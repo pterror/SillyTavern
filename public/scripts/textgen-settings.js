@@ -3,6 +3,7 @@ import {
     getStoppingStrings,
     online_status,
     resultCheckStatus,
+    saveSettings,
     saveSettingsDebounced,
     setGenerationParamsFromPreset,
     setOnlineStatus,
@@ -19,7 +20,8 @@ import { autoSelectInstructPreset, selectContextPreset, selectInstructPreset } f
 import { buildLogitBiasListResult, createNewLogitBiasEntry, displayLogitBias, getLogitBiasEntryTexts } from './logit-bias.js';
 
 import { power_user, registerDebugFunction } from './power-user.js';
-import { getActiveManualApiSamplers, loadApiSelectedSamplers, isSamplerManualPriorityEnabled } from './samplerSelect.js';
+import { SERVER_OWNED, newUi, newUiStarted } from './new-ui.js';
+import { importBrowserSamplerSelect } from './samplerSelect.js';
 import { SECRET_KEYS, writeSecret } from './secrets.js';
 import { CompactStreamDecoder, ResumableCompactStreamReader } from './llamacpp-compact-stream.js';
 import { loadAphroditeModels, loadDreamGenModels, loadFeatherlessModels, loadGenericModels, loadInfermaticAIModels, loadLlamaCppModels, loadMancerModels, loadOllamaModels, loadOpenRouterModels, loadTabbyModels, loadTogetherAIModels, loadVllmModels, updateOpenRouterProvidersWarning } from './textgen-models.js';
@@ -270,12 +272,16 @@ async function selectPreset(name) {
 
     textgenerationwebui_settings.preset = name;
     for (const name of setting_names) {
+        // The server's fields come from the preset there: selecting it is the save below.
+        if (isServerOwned(name)) continue;
         const value = preset[name];
         setSettingByName(name, value, true);
     }
     setGenerationParamsFromPreset(preset);
     displayLogitBias(preset.logit_bias, BIAS_KEY, 'textgenerationwebui_settings');
-    saveSettingsDebounced('textgenerationwebui_settings');
+    // Stored now, and the settings view read again, so whoever hears of the change reads the preset's values.
+    await saveSettings('textgenerationwebui_settings');
+    if (newUiStarted()) await newUi().settings.reread();
 }
 
 export function formatTextGenURL(value) {
@@ -390,22 +396,6 @@ function getCustomTokenBans(sequences, getIds, dropped) {
 }
 
 /**
- * Sets the banned strings kill switch toggle.
- * @param {boolean} isEnabled Kill switch state
- * @param {string} title Label title
- */
-function toggleBannedStringsKillSwitch(isEnabled, title) {
-    $('#send_banned_tokens_textgenerationwebui').prop('checked', isEnabled);
-    $('#send_banned_tokens_label').find('.menu_button').toggleClass('toggleEnabled', isEnabled).prop('title', title);
-    // setSettingByName's boot loop triggers this change unconditionally to re-apply the stored value; don't persist a no-op.
-    const changed = isEnabled !== textgenerationwebui_settings.send_banned_tokens;
-    textgenerationwebui_settings.send_banned_tokens = isEnabled;
-    if (changed) {
-        saveSettingsDebounced('textgenerationwebui_settings');
-    }
-}
-
-/**
  * Calculates logit bias object from the logit bias list.
  * @param {TextCompletionSettings} settings Text completion settings
  * @param {(text: string) => number[]|null} getIds Token ids for an entry's text; null leaves it out.
@@ -443,11 +433,17 @@ function calculateLogitBias(settings, getIds, dropped) {
     return result;
 }
 
+/** Whether a text generation setting is the server's (the new page shows it; this page neither writes nor saves it). */
+const isServerOwned = (/** @type {string} */ key) => SERVER_OWNED.has(`textgenerationwebui_settings.${key}`);
+
 export async function loadTextGenSettings(data, loadedSettings) {
-    await loadApiSelectedSamplers();
     textgenerationwebui_presets = convertPresets(data.textgenerationwebui_presets);
     textgenerationwebui_preset_names = data.textgenerationwebui_preset_names ?? [];
-    Object.assign(textgenerationwebui_settings, loadedSettings.textgenerationwebui_settings ?? {});
+    // The server's fields read its view once the new page has started; before, they hold what was loaded.
+    for (const [key, value] of Object.entries(loadedSettings.textgenerationwebui_settings ?? {})) {
+        if (isServerOwned(key) && newUiStarted()) continue;
+        textgenerationwebui_settings[key] = value;
+    }
 
     if (loadedSettings.api_server_textgenerationwebui) {
         for (const type of Object.keys(SERVER_INPUTS)) {
@@ -480,6 +476,7 @@ export async function loadTextGenSettings(data, loadedSettings) {
     }
 
     for (const i of setting_names) {
+        if (isServerOwned(i)) continue;
         const value = textgenerationwebui_settings[i];
         setSettingByName(i, value);
     }
@@ -701,16 +698,21 @@ async function getStatusTextgen() {
     return resultCheckStatus();
 }
 
+/**
+ * Once the new page shows the text generation fields: textgenerationwebui_settings' fields of them read its settings
+ * view (a write is an action), this page's own blocks follow the sampler select, and the browser's old copy of the
+ * sampler select moves to the server.
+ * @param {import('/ui/entry.js').NewUi['settings']} settings
+ */
+export function bindTextGenSettings(settings) {
+    settings.bind(textgenerationwebui_settings, 'textgenerationwebui_settings');
+    settings.watchSamplers(() => showSamplerControls());
+    showSamplerControls();
+    void importBrowserSamplerSelect().catch(error => console.warn('[settings] the sampler select stays in the browser:', error));
+}
+
 export function initTextGenSettings() {
     registerEntryTextSource('textgenerationwebui', getTextgenEntryTexts);
-
-    $('#send_banned_tokens_textgenerationwebui').on('change', function () {
-        const checked = !!$(this).prop('checked');
-        toggleBannedStringsKillSwitch(checked,
-            checked
-                ? t`Banned tokens/strings are being sent in the request.`
-                : t`Banned tokens/strings are NOT being sent in the request.`);
-    });
 
     $('#koboldcpp_order').sortable({
         delay: getSortableDelay(),
@@ -777,22 +779,6 @@ export function initTextGenSettings() {
         },
     });
 
-    $('#tabby_json_schema').on('input', function () {
-        const json_schema_string = String($(this).val());
-
-        if (json_schema_string) {
-            try {
-                textgenerationwebui_settings.json_schema = JSON.parse(json_schema_string);
-            } catch {
-                textgenerationwebui_settings.json_schema = null;
-            }
-        } else {
-            textgenerationwebui_settings.json_schema = null;
-        }
-
-        saveSettingsDebounced('textgenerationwebui_settings');
-    });
-
     $('#textgenerationwebui_default_order').on('click', function () {
         sortOobaItemsByOrder(OOBA_DEFAULT_ORDER);
         textgenerationwebui_settings.sampler_priority = OOBA_DEFAULT_ORDER;
@@ -811,26 +797,7 @@ export function initTextGenSettings() {
         const type = String($(this).val());
         textgenerationwebui_settings.type = type;
 
-        if ([VLLM, APHRODITE, INFERMATICAI].includes(textgenerationwebui_settings.type)) {
-            $('#mirostat_mode_textgenerationwebui').attr('step', 2); //Aphro disallows mode 1
-            $('#do_sample_textgenerationwebui').prop('checked', true); //Aphro should always do sample; 'otherwise set temp to 0 to mimic no sample'
-            $('#ban_eos_token_textgenerationwebui').prop('checked', false); //Aphro should not ban EOS, just ignore it; 'add token '2' to ban list do to this'
-            //special handling for vLLM/Aphrodite topK -1 disable state
-            $('#top_k_textgenerationwebui').attr('min', -1);
-            if ($('#top_k_textgenerationwebui').val() === '0' || textgenerationwebui_settings.top_k === 0) {
-                textgenerationwebui_settings.top_k = -1;
-                $('#top_k_textgenerationwebui').val('-1').trigger('input');
-            }
-        } else {
-            $('#mirostat_mode_textgenerationwebui').attr('step', 1);
-            //undo special vLLM/Aphrodite setup for topK
-            $('#top_k_textgenerationwebui').attr('min', 0);
-            if ($('#top_k_textgenerationwebui').val() === '-1' || textgenerationwebui_settings.top_k === -1) {
-                textgenerationwebui_settings.top_k = 0;
-                $('#top_k_textgenerationwebui').val('0').trigger('input');
-            }
-        }
-
+        // Top K's off value and mirostat's modes follow the backend on the server (withinBackend, the view's ranges).
         showSamplerControls(type);
         setOnlineStatus('no_connection');
 
@@ -849,80 +816,9 @@ export function initTextGenSettings() {
         await eventSource.emit(event_types.PRESET_CHANGED, { apiId: 'textgenerationwebui', name: presetName });
     });
 
-    $('#samplerResetButton').off('click').on('click', function () {
-        const inputs = {
-            'temp_textgenerationwebui': 1,
-            'top_k_textgenerationwebui': [INFERMATICAI, APHRODITE, VLLM].includes(textgenerationwebui_settings.type) ? -1 : 0,
-            'top_p_textgenerationwebui': 1,
-            'min_p_textgenerationwebui': 0,
-            'rep_pen_textgenerationwebui': 1,
-            'rep_pen_range_textgenerationwebui': 0,
-            'rep_pen_decay_textgenerationwebui': 0,
-            'dynatemp_textgenerationwebui': false,
-            'seed_textgenerationwebui': -1,
-            'ban_eos_token_textgenerationwebui': false,
-            'do_sample_textgenerationwebui': true,
-            'add_bos_token_textgenerationwebui': true,
-            'temperature_last_textgenerationwebui': true,
-            'skip_special_tokens_textgenerationwebui': true,
-            'include_reasoning_textgenerationwebui': true,
-            'top_a_textgenerationwebui': 0,
-            'top_a_counter_textgenerationwebui': 0,
-            'mirostat_mode_textgenerationwebui': 0,
-            'mirostat_tau_textgenerationwebui': 5,
-            'mirostat_eta_textgenerationwebui': 0.1,
-            'tfs_textgenerationwebui': 1,
-            'epsilon_cutoff_textgenerationwebui': 0,
-            'eta_cutoff_textgenerationwebui': 0,
-            'encoder_rep_pen_textgenerationwebui': 1,
-            'freq_pen_textgenerationwebui': 0,
-            'presence_pen_textgenerationwebui': 0,
-            'skew_textgenerationwebui': 0,
-            'no_repeat_ngram_size_textgenerationwebui': 0,
-            'speculative_ngram_textgenerationwebui': false,
-            'min_length_textgenerationwebui': 0,
-            'num_beams_textgenerationwebui': 1,
-            'length_penalty_textgenerationwebui': 1,
-            'penalty_alpha_textgenerationwebui': 0,
-            'typical_p_textgenerationwebui': 1, // Added entry
-            'guidance_scale_textgenerationwebui': 1,
-            'smoothing_factor_textgenerationwebui': 0,
-            'smoothing_curve_textgenerationwebui': 1,
-            'dry_allowed_length_textgenerationwebui': 2,
-            'dry_multiplier_textgenerationwebui': 0,
-            'dry_base_textgenerationwebui': 1.75,
-            'dry_penalty_last_n_textgenerationwebui': 0,
-            'xtc_threshold_textgenerationwebui': 0.1,
-            'xtc_probability_textgenerationwebui': 0,
-            'nsigma_textgenerationwebui': 0,
-            'min_keep_textgenerationwebui': 0,
-            'adaptive_target_textgenerationwebui': -0.01,
-            'adaptive_decay_textgenerationwebui': 0.9,
-        };
-
-        for (const [id, value] of Object.entries(inputs)) {
-            const inputElement = $(`#${id}`);
-            const valueToSet = typeof value === 'boolean' ? String(value) : value;
-            if (inputElement.prop('type') === 'checkbox') {
-                inputElement.prop('checked', value).trigger('input');
-            } else if (inputElement.prop('type') === 'number') {
-                inputElement.val(valueToSet).trigger('input');
-            } else {
-                inputElement.val(valueToSet).trigger('input');
-                if (power_user.enableZenSliders) {
-                    let masterElementID = inputElement.prop('id');
-                    let zenSlider = $(`#${masterElementID}_zenslider`).slider();
-                    zenSlider.slider('option', 'value', value);
-                    zenSlider.slider('option', 'slide')
-                        .call(zenSlider, null, {
-                            handle: $('.ui-slider-handle', zenSlider), value: value,
-                        });
-                }
-            }
-        }
-    });
-
     for (const i of setting_names) {
+        // The new page's fields are its own (packages/areas/settings/page/tg.tsx).
+        if (isServerOwned(i)) continue;
         $(`#${i}_textgenerationwebui`).attr('x-setting-id', i);
         $(document).on('input', `#${i}_textgenerationwebui`, function () {
             const isCheckbox = $(this).attr('type') == 'checkbox';
@@ -939,11 +835,6 @@ export function initTextGenSettings() {
                 const value = Number($(this).val());
                 $(`#${id}_counter_textgenerationwebui`).val(value);
                 textgenerationwebui_settings[id] = value;
-                //special handling for vLLM/Aphrodite using -1 as disabled instead of 0
-                if ($(this).attr('id') === 'top_k_textgenerationwebui' && [INFERMATICAI, APHRODITE, VLLM].includes(textgenerationwebui_settings.type) && value === 0) {
-                    textgenerationwebui_settings[id] = -1;
-                    $(this).val(-1);
-                }
             }
             saveSettingsDebounced('textgenerationwebui_settings');
         });
@@ -1039,10 +930,13 @@ function showSamplerControls(apiType = null) {
 
     showTypeSpecificControls(apiType ?? textgenerationwebui_settings.type);
 
-    const prioritizeManualSamplerSelect = isSamplerManualPriorityEnabled(apiType ?? textgenerationwebui_settings.type);
-    const samplersActivatedManually = getActiveManualApiSamplers(apiType ?? textgenerationwebui_settings.type);
+    // The sampler select is the server's (the settings view's, for the backend now); the new page's fields follow it
+    // themselves, this page's own blocks (logit bias, sampler orders) here.
+    const select = newUiStarted() ? newUi().settings.samplers() : { manual: false, shown: [] };
+    const prioritizeManualSamplerSelect = select.manual;
+    const samplersActivatedManually = select.shown;
 
-    if (!samplersActivatedManually?.length || !prioritizeManualSamplerSelect) return;
+    if (!samplersActivatedManually.length || !prioritizeManualSamplerSelect) return;
 
     $('#textgenerationwebui_api-settings [data-tg-samplers], #textgenerationwebui_api [data-tg-samplers]').each(function () {
         const tgSamplers = $(this).attr('data-tg-samplers').split(',').map(x => x.trim()).filter(str => str !== '');

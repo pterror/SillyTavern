@@ -1,7 +1,7 @@
-import { For, Show, createSignal } from 'solid-js';
+import { For, Show, createRenderEffect, createSignal } from 'solid-js';
 import type { JSX } from 'solid-js';
-import { FIELDS, VIEW } from '../protocol.ts';
-import type { Field, Level, Range, SettingsView } from '../protocol.ts';
+import { FIELDS, VIEW, samplerSelectOf, zenOf } from '../protocol.ts';
+import type { Field, Level, Range, SamplerSelect, SettingsView } from '../protocol.ts';
 import { useUi } from '@st/page/context';
 
 // The AI response configuration panel's controls, each bound to a field's declaration (packages/protocol/src/
@@ -10,14 +10,33 @@ import { useUi } from '@st/page/context';
 
 const byId = new Map(FIELDS.map((field) => [field.id, field]));
 
-/** Whether a field shows for what the view's API, source and backend are now. */
-export function isShown(field: Field, api: SettingsView['api']): boolean {
+/** Whether something shown for these text generation backends (or all but them) shows for this one. */
+export function forBackend(rule: Field['textgen'], backend: string): boolean {
+    if (rule === undefined) return true;
+    const types = 'only' in rule ? rule.only : rule.except;
+    const listed = types.includes(backend) || types.includes('all');
+    return 'only' in rule ? listed : !listed;
+}
+
+/**
+ * What the sampler select says of something hidden by these sampler names: shown or not when the user chose the
+ * samplers ("prioritize manual", with a list), else nothing (its backend decides).
+ */
+export function bySamplerSelect(names: readonly string[] | undefined, select: SamplerSelect): boolean | undefined {
+    if (names === undefined || !select.manual || select.shown.length === 0) return undefined;
+    return names.some((name) => select.shown.includes(name));
+}
+
+/**
+ * Whether a field shows for what the view's API, source and backend are now; the user's chosen samplers decide over
+ * the backend, as the old page's sampler select did.
+ */
+export function isShown(field: Field, api: SettingsView['api'], samplers?: SamplerSelect): boolean {
     if (field.api && !field.api.includes(api.main)) return false;
     if (field.family === 'cc' && field.sources && !field.sources.includes(api.source)) return false;
-    if (field.family === 'textgen' && field.textgen) {
-        const types = 'only' in field.textgen ? field.textgen.only : field.textgen.except;
-        const listed = types.includes(api.textgen) || types.includes('all');
-        if ('only' in field.textgen ? !listed : listed) return false;
+    if (field.family === 'textgen') {
+        const chosen = samplers ? bySamplerSelect(field.samplers, samplers) : undefined;
+        return chosen ?? forBackend(field.textgen, api.textgen);
     }
     return true;
 }
@@ -30,6 +49,7 @@ export function useField(id: string) {
     const view = client.view<SettingsView>(VIEW);
     const [refusal, setRefusal] = createSignal<string | null>(null);
     const value = () => view()?.values[field.path];
+    const range = (): Range => view()?.ranges[field.id] ?? { min: field.min, max: field.max, step: field.step };
     return {
         field,
         value,
@@ -45,15 +65,17 @@ export function useField(id: string) {
         },
         shown: () => {
             const shown = view();
-            return !!shown && isShown(field, shown.api);
+            return !!shown && isShown(field, shown.api, samplerSelectOf(shown));
         },
+        /** Zen sliders on. */
+        zen: () => view()?.zen === true,
         /** The level the value comes from; 'unset' where a range above the defaults sets nothing. */
         level: (): Level | 'unset' | undefined => {
             const shown = view();
             if (!shown) return undefined;
             return shown.sources[field.path] ?? (shown.range.from === 'default' ? undefined : 'unset');
         },
-        range: (): Range => view()?.ranges[field.id] ?? { min: field.min, max: field.max, step: field.step },
+        range,
         /** Not editable: no view yet, or a range that ends at the defaults. */
         disabled: () => (view()?.range.to ?? 'default') === 'default',
         /** A chat's level is edited, and it sets this field: its value can be taken away. */
@@ -124,6 +146,28 @@ export function UnsetButton(props: { field: FieldState }) {
     );
 }
 
+/**
+ * Keeps a number input on its field: its range, then its value, set together whenever either changes. Set apart
+ * (attributes compared one by one), an input whose min rose past its value clamped it, and the same value wasn't set
+ * again once the min came back down.
+ */
+function numeric(field: FieldState) {
+    return (input: HTMLInputElement) => {
+        createRenderEffect(() => {
+            const { min, max, step } = field.range();
+            for (const [name, bound] of [
+                ['min', min],
+                ['max', max],
+                ['step', step],
+            ] as const) {
+                if (bound === undefined) input.removeAttribute(name);
+                else input.setAttribute(name, String(bound));
+            }
+            input.value = String(field.number());
+        });
+    };
+}
+
 /** A number input stepped by the mouse wheel while it's focused, as the old page's were (dom-handlers.js). */
 function wheelStep(field: FieldState, input: HTMLInputElement, event: WheelEvent) {
     if (document.activeElement !== input) return;
@@ -140,7 +184,50 @@ function wheelStep(field: FieldState, input: HTMLInputElement, event: WheelEvent
 }
 
 /** A slider with its number box, as the old range blocks (the box's id is the old counter's). */
-export function Slider(props: { field: FieldState; counterId: string }) {
+/**
+ * A slider with its number box, as the old range blocks (the box's id is the old counter's); a zen slider instead
+ * with zen sliders on. `look` is the old markup's: a range block's, or text generation's neo-range classes.
+ */
+export function Slider(props: { field: FieldState; counterId: string; look?: 'block' | 'neo'; unlocked?: boolean }) {
+    return (
+        <Show
+            when={props.field.zen()}
+            fallback={<PlainSlider field={props.field} counterId={props.counterId} look={props.look} />}
+        >
+            <ZenSlider field={props.field} unlocked={props.unlocked === true} />
+        </Show>
+    );
+}
+
+function PlainSlider(props: { field: FieldState; counterId: string; look: 'block' | 'neo' | undefined }) {
+    const field = () => props.field;
+    const send = (input: HTMLInputElement) =>
+        void field().set(Number(input.value), () => (input.value = String(field().number())));
+    return (
+        <Show when={props.look === 'neo'} fallback={<BlockSlider field={props.field} counterId={props.counterId} />}>
+            <input
+                class="neo-range-slider"
+                type="range"
+                id={field().field.id}
+                ref={numeric(field())}
+                disabled={field().disabled()}
+                onChange={(event) => send(event.currentTarget)}
+            />
+            <input
+                class="neo-range-input"
+                type="number"
+                id={props.counterId}
+                attr:data-for={field().field.id}
+                ref={numeric(field())}
+                disabled={field().disabled()}
+                onChange={(event) => send(event.currentTarget)}
+                onWheel={(event) => wheelStep(field(), event.currentTarget, event)}
+            />
+        </Show>
+    );
+}
+
+function BlockSlider(props: { field: FieldState; counterId: string }) {
     const field = () => props.field;
     const send = (input: HTMLInputElement) =>
         void field().set(Number(input.value), () => (input.value = String(field().number())));
@@ -150,10 +237,7 @@ export function Slider(props: { field: FieldState; counterId: string }) {
                 <input
                     type="range"
                     id={field().field.id}
-                    min={field().range().min}
-                    max={field().range().max}
-                    step={field().range().step}
-                    value={field().number()}
+                    ref={numeric(field())}
                     disabled={field().disabled()}
                     onChange={(event) => send(event.currentTarget)}
                 />
@@ -163,10 +247,7 @@ export function Slider(props: { field: FieldState; counterId: string }) {
                     type="number"
                     id={props.counterId}
                     attr:data-for={field().field.id}
-                    min={field().range().min}
-                    max={field().range().max}
-                    step={field().range().step}
-                    value={field().number()}
+                    ref={numeric(field())}
                     disabled={field().disabled()}
                     onChange={(event) => send(event.currentTarget)}
                     onWheel={(event) => wheelStep(field(), event.currentTarget, event)}
@@ -183,10 +264,7 @@ export function NumberBox(props: { field: FieldState; class?: string }) {
             type="number"
             class={props.class ?? 'text_pole'}
             id={field().field.id}
-            min={field().range().min}
-            max={field().range().max}
-            step={field().range().step}
-            value={field().number()}
+            ref={numeric(field())}
             disabled={field().disabled()}
             onChange={(event) => {
                 const input = event.currentTarget;
@@ -289,5 +367,151 @@ export function Radio(props: { field: FieldState; index: number; name: string })
                 void field().set(option()?.value, () => (radio.checked = field().value() === option()?.value));
             }}
         />
+    );
+}
+
+/**
+ * A zen slider (the old page's CreateZenSliders): a track whose handle shows the value (Off at the field's off
+ * value), dragged across `steps` stops or through named values, or typed into. The field's old id stays on a hidden
+ * range input holding the value, for extensions that read it.
+ */
+function ZenSlider(props: { field: FieldState; unlocked: boolean }) {
+    const { t } = useUi();
+    const field = () => props.field;
+    const zen = () => zenOf(field().field.id);
+    const values = () => (props.unlocked ? zen().unlockedValues : undefined) ?? zen().values;
+    /** Where the handle is while it's dragged (the value isn't sent until it's let go). */
+    const [dragged, setDragged] = createSignal<number | null>(null);
+    const range = () => {
+        const named = values();
+        if (named) return { min: 0, max: named.length - 1, step: 1 };
+        const { min = 0, max = 1 } = field().range();
+        return { min, max, step: (max - min) / zen().steps };
+    };
+    /** The handle's position for a value: its index among named values, else the value. */
+    const positionOf = (value: number) => {
+        const named = values();
+        if (!named) return value;
+        const index = named.indexOf(value);
+        if (index !== -1) return index;
+        const standIn = zen().standIn;
+        return standIn === undefined ? 0 : Math.max(0, named.indexOf(standIn));
+    };
+    const valueAt = (position: number) => values()?.[position] ?? position;
+    const position = () => dragged() ?? positionOf(field().number());
+    const fraction = () => {
+        const { min, max } = range();
+        return max === min ? 0 : (position() - min) / (max - min);
+    };
+    const text = () => {
+        const value = valueAt(position());
+        if (value === zen().off) return t('Off');
+        if (zen().all !== undefined && value === zen().all) return t('All');
+        return values() ? String(value) : value.toFixed(zen().decimals);
+    };
+    const snap = (track: HTMLElement, clientX: number) => {
+        const rect = track.getBoundingClientRect();
+        const { min, max, step } = range();
+        const raw = min + Math.min(1, Math.max(0, (clientX - rect.left) / rect.width)) * (max - min);
+        return Math.min(max, Math.max(min, min + Math.round((raw - min) / step) * step));
+    };
+    const commit = (value: number) => {
+        const decimals = values() ? 0 : zen().decimals;
+        void field().set(Number(value.toFixed(decimals)), () => setDragged(null));
+    };
+    return (
+        <>
+            <input type="range" id={field().field.id} ref={numeric(field())} hidden />
+            <div
+                id={`${field().field.id}_zenslider`}
+                class="ui-slider ui-corner-all ui-slider-horizontal ui-widget ui-widget-content"
+                style={{ width: '100%' }}
+                onPointerDown={(event) => {
+                    if (field().disabled() || event.target !== event.currentTarget) return;
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                    setDragged(snap(event.currentTarget, event.clientX));
+                }}
+                onPointerMove={(event) => {
+                    if (dragged() !== null) setDragged(snap(event.currentTarget, event.clientX));
+                }}
+                onPointerUp={() => {
+                    const at = dragged();
+                    if (at === null) return;
+                    setDragged(null);
+                    commit(valueAt(at));
+                }}
+            >
+                <span
+                    class="ui-slider-handle ui-corner-all ui-state-default"
+                    tabindex="0"
+                    contenteditable={values() === undefined && !field().disabled()}
+                    style={{
+                        left: `${fraction() * 100}%`,
+                        'margin-left': `${-fraction() * 50}px`,
+                        color: valueAt(position()) === zen().off ? 'rgba(128,128,128,0.5)' : '',
+                    }}
+                    onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                            event.preventDefault();
+                            event.currentTarget.blur();
+                        }
+                    }}
+                    onBlur={(event) => {
+                        if (values() !== undefined) return;
+                        const typed = Number.parseFloat(event.currentTarget.textContent);
+                        const handle = event.currentTarget;
+                        if (Number.isFinite(typed) && typed !== field().number()) {
+                            void field().set(typed, () => (handle.textContent = text()));
+                        } else handle.textContent = text();
+                    }}
+                >
+                    {text()}
+                </span>
+            </div>
+        </>
+    );
+}
+
+/**
+ * A text area holding JSON: what's typed is sent parsed, when it's left (empty is nothing). Text that isn't JSON
+ * isn't sent, and stays as typed with why.
+ */
+export function JsonArea(props: { field: FieldState; class?: string; rows?: number; placeholder?: string }) {
+    const { t } = useUi();
+    const field = () => props.field;
+    const [invalid, setInvalid] = createSignal(false);
+    const shownText = () => {
+        const value = field().value();
+        return value === null || value === undefined ? '' : JSON.stringify(value, null, 2);
+    };
+    return (
+        <>
+            <textarea
+                id={field().field.id}
+                class={props.class ?? 'text_pole textarea_compact monospace'}
+                rows={props.rows ?? 4}
+                placeholder={props.placeholder}
+                value={shownText()}
+                disabled={field().disabled()}
+                onChange={(event) => {
+                    const text = event.currentTarget.value.trim();
+                    let parsed: unknown = null;
+                    if (text !== '') {
+                        try {
+                            parsed = JSON.parse(text);
+                        } catch {
+                            setInvalid(true);
+                            return;
+                        }
+                    }
+                    setInvalid(false);
+                    // Refused, what was typed stays to be fixed: the refusal says why.
+                    void field().set(parsed, () => {});
+                }}
+            />
+            <Show when={invalid()}>
+                <small class="settings_refusal">{t('Not valid JSON.')}</small>
+            </Show>
+        </>
     );
 }

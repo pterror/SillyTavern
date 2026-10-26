@@ -1,5 +1,5 @@
 import { expect, test } from 'vite-plus/test';
-import { UNLOCKED_CONTEXT, limitRecord, limitsFor, withinLimits } from './model-limits.ts';
+import { UNLOCKED_CONTEXT, limitRecord, limitsFor, withinAllowed, withinLimits } from './model-limits.ts';
 
 test("a model's name decides its context where the source has no list", () => {
     expect(limitsFor('openai', 'gpt-4.1-mini', false).context).toBe(1_000_000);
@@ -90,4 +90,18 @@ test("what's kept of a model record is what the limits read", () => {
     });
     for (const source of ['openrouter', 'workers_ai', 'aimlapi'])
         expect(limitsFor(source, 'm', false, [kept])).toEqual(limitsFor(source, 'm', false, [record]));
+});
+
+test('a context-limited value past the locked limit reads as it until the user unlocks; the stored value stays', () => {
+    const settings = {
+        power_user: { max_context_unlocked: false },
+        max_context: 20_000,
+        textgenerationwebui_settings: { rep_pen_range: 9000, type: 'ooba', top_k: -1 },
+    };
+    const read = withinAllowed(settings, () => []);
+    expect(read.max_context).toBe(8192);
+    expect(read.textgenerationwebui_settings).toMatchObject({ rep_pen_range: 8192, top_k: 0 });
+    expect(settings.max_context).toBe(20_000);
+    const unlocked = { ...settings, power_user: { max_context_unlocked: true } };
+    expect(withinAllowed(unlocked, () => []).max_context).toBe(20_000);
 });

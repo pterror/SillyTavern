@@ -1,3 +1,5 @@
+import { FIELDS, rangeOf } from './protocol.ts';
+
 // What a chat completion source and model allow: the largest context, the highest temperature, and the penalties'
 // range. The old page set these on its controls when the source or model changed (chat-completion-settings.js
 // onModelChange and its get*MaxContext helpers), from the model list the source answered or from tables of model
@@ -509,7 +511,39 @@ export function withinBackend<T extends Record<string, unknown>>(settings: T): T
     return { ...settings, textgenerationwebui_settings: { ...stored, top_k: off } };
 }
 
-/** Settings as everything reads them: within the chat completion model's limits and as the text backend takes them. */
+/**
+ * Settings with each field whose range follows the context or response limits at most their maximum, by whether
+ * the user unlocked them (power_user.max_context_unlocked). The old page lowered and saved them when the unlock
+ * changed; this reads them so, and stores nothing.
+ */
+export function withinUnlock<T extends Record<string, unknown>>(settings: T): T {
+    const powerUser: unknown = settings['power_user'];
+    const unlocked =
+        typeof powerUser === 'object' &&
+        powerUser !== null &&
+        (powerUser as Record<string, unknown>)['max_context_unlocked'] === true;
+    let out: Record<string, unknown> = settings;
+    for (const field of FIELDS) {
+        if (field.limits === undefined) continue;
+        const { max } = rangeOf(field, unlocked);
+        const keys = field.path.split('.');
+        const parent = keys.length === 1 ? out : out[keys[0] ?? ''];
+        const key = keys.at(-1) ?? '';
+        if (typeof parent !== 'object' || parent === null) continue;
+        const value = (parent as Record<string, unknown>)[key];
+        if (typeof value !== 'number' || max === undefined || value <= max) continue;
+        out =
+            keys.length === 1
+                ? { ...out, [key]: max }
+                : { ...out, [keys[0] ?? '']: { ...(parent as Record<string, unknown>), [key]: max } };
+    }
+    return out as T;
+}
+
+/**
+ * Settings as everything reads them: within the chat completion model's limits and the context limits, and as the
+ * text backend takes them.
+ */
 export function withinAllowed<T extends Record<string, unknown>>(settings: T, models: ModelLists): T {
-    return withinBackend(withinLimits(settings, models));
+    return withinUnlock(withinBackend(withinLimits(settings, models)));
 }

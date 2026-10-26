@@ -194,9 +194,13 @@ test.describe('stopping a generation', () => {
             const avatar = await createCharacter(page, `StopNS-${stamp}`);
             await openCharacter(page, avatar);
             await connectLlamaCpp(page, mock.url);
-            // @ts-ignore
-            await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = false; });
-            await page.waitForTimeout(2500);
+            // Stored, not just set on the page: the server builds the request from what's stored.
+            await page.evaluate(async () => {
+                // @ts-ignore
+                SillyTavern.getContext().textCompletionSettings.streaming = false;
+                const { saveSettings } = await import('/script.js');
+                await saveSettings('textgenerationwebui_settings');
+            });
 
             // The server answers in full, but the answer is held back from the page until after stop is pressed.
             let serverAnswered = false;

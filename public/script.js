@@ -40,6 +40,7 @@ import {
     parseTextgenLogprobs,
     parseTabbyLogprobs,
     initTextGenSettings,
+    bindTextGenSettings,
 } from './scripts/textgen-settings.js';
 
 import {
@@ -250,7 +251,6 @@ import { applyMacroColors, macroColorsOf } from './scripts/macro-colors.js';
 import { renderTemplate, renderTemplateAsync } from './scripts/templates.js';
 import { assetUrl } from './scripts/asset-url.js';
 import { initScrapers } from './scripts/scrapers.js';
-import { initCustomSelectedSamplers, validateDisabledSamplers } from './scripts/samplerSelect.js';
 import { DragAndDropHandler } from './scripts/dragdrop.js';
 import { INTERACTABLE_CONTROL_CLASS, initKeyboard } from './scripts/keyboard.js';
 import { initDynamicStyles } from './scripts/dynamic-styles.js';
@@ -1523,6 +1523,7 @@ async function firstLoadInit() {
         },
     });
     bindChatCompletionSettings(newUi().settings);
+    bindTextGenSettings(newUi().settings);
     await initTokenizers();
     initAuthorsNote();
     await initPersonas();
@@ -1544,7 +1545,6 @@ async function firstLoadInit() {
 
     setStage('Starting up');
     await initScrapers();
-    initCustomSelectedSamplers();
     initDataMaid();
     initFailedSends({
         addOneMessage, deleteMessage, getCurrentChatContext, redisplayChat, reloadCurrentChat, updateViewMessageIds,
@@ -7489,7 +7489,6 @@ export function changeMainAPI(api = null) {
         getStatusHorde();
         getHordeModels(true);
     }
-    validateDisabledSamplers();
     setupChatCompletionPromptManager(oai_settings);
     markCharacterEditorCountsStale();
 }
@@ -7728,7 +7727,6 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
             onboarded = true;
         }
     }
-    await validateDisabledSamplers();
 
     // Seeds the dirty-check baseline so the first saveSettings() doesn't re-write the exact payload it just received.
     // Not after onboarding: its changes aren't in that payload, and a baseline that included them would skip their save.

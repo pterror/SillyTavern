@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createRoot, on } from 'solid-js';
-import { FIELDS, SERVER_FAMILIES, VIEW } from '../protocol.ts';
-import type { SettingsView } from '../protocol.ts';
+import { FIELDS, SERVER_FAMILIES, VIEW, samplerSelectOf } from '../protocol.ts';
+import type { SamplerSelect, SettingsView } from '../protocol.ts';
 import type { Client } from '@st/page/client';
 
 // Upstream's settings objects (oai_settings and the rest) keep their names for old code and extensions: each field of
@@ -47,6 +47,27 @@ export function settingsCompat(client: Client) {
                     },
                 });
             }
+        },
+        /** A text generation backend's sampler select, the backend now's by default (none until the view arrives). */
+        samplers: (backend?: string): SamplerSelect => {
+            const current = view();
+            return current ? samplerSelectOf(current, backend ?? current.api.textgen) : { manual: false, shown: [] };
+        },
+        /** Changes a backend's sampler select (the backend now's by default); resolves whether the server took it. */
+        setSamplers: async (change: { backend?: string; manual?: boolean; shown?: string[] }) =>
+            (await client.send('settings.samplers', change)).ok,
+        /** A backend's sampler select (the backend now's by default) back to none. */
+        resetSamplers: async (backend?: string) =>
+            (await client.send('settings.samplers.reset', backend === undefined ? {} : { backend })).ok,
+        /** The sampler selects the old page kept in the browser, by backend; resolves whether the server took them. */
+        importSamplers: async (byBackend: Record<string, { manual: boolean; shown: string[] }>) =>
+            (await client.send('settings.samplers.import', byBackend)).ok,
+        /** Runs `run` whenever the sampler select or the backend changes in the view (not for the first view). */
+        watchSamplers(run: () => void) {
+            createRoot(() => {
+                const key = createMemo(() => JSON.stringify([view()?.samplerSelects, view()?.api.textgen]));
+                createEffect(on(key, () => run(), { defer: true }));
+            });
         },
         /** Reads the view again (after an old route changed what it shows), and resolves once it's here. */
         reread: () => client.reread(VIEW),

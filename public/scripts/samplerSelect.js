@@ -1,422 +1,97 @@
-import { main_api } from './generation-params.js';
-import { setting_names as TGsamplerNames, showTGSamplerControls, textgenerationwebui_settings } from './textgen-settings.js';
-import { renderTemplateAsync } from './templates.js';
-import { Popup, POPUP_TYPE } from './popup.js';
 import { localforage } from '../lib.js';
+import { newUi, newUiStarted } from './new-ui.js';
 
-const forcedOnColoring = 'color: #89db35;';
-const forcedOffColoring = 'color: #e84f62;';
-const SELECT_SAMPLER = {
-    DATA: 'selectsampler',
-    SHOWN: 'shown',
-    HIDDEN: 'hidden',
-};
-
-const textGenObjectStore = localforage.createInstance({ name: 'SillyTavern_TextCompletions' });
-let selectedSamplers = {};
+// Upstream's sampler select. It's the server's now (the settings view's, per text generation backend; the popup is
+// the new page's, packages/areas/settings/page/tg.tsx); these names stay for extensions that import them, over the
+// new page. A tcApiType names a backend other than the one now, as upstream's did.
 
 /**
- * Whether the given (or currently active) main API is the Text Completion backend - the one
- * sampler visibility/selection in this file is gated on.
- * @param {string} [api] API to check. Defaults to the currently active main API.
- * @returns {boolean}
+ * @param {string} [tcApiType]
+ * @returns {{ manual: boolean, shown: readonly string[] }}
  */
-function isTextCompletionApi(api = main_api) {
-    return api === 'textgenerationwebui';
-}
+const select = tcApiType => (newUiStarted() ? newUi().settings.samplers(tcApiType || undefined) : { manual: false, shown: [] });
 
-async function showSamplerSelectPopup() {
-    const html = $(document.createElement('div'));
-    html.attr('id', 'sampler_view_list')
-        .addClass('flex-container flexFlowColumn');
-    html.append(await renderTemplateAsync('samplerSelector'));
-
-    const listContainer = $('<div id="apiSamplersList" class="flex-container flexNoGap"></div>');
-    const APISamplers = await listSamplers(main_api);
-    listContainer.append(APISamplers.toString());
-    html.append(listContainer);
-
-    const showPromise = new Popup(html, POPUP_TYPE.TEXT, null, { wide: true, large: true, allowVerticalScrolling: true }).show();
-
-    setSamplerListListeners();
-
-    $('#resetSelectedSamplers').off('click').on('click', async function () {
-        if (isTextCompletionApi(main_api)) {
-            $('#prioritizeManuallySelectedSamplers').toggleClass('toggleEnabled', false);
-            await resetApiSelectedSamplers(null, true);
-        }
-
-        await validateDisabledSamplers(true);
-    });
-
-    if (isTextCompletionApi(main_api)) {
-        $('#prioritizeManuallySelectedSamplers').show();
-        $('#prioritizeManuallySelectedSamplers').toggleClass('toggleEnabled', isSamplerManualPriorityEnabled());
-        $('#prioritizeManuallySelectedSamplers').off('click').on('click', function () {
-            $(this).toggleClass('toggleEnabled');
-
-            const isActive = $(this).hasClass('toggleEnabled');
-
-            toggleSamplerManualPriority(isActive);
-        });
-    } else {
-        $('#prioritizeManuallySelectedSamplers').hide();
-        $('#prioritizeManuallySelectedSamplers').off('click');
-    }
-
-    await showPromise;
-    if (isTextCompletionApi(main_api)) await saveApiSelectedSamplers();
-}
-
-function getRelatedDOMElement(samplerName) {
-    let relatedDOMElement = $(`#${samplerName}_${main_api}`).parent();
-    let targetDisplayType = 'flex';
-    let displayname;
-
-    if (samplerName === 'json_schema') {
-        relatedDOMElement = $('#json_schema_block');
-        targetDisplayType = 'block';
-        displayname = 'JSON Schema Block';
-    }
-
-    if (samplerName === 'grammar_string') {
-        relatedDOMElement = $('#grammar_block_ooba');
-        targetDisplayType = 'block';
-        displayname = 'Grammar Block';
-    }
-
-    if (samplerName === 'guidance_scale') {
-        relatedDOMElement = $('#cfg_block_ooba');
-        targetDisplayType = 'block';
-        displayname = 'CFG Block';
-    }
-
-    if (samplerName === 'mirostat_mode') {
-        relatedDOMElement = $('#mirostat_block_ooba');
-        targetDisplayType = 'block';
-        displayname = 'Mirostat Block';
-    }
-
-    if (samplerName === 'dry_multiplier') {
-        relatedDOMElement = $('#dryBlock');
-        targetDisplayType = 'block';
-        displayname = 'DRY Rep Pen Block';
-    }
-
-    if (samplerName === 'xtc_probability') {
-        relatedDOMElement = $('#xtc_block');
-        targetDisplayType = 'block';
-        displayname = 'XTC Block';
-    }
-
-    if (samplerName === 'dynatemp') {
-        relatedDOMElement = $('#dynatemp_block_ooba');
-        targetDisplayType = 'block';
-        displayname = 'DynaTemp Block';
-    }
-
-    if (samplerName === 'banned_tokens') {
-        relatedDOMElement = $('#banned_tokens_block_ooba');
-        targetDisplayType = 'block';
-    }
-
-    if (samplerName === 'sampler_order') {
-        relatedDOMElement = $('#sampler_order_block_kcpp');
-        displayname = 'KCPP Sampler Order Block';
-    }
-
-    if (samplerName === 'samplers') {
-        relatedDOMElement = $('#sampler_order_block_lcpp');
-        displayname = 'LCPP Sampler Order Block';
-    }
-
-    if (samplerName === 'sampler_priority') {
-        relatedDOMElement = $('#sampler_priority_block_ooba');
-        displayname = 'Ooba Sampler Priority Block';
-    }
-
-    if (samplerName === 'samplers_priorities') {
-        relatedDOMElement = $('#sampler_priority_block_aphrodite');
-        displayname = 'Aphrodite Sampler Priority Block';
-    }
-
-    if (samplerName === 'penalty_alpha') {
-        relatedDOMElement = $('#contrastiveSearchBlock');
-        displayname = 'Contrast Search Block';
-    }
-
-    if (samplerName === 'num_beams') { // num_beams is the killswitch for Beam Search
-        relatedDOMElement = $('#beamSearchBlock');
-        targetDisplayType = 'block';
-        displayname = 'Beam Search Block';
-    }
-
-    if (samplerName === 'smoothing_factor') {
-        relatedDOMElement = $('#smoothingBlock');
-        targetDisplayType = 'block';
-        displayname = 'Smoothing Block';
-    }
-
-    return { relatedDOMElement, targetDisplayType, displayname };
-}
-
-function setSamplerListListeners() {
-    let listContainer = $('#apiSamplersList');
-    listContainer.find('input').off('change').on('change', async function () {
-        const samplerName = this.name.replace('_checkbox', '');
-        const { relatedDOMElement, targetDisplayType } = getRelatedDOMElement(samplerName);
-
-        const previousState = relatedDOMElement.data(SELECT_SAMPLER.DATA);
-        const isChecked = $(this).prop('checked');
-        const popupInputLabel = $(this).parent().find('.sampler_name');
-
-        if (isChecked === false) {
-            if (previousState === SELECT_SAMPLER.SHOWN) {
-                relatedDOMElement.removeData(SELECT_SAMPLER.DATA);
-                popupInputLabel.removeAttr('style');
-            } else {
-                relatedDOMElement.data(SELECT_SAMPLER.DATA, SELECT_SAMPLER.HIDDEN);
-                popupInputLabel.attr('style', forcedOffColoring);
-            }
-        } else {
-            if (previousState === SELECT_SAMPLER.HIDDEN) {
-                relatedDOMElement.removeData(SELECT_SAMPLER.DATA);
-                popupInputLabel.removeAttr('style');
-            } else {
-                relatedDOMElement.data(SELECT_SAMPLER.DATA, SELECT_SAMPLER.SHOWN);
-                popupInputLabel.attr('style', forcedOnColoring);
-            }
-        }
-
-
-        const shouldDisplay = isChecked ? targetDisplayType : 'none';
-        relatedDOMElement.css('display', shouldDisplay);
-
-        if (isTextCompletionApi(main_api)) setApiSamplersState(samplerName, shouldDisplay !== 'none');
-    });
-}
-
-function isElementVisibleInDOM(element) {
-    while (element && element !== document.body) {
-        if (window.getComputedStyle(element).display === 'none') {
-            return false;
-        }
-        element = element.parentElement;
-    }
-    return true;
-}
-
-
-async function listSamplers(main_api, arrayOnly = false) {
-    let availableSamplers;
-    if (isTextCompletionApi(main_api)) {
-        availableSamplers = TGsamplerNames;
-        const valuesToRemove = new Set(['streaming', 'bypass_status_check', 'custom_model', 'generic_model', 'openrouter_allow_fallbacks', 'legacy_api', 'extensions']);
-        availableSamplers = availableSamplers.filter(sampler => !valuesToRemove.has(sampler));
-        availableSamplers.sort();
-    }
-
-    if (arrayOnly) {
-        return availableSamplers;
-    }
-
-    const samplersActivatedManually = isTextCompletionApi(main_api) ? getActiveManualApiSamplers() : [];
-    const prioritizeManualSamplerSelect = isTextCompletionApi(main_api) ? isSamplerManualPriorityEnabled() : false;
-
-    const samplersListHTML = availableSamplers.reduce((html, sampler) => {
-        let customColor;
-        let { relatedDOMElement, displayname } = getRelatedDOMElement(sampler);
-
-        const isManuallyActivated = samplersActivatedManually.includes(sampler);
-        const displayModified = relatedDOMElement.data(SELECT_SAMPLER.DATA);
-        const isInDefaultState = !displayModified;
-
-        const shouldBeChecked = () => {
-            let finalState = isElementVisibleInDOM(relatedDOMElement[0]);
-
-            if (prioritizeManualSamplerSelect) {
-                finalState = isManuallyActivated;
-            } else if (!isInDefaultState) {
-                finalState = displayModified === SELECT_SAMPLER.SHOWN;
-                customColor = finalState ? forcedOnColoring : forcedOffColoring;
-            }
-
-            return finalState;
-        };
-
-        if (displayname === undefined) displayname = sampler;
-        if (isTextCompletionApi(main_api)) setApiSamplersState(sampler, shouldBeChecked());
-
-        return html + `
-        <label class="sampler_view_list_item wide50p flex-container">
-            <input type="checkbox" name="${sampler}_checkbox" ${shouldBeChecked() ? 'checked' : ''}>
-            <small class="sampler_name" style="${customColor}">${displayname}</small>
-        </label>`;
-    }, '');
-
-    return samplersListHTML;
-}
-
-export async function validateDisabledSamplers(redraw = false) {
-    const APISamplers = await listSamplers(main_api, true);
-
-    if (!Array.isArray(APISamplers)) {
-        return;
-    }
-
-    const samplersActivatedManually = isTextCompletionApi(main_api) ? getActiveManualApiSamplers() : [];
-    const prioritizeManualSamplerSelect = isTextCompletionApi(main_api) ? isSamplerManualPriorityEnabled() : false;
-
-    for (const sampler of APISamplers) {
-        const { relatedDOMElement, targetDisplayType } = getRelatedDOMElement(sampler);
-
-        if (prioritizeManualSamplerSelect) {
-            const isManuallyActivated = samplersActivatedManually.includes(sampler);
-            relatedDOMElement.css('display', isManuallyActivated ? targetDisplayType : 'none');
-        } else {
-            const selectSamplerData = relatedDOMElement.data(SELECT_SAMPLER.DATA);
-            relatedDOMElement.css('display', selectSamplerData === SELECT_SAMPLER.SHOWN ? targetDisplayType : 'none');
-        }
-
-        relatedDOMElement.removeData(SELECT_SAMPLER.DATA);
-    }
-
-    if (!prioritizeManualSamplerSelect && isTextCompletionApi(main_api)) {
-        showTGSamplerControls();
-    }
-
-    if (redraw) {
-        let samplersHTML = await listSamplers(main_api);
-        $('#apiSamplersList').empty().append(samplersHTML.toString());
-        setSamplerListListeners();
-    }
-}
+/** The new page draws the panel and its sampler select. */
+export async function initCustomSelectedSamplers() { }
 
 /**
- * Initializes the configuration object for manually selected samplers.
- * @returns void
+ * The new page shows the panel's samplers as the server's select says, redrawn as it changes.
+ * @param {boolean} [_redraw]
  */
-export async function loadApiSelectedSamplers() {
-    try {
-        console.debug('Text Completions: loading selected samplers');
-        selectedSamplers = await textGenObjectStore.getItem('selectedSamplers') || {};
-    } catch (error) {
-        console.log('Text Completions: unable to load selected samplers, using default samplers', error);
-        selectedSamplers = {};
-    }
-}
+export async function validateDisabledSamplers(_redraw = false) { }
+
+/** The server has the selects. */
+export async function loadApiSelectedSamplers() { }
+
+/** The server has the selects; each change is stored as it's made. */
+export async function saveApiSelectedSamplers() { }
 
 /**
- * Synchronizes the local forage instance with the selected samplers configuration object.
- * @returns void
- */
-export async function saveApiSelectedSamplers() {
-    try {
-        console.debug('Text Completions: saving selected samplers');
-        await textGenObjectStore.setItem('selectedSamplers', selectedSamplers);
-    } catch (error) {
-        console.log('Text Completions: unable to save selected samplers', error);
-    }
-}
-
-/**
- * Resets the selected samplers configuration object from the local forage instance.
- * @param {string?} tcApiType Name of the target API Type - It picks the currently active TC API type name by default
- * @param {boolean} silent Suppresses the toastr message confirming that the data was deleted.
- * @returns void
+ * @param {string} [tcApiType]
+ * @param {boolean} [silent]
  */
 export async function resetApiSelectedSamplers(tcApiType = '', silent = false) {
-    try {
-        if (!textgenerationwebui_settings?.type && !tcApiType) return;
-        if (!tcApiType) tcApiType = textgenerationwebui_settings.type;
-        if (!selectedSamplers[tcApiType]) return;
-
-        console.debug('Text Completions: resetting selected samplers');
-        delete selectedSamplers[tcApiType];
-        await saveApiSelectedSamplers();
-        if (!silent) toastr.success('Selected samplers cleared.');
-    } catch (error) {
-        console.log('Text Completions: unable to reset selected preset samplers', error);
-    }
+    const reset = await newUi().settings.resetSamplers(tcApiType || undefined);
+    if (reset && !silent) toastr.success('Selected samplers cleared.');
 }
 
 /**
- * Saves the visibility state for selected samplers into the configuration object.
- * @param {string} samplerName Target sampler key name
- * @param {string|boolean} state Visibility state of the target sampler
- * @param {string?} tcApiType Name of the target API Type - It picks the currently active TC API type name by default
- * @returns void
+ * @param {string} samplerName
+ * @param {string|boolean} state
+ * @param {string} [tcApiType]
  */
 export function setApiSamplersState(samplerName, state, tcApiType = '') {
-    if (!textgenerationwebui_settings?.type && !tcApiType) return;
-    if (!tcApiType) tcApiType = textgenerationwebui_settings.type;
-    if (!selectedSamplers[tcApiType]) selectedSamplers[tcApiType] = {};
-
-    const presetSamplers = selectedSamplers[tcApiType];
-    presetSamplers[samplerName] = String(state) === 'true';
+    const backend = tcApiType || undefined;
+    const shown = select(backend).shown.filter(name => name !== samplerName);
+    void newUi().settings.setSamplers({ backend, shown: String(state) === 'true' ? [...shown, samplerName] : shown });
 }
 
 /**
- * Returns the local forage object belonging to the active/selected TC API Type
- * @param {string?} tcApiType Name of the target API Type - It picks the currently active TC API type name by default
- * @returns {object} Full localforage object with manual selections
+ * @param {string} [tcApiType]
+ * @returns {Record<string, boolean>}
  */
 export function getAllManualApiSamplers(tcApiType = '') {
-    if (!textgenerationwebui_settings?.type && !tcApiType) return {};
-    if (!tcApiType) tcApiType = textgenerationwebui_settings.type;
-    if (!selectedSamplers[tcApiType]) selectedSamplers[tcApiType] = {};
-
-    return selectedSamplers[tcApiType];
+    const { manual, shown } = select(tcApiType);
+    return { ...Object.fromEntries(shown.map(name => [name, true])), st_manual_priority: manual };
 }
 
 /**
- * Returns the key names of all the manually activated API Type samplers.
- * @param {string?} tcApiType Name of the target API Type - It picks the currently active TC API type name by default
- * @returns {string[]} Array of sampler key names
+ * @param {string} [tcApiType]
+ * @returns {string[]}
  */
 export function getActiveManualApiSamplers(tcApiType = '') {
-    if (!textgenerationwebui_settings?.type && !tcApiType) return [];
-    if (!tcApiType) tcApiType = textgenerationwebui_settings.type;
-    if (!selectedSamplers[tcApiType]) selectedSamplers[tcApiType] = {};
-
-    try {
-        const presetSamplers = Object.entries(selectedSamplers[tcApiType]);
-
-        return presetSamplers
-            .filter(([key, val]) => val === true && key !== 'st_manual_priority')
-            .map(([key, val]) => key);
-    } catch (error) {
-        console.log('Text Completions: unable to fetch active preset samplers', error);
-        return [];
-    }
+    return [...select(tcApiType).shown];
 }
 
 /**
- * @param {string|boolean} state Target state of the feature
- * @param {string?} tcApiType Name of the target API Type - It picks the currently active TC API type name by default
- * @returns void
+ * @param {string|boolean} [state]
+ * @param {string} [tcApiType]
  */
 export function toggleSamplerManualPriority(state = false, tcApiType = '') {
-    if (!textgenerationwebui_settings?.type && !tcApiType) return;
-    if (!tcApiType) tcApiType = textgenerationwebui_settings.type;
-    if (!selectedSamplers[tcApiType]) selectedSamplers[tcApiType] = {};
+    void newUi().settings.setSamplers({ backend: tcApiType || undefined, manual: String(state) === 'true' });
+}
 
-    const presetSamplers = selectedSamplers[tcApiType];
-    presetSamplers.st_manual_priority = String(state) === 'true';
+/** @param {string} [tcApiType] */
+export function isSamplerManualPriorityEnabled(tcApiType = '') {
+    return select(tcApiType).manual;
 }
 
 /**
- * @param {string?} tcApiType Name of the target API Type - It picks the currently active TC API type name by default
- * @returns {boolean}
+ * Moves the sampler selects the old page kept in the browser (IndexedDB) to the server, once: the server takes them
+ * for the backends it has none for, and the browser's copy goes when it has.
  */
-export function isSamplerManualPriorityEnabled(tcApiType = '') {
-    if (!textgenerationwebui_settings?.type && !tcApiType) return false;
-    if (!tcApiType) tcApiType = textgenerationwebui_settings.type;
-    if (!selectedSamplers[tcApiType]) selectedSamplers[tcApiType] = {};
-
-    return selectedSamplers[tcApiType]?.st_manual_priority ?? false;
-}
-
-export async function initCustomSelectedSamplers() {
-    $('#samplerSelectButton').off('click').on('click', showSamplerSelectPopup);
+export async function importBrowserSamplerSelect() {
+    const store = localforage.createInstance({ name: 'SillyTavern_TextCompletions' });
+    const stored = await store.getItem('selectedSamplers');
+    if (!stored || typeof stored !== 'object') return;
+    /** @type {Record<string, { manual: boolean, shown: string[] }>} */
+    const byBackend = {};
+    for (const [backend, samplers] of Object.entries(stored)) {
+        if (!samplers || typeof samplers !== 'object') continue;
+        byBackend[backend] = {
+            manual: samplers.st_manual_priority === true,
+            shown: Object.entries(samplers).filter(([name, on]) => on === true && name !== 'st_manual_priority').map(([name]) => name),
+        };
+    }
+    if (await newUi().settings.importSamplers(byBackend)) await store.removeItem('selectedSamplers');
 }

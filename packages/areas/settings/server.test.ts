@@ -1,5 +1,5 @@
 import type { ChatOwner } from '@st/protocol';
-import { LAB_RANGE, LEVELS, LIMITS } from './protocol.ts';
+import { LAB_RANGE, LEVELS, LIMITS, samplerSelectOf } from './protocol.ts';
 import type { Level, LevelRange, SettingsView } from './protocol.ts';
 import { expect, test } from 'vite-plus/test';
 import { settingsArea } from './server.ts';
@@ -232,20 +232,20 @@ test('neutralize writes every sampler at once, top K off as the backend takes it
 test("the sampler select is the user's, by backend; the view shows the backend's", async () => {
     const w = world();
     w.levels.user['textgenerationwebui_settings.type'] = 'ooba';
-    expect((await w.view()).samplers).toEqual({ manual: false, shown: [] });
+    expect(samplerSelectOf(await w.view())).toEqual({ manual: false, shown: [] });
     await w.act('settings.samplers', { manual: true, shown: ['temp', 'top_p'] });
-    expect((await w.view()).samplers).toEqual({ manual: true, shown: ['temp', 'top_p'] });
+    expect(samplerSelectOf(await w.view())).toEqual({ manual: true, shown: ['temp', 'top_p'] });
     // Another backend has its own.
     w.levels.user['textgenerationwebui_settings.type'] = 'tabby';
-    expect((await w.view()).samplers).toEqual({ manual: false, shown: [] });
+    expect(samplerSelectOf(await w.view())).toEqual({ manual: false, shown: [] });
     // The browser's old copy is taken only where there's none.
     await w.act('settings.samplers.import', {
         ooba: { manual: false, shown: ['min_p'] },
         tabby: { manual: true, shown: ['min_p', 'no_such_sampler'] },
     });
-    expect((await w.view()).samplers).toEqual({ manual: true, shown: ['min_p'] });
+    expect(samplerSelectOf(await w.view())).toEqual({ manual: true, shown: ['min_p'] });
     w.levels.user['textgenerationwebui_settings.type'] = 'ooba';
-    expect((await w.view()).samplers).toEqual({ manual: true, shown: ['temp', 'top_p'] });
+    expect(samplerSelectOf(await w.view())).toEqual({ manual: true, shown: ['temp', 'top_p'] });
     await w.act('settings.samplers.reset', {});
-    expect((await w.view()).samplers).toEqual({ manual: false, shown: [] });
+    expect(samplerSelectOf(await w.view())).toEqual({ manual: false, shown: [] });
 });
