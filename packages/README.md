@@ -27,10 +27,8 @@ how new code is shaped.
 
 - `protocol`: the actions and views, as schemas both sides use (the server validates every action with them).
 - `server-ui`: the server side: the area registry, `POST /api/ui/action`, the tabs and what each shows, pushes.
-- `ui`: the page: the client (the one module that talks to the server), layers, components, the upstream stubs.
-- `jsx`: JSX for Solid without its compiler (through Solid's `h`). Two rules come with it, both linted: a dynamic
-  value is written as a function (`{() => count()}`), and an element handed to a component (a `<Show>`'s
-  children) is a function that builds it (`{() => <p />}`).
+- `ui`: the page (Solid, compiled by vite-plugin-solid): the client (the one module that talks to the server),
+  layers, components, the upstream stubs.
 - `serve-ui`: serves `ui` at `/ui/`.
 - `lint`: the rules that keep this shape (see `lint/config.ts`).
 

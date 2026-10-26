@@ -42,13 +42,14 @@ test('built: the entry the manifest names is served under /ui/, nothing else is'
     expect((await fetch(`${origin}/elsewhere.js`)).status).toBe(404);
 });
 
-test("dev: a module is compiled when asked for, JSX to Solid's h", async () => {
+test("dev: a module is compiled when asked for, JSX by Solid's compiler", async () => {
     const origin = await start(true);
     const response = await fetch(`${origin}/ui/test/jsx-fixture.tsx`);
     expect(response.status).toBe(200);
     const code = await response.text();
-    expect(code).toMatch(/@st\/jsx\/jsx-(dev-)?runtime|packages\/jsx\/src\/jsx-runtime/);
-    expect(code).not.toContain('<b>');
+    expect(code).toMatch(/template\(/);
+    // The template is HTML; the JSX itself is gone.
+    expect(code).not.toContain('<b>{');
     expect(await (await fetch(`${origin}/ui/entry.js`)).text()).toBe(`export * from '/ui/src/main.tsx';\n`);
     expect((await fetch(`${origin}/elsewhere.js`)).status).toBe(404);
 });

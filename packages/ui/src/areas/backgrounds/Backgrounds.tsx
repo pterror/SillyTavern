@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal } from 'solid-js';
+import { For, Show, createEffect, createMemo, createSignal } from 'solid-js';
 import type { Accessor } from 'solid-js';
 import { VIEW, CHAT_VIEW, actions, COLUMNS, FITTINGS, SORT_ORDERS } from '@st/protocol/backgrounds';
 import type { Background, BackgroundsView, ChatBackgroundsView, Folder, Ref } from '@st/protocol/backgrounds';
@@ -7,7 +7,6 @@ import type { Client } from '../../client.ts';
 import { classes } from '../../classes.ts';
 import { useUi } from '../../context.ts';
 import { ask } from '../../layers/dialog.tsx';
-import { For, Show } from '../../solid.ts';
 
 // The backgrounds drawer: the system's backgrounds (with folders) and the open chat's, each shown from the server's
 // view. What's only this drawer's (the tab, the search, the folder open, what's ticked) is the drawer's own.
@@ -267,14 +266,14 @@ export function Backgrounds(props: {
             <div id="bg-header-fixed">
                 <div class="bg-header-row-1">
                     <h3 class="margin0">
-                        <span>{() => t('Backgrounds')}</span>
+                        <span>{t('Backgrounds')}</span>
                     </h3>
                     <span class="expander" />
                     <select
                         id="background_fitting"
                         class="text_pole"
-                        title={() => t('Background Fitting')}
-                        value={() => view()?.options.fitting ?? 'classic'}
+                        title={t('Background Fitting')}
+                        value={view()?.options.fitting ?? 'classic'}
                         onChange={(event) => {
                             const select = event.currentTarget;
                             void act('backgrounds.options', {
@@ -286,38 +285,38 @@ export function Backgrounds(props: {
                         }}
                     >
                         <For each={FITTINGS}>
-                            {(fitting) => <option value={fitting}>{() => t(FITTING_LABELS[fitting])}</option>}
+                            {(fitting) => <option value={fitting}>{t(FITTING_LABELS[fitting])}</option>}
                         </For>
                     </select>
                     <button
                         id="auto_background"
                         type="button"
                         class="menu_button menu_button_icon"
-                        title={() => t('Automatically select a background based on the chat context')}
-                        disabled={() => busy() !== null}
+                        title={t('Automatically select a background based on the chat context')}
+                        disabled={busy() !== null}
                         onClick={() => void autoSelect()}
                     >
                         <i class="fa-solid fa-wand-magic" />
-                        <span>{() => t('Auto-select')}</span>
+                        <span>{t('Auto-select')}</span>
                     </button>
                     <button
                         id="bg_add_folder_button"
                         type="button"
                         class="menu_button menu_button_icon"
-                        title={() => t('New Folder')}
+                        title={t('New Folder')}
                         onClick={() => void createFolder()}
                     >
                         <i class="fa-solid fa-folder-plus" />
-                        <span>{() => t('New Folder')}</span>
+                        <span>{t('New Folder')}</span>
                     </button>
                     <label
                         for="add_bg_button"
                         id="add_background_button_top"
                         class="menu_button menu_button_icon"
-                        title={() => t('Add a new background')}
+                        title={t('Add a new background')}
                     >
                         <i class="fa-solid fa-upload" />
-                        <span>{() => t('Add Background')}</span>
+                        <span>{t('Add Background')}</span>
                     </label>
                 </div>
                 <div class="bg-header-row-2">
@@ -325,15 +324,15 @@ export function Backgrounds(props: {
                         id="bg-filter"
                         class="text_pole"
                         type="search"
-                        placeholder={() => t('Search...')}
-                        value={search}
+                        placeholder={t('Search...')}
+                        value={search()}
                         onInput={(event) => setSearch(event.currentTarget.value)}
                     />
                     <select
                         id="bg-sort"
                         class="text_pole margin0"
-                        title={() => t('Sort backgrounds')}
-                        value={() => view()?.options.sortOrder ?? 'az'}
+                        title={t('Sort backgrounds')}
+                        value={view()?.options.sortOrder ?? 'az'}
                         onChange={(event) => {
                             const select = event.currentTarget;
                             void act('backgrounds.options', {
@@ -342,14 +341,14 @@ export function Backgrounds(props: {
                         }}
                     >
                         <For each={SORT_ORDERS}>
-                            {(order) => <option value={order}>{() => t(SORT_LABELS[order])}</option>}
+                            {(order) => <option value={order}>{t(SORT_LABELS[order])}</option>}
                         </For>
                     </select>
                 </div>
-                <Show when={() => busy() ?? notice()}>
+                <Show when={busy() ?? notice()}>
                     {(text) => (
                         <div class="bg_notice" role="status">
-                            {text}
+                            {text()}
                         </div>
                     )}
                 </Show>
@@ -366,13 +365,13 @@ export function Backgrounds(props: {
                         class="invisible-radio"
                         name="bg_tabs_tab"
                         value="0"
-                        checked={() => tab() === 'system'}
+                        checked={tab() === 'system'}
                         onChange={() => setTab('system')}
                     />
-                    <span>{() => t('Global')}</span>
+                    <span>{t('Global')}</span>
                 </label>
                 <div id="bg_global_tab" class="bg_tab_panel tab-contents">
-                    <Show when={openFolder}>
+                    <Show when={openFolder()}>
                         {(open) => (
                             <div id="bg_folder_breadcrumb" class="bg_folder_breadcrumb">
                                 <button
@@ -385,33 +384,33 @@ export function Backgrounds(props: {
                                     }}
                                 >
                                     <i class="fa-solid fa-arrow-left" />
-                                    <span>{() => t('Back')}</span>
+                                    <span>{t('Back')}</span>
                                 </button>
                                 <span id="bg_current_folder_name" class="bg_current_folder_name">
-                                    {() => open().name}
+                                    {open().name}
                                 </span>
                                 <span class="expander" />
-                                <Show when={() => ticking() && ticked().size > 0}>
-                                    {() => (
+                                <Show when={ticking() && ticked().size > 0}>
+                                    {
                                         <button
                                             id="bg_folder_remove_selected_button"
                                             type="button"
                                             class="menu_button menu_button_icon"
-                                            title={() => t('Remove selected backgrounds from this folder')}
+                                            title={t('Remove selected backgrounds from this folder')}
                                             onClick={() => void removeTickedFromFolder()}
                                         >
                                             <i class="fa-solid fa-folder-minus" />
-                                            <span>{() => t('Remove from Folder')}</span>
+                                            <span>{t('Remove from Folder')}</span>
                                         </button>
-                                    )}
+                                    }
                                 </Show>
                             </div>
                         )}
                     </Show>
-                    <Show when={() => activeFolder() === null}>
-                        {() => (
+                    <Show when={activeFolder() === null}>
+                        {
                             <div id="bg_folder_grid" class="bg_list bg_folder_grid">
-                                <For each={folders}>
+                                <For each={folders()}>
                                     {(target) => (
                                         <FolderTile
                                             folder={target}
@@ -426,18 +425,18 @@ export function Backgrounds(props: {
                                     )}
                                 </For>
                             </div>
-                        )}
+                        }
                     </Show>
                     <div id="bg_menu_content" class="bg_list">
-                        <For each={system}>
+                        <For each={system()}>
                             {(background) => (
                                 <Thumbnail
                                     background={background}
                                     chat={false}
-                                    animation={() => view()?.options.animation ?? false}
-                                    selected={() => isSelected({ file: background.file, chat: false })}
-                                    locked={() => isLocked({ file: background.file, chat: false })}
-                                    ticked={() => ticked().has(background.file)}
+                                    animation={view()?.options.animation ?? false}
+                                    selected={isSelected({ file: background.file, chat: false })}
+                                    locked={isLocked({ file: background.file, chat: false })}
+                                    ticked={ticked().has(background.file)}
                                     t={t}
                                     onPick={(event) => pick(background, false, event)}
                                     onAction={(action) => {
@@ -469,24 +468,24 @@ export function Backgrounds(props: {
                         class="invisible-radio"
                         name="bg_tabs_tab"
                         value="1"
-                        checked={() => tab() === 'chat'}
+                        checked={tab() === 'chat'}
                         onChange={() => {
                             stopTicking();
                             setTab('chat');
                         }}
                     />
-                    <span>{() => t('Chat')}</span>
+                    <span>{t('Chat')}</span>
                 </label>
                 <div id="bg_chat_tab" class="bg_tab_panel tab-contents">
                     <div id="bg_custom_content" class="bg_list">
-                        <For each={chatBackgrounds}>
+                        <For each={chatBackgrounds()}>
                             {(background) => (
                                 <Thumbnail
                                     background={background}
                                     chat={true}
-                                    animation={() => view()?.options.animation ?? false}
+                                    animation={view()?.options.animation ?? false}
                                     selected={false}
-                                    locked={() => isLocked({ file: background.file, chat: true })}
+                                    locked={isLocked({ file: background.file, chat: true })}
                                     ticked={false}
                                     t={t}
                                     onPick={(event) => pick(background, true, event)}
@@ -505,54 +504,54 @@ export function Backgrounds(props: {
                     </div>
                     <div id="bg_chat_hint" class="wide100p textAlignCenter">
                         <Show
-                            when={() => view() !== undefined && chatView()?.chat === null}
-                            fallback={() => (
+                            when={view() !== undefined && chatView()?.chat === null}
+                            fallback={
                                 <span>
-                                    {() => t('bg_chat_hint_1')} Image Generation {() => t('bg_chat_hint_2')}
+                                    {t('bg_chat_hint_1')} Image Generation {t('bg_chat_hint_2')}
                                 </span>
-                            )}
+                            }
                         >
-                            {() => <span>{() => t('Select a chat to upload a background for it')}</span>}
+                            {<span>{t('Select a chat to upload a background for it')}</span>}
                         </Show>
                     </div>
                 </div>
                 <div class="heading-controls">
-                    <Show when={() => tab() === 'system' && ticking() && ticked().size > 0}>
-                        {() => (
+                    <Show when={tab() === 'system' && ticking() && ticked().size > 0}>
+                        {
                             <button
                                 id="bg_group_add_to_folder_button"
                                 type="button"
                                 class="menu_button menu_button_icon"
-                                title={() => t('Add selected backgrounds to folder')}
+                                title={t('Add selected backgrounds to folder')}
                                 onClick={() => void addTickedToFolders()}
                             >
                                 <i class="fa-solid fa-folder-tree" />
-                                <span>{() => t('Add to Folder')}</span>
+                                <span>{t('Add to Folder')}</span>
                             </button>
-                        )}
+                        }
                     </Show>
-                    <Show when={() => tab() === 'system'}>
-                        {() => (
+                    <Show when={tab() === 'system'}>
+                        {
                             <button
                                 id="bg_selection_mode_button"
                                 type="button"
-                                class={() => classes('menu_button menu_button_icon', { active: ticking() })}
-                                title={() => t('Select backgrounds for bulk folder actions')}
+                                class={classes('menu_button menu_button_icon', { active: ticking() })}
+                                title={t('Select backgrounds for bulk folder actions')}
                                 onClick={() => (ticking() ? stopTicking() : setTicking(true))}
                             >
                                 <i class="fa-solid fa-edit" />
-                                <Show when={() => ticked().size > 0}>
-                                    {() => <span id="bg_group_select_count">{() => ` (${ticked().size})`}</span>}
+                                <Show when={ticked().size > 0}>
+                                    {<span id="bg_group_select_count">{` (${ticked().size})`}</span>}
                                 </Show>
                             </button>
-                        )}
+                        }
                     </Show>
                     <button
                         id="bg_thumb_zoom_out"
                         type="button"
                         class="menu_button menu_button_icon"
-                        title={() => t('Make thumbnails smaller')}
-                        disabled={() => columns() >= COLUMNS.max}
+                        title={t('Make thumbnails smaller')}
+                        disabled={columns() >= COLUMNS.max}
                         onClick={() => setColumns(columns() + 1)}
                     >
                         <i class="fa-solid fa-minus" />
@@ -561,8 +560,8 @@ export function Backgrounds(props: {
                         id="bg_thumb_zoom_in"
                         type="button"
                         class="menu_button menu_button_icon"
-                        title={() => t('Make thumbnails larger')}
-                        disabled={() => columns() <= COLUMNS.min}
+                        title={t('Make thumbnails larger')}
+                        disabled={columns() <= COLUMNS.min}
                         onClick={() => setColumns(columns() - 1)}
                     >
                         <i class="fa-solid fa-plus" />
@@ -580,8 +579,8 @@ export function Backgrounds(props: {
             <button
                 id="bg-scroll-top"
                 type="button"
-                class={() => classes('menu_button menu_button_icon', { visible: scrolled() })}
-                title={() => t('Scroll backgrounds to top')}
+                class={classes('menu_button menu_button_icon', { visible: scrolled() })}
+                title={t('Scroll backgrounds to top')}
                 onClick={() => panels?.scrollTo({ top: 0, behavior: 'smooth' })}
             >
                 <i class="fa-solid fa-chevron-up" aria-hidden="true" />
@@ -624,20 +623,18 @@ function Thumbnail(props: {
     const still = () => props.background.animated && !props.animation && !isVideo();
     return (
         <div
-            class={() =>
-                classes('bg_example flex-container', {
-                    'selected-background': props.selected,
-                    'locked-background': props.locked,
-                    'folder-group-selected': props.ticked,
-                    'mobile-menu-open': menuOpen(),
-                })
-            }
+            class={classes('bg_example flex-container', {
+                'selected-background': props.selected,
+                'locked-background': props.locked,
+                'folder-group-selected': props.ticked,
+                'mobile-menu-open': menuOpen(),
+            })}
             tabIndex={0}
-            title={() => props.background.title}
-            attr:bgfile={() => props.background.file}
-            attr:custom={() => String(props.chat)}
-            attr:animated={() => String(props.background.animated)}
-            style={() => (props.background.aspect ? { 'aspect-ratio': String(props.background.aspect) } : {})}
+            title={props.background.title}
+            attr:bgfile={props.background.file}
+            attr:custom={String(props.chat)}
+            attr:animated={String(props.background.animated)}
+            style={props.background.aspect ? { 'aspect-ratio': String(props.background.aspect) } : {}}
             onClick={(event) => props.onPick(event)}
             onFocusOut={(event) => {
                 if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setMenuOpen(false);
@@ -645,16 +642,16 @@ function Thumbnail(props: {
         >
             <div
                 class="thumbnail-clipper"
-                style={() => ({
+                style={{
                     ...(props.background.color ? { 'background-color': props.background.color } : {}),
                     ...(still() || isVideo() ? {} : { 'background-image': `url("${props.background.thumbnail}")` }),
-                })}
+                }}
             >
-                <Show when={still}>{() => <Still url={() => props.background.url} />}</Show>
-                <Show when={isVideo}>
-                    {() => <video src={() => props.background.url} muted preload="metadata" class="thumbnail-still" />}
+                <Show when={still()}>{<Still url={props.background.url} />}</Show>
+                <Show when={isVideo()}>
+                    {<video src={props.background.url} muted preload="metadata" class="thumbnail-still" />}
                 </Show>
-                <div class="BGSampleTitle">{() => props.background.title}</div>
+                <div class="BGSampleTitle">{props.background.title}</div>
             </div>
             <div
                 class="mobile-only-menu-toggle"
@@ -673,7 +670,7 @@ function Thumbnail(props: {
                             <div
                                 class={buttonClasses}
                                 attr:data-action={action}
-                                title={() => props.t(label)}
+                                title={props.t(label)}
                                 onClick={(event) => {
                                     event.stopPropagation();
                                     props.onAction(action);
@@ -708,7 +705,7 @@ function Still(props: { url: string }) {
                 loading="lazy"
                 decoding="async"
                 alt=""
-                src={() => props.url}
+                src={props.url}
                 onLoad={(event) => draw(event.currentTarget)}
             />
         </>
@@ -725,18 +722,18 @@ function FolderTile(props: {
     const [menuOpen, setMenuOpen] = createSignal(false);
     return (
         <div
-            class={() => classes('bg_folder_tile', { 'mobile-menu-open': menuOpen() })}
+            class={classes('bg_folder_tile', { 'mobile-menu-open': menuOpen() })}
             tabIndex={0}
-            attr:data-folder-id={() => props.folder.id}
+            attr:data-folder-id={props.folder.id}
             onClick={() => props.onOpen(props.folder.id)}
         >
             <div
                 class="bg_folder_tile_cover"
-                style={() => (props.folder.cover ? { 'background-image': `url("${props.folder.cover}")` } : {})}
+                style={props.folder.cover ? { 'background-image': `url("${props.folder.cover}")` } : {}}
             />
             <div class="bg_folder_tile_overlay">
                 <i class="fa-solid fa-folder" />
-                <span class="bg_folder_tile_name">{() => props.folder.name}</span>
+                <span class="bg_folder_tile_name">{props.folder.name}</span>
             </div>
             <div
                 class="mobile-only-menu-toggle"
@@ -751,7 +748,7 @@ function FolderTile(props: {
                 <div
                     class="jg-button fa-solid fa-pen-to-square fa-fw pointer"
                     attr:data-action="rename-folder"
-                    title={() => props.t('Rename folder')}
+                    title={props.t('Rename folder')}
                     onClick={(event) => {
                         event.stopPropagation();
                         props.onRename(props.folder);
@@ -760,7 +757,7 @@ function FolderTile(props: {
                 <div
                     class="jg-button fa-solid fa-trash-can fa-fw pointer"
                     attr:data-action="delete-folder"
-                    title={() => props.t('Delete folder')}
+                    title={props.t('Delete folder')}
                     onClick={(event) => {
                         event.stopPropagation();
                         props.onDelete(props.folder);

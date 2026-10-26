@@ -1,6 +1,5 @@
 import { createContext, useContext } from 'solid-js';
 import type { Client } from './client.ts';
-import type { Child } from './solid.ts';
 
 /** What every surface of the new page works with: the client, and the user's language. */
 export type Ui = {
@@ -11,8 +10,8 @@ export type Ui = {
 
 const UiContext = createContext<Ui>();
 
-/** Gives the surfaces under it the Ui (Solid's provider, typed for h: see solid.ts). */
-export const UiProvider = UiContext.Provider as unknown as (props: { value: Ui; children: Child }) => Child;
+/** Gives the surfaces under it the Ui. */
+export const UiProvider = UiContext.Provider;
 
 export function useUi(): Ui {
     const ui = useContext(UiContext);

@@ -35,38 +35,16 @@ export const lintConfig = {
         {
             files: ['packages/ui/**', 'packages/lint/fixtures/page/**'],
             rules: {
-                'st/reactive-in-arrow': 'error',
+                'st/props-read-in-place': 'error',
                 'st/no-html-strings': 'error',
                 'st/no-module-state': 'error',
                 'no-restricted-globals': ['error', ...PAGE_BANNED_GLOBALS],
-                'no-restricted-imports': [
-                    'error',
-                    {
-                        paths: [
-                            {
-                                name: 'solid-js',
-                                importNames: ['Show', 'For', 'Index', 'Switch', 'Match'],
-                                message: 'Import it from solid.ts (typed for h).',
-                            },
-                            {
-                                name: 'solid-js/web',
-                                importNames: ['render'],
-                                message: 'Import it from solid.ts (typed for h).',
-                            },
-                        ],
-                    },
-                ],
             },
         },
         {
             // Tests stand in for the server (they replace fetch); they're not the page.
             files: ['packages/ui/test/**'],
             rules: { 'no-restricted-globals': 'off' },
-        },
-        {
-            // The one module that bridges Solid's types to h's.
-            files: ['packages/ui/src/solid.ts'],
-            rules: { 'no-restricted-imports': 'off' },
         },
         {
             // The client is the one place the page talks to the server (and waits to reconnect).
