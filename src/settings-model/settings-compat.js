@@ -473,7 +473,8 @@ export function userConnections(model) {
 
 /**
  * The statements one level makes of the bundle groups (a character's or group's, §1.1).
- * @typedef {{ level: 'character', bundles?: Record<string, string>, overrides?: Record<string, unknown> }} ContextLevel
+ * @typedef {{ level: 'character', name?: 'character' | 'group' | 'chat', bundles?: Record<string, string>, overrides?: Record<string, unknown> }} ContextLevel
+ *   `name`: which of the closer levels it is, for where a value comes from (`sources`).
  */
 
 /**
@@ -482,7 +483,9 @@ export function userConnections(model) {
  * @param {UserModel} model
  * @param {{ bundles: BundleFiles, extrasApiKey?: string, levels?: ContextLevel[] }} options `bundles` holds every
  *   bundle a level states.
- * @returns {{ settings: Record<string, any>, warnings: string[] }}
+ * @returns {{ settings: Record<string, any>, warnings: string[], sources: Record<string, string> }} `sources`: the
+ *   level each bundle field's and selection's value comes from, by path ('preset' for the user's bundle's, 'user'
+ *   for the user's own, a closer level's name).
  */
 export function assemble(model, { bundles, extrasApiKey, levels: closer = [] }) {
     /** @type {string[]} */
@@ -519,8 +522,23 @@ export function assemble(model, { bundles, extrasApiKey, levels: closer = [] }) 
         .filter(l => group !== 'theme' || l === user)
         .map(l => l.bundles?.[group])
         .find(ref => ref !== undefined);
-    /** @param {string} id */
-    const resolved = id => resolveField(levels, id, catalog).value;
+    /** @type {Record<string, string>} */
+    const sources = {};
+    /** @param {import('../settings-cascade.js').Resolution} r */
+    const sourceOf = (r) => {
+        const level = levels[r.index];
+        if (level === user) return r.from === 'bundle' ? 'preset' : 'user';
+        return /** @type {ContextLevel} */ (level).name ?? 'character';
+    };
+    /**
+     * @param {string} id
+     * @param {string} [path] Where the value goes, to note its source.
+     */
+    const resolved = (id, path) => {
+        const r = resolveField(levels, id, catalog);
+        if (path && r.from !== 'none' && !isAppDefault(r.value)) sources[path] = sourceOf(r);
+        return r.value;
+    };
     const layoutPaths = new Map(fields.map(([group, field, path]) => [`${group}/${field}`, path]));
     // A bundle's fields the settings object didn't list (the page's own keys of a text family are the file's).
     for (const [group, ref] of stating.flatMap(l => Object.entries(l.bundles ?? {}))) {
@@ -540,15 +558,18 @@ export function assemble(model, { bundles, extrasApiKey, levels: closer = [] }) 
         else if (group.startsWith('template.')) layoutPaths.set(id, `power_user.${group.slice('template.'.length)}.${field}`);
     }
     for (const [id, path] of layoutPaths) {
-        const value = resolved(id);
+        const value = resolved(id, path);
         if (value !== undefined && !isAppDefault(value)) put(settings, path, structuredClone(value));
     }
     for (const [group, path] of selections) {
         const ref = statedFor(group);
-        if (ref !== undefined) put(settings, path, bundleName(group, ref));
+        if (ref === undefined) continue;
+        put(settings, path, bundleName(group, ref));
+        const by = stating.filter(l => group !== 'theme' || l === user).find(l => l.bundles?.[group] !== undefined);
+        sources[path] = by === user ? 'user' : /** @type {ContextLevel} */ (by).name ?? 'character';
     }
     for (const setting of Object.values(TEXT_PRESET_LENGTH_KEYS)) {
-        const value = resolved(setting);
+        const value = resolved(setting, setting);
         if (value !== undefined && !isAppDefault(value)) settings[setting] = value;
     }
 
@@ -605,7 +626,7 @@ export function assemble(model, { bundles, extrasApiKey, levels: closer = [] }) 
 
     for (const [key, value] of Object.entries(model.unknown)) settings[key] = structuredClone(value);
     for (const [key, value] of Object.entries(model.elsewhere)) settings[key] = structuredClone(value);
-    return { settings, warnings };
+    return { settings, warnings, sources };
 }
 
 /** The containers whose keys are each one preference (`power_user.<key>`, …), as import stores them. */

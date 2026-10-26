@@ -15,6 +15,12 @@ import path from 'node:path';
  * @property {() => import('./settings-model/settings-compat.js').UserModel} model The model as last written.
  * @property {(context: { avatar?: string | null, groupId?: string | null }) => Record<string, any>} settingsFor The
  *   settings in a context: the speaking character's and its group's statements over the user's.
+ * @property {(context: { avatar?: string | null, groupId?: string | null }, range?: { from: string, to: string }) => { settings: Record<string, any>, sources: Record<string, string> }} view
+ *   The settings in a context over a range of levels (settings-document.js LEVEL_POSITIONS), and the level each bundle
+ *   field's value comes from.
+ * @property {(context: { avatar?: string | null, groupId?: string | null }, range: { from: string, to: string }, saved: Record<string, any>) => Promise<void>} saveIn
+ *   A save of settings shown by view(): each change written to the range's top level (a bundle's field or selection)
+ *   or the user's.
  * @property {(holder: string, change: { bundles?: Record<string, string | null>, set?: Record<string, unknown>, delete?: string[] }) => Promise<void>} writeLevel
  *   Changes a character's (`character:<avatar>`) or group's (`group:<id>`) statements: bundles stated (null: none),
  *   overrides set and deleted.
