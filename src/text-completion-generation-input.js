@@ -1,4 +1,4 @@
-import { readSettingsAtPaths } from './settings-store.js';
+import { readSettingsFor, settingsContextOf } from './settings-reads.js';
 import { resolveTextGenBackend } from './textgen-backend-resolve.js';
 import { loadChatHistory } from './chat-request.js';
 import { readExtraBooks } from './endpoints/characters.js';
@@ -328,8 +328,8 @@ const DEFAULT_STORY_STRING_ROLE = extension_prompt_roles.SYSTEM;
  */
 
 /**
- * The exact set of top-level settings.json paths this resolver reads via `readSettingsAtPaths()`,
- * typed field-for-field per the module doc comment's FIELD-MAPPING NOTES - `readSettingsAtPaths()`
+ * The exact set of top-level settings.json paths this resolver reads via `readSettingsFor()`,
+ * typed field-for-field per the module doc comment's FIELD-MAPPING NOTES - `readSettingsFor()`
  * itself returns a generic `Record<string, unknown>` (it has no way to know what its caller asked
  * for), so this resolver's own knowledge of what it requested is cast on here rather than left
  * `unknown` at every use site below.
@@ -450,6 +450,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
         throw new Error(`resolveTextCompletionGenerationInput: unsupported mainApi '${mainApi}' (koboldhorde is deliberately not supported here - see module doc comment)`);
     }
 
+    const settingsContext = settingsContextOf({ avatar, groupId, chat: chatContext, nodeId });
     const {
         power_user: powerUser = {},
         world_info_settings: worldInfoSettings = {},
@@ -461,7 +462,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
         user_avatar: userAvatar,
         amount_gen: settingsAmountGen,
         max_context: settingsMaxContext,
-    } = /** @type {TextCompletionSettingsBundle} */ (readSettingsAtPaths(directories, [
+    } = /** @type {TextCompletionSettingsBundle} */ (readSettingsFor(directories, settingsContext, [
         'power_user', 'world_info_settings',
         'textgenerationwebui_settings', 'kai_settings', 'nai_settings',
         'extension_settings', 'username', 'user_avatar', 'amount_gen', 'max_context',
@@ -483,7 +484,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
     // own plain, unmerged `textgenSettings` read below).
     const backendSettings = mainApi === 'kobold' ? koboldSettings : mainApi === 'novel' ? novelSettings : textgenSettings;
 
-    const backend = mainApi === 'textgenerationwebui' ? resolveTextGenBackend(directories) : null;
+    const backend = mainApi === 'textgenerationwebui' ? resolveTextGenBackend(directories, settingsContext) : null;
     // Computed here (rather than inline in `resolved` below) so its type is tied to `backend`'s own
     // null-check instead of a second, separate `mainApi === 'textgenerationwebui'` comparison the
     // type checker can't relate back to this one.

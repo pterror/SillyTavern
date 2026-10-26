@@ -1,4 +1,4 @@
-import { readSettingsAtPaths } from './settings-store.js';
+import { readSettingsFor, settingsContextOf } from './settings-reads.js';
 import { apiTokenLimits, generationMacroFacts, variablesBefore } from './macro-facts.js';
 import { loadChatHistory } from './chat-request.js';
 import { readExtraBooks } from './endpoints/characters.js';
@@ -398,7 +398,7 @@ import { exampleBlocks } from './example-blocks.js';
  * Loose, read-only shape of the subset of the on-disk `oai_settings` blob (src/settings-store.js)
  * this resolver actually reads - NOT the full client `ChatCompletionSettings` shape (that type lives
  * client-side in public/global.d.ts and isn't meaningfully reusable for a server-side partial read
- * via `readSettingsAtPaths()`, which only ever returns the handful of dotted paths asked for). Real
+ * via `readSettingsFor()`, which only ever returns the handful of dotted paths asked for). Real
  * field list cross-checked against every `oaiSettings.<field>` read in this file.
  * @typedef {object} OaiSettingsShape
  * @property {string} [chat_completion_source]
@@ -694,7 +694,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     // analysis in this session's task write-up), and re-deriving that from `type` here would duplicate
     // that decision in a second place.
 
-    // readSettingsAtPaths() (src/settings-store.js, not a target file) declares its return as
+    // readSettingsFor() (src/settings-reads.js) declares its return as
     // `Record<string, unknown>` - it's a generic dotted-path reader with no static knowledge of any
     // individual settings key's real shape. Narrowed here to this module's own real read surface
     // (OaiSettingsShape/PowerUserSettingsShape/etc. above), the boundary-local cast this task's own
@@ -713,7 +713,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
         extension_settings?: Record<string, any>,
         username?: string,
         user_avatar?: string,
-    }} */ (readSettingsAtPaths(directories, [
+    }} */ (readSettingsFor(directories, settingsContextOf({ avatar, groupId, chat: chatContext, nodeId }), [
             'oai_settings', 'power_user', 'world_info_settings', 'extension_settings', 'username', 'user_avatar',
         ]));
     // As the page loads them (loadOpenAISettings()): older settings migrated, a missing one its default.

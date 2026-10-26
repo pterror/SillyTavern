@@ -18,7 +18,7 @@ import { sessionHeaderOf } from '../request-session.js';
 import { userStore } from '../user-stores.js';
 import { TYPE } from '../library-codes.js';
 import { avatarImage, writeWithAvatar } from '../character-avatars.js';
-import { readSettingsAtPaths } from '../settings-store.js';
+import { readUserSettings } from '../settings-reads.js';
 
 const contentDirectory = path.join(serverDirectory, 'default/content');
 const scaffoldDirectory = path.join(serverDirectory, 'default/scaffold');
@@ -464,7 +464,7 @@ function getContentLog(contentLogPath) {
  */
 export function isLinkedLorebookFetchAllowed(directories) {
     const key = 'power_user.forbid_linked_lorebooks';
-    return readSettingsAtPaths(directories, [key])[key] === false;
+    return readUserSettings(directories, [key])[key] === false;
 }
 
 export async function downloadChubLorebook(id) {

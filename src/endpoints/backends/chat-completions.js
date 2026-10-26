@@ -64,7 +64,7 @@ import { substituteParams } from '../../macro-substitution.js';
 import { refreshLlamaCppDetection } from '../../custom-llamacpp.js';
 import { createLlamaCppPropsCheck } from '../../llamacpp-props.js';
 import { writeBack } from '../../token-count-store.js';
-import { readSettingsAtPaths } from '../../settings-store.js';
+import { readSettingsFor, settingsContextOf } from '../../settings-reads.js';
 import { readPresetByName } from '../presets.js';
 import { resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
 import { resolveTokenizer, sendTokenizerWarnings, createTokenizerOutcome } from '../../tokenizer-resolve.js';
@@ -2660,7 +2660,7 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
  * 2. Real anchor-node resolution (a given `nodeId` verified as a message of the request's tree, or -
  *    only when `nodeId` is explicitly `null` AND the tree's root is current - the root) - identical logic to the text-completion helper; see this function's own ADDRESSING
  *    MODEL doc comment below.
- * 3. Read real `oai_settings`/`power_user` via `readSettingsAtPaths()` - JUDGMENT CALL: unlike
+ * 3. Read real `oai_settings`/`power_user` via `readSettingsFor()` - JUDGMENT CALL: unlike
  *    text-completion (which needs a separate `resolveTextGenBackend()` step - see
  *    src/textgen-backend-resolve.js), chat completion has no separate "resolve the active backend
  *    connection" concept: `oai_settings.chat_completion_source`/model selection IS the settings, and
@@ -2857,7 +2857,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
     }
 
     // Step 3
-    const { oai_settings: settings = {}, power_user: powerUser = {} } = readSettingsAtPaths(directories, ['oai_settings', 'power_user']);
+    const { oai_settings: settings = {}, power_user: powerUser = {} } = readSettingsFor(directories, settingsContextOf({ avatar: characterAvatar, groupId, chat, nodeId }), ['oai_settings', 'power_user']);
 
     // Step 4
     // `imageInlining`/`videoInlining`/`audioInlining` OVERRIDE via `macroExtras` (resolveChatCompletionGenerationInput()'s
@@ -4034,7 +4034,8 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 return response.status(400).send({ error: true, message: 'messages must be an array' });
             }
 
-            const { 'oai_settings': baseSettings, proxies } = readSettingsAtPaths(request.user.directories, ['oai_settings', 'proxies']);
+            // A generation in no chat: the user's own settings.
+            const { 'oai_settings': baseSettings, proxies } = readSettingsFor(request.user.directories, settingsContextOf({}), ['oai_settings', 'proxies']);
             const preset = profile.preset ? readPresetByName('openai', profile.preset, request.user.directories) : null;
             const settings = mergeChatCompletionPreset({ ...baseSettings, chat_completion_source: selectedApiMap.source }, preset);
 

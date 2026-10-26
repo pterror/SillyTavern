@@ -5,7 +5,7 @@ import express from 'express';
 import sanitize from 'sanitize-filename';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
-import { readSettingsAtPaths } from '../settings-store.js';
+import { readUserSettings } from '../settings-reads.js';
 import { THEME_FIELDS } from '../../public/scripts/theme-fields.js';
 
 export const router = express.Router();
@@ -30,7 +30,7 @@ router.post('/save-from-settings', (request, response) => {
     }
 
     const dottedPaths = THEME_FIELDS.map(field => `power_user.${field}`);
-    const values = readSettingsAtPaths(request.user.directories, dottedPaths);
+    const values = readUserSettings(request.user.directories, dottedPaths);
 
     const theme = { name };
     for (const field of THEME_FIELDS) {

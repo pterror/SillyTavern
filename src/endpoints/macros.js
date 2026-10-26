@@ -6,7 +6,7 @@ import { getChatCompletionModel } from '../chat-completion-generation-input.js';
 import { apiTokenLimits, generationMacroFacts, readPageMacroFacts } from '../macro-facts.js';
 import { resolveSpeakers } from '../macro-scope.js';
 import { substituteParams } from '../macro-substitution.js';
-import { readSettingsAtPaths } from '../settings-store.js';
+import { readSettingsFor, settingsContextOf } from '../settings-reads.js';
 import { resolveTextGenBackend } from '../textgen-backend-resolve.js';
 import { storeRoute } from '../user-stores.js';
 import { isSafeMacro } from '../../public/scripts/safe-macros.js';
@@ -24,14 +24,15 @@ const MAX_MACRO_LENGTH = 100_000;
 /**
  * The model the macros name ({{model}}), as the prompt builders read it.
  * @param {import('../users.js').UserDirectoryList} directories
+ * @param {import('../settings-reads.js').SettingsContext} settingsContext
  * @param {string} mainApi
  * @param {Record<string, any>} oaiSettings
  */
-function modelOf(directories, mainApi, oaiSettings) {
+function modelOf(directories, settingsContext, mainApi, oaiSettings) {
     if (mainApi === 'openai') return getChatCompletionModel(oaiSettings) ?? undefined;
     if (mainApi !== 'textgenerationwebui') return undefined;
     try {
-        return resolveTextGenBackend(directories).model;
+        return resolveTextGenBackend(directories, settingsContext).model;
     } catch {
         return undefined;
     }
@@ -49,16 +50,16 @@ async function previewContext(request) {
     const body = request.body ?? {};
     const avatar = typeof body.avatar_url === 'string' && body.avatar_url !== '' ? body.avatar_url : null;
     const groupId = typeof body.group_id === 'string' && body.group_id !== '' ? body.group_id : null;
-    const {
-        power_user: powerUser = {}, extension_settings: extensionSettings = {}, oai_settings: oaiSettings = {},
-        username, user_avatar: userAvatar, main_api: mainApi = 'textgenerationwebui', ...limits
-    } = /** @type {Record<string, any>} */ (readSettingsAtPaths(directories, [
-        'power_user', 'extension_settings', 'oai_settings', 'username', 'user_avatar', 'main_api', 'max_context', 'amount_gen',
-    ]));
-
     const speakers = await resolveSpeakers(directories, { avatar, groupId });
     const chat = avatar !== null || groupId !== null ? await chatContext(request, { avatar, group: groupId }) : null;
     const at = typeof body.at === 'string' && body.at !== '' ? body.at : null;
+    const settingsContext = settingsContextOf({ avatar, groupId, chat, nodeId: at });
+    const {
+        power_user: powerUser = {}, extension_settings: extensionSettings = {}, oai_settings: oaiSettings = {},
+        username, user_avatar: userAvatar, main_api: mainApi = 'textgenerationwebui', ...limits
+    } = /** @type {Record<string, any>} */ (readSettingsFor(directories, settingsContext, [
+        'power_user', 'extension_settings', 'oai_settings', 'username', 'user_avatar', 'main_api', 'max_context', 'amount_gen',
+    ]));
     const { chat: messages, metadata } = await loadChatHistory(chat, { nodeId: at });
     // Only read: a copy, whatever a macro does.
     const chatMetadata = structuredClone(metadata);
@@ -81,7 +82,7 @@ async function previewContext(request) {
         chatMetadata,
         macroContext: base,
     });
-    return { ...base, characterCard, model: modelOf(directories, mainApi, oaiSettings) };
+    return { ...base, characterCard, model: modelOf(directories, settingsContext, mainApi, oaiSettings) };
 }
 
 /**

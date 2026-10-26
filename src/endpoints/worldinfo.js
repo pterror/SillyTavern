@@ -4,7 +4,8 @@ import path from 'node:path';
 import express from 'express';
 import sanitize from 'sanitize-filename';
 import _ from 'lodash';
-import { readAllSettingsAsJson, readSettingsAtPaths, writeSettingsKeys } from '../settings-store.js';
+import { readAllSettingsAsJson, writeSettingsKeys } from '../settings-store.js';
+import { readUserSettings } from '../settings-reads.js';
 import { resolveCharacterWorldLink } from '../../public/scripts/character-world-link.js';
 import { getStringHash } from '../../public/scripts/hash-utils.js';
 import { engineStoreHere, requestStore, storeRoute, userStore } from '../user-stores.js';
@@ -403,7 +404,7 @@ router.post('/rename', storeRoute('renaming a World Info book', async (request, 
     }
 
     const rename = (/** @type {unknown} */ value) => value === name ? newName : value;
-    const current = readSettingsAtPaths(directories, ['world_info_settings', 'power_user.persona_data']);
+    const current = readUserSettings(directories, ['world_info_settings', 'power_user.persona_data']);
     /** @type {Record<string, unknown>} */
     const settings = {};
     const worldInfoSettings = _.isPlainObject(current.world_info_settings) ? _.cloneDeep(current.world_info_settings) : null;
