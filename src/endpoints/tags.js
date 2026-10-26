@@ -1,10 +1,9 @@
-import crypto from 'node:crypto';
-
 import express from 'express';
 
 import { requestStore } from '../user-stores.js';
 import { TAG_REORDER_MODES, TAG_SORTS } from '../library-engine-tags.js';
 import { writeBackpressured } from '../util.js';
+import { pageAnswer, parsePageRequest } from '../catalog-page.js';
 
 export const router = express.Router();
 
@@ -250,9 +249,6 @@ router.post('/backup', async (request, response) => {
     response.end();
 });
 
-const DEFAULT_QUERY_PAGE_SIZE = 50;
-const MAX_QUERY_PAGE_SIZE = 500;
-const QUERY_MAX_IDS = 500;
 /** `restCount` counts at most this many tags after a page; past it the answer says "at least". */
 const QUERY_REST_COUNT_MAX = 10000;
 
@@ -267,8 +263,7 @@ const QUERY_REST_COUNT_MAX = 10000;
  * was made in is no longer the one read, i.e. when a tag reorder pass starts or starts draining. `more` means the server's work cap cut the page short and `cursor`
  * carries on; otherwise a null `cursor` is the end.
  *
- * With `ifHash` (a string, empty when the client holds no copy of this page) the answer also has `hash`, and is
- * only `{ unchanged: true, hash }` when `ifHash` is the hash of what would be answered now.
+ * The page fields (`pageSize`, `cursor`, `ids`, `ifHash`) follow catalog-page.js.
  *
  * With `restCount: true`, a full page that has a next page also answers `rest: { count, more }`: how many tags
  * match after it, counted up to QUERY_REST_COUNT_MAX under the same work cap. `more` means there may be more than
@@ -282,9 +277,11 @@ router.post('/query', async (request, response) => {
         if (!Object.hasOwn(TAG_SORTS, sortField)) {
             return response.status(400).send({ error: true, reason: 'invalid-sort-field' });
         }
-        if (filter.search !== undefined && typeof filter.search !== 'string') {
-            return response.status(400).send({ error: true, reason: 'invalid-search' });
+        const parsed = parsePageRequest(body);
+        if ('reason' in parsed) {
+            return response.status(400).send({ error: true, ...parsed });
         }
+        const { pageSize, cursor, ids, search, ifHash } = parsed.request;
         if (filter.name !== undefined && typeof filter.name !== 'string') {
             return response.status(400).send({ error: true, reason: 'invalid-name' });
         }
@@ -293,9 +290,6 @@ router.post('/query', async (request, response) => {
         }
         if (body.counts !== undefined && typeof body.counts !== 'boolean') {
             return response.status(400).send({ error: true, reason: 'invalid-counts' });
-        }
-        if (body.ifHash !== undefined && typeof body.ifHash !== 'string') {
-            return response.status(400).send({ error: true, reason: 'invalid-if-hash' });
         }
         if (body.restCount !== undefined && typeof body.restCount !== 'boolean') {
             return response.status(400).send({ error: true, reason: 'invalid-rest-count' });
@@ -308,27 +302,9 @@ router.post('/query', async (request, response) => {
         if (filter.folderType !== undefined && filter.folderType !== 'OPEN' && filter.folderType !== 'CLOSED') {
             return response.status(400).send({ error: true, reason: 'invalid-folder-type', message: 'filter.folderType takes "OPEN" or "CLOSED".' });
         }
-        let ids;
-        if (filter.ids !== undefined) {
-            if (!Array.isArray(filter.ids) || !filter.ids.every(id => typeof id === 'string')) {
-                return response.status(400).send({ error: true, reason: 'invalid-ids', message: 'filter.ids must be an array of strings' });
-            }
-            ids = [...new Set(filter.ids)];
-            if (ids.length > QUERY_MAX_IDS) {
-                return response.status(400).send({ error: true, reason: 'too-many-ids', message: `at most ${QUERY_MAX_IDS} distinct ids per request` });
-            }
-        }
-        if (body.cursor !== undefined && body.cursor !== null && typeof body.cursor !== 'string') {
-            return response.status(400).send({ error: true, reason: 'invalid-cursor' });
-        }
-        const cursor = typeof body.cursor === 'string' ? body.cursor : null;
-        const pageSize = Number.isFinite(Number(body.pageSize)) && Number(body.pageSize) >= 1
-            ? Math.min(Math.trunc(Number(body.pageSize)), MAX_QUERY_PAGE_SIZE)
-            : DEFAULT_QUERY_PAGE_SIZE;
-
         const params = {
             sort: sortField,
-            search: filter.search?.trim() || undefined,
+            search,
             name: filter.name,
             contains: filter.contains?.trim() || undefined,
             counts: body.counts === true,
@@ -350,11 +326,7 @@ router.post('/query', async (request, response) => {
                 result = { ...result, rest: { count: rest.rows.length, more: rest.cursor !== null } };
             }
         }
-        if (body.ifHash !== undefined) {
-            const hash = crypto.createHash('sha256').update(JSON.stringify(result)).digest('hex');
-            return response.send(hash === body.ifHash ? { unchanged: true, hash } : { ...result, hash });
-        }
-        response.send(result);
+        response.send(pageAnswer(result, ifHash));
     } catch (err) {
         console.error('Could not query tag definitions', err);
         response.status(500).send({ error: true });
