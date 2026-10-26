@@ -954,6 +954,47 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         expect(isStoredId((await openingSwipes(page)).nodeIds[0])).toBe(true);
     });
 
+    test('a greeting swiped to, edited in the chat, then the same greeting on the card edited to match: one alternative, shown at once, no hole', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const avatar = await createCharacter(page, `DedupSwiped-${s}`, g);
+        await openCharacter(page, avatar);
+        await page.locator('#chat .mes[mesid="0"] .swipe_right').first().click();
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(g[1]);
+        const y = `Shared ${s}`;
+        await editOpeningInChat(page, y);
+
+        await openCharacter(page, avatar);
+        await openGreetingsPopup(page, 3);
+        const response = greetingOpResponse(page, 'edit');
+        await popupRow(page, 1).locator('.alternate_greeting_text').fill(y);
+        expect((await response).ok()).toBe(true);
+
+        // The server's list as a fresh load lays it out: the stored opening, then the card's other greetings.
+        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([y, g[0], g[2]]);
+        const opening = await openingSwipes(page);
+        expect(opening.swipe_id).toBe(0);
+        expect(isStoredId(opening.nodeIds[0])).toBe(true);
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(y);
+    });
+
+    test('a card greeting differing from the chat\'s opening only by spaces around it is that opening', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const avatar = await createCharacter(page, `DedupSpaces-${s}`, g);
+        await openCharacter(page, avatar);
+        const y = `Shared ${s}`;
+        await editOpeningInChat(page, y);
+
+        await openCharacter(page, avatar);
+        await openGreetingsPopup(page, 3);
+        const response = greetingOpResponse(page, 'edit');
+        await popupRow(page, 2).locator('.alternate_greeting_text').fill(`${y}\n`);
+        expect((await response).ok()).toBe(true);
+
+        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([y, g[0], g[1]]);
+    });
+
     test('popup delete on a list another session reordered deletes that greeting and drops no other', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];
