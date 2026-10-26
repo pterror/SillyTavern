@@ -1,8 +1,8 @@
 import { readSettingsAtPaths } from './settings-store.js';
 import { variablesBefore, generationMacroFacts } from './macro-facts.js';
 import { loadChatHistory } from './chat-request.js';
-import { readCardContent, readExtraBooks } from './endpoints/characters.js';
-import { getGroupsByIds } from './endpoints/groups.js';
+import { readExtraBooks } from './endpoints/characters.js';
+import { resolveSpeakers } from './macro-scope.js';
 import { getCharacterCardFields } from './character-card-fields.js';
 import { buildChatCompletionMessages, buildChatCompletionMessageExamples, character_names_behavior } from './chat-completion-messages.js';
 import { TokenHandler } from './chat-completion-budget.js';
@@ -50,7 +50,7 @@ import { substituteParams } from './macro-substitution.js';
  *    contrast, needed raw per-field access plus a `character` object to feed directly into
  *    `resolveWorldInfoCandidates()`/`activateWorldInfoEntries()`, which is why that resolver used the
  *    lower-level approach instead. This resolver still does one small extra raw card read (see
- *    `resolveCharacterName2()` below) purely to get the bare `.name` for `name2`/macro context and to
+ *    src/macro-scope.js's `resolveSpeakers()`) purely to get the bare `.name` for `name2`/macro context and to
  *    decide `hasActiveCharacter` - `getCharacterCardFields()` itself has no "was there even a
  *    character" signal in its return shape (it returns a fully-populated all-empty-strings object
  *    either way), so a second small read is unavoidable without changing that module. This is a minor,
@@ -228,7 +228,7 @@ import { substituteParams } from './macro-substitution.js';
  * - GROUPS: NOW REAL, AS OF THIS FOLLOW-UP TASK (previously an explicit MVP scope boundary - `groupId`
  *   accepted for interface parity only, `isGroup` hardcoded `false`, `groupMemberNames` hardcoded `[]`,
  *   `void groupId`). Real wiring, mirroring text-completion-generation-input.js's own precedent
- *   (`resolveName2AndGroupMemberNames()`/`isGroup = Boolean(groupId)`) as closely as the two
+ *   (`resolveSpeakers()`/`isGroup = Boolean(groupId)`) as closely as the two
  *   pipelines' real differences allow:
  *     - `isGroup` is now `Boolean(groupId)`, real.
  *     - `groupId` is now forwarded to `getCharacterCardFields()`'s own, already-real `groupId`
@@ -238,21 +238,8 @@ import { substituteParams } from './macro-substitution.js';
  *       specific responding member, still required for a real `character` to exist - see that
  *       module's own `useGroupCards` guard) and `groupId` are given together, exactly like the
  *       text-completion path's own equivalent already did.
- *     - `groupMemberNames` is now resolved for real by this module's own `resolveCharacterName2()`
- *       (renamed in spirit, not in export, to also resolve group members - see that function's own
- *       doc comment for the full read-and-filter rules, verified against, not guessed from,
- *       text-completion-generation-input.js's `resolveName2AndGroupMemberNames()`: real
- *       `getGroupsByIds()` + per-member `readCardContent()` reads, an unreadable member card is
- *       silently skipped rather than failing the whole resolution, no disabled-member/self-exclusion
- *       filtering is applied - `resolveName2AndGroupMemberNames()` itself applies none either, verified
- *       by reading its body, not assumed - and `name2` falls back to the group's own `.name` when no
- *       `avatar` is given). ONE real, verified shape difference from the text-completion version:
- *       here `groupMemberNames` is a plain `string[]`, not an `{name}[]` array of records - dictated by
- *       THIS pipeline's own real consumer shape (`chat-completion-prompt-collection.js`'s
- *       `getPromptCollection()`/`preparePrompt()`, used for the `{{group}}` macro's
- *       `groupMemberNames.join(', ')`, and that module's own `@param {string[]}` JSDoc) - re-verified
- *       by reading that file directly before choosing this shape, not copied blindly from the
- *       text-completion precedent.
+ *     - `groupMemberNames` (every member's name, muted ones too) and `groupDisabledMembers` come from
+ *       src/macro-scope.js's `resolveSpeakers()`, which the text-completion pipeline uses too.
  *     - Real `isGroup`/`groupMemberNames` now flow into every place that used to hardcode `false`/`[]`:
  *       `buildChatCompletionMessages()` (group name-prefixing per `namesBehavior`, and excluding other
  *       members' reasoning/signatures from a responding member's own turn - see that function's own
@@ -499,16 +486,6 @@ import { substituteParams } from './macro-substitution.js';
  * @property {number} [world_info_character_strategy]
  */
 
-/**
- * The real fields this module reads off a group JSON file (src/endpoints/groups.js's
- * `getGroupsByIds()` - that module isn't one of this task's target files, so its own return type
- * (`Record<string, object>`) stays as loose as it already is; this is the boundary-local narrowing -
- * see `resolveCharacterName2()` below for the cast site and the cross-file-mismatch note).
- * @typedef {object} GroupRecordShape
- * @property {string} [name]
- * @property {string[]} [members]
- */
-
 /** Mirrors PromptManager.js's `configuration.promptOrder.dummyId` - see FIELD-MAPPING NOTES above. */
 const PROMPT_ORDER_DUMMY_ID = 100000;
 
@@ -632,74 +609,6 @@ export function parseMesExamplesForChatCompletion(examplesStr) {
         examplesStr = '<START>\n' + examplesStr.trim();
     }
     return examplesStr.split(/<START>/gi).slice(1).map(block => `<START>\n${block.trim()}\n`);
-}
-
-/**
- * Loads a character card's bare display name/raw-existence signal (`name2`/`hasCharacter`), AND - AS
- * OF THIS TASK - real group member display names, when `groupId` is given. This is the direct
- * chat-completion analog of text-completion-generation-input.js's own
- * `resolveName2AndGroupMemberNames()` - same real reads (`readCardContent`/`getGroupsByIds`), same
- * tolerate-a-missing/unreadable-card stance, same "no `avatar` -> fall back to the group's own name
- * for `name2`" rule, same "skip an unreadable member card, don't fail the whole resolution" rule, and
- * deliberately NO disabled-member/self-exclusion filtering (verified directly against that function's
- * own body - it applies neither), replicated here rather than invented.
- *
- * ONE real shape difference from the text-completion version, verified against this pipeline's own
- * real consumers before writing this: `groupMemberNames` here is a plain `string[]` (bare display
- * names), NOT an `{name}[]` array of records. text-completion's `groupMemberNames` shape is dictated
- * by src/stopping-strings.js's `getStoppingStrings({groupMemberNames})`, which reads `.name` off each
- * entry - but chat-completion's OWN real consumer of this field,
- * src/chat-completion-prompt-collection.js's `getPromptCollection()`/`preparePrompt()` (used for the
- * `{{group}}` macro's `groupMemberNames.join(', ')`), and its own JSDoc (`@param {string[]}
- * [options.groupMemberNames]`), both expect bare strings - confirmed by reading both files' real
- * signatures before choosing this shape, not guessed.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {object} params
- * @param {string} [params.avatar]
- * @param {string} [params.groupId]
- * @returns {Promise<{ name2: string, groupMemberNames: string[], hasCharacter: boolean }>}
- */
-async function resolveCharacterName2(directories, { avatar, groupId } = {}) {
-    let name2 = '';
-    let hasCharacter = false;
-
-    if (avatar != null) {
-        try {
-            const raw = await readCardContent(directories, avatar);
-            if (raw !== undefined) {
-                const character = JSON.parse(raw);
-                name2 = character?.name || character?.data?.name || '';
-                hasCharacter = true;
-            }
-        } catch { /* leave name2 as '', hasCharacter false - matches text-completion's own fallback */ }
-    }
-
-    /** @type {string[]} */
-    const groupMemberNames = [];
-    if (groupId != null) {
-        // getGroupsByIds() (src/endpoints/groups.js, not a target file) declares its return as the
-        // loose `Record<string, object>` its own module doc comment settled on - narrowed here to the
-        // real, on-disk `Group` fields this function actually reads. Cross-file boundary, not a guess:
-        // `name`/`members` are real `Group` (public/global.d.ts) properties.
-        const group = /** @type {GroupRecordShape | undefined} */ ((await getGroupsByIds(directories, [groupId]))[groupId]);
-        if (group) {
-            if (avatar == null && group.name != null && group.name !== '') {
-                name2 = group.name;
-            }
-            const members = Array.isArray(group.members) ? group.members : [];
-            for (const memberAvatar of members) {
-                try {
-                    const raw = await readCardContent(directories, memberAvatar);
-                    if (raw === undefined) continue;
-                    const card = JSON.parse(raw);
-                    const memberName = card?.name || card?.data?.name;
-                    if (memberName) groupMemberNames.push(memberName);
-                } catch { /* skip unreadable member card - matches text-completion's own stance */ }
-            }
-        }
-    }
-
-    return { name2, groupMemberNames, hasCharacter };
 }
 
 /**
@@ -837,7 +746,8 @@ export async function resolveChatCompletionGenerationInput(directories, {
     // What it holds before any macro runs, to tell what the macros changed.
     const stateBefore = variablesBefore(chatMetadata, extensionSettings.variables?.global ?? {});
 
-    const { name2, groupMemberNames, hasCharacter } = await resolveCharacterName2(directories, { avatar, groupId });
+    const { name2, character, groupMembers: groupMemberNames, groupDisabledMembers } = await resolveSpeakers(directories, { avatar, groupId });
+    const hasCharacter = character !== null;
     const name1 = (username != null && username !== '') ? username : 'User';
 
     // Appends the pending user action onto the loaded history, in the exact tree-DB-native shape
@@ -902,7 +812,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
         preferCharacterJailbreak: Boolean(powerUser.prefer_character_jailbreak),
         personaDescription: activePersona.description,
         chatMetadata,
-        macroContext: { ...macroFacts, name1, isGroup, groupMembers: groupMemberNames, chat: promptChat, chatMetadata },
+        macroContext: { ...macroFacts, name1, isGroup, groupMembers: groupMemberNames, groupDisabledMembers, chat: promptChat, chatMetadata },
     });
 
     // Real world-info CANDIDATE resolution - see doc comment decision 4 for the full real ACTIVATION
@@ -917,13 +827,6 @@ export async function resolveChatCompletionGenerationInput(directories, {
     if (worldInfoCandidates === undefined) {
         // The character's links after the first (its card's `world` is the first), read from its entity.
         const characterExtraBooks = avatar != null ? await readExtraBooks(directories, avatar) : [];
-        let character = null;
-        if (avatar != null) {
-            try {
-                const raw = await readCardContent(directories, avatar);
-                if (raw !== undefined) character = JSON.parse(raw);
-            } catch { /* leave character null - candidate resolution tolerates this */ }
-        }
         // resolveWorldInfoCandidates() (src/world-info/candidate-resolution.js, not a target file)
         // declares its return as `Promise<Array<object>>` - looser than reality: its entries are real
         // on-disk lorebook entries, i.e. genuinely `WIEntry`-shaped. Boundary cast, not a guess.
@@ -954,7 +857,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     /** @type {SubstituteParamsContext} */
     const macroContext = {
         ...macroFacts,
-        name1, name2, isGroup, groupMembers: groupMemberNames, model: model ?? undefined,
+        name1, name2, isGroup, groupMembers: groupMemberNames, groupDisabledMembers, model: model ?? undefined,
         characterCard: fields,
         chat: /** @type {import('./macro-substitution.js').ChatMessage[]} */ (promptChat), chatMetadata,
     };

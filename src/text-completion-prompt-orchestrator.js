@@ -402,7 +402,8 @@ function parseMesExamplesBlocks(examplesStr, isInstruct, exampleSeparator = '') 
  * @property {string} [customStoppingStringsRaw]
  * @property {boolean} [customStoppingStringsMacro]
  * @property {string[]} [ephemeralStoppingStrings]
- * @property {{name?: string}[]} [groupMemberNames]
+ * @property {string[]} [groupMemberNames] Every member's name, muted ones too.
+ * @property {string[]} [groupDisabledMembers] The muted members' names.
  * @property {string} [bannedTokensRaw]
  * @property {string} [globalBannedTokensRaw]
  * @property {boolean} [sendBannedTokens]
@@ -482,7 +483,7 @@ export async function assembleTextCompletionPrompt(input) {
         sysPromptPostHistory = '', injectedIndices: initialInjectedIndices = [],
         mainApi, naiPreamble = '', chatStart = '', collapseNewlines = false,
         namesAsStopStrings = false, singleLine = false, customStoppingStringsRaw, customStoppingStringsMacro = false,
-        ephemeralStoppingStrings = [], groupMemberNames = [],
+        ephemeralStoppingStrings = [], groupMemberNames = [], groupDisabledMembers = [],
         bannedTokensRaw = '', globalBannedTokensRaw = '', sendBannedTokens = false, logitBiasEntries = [],
         settings = {}, model,
         koboldFlags = {}, isHorde = false, apiServer, novelDataTier, presetOrder, consoleLogPrompts = false,
@@ -503,7 +504,7 @@ export async function assembleTextCompletionPrompt(input) {
     // Built before character-card fields are resolved (matching the task's stage ordering) - the
     // macro context used here has no `characterCard` yet, same as any macro usage that happens to
     // run before the client's own character-card fields are in scope.
-    const baseMacroContext = { ...macroFacts, name1, name2, isGroup, groupMembers: groupMemberNames, chat, chatMetadata, bannedWordsSink };
+    const baseMacroContext = { ...macroFacts, name1, name2, isGroup, groupMembers: groupMemberNames, groupDisabledMembers, chat, chatMetadata, bannedWordsSink };
     const { messageBias, promptBias, isUserPromptBias } = getBiasStrings({
         textareaText, type, chat, userPromptBias, macroContext: baseMacroContext,
     });

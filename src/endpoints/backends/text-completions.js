@@ -518,7 +518,7 @@ router.post('/props', async function (request, response) {
  *   name2/world-info/depth-prompt resolution) AND `groupId` (the group's own addressing/roster) -
  *   this is a real, intentional combination, not a fallback: the existence checks below run
  *   independently for each, `resolveTextCompletionGenerationInput()`'s own
- *   `resolveName2AndGroupMemberNames()` already resolves `name2` from `avatar` while still
+ *   `resolveSpeakers()` (src/macro-scope.js) already resolves `name2` from `avatar` while still
  *   populating `groupMemberNames` from every group member, and `getGroupCharacterDepthPrompts()`
  *   (src/text-completion-prompt-orchestrator.js) already takes both `groupId` AND `avatar` together
  *   for exactly this reason. `characterAvatar` alone (no `groupId`) still means a plain
@@ -572,14 +572,14 @@ export async function buildRawActionTextCompletionRequest(directories, {
     const backend = resolveTextGenBackend(directories);
 
     // Step 2 (existence checks) - readCardContent() throws (rather than returning undefined) for a
-    // missing file (ENOENT); resolveName2AndGroupMemberNames() in text-completion-generation-
-    // input.js already treats any read failure as "no character" via its own try/catch, so this
+    // missing file (ENOENT); resolveSpeakers() in
+    // macro-scope.js already treats any read failure as "no character" via its own try/catch, so this
     // mirrors that same convention rather than letting the ENOENT bubble up as an unrelated 500.
     if (characterAvatar) {
         let raw;
         try {
             raw = await readCardContent(directories, characterAvatar);
-        } catch { /* treated as not-found below, matching resolveName2AndGroupMemberNames()'s convention */ }
+        } catch { /* treated as not-found below, matching resolveSpeakers()'s convention */ }
         if (raw === undefined) {
             throw new Error(`Character not found: ${characterAvatar}`);
         }
