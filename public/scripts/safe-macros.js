@@ -91,6 +91,32 @@ export function isSafeMacro(macroText) {
     return true;
 }
 
+/** For each mention, the macro whose value is its card's text: who it names' description, its macros filled in. */
+const MENTION_ABOUT = Object.freeze({ user: '{{persona}}', char: '{{description}}', charifnotgroup: '{{description}}' });
+
+/**
+ * @param {string} macroName
+ * @returns {string | undefined} The macro whose value is the card text of the mention by that name.
+ */
+export function mentionAboutMacro(macroName) {
+    return MENTION_ABOUT[/** @type {keyof typeof MENTION_ABOUT} */ (macroName.toLowerCase())];
+}
+
+/**
+ * Who a mention names, their description as filled in (its macros' values); none until it is known.
+ * @template {{ about: string }} P
+ * @param {P | null} person
+ * @param {string} macroName
+ * @param {MacroValueOf} valueOf
+ * @returns {P | null}
+ */
+export function withFilledAbout(person, macroName, valueOf) {
+    if (!person) return person;
+    const source = mentionAboutMacro(macroName);
+    const about = source ? valueOf(source) : undefined;
+    return { ...person, about: typeof about === 'string' ? about : '' };
+}
+
 /**
  * @typedef {import('./macro-pill.js').MacroShown} MacroShown
  * @typedef {(source: string) => string | null | undefined} MacroValueOf A macro's value by its `{{…}}`: null when it

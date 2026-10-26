@@ -101,7 +101,8 @@ test.describe('live editor macros', () => {
         await page.keyboard.press('ArrowRight');
         await page.keyboard.press('ArrowRight');
         await expect(tooltip.locator('.macro-person-name')).toHaveText('Person char');
-        await expect(tooltip.locator('.macro-person-about')).toHaveText('About char.');
+        // Its text is who it names' description as the server fills it in: here no character, so none.
+        await expect(tooltip.locator('.macro-person-about')).toHaveCount(0);
         await expect(tooltip.locator('code')).toHaveText('{{char}}');
         await expect(tooltip.locator('.macro-person-avatar')).toHaveAttribute('src', '/img/ai4.png');
         for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowRight');
@@ -126,7 +127,7 @@ test.describe('live editor macros', () => {
         await mountWithMacros(page, 'In the editor {{char}} and {{random::x::y}}.', { person: true });
         await page.evaluate(async () => {
             const { insertMacroPills } = await import('/scripts/macro-pill.js');
-            const { withMacroPlaceholders } = await import('/scripts/safe-macros.js');
+            const { withFilledAbout, withMacroPlaceholders } = await import('/scripts/safe-macros.js');
             const { macroValuesOf } = await import('/scripts/macro-values.js');
             const source = 'Rendered {{char}} and {{random::x::y}}.';
             const values = await macroValuesOf(source, { name2: 'Testchar' });
@@ -136,7 +137,7 @@ test.describe('live editor macros', () => {
             // Clipped by what holds it, as a drawer clips its preview: the tooltip isn't.
             preview.style.cssText = 'overflow:hidden;height:1.6em;margin-top:220px';
             preview.innerHTML = insertMacroPills(text, macros, s => s.join(''),
-                name => ({ name: `Person ${name}`, avatarUrl: '/img/ai4.png', about: `About ${name}.` }));
+                name => withFilledAbout({ name: `Person ${name}`, avatarUrl: '/img/ai4.png', about: `About ${name}.` }, name, values.valueOf));
             document.getElementById('liveEditorTestHost').append(preview);
         });
         const tooltip = page.locator('.macro-tooltip:popover-open');
