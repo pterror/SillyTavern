@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 import { startLlamaCpp, connectLlamaCpp, openCharacter } from './llamacpp-mock.js';
+import { startOpenAICompat, connectOpenAICompat } from './openai-mock.js';
 import { PARITY_CASES, applyChatMetadata, applyPersona, applyPowerUser, createLorebook } from './prompt-parity-cases.js';
 
 // The prompt sent for a chat is the prompt upstream builds for it: upstream's page built each case's prompt
@@ -114,27 +115,64 @@ async function serverPrompt(page, type) {
     return String(completions()[before].body.prompt);
 }
 
+/**
+ * Sets a case's chat up, after the connection: its lorebook and character, its settings, its messages, its metadata and
+ * its persona.
+ * @param {import('@playwright/test').Page} page
+ * @param {import('./prompt-parity-cases.js').ParityCase} parityCase
+ */
+async function setUp(page, parityCase) {
+    if (parityCase.lorebook) await page.evaluate(createLorebook, parityCase.lorebook);
+    await openCard(page, parityCase.card);
+    if (parityCase.powerUser) {
+        // Put back once the case is done: the cases in a worker share its server's settings.
+        restore = await page.evaluate(applyPowerUser, parityCase.powerUser);
+        await saveSettings(page);
+    }
+    for (const step of parityCase.steps) await slash(page, step);
+    if (parityCase.chatMetadata) await page.evaluate(applyChatMetadata, parityCase.chatMetadata);
+    if (parityCase.persona) {
+        await page.evaluate(applyPersona, parityCase.persona);
+        await saveSettings(page);
+    }
+}
+
 test.describe('text completion', () => {
-    for (const parityCase of PARITY_CASES) {
+    for (const parityCase of PARITY_CASES.filter(c => c.name.startsWith('tc-'))) {
         test(`${parityCase.name}`, async ({ page }) => {
             const expected = fs.readFileSync(path.join(goldens, `${parityCase.name}.txt`), 'utf8');
             await connectLlamaCpp(page, llama.url);
-            if (parityCase.lorebook) await page.evaluate(createLorebook, parityCase.lorebook);
-            await openCard(page, parityCase.card);
-            if (parityCase.powerUser) {
-                // Put back once the case is done: the cases in a worker share its server's settings.
-                restore = await page.evaluate(applyPowerUser, parityCase.powerUser);
-                await saveSettings(page);
-            }
-            for (const step of parityCase.steps) await slash(page, step);
-            if (parityCase.chatMetadata) await page.evaluate(applyChatMetadata, parityCase.chatMetadata);
-            if (parityCase.persona) {
-                await page.evaluate(applyPersona, parityCase.persona);
-                await saveSettings(page);
-            }
+            await setUp(page, parityCase);
             const type = parityCase.type ?? 'normal';
             expect.soft(await pagePrompt(page, type), 'the page\'s own prompt').toBe(expected);
             expect.soft(await serverPrompt(page, type), 'the server\'s prompt').toBe(expected);
+        });
+    }
+});
+
+test.describe('chat completion', () => {
+    /** @type {Awaited<ReturnType<typeof startOpenAICompat>>} */
+    let openai;
+
+    test.beforeEach(async () => {
+        openai = await startOpenAICompat();
+    });
+
+    test.afterEach(async () => {
+        await openai.close();
+    });
+
+    // What upstream's server sends: the messages, after its own processing of them.
+    for (const parityCase of PARITY_CASES.filter(c => c.name.startsWith('cc-'))) {
+        test(`${parityCase.name}`, async ({ page }) => {
+            const expected = JSON.parse(fs.readFileSync(path.join(goldens, `${parityCase.name}.json`), 'utf8'));
+            await connectOpenAICompat(page, openai.url);
+            await setUp(page, parityCase);
+            const sends = () => openai.log.filter(entry => entry.url.endsWith('/chat/completions'));
+            const before = sends().length;
+            await slash(page, SEND[parityCase.type ?? 'normal']);
+            await expect.poll(() => sends().length, { timeout: 20000 }).toBeGreaterThan(before);
+            expect(sends()[before].body.messages).toEqual(expected);
         });
     }
 });

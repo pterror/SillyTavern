@@ -151,6 +151,14 @@ export const PARITY_CASES = [
     },
 ];
 
+/** Text completion only: instruct mode and the system prompt. */
+const TEXT_COMPLETION_ONLY = new Set(['tc-instruct-chatml', 'tc-system-prompt']);
+
+// The same chats over chat completion: the messages the server sends.
+PARITY_CASES.push(...PARITY_CASES
+    .filter(c => c.name.startsWith('tc-') && !TEXT_COMPLETION_ONLY.has(c.name))
+    .map(c => ({ ...c, name: `cc-${c.name.slice(3)}` })));
+
 /**
  * Sets power_user values by dotted path, in the page. Run with page.evaluate().
  * @param {Record<string, unknown>} values

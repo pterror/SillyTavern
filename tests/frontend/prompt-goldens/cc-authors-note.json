@@ -1,0 +1,34 @@
+[
+  {
+    "role": "system",
+    "content": "Write Parity Sailor's next reply in a fictional chat between Parity Sailor and User."
+  },
+  {
+    "role": "system",
+    "content": "An old sailor."
+  },
+  {
+    "role": "system",
+    "content": "[Start a new Chat]"
+  },
+  {
+    "role": "assistant",
+    "content": "The sea is calm."
+  },
+  {
+    "role": "user",
+    "content": "What do you see?"
+  },
+  {
+    "role": "assistant",
+    "content": "Clouds, far off."
+  },
+  {
+    "role": "system",
+    "content": "Parity Sailor senses a storm coming."
+  },
+  {
+    "role": "user",
+    "content": "Should we turn back?"
+  }
+]
