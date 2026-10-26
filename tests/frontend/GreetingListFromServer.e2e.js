@@ -930,6 +930,30 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(y);
     });
 
+    test('the chat\'s opening edited to text with macros, then a card greeting edited to the same: one alternative, the macros kept as written and shown filled in', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const avatar = await createCharacter(page, `DedupMacros-${s}`, g);
+        await openCharacter(page, avatar);
+        const y = `Hello {{user}}, I am {{char}} ${s}.`;
+        await page.locator('#chat .mes[mesid="0"] .mes_edit').click();
+        await page.locator('#curEditTextarea').fill(y);
+        await page.locator('#chat .mes[mesid="0"] .mes_edit_done').click();
+        await expect(page.locator('#curEditTextarea')).toHaveCount(0);
+        // Stored as written, as a card greeting is; shown with its macros filled in.
+        await expect.poll(async () => (await openingSwipes(page)).swipes[0], { timeout: 10000 }).toBe(y);
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).not.toContainText('{{user}}');
+
+        await openCharacter(page, avatar);
+        await openGreetingsPopup(page, 3);
+        const response = greetingOpResponse(page, 'edit');
+        await popupRow(page, 2).locator('.alternate_greeting_text').fill(y);
+        expect((await response).ok()).toBe(true);
+
+        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([y, g[0], g[1]]);
+        expect(isStoredId((await openingSwipes(page)).nodeIds[0])).toBe(true);
+    });
+
     test('popup delete on a list another session reordered deletes that greeting and drops no other', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];

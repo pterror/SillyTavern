@@ -8061,10 +8061,15 @@ function applyMessageEdit(div) {
         text = text.trim();
     }
 
+    // The opening's macros are filled in each time it is shown (messageFormatting()), as a card greeting's are: it
+    // keeps them as written, so it stays the same text as the same greeting on the card.
+    const keepsMacros = mesId === 0 && !mes.is_user && !mes.is_system;
     const bias = substituteParams(extractMessageBias(text));
-    text = substituteParams(text);
-    if (bias) {
-        text = removeMacros(text);
+    if (!keepsMacros) {
+        text = substituteParams(text);
+        if (bias) {
+            text = removeMacros(text);
+        }
     }
 
     return finishMessageEdit(mesBlock, mesId, mes, text, bias);
