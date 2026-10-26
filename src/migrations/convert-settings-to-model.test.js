@@ -59,12 +59,10 @@ const noServer = async () => ({ running: false, lines: [] });
  * @param {string} handle
  * @param {boolean} apply
  */
-async function convert(handle, apply) {
+async function convert(handle, apply, again = false) {
     const lines = [];
-    let n = 0;
     const code = await runConvert({
-        dataRoot, handle, apply, engine: async () => binding, probeServer: noServer,
-        newKey: () => `00000000-0000-0000-0000-${String(++n).padStart(12, '0')}`,
+        dataRoot, handle, apply, again, engine: async () => binding, probeServer: noServer,
         log: line => lines.push(line), warn: line => lines.push(line),
     });
     return { code, lines };
@@ -122,4 +120,21 @@ test('refused while the server runs', async () => {
     const code = await runConvert({ dataRoot, handle: 'running', apply: true, engine: async () => binding, probeServer: async () => ({ running: true, lines: [] }), log: l => lines.push(l), warn: l => lines.push(l) });
     assert.equal(code, 1);
     assert.ok(lines.some(l => l.includes('REFUSED')));
+});
+
+test('again: the last run\'s model goes, and the same one is made anew', async () => {
+    await seedUser('again');
+    assert.equal((await convert('again', true)).code, 0);
+    const second = await convert('again', true, true);
+    assert.equal(second.code, 0, second.lines.join('\n'));
+    assert.ok(second.lines.some(l => l.includes('deleted the last run')));
+    setStoreEngine(() => binding);
+    const store = await userStore({ root: directoriesFor(dataRoot, 'again').root });
+    try {
+        const { entities } = await store.lib.store.libraryOfType(TYPE.connection, null, 1000);
+        const model = await readUserModel(store.lib, 'again');
+        assert.equal(entities.length, model?.entities.filter(e => e.type === TYPE.connection).length);
+    } finally {
+        await closeUserStores();
+    }
 });

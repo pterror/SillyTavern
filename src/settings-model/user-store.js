@@ -100,6 +100,8 @@ export function userDraftOf(handle, model, holders) {
     slot('regexPreset', statements.regexPreset);
     slot('username', statements.username);
     slot('disabledElsewhere', statements.dataBank?.disabledElsewhere);
+    slot('sources', statements.sources);
+    for (const [type, keys] of Object.entries(statements.order ?? {})) slot(`order.${type}`, keys);
     for (const [key, value] of Object.entries(model.ext)) values[`ext:${key}`] = value;
     for (const [key, value] of Object.entries(model.unknown)) values[`key:${key}`] = value;
     const holderList = (/** @type {number} */ type) => [...holders.values()].filter(h => h.type === type).map(h => h.key);
@@ -133,6 +135,16 @@ export async function writeUserModel(lib, handle, model, { actor = null, bundles
     /** @type {string[]} */
     const warnings = [];
     const holders = holdersOf(model.statements);
+    // A character or group not in the library can't hold a statement: kept on the user record as it came.
+    const holderIds = await lib.store.libraryIds([...holders.values()].map(h => [h.type, h.key]));
+    /** @type {{ type: number, key: string, says: HolderStatements }[]} */
+    const orphans = [];
+    [...holders.entries()].forEach(([id, holder], i) => {
+        if (holderIds[i] !== null) return;
+        orphans.push(holder);
+        holders.delete(id);
+        warnings.push(`${holder.key} isn't in the library: the statements made at it are kept as they came`);
+    });
     /** @type {[number, string][]} */
     const refs = [];
     for (const { type, key, says } of holders.values()) {
@@ -142,6 +154,7 @@ export async function writeUserModel(lib, handle, model, { actor = null, bundles
         for (const name of [...(says.quickReplies?.items ?? []), ...(says.quickReplies?.hidden ?? [])]) refs.push([TYPE.quickReplySet, name]);
     }
     const user = userDraftOf(handle, model, holders);
+    if (orphans.length) user.values['s:orphans'] = orphans;
     await writeDrafts(lib, [...bundles, ...model.entities, user], {
         actor, warnings, refs,
         extra: async (ids, stamp) => {
@@ -205,6 +218,8 @@ export async function readUserModel(lib, handle) {
     const statements = { remembered: {}, capabilities: {} };
     /** @type {unknown} */
     let disabledElsewhere;
+    /** @type {{ type: number, key: string, says: HolderStatements }[]} */
+    let orphans = [];
     /** @type {Record<string, unknown>} */
     const ext = {};
     /** @type {Record<string, unknown>} */
@@ -218,6 +233,8 @@ export async function readUserModel(lib, handle) {
         else if (name.startsWith('remembered.')) statements.remembered[name.slice('remembered.'.length)] = value;
         else if (name.startsWith('capability.')) statements.capabilities[name.slice('capability.'.length)] = capabilityOf(value);
         else if (name === 'disabledElsewhere') disabledElsewhere = value;
+        else if (name.startsWith('order.')) (statements.order ??= {})[name.slice('order.'.length)] = value;
+        else if (name === 'orphans') orphans = /** @type {any[]} */ (value);
         else if (name !== 'dataBank') statements[name] = value;
     }
     /** The list as written; undefined for one the model hadn't. */
@@ -253,6 +270,48 @@ export async function readUserModel(lib, handle) {
         if (files) (statements.dataBank ??= { user: [], characters: [], disabledElsewhere: [] }).characters.push({ avatar: holder.key, files: named(files) });
         if (qr) (statements.quickReplies ??= { user: { items: [], hidden: [] }, characters: [] }).characters.push({ avatar: holder.key, items: named(qr.items), hidden: named(qr.hidden) });
     }
+    for (const { type, key, says } of orphans) {
+        if (says.personas) statements.personasConnected.push({ holder: { type: type === TYPE.group ? 'group' : 'character', id: key }, personas: says.personas });
+        if (says.dataBank) (statements.dataBank ??= { user: [], characters: [], disabledElsewhere: [] }).characters.push({ avatar: key, files: says.dataBank });
+        if (says.quickReplies) (statements.quickReplies ??= { user: { items: [], hidden: [] }, characters: [] }).characters.push({ avatar: key, ...says.quickReplies });
+    }
     return { user: level, entities, ext, unknown, elsewhere: {}, statements, secrets: [], warnings: [] };
 }
 
+
+/**
+ * Deletes a user's model from the store (its history kept): every settings entity, placeholders too, and the
+ * statements the user record names at characters and groups. For a conversion run again before the model is read.
+ * @param {import('../library-engine.js').LibraryEngine} lib
+ * @param {string} handle
+ * @returns {Promise<number>} How many entities went.
+ */
+export async function deleteUserModel(lib, handle) {
+    const user = await readDraft(lib, TYPE.user, handle);
+    /** @type {bigint[]} */
+    const ids = [];
+    for (let type = TYPE.user; type <= TYPE.device; type++) {
+        let after = null;
+        for (;;) {
+            const { entities, more } = await lib.store.libraryOfType(type, after, PAGE);
+            ids.push(...entities.map(e => e.id));
+            if (!more || entities.length === 0) break;
+            after = entities[entities.length - 1].key;
+        }
+    }
+    /** @type {object[]} */
+    const records = [];
+    const stamp = await lib.stamper(null, records);
+    const writes = historyWrites(stamp);
+    for (const [list, type] of [[USER_LISTS.characters, TYPE.character], [USER_LISTS.groups, TYPE.group]]) {
+        for (const key of /** @type {string[]} */ (user?.lists?.[list] ?? [])) {
+            const holder = await lib.entity(type, key);
+            for (const field of Object.values(STATEMENTS)) {
+                if (holder?.values.some(v => v.field === field)) records.push(...writes.delete(holder.id, field));
+            }
+        }
+    }
+    for (const id of ids) records.push({ kind: 'histEntityDelete', entity: id, ...stamp() });
+    if (records.length) await lib.store.commit(records);
+    return ids.length;
+}

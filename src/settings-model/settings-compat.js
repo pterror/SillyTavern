@@ -295,6 +295,7 @@ export function importUpstream(upstream, { bundles, newKey }) {
     const fromCapabilities = capabilitiesFromUpstream(ext, entities, newKey);
     entities.push(...fromCapabilities.connections);
     statements.capabilities = fromCapabilities.capabilities;
+    statements.sources = [...fromConnections.sources, ...fromCapabilities.connections.map(c => c.key)];
     Object.assign(ext, fromCapabilities.settings);
     statements.secrets = fromConnections.secrets;
 
@@ -308,6 +309,8 @@ export function importUpstream(upstream, { bundles, newKey }) {
 
     const servers = serverHistoryFromUpstream(at(settings, 'power_user.servers'));
     entities.push(...servers.servers);
+    // Arrays upstream keeps in an order of their own, kept: a catalog reads in key order.
+    statements.order = { serverHistory: servers.servers.map(e => e.key) };
     warnings.push(...servers.warnings);
     drop(settings, 'power_user.servers');
 
@@ -321,6 +324,7 @@ export function importUpstream(upstream, { bundles, newKey }) {
         const connectionOf = (/** @type {string} */ type) => entities.find(e => e.values.type === type)?.key;
         const profiles = profilesFromUpstream(ext.connectionManager, connectionOf);
         entities.push(...profiles.profiles);
+        statements.order.connectionProfile = profiles.profiles.map(e => e.key);
         statements.profile = profiles.selected;
         warnings.push(...profiles.warnings);
         delete ext.connectionManager;
@@ -426,6 +430,15 @@ export function importUpstream(upstream, { bundles, newKey }) {
 }
 
 /**
+ * The user's own connections (`statements.sources`); every connection when the model doesn't say.
+ * @param {UserModel} model
+ */
+export function userConnections(model) {
+    const sources = model.statements.sources ? new Set(model.statements.sources) : null;
+    return model.entities.filter(e => e.type === TYPE.connection && (!sources || sources.has(e.key)));
+}
+
+/**
  * The model laid out as upstream's settings file, for a context of only the user's level.
  * @param {UserModel} model
  * @param {{ bundles: BundleFiles, extrasApiKey?: string }} options
@@ -439,8 +452,9 @@ export function assemble(model, { bundles, extrasApiKey }) {
     const { user, entities, statements } = model;
     const byType = (/** @type {number} */ type) => entities.filter(e => e.type === type);
 
-    // Connections first: the bundles and preferences then lay over the objects they fill.
-    const connections = byType(TYPE.connection);
+    // Connections first: the bundles and preferences then lay over the objects they fill. The user's own; a preset's
+    // connection of its own isn't the user's choice for its source.
+    const connections = userConnections(model);
     const flat = connectionsToUpstream(connections, { textGeneration: statements.textGeneration, remembered: statements.remembered, extrasApiKey });
     const mainApi = flat.main_api;
     settings.main_api = flat.main_api;
@@ -507,11 +521,15 @@ export function assemble(model, { bundles, extrasApiKey }) {
     const { proxies, selected_proxy } = proxiesToUpstream(byType(TYPE.proxy), statements.proxy);
     settings.proxies = proxies;
     if (selected_proxy) settings.selected_proxy = selected_proxy;
-    const servers = byType(TYPE.serverHistory);
+    const ordered = (/** @type {number} */ type, /** @type {string[] | undefined} */ order) => {
+        const all = byType(type);
+        return order ? [...all].sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key)) : all;
+    };
+    const servers = ordered(TYPE.serverHistory, statements.order?.serverHistory);
     if (servers.length) put(settings, 'power_user.servers', serverHistoryToUpstream(servers));
     // Empty when there are none, as the page holds it.
     put(settings, 'power_user.model_templates_mappings', Object.fromEntries(byType(TYPE.modelTemplateBinding).map(b => [b.key, bindingToUpstream(b)])));
-    const profileEntities = byType(TYPE.connectionProfile);
+    const profileEntities = ordered(TYPE.connectionProfile, statements.order?.connectionProfile);
     if (profileEntities.length || statements.profile !== undefined) {
         settings.extension_settings.connectionManager = {
             profiles: profileEntities.map(p => profileToUpstream(p, key => entities.find(e => e.key === key))),

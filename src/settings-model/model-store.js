@@ -1,5 +1,5 @@
 import { POSITION_GAP, historyWrites, itemField, pushAll, valueRecords } from '../entity-values.js';
-import { NO_PLACEHOLDER, PART_LISTS, REF_LISTS, REF_VALUES, refKey } from './refs.js';
+import { NO_PLACEHOLDER, PART_LISTS, REF_ARRAYS, REF_LISTS, REF_VALUES, refKey } from './refs.js';
 
 /**
  * The settings model's entities in the engine (the settings model, step 9): an EntityDraft written as an entity
@@ -8,7 +8,7 @@ import { NO_PLACEHOLDER, PART_LISTS, REF_LISTS, REF_VALUES, refKey } from './ref
  * - A value that is text is a text value, any other JSON (`"text"` and `text` stay apart).
  * - A list of texts is text items; a list of parts (refs.js PART_LISTS) holds each part's entity as its item. An
  *   empty list, which has no items to be, is the value `list:<n>` (`[]`), so it reads back as one.
- * - A ref (refs.js REF_VALUES, REF_LISTS) is stored as the named entity's id; a name naming nothing gets a
+ * - A ref (refs.js REF_VALUES, REF_ARRAYS, REF_LISTS) is stored as the named entity's id; a name naming nothing gets a
  *   placeholder entity keyed by it (an unresolved ref, as a book link's), so it resolves once that entity exists. A
  *   placeholder has no DEFINED value, and reads as no entity.
  */
@@ -93,6 +93,9 @@ export async function writeDrafts(lib, drafts, { actor = null, warnings = [], re
     for (const [type, name] of refs) noteRef(type, name);
     for (const d of all) {
         for (const [field, type] of Object.entries(REF_VALUES[d.type] ?? {})) noteRef(type, d.values[field]);
+        for (const [field, type] of Object.entries(REF_ARRAYS[d.type] ?? {})) {
+            if (Array.isArray(d.values[field])) /** @type {unknown[]} */ (d.values[field]).forEach(item => noteRef(type, item));
+        }
         for (const [list, type] of Object.entries(REF_LISTS[d.type] ?? {})) (d.lists?.[list] ?? []).forEach(item => noteRef(type, item));
     }
     if (targets.length) {
@@ -124,7 +127,10 @@ export async function writeDrafts(lib, drafts, { actor = null, warnings = [], re
         const values = new Map([[DEFINED, { text: '' }]]);
         for (const [field, raw] of Object.entries(d.values)) {
             const refType = REF_VALUES[d.type]?.[field];
-            const value = refType !== undefined ? refText(refType, raw) : raw;
+            const arrayType = REF_ARRAYS[d.type]?.[field];
+            const value = refType !== undefined ? refText(refType, raw)
+                : arrayType !== undefined && Array.isArray(raw) ? raw.map(item => refText(arrayType, item)).filter(item => item !== undefined)
+                    : raw;
             if (value === undefined) continue;
             values.set(field, typeof value === 'string' ? { text: value } : { json: JSON.stringify(value) });
         }
@@ -194,6 +200,7 @@ function isDefined(entity) {
 async function draftOf(lib, entity) {
     const parts = PART_LISTS[entity.type] ?? {};
     const refValues = REF_VALUES[entity.type] ?? {};
+    const refArrays = REF_ARRAYS[entity.type] ?? {};
     const refLists = REF_LISTS[entity.type] ?? {};
     /** @type {Map<number, string>} */
     const itemTexts = new Map();
@@ -216,6 +223,7 @@ async function draftOf(lib, entity) {
         }
         values[String(v.field)] = value;
         if (refValues[v.field] !== undefined && typeof value === 'string' && value !== '') refIds.push(BigInt(value));
+        if (refArrays[v.field] !== undefined && Array.isArray(value)) value.forEach(id => refIds.push(BigInt(id)));
     }
     /** @type {Record<number, { item: number, position: number }[]>} */
     const byList = {};
@@ -228,6 +236,9 @@ async function draftOf(lib, entity) {
     const keyOf = await keysOf(lib, refIds);
     for (const field of Object.keys(refValues)) {
         if (typeof values[field] === 'string' && values[field] !== '') values[field] = keyOf.get(String(values[field]));
+    }
+    for (const field of Object.keys(refArrays)) {
+        if (Array.isArray(values[field])) values[field] = /** @type {string[]} */ (values[field]).map(id => keyOf.get(id)).filter(key => key !== undefined);
     }
     /** @type {Record<number, (string | EntityDraft)[]>} */
     const lists = {};
