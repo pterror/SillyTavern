@@ -1,5 +1,6 @@
 import { STATEMENT_PREFIX, TYPE } from '../library-codes.js';
 import { historyWrites } from '../entity-values.js';
+import { canonicalStringify } from '../../public/scripts/hash-utils.js';
 import { draft } from './entity-draft.js';
 import { USER_LISTS } from './refs.js';
 import { FOLLOWS_TEXT_GENERATION } from './capabilities.js';
@@ -57,6 +58,15 @@ function capabilityOf(value) {
 }
 
 /**
+ * A draft and every part under it.
+ * @param {EntityDraft} d
+ * @returns {EntityDraft[]}
+ */
+function partsAndSelf(d) {
+    return [d, ...Object.values(d.lists ?? {}).flat().filter(item => typeof item === 'object').flatMap(item => partsAndSelf(/** @type {EntityDraft} */ (item)))];
+}
+
+/**
  * The statements the model makes at each character and group, by `character:<avatar>` or `group:<id>`.
  * @param {UserModel['statements']} statements
  * @returns {Map<string, { type: number, key: string, says: HolderStatements }>}
@@ -97,6 +107,7 @@ export function userDraftOf(handle, model, holders) {
     slot('proxy', statements.proxy);
     slot('profile', statements.profile);
     slot('persona', statements.persona);
+    slot('currentPersona', statements.currentPersona);
     slot('regexPreset', statements.regexPreset);
     slot('username', statements.username);
     slot('disabledElsewhere', statements.dataBank?.disabledElsewhere);
@@ -127,11 +138,12 @@ export function userDraftOf(handle, model, holders) {
  * @param {import('../library-engine.js').LibraryEngine} lib
  * @param {string} handle
  * @param {UserModel} model
- * @param {{ actor?: import('../world-info-engine.js').Actor | null, bundles?: EntityDraft[] }} [options] `bundles`:
- *   the bundles (presets, templates, themes, quick reply sets) written with it.
+ * @param {{ actor?: import('../world-info-engine.js').Actor | null, bundles?: EntityDraft[], previous?: UserModel }} [options]
+ *   `bundles`: the bundles (presets, templates, themes, quick reply sets) written with it. `previous`: the model as
+ *   stored now, so only the entities that differ are written and those it no longer has deleted (history kept).
  * @returns {Promise<{ warnings: string[] }>}
  */
-export async function writeUserModel(lib, handle, model, { actor = null, bundles = [] } = {}) {
+export async function writeUserModel(lib, handle, model, { actor = null, bundles = [], previous } = {}) {
     /** @type {string[]} */
     const warnings = [];
     const holders = holdersOf(model.statements);
@@ -155,10 +167,18 @@ export async function writeUserModel(lib, handle, model, { actor = null, bundles
     }
     const user = userDraftOf(handle, model, holders);
     if (orphans.length) user.values['s:orphans'] = orphans;
-    await writeDrafts(lib, [...bundles, ...model.entities, user], {
+    const id = (/** @type {EntityDraft} */ d) => `${d.type}:${d.key}`;
+    const before = new Map((previous?.entities ?? []).map(d => [id(d), canonicalStringify(d)]));
+    const changed = previous ? model.entities.filter(d => before.get(id(d)) !== canonicalStringify(d)) : model.entities;
+    const kept = new Set(model.entities.map(id));
+    const gone = (previous?.entities ?? []).filter(d => !kept.has(id(d)));
+    await writeDrafts(lib, [...bundles, ...changed, user], {
         actor, warnings, refs,
         extra: async (ids, stamp) => {
             const writes = historyWrites(stamp);
+            // What the model no longer has goes, its parts with it.
+            const goneIds = await lib.store.libraryIds(gone.flatMap(partsAndSelf).map(d => [d.type, d.key]));
+            const removed = goneIds.filter(x => x !== null).map(entity => ({ kind: 'histEntityDelete', entity, ...stamp() }));
             const idOf = (/** @type {number} */ type, /** @type {string} */ key) => ids.get(`${type}:${key}`);
             const records = [];
             for (const { type, key, says } of holders.values()) {
@@ -173,16 +193,16 @@ export async function writeUserModel(lib, handle, model, { actor = null, bundles
                     [STATEMENTS.quickReplies, says.quickReplies && { items: ref(TYPE.quickReplySet, says.quickReplies.items), hidden: ref(TYPE.quickReplySet, says.quickReplies.hidden) }],
                 ];
                 for (const [field, value] of next) {
-                    const before = stored?.values.find(v => v.field === field)?.json;
+                    const was = stored?.values.find(v => v.field === field)?.json;
                     if (value === undefined) {
-                        if (before !== undefined) records.push(...writes.delete(holder, field));
+                        if (was !== undefined) records.push(...writes.delete(holder, field));
                         continue;
                     }
                     const json = JSON.stringify(value);
-                    if (json !== before) records.push(...writes.json(holder, field, json, before));
+                    if (json !== was) records.push(...writes.json(holder, field, json, was));
                 }
             }
-            return records;
+            return [...records, ...removed];
         },
     });
     return { warnings };

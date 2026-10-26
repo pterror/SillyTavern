@@ -885,17 +885,17 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
  * when it changed.
  * @param {import('express').Request} request
  * @param {{ character: string|null, group: string|null }} opened
- * @returns {{ active_character: string|null, active_group: string|null, settings_hash?: number }} The stored values;
+ * @returns {Promise<{ active_character: string|null, active_group: string|null, settings_hash?: number }>} The stored values;
  * `settings_hash` (the whole settings' hash, as /api/settings answers it) when they were written.
  */
-function recordLastOpened(request, opened) {
+async function recordLastOpened(request, opened) {
     const directories = request.user.directories;
     const current = readUserSettings(directories, ['active_character', 'active_group']);
     const stored = { active_character: opened.character, active_group: opened.group };
     if ((current.active_character ?? null) === stored.active_character && (current.active_group ?? null) === stored.active_group) {
         return stored;
     }
-    writeSettingsKeys(directories, stored);
+    await writeSettingsKeys(directories, stored);
     triggerAutoSave(request.user.profile.handle, request.user.directories);
     return { ...stored, settings_hash: getStringHash(readAllSettingsAsJson(directories)) };
 }
@@ -992,7 +992,7 @@ async function openChatAnswer(request, response, body) {
                 card_openings: null,
                 chats: (await chatListOf(chat)).map(r => r.file_id),
                 date_last_chat: stats.get(chat.tree)?.date_last_chat ?? 0,
-                ...recordLastOpened(request, { character: null, group: groupId }),
+                ...await recordLastOpened(request, { character: null, group: groupId }),
             },
         };
     }
@@ -1002,7 +1002,7 @@ async function openChatAnswer(request, response, body) {
         answer: {
             ...common,
             ...await openingsForPage(chat, avatar),
-            ...recordLastOpened(request, { character: avatar, group: null }),
+            ...await recordLastOpened(request, { character: avatar, group: null }),
         },
     };
 }

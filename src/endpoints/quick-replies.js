@@ -1,39 +1,30 @@
-import fs from 'node:fs';
-
 import express from 'express';
+import sanitize from 'sanitize-filename';
 
-import { bundleFilePath, deleteBundleFile, writeBundleFile } from '../bundle-files.js';
+import { deleteBundle, readBundle, writeBundle } from '../bundle-store.js';
 
 export const router = express.Router();
 
-router.post('/save', (request, response) => {
+router.post('/save', async (request, response) => {
     if (!request.body || !request.body.name) {
         return response.sendStatus(400);
     }
 
-    return response.sendStatus(writeBundleFile(request.user.directories, 'quickReplies', request.body.name, request.body) ? 200 : 400);
+    return response.sendStatus(await writeBundle(request.user.directories, 'quickReplies', request.body.name, request.body) ? 200 : 400);
 });
 
-router.post('/save-partial', (request, response) => {
+router.post('/save-partial', async (request, response) => {
     const { name, setProps, qrUpdates, qrDeletes, qrAdds, qrOrder } = request.body ?? {};
     if (!name) {
         return response.sendStatus(400);
     }
 
-    const filename = bundleFilePath(request.user.directories, 'quickReplies', name);
-    if (!filename) {
+    if (!sanitize(String(name))) {
         return response.sendStatus(400);
     }
 
-    // Read current state (synchronous read-modify-write, same concurrency model as settings/save-partial)
-    let current = {};
-    if (fs.existsSync(filename)) {
-        try {
-            current = JSON.parse(fs.readFileSync(filename, 'utf8'));
-        } catch {
-            return response.status(500).send({ error: 'Current QR set file is not valid JSON.' });
-        }
-    }
+    // Read current state (read-modify-write, writes to one set one after another as settings/save-partial's)
+    let current = /** @type {Record<string, any>} */ ((await readBundle(request.user.directories, 'quickReplies', name)) ?? {});
 
     // 1. Merge set-level properties (shallow, never touches qrList/name)
     if (setProps && typeof setProps === 'object' && !Array.isArray(setProps)) {
@@ -83,15 +74,15 @@ router.post('/save-partial', (request, response) => {
         current.qrList = [...ordered, ...remaining];
     }
 
-    writeBundleFile(request.user.directories, 'quickReplies', name, current);
+    await writeBundle(request.user.directories, 'quickReplies', name, current);
     return response.send({ ok: true, assignedIds });
 });
 
-router.post('/delete', (request, response) => {
+router.post('/delete', async (request, response) => {
     if (!request.body || !request.body.name) {
         return response.sendStatus(400);
     }
 
-    deleteBundleFile(request.user.directories, 'quickReplies', request.body.name);
+    await deleteBundle(request.user.directories, 'quickReplies', request.body.name);
     return response.sendStatus(200);
 });

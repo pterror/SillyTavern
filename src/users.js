@@ -726,8 +726,10 @@ export async function getUserAvatar(handle) {
             return avatar;
         }
 
-        // Fallback to reading from files if custom avatar is not set
+        // Else the user's persona: the settings, the settings model's once its document is open.
         const directory = getUserDirectories(handle);
+        const { openSettingsDocument } = await import('./settings-document.js');
+        await openSettingsDocument(directory, handle);
         const settings = readAllSettings(directory);
         const avatarFile = settings?.power_user?.default_persona || settings?.user_avatar;
         if (!avatarFile) {

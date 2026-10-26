@@ -75,6 +75,7 @@ import { init as settingsInit } from './endpoints/settings.js';
 import { redirectDeprecatedEndpoints, ServerStartup, setupPrivateEndpoints } from './server-startup.js';
 import { diskCache, dropStoppedRuns, startDroppedWatch, stopDroppedWatches } from './endpoints/characters.js';
 import { OldFormatError, assertConverted, closeUserStores, resumeStoreWork, setStoreEngine } from './user-stores.js';
+import { openSettingsDocument } from './settings-document.js';
 import { initializeLocalImportScan, disposeLocalImportScan } from './local-import-scan.js';
 import { migrateFlatSecrets } from './endpoints/secrets.js';
 import { wasBrowserRecentlyConnected } from './browser-presence.js';
@@ -528,8 +529,10 @@ async function postSetupTasks(result) {
     // Each user's characters/ is then rescanned in batches and watched for dropped PNGs; a new store's upstream
     // groups, books and chats are imported after it (src/upstream-import.js).
     resumeStoreWork(await getUserDirectoriesList(), async (store, directories) => {
-        await dropStoppedRuns(store.lib);
         const userDirectories = /** @type {import('./users.js').UserDirectoryList} */ (directories);
+        // The settings document first: the work below reads settings outside any request.
+        await openSettingsDocument(userDirectories, path.basename(userDirectories.root));
+        await dropStoppedRuns(store.lib);
         // A new store's upstream groups, books and chats go in after the characters' rescan, which their chats need.
         startDroppedWatch(userDirectories).first
             .then(() => resumeUpstreamImport(store, userDirectories))

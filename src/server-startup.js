@@ -2,6 +2,7 @@ import https from 'node:https';
 import http from 'node:http';
 import fs from 'node:fs';
 import { color, urlHostnameToIPv6, getHasIP } from './util.js';
+import { settingsDocumentMiddleware } from './settings-document.js';
 
 // Express routers
 import { router as userDataRouter } from './users.js';
@@ -146,6 +147,8 @@ export function redirectDeprecatedEndpoints(app) {
  * @param {import('express').Express} app The Express app to use
  */
 export function setupPrivateEndpoints(app) {
+    // Every route reads the settings as the user's settings document holds them.
+    app.use('/api', settingsDocumentMiddleware);
     app.use('/', userDataRouter);
     app.use('/api/users', usersPrivateRouter);
     app.use('/api/users', usersAdminRouter);

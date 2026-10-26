@@ -1,22 +1,22 @@
 import express from 'express';
 
 import { readUserSettings } from '../settings-reads.js';
-import { deleteBundleFile, writeBundleFile } from '../bundle-files.js';
+import { deleteBundle, writeBundle } from '../bundle-store.js';
 import { THEME_FIELDS } from '../../public/scripts/theme-fields.js';
 
 export const router = express.Router();
 
-router.post('/save', (request, response) => {
+router.post('/save', async (request, response) => {
     if (!request.body || !request.body.name) {
         return response.sendStatus(400);
     }
 
-    return response.sendStatus(writeBundleFile(request.user.directories, 'theme', request.body.name, request.body) ? 200 : 400);
+    return response.sendStatus(await writeBundle(request.user.directories, 'theme', request.body.name, request.body) ? 200 : 400);
 });
 
 // Composes a theme from the server's own stored power_user settings, instead of trusting a
 // client-reassembled snapshot of settings it already has.
-router.post('/save-from-settings', (request, response) => {
+router.post('/save-from-settings', async (request, response) => {
     const { name, overrides } = request.body ?? {};
     if (!name) {
         return response.sendStatus(400);
@@ -33,19 +33,19 @@ router.post('/save-from-settings', (request, response) => {
         Object.assign(theme, overrides);
     }
 
-    if (!writeBundleFile(request.user.directories, 'theme', name, theme)) {
+    if (!await writeBundle(request.user.directories, 'theme', name, theme)) {
         return response.sendStatus(400);
     }
     return response.send({ theme });
 });
 
-router.post('/delete', (request, response) => {
+router.post('/delete', async (request, response) => {
     if (!request.body || !request.body.name) {
         return response.sendStatus(400);
     }
 
     try {
-        if (!deleteBundleFile(request.user.directories, 'theme', request.body.name)) {
+        if (!await deleteBundle(request.user.directories, 'theme', request.body.name)) {
             console.error('Theme file not found:', request.body.name);
             return response.sendStatus(404);
         }

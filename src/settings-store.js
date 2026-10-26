@@ -5,13 +5,34 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import { SETTINGS_FILE } from './constants.js';
 import { getAtPath, setAtPath, settingsWithoutCharLore } from '../public/scripts/hash-utils.js';
+import { settingsDocumentOf } from './settings-documents.js';
 
 /**
  * Sharded on-disk storage for a user's settings, one file per top-level key
  * (`<user root>/settings/<key>.json`) instead of a single monolithic settings.json.
  * A JSON file can't be patched in place, so writing one key at a time requires one file per key.
  * Legacy monolithic settings.json is migrated in-place lazily on first touch (see ensureMigrated()).
+ *
+ * Once a user's settings are the settings model's (settings-document.js), every function here reads and writes the
+ * user's open settings document instead, and the files are moved aside (FILES_ASIDE): a read of a user's files then
+ * is an error, not a stale copy.
  */
+
+/** Where a user's settings files go once the settings model holds them. */
+export const FILES_ASIDE = 'settings.before-model';
+
+/**
+ * The user's open settings document, or undefined to read the files; an error when the files are moved aside
+ * and no document is open.
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
+function documentOf(directories) {
+    const document = settingsDocumentOf(directories);
+    if (!document && typeof directories?.root === 'string' && fs.existsSync(path.join(directories.root, FILES_ASIDE))) {
+        throw new Error(`the settings of ${directories.root} are the settings model's: open its settings document first`);
+    }
+    return document;
+}
 
 const SETTINGS_SUBDIR = 'settings';
 
@@ -101,6 +122,7 @@ function ensureMigrated(directories) {
 
 /** @param {import('./users.js').UserDirectoryList} directories */
 export function settingsExist(directories) {
+    if (documentOf(directories)) return true;
     return fs.existsSync(settingsDirPath(directories)) || fs.existsSync(legacySettingsPath(directories));
 }
 
@@ -109,6 +131,8 @@ export function settingsExist(directories) {
  * @param {import('./users.js').UserDirectoryList} directories
  */
 export function readAllSettings(directories) {
+    const document = documentOf(directories);
+    if (document) return structuredClone(document.settings);
     ensureMigrated(directories);
     const dir = settingsDirPath(directories);
     /** @type {Record<string, unknown>} */
@@ -138,6 +162,17 @@ export function readAllSettingsAsJson(directories) {
  * @returns {Record<string, unknown>} Map of path -> current value (undefined if absent)
  */
 export function readSettingsAtPaths(directories, dottedPaths) {
+    const document = documentOf(directories);
+    if (document) {
+        /** @type {Record<string, unknown>} */
+        const read = {};
+        for (const dottedPath of dottedPaths) {
+            const dot = dottedPath.indexOf('.');
+            const top = document.settings[dot === -1 ? dottedPath : dottedPath.slice(0, dot)];
+            setOwnProperty(read, dottedPath, structuredClone(dot === -1 ? top : getAtPath(top, dottedPath.slice(dot + 1))));
+        }
+        return read;
+    }
     ensureMigrated(directories);
     const dir = settingsDirPath(directories);
     /** @type {Map<string, unknown>} */
@@ -162,10 +197,11 @@ export function readSettingsAtPaths(directories, dottedPaths) {
  * (CHAR_LORE_PATH) is never stored: characters' links are the store's.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {Record<string, unknown>} keys Top-level keys or dotted paths to their new values.
- * @returns {string[]} The top-level key names touched.
+ * @returns {Promise<string[]>} The top-level key names touched, once written.
  */
 export function writeSettingsKeys(directories, keys) {
-    ensureMigrated(directories);
+    const document = documentOf(directories);
+    if (!document) ensureMigrated(directories);
     const dir = settingsDirPath(directories);
 
     /** @type {Map<string, Array<[string|null, unknown]>>} */
@@ -185,9 +221,10 @@ export function writeSettingsKeys(directories, keys) {
         updatesByTopKey.get(topKey).push([subPath, value]);
     }
 
+    const next = document ? structuredClone(document.settings) : null;
     for (const [topKey, updates] of updatesByTopKey) {
         const filePath = path.join(dir, `${topKey}.json`);
-        let current = readKeyFile(filePath);
+        let current = next ? next[topKey] : readKeyFile(filePath);
         for (const [subPath, value] of updates) {
             if (subPath === null) {
                 current = value;
@@ -198,10 +235,11 @@ export function writeSettingsKeys(directories, keys) {
                 setAtPath(current, subPath, value);
             }
         }
-        writeFileAtomicSync(filePath, JSON.stringify(current, null, 4), 'utf8');
+        if (next) setOwnProperty(next, topKey, current);
+        else writeFileAtomicSync(filePath, JSON.stringify(current, null, 4), 'utf8');
     }
-
-    return [...updatesByTopKey.keys()];
+    const touched = [...updatesByTopKey.keys()];
+    return document && next ? document.replace(next).then(() => touched) : Promise.resolve(touched);
 }
 
 /**
@@ -210,10 +248,11 @@ export function writeSettingsKeys(directories, keys) {
  * Upstream's `charLore` (CHAR_LORE_PATH) is never stored.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {Record<string, unknown>} object
- * @returns {Set<string>} The file names written.
+ * @returns {Promise<Set<string>>} The file names written (the keys), once written.
  */
 export function writeNamedSettings(directories, object) {
-    ensureMigrated(directories);
+    const document = documentOf(directories);
+    if (!document) ensureMigrated(directories);
     const dir = settingsDirPath(directories);
 
     const allKeys = Object.keys(object ?? {});
@@ -224,11 +263,14 @@ export function writeNamedSettings(directories, object) {
         }
     }
 
+    const next = document ? structuredClone(document.settings) : null;
     for (const key of validKeys) {
         const { value } = settingsWithoutCharLore(key, object[key]);
-        writeFileAtomicSync(path.join(dir, `${key}.json`), JSON.stringify(value, null, 4), 'utf8');
+        if (next) setOwnProperty(next, key, structuredClone(value));
+        else writeFileAtomicSync(path.join(dir, `${key}.json`), JSON.stringify(value, null, 4), 'utf8');
     }
-    return new Set(validKeys.map(k => `${k}.json`));
+    const written = new Set(validKeys.map(k => `${k}.json`));
+    return document && next ? document.replace(next).then(() => written) : Promise.resolve(written);
 }
 
 /**
@@ -236,9 +278,19 @@ export function writeNamedSettings(directories, object) {
  * file not present in `fullObject`, matching a whole-file settings.json overwrite.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {Record<string, unknown>} fullObject
+ * @returns {Promise<void>} Once written.
  */
 export function writeAllSettings(directories, fullObject) {
-    const wantedFiles = writeNamedSettings(directories, fullObject);
+    const document = documentOf(directories);
+    if (document) {
+        /** @type {Record<string, unknown>} */
+        const next = {};
+        for (const key of Object.keys(fullObject ?? {}).filter(isValidSettingsKey)) setOwnProperty(next, key, settingsWithoutCharLore(key, fullObject[key]).value);
+        return document.replace(next);
+    }
+    // Files: written before this returns (the promise only says so).
+    const wantedFiles = new Set(Object.keys(fullObject ?? {}).filter(isValidSettingsKey).map(k => `${k}.json`));
+    void writeNamedSettings(directories, fullObject);
     const dir = settingsDirPath(directories);
 
     for (const file of fs.readdirSync(dir)) {
@@ -246,6 +298,7 @@ export function writeAllSettings(directories, fullObject) {
             fs.rmSync(path.join(dir, file), { force: true });
         }
     }
+    return Promise.resolve();
 }
 
 /**
@@ -253,8 +306,12 @@ export function writeAllSettings(directories, fullObject) {
  * path would leave a stale sharded directory that ensureMigrated() treats as already-migrated,
  * defeating the reset.
  * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<void>} Once done.
  */
 export function deleteAllSettings(directories) {
+    const document = documentOf(directories);
+    if (document) return document.reset();
     fs.rmSync(settingsDirPath(directories), { recursive: true, force: true });
     fs.rmSync(legacySettingsPath(directories), { force: true });
+    return Promise.resolve();
 }

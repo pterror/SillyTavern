@@ -52,6 +52,19 @@ const CC_PRESET_KEYS = Object.freeze(Object.fromEntries(Object.entries(settingsT
     .filter(([, [, , , isConnection]]) => !isConnection)
     .map(([presetKey, [, settingKey]]) => [presetKey, settingKey])));
 
+/**
+ * An override stating the app's default (the page's own value) for a field, over a bundle that holds the field:
+ * assembled as nothing at its path, so the page's default applies.
+ */
+export const APP_DEFAULT = Object.freeze({ $default: true });
+
+/**
+ * @param {unknown} value
+ */
+export function isAppDefault(value) {
+    return Boolean(value) && typeof value === 'object' && /** @type {any} */ (value).$default === true && Object.keys(/** @type {object} */ (value)).length === 1;
+}
+
 /** Paths nothing reads: dropped on import, warned. */
 export const DEAD_PATHS = Object.freeze([
     'selected_button', 'extension_settings.note.wiAddition', 'extension_settings.quickReply',
@@ -65,7 +78,7 @@ export const DEAD_PATHS = Object.freeze([
 
 /** Paths derived from something else (the persona, the model, the session) or the device's own: not stored. */
 export const DERIVED_PATHS = Object.freeze([
-    'active_character', 'active_group', 'accountStorage', 'background.url', 'power_user.chat_template_hash',
+    'accountStorage', 'background.url', 'power_user.chat_template_hash',
     'power_user.context_size_derived', 'power_user.persona_description', 'power_user.persona_description_depth',
     'power_user.persona_description_lorebook', 'power_user.persona_description_position', 'power_user.persona_description_role',
     'world_info_settings.charLore', 'world_info_settings.world_info.charLore',
@@ -75,7 +88,7 @@ export const DERIVED_PATHS = Object.freeze([
 const ELSEWHERE = Object.freeze(['tags', 'tag_map']);
 
 /** Top-level keys that are preferences as a whole (their values as they came). */
-const TOP_PREFERENCES = Object.freeze(['firstRun', 'currentVersion', 'swipes']);
+const TOP_PREFERENCES = Object.freeze(['firstRun', 'currentVersion', 'swipes', 'active_character', 'active_group']);
 
 /**
  * @typedef {import('./entity-draft.js').EntityDraft} EntityDraft
@@ -249,23 +262,42 @@ export function importUpstream(upstream, { bundles, newKey }) {
     for (const [group, path] of selections) {
         const name = at(settings, path);
         drop(settings, path);
-        if (typeof name !== 'string' || (group === 'preset.kobold' && name === KOBOLD_NO_PRESET)) continue;
+        // KoboldAI's own settings are a choice of no preset: kept as stated (absent, the page reads a fallback).
+        if (group === 'preset.kobold' && name === KOBOLD_NO_PRESET) {
+            user.overrides[path] = name;
+            continue;
+        }
+        if (typeof name !== 'string') continue;
         user.bundles[group] = bundleRef(group, name);
         if (!bundles(group, name)) warnings.push(`${path} names ${JSON.stringify(name)}, which isn't there; kept by name`);
     }
+    /** @type {Set<string>} */
+    const seen = new Set();
     for (const [group, field, path] of fields) {
         const value = at(settings, path);
         if (value === undefined) continue;
+        seen.add(`${group}/${field}`);
         drop(settings, path);
         const ref = user.bundles[group];
         const held = ref !== undefined ? bundleFields(bundles, group, ref) : undefined;
         if (!held || !same(held[`${group}/${field}`], value)) user.overrides[`${group}/${field}`] = value;
     }
+    // A field the settings lack is the page's default, not the selected bundle's (upstream applies a bundle's values
+    // only when it's selected): stated as the app's default, over the bundle.
+    for (const [group, ref] of Object.entries(user.bundles)) {
+        for (const id of Object.keys(bundleFields(bundles, group, ref) ?? {})) {
+            if (!id.includes('/') || id === `${group}/name` || seen.has(id)) continue;
+            user.overrides[id] = APP_DEFAULT;
+        }
+    }
     const family = lengthFamily(settings.main_api);
     for (const [key, setting] of Object.entries(TEXT_PRESET_LENGTH_KEYS)) {
-        if (!Object.hasOwn(settings, setting)) continue;
         const ref = family ? user.bundles[`preset.${family}`] : undefined;
         const held = ref !== undefined ? bundles(`preset.${family}`, bundleName(`preset.${family}`, ref)) : undefined;
+        if (!Object.hasOwn(settings, setting)) {
+            if (held && Object.hasOwn(held, key)) user.overrides[setting] = APP_DEFAULT;
+            continue;
+        }
         if (!held || !same(held[key], settings[setting])) user.overrides[setting] = settings[setting];
         delete settings[setting];
     }
@@ -340,6 +372,7 @@ export function importUpstream(upstream, { bundles, newKey }) {
     });
     entities.push(...personas.personas);
     statements.persona = personas.userPersona;
+    statements.currentPersona = personas.currentPersona;
     statements.personasConnected = personas.connected;
     if (personas.username !== undefined) statements.username = personas.username;
     warnings.push(...personas.warnings);
@@ -497,17 +530,15 @@ export function assemble(model, { bundles, extrasApiKey }) {
     }
     for (const [id, path] of layoutPaths) {
         const value = resolved(id);
-        if (value !== undefined) put(settings, path, structuredClone(value));
+        if (value !== undefined && !isAppDefault(value)) put(settings, path, structuredClone(value));
     }
     for (const [group, path] of selections) {
         const ref = user.bundles[group];
         if (ref !== undefined) put(settings, path, bundleName(group, ref));
-        // KoboldAI with no preset states its own settings.
-        else if (group === 'preset.kobold') put(settings, path, KOBOLD_NO_PRESET);
     }
     for (const setting of Object.values(TEXT_PRESET_LENGTH_KEYS)) {
         const value = resolved(setting);
-        if (value !== undefined) settings[setting] = value;
+        if (value !== undefined && !isAppDefault(value)) settings[setting] = value;
     }
 
     // Preferences at their paths.
@@ -536,11 +567,11 @@ export function assemble(model, { bundles, extrasApiKey }) {
             selectedProfile: statements.profile ?? null,
         };
     }
-    const persona = personasToUpstream(byType(TYPE.persona), { userPersona: statements.persona, connected: statements.personasConnected, username: statements.username });
+    const persona = personasToUpstream(byType(TYPE.persona), { userPersona: statements.persona, currentPersona: statements.currentPersona, connected: statements.personasConnected, username: statements.username });
     put(settings, 'power_user.persona_data', persona.persona_data);
     put(settings, 'power_user.personas', persona.personas);
     put(settings, 'power_user.persona_descriptions', persona.persona_descriptions);
-    put(settings, 'power_user.default_persona', persona.default_persona);
+    if (statements.persona !== undefined) put(settings, 'power_user.default_persona', persona.default_persona);
     if (persona.user_avatar !== undefined) settings.user_avatar = persona.user_avatar;
     if (persona.username !== undefined) settings.username = persona.username;
     if (statements.regexScripts) settings.extension_settings.regex = regexScriptsToUpstream(statements.regexScripts.map(key => entities.find(e => e.key === key)));
@@ -780,10 +811,7 @@ export function applyWrites(model, writes) {
  * The two-way translation's documented losses (§2.4) at a path: why a value there may come back otherwise.
  * @type {Readonly<Record<string, string>>}
  */
-export const DOCUMENTED_LOSSES = Object.freeze({
-    // §2.4.12: the current and the default persona are one user-level persona, the default, else the current.
-    'power_user.default_persona': 'the current and the default persona are one user-level persona',
-});
+export const DOCUMENTED_LOSSES = Object.freeze({});
 
 /**
  * The leaves of upstream settings that `back` (assembled) doesn't give back as they were, less the dead, derived and
@@ -812,4 +840,15 @@ export function lostLeaves(settings, back) {
     };
     walk(settings, []);
     return lost;
+}
+
+/**
+ * The bundles upstream settings select, by group and name (KoboldAI's own settings none).
+ * @param {Record<string, any>} settings
+ * @returns {{ group: string, name: string }[]}
+ */
+export function selectedBundles(settings) {
+    return bundleLayout({}).selections
+        .map(([group, path]) => ({ group, name: at(settings, path) }))
+        .filter(({ group, name }) => typeof name === 'string' && !(group === 'preset.kobold' && name === KOBOLD_NO_PRESET));
 }

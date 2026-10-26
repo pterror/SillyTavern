@@ -46,15 +46,15 @@ test('upstream\'s two dictionaries merge into one persona each, as the page merg
     });
     assert.deepEqual(from.personas.map(p => [p.key, p.values.name]), [['a.png', 'Ann'], ['only-name.png', 'Nameless'], ['only-desc.png', 'From desc']]);
     assert.equal(from.personas[0].values.description, 'd');
-    assert.equal(from.userPersona, 'a.png');
+    assert.equal(from.currentPersona, 'a.png');
 });
 
-test('the user-level persona: the default, else the current; a different current one is warned', () => {
-    assert.equal(personasFromUpstream({ persona_data: {}, default_persona: null, user_avatar: 'u.png' }).userPersona, 'u.png');
+test('the default and the current persona are each their own', () => {
     const both = personasFromUpstream({ persona_data: {}, default_persona: 'd.png', user_avatar: 'u.png' });
-    assert.equal(both.userPersona, 'd.png');
-    assert.equal(both.warnings.length, 1);
-    assert.equal(personasToUpstream([], {}).default_persona, null);
+    assert.deepEqual([both.userPersona, both.currentPersona, both.warnings], ['d.png', 'u.png', []]);
+    const back = personasToUpstream([], both);
+    assert.deepEqual([back.default_persona, back.user_avatar], ['d.png', 'u.png']);
+    assert.equal(personasToUpstream([], { currentPersona: 'u.png' }).default_persona, null);
 });
 
 test('username is kept only when no persona has the user\'s avatar', () => {
