@@ -100,7 +100,8 @@ export function personasToUpstream(personas, statements) {
     return {
         persona_data,
         personas: Object.fromEntries(Object.entries(persona_data).map(([avatar, record]) => [avatar, record.name])),
-        persona_descriptions: Object.fromEntries(Object.entries(persona_data).map(([avatar, record]) => [avatar, without(record, ['name'])])),
+        // This fork's persona_descriptions is a view of the records, name and all (power-user.js).
+        persona_descriptions: structuredClone(persona_data),
         default_persona: user ?? null,
         user_avatar: user,
         username: userEntry ? /** @type {string} */ (userEntry.name) : statements.username,
