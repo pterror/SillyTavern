@@ -1,22 +1,13 @@
 # Builds the new page (packages/ui) and the libraries the old page imports (public/lib.js, public/live-editor-lib.js)
-# and publishes them as the release ui-<first 16 hex of their source hash> (packages/serve-ui), which the server
-# downloads, so nobody running SillyTavern builds them. A source hash that
-# already has a release is not rebuilt.
+# for a release, and publishes them as the release ui-<first 16 hex of their source hash> (packages/serve-ui), which
+# the server downloads, so nobody running a release builds them. A source hash already released isn't rebuilt.
 name: New page release
 
 on:
-  # The branches people run; a feature branch's pushes build nothing (it builds locally, with the dev dependencies).
-  push:
-    branches: [staging, release]
-    paths:
-      - 'packages/ui/**'
-      - 'packages/protocol/**'
-      - 'packages/serve-ui/**'
-      - 'public/lib.js'
-      - 'public/live-editor-lib.js'
-      - 'package-lock.json'
-      - 'scripts/build-ui.mjs'
-      - '.github/workflows/ui.yml'
+  # A published release (and a run by hand): the build for its commit, so people running that release download it.
+  # Between releases, a checkout builds the page itself (start.sh does, with the dev dependencies).
+  release:
+    types: [published]
   workflow_dispatch:
 
 # One run at a time, so a second run for the same hash sees the first one's release.
@@ -29,6 +20,10 @@ permissions:
 
 jobs:
   release:
+    # Not for the build releases themselves (this one's ui-*, the engine's engine-*).
+    if: >-
+      github.event_name != 'release' ||
+      !(startsWith(github.event.release.tag_name, 'ui-') || startsWith(github.event.release.tag_name, 'engine-'))
     runs-on: ubuntu-24.04
     permissions:
       contents: write

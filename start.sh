@@ -61,5 +61,14 @@ then
     fi
 fi
 
+# The new page's build for this checkout (packages/serve-ui): the one there, else its release's; between releases
+# it's built here, which needs the dev dependencies (installed only then).
+if ! node scripts/build-ui.mjs --ensure
+then
+    echo "Installing the tools to build the new page..."
+    npm install --no-save --no-audit --no-fund --loglevel=error --no-progress --include=dev --ignore-scripts
+    node scripts/build-ui.mjs --ensure || echo -e "\033[0;31mThe new page could not be built; SillyTavern will not start without it.\033[0m"
+fi
+
 echo "Entering SillyTavern..."
 node "server.js" "$@"

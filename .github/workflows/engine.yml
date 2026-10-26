@@ -5,9 +5,7 @@
 name: Engine release
 
 on:
-  # The branches people run; a feature branch's pushes build nothing (it builds locally, with the dev dependencies).
   push:
-    branches: [staging, release]
     paths:
       - 'engine/**'
       - '.github/workflows/engine.yml'
