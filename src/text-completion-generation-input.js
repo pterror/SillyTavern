@@ -7,6 +7,7 @@ import { extension_prompt_types, extension_prompt_roles } from './extension-prom
 import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './world-info/candidate-resolution.js';
 import { apiTokenLimits, generationMacroFacts, variablesBefore } from './macro-facts.js';
 import { storyStringWithAnchors } from '../public/scripts/story-string-anchors.js';
+import { persona_description_defaults, persona_description_positions } from '../public/scripts/constants.js';
 
 /**
  * Adapter/resolver layer between REAL on-disk state (settings.json - via settings-store.js's
@@ -621,7 +622,9 @@ export async function resolveTextCompletionGenerationInput(directories, {
         storyStringRole: context.story_string_role ?? DEFAULT_STORY_STRING_ROLE,
         sysPromptEnabled: Boolean(sysprompt.enabled ?? false),
         sysPromptContent: sysprompt.content ?? '',
-        personaDescriptionPosition: activePersona.position ?? 0,
+        personaDescriptionPosition: activePersona.position ?? persona_description_positions.IN_PROMPT,
+        personaDescriptionDepth: activePersona.depth ?? persona_description_defaults.depth,
+        personaDescriptionRole: activePersona.role ?? persona_description_defaults.role,
         stripExamples: Boolean(powerUser.strip_examples ?? false),
         isInstruct: Boolean(instruct.enabled ?? false),
         instructPreset: instruct,

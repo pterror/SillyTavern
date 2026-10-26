@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
-import { PARITY_CASES, applyChatMetadata, applyPowerUser, createLorebook } from './frontend/prompt-parity-cases.js';
+import { PARITY_CASES, applyChatMetadata, applyPersona, applyPowerUser, createLorebook } from './frontend/prompt-parity-cases.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const out = path.join(here, 'frontend', 'prompt-goldens');
@@ -25,6 +25,11 @@ try {
         const page = await browser.newPage();
         await page.goto(url);
         await page.waitForFunction(() => document.getElementById('preloader') === null, null, { timeout: 60000 });
+        // A fresh upstream asks for a language and a persona name first, and finishes starting once they're given:
+        // the defaults (English, "User"), as the parity test's server has them.
+        const welcome = page.locator('dialog[open] .popup-button-ok').first();
+        if (await welcome.waitFor({ timeout: 10000 }).then(() => true, () => false)) await welcome.click();
+        await page.waitForFunction(() => !!$._data(document.getElementById('persona_description'), 'events'), null, { timeout: 60000 });
         // A text completion backend's prompt (llama.cpp's), as the parity test connects to.
         await page.evaluate(() => {
             $('#main_api').val('textgenerationwebui').trigger('change');
@@ -53,6 +58,7 @@ try {
             }, step);
         }
         if (parityCase.chatMetadata) await page.evaluate(applyChatMetadata, parityCase.chatMetadata);
+        if (parityCase.persona) await page.evaluate(applyPersona, parityCase.persona);
         const prompt = await page.evaluate(async (type) => {
             // @ts-ignore
             const { eventSource, eventTypes } = SillyTavern.getContext();

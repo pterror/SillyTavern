@@ -51,7 +51,7 @@ import {
     findPersona,
     escapeHtml,
 } from './utils.js';
-import { debounce_timeout } from './constants.js';
+import { debounce_timeout, persona_description_defaults, persona_description_positions } from './constants.js';
 import { FILTER_TYPES, FilterHelper } from './filters.js';
 import { groupsStore, selected_group } from './group-chats.js';
 import { groups } from './group-store.js';
@@ -85,24 +85,14 @@ import { slashCommandReturnHelper } from './slash-commands/SlashCommandReturnHel
  * @property {boolean} locked.character - Whether the persona is locked to the currently open character or group
  */
 
-export const persona_description_positions = {
-    IN_PROMPT: 0,
-    /**
-     * @deprecated Use persona_description_positions.IN_PROMPT instead.
-     */
-    AFTER_CHAR: 1,
-    TOP_AN: 2,
-    BOTTOM_AN: 3,
-    AT_DEPTH: 4,
-    NONE: 9,
-};
+export { persona_description_positions };
 
 const USER_AVATAR_PATH = 'User Avatars/';
 
 let savePersonasPage = 0;
 const GRID_STORAGE_KEY = 'Personas_GridView';
-export const DEFAULT_DEPTH = 2;
-export const DEFAULT_ROLE = 0;
+export const DEFAULT_DEPTH = persona_description_defaults.depth;
+export const DEFAULT_ROLE = persona_description_defaults.role;
 
 /** @type {string} The currently selected persona (identified by its avatar) */
 export let user_avatar = '';
