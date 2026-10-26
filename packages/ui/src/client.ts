@@ -98,7 +98,9 @@ export function createClient({ headers }: ClientOptions): Client {
         return response.json().catch(() => ({ ok: false, error: `The server answered ${response.status}.` }));
     };
 
-    const open = async (key: string) => apply((await post('view.open', { key })).views);
+    const open = async (key: string) => {
+        apply((await post('view.open', { key })).views);
+    };
 
     return {
         async send(type, payload, file) {

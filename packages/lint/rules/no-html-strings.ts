@@ -18,11 +18,11 @@ const rule: CreateRule = {
         return {
             AssignmentExpression(node) {
                 const name = propertyName(node.left);
-                if (name && WRITE_PROPERTIES.has(name)) context.report({ node, messageId: 'html' });
+                if (name !== undefined && WRITE_PROPERTIES.has(name)) context.report({ node, messageId: 'html' });
             },
             CallExpression(node) {
                 const name = propertyName(node.callee);
-                if (name && WRITE_METHODS.has(name)) context.report({ node, messageId: 'html' });
+                if (name !== undefined && WRITE_METHODS.has(name)) context.report({ node, messageId: 'html' });
             },
         };
     },

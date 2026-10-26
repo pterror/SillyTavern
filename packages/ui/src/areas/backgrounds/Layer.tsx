@@ -17,7 +17,7 @@ export function BackgroundLayer(props: { element: HTMLElement }) {
     });
     createEffect(() => {
         const fitting = view()?.options.fitting;
-        if (fitting) for (const each of FITTINGS) props.element.classList.toggle(each, each === fitting);
+        if (fitting !== undefined) for (const each of FITTINGS) props.element.classList.toggle(each, each === fitting);
     });
     return null;
 }

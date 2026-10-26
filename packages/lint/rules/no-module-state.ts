@@ -13,8 +13,8 @@ const rule: CreateRule = {
                 if (node.kind === 'const' || node.kind === 'using' || node.kind === 'await using') return;
                 const parent = node.parent;
                 const atTop =
-                    parent?.type === 'Program' ||
-                    (parent?.type === 'ExportNamedDeclaration' && parent.parent?.type === 'Program');
+                    parent.type === 'Program' ||
+                    (parent.type === 'ExportNamedDeclaration' && parent.parent.type === 'Program');
                 if (atTop) context.report({ node, messageId: 'state' });
             },
         };

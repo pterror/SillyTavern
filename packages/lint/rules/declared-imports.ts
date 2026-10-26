@@ -54,7 +54,10 @@ const rule: CreateRule = {
         function check(source: ESTree.Expression | null) {
             if (source?.type !== 'Literal' || typeof source.value !== 'string') return;
             const specifier = source.value;
-            if (!owner) return context.report({ node: source, messageId: 'noPackage' });
+            if (!owner) {
+                context.report({ node: source, messageId: 'noPackage' });
+                return;
+            }
             if (specifier.startsWith('node:')) return;
             if (specifier.startsWith('.') || specifier.startsWith('/')) {
                 const target = specifier.startsWith('/') ? specifier : path.resolve(path.dirname(file), specifier);
