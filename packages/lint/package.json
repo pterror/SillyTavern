@@ -1,0 +1,10 @@
+{
+    "name": "@st/lint",
+    "private": true,
+    "type": "module",
+    "exports": "./index.ts",
+    "devDependencies": {
+        "@types/node": "22.20.1",
+        "vite-plus": "1.1.0"
+    }
+}
