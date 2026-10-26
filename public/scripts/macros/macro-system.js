@@ -6,7 +6,8 @@ import { chevrotain, moment, seedrandom, droll } from '../../lib.js';
 import { timestampToMoment } from '../utils.js';
 import { initMacroEngine, registerBuiltinMacros } from './macro-engine-init.js';
 import { MacroCstWalker } from './engine/MacroCstWalker.js';
-import { MacroEnvBuilder } from './engine/MacroEnvBuilder.js';
+import { MacroEnvBuilder, pageMacroFacts } from './engine/MacroEnvBuilder.js';
+import { setPageMacroFacts } from '../macro-values.js';
 import { setMacroRegistry } from '../macro-pill.js';
 import { refreshMacroColors, setMacroList } from '../macro-colors.js';
 
@@ -61,4 +62,5 @@ MacroRegistry.onChange(refreshMacroColors);
 
 export function initRegisterMacros() {
     registerBuiltinMacros();
+    setPageMacroFacts(pageMacroFacts);
 }

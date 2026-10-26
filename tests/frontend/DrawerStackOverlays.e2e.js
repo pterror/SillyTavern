@@ -104,7 +104,7 @@ test.describe('stacked drawers', () => {
             const textarea = document.createElement('textarea');
             host.append(textarea);
             document.body.append(host);
-            const editor = await mountLiveEditor(textarea, { formatting: false, macros: { evaluate: () => null } });
+            const editor = await mountLiveEditor(textarea, { formatting: false, macros: { values: { get: () => null, wantMacros: async () => false, refresh: async () => false } } });
             editor.view.focus();
             window['__stackTestEditor'] = editor;
         });

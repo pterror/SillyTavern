@@ -3,14 +3,15 @@
 // before the textarea is removed. The chat box keeps its editor once it has one.
 
 import { showdown } from '../lib.js';
-import { evaluateSafeMacro } from './safe-macros.js';
+import { MacroValues } from './macro-values.js';
+import { macrosIn } from './safe-macros.js';
 import { getFocusedField, loadLiveEditor, mountLiveEditor } from './live-editor/registry.js';
 import { drawerStackChanged } from './drawer-stack.js';
 
 /**
  * @typedef {object} ChatEditorDeps
  * @property {(mes: string, chName: string, isSystem: boolean, isUser: boolean, messageId: number, sanitizerOverrides?: object, isReasoning?: boolean) => string} messageFormatting
- * @property {(content: string, options?: object) => string} substituteParams
+ * @property {() => import('./macro-values.js').MacroScope} macroScope Whose macros the chat's are: the open chat's.
  * @property {{ encode_tags?: boolean }} power_user
  * @property {(file: File) => Promise<string>} uploadImage
  * @property {() => string} userName The user's name, as a message they send renders with it.
@@ -51,11 +52,13 @@ function chatEditorOptions(chatDeps, target) {
     const messageIdNow = () => (typeof target.messageId === 'function' ? target.messageId() : target.messageId);
     const isReasoning = Boolean(target.isReasoning);
     const isChatBox = Boolean(target.isChatBox);
-    const { messageFormatting, substituteParams, power_user, uploadImage, macroPerson } = chatDeps;
+    const { messageFormatting, power_user, uploadImage, macroPerson } = chatDeps;
     // messageFormatting fills in macros only on the first message of a character (not reasoning); a reasoning edit
     // fills them in when it's saved, and the chat box's text when it's sent. Elsewhere the text renders with its
     // macros as written.
     const fillsMacros = () => isReasoning || isChatBox || (Number(messageIdNow()) === 0 && !isSystem && !isUser);
+    // {{char}} is the speaker only where a character speaks.
+    const values = new MacroValues(() => (isUser ? chatDeps.macroScope() : { ...chatDeps.macroScope(), name2: nameNow() }));
     return {
         render: text => messageFormatting(text, nameNow(), isSystem, isUser, messageIdNow(), {}, isReasoning),
         grammar: {
@@ -68,9 +71,13 @@ function chatEditorOptions(chatDeps, target) {
         contentClass: isReasoning || isChatBox ? '' : 'mes_text',
         // Without chat's text class, the editor's own classes give its quotes chat's look.
         editorClass: isChatBox ? 'live-chat-text' : isReasoning ? 'live-chat-text live-reasoning-text' : '',
-        // {{char}} is the speaker only where a character speaks.
+        // Only where the text's macros are filled in; elsewhere they're shown as written.
         macros: {
-            evaluate: text => (fillsMacros() ? evaluateSafeMacro(text, substituteParams, isUser ? {} : { name2Override: nameNow() }) : null),
+            values: {
+                get: source => (fillsMacros() ? values.get(source) : null),
+                wantMacros: sources => (fillsMacros() ? values.wantMacros(sources) : Promise.resolve(false)),
+                refresh: () => (fillsMacros() ? values.refresh() : Promise.resolve(false)),
+            },
             person: macroName => macroPerson(macroName, isUser ? '' : nameNow()),
         },
         formatting: { uploadImage },
@@ -91,7 +98,14 @@ export async function mountChatEditor(textarea, target) {
     // Nothing may cover the chat while a message is being edited.
     drawerStackChanged();
     try {
-        const editor = await mountLiveEditor(textarea, chatEditorOptions(deps, target));
+        const options = chatEditorOptions(deps, target);
+        // The editor opens with its macros' values, so nothing moves once it's shown.
+        await options.macros.values.wantMacros(macrosIn(textarea.value));
+        if (holder.ended || !textarea.isConnected) {
+            editors.delete(textarea);
+            return;
+        }
+        const editor = await mountLiveEditor(textarea, options);
         if (holder.ended || !textarea.isConnected) {
             editor.destroy();
             editors.delete(textarea);

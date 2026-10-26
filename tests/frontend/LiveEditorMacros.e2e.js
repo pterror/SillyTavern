@@ -10,8 +10,9 @@ async function mountWithMacros(page, value, { person = false } = {}) {
     await page.evaluate(async ({ value, person }) => {
         const registry = await import('/scripts/live-editor/registry.js');
         const { renderMarkdown } = await import('/scripts/marked-processor.js');
-        const { substituteParams } = await import('/script.js');
-        const { evaluateSafeMacro } = await import('/scripts/safe-macros.js');
+        const { MacroValues } = await import('/scripts/macro-values.js');
+        const values = new MacroValues(() => ({ name2: 'Testchar' }));
+        await values.want(value);
         const host = document.createElement('div');
         host.id = 'liveEditorTestHost';
         host.style.cssText = 'position:fixed;top:60px;left:60px;width:500px;z-index:100000;background:#000;color:#fff';
@@ -23,7 +24,7 @@ async function mountWithMacros(page, value, { person = false } = {}) {
         const editor = await registry.mountLiveEditor(textarea, {
             render: renderMarkdown,
             macros: {
-                evaluate: (/** @type {string} */ text) => evaluateSafeMacro(text, substituteParams, { name2Override: 'Testchar' }),
+                values,
                 person: person ? (/** @type {string} */ name) => ({ name: `Person ${name}`, avatarUrl: '/img/ai4.png', about: `About ${name}.` }) : undefined,
             },
         });
@@ -125,9 +126,11 @@ test.describe('live editor macros', () => {
         await mountWithMacros(page, 'In the editor {{char}} and {{random::x::y}}.', { person: true });
         await page.evaluate(async () => {
             const { insertMacroPills } = await import('/scripts/macro-pill.js');
-            const { substituteSafeMacros } = await import('/scripts/safe-macros.js');
-            const { substituteParams } = await import('/script.js');
-            const { text, macros } = substituteSafeMacros('Rendered {{char}} and {{random::x::y}}.', substituteParams, { name2Override: 'Testchar' });
+            const { withMacroPlaceholders } = await import('/scripts/safe-macros.js');
+            const { macroValuesOf } = await import('/scripts/macro-values.js');
+            const source = 'Rendered {{char}} and {{random::x::y}}.';
+            const values = await macroValuesOf(source, { name2: 'Testchar' });
+            const { text, macros } = withMacroPlaceholders(source, values.valueOf);
             const preview = document.createElement('div');
             preview.id = 'renderedPillTest';
             // Clipped by what holds it, as a drawer clips its preview: the tooltip isn't.
@@ -246,11 +249,12 @@ test.describe('live editor macros', () => {
         expect(Math.min(apart, 360 - apart)).toBeGreaterThan(90);
         // A preview draws the same pills, so they have the same colors.
         const preview = await page.evaluate(async () => {
-            const { substituteSafeMacros } = await import('/scripts/safe-macros.js');
+            const { withMacroPlaceholders } = await import('/scripts/safe-macros.js');
+            const { macroValuesOf } = await import('/scripts/macro-values.js');
             const { insertMacroPills } = await import('/scripts/macro-pill.js');
             const { t } = await import('/scripts/i18n.js');
-            const { substituteParams } = await import('/script.js');
-            const { text, macros } = substituteSafeMacros('{{user}} {{description}} {{time}} {{getvar::x}} {{random::a::b}}', substituteParams);
+            const source = '{{user}} {{description}} {{time}} {{getvar::x}} {{random::a::b}}';
+            const { text, macros } = withMacroPlaceholders(source, (await macroValuesOf(source, {})).valueOf);
             const holder = document.createElement('div');
             holder.className = 'macro_preview_content';
             holder.innerHTML = insertMacroPills(text, macros, t);

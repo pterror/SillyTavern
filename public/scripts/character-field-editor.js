@@ -2,7 +2,8 @@ import { DOMPurify, showdown } from '../lib.js';
 import { renderMarkdownLiteralTags } from './marked-processor.js';
 import { refreshCharInfoTabDimming } from './char-info-tab-dimming.js';
 import { keepViewState, openEditorLayer } from './editor-layer.js';
-import { evaluateSafeMacro, substituteSafeMacros } from './safe-macros.js';
+import { withMacroPlaceholders } from './safe-macros.js';
+import { MacroValues } from './macro-values.js';
 import { insertMacroPills } from './macro-pill.js';
 import { EDITOR_ESCAPE_TAKERS, isEditorEvent, isUserEvent, mountLiveEditor } from './live-editor/registry.js';
 import { renderedOffset, sourcePosition } from './live-editor/positions.js';
@@ -13,11 +14,13 @@ import { drawerStackChanged } from './drawer-stack.js';
 
 /**
  * @typedef {object} CharacterFieldEditorDeps
- * @property {(content: string, options: object) => string} substituteParams
+ * @property {() => import('./macro-values.js').MacroScope} macroScope Whose macros the fields' are: the character in
+ * the editor's, in the open chat.
  * @property {(mes: string, chName: string, isSystem: boolean, isUser: boolean, messageId: number) => string} messageFormatting
- * @property {(text: string, styleScope?: string) => string} formatCreatorNotes Renders Creator's Notes for the character
- * loaded in the editor, as upstream does (markdown with the card's HTML, sanitized); `styleScope` is the selector of the
- * element it's shown in, which the card's `<style>` rules are kept to (Creator's Notes' own preview when left out).
+ * @property {(text: string, valueOf: import('./safe-macros.js').MacroValueOf, styleScope?: string) => string} formatCreatorNotes
+ * Renders Creator's Notes for the character loaded in the editor, as upstream does (markdown with the card's HTML,
+ * sanitized), each macro shown with its value; `styleScope` is the selector of the element it's shown in, which the
+ * card's `<style>` rules are kept to (Creator's Notes' own preview when left out).
  * @property {{ auto_save_msg_edits: boolean, click_to_edit: boolean }} power_user
  * @property {(strings: TemplateStringsArray, ...values: any[]) => string} t
  * @property {(macroName: string) => import('./macro-pill.js').MacroPerson | null} macroPerson Who a mention names in
@@ -43,32 +46,43 @@ import { drawerStackChanged } from './drawer-stack.js';
 /** @type {CharacterFieldEditorDeps} */
 let deps = null;
 
-/** @param {string} text @returns {string} */
-function renderLiteralTagsPreview(text) {
-    const { text: substituted, macros } = substituteSafeMacros(text, deps.substituteParams);
-    const html = DOMPurify.sanitize(renderMarkdownLiteralTags(substituted));
+/**
+ * @param {string} text
+ * @param {import('./safe-macros.js').MacroValueOf} valueOf
+ * @returns {string}
+ */
+function renderLiteralTagsPreview(text, valueOf) {
+    const { text: placeheld, macros } = withMacroPlaceholders(text, valueOf);
+    const html = DOMPurify.sanitize(renderMarkdownLiteralTags(placeheld));
     return insertMacroPills(html, macros, deps.t, deps.macroPerson);
 }
 
-/** @param {string} text @returns {string} */
-function renderGreetingPreview(text) {
-    const name = String($('#character_name_pole').val() ?? '');
-    const { text: substituted, macros } = substituteSafeMacros(text, deps.substituteParams, { name2Override: name });
-    const html = deps.messageFormatting(substituted, name, false, false, 0);
+/** The name typed for the character, which its greeting is shown under. */
+const typedName = () => String($('#character_name_pole').val() ?? '');
+
+/**
+ * @param {string} text
+ * @param {import('./safe-macros.js').MacroValueOf} valueOf
+ * @returns {string}
+ */
+function renderGreetingPreview(text, valueOf) {
+    const name = typedName();
+    const { text: placeheld, macros } = withMacroPlaceholders(text, valueOf);
+    const html = deps.messageFormatting(placeheld, name, false, false, 0);
     return insertMacroPills(html, macros, deps.t, deps.macroPerson);
 }
 
 /**
  * @typedef {object} EditableField
  * @property {() => (value: string) => Promise<boolean>} save
- * @property {(text: string) => string} render
+ * @property {(text: string, valueOf: import('./safe-macros.js').MacroValueOf) => string} render
  */
 
 /** @type {Record<string, EditableField>} Keyed by textarea id. */
 const FIELDS = {
-    creator_notes_textarea: { save: () => deps.saveCreatorNotesField, render: text => deps.formatCreatorNotes(text) },
+    creator_notes_textarea: { save: () => deps.saveCreatorNotesField, render: (text, valueOf) => deps.formatCreatorNotes(text, valueOf) },
     // The description shows the card's HTML, rendered as upstream renders card text (Creator's Notes).
-    description_textarea: { save: () => deps.saveDescriptionField, render: text => deps.formatCreatorNotes(text, '#description_preview') },
+    description_textarea: { save: () => deps.saveDescriptionField, render: (text, valueOf) => deps.formatCreatorNotes(text, valueOf, '#description_preview') },
     greeting_field: { save: () => deps.saveGreetingField, render: renderGreetingPreview },
     system_prompt_textarea: { save: () => deps.saveSystemPromptField, render: renderLiteralTagsPreview },
     post_history_instructions_textarea: { save: () => deps.savePostHistoryInstructionsField, render: renderLiteralTagsPreview },
@@ -160,10 +174,26 @@ export function setFieldValue(id, value) {
 }
 
 /**
- * Re-renders a field's preview from its textarea; an empty field shows the textarea's placeholder.
+ * Whose macros a field's are: a greeting's {{char}} is the name typed.
  * @param {string} id Textarea id.
+ * @returns {import('./macro-values.js').MacroScope}
  */
-function refreshFieldPreview(id) {
+function macroScopeOf(id) {
+    const scope = deps.macroScope();
+    return id === GREETING_FIELD_ID ? { ...scope, name2: typedName() } : scope;
+}
+
+/** @type {Map<string, number>} The last render asked of each field's preview, so an older one never lands after it. */
+const previewRenders = new Map();
+let previewRenderCount = 0;
+
+/**
+ * Re-renders a field's preview from its textarea, once its macros' values are in (it changes once, to the new text);
+ * an empty field shows the textarea's placeholder.
+ * @param {string} id Textarea id.
+ * @param {MacroValues} [values] The values to render with; those it doesn't have are asked for. A new set by default.
+ */
+function refreshFieldPreview(id, values = new MacroValues(() => macroScopeOf(id))) {
     refreshCharInfoTabDimming();
     const field = FIELDS[id];
     const preview = getPreview(id);
@@ -171,13 +201,18 @@ function refreshFieldPreview(id) {
         return;
     }
     const text = String(getTextarea(id).val() ?? '');
-    const isEmpty = text === '';
-    preview.toggleClass('field_preview_empty', isEmpty);
-    if (isEmpty) {
+    const render = ++previewRenderCount;
+    previewRenders.set(id, render);
+    if (text === '') {
+        preview.addClass('field_preview_empty');
         preview.text(String(getTextarea(id).attr('placeholder') ?? ''));
-    } else {
-        preview.html(field.render(text));
+        return;
     }
+    void values.want(text).then(() => {
+        if (previewRenders.get(id) !== render) return;
+        preview.removeClass('field_preview_empty');
+        preview.html(field.render(text, values.valueOf));
+    });
 }
 
 /**
@@ -243,7 +278,10 @@ export function beginEdit(id, at = 0) {
     void mountFieldEditor(id);
 }
 
-/** @type {{ id: string, editor: import('./live-editor/mount.js').LiveEditor | null, ended: boolean } | null} The editor on the field in edit mode. */
+/**
+ * The editor on the field in edit mode, and its macros' values, which its preview renders with once the edit ends.
+ * @type {{ id: string, editor: import('./live-editor/mount.js').LiveEditor | null, ended: boolean, values: MacroValues } | null}
+ */
 let liveEditor = null;
 
 /** Classes of a field's preview that style its text (not its box), so the editor's text is styled the same. */
@@ -254,23 +292,26 @@ const PREVIEW_TEXT_CLASSES = new Set(['mes_text', 'creator_notes_preview_content
  * @param {string} id
  */
 async function mountFieldEditor(id) {
-    const holder = { id, editor: null, ended: false };
+    const values = new MacroValues(() => macroScopeOf(id));
+    const holder = { id, editor: null, ended: false, values };
     liveEditor = holder;
     const textarea = getTextarea(id)[0];
     const preview = getPreview(id)[0];
     const isGreeting = id === GREETING_FIELD_ID;
-    const characterName = () => String($('#character_name_pole').val() ?? '');
     try {
+        // The editor opens with its macros' values, so nothing moves once it's shown.
+        await values.want(textarea.value);
+        if (holder.ended) return;
         const editor = await mountLiveEditor(textarea, {
-            render: FIELDS[id].render,
+            render: text => FIELDS[id].render(text, values.valueOf),
             grammar: { emojis: showdown.helper.emojis, dialogueQuotes: isGreeting },
             contentClass: [...(preview?.classList ?? [])].filter(c => PREVIEW_TEXT_CLASSES.has(c)).join(' '),
             macros: {
-                evaluate: text => evaluateSafeMacro(text, deps.substituteParams, isGreeting ? { name2Override: characterName() } : {}),
+                values,
                 person: macroName => deps.macroPerson(macroName),
             },
             formatting: { uploadImage: deps.uploadImage },
-            search: { context: () => ({ characterName: characterName() }) },
+            search: { context: () => ({ characterName: typedName() }) },
         });
         if (holder.ended) {
             editor.destroy();
@@ -295,12 +336,14 @@ function unmountFieldEditor() {
 
 function endEdit() {
     const { id } = activeEdit;
+    const values = liveEditor?.id === id ? liveEditor.values : undefined;
     unmountFieldEditor();
     activeEdit = null;
     getPanel(id).removeClass('field_editing');
     drawerStackChanged();
     deps.onEditEnd?.(id);
-    refreshFieldPreview(id);
+    // With the editor's values: the preview is drawn at once with what the editor showed.
+    refreshFieldPreview(id, values);
 }
 
 function cancelAutoSave() {

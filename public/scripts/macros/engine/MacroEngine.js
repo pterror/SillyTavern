@@ -3,6 +3,7 @@ import { MacroCstWalker } from './MacroCstWalker.js';
 import { MacroRegistry, MacroValueType } from './MacroRegistry.js';
 import { logMacroGeneralError, logMacroInternalError, logMacroRuntimeWarning, logMacroSyntaxWarning } from './MacroDiagnostics.js';
 import { ELSE_MARKER } from './MacroConstants.js';
+import { TRIM_MACRO } from '../../safe-macros.js';
 
 /** @typedef {import('./MacroCstWalker.js').MacroCall} MacroCall */
 /** @typedef {import('./MacroEnv.types.js').MacroEnv} MacroEnv */
@@ -293,7 +294,7 @@ class MacroEngine {
 
         // {{trim}} reaches outside its own macro boundaries, which the engine can't support, so it's handled via regex instead.
         this.addPostProcessor(
-            text => text.replace(/(?:\r?\n)*{{trim}}(?:\r?\n)*/gi, ''),
+            text => text.replace(TRIM_MACRO, ''),
             { priority: 20, source: 'core:legacy-trim' },
         );
 

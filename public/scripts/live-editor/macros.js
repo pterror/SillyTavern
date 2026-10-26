@@ -15,16 +15,32 @@ const { Decoration, ViewPlugin, WidgetType, EditorView, keymap } = cmView;
 const { autocompletion } = cmAutocomplete;
 
 /**
+ * @typedef {object} MacroValueSource Where the editor's macros' values come from (macro-values.js MacroValues).
+ * @property {(source: string) => string | null | undefined} get A macro's value: null when it only runs when sent
+ * (side effects or randomness); undefined while it isn't known.
+ * @property {(sources: string[]) => Promise<boolean>} wantMacros Asks for those not known; whether one was learned.
+ * @property {() => Promise<boolean>} refresh Asks for the known ones again; whether one changed.
+ */
+
+/**
  * @typedef {object} MacroOptions
- * @property {(macroText: string) => string | null} evaluate A macro's value, or null when it only runs when sent
- * (side effects or randomness), so it stays as written.
+ * @property {MacroValueSource} values The macros' values. One not known yet is shown as written until it is.
  * @property {(macroName: string) => import('../macro-pill.js').MacroPerson | null} [person] Who a mention
  * ({{user}}, {{char}}) names here, for its card.
  */
 
+/** @type {MacroValueSource} */
+const NO_VALUES = { get: () => null, wantMacros: async () => false, refresh: async () => false };
+
 const macroOptions = Facet.define({
-    combine: values => values[0] ?? { evaluate: () => null },
+    combine: values => values[0] ?? { values: NO_VALUES },
 });
+
+/** Some macros' values were learned, or changed: the pills are drawn again. */
+const valuesLearned = StateEffect.define();
+
+/** How long after the last change the known values are asked for again, for those that change over time. */
+const REFRESH_DELAY = 2000;
 
 /**
  * A macro's name, from its text: flags before it (`{{!user}}`, `{{#if …}}`) are skipped; the comment macro is `//`.
@@ -44,12 +60,7 @@ function macroNameOf(macroText) {
  */
 function shownMacro(state, source) {
     const name = macroNameOf(source);
-    let value = null;
-    try {
-        value = state.facet(macroOptions).evaluate(source);
-    } catch (error) {
-        console.warn('Macro could not be filled in', source, error);
-    }
+    const value = state.facet(macroOptions).values.get(source) ?? null;
     return { source, name, category: name ? macroCategory(name) : undefined, value };
 }
 
@@ -146,8 +157,8 @@ class MacroPillWidget extends WidgetType {
 }
 
 /**
- * A macro shown as written, in its color: every macro while the source is shown; the macro opened for editing, with
- * its tooltip (the source shown says it all otherwise).
+ * A macro shown as written, in its color: every macro while the source is shown; one whose value isn't known yet; the
+ * macro opened for editing, with its tooltip (the source shown says it all otherwise).
  * @param {import('@codemirror/state').EditorState} state
  * @param {string} macroText
  * @param {boolean} opened
@@ -176,21 +187,44 @@ const pillGlue = Decoration.mark({ class: 'macro-pill-glue' });
 const macroPills = ViewPlugin.fromClass(class {
     /** @param {import('@codemirror/view').EditorView} view */
     constructor(view) {
+        this.view = view;
+        /** @type {ReturnType<typeof setTimeout> | null} */
+        this.refreshTimer = null;
         this.build(view);
     }
 
     /** @param {import('@codemirror/view').ViewUpdate} update */
     update(update) {
+        const learned = update.transactions.some(tr => tr.effects.some(effect => effect.is(valuesLearned)));
         // While an IME composes, the pills only move with the text; they're worked out again when it ends.
         if (update.view.composing) {
             this.pills = this.pills.map(update.changes);
             this.marks = this.marks.map(update.changes);
             this.decorations = this.decorations.map(update.changes);
-        } else if (update.docChanged || update.viewportChanged
+        } else if (learned || update.docChanged || update.viewportChanged
             || update.startState.field(openedMacro) !== update.state.field(openedMacro)
             || update.startState.field(showingSource) !== update.state.field(showingSource)) {
             this.build(update.view);
         }
+        if (update.docChanged) this.refreshLater();
+    }
+
+    /** Asks for the known values again once the typing stops ({{time}} moves on, a variable is set elsewhere). */
+    refreshLater() {
+        if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
+        this.refreshTimer = setTimeout(() => {
+            this.refreshTimer = null;
+            void this.view.state.facet(macroOptions).values.refresh().then(changed => this.redraw(changed));
+        }, REFRESH_DELAY);
+    }
+
+    /** @param {boolean} changed Whether a value was learned or changed. */
+    redraw(changed) {
+        if (changed && this.view.dom.isConnected) this.view.dispatch({ effects: valuesLearned.of(null) });
+    }
+
+    destroy() {
+        if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
     }
 
     /** @param {import('@codemirror/view').EditorView} view */
@@ -202,6 +236,9 @@ const macroPills = ViewPlugin.fromClass(class {
         const pills = [];
         /** @type {import('@codemirror/state').Range<import('@codemirror/view').Decoration>[]} */
         const marks = [];
+        const { values } = state.facet(macroOptions);
+        /** @type {string[]} Macros whose values aren't known yet: shown as written until they are. */
+        const unknown = [];
         // Whole lines, so a macro is never cut by the edge of what's shown.
         for (const visible of view.visibleRanges) {
             const unit = { from: state.doc.lineAt(visible.from).from, to: state.doc.lineAt(visible.to).to };
@@ -211,8 +248,10 @@ const macroPills = ViewPlugin.fromClass(class {
                 const from = unit.from + span.start;
                 const to = unit.from + span.end;
                 const text = state.doc.sliceString(from, to);
-                if (asWritten || (opened && opened.from <= from && to <= opened.to)) {
-                    marks.push(sourceMark(state, text, !asWritten).range(from, to));
+                const isOpened = Boolean(opened && opened.from <= from && to <= opened.to);
+                if ((isOpened || !asWritten) && values.get(text) === undefined) unknown.push(text);
+                if (asWritten || isOpened || values.get(text) === undefined) {
+                    marks.push(sourceMark(state, text, isOpened && !asWritten).range(from, to));
                 } else {
                     const shown = shownMacro(state, text);
                     pills.push(Decoration.replace({ widget: new MacroPillWidget(shown, personOf(state, shown)) }).range(from, to));
@@ -224,6 +263,7 @@ const macroPills = ViewPlugin.fromClass(class {
         this.pills = Decoration.set(pills, true);
         this.marks = Decoration.set(marks, true);
         this.decorations = Decoration.set([...pills, ...marks], true);
+        if (unknown.length > 0) void values.wantMacros(unknown).then(learned => this.redraw(learned));
     }
 }, {
     decorations: plugin => plugin.decorations,
@@ -357,7 +397,7 @@ async function macroCompletions(context) {
     }
     const result = await getMacroAutoCompleteAt(text, pos, { isForced: context.explicit });
     if (!result || context.aborted) return null;
-    const { evaluate } = context.state.facet(macroOptions);
+    const { values } = context.state.facet(macroOptions);
     const name = result.name ?? '';
     const from = result.start;
     const to = Math.max(pos, from + name.length);
@@ -367,19 +407,16 @@ async function macroCompletions(context) {
             label: option.name,
             detail: option.type || undefined,
             boost: -index,
-            info: () => {
+            info: async () => {
+                const source = `{{${option.name}}}`;
+                await values.wantMacros([source]);
+                const value = values.get(source) ?? null;
                 const box = document.createElement('div');
                 box.className = 'live-macro-info';
                 const details = option.renderDetails?.();
                 if (details) box.append(details);
                 const valueLine = document.createElement('div');
                 valueLine.className = 'live-macro-value';
-                let value = null;
-                try {
-                    value = evaluate(`{{${option.name}}}`);
-                } catch {
-                    value = null;
-                }
                 valueLine.textContent = value === null ? t`Runs when sent` : t`Now: ${value}`;
                 box.append(valueLine);
                 return box;

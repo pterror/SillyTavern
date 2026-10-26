@@ -85,8 +85,8 @@ function formatMesExamples(raw, user, char) {
  * @returns {import('../../../../src/macro-facts.js').PageMacroFacts}
  */
 export function pageMacroFacts() {
-    const { chatId, input, firstDisplayedMessageId, isMobile, utcOffset, extensions } = pageState();
-    return { chatId, input, firstDisplayedMessageId, isMobile, utcOffset, extensions };
+    const { chatId, input, firstDisplayedMessageId, isMobile, utcOffset, extensions, lastGenerationType } = pageState();
+    return { chatId, input, firstDisplayedMessageId, isMobile, utcOffset, extensions, lastGenerationType };
 }
 
 /**

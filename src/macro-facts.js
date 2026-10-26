@@ -14,6 +14,7 @@ import { recordStored } from './stored-messages.js';
  * @property {number|null} [firstDisplayedMessageId] The first message shown.
  * @property {boolean} [isMobile]
  * @property {number} [utcOffset] The user's offset from UTC in minutes.
+ * @property {string} [lastGenerationType] The type of the generation the page last started ('' for none).
  * @property {{ names: string[], disabled: string[] }} [extensions] The extensions there are, and those turned off.
  */
 
@@ -33,6 +34,7 @@ export function readPageMacroFacts(body) {
         ...(typeof facts.input === 'string' ? { input: facts.input } : {}),
         ...(typeof facts.firstDisplayedMessageId === 'number' ? { firstDisplayedMessageId: facts.firstDisplayedMessageId } : {}),
         ...(typeof facts.isMobile === 'boolean' ? { isMobile: facts.isMobile } : {}),
+        ...(typeof facts.lastGenerationType === 'string' ? { lastGenerationType: facts.lastGenerationType } : {}),
         ...(Number.isFinite(facts.utcOffset) && Math.abs(facts.utcOffset) <= 16 * 60 ? { utcOffset: facts.utcOffset } : {}),
         ...(isNameList(facts.extensions?.names) && isNameList(facts.extensions?.disabled) ? { extensions: { names: facts.extensions.names, disabled: facts.extensions.disabled } } : {}),
     };
@@ -44,12 +46,14 @@ export function readPageMacroFacts(body) {
  * @param {Record<string, any>} params.extensionSettings The user's extension_settings (the global variables).
  * @param {string} params.mainApi
  * @param {string} [params.type] The generation's type.
+ * @param {string} [params.lastGenerationType] {{lastGenerationType}}, for macros filled in outside a generation;
+ * a generation's is its own type.
  * @param {number} params.maxContext The context size.
  * @param {number} params.maxResponse The reply length.
  * @param {PageMacroFacts} [params.pageFacts]
  * @returns {import('./macro-substitution.js').SubstituteParamsContext}
  */
-export function generationMacroFacts({ powerUser, extensionSettings, mainApi, type, maxContext, maxResponse, pageFacts = {} }) {
+export function generationMacroFacts({ powerUser, extensionSettings, mainApi, type, lastGenerationType, maxContext, maxResponse, pageFacts = {} }) {
     extensionSettings.variables ??= {};
     extensionSettings.variables.global ??= {};
     return {
@@ -60,7 +64,7 @@ export function generationMacroFacts({ powerUser, extensionSettings, mainApi, ty
         maxResponseTokens: maxResponse,
         maxPromptTokens: maxContext - maxResponse,
         // The page's GENERATION_STARTED: this generation's own type.
-        lastGenerationType: type || 'normal',
+        lastGenerationType: lastGenerationType ?? (type || 'normal'),
         instruct: powerUser.instruct,
         sysprompt: powerUser.sysprompt,
         contextTemplate: powerUser.context,
@@ -71,6 +75,19 @@ export function generationMacroFacts({ powerUser, extensionSettings, mainApi, ty
         utcOffset: pageFacts.utcOffset,
         extensions: pageFacts.extensions,
     };
+}
+
+/**
+ * The context size and the reply length the macros give ({{maxContext}}, {{maxResponse}}), as the page reads them for
+ * the API it generates with.
+ * @param {{ max_context?: number, amount_gen?: number, oai_settings?: Record<string, any> }} settings
+ * @param {string} mainApi
+ * @returns {{ maxContext: number, maxResponse: number }}
+ */
+export function apiTokenLimits({ max_context, amount_gen, oai_settings }, mainApi) {
+    return mainApi === 'openai'
+        ? { maxContext: oai_settings?.openai_max_context ?? 4095, maxResponse: oai_settings?.openai_max_tokens ?? 300 }
+        : { maxContext: max_context ?? 8192, maxResponse: amount_gen ?? 0 };
 }
 
 /**

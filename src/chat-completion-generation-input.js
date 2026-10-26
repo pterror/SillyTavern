@@ -1,5 +1,5 @@
 import { readSettingsAtPaths } from './settings-store.js';
-import { variablesBefore, generationMacroFacts } from './macro-facts.js';
+import { apiTokenLimits, generationMacroFacts, variablesBefore } from './macro-facts.js';
 import { loadChatHistory } from './chat-request.js';
 import { readExtraBooks } from './endpoints/characters.js';
 import { resolveSpeakers } from './macro-scope.js';
@@ -803,7 +803,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
 
     const macroFacts = generationMacroFacts({
         powerUser, extensionSettings, mainApi: 'openai', type, pageFacts,
-        maxContext: oaiSettings.openai_max_context ?? 4095, maxResponse: oaiSettings.openai_max_tokens ?? 300,
+        ...apiTokenLimits({ oai_settings: oaiSettings }, 'openai'),
     });
     const fields = await getCharacterCardFields(directories, {
         avatar,

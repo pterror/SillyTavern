@@ -11,6 +11,7 @@ import { router as imagesRouter } from './endpoints/images.js';
 import { router as quickRepliesRouter } from './endpoints/quick-replies.js';
 import { router as editorPresetsRouter } from './endpoints/editor-presets.js';
 import { router as itemizedPromptsRouter } from './endpoints/itemized-prompts.js';
+import { router as macrosRouter } from './endpoints/macros.js';
 import { router as avatarsRouter } from './endpoints/avatars.js';
 import { router as themesRouter } from './endpoints/themes.js';
 import { router as openAiRouter } from './endpoints/openai.js';
@@ -152,6 +153,7 @@ export function setupPrivateEndpoints(app) {
     app.use('/api/quick-replies', quickRepliesRouter);
     app.use('/api/editor-presets', editorPresetsRouter);
     app.use('/api/itemized-prompts', itemizedPromptsRouter);
+    app.use('/api/macros', macrosRouter);
     app.use('/api/avatars', avatarsRouter);
     app.use('/api/themes', themesRouter);
     app.use('/api/openai', openAiRouter);
