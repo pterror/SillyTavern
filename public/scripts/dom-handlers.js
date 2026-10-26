@@ -39,7 +39,8 @@ function handleInputWheel() {
 
     document.addEventListener('wheel', (e) => {
         const input = document.activeElement instanceof HTMLInputElement ? document.activeElement : null;
-        if (input && input.type === 'number' && input.hasAttribute('step')) {
+        // The new page's settings fields step themselves (packages/ui/src/areas/settings/fields.tsx).
+        if (input && input.type === 'number' && input.hasAttribute('step') && !input.closest('[data-field]')) {
             const parent = input.closest('.range-block-range-and-counter') ?? input.closest('div') ?? input.parentElement;
             const slider = /** @type {HTMLInputElement} */ (parent?.querySelector('input[type="range"]'));
 

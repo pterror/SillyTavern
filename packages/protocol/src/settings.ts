@@ -37,7 +37,18 @@ export type Field = {
     api?: string[];
     /** Its range follows the context or response limits (raised when the user unlocks them). */
     limits?: 'context' | 'response';
+    /** Lab mode (power_user.enableLabMode) takes its range's limits away. */
+    lab?: true;
 };
+
+/** A field's range in lab mode. */
+export const LAB_RANGE = { min: -99999, max: 99999, step: 0.001 } as const;
+
+/**
+ * The families the new page shows: their fields are the server's (only the actions below write them), and the old
+ * page's controls for them are gone. A family joins when its old controls go.
+ */
+export const SERVER_FAMILIES: readonly Field['family'][] = ['cc'];
 
 /** The context and response limits, by whether the user unlocked them (power_user.max_context_unlocked). */
 export const LIMITS = {
@@ -52,7 +63,7 @@ export const LIMITS = {
 export type Range = { min: number | undefined; max: number | undefined; step: number | undefined };
 
 export function rangeOf(field: Field, unlocked: boolean): Range {
-    if (!field.limits) return { min: field.min, max: field.max, step: field.step };
+    if (field.limits === undefined) return { min: field.min, max: field.max, step: field.step };
     const limit = LIMITS[field.limits][unlocked ? 'unlocked' : 'locked'];
     if (field.limits === 'context' && field.id !== 'max_context')
         return { min: field.min, max: limit.max, step: field.step };
@@ -511,6 +522,7 @@ export const FIELDS: readonly Field[] = [
         min: 1,
         max: 50,
         step: 1,
+        lab: true,
         family: 'cc',
         sources: [
             'openai',
@@ -589,9 +601,9 @@ export const FIELDS: readonly Field[] = [
         kind: 'select',
         label: 'Inline Image Quality',
         options: [
-            { value: 'auto', label: 'openai_inline_image_quality_auto' },
-            { value: 'low', label: 'openai_inline_image_quality_low' },
-            { value: 'high', label: 'openai_inline_image_quality_high' },
+            { value: 'auto', label: 'Auto' },
+            { value: 'low', label: 'Low' },
+            { value: 'high', label: 'High' },
         ],
         family: 'cc',
         sources: [
@@ -693,12 +705,12 @@ export const FIELDS: readonly Field[] = [
         kind: 'select',
         label: 'Reasoning Effort',
         options: [
-            { value: 'auto', label: 'openai_reasoning_effort_auto' },
-            { value: 'min', label: 'openai_reasoning_effort_minimum' },
-            { value: 'low', label: 'openai_reasoning_effort_low' },
-            { value: 'medium', label: 'openai_reasoning_effort_medium' },
-            { value: 'high', label: 'openai_reasoning_effort_high' },
-            { value: 'max', label: 'openai_reasoning_effort_maximum' },
+            { value: 'auto', label: 'Auto' },
+            { value: 'min', label: 'Minimum' },
+            { value: 'low', label: 'Low' },
+            { value: 'medium', label: 'Medium' },
+            { value: 'high', label: 'High' },
+            { value: 'max', label: 'Maximum' },
         ],
         family: 'cc',
         sources: [
@@ -727,10 +739,10 @@ export const FIELDS: readonly Field[] = [
         kind: 'select',
         label: 'Verbosity',
         options: [
-            { value: 'auto', label: 'openai_verbosity_auto' },
-            { value: 'low', label: 'openai_verbosity_low' },
-            { value: 'medium', label: 'openai_verbosity_medium' },
-            { value: 'high', label: 'openai_verbosity_high' },
+            { value: 'auto', label: 'Auto' },
+            { value: 'low', label: 'Low' },
+            { value: 'medium', label: 'Medium' },
+            { value: 'high', label: 'High' },
         ],
         family: 'cc',
         sources: ['openai', 'custom', 'openrouter', 'claude'],
@@ -1579,7 +1591,7 @@ export type SettingsView = {
     sources: Record<string, Exclude<Level, 'default'>>;
     /** How many fields each level sets in this chat, whatever the range (a level the range leaves out shows it). */
     counts: Partial<Record<Level, number>>;
-    /** The range now of each field whose range follows the unlock, by its id. */
+    /** The range now of each field whose range isn't its declaration's (limits, the model, lab mode), by its id. */
     ranges: Record<string, Range>;
     /** What decides which fields are shown: the API, chat completion's source, text generation's backend. */
     api: { main: string; source: string; textgen: string };
@@ -1590,6 +1602,8 @@ export const actions = {
     'settings.set': v.object({ path: v.string(), value: v.unknown() }),
     /** Takes a field's value away at the range's top level: what's under it shows again. */
     'settings.unset': v.object({ path: v.string() }),
+    /** Sets a field to its default (the default level's value) at the range's top level. */
+    'settings.reset': v.object({ path: v.string() }),
     /** Which levels the tab shows and edits. */
     'settings.range': v.object({ from: v.picklist(LEVELS), to: v.picklist(LEVELS) }),
 } satisfies ActionSchemas;

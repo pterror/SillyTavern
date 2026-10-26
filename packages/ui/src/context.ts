@@ -4,8 +4,8 @@ import type { Client } from './client.ts';
 /** What every surface of the new page works with: the client, and the user's language. */
 export type Ui = {
     client: Client;
-    /** The text in the user's language (the old page's translations, keyed by the English text). */
-    t: (text: string) => string;
+    /** The text in the user's language: the old page's translation under `key`, or under the English text. */
+    t: (text: string, key?: string) => string;
 };
 
 const UiContext = createContext<Ui>();

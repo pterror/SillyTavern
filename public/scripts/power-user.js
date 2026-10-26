@@ -723,7 +723,7 @@ async function switchLabMode({ noReset = false } = {}) {
 
     if (power_user.enableLabMode) {
         //save all original slider values into an array
-        $('#advanced-ai-config-block input').each(function () {
+        $('#advanced-ai-config-block input').not('[data-field] input').each(function () {
             let id = $(this).attr('id');
             let min = $(this).attr('min');
             let max = $(this).attr('max');
@@ -732,7 +732,7 @@ async function switchLabMode({ noReset = false } = {}) {
         });
         //console.log(originalSliderValues)
         //remove limits on all inputs and hide sliders
-        $('#advanced-ai-config-block input')
+        $('#advanced-ai-config-block input').not('[data-field] input')
             .attr('min', '-99999')
             .attr('max', '99999')
             .attr('step', '0.001');

@@ -1,0 +1,85 @@
+/* The AI response configuration panel's new-page parts (packages/ui/src/areas/settings). */
+
+/* Where a run of fields is mounted: no box of its own, so the fields lay out as the old markup's did. */
+.settings_mount {
+    display: contents;
+}
+
+/* A value a chat's level sets (a group's or a character's): marked at the block's edge, without moving anything. */
+[data-settings-level="group"],
+[data-settings-level="character"] {
+    box-shadow: inset 3px 0 0 var(--SmartThemeQuoteColor);
+}
+
+/* A range above the defaults where nothing sets the field: what's shown is what lies under it. */
+[data-settings-level="unset"] {
+    opacity: 0.5;
+}
+
+.settings_refusal {
+    color: var(--warning, #e8a33d);
+}
+
+.settings_unset {
+    background: none;
+    border: none;
+    color: inherit;
+    opacity: 0.6;
+    cursor: pointer;
+    padding: 0 4px;
+}
+
+.settings_unset:hover {
+    opacity: 1;
+}
+
+.settings_level_range {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-bottom: 5px;
+}
+
+.settings_level_track {
+    position: relative;
+    height: 1.2em;
+}
+
+.settings_level_track input[type="range"] {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    pointer-events: none;
+    background: transparent;
+}
+
+.settings_level_track input[type="range"]::-webkit-slider-thumb {
+    pointer-events: auto;
+}
+
+.settings_level_track input[type="range"]::-moz-range-thumb {
+    pointer-events: auto;
+}
+
+.settings_level_labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: calc(var(--mainFontSize) * 0.85);
+}
+
+.settings_level_label {
+    opacity: 0.5;
+}
+
+.settings_level_label.settings_level_in_range {
+    opacity: 1;
+}
+
+.settings_level_label.settings_level_absent {
+    text-decoration: line-through;
+}
+
+.settings_level_count {
+    margin-left: 3px;
+    opacity: 0.7;
+}

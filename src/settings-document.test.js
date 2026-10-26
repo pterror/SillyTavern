@@ -223,3 +223,24 @@ test('a value past what the model allows reads as its limit, from the model list
     // Kept on disk: a restart reads the same.
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(directories.root, 'model-lists', 'mistralai.json'), 'utf8')), [{ id: 'm', max_context_length: 20000 }]);
 });
+
+test('a write that selects another preset takes its values of the fields the server owns, as the old page wrote them with the selection', async () => {
+    const { settingsDocumentOf } = await import('./settings-documents.js');
+    const { pageWrite } = await import('./settings-hash.js');
+    const directories = seedUser('selects');
+    await openSettingsDocument(directories, 'selects');
+    const document = settingsDocumentOf(directories);
+    await writeBundle(directories, 'preset.openai', 'Cool', { temperature: 0.4 });
+    await document.writeAt({}, { from: 'default', to: 'user' }, 'oai_settings.temp_openai', 0.6);
+    assert.equal(document.settings.oai_settings.temp_openai, 0.6);
+    // The page's save of the selection: what the server owns is kept as the server has it.
+    const over = settingsStore.readAllSettings(directories);
+    const sent = pageWrite('oai_settings', { ...over.oai_settings, preset_settings_openai: 'Cool' }, over);
+    await settingsStore.writeSettingsKeys(directories, { oai_settings: sent?.value });
+    assert.equal(document.settings.oai_settings.preset_settings_openai, 'Cool');
+    assert.equal(document.settings.oai_settings.temp_openai, 0.4);
+    // A write that keeps the selection keeps the user's own value.
+    await document.writeAt({}, { from: 'default', to: 'user' }, 'oai_settings.temp_openai', 0.7);
+    await settingsStore.writeSettingsKeys(directories, { oai_settings: settingsStore.readAllSettings(directories).oai_settings });
+    assert.equal(document.settings.oai_settings.temp_openai, 0.7);
+});

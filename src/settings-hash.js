@@ -1,18 +1,11 @@
-import { FIELDS } from '@st/protocol/settings';
+import { FIELDS, SERVER_FAMILIES } from '@st/protocol/settings';
 import { getAtPath, getStringHash, setAtPath } from '../public/scripts/hash-utils.js';
 
 /**
- * The AI response configuration panel's families whose fields the new page shows: their fields are the server's, and
- * only settings.set writes them. A family joins when its old controls go.
- * @type {ReadonlySet<string>}
+ * Settings the server owns now (the new page's), as dotted paths: the background, and the fields of the panel families
+ * the new page shows (SERVER_FAMILIES). The old page neither saves them nor counts them in its hash.
  */
-const SWITCHED_FAMILIES = new Set([]);
-
-/**
- * Settings the server owns now (the new page's), as dotted paths: the background, and the switched families' fields
- * (packages/protocol/src/settings.ts). The old page neither saves them nor counts them in its hash.
- */
-export const SERVER_OWNED_PATHS = ['background', ...FIELDS.filter(field => SWITCHED_FAMILIES.has(field.family)).map(field => field.path)];
+export const SERVER_OWNED_PATHS = ['background', ...FIELDS.filter(field => SERVER_FAMILIES.includes(field.family)).map(field => field.path)];
 
 /**
  * Takes a path away from settings (nothing when it isn't there).
@@ -74,7 +67,16 @@ export function withServerOwned(saved, current) {
  * @param {Record<string, unknown>} settings
  */
 export function pageSettingsHash(settings) {
+    return getStringHash(JSON.stringify(pageSettings(settings), null, 4));
+}
+
+/**
+ * Settings as the page knows them: without what the server owns. Every hash the page checks a save against (the
+ * whole settings' and each key's) is of these.
+ * @param {Record<string, unknown>} settings
+ */
+export function pageSettings(settings) {
     const page = structuredClone(settings);
     for (const owned of SERVER_OWNED_PATHS) deleteAtPath(page, owned);
-    return getStringHash(JSON.stringify(page, null, 4));
+    return page;
 }

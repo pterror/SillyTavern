@@ -881,16 +881,12 @@ label[for="trim_spaces"]:not(:has(input:checked)) small {
 }
 
 #claude_function_prefill_warning {
-    display: none;
-    color: red;
-    font-weight: bold;
-}
-
-#openai_settings:has(#openai_function_calling:checked):has(#claude_assistant_prefill:not(:placeholder-shown), #claude_assistant_impersonation:not(:placeholder-shown)) #claude_function_prefill_warning {
     display: flex;
     align-items: center;
     gap: 5px;
     margin: 10px 0;
+    color: red;
+    font-weight: bold;
 }
 
 #mistralai_other_models:empty {

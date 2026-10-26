@@ -108,6 +108,7 @@ import {
     loadProxyPresets,
     selected_proxy,
     initOpenAI,
+    bindChatCompletionSettings,
 } from './scripts/chat-completion-settings.js';
 
 import {
@@ -230,7 +231,7 @@ import {
     getPersonaDescriptionDepth,
     getPersonaDescriptionRole,
 } from './scripts/personas.js';
-import { startNewUi, takeViews, chatClosed } from './scripts/new-ui.js';
+import { startNewUi, takeViews, chatClosed, newUi } from './scripts/new-ui.js';
 import { loader } from './scripts/action-loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
@@ -1521,6 +1522,7 @@ async function firstLoadInit() {
             return typeof avatar === 'string' && avatar !== '' && chat.length > 0 ? { avatar } : null;
         },
     });
+    bindChatCompletionSettings(newUi().settings);
     await initTokenizers();
     initAuthorsNote();
     await initPersonas();
@@ -15136,20 +15138,22 @@ jQuery(async function () {
 
     var isManualInput = false;
     var valueBeforeManualInput;
+    // The new page's settings fields handle their own counters (packages/ui/src/areas/settings/fields.tsx).
+    const counterInputs = '.range-block-counter input:not([data-field] input), .neo-range-input';
 
-    $(document).on('input', '.range-block-counter input, .neo-range-input', function () {
+    $(document).on('input', counterInputs, function () {
         valueBeforeManualInput = $(this).val();
         console.log(valueBeforeManualInput);
     });
 
-    $(document).on('change', '.range-block-counter input, .neo-range-input', function (e) {
+    $(document).on('change', counterInputs, function (e) {
         if (!(e.target instanceof HTMLElement)) {
             return;
         }
         e.target.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
     });
 
-    $(document).on('keydown', '.range-block-counter input, .neo-range-input', function (e) {
+    $(document).on('keydown', counterInputs, function (e) {
         const masterSelector = '#' + $(this).data('for');
         const masterElement = $(masterSelector);
         if (e.key === 'Enter') {
@@ -15172,13 +15176,13 @@ jQuery(async function () {
         }
     });
 
-    $(document).on('keyup', '.range-block-counter input, .neo-range-input', function () {
+    $(document).on('keyup', counterInputs, function () {
         valueBeforeManualInput = $(this).val();
         isManualInput = true;
     });
 
     //trigger slider changes when user clicks away
-    $(document).on('mouseup blur', '.range-block-counter input, .neo-range-input', function () {
+    $(document).on('mouseup blur', counterInputs, function () {
         const masterSelector = '#' + $(this).data('for');
         const masterElement = $(masterSelector);
         let manualInput = Number($(this).val());
