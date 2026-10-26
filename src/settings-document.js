@@ -7,7 +7,9 @@ import { userStore } from './user-stores.js';
 import { TYPE } from './library-codes.js';
 import { SECRET_KEYS, readSecret, writeSecret } from './endpoints/secrets.js';
 import { BUNDLE_FOLDERS, bundleFilesOf, bundleFolder, listBundleFiles } from './bundle-files.js';
-import { assemble, importUpstream, selectedBundles } from './settings-model/settings-compat.js';
+import { assemble, bundleRef, importUpstream, selectedBundles, unitOfPath } from './settings-model/settings-compat.js';
+import { getAtPath, setAtPath } from '../public/scripts/hash-utils.js';
+import { writeBundle } from './bundle-store.js';
 import { bundleDraftOf, bundleDraftsFromFiles, bundleEntityOf, bundleFileFromStore, statedBundleFiles } from './settings-model/bundle-import.js';
 import { readDraft, writeDrafts } from './settings-model/model-store.js';
 import { readUserModel, writeUserModel } from './settings-model/user-store.js';
@@ -28,6 +30,26 @@ import { serverDirectory } from './server-directory.js';
 
 /** @type {Map<string, Promise<void>>} */
 const opening = new Map();
+
+/**
+ * The levels a context's settings are shown and edited over, farthest first (the settings model §1.1, closest
+ * first there): the app's default, the user's preset, the user's own, a group, the speaking character.
+ */
+export const LEVEL_POSITIONS = Object.freeze(['default', 'preset', 'user', 'group', 'character']);
+
+/** Every level. */
+const FULL_RANGE = Object.freeze({ from: 'default', to: 'character' });
+
+/**
+ * The levels from `range.from` to `range.to`.
+ * @param {{ from: string, to: string }} range
+ */
+function levelsIn(range) {
+    const from = LEVEL_POSITIONS.indexOf(range.from);
+    const to = LEVEL_POSITIONS.indexOf(range.to);
+    if (from === -1 || to === -1 || from > to) throw new Error(`no level range ${range.from}..${range.to}`);
+    return LEVEL_POSITIONS.slice(from, to + 1);
+}
 
 /**
  * @param {import('./users.js').UserDirectoryList} directories
@@ -168,25 +190,111 @@ async function open(directories, handle) {
     const allBundles = (group, name) => userBundles(group, name) ?? levelBundles.get(`${group}\u0000${name}`);
     await loadLevelBundles();
 
+    /** @type {Record<string, string> | null} */
+    let userSourcesMemo = null;
+    const userSources = () => (userSourcesMemo ??= assemble(current, { bundles: userBundles, extrasApiKey: extrasKey() }).sources);
+
+    /**
+     * A save made while the page shows a context's settings over a range of levels: each change the save makes to
+     * what was shown is the range's top level's (a bundle's field or selection), or the user's (anything else).
+     * @param {{ avatar?: string | null, groupId?: string | null }} context
+     * @param {{ from: string, to: string }} range
+     * @param {Record<string, any>} saved
+     */
+    const saveInContext = async (context, range, saved) => {
+        const shown = document.view(context, range).settings;
+        /** @type {Map<string, ReturnType<typeof unitOfPath>>} */
+        const units = new Map();
+        const walk = (/** @type {unknown} */ before, /** @type {unknown} */ after, /** @type {string[]} */ keys) => {
+            if (JSON.stringify(before) === JSON.stringify(after)) return;
+            const isObject = (/** @type {unknown} */ v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+            const unit = keys.length ? unitOfPath(keys) : null;
+            if (unit && unit.kind !== 'container' && 'path' in unit && keys.join('.') === unit.path) {
+                units.set(unit.path, unit);
+                return;
+            }
+            if (unit && unit.kind !== 'container' && (!isObject(before) || !isObject(after))) {
+                units.set(keys.join('.'), unit);
+                return;
+            }
+            for (const key of new Set([...Object.keys(isObject(before) ? before : {}), ...Object.keys(isObject(after) ? after : {})])) {
+                walk(isObject(before) ? before[key] : undefined, isObject(after) ? after[key] : undefined, [...keys, key]);
+            }
+        };
+        walk(shown, saved, []);
+        const top = levelsIn(range).at(-1);
+        const holder = top === 'character' && context.avatar ? `character:${context.avatar}` : top === 'group' && context.groupId ? `group:${context.groupId}` : null;
+        /** @type {{ bundles: Record<string, string | null>, set: Record<string, unknown>, delete: string[] }} */
+        const level = { bundles: {}, set: {}, delete: [] };
+        /** @type {Map<string, Record<string, unknown>>} Changes to the user's presets, by group. */
+        const presets = new Map();
+        const user = structuredClone(document.settings);
+        let userChanged = false;
+        for (const [path, unit] of units) {
+            const value = getAtPath(saved, path);
+            const bundled = unit.kind === 'selection' || (unit.kind === 'field' && unit.field.includes('/'));
+            if (bundled && holder) {
+                if (unit.kind === 'selection') level.bundles[unit.group] = typeof value === 'string' && value ? bundleRef(unit.group, value) : null;
+                else if (value === undefined) level.delete.push(unit.field);
+                else level.set[unit.field] = value;
+            } else if (bundled && top === 'preset' && unit.kind === 'field') {
+                const group = unit.field.slice(0, unit.field.indexOf('/'));
+                if (!presets.has(group)) presets.set(group, {});
+                presets.get(group)[unit.field.slice(unit.field.indexOf('/') + 1)] = value;
+            } else {
+                setAtPath(user, path, structuredClone(value));
+                userChanged = true;
+            }
+        }
+        if (holder && (Object.keys(level.bundles).length || Object.keys(level.set).length || level.delete.length)) await document.writeLevel(holder, level);
+        for (const [group, changes] of presets) {
+            const ref = current.user.bundles[group];
+            if (ref === undefined) continue;
+            const name = group === 'theme' ? ref : ref.slice(ref.indexOf(':') + 1);
+            const file = (await bundleFileFromStore(lib, group, name, userConnections(current))) ?? {};
+            await writeBundle(directories, group, name, { ...file, ...changes });
+            userBundles = await statedBundleFiles(lib, current);
+            userSourcesMemo = null;
+            contexts.clear();
+        }
+        if (userChanged) await document.replace(user);
+    };
+
     let writing = Promise.resolve();
     let latest = 0;
     /** @type {import('./settings-documents.js').OpenSettingsDocument} */
     const document = {
         settings: assemble(current, { bundles: userBundles, extrasApiKey: extrasKey() }).settings,
         settingsFor(context) {
-            const levels = [context.avatar && `character:${context.avatar}`, context.groupId && `group:${context.groupId}`]
-                .filter(Boolean)
-                .map(key => current.statements.levels?.[/** @type {string} */ (key)])
-                .filter(Boolean)
-                .map(level => ({ level: /** @type {'character'} */ ('character'), ...level }));
-            if (levels.length === 0) return document.settings;
-            const key = `${context.avatar ?? ''}\u0000${context.groupId ?? ''}`;
+            return document.view(context).settings;
+        },
+        view(context, range = FULL_RANGE) {
+            const shown = new Set(levelsIn(range));
+            const closer = /** @type {[string, 'character' | 'group'][]} */ ([
+                [context.avatar ? `character:${context.avatar}` : '', 'character'],
+                [context.groupId ? `group:${context.groupId}` : '', 'group'],
+            ])
+                .filter(([key, name]) => key && shown.has(name) && current.statements.levels?.[key])
+                .map(([key, name]) => ({ level: /** @type {'character'} */ ('character'), name, ...current.statements.levels?.[key] }));
+            const whole = shown.has('preset') && shown.has('user');
+            if (closer.length === 0 && whole) return { settings: document.settings, sources: userSources() };
+            const key = `${context.avatar ?? ''}\u0000${context.groupId ?? ''}\u0000${range.from}\u0000${range.to}`;
             let found = contexts.get(key);
             if (!found) {
-                found = assemble(current, { bundles: allBundles, extrasApiKey: extrasKey(), levels }).settings;
+                // The user's level as far as the range goes: its preset (bundles), its own (overrides), or both.
+                const user = {
+                    level: /** @type {'user'} */ ('user'),
+                    bundles: shown.has('preset') ? current.user.bundles : {},
+                    overrides: shown.has('user') ? current.user.overrides : {},
+                };
+                const assembled = assemble({ ...current, user }, { bundles: allBundles, extrasApiKey: extrasKey(), levels: closer });
+                found = { settings: assembled.settings, sources: assembled.sources };
                 contexts.set(key, found);
             }
             return found;
+        },
+        saveIn(context, range, saved) {
+            return saveInContext(context, range, saved);
         },
         writeLevel(holder, change) {
             const run = writing.then(async () => {
@@ -205,6 +313,7 @@ async function open(directories, handle) {
                 const written = await writeUserModel(lib, handle, nextModel, { previous: current });
                 for (const warning of written.warnings) console.warn(`[settings] ${handle}: ${warning}`);
                 current = nextModel;
+                userSourcesMemo = null;
                 await loadLevelBundles();
             });
             writing = run.catch(() => {});
@@ -232,6 +341,7 @@ async function open(directories, handle) {
                 // What was written is the model now: the store isn't read back.
                 current = { ...nextModel, elsewhere: {} };
                 userBundles = bundles;
+                userSourcesMemo = null;
                 contexts.clear();
                 // The settings as the model gives them, unless a later write is showing its own already.
                 if (mine === latest) document.settings = assemble(current, { bundles, extrasApiKey: extrasKey() }).settings;

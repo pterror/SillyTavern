@@ -155,3 +155,45 @@ test('a character\'s own preset and override: its context reads them, the user\'
     await settingsDocumentOf(directories).writeLevel('character:Cara.png', { bundles: { 'preset.openai': null }, delete: ['preset.openai/top_p'] });
     assert.deepEqual(read({ avatar: 'Cara.png' }), read({}));
 });
+
+test('a save in a context goes to the range\'s top level: the character\'s, the user\'s, or the preset itself; a preference is the user\'s', async () => {
+    const { userStore } = await import('./user-stores.js');
+    const { settingsDocumentOf } = await import('./settings-documents.js');
+    const directories = seedUser('ranges');
+    await openSettingsDocument(directories, 'ranges');
+    const { lib } = await userStore(directories, 'ranges');
+    const card = name => JSON.stringify({ name, description: '', personality: '', scenario: '', first_mes: 'Hi.', mes_example: '', spec: 'chara_card_v2', spec_version: '2.0', data: { name, description: '', personality: '', scenario: '', first_mes: 'Hi.', mes_example: '', creator_notes: '', system_prompt: '', post_history_instructions: '', alternate_greetings: [], tags: [], creator: '', character_version: '', extensions: {} } });
+    await lib.writeCard({}, 'Cara.png', card('Cara'));
+    const document = settingsDocumentOf(directories);
+    const cara = { avatar: 'Cara.png' };
+    const all = { from: 'default', to: 'character' };
+    const edit = (/** @type {any} */ range, /** @type {(s: any) => void} */ change) => {
+        const saved = structuredClone(document.view(cara, range).settings);
+        change(saved);
+        return document.saveIn(cara, range, saved);
+    };
+
+    // Top: the character. The temperature and a preference change.
+    await edit(all, s => {
+        s.oai_settings.temp_openai = 1.3;
+        s.power_user.auto_swipe = true;
+    });
+    assert.equal(document.view(cara).settings.oai_settings.temp_openai, 1.3);
+    assert.equal(document.view(cara).sources['oai_settings.temp_openai'], 'character');
+    assert.notEqual(document.settings.oai_settings.temp_openai, 1.3);
+    assert.equal(document.settings.power_user.auto_swipe, true);
+
+    // Top: the user. Cara's still wins in her context; the user's is the fallback.
+    await edit({ from: 'default', to: 'user' }, s => { s.oai_settings.temp_openai = 0.4; });
+    assert.equal(document.settings.oai_settings.temp_openai, 0.4);
+    assert.equal(document.view(cara).settings.oai_settings.temp_openai, 1.3);
+    assert.equal(document.view({}).sources['oai_settings.temp_openai'], 'user');
+
+    // Only the character's level: what Cara sets, and nothing else.
+    const caraOnly = document.view(cara, { from: 'character', to: 'character' });
+    assert.deepEqual(Object.values(caraOnly.sources), ['character']);
+
+    // Top: the preset. The preset's file changes.
+    await edit({ from: 'default', to: 'preset' }, s => { s.oai_settings.top_p_openai = 0.77; });
+    assert.equal((await readBundle(directories, 'preset.openai', document.settings.oai_settings.preset_settings_openai))?.top_p, 0.77);
+});

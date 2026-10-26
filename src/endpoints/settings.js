@@ -9,9 +9,10 @@ import bytes from 'bytes';
 import { getConfigValue, generateTimestamp, removeOldBackups } from '../util.js';
 import { getAllUserHandles, getUserDirectories } from '../users.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
-import { CHAR_LORE_PATH, getStringHash, seedKeyHashes, settingsWithoutCharLore } from '../../public/scripts/hash-utils.js';
+import { CHAR_LORE_PATH, getStringHash, seedKeyHashes, setAtPath, settingsWithoutCharLore } from '../../public/scripts/hash-utils.js';
 import {
     readAllSettings,
+    valuesAtPaths,
     readAllSettingsAsJson,
     readSettingsAtPaths,
     writeSettingsKeys,
@@ -210,6 +211,37 @@ export const router = express.Router();
  * current on-disk hash, rejecting a save whose view is stale. Header absent means skip the check (unconditional
  * overwrite, for backward compatibility).
  */
+/**
+ * The settings context a save was made in (the page showing a context's settings over a range of levels): the
+ * `X-Settings-Context` header, `{ avatar?, group_id?, range? }`; null for the user's own settings, or without the
+ * settings model.
+ * @param {import('express').Request} request
+ * @returns {{ document: import('../settings-documents.js').OpenSettingsDocument, context: { avatar: string | null, groupId: string | null }, range: { from: string, to: string } } | null}
+ */
+function savedIn(request) {
+    const header = request.get('X-Settings-Context');
+    const document = settingsDocumentOf(request.user.directories);
+    if (!header || !document) return null;
+    let body;
+    try {
+        body = JSON.parse(header);
+    } catch {
+        return null;
+    }
+    return { document, context: contextOf(body), range: rangeOf(body) };
+}
+
+/**
+ * The settings a save is checked against and answered by: the context's view when it was made in one, else the user's.
+ * @param {import('express').Request} request
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @returns {Record<string, any>}
+ */
+function settingsSavedOver(request, directories) {
+    const at = savedIn(request);
+    return at ? at.document.view(at.context, at.range).settings : readAllSettings(directories);
+}
+
 function checkSettingsConflict(request, directories) {
     const expectedHashHeader = request.get('X-Settings-Hash');
     if (expectedHashHeader === undefined) {
@@ -221,7 +253,7 @@ function checkSettingsConflict(request, directories) {
         return { ok: true };
     }
 
-    const currentHash = getStringHash(readAllSettingsAsJson(directories));
+    const currentHash = getStringHash(JSON.stringify(settingsSavedOver(request, directories), null, 4));
     return { ok: currentHash === expectedHash };
 }
 
@@ -239,14 +271,16 @@ router.post('/save', async function (request, response) {
 
         // Keeps the key files the body leaves out: the client's full save has no tags, tag_map or accountStorage.
         // Its charLore isn't stored (writeNamedSettings() leaves it out).
-        await writeNamedSettings(directories, request.body);
+        const at = savedIn(request);
+        if (at) await at.document.saveIn(at.context, at.range, /** @type {any} */ (settingsWithoutCharLore('', request.body).value));
+        else await writeNamedSettings(directories, request.body);
         void reportIgnoredCharLore(request, settingsWithoutCharLore('', request.body).charLore);
         triggerAutoSave(request.user.profile.handle, request.user.directories);
         // Key order in the reconstructed store may differ from the client's payload, so the client can't just
         // hash its own JSON locally - it must use this returned hash.
         // The hashes of the settings as stored (the settings model may store them otherwise than sent: its key order,
-        // without what nothing reads), for the client's next conflict check.
-        const stored = readAllSettings(directories);
+        // without what nothing reads), for the client's next conflict check; a context's as it shows them.
+        const stored = settingsSavedOver(request, directories);
         const keyHashes = {};
         seedKeyHashes(keyHashes, stored);
         response.send({ result: 'ok', settingsHash: getStringHash(JSON.stringify(stored, null, 4)), keyHashes });
@@ -276,7 +310,7 @@ router.post('/save-partial', async function (request, response) {
 
         if (expectedHashes && typeof expectedHashes === 'object' && !Array.isArray(expectedHashes)) {
             const paths = Object.keys(expectedHashes);
-            const currentValues = readSettingsAtPaths(directories, paths);
+            const currentValues = valuesAtPaths(settingsSavedOver(request, directories), paths);
             const conflictingKeys = paths.filter(path => getStringHash(JSON.stringify(currentValues[path], null, 4)) !== expectedHashes[path]);
             if (conflictingKeys.length > 0) {
                 return response.status(409).send({
@@ -288,8 +322,19 @@ router.post('/save-partial', async function (request, response) {
         }
 
         try {
-            // A charLore among the keys isn't stored (writeSettingsKeys() leaves it out).
-            await writeSettingsKeys(directories, keys);
+            const at = savedIn(request);
+            if (at) {
+                // The context's settings as shown, with the keys changed; the save then routes each change.
+                const saved = structuredClone(at.document.view(at.context, at.range).settings);
+                for (const [key, given] of Object.entries(keys)) {
+                    const { value, skip } = settingsWithoutCharLore(key, given);
+                    if (!skip) setAtPath(saved, key, structuredClone(value));
+                }
+                await at.document.saveIn(at.context, at.range, saved);
+            } else {
+                // A charLore among the keys isn't stored (writeSettingsKeys() leaves it out).
+                await writeSettingsKeys(directories, keys);
+            }
         } catch (err) {
             console.error('Could not write partial settings update', err);
             return response.status(400).send({ result: 'error', error: err.message });
@@ -300,8 +345,8 @@ router.post('/save-partial', async function (request, response) {
         triggerAutoSave(request.user.profile.handle, request.user.directories);
         // Same reasoning as /save's response above: return the server's own canonical whole-store hash so the
         // client's knownServerSettingsHash stays correct without needing to know how the store reconstructs it; and
-        // the hashes of each top-level key written, as stored.
-        const stored = readAllSettings(directories);
+        // the hashes of each top-level key written, as stored (a context's as it shows them).
+        const stored = settingsSavedOver(request, directories);
         const keyHashes = {};
         for (const top of new Set(Object.keys(keys).map(key => key.split('.')[0]))) {
             if (Object.hasOwn(stored, top)) seedKeyHashes(keyHashes, stored[top], top);
@@ -371,11 +416,37 @@ router.post('/level', async function (request, response) {
 router.post('/for-context', function (request, response) {
     const { directories } = request.user;
     const document = settingsDocumentOf(directories);
-    const avatar = typeof request.body?.avatar === 'string' && request.body.avatar ? request.body.avatar : null;
-    const groupId = typeof request.body?.group_id === 'string' && request.body.group_id ? request.body.group_id : null;
-    const settings = document ? document.settingsFor({ avatar, groupId }) : readAllSettings(directories);
-    response.send({ settings, settingsHash: getStringHash(JSON.stringify(settings, null, 4)) });
+    const context = contextOf(request.body);
+    if (!document) {
+        const settings = readAllSettings(directories);
+        return response.send({ settings, sources: {}, settingsHash: getStringHash(JSON.stringify(settings, null, 4)) });
+    }
+    try {
+        const { settings, sources } = document.view(context, rangeOf(request.body));
+        response.send({ settings, sources, settingsHash: getStringHash(JSON.stringify(settings, null, 4)) });
+    } catch (err) {
+        response.status(400).send({ error: String(/** @type {Error} */ (err).message) });
+    }
 });
+
+/**
+ * A request's settings context: `{ avatar?, group_id? }`.
+ * @param {any} body
+ */
+function contextOf(body) {
+    return {
+        avatar: typeof body?.avatar === 'string' && body.avatar ? body.avatar : null,
+        groupId: typeof body?.group_id === 'string' && body.group_id ? body.group_id : null,
+    };
+}
+
+/**
+ * A request's level range: `{ from, to }` (LEVEL_POSITIONS), every level when left out.
+ * @param {any} body
+ */
+function rangeOf(body) {
+    return { from: typeof body?.range?.from === 'string' ? body.range.from : 'default', to: typeof body?.range?.to === 'string' ? body.range.to : 'character' };
+}
 
 router.post('/toggle-extension', async function (request, response) {
     try {
