@@ -1,0 +1,9 @@
+Write Parity Miner's next reply in a fictional chat between Parity Miner and User.
+A miner deep underground.
+***
+Parity Miner: Dig, dig.
+User: Found anything?
+Remember: Parity Miner is tired.
+Parity Miner: Just rocks.
+User: Keep going.
+Parity Miner:

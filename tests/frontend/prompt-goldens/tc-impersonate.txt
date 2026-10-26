@@ -1,0 +1,7 @@
+Write Parity Merchant's next reply in a fictional chat between Parity Merchant and User.
+A merchant at a stall.
+***
+Parity Merchant: Fine wares!
+User: How much for the lamp?
+Parity Merchant: Ten silver.
+User:
