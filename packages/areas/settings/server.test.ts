@@ -1,10 +1,10 @@
 import type { ChatOwner } from '@st/protocol';
-import { LAB_RANGE, LEVELS, LIMITS } from '@st/protocol/settings';
-import type { Level, LevelRange, SettingsView } from '@st/protocol/settings';
+import { LAB_RANGE, LEVELS, LIMITS } from './protocol.ts';
+import type { Level, LevelRange, SettingsView } from './protocol.ts';
 import { expect, test } from 'vite-plus/test';
-import { settingsArea } from './settings.ts';
-import type { Ports } from './settings.ts';
-import type { ActionContext, User } from './index.ts';
+import { settingsArea } from './server.ts';
+import type { Ports } from './server.ts';
+import type { ActionContext, User } from '@st/server-ui';
 import type { ModelRecord } from './model-limits.ts';
 
 const user: User = { handle: 'u', directories: { root: '/u' } };

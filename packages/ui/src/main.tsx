@@ -2,23 +2,20 @@ import { createSignal } from 'solid-js';
 import type { ChatOwner, ViewPush } from '@st/protocol';
 
 export type { ViewFrame } from '@st/protocol';
-export { SERVER_OWNED } from './areas/settings/compat.ts';
-import { createClient } from './client.ts';
-import { UiProvider } from './context.ts';
-import type { Ui } from './context.ts';
-import { Backgrounds } from './areas/backgrounds/Backgrounds.tsx';
-import type { BackgroundsTab } from './areas/backgrounds/Backgrounds.tsx';
-import { AnimationOption, BackgroundLayer } from './areas/backgrounds/Layer.tsx';
-import { backgroundsCompat } from './areas/backgrounds/compat.ts';
-import { CcContext, CcOptions, CcSamplers, CcUtility } from './areas/settings/cc.tsx';
-import type { Support } from './areas/settings/cc.tsx';
-import { LevelSlider } from './areas/settings/LevelSlider.tsx';
-import { settingsCompat } from './areas/settings/compat.ts';
+export { SERVER_OWNED } from '@st/settings/page';
+import { createClient } from '@st/page/client';
+import { UiProvider } from '@st/page/context';
+import type { Ui } from '@st/page/context';
+import { AnimationOption, BackgroundLayer, Backgrounds, backgroundsCompat } from '@st/backgrounds/page';
+import type { BackgroundsTab } from '@st/backgrounds/page';
+import { CcContext, CcOptions, CcSamplers, CcUtility, LevelSlider, settingsCompat } from '@st/settings/page';
+import type { Support } from '@st/settings/page';
 import { render } from 'solid-js/web';
 import type { JSX } from 'solid-js';
 
 // The new page, started by the old one (public/scripts/new-ui.js), which hands it what only the old page has yet,
-// and the containers its surfaces replace.
+// and the containers its surfaces replace. It's the page's loader: the core (@st/page) and each area's page half
+// (packages/areas/*), mounted in the old page's containers.
 
 export type StartOptions = {
     headers: () => Record<string, string>;

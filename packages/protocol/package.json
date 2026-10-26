@@ -3,9 +3,7 @@
     "private": true,
     "type": "module",
     "exports": {
-        ".": "./src/index.ts",
-        "./backgrounds": "./src/backgrounds.ts",
-        "./settings": "./src/settings.ts"
+        ".": "./src/index.ts"
     },
     "dependencies": {
         "valibot": "1.5.0"

@@ -2,15 +2,15 @@ import { createRoot, createSignal } from 'solid-js';
 import type { JSX } from 'solid-js';
 import { render } from 'solid-js/web';
 import { expect, test } from 'vite-plus/test';
-import { FIELDS } from '@st/protocol/settings';
-import type { SettingsView } from '@st/protocol/settings';
-import type { Client } from '../src/client.ts';
-import { UiProvider } from '../src/context.ts';
-import { LevelSlider } from '../src/areas/settings/LevelSlider.tsx';
-import { CcOptions, CcSamplers, CcUtility } from '../src/areas/settings/cc.tsx';
-import type { Support } from '../src/areas/settings/cc.tsx';
-import { isShown } from '../src/areas/settings/fields.tsx';
-import { settingsCompat } from '../src/areas/settings/compat.ts';
+import { FIELDS } from '../protocol.ts';
+import type { SettingsView } from '../protocol.ts';
+import type { Client } from '@st/page/client';
+import { UiProvider } from '@st/page/context';
+import { LevelSlider } from './LevelSlider.tsx';
+import { CcOptions, CcSamplers, CcUtility } from './cc.tsx';
+import type { Support } from './cc.tsx';
+import { isShown } from './fields.tsx';
+import { settingsCompat } from './compat.ts';
 
 // The panel against a stand-in client: it draws the view it's given and sends what the user does.
 

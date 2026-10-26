@@ -1,4 +1,4 @@
-import { FIELDS, SERVER_FAMILIES } from '@st/protocol/settings';
+import { FIELDS, SERVER_FAMILIES } from '@st/settings/protocol';
 import { getAtPath, getStringHash, setAtPath } from '../public/scripts/hash-utils.js';
 
 /**

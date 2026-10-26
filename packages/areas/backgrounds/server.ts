@@ -1,16 +1,9 @@
-import { actions, FITTINGS, SORT_ORDERS, COLUMNS, VIEW, CHAT_VIEW } from '@st/protocol/backgrounds';
-import type {
-    Background,
-    BackgroundsView,
-    ChatBackgroundsView,
-    Fitting,
-    Ref,
-    SortOrder,
-} from '@st/protocol/backgrounds';
-import { defineArea } from './index.ts';
-import type { ActionContext, ActionResult, Upload, User, ViewContext } from './index.ts';
+import { actions, FITTINGS, SORT_ORDERS, COLUMNS, VIEW, CHAT_VIEW } from './protocol.ts';
+import type { Background, BackgroundsView, ChatBackgroundsView, Fitting, Ref, SortOrder } from './protocol.ts';
+import { defineArea } from '@st/server-ui';
+import type { ActionContext, ActionResult, Upload, User, ViewContext } from '@st/server-ui';
 
-// Backgrounds (packages/protocol/src/backgrounds.ts), over what old server code stores: system backgrounds are files
+// Backgrounds (packages/areas/backgrounds/protocol.ts), over what old server code stores: system backgrounds are files
 // in the user's backgrounds folder with metadata beside them; the user's choice and options are the settings'
 // `background`; a chat's backgrounds and lock are keys of its state, in upstream's form (`chat_backgrounds`, a list
 // of image paths, and `custom_background`, a CSS `url("...")`).

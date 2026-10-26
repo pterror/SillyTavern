@@ -25,10 +25,17 @@ how new code is shaped.
 
 ## Packages
 
-- `protocol`: the actions and views, as schemas both sides use (the server validates every action with them).
+The core is what every area builds on; each area is a package of its own, the way an extension would be one. An area
+reaches the core and nothing else (`st/declared-imports` holds it to its package.json): never another area, and never
+old code. What an area needs that the core doesn't give is a gap in the core, not a reason to reach across.
+
+- `protocol`: what an action and a view are, as schemas both sides use (the server validates every action with them).
 - `server-ui`: the server side: the area registry, `POST /api/ui/action`, the tabs and what each shows, pushes.
-- `ui`: the page (Solid, compiled by vite-plugin-solid): the client (the one module that talks to the server),
-  layers, components, the upstream stubs.
+- `page`: the page's core (Solid): the client (the one module that talks to the server), the context, layers.
+- `areas/<name>`: an area: `protocol.ts` (its actions and views), `server.ts` (its area for `server-ui`, with the
+  ports old code implements), `page/` (its surfaces and the stubs over them, exported from `page/index.ts`).
+- `ui`: the page's entry: mounts each area's surfaces in the old page's containers (compiled by vite-plugin-solid).
+  The server's side of the same is `src/ui-wiring.js`.
 - `serve-ui`: builds `ui` and the old page's libraries (`/lib.js`, `/live-editor-lib.js`), takes their build from
   CI's release for the source (built here only for unreleased source), and serves it.
 - `lint`: the rules that keep this shape (see `lint/config.ts`).

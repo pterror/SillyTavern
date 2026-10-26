@@ -1,5 +1,5 @@
 import { expect, test } from 'vite-plus/test';
-import { FIELDS, LIMITS, rangeOf } from './settings.ts';
+import { FIELDS, LIMITS, rangeOf } from './protocol.ts';
 
 test('every field is one control at one place', () => {
     const ids = [...FIELDS.map((f) => f.id), ...FIELDS.flatMap((f) => f.inputs ?? [])];

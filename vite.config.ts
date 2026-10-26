@@ -8,7 +8,7 @@ export default defineConfig({
     test: {
         projects: [
             'packages/ui/vite.config.ts',
-            { extends: false, test: { name: 'node', include: ['packages/**/*.test.ts'], exclude: ['packages/ui/**', '**/node_modules/**'] } },
+            { extends: false, test: { name: 'node', include: ['packages/**/*.test.ts'], exclude: ['packages/{ui,page}/**', 'packages/areas/*/page/**', '**/node_modules/**'] } },
         ],
     },
 });

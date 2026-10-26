@@ -15138,7 +15138,7 @@ jQuery(async function () {
 
     var isManualInput = false;
     var valueBeforeManualInput;
-    // The new page's settings fields handle their own counters (packages/ui/src/areas/settings/fields.tsx).
+    // The new page's settings fields handle their own counters (packages/areas/settings/page/fields.tsx).
     const counterInputs = '.range-block-counter input:not([data-field] input), .neo-range-input';
 
     $(document).on('input', counterInputs, function () {

@@ -1,8 +1,8 @@
 import { For, Show, createSignal } from 'solid-js';
 import type { JSX } from 'solid-js';
-import { FIELDS, VIEW } from '@st/protocol/settings';
-import type { Field, Level, Range, SettingsView } from '@st/protocol/settings';
-import { useUi } from '../../context.ts';
+import { FIELDS, VIEW } from '../protocol.ts';
+import type { Field, Level, Range, SettingsView } from '../protocol.ts';
+import { useUi } from '@st/page/context';
 
 // The AI response configuration panel's controls, each bound to a field's declaration (packages/protocol/src/
 // settings.ts) and its value in the server's settings view. The sections lay them out as the old markup did; an edit

@@ -1,22 +1,12 @@
-import {
-    FIELDS,
-    VIEW,
-    DEFAULT_RANGE,
-    LAB_RANGE,
-    LEVELS,
-    actions,
-    fieldAt,
-    rangeOf,
-    refusalOf,
-} from '@st/protocol/settings';
-import type { Level, LevelRange, Range, SettingsView } from '@st/protocol/settings';
+import { FIELDS, VIEW, DEFAULT_RANGE, LAB_RANGE, LEVELS, actions, fieldAt, rangeOf, refusalOf } from './protocol.ts';
+import type { Level, LevelRange, Range, SettingsView } from './protocol.ts';
 import type { ChatOwner } from '@st/protocol';
-import { defineArea } from './index.ts';
-import type { ActionResult, ChatRef, User, ViewContext } from './index.ts';
+import { defineArea } from '@st/server-ui';
+import type { ActionResult, ChatRef, User, ViewContext } from '@st/server-ui';
 import { limitsOfSettings } from './model-limits.ts';
 import type { ModelLists, ModelRecord } from './model-limits.ts';
 
-// The AI response configuration panel's settings (packages/protocol/src/settings.ts): a tab's chat's settings over
+// The AI response configuration panel's settings (packages/areas/settings/protocol.ts): a tab's chat's settings over
 // the range of levels the tab shows, and edits of one field at a time, each written where its level says (the old
 // server's settings document routes them).
 

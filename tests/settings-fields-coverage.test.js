@@ -2,7 +2,7 @@ import { describe, test, expect } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
 
-// The settings declarations (packages/protocol/src/settings.ts) against the old panel they replace: every setting
+// The settings declarations (packages/areas/settings/protocol.ts) against the old panel they replace: every setting
 // the old tables list is declared or named here with where it belongs instead, and every declared control is in the
 // old markup. Deleted with the old panel.
 
@@ -24,7 +24,7 @@ const ELSEWHERE = {
 
 describe('settings declarations', () => {
     test('every setting of the old tables is declared, or named with where it belongs', async () => {
-        const { FIELDS } = await import('../packages/protocol/src/settings.ts');
+        const { FIELDS } = await import('../packages/areas/settings/protocol.ts');
         const { settingsToUpdate } = await import('../public/scripts/chat-completion-defaults.js');
         const { setting_names } = await import('../public/scripts/textgen-setting-names.js');
         const declared = new Set(FIELDS.map(field => field.path));
@@ -38,7 +38,7 @@ describe('settings declarations', () => {
     });
 
     test('every declared control of a family the old page still shows is in its markup, by its id; the new page\'s families\' aren\'t', async () => {
-        const { FIELDS, SERVER_FAMILIES } = await import('../packages/protocol/src/settings.ts');
+        const { FIELDS, SERVER_FAMILIES } = await import('../packages/areas/settings/protocol.ts');
         const html = fs.readFileSync(path.join(process.cwd(), '..', 'public', 'index.html'), 'utf8');
         const idsOf = (/** @type {typeof FIELDS} */ fields) => fields.flatMap(field => [field.id, ...(field.inputs ?? [])]);
         const old = FIELDS.filter(field => !SERVER_FAMILIES.includes(field.family));

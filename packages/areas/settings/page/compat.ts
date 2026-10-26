@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createRoot, on } from 'solid-js';
-import { FIELDS, SERVER_FAMILIES, VIEW } from '@st/protocol/settings';
-import type { SettingsView } from '@st/protocol/settings';
-import type { Client } from '../../client.ts';
+import { FIELDS, SERVER_FAMILIES, VIEW } from '../protocol.ts';
+import type { SettingsView } from '../protocol.ts';
+import type { Client } from '@st/page/client';
 
 // Upstream's settings objects (oai_settings and the rest) keep their names for old code and extensions: each field of
 // them the server owns becomes an accessor over the settings view. Read, it's the view's value; written, it's sent as

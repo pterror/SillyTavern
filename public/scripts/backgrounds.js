@@ -1,7 +1,7 @@
 import { newUi } from './new-ui.js';
 
 // Upstream's backgrounds module, kept for extensions that import it: the backgrounds are the new page's now
-// (packages/ui/src/areas/backgrounds). Each name reads the new page's, which the server keeps current.
+// (packages/areas/backgrounds/page). Each name reads the new page's, which the server keeps current.
 
 const compat = () => newUi().backgrounds;
 

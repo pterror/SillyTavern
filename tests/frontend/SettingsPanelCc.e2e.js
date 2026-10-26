@@ -2,7 +2,7 @@ import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
 // The chat completion fields of the AI response configuration panel, drawn by the new page from the server's settings
-// view (packages/ui/src/areas/settings/cc.tsx): an edit is stored as the user's setting, upstream's oai_settings reads
+// view (packages/areas/settings/page/cc.tsx): an edit is stored as the user's setting, upstream's oai_settings reads
 // it, and the old page can't write it any more.
 
 /**

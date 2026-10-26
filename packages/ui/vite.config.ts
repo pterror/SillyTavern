@@ -1,4 +1,5 @@
 /// <reference types="vite-plus/test/config" />
+import path from 'node:path';
 import { defineConfig } from 'vite';
 import solid from 'vite-plugin-solid';
 
@@ -12,7 +13,9 @@ export default defineConfig({
     test: {
         name: 'ui',
         environment: 'happy-dom',
-        include: ['test/**/*.test.{ts,tsx}', 'src/**/*.test.{ts,tsx}'],
+        // The page's tests: the core's, each area's page half's, and the entry's (all under packages/).
+        dir: path.resolve(import.meta.dirname, '..'),
+        include: ['{ui,page}/{src,test}/**/*.test.{ts,tsx}', 'areas/*/page/**/*.test.{ts,tsx}'],
         // Loaded by Vite (with the conditions above), not by Node, which would pick Solid's server build.
         server: { deps: { inline: [/solid-js/] } },
     },

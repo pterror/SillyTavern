@@ -2,7 +2,7 @@ import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 import { startOpenAICompat } from './openai-mock-server.js';
 
-// The settings area's actions against the real server and settings document (packages/server-ui/src/settings.ts):
+// The settings area's actions against the real server and settings document (packages/areas/settings/server.ts):
 // the panel isn't on the new page yet, so these go through /api/ui/action as the page's client will.
 
 /**

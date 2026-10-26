@@ -24,15 +24,27 @@ const LIBRARY_DIR = 'lib';
 /** What the build is of: written beside it, compared with the source on every start. */
 const SOURCE_HASH_FILE = '.source-hash';
 
-/** Everything the built page is made from: its code, the protocol it bundles, and the dependencies' versions. */
-const SOURCES = [
-    ...Object.values(LIBRARIES),
-    path.join(UI_ROOT, 'src'),
-    CONFIG_FILE,
-    path.join(UI_ROOT, 'package.json'),
-    path.resolve(UI_ROOT, '../protocol/src'),
-    path.resolve(UI_ROOT, '../../package-lock.json'),
-];
+/** Where the areas are: each one's package, its page half among it, is bundled into the page. */
+const AREAS = path.resolve(UI_ROOT, '../areas');
+
+/**
+ * Everything the built page is made from: its entry, the page's core, the protocol and the areas it bundles, and the
+ * dependencies' versions. An area is taken whole, its server half too, so nothing its page half bundles is left out.
+ */
+async function sources(): Promise<string[]> {
+    const areas = (await fs.readdir(AREAS)).sort().map((name) => path.join(AREAS, name));
+    return [
+        ...Object.values(LIBRARIES),
+        path.join(UI_ROOT, 'src'),
+        CONFIG_FILE,
+        path.join(UI_ROOT, 'package.json'),
+        path.resolve(UI_ROOT, '../page/src'),
+        path.resolve(UI_ROOT, '../page/package.json'),
+        path.resolve(UI_ROOT, '../protocol/src'),
+        ...areas,
+        path.resolve(UI_ROOT, '../../package-lock.json'),
+    ];
+}
 
 /** The stable URL old page code imports the new page from. */
 export const ENTRY = '/ui/entry.js';
@@ -46,14 +58,14 @@ type Bundle = { files: Record<string, string> };
 async function filesOf(entry: string): Promise<string[]> {
     const stat = await fs.stat(entry);
     if (!stat.isDirectory()) return [entry];
-    const names = (await fs.readdir(entry)).sort();
+    const names = (await fs.readdir(entry)).filter((name) => name !== 'node_modules').sort();
     return (await Promise.all(names.map((name) => filesOf(path.join(entry, name))))).flat();
 }
 
 /** A hash of the page's source as it is now (each file by its path relative to the page and its content). */
 export async function uiSourceHash(): Promise<string> {
     const hash = crypto.createHash('sha256');
-    for (const file of (await Promise.all(SOURCES.map(filesOf))).flat()) {
+    for (const file of (await Promise.all((await sources()).map(filesOf))).flat()) {
         hash.update(path.relative(UI_ROOT, file))
             .update('\0')
             .update(await fs.readFile(file))

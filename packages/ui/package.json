@@ -3,7 +3,10 @@
     "private": true,
     "type": "module",
     "dependencies": {
+        "@st/backgrounds": "*",
+        "@st/page": "*",
         "@st/protocol": "*",
+        "@st/settings": "*",
         "solid-js": "1.9.17"
     },
     "devDependencies": {

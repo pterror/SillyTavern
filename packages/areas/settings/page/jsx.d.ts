@@ -5,11 +5,6 @@ declare module 'solid-js' {
     namespace JSX {
         /** Attributes the old page's CSS selects by (`attr:<name>`), kept so its stylesheets still apply. */
         interface ExplicitAttributes {
-            bgfile: string;
-            custom: string;
-            animated: string;
-            'data-action': string;
-            'data-folder-id': string;
             'data-family': string;
             'data-group': string;
             'data-settings-level': string | undefined;

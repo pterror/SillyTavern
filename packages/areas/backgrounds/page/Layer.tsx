@@ -1,7 +1,7 @@
 import { createEffect } from 'solid-js';
-import { VIEW, CHAT_VIEW, FITTINGS } from '@st/protocol/backgrounds';
-import type { BackgroundsView, ChatBackgroundsView } from '@st/protocol/backgrounds';
-import { useUi } from '../../context.ts';
+import { VIEW, CHAT_VIEW, FITTINGS } from '../protocol.ts';
+import type { BackgroundsView, ChatBackgroundsView } from '../protocol.ts';
+import { useUi } from '@st/page/context';
 
 /**
  * The background behind the chat: the old page's `#bg1` element (other old code and themes reach it by id) shows
