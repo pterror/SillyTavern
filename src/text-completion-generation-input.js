@@ -5,7 +5,7 @@ import { readExtraBooks } from './endpoints/characters.js';
 import { resolveSpeakers } from './macro-scope.js';
 import { extension_prompt_types, extension_prompt_roles } from './extension-prompt-table.js';
 import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './world-info/candidate-resolution.js';
-import { variablesBefore, generationMacroFacts } from './macro-facts.js';
+import { apiTokenLimits, generationMacroFacts, variablesBefore } from './macro-facts.js';
 
 /**
  * Adapter/resolver layer between REAL on-disk state (settings.json - via settings-store.js's
@@ -530,7 +530,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
         name1, name2,
         macroFacts: generationMacroFacts({
             powerUser, extensionSettings, mainApi, type, pageFacts,
-            maxContext: settingsMaxContext ?? 8192, maxResponse: amountGen ?? settingsAmountGen ?? 0,
+            ...apiTokenLimits({ max_context: settingsMaxContext, amount_gen: amountGen ?? settingsAmountGen }, mainApi),
         }),
 
         // --- Character/persona/chat resolution ---

@@ -112,6 +112,29 @@ function openOwner() {
     return typeof avatar === 'string' && avatar !== '' ? { avatar_url: avatar } : null;
 }
 
+/** @returns {string | null} The last message of the open chat that is stored (null: none, the tree's root). */
+function openPosition() {
+    for (let i = chat.length - 1; i >= 0; i--) {
+        if (isStoredNodeId(chat[i]?.node_id)) return chat[i].node_id;
+    }
+    return null;
+}
+
+/**
+ * Whose macros the page shows (src/endpoints/macros.js): the open chat's, at its last stored message. In a group, the
+ * character the page has current (if any) too, for its card.
+ * @returns {import('./macro-values.js').MacroScope}
+ */
+export function openChatMacroScope() {
+    const owner = openOwner();
+    const avatar = getCurrentCharacter()?.avatar;
+    return {
+        ...(owner ?? {}),
+        ...(owner && 'group_id' in owner && typeof avatar === 'string' && avatar !== '' ? { avatar_url: avatar } : {}),
+        at: owner ? openPosition() : null,
+    };
+}
+
 /**
  * Reads the server's state again after a change elsewhere (the changes stream's `state-changed`: `tree` the
  * character's avatar or group's id, null when every page reads again; `at` the message it hangs on, null at the
@@ -123,13 +146,7 @@ export async function onStateChanged({ tree, at }) {
     if (!owner) return;
     const open = 'group_id' in owner ? owner.group_id : owner.avatar_url;
     if (tree !== null && (tree !== open || !stateChangedHere(at))) return;
-    let position = null;
-    for (let i = chat.length - 1; i >= 0; i--) {
-        if (isStoredNodeId(chat[i]?.node_id)) {
-            position = chat[i].node_id;
-            break;
-        }
-    }
+    const position = openPosition();
     try {
         const response = await fetch('/api/state/at', {
             method: 'POST',

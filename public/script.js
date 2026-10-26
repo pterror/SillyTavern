@@ -309,7 +309,8 @@ export {
 import { isStoredNodeId, isProvisionalNodeId, provisionalNodeId } from './scripts/node-identity.js';
 export { isStoredNodeId, isProvisionalNodeId, provisionalNodeId };
 // Lives in metadata-store.js, isolated so it can be typechecked under strict null checks; re-exported for existing importers.
-import { saveMetadata, _resetMetadataSaveSnapshot, onStateChanged } from './scripts/metadata-store.js';
+import { saveMetadata, _resetMetadataSaveSnapshot, onStateChanged, openChatMacroScope } from './scripts/metadata-store.js';
+export { openChatMacroScope };
 export { saveMetadata };
 // Lives in node-navigation.js, isolated so it can be typechecked under strict null checks; re-exported for existing importers.
 import { switchToNode, switchToAlternativePath } from './scripts/node-navigation.js';
@@ -1407,9 +1408,10 @@ async function firstLoadInit() {
     await initLocales();
     initChatUtilities();
     initCharacterFieldEditor({
-        substituteParams,
+        // The character in the editor, in the open chat; a character being created has no chat or card yet.
+        macroScope: () => (menu_type === 'create' ? {} : { ...openChatMacroScope(), avatar_url: getEditorCharacterAvatar() }),
         messageFormatting,
-        formatCreatorNotes: (text, styleScope) => formatCreatorNotes(text, menu_type === 'create' ? '' : getCurrentCharacter()?.avatar, { safeMacros: true, styleScope }),
+        formatCreatorNotes: (text, valueOf, styleScope) => formatCreatorNotes(text, menu_type === 'create' ? '' : getCurrentCharacter()?.avatar, { valueOf, styleScope }),
         power_user,
         t,
         macroPerson: macroName => macroPerson(macroName, { avatar: menu_type === 'create' ? '' : getEditorCharacterAvatar(), name: String($('#character_name_pole').val() ?? '') }),
@@ -1431,7 +1433,7 @@ async function firstLoadInit() {
     });
     initChatLiveEditor({
         messageFormatting,
-        substituteParams,
+        macroScope: openChatMacroScope,
         power_user,
         uploadImage: uploadEditorImage,
         userName: () => name1,

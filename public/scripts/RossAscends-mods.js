@@ -1,5 +1,6 @@
 import { handleFieldEditKey } from './character-field-editor.js';
-import { substituteSafeMacrosAsText } from './safe-macros.js';
+import { macrosIn, withMacroValues } from './safe-macros.js';
+import { MacroValues } from './macro-values.js';
 import { getFocusedField } from './live-editor/registry.js';
 import { DOMPurify, Bowser } from '../lib.js';
 
@@ -10,7 +11,7 @@ import {
     buildAvatarList,
     selectCharacterByAvatar,
     menu_type,
-    substituteParams,
+    openChatMacroScope,
     requestTextareaSend,
     doNavbarIconClick,
     restoreDrawerOrder,
@@ -287,13 +288,19 @@ export async function RA_CountCharTokens() {
             total_tokens += Number(counter.text());
             permanent_tokens += isPermanent ? Number(counter.text()) : 0;
         } else {
-            const valueToCount = menu_type === 'create' ? value : substituteSafeMacrosAsText(value, substituteParams);
-            pending.push({ counter, input, isPermanent, valueHash, valueToCount });
+            pending.push({ counter, input, isPermanent, valueHash, value });
         }
     }
 
     if (pending.length > 0) {
-        const { counts: counted, answer } = await getTokenCountsWithTokenizer(pending.map(p => p.valueToCount));
+        // Counted as sent: the macros filled in (a character being created has none to fill them in with yet).
+        const values = new MacroValues(() => ({ ...openChatMacroScope(), avatar_url: String($('#avatar_url_pole').val() ?? '') }));
+        if (menu_type !== 'create') await values.wantMacros(pending.flatMap(p => macrosIn(p.value)));
+        if (counterNonceLocal !== counterNonce) {
+            return;
+        }
+        const toCount = pending.map(p => (menu_type === 'create' ? p.value : withMacroValues(p.value, values.valueOf)));
+        const { counts: counted, answer } = await getTokenCountsWithTokenizer(toCount);
         totalAnswer = answer;
 
         if (counterNonceLocal !== counterNonce) {

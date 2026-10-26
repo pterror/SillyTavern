@@ -171,16 +171,6 @@ export function mountLiveEditor(textarea, options = {}) {
         }),
     ];
 
-    // Its tooltips (macro suggestions, the paste picker) float over the page from inside it, where nothing outside
-    // watches: the page is told when they come or go.
-    let hadTooltip = false;
-    const tellTooltips = EditorView.updateListener.of((update) => {
-        const hasTooltip = update.view.dom.querySelector(':scope > .cm-tooltip') !== null;
-        if (hasTooltip === hadTooltip) return;
-        hadTooltip = hasTooltip;
-        update.view.dom.dispatchEvent(new Event(OVERLAYS_CHANGED_EVENT, { bubbles: true }));
-    });
-
     const sync = EditorView.updateListener.of((update) => {
         if (update.docChanged && !update.transactions.some(tr => tr.annotation(fromTextarea))) {
             textareaValue.set.call(textarea, update.state.doc.toString());
@@ -219,7 +209,6 @@ export function mountLiveEditor(textarea, options = {}) {
                 Prec.highest(EditorView.domEventHandlers(forwardHandlers)),
                 sync,
                 keepChatScroll,
-                tellTooltips,
                 placeholderSlot.of(textarea.placeholder ? placeholderExtension(textarea.placeholder) : []),
                 EditorState.readOnly.of(textarea.readOnly),
                 EditorView.editable.of(!textarea.disabled),
@@ -285,6 +274,20 @@ export function mountLiveEditor(textarea, options = {}) {
     });
     observer.observe(textarea, { attributes: true, attributeFilter: ['style', 'class', 'placeholder'] });
 
+    // Its tooltips (macro suggestions and their info, the paste picker) float over the page from inside it, where
+    // nothing outside watches: the page is told when one comes or goes, or a part of one does (a suggestion's info,
+    // drawn once its value is in).
+    const tooltipWatcher = new MutationObserver(() => {
+        watchTooltips();
+        view.dom.dispatchEvent(new Event(OVERLAYS_CHANGED_EVENT, { bubbles: true }));
+    });
+    const watchTooltips = () => {
+        tooltipWatcher.disconnect();
+        tooltipWatcher.observe(view.dom, { childList: true });
+        for (const tooltip of view.dom.querySelectorAll(':scope > .cm-tooltip')) tooltipWatcher.observe(tooltip, { childList: true });
+    };
+    watchTooltips();
+
     let destroyed = false;
     return {
         view,
@@ -312,6 +315,7 @@ export function mountLiveEditor(textarea, options = {}) {
             if (destroyed) return;
             destroyed = true;
             observer.disconnect();
+            tooltipWatcher.disconnect();
             textarea.removeEventListener('input', onOutsideInput, true);
             for (const type of STOPPED) view.dom.removeEventListener(type, stopAtEditor);
             view.contentDOM.removeEventListener('focus', onContentFocus);

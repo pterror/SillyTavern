@@ -1,13 +1,19 @@
-// A leaf module: the app's substituteParams is passed in, so importing it never adds an import cycle.
+// Which macros a preview may fill in, and the text it renders with each macro's value in its place. The values come
+// from the server (macro-values.js), which fills in the prompts too. A leaf module, so importing it never adds an
+// import cycle; the server imports it as well.
 
-const VALUE_START = '';
-const RAW_START = '';
-const PLACEHOLDER_END = '';
+const VALUE_START = '\ue000';
+const PLACEHOLDER_END = '\ue001';
 const VALUE_REGEX = new RegExp(`${VALUE_START}(\\d+)${PLACEHOLDER_END}`, 'g');
-const RAW_REGEX = new RegExp(`${RAW_START}(\\d+)${PLACEHOLDER_END}`, 'g');
 
 /**
- * Macros that read state and have no side effects and no randomness, so a preview may evaluate them on every redraw.
+ * {{trim}} with the line breaks either side of it, which the macro engine removes once the other macros are filled in
+ * (it reaches outside its own braces). A preview removes it first.
+ */
+export const TRIM_MACRO = /(?:\r?\n)*{{trim}}(?:\r?\n)*/gi;
+
+/**
+ * Macros that read state and have no side effects and no randomness, so a preview may fill them in on every redraw.
  * Lowercase. Anything else, built-in or from an extension, is shown as written.
  */
 const SAFE_MACRO_NAMES = new Set([
@@ -76,7 +82,7 @@ export function topLevelMacroSpans(text) {
  * @param {string} macroText The whole `{{…}}`.
  * @returns {boolean}
  */
-function isSafeMacro(macroText) {
+export function isSafeMacro(macroText) {
     const opens = [...macroText.matchAll(/\{\{/g)];
     for (const open of opens) {
         const name = macroName(macroText.slice(open.index + 2));
@@ -86,110 +92,60 @@ function isSafeMacro(macroText) {
 }
 
 /**
- * Replaces each top-level macro that isn't safe to run with a placeholder.
- * @param {string} text
- * @returns {{ masked: string, raws: string[] }}
+ * @typedef {import('./macro-pill.js').MacroShown} MacroShown
+ * @typedef {(source: string) => string | null | undefined} MacroValueOf A macro's value by its `{{…}}`: null when it
+ * is filled in only when sent, undefined when it isn't known yet. Either is shown as written.
  */
-function maskUnsafeMacros(text) {
-    /** @type {string[]} */
-    const raws = [];
-    let masked = '';
+
+/**
+ * The top-level macros of a text, as a preview fills them in.
+ * @param {string} text
+ * @returns {string[]} Each one's `{{…}}`.
+ */
+export function macrosIn(text) {
+    const trimmed = text.replace(TRIM_MACRO, '');
+    return topLevelMacroSpans(trimmed).map(({ start, end }) => trimmed.slice(start, end));
+}
+
+/**
+ * The text with a placeholder where each top-level macro was, which survives markdown and sanitizing, so it can be
+ * rendered before {@link insertMacroPlaceholders} puts what shows each macro in its place.
+ * @param {string} text
+ * @param {MacroValueOf} valueOf
+ * @returns {{ text: string, macros: MacroShown[] }}
+ */
+export function withMacroPlaceholders(text, valueOf) {
+    const trimmed = text.replace(TRIM_MACRO, '');
+    /** @type {MacroShown[]} */
+    const macros = [];
+    let out = '';
     let cursor = 0;
-    for (const { start, end } of topLevelMacroSpans(text)) {
-        const macroText = text.slice(start, end);
-        if (isSafeMacro(macroText)) continue;
-        masked += text.slice(cursor, start) + `${RAW_START}${raws.length}${PLACEHOLDER_END}`;
-        raws.push(macroText);
+    for (const { start, end } of topLevelMacroSpans(trimmed)) {
+        const source = trimmed.slice(start, end);
+        out += trimmed.slice(cursor, start) + `${VALUE_START}${macros.length}${PLACEHOLDER_END}`;
+        macros.push({ source, name: macroName(source.slice(2)) ?? undefined, value: valueOf(source) ?? null });
         cursor = end;
     }
-    masked += text.slice(cursor);
-    return { masked, raws };
+    return { text: out + trimmed.slice(cursor), macros };
 }
 
 /**
- * @param {string} macroText One whole `{{…}}`.
- * @param {(content: string, options?: object) => string} substituteParams The app's substituteParams.
- * @param {object} [options] Extra substituteParams options.
- * @returns {string | null} Its value, or null when it isn't safe to run without being sent.
- */
-export function evaluateSafeMacro(macroText, substituteParams, options = {}) {
-    if (!/^\{\{[\s\S]*\}\}$/.test(macroText) || !isSafeMacro(macroText)) return null;
-    return substituteParams(macroText, options);
-}
-
-/**
- * Plain text with only the safe macros evaluated and every other macro as written: for counting a field's tokens on
- * every change without running macros that have side effects or randomness.
+ * Plain text with each macro's value in its place, and every macro with none as written: for counting a field's
+ * tokens.
  * @param {string} text
- * @param {(content: string, options?: object) => string} substituteParams The app's substituteParams.
- * @param {object} [options] Extra substituteParams options.
+ * @param {MacroValueOf} valueOf
  * @returns {string}
  */
-export function substituteSafeMacrosAsText(text, substituteParams, options = {}) {
-    const { masked, raws } = maskUnsafeMacros(text);
-    return substituteParams(masked, options).replace(RAW_REGEX, (_, index) => raws[Number(index)] ?? '');
-}
-
-/**
- * @typedef {import('./macro-pill.js').MacroShown} MacroShown
- */
-
-/**
- * A macro's placeholder in text being rendered: survives markdown and sanitizing, and {@link insertMacroPlaceholders}
- * puts what shows the macro in its place.
- * @param {number} index
- */
-function macroPlaceholder(index) {
-    return `${VALUE_START}${index}${PLACEHOLDER_END}`;
-}
-
-/**
- * @param {object} options substituteParams options
- * @param {MacroShown[]} macros Gets each evaluated macro.
- */
-function collecting(options, macros) {
-    return {
-        ...options,
-        postProcessFn: (/** @type {string} */ value, /** @type {import('./macros/engine/MacroEnvBuilder.js').MacroIdentity | undefined} */ macro) => {
-            macros.push({ source: macro?.source ?? '', name: macro?.name, category: macro?.category, value: String(value) });
-            return macroPlaceholder(macros.length - 1);
-        },
-    };
-}
-
-/**
- * Evaluates every macro, leaving a placeholder where each goes, so the text can be rendered before
- * {@link insertMacroPlaceholders} puts them back.
- * @param {string} text
- * @param {(content: string, options: object) => string} substituteParams The app's substituteParams.
- * @param {object} [options] Extra substituteParams options.
- * @returns {{ text: string, macros: MacroShown[] }}
- */
-export function substituteMacros(text, substituteParams, options = {}) {
-    /** @type {MacroShown[]} */
-    const macros = [];
-    return { text: substituteParams(text, collecting(options, macros)), macros };
-}
-
-/**
- * Evaluates only the macros that are safe to run on every redraw of a preview; every other macro is kept as written,
- * with no value (null). Each comes back as a placeholder, so the text can be rendered before
- * {@link insertMacroPlaceholders} puts them back.
- * @param {string} text
- * @param {(content: string, options: object) => string} substituteParams The app's substituteParams.
- * @param {object} [options] Extra substituteParams options.
- * @returns {{ text: string, macros: MacroShown[] }}
- */
-export function substituteSafeMacros(text, substituteParams, options = {}) {
-    const { masked, raws } = maskUnsafeMacros(text);
-    /** @type {MacroShown[]} */
-    const macros = [];
-    const substituted = substituteParams(masked, collecting(options, macros));
-    const evaluated = macros.length;
-    for (const source of raws) {
-        macros.push({ source, name: macroName(source.slice(2)) ?? undefined, value: null });
+export function withMacroValues(text, valueOf) {
+    const trimmed = text.replace(TRIM_MACRO, '');
+    let out = '';
+    let cursor = 0;
+    for (const { start, end } of topLevelMacroSpans(trimmed)) {
+        const source = trimmed.slice(start, end);
+        out += trimmed.slice(cursor, start) + (valueOf(source) ?? source);
+        cursor = end;
     }
-    return { text: substituted.replace(RAW_REGEX, (_, index) => macroPlaceholder(evaluated + Number(index))), macros };
+    return out + trimmed.slice(cursor);
 }
 
 /**

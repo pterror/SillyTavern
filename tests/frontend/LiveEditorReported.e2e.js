@@ -14,8 +14,9 @@ async function mount(page, value, options = {}) {
     await page.evaluate(async ({ value, options }) => {
         const registry = await import('/scripts/live-editor/registry.js');
         const { renderMarkdown } = await import('/scripts/marked-processor.js');
-        const { substituteParams } = await import('/script.js');
-        const { evaluateSafeMacro } = await import('/scripts/safe-macros.js');
+        const { MacroValues } = await import('/scripts/macro-values.js');
+        const values = new MacroValues(() => ({ name2: 'Testchar' }));
+        await values.want(value);
         const host = document.createElement('div');
         host.id = 'liveEditorTestHost';
         host.style.cssText = 'position:fixed;top:60px;left:60px;width:500px;z-index:100000;background:#000;color:#fff';
@@ -30,7 +31,7 @@ async function mount(page, value, options = {}) {
         const editor = await registry.mountLiveEditor(textarea, {
             render: renderMarkdown,
             contentClass: options.contentClass ?? 'mes_text',
-            macros: { evaluate: (/** @type {string} */ text) => evaluateSafeMacro(text, substituteParams, { name2Override: 'Testchar' }) },
+            macros: { values },
         });
         editor.view.focus();
         editor.view.dispatch({ selection: { anchor: editor.view.state.doc.length } });

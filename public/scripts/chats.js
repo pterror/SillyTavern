@@ -15,6 +15,7 @@ import {
     updateChatMetadata,
     system_message_types,
     substituteParams,
+    openChatMacroScope,
     getSystemMessageByType,
     printMessages,
     clearChat,
@@ -26,7 +27,8 @@ import {
     macroPerson,
 } from '../script.js';
 import { renderMarkdown } from './marked-processor.js';
-import { substituteMacros, substituteSafeMacros, substituteSafeMacrosAsText } from './safe-macros.js';
+import { withMacroPlaceholders, withMacroValues } from './safe-macros.js';
+import { fetchMacroValues, macroValuesOf } from './macro-values.js';
 import { insertMacroPills } from './macro-pill.js';
 import { initImageLightbox, onLightboxImageClick } from './image-lightbox.js';
 import { openEditorLayer } from './editor-layer.js';
@@ -652,13 +654,14 @@ async function migrateAllowGlobalStylesToDb() {
  * @param {string} text Raw Markdown text
  * @param {string} avatarId Avatar ID
  * @param {object} [options]
- * @param {boolean} [options.safeMacros=false] Evaluate only macros safe to run on every redraw (no side effects or
- * randomness), leaving the rest as written; for previews.
+ * @param {import('./safe-macros.js').MacroValueOf} [options.valueOf] The macros' values (macro-values.js), each macro
+ * shown as a pill holding its value; for the app's previews. Left out (an extension's call), every macro is filled in
+ * here, as upstream does.
  * @param {string} [options.styleScope='#creator_notes_preview'] Selector of the element the HTML is shown in: unless
  * the character's styles are allowed everywhere, its `<style>` rules apply only inside it.
  * @returns {string} Formatted HTML text
  */
-export function formatCreatorNotes(text, avatarId, { safeMacros = false, styleScope = '#creator_notes_preview' } = {}) {
+export function formatCreatorNotes(text, avatarId, { valueOf, styleScope = '#creator_notes_preview' } = {}) {
     const preference = new StylesPreference(avatarId);
     const sanitizeStyles = !preference.get();
     const decodeStyleParam = { prefix: sanitizeStyles ? `${styleScope} ` : '' };
@@ -671,8 +674,8 @@ export function formatCreatorNotes(text, avatarId, { safeMacros = false, styleSc
         ADD_TAGS: ['custom-style'],
     };
 
-    const { text: substituted, macros } = (safeMacros ? substituteSafeMacros : substituteMacros)(text, substituteParams);
-    let html = renderMarkdown(substituted);
+    const { text: placeheld, macros } = valueOf ? withMacroPlaceholders(text, valueOf) : { text: substituteParams(text), macros: [] };
+    let html = renderMarkdown(placeheld);
     html = encodeStyleTags(html);
     html = DOMPurify.sanitize(html, config);
     html = decodeStyleTags(html, decodeStyleParam);
@@ -726,7 +729,11 @@ async function checkForCreatorNotesStyles() {
 
     const notes = getCurrentCharacter().data?.creator_notes || getCurrentCharacter().creatorcomment;
     const avatarId = getCurrentCharacter().avatar;
-    const styleContents = getStyleContentsFromMarkdown(notes);
+    const styleContents = await getStyleContentsFromMarkdown(notes);
+    // Another character may have been opened meanwhile.
+    if (getCurrentCharacter()?.avatar !== avatarId) {
+        return;
+    }
 
     if (!styleContents) {
         setGlobalStylesButtonClass(null);
@@ -780,14 +787,15 @@ function setGlobalStylesButtonClass(state) {
 
 /**
  * @param {string} text Markdown text
- * @returns {string} The joined contents of all style elements
+ * @returns {Promise<string>} The joined contents of all style elements
  */
-function getStyleContentsFromMarkdown(text) {
+async function getStyleContentsFromMarkdown(text) {
     if (!text) {
         return '';
     }
 
-    const html = renderMarkdown(substituteSafeMacrosAsText(text, substituteParams));
+    const values = await macroValuesOf(text, openChatMacroScope());
+    const html = renderMarkdown(withMacroValues(text, values.valueOf));
     const parsedDocument = new DOMParser().parseFromString(html, 'text/html');
     const styleElements = Array.from(parsedDocument.querySelectorAll('style'));
     return styleElements
@@ -2433,8 +2441,9 @@ export function initChatUtilities() {
         }
 
         const rawText = String(bro.val());
-        const previewText = substituteParams(rawText);
-        const pre = $('<pre class="justifyLeft" style="white-space: pre-wrap; word-break: break-word;"></pre>').text(previewText);
+        // Every macro filled in, as it is sent; nothing a macro sets is kept.
+        const [previewText] = await fetchMacroValues([rawText], openChatMacroScope(), { all: true });
+        const pre = $('<pre class="justifyLeft" style="white-space: pre-wrap; word-break: break-word;"></pre>').text(previewText ?? rawText);
         await callGenericPopup(pre, POPUP_TYPE.TEXT, '', { wide: true, large: true, allowVerticalScrolling: true });
     });
 
