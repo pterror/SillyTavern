@@ -4,7 +4,9 @@
 // A leaf module: the app's translation is passed in and the macro registry tells it about the macros
 // (setMacroRegistry()), so importing it never adds an import cycle.
 
+import { DOMPurify } from '../lib.js';
 import { insertMacroPlaceholders } from './safe-macros.js';
+import { renderMarkdown } from './marked-processor.js';
 
 /** @typedef {(strings: TemplateStringsArray, ...values: any[]) => string} Translate */
 
@@ -49,8 +51,11 @@ export function macroColorAttributes(name, category) {
 const SHOWN_LENGTH = 24;
 /** The most of a shortened value its tooltip shows. */
 const TOOLTIP_VALUE_LENGTH = 200;
-/** The most of who a mention names' description its card shows. */
-const ABOUT_LENGTH = 240;
+/** The most of who a mention names' description its card carries; it shows the first lines of it (style.css). */
+const ABOUT_LENGTH = 600;
+/** What a card keeps of the description's markup: the inline formatting, in its paragraphs. Images and HTML blocks go,
+ * their text kept. */
+const ABOUT_TAGS = ['p', 'br', 'em', 'strong', 'del', 's', 'code', 'q', 'b', 'i', 'u', 'sub', 'sup', 'mark', 'small', 'span'];
 
 /** Each category's icon (macros/engine/MacroRegistry.js MacroCategory). One person's name has none: its card says who. */
 const CATEGORY_ICONS = Object.freeze({
@@ -185,7 +190,8 @@ export function macroPersonCard(person, source) {
     if (person.about.trim()) {
         const about = document.createElement('div');
         about.className = 'macro-person-about';
-        about.textContent = person.about;
+        // Rendered as the description's preview renders it, keeping only its inline formatting.
+        about.innerHTML = DOMPurify.sanitize(renderMarkdown(person.about), { ALLOWED_TAGS: ABOUT_TAGS, ALLOWED_ATTR: [] });
         text.append(about);
     }
     card.append(avatar, text);
