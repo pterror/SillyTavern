@@ -6,6 +6,7 @@ import { resolveSpeakers } from './macro-scope.js';
 import { extension_prompt_types, extension_prompt_roles } from './extension-prompt-table.js';
 import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './world-info/candidate-resolution.js';
 import { apiTokenLimits, generationMacroFacts, variablesBefore } from './macro-facts.js';
+import { storyStringWithAnchors } from '../public/scripts/story-string-anchors.js';
 
 /**
  * Adapter/resolver layer between REAL on-disk state (settings.json - via settings-store.js's
@@ -427,6 +428,8 @@ async function resolveChatHistory(chat, { branchName, nodeId }) {
  * @param {number} [params.amountGen] Overrides settings.amount_gen when given.
  * @param {object} [params.macroExtras] Shallow-merged over the resolved input object.
  * @param {import('./macro-facts.js').PageMacroFacts} [params.pageFacts] What only the page knows, for the macros.
+ * @param {import('./extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections] What the page's extensions
+ *   inject (src/page-injections.js).
  * @returns {Promise<import('./text-completion-prompt-orchestrator.js').AssembleTextCompletionPromptInput>}
  */
 export async function resolveTextCompletionGenerationInput(directories, {
@@ -434,7 +437,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
     type, isImpersonate = false, isContinue = false, isSwipe = false,
     textareaText = '', chatMetadata: chatMetadataOverride, userMessageText, userMessageExtra,
     worldInfoCandidates: worldInfoCandidatesOverride, countTokens, encodeTokens, countPromptTokens, amountGen, macroExtras = {},
-    pageFacts = {},
+    pageFacts = {}, pageInjections = {},
 } = {}) {
     if (typeof countTokens !== 'function') {
         throw new Error('resolveTextCompletionGenerationInput: countTokens is required (real tokenizer resolution is caller-owned - see module doc comment)');
@@ -572,6 +575,9 @@ export async function resolveTextCompletionGenerationInput(directories, {
         reasoningSeparator: reasoning.separator ?? '\n',
         reasoningSuffix: reasoning.suffix ?? '</think>',
 
+        // What the page's extensions inject.
+        pageInjections,
+
         // --- Context/token budget ---
         thisMaxContext: promptTokenBudget(mainApi, settingsMaxContext ?? 8192, amountGen ?? settingsAmountGen ?? 0, novelSettings.model_novel),
         maxContext: settingsMaxContext ?? 8192,
@@ -608,7 +614,8 @@ export async function resolveTextCompletionGenerationInput(directories, {
         noteSettings, hasCharacterOrGroup,
 
         // --- Story string / instruct mode ---
-        storyStringTemplate: context.story_string ?? '',
+        // As the page uses it: an older template gets its injection anchors (power-user.js's loadContextSettings()).
+        storyStringTemplate: storyStringWithAnchors(context),
         storyStringPosition: context.story_string_position ?? DEFAULT_STORY_STRING_POSITION,
         storyStringDepth: context.story_string_depth ?? DEFAULT_STORY_STRING_DEPTH,
         storyStringRole: context.story_string_role ?? DEFAULT_STORY_STRING_ROLE,

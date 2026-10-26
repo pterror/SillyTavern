@@ -77,6 +77,25 @@ export const PARITY_CASES = [
         steps: ['/send Found anything?', '/sendas name="Parity Miner" Just rocks.', '/send Keep going.'],
     },
     {
+        name: 'tc-authors-note',
+        card: { ch_name: 'Parity Sailor', first_mes: 'The sea is calm.', description: 'An old sailor.' },
+        steps: ['/send What do you see?', '/sendas name="Parity Sailor" Clouds, far off.', '/send Should we turn back?'],
+        // In the chat, one message deep, after every message.
+        chatMetadata: { note_prompt: '{{char}} senses a storm coming.', note_interval: 1, note_position: 1, note_depth: 1, note_role: 0 },
+    },
+    {
+        name: 'tc-injections',
+        card: { ch_name: 'Parity Hermit', first_mes: 'Who goes there?', description: 'A hermit in a cave.' },
+        steps: [
+            '/send Only a traveller.',
+            '/sendas name="Parity Hermit" Come in, then.',
+            '/send Thank you.',
+            '/inject id=parity-chat position=chat depth=1 The fire crackles.',
+            '/inject id=parity-before position=before {{char}} lives alone.',
+            '/inject id=parity-after position=after It is winter.',
+        ],
+    },
+    {
         name: 'tc-continue',
         card: { ch_name: 'Parity Bard', first_mes: 'A song for you.', description: 'A travelling bard.' },
         steps: ['/send Sing about the sea.', '/sendas name="Parity Bard" Oh, the waves they roll and'],
@@ -93,16 +112,21 @@ export const PARITY_CASES = [
 /**
  * Sets power_user values by dotted path, in the page. Run with page.evaluate().
  * @param {Record<string, unknown>} values
+ * @returns {Promise<Record<string, unknown>>} The values they replaced, to put back.
  */
 export async function applyPowerUser(values) {
     // @ts-ignore - the page's own module
     const { power_user } = await import('/scripts/power-user.js');
+    /** @type {Record<string, unknown>} */
+    const replaced = {};
     for (const [path, value] of Object.entries(values)) {
         const keys = path.split('.');
         let target = power_user;
         for (const key of keys.slice(0, -1)) target = target[key];
+        replaced[path] = structuredClone(target[keys[keys.length - 1]]);
         target[keys[keys.length - 1]] = value;
     }
+    return replaced;
 }
 
 /**
@@ -114,6 +138,6 @@ export async function applyChatMetadata(values) {
     const context = SillyTavern.getContext();
     Object.assign(context.chatMetadata, values);
     await context.saveMetadata();
-    // Upstream's Author's Note reads its panel, which takes the chat's metadata when the chat changes.
-    await context.eventSource.emit(context.eventTypes.CHAT_CHANGED, context.getCurrentChatId());
+    // The page's Author's Note reads its text from its panel's field, filled from the metadata when a chat opens.
+    if (typeof values.note_prompt === 'string') $('#extension_floating_prompt').val(values.note_prompt);
 }

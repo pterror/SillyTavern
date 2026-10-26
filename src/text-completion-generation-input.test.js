@@ -269,9 +269,8 @@ async function run() {
     assert.equal(input.reasoningMaxAdditions, 2);
     assert.equal(input.isInstruct, true, 'isInstruct resolves from power_user.instruct.enabled');
     assert.equal(input.instructWrap, true);
-    assert.equal(input.storyStringTemplate, '{{#if system}}{{system}}\n{{/if}}{{wiBefore}}{{description}}{{wiAfter}}');
-    assert.equal(input.chatStart, undefined, 'chatStart is not a resolved field on this orchestrator input - only storyStringTemplate/contextSettings are');
-    assert.equal(input.contextSettings.chat_start, '***', 'chatStart-equivalent data is still present, nested under contextSettings');
+    assert.equal(input.storyStringTemplate, '{{#if anchorBefore}}{{anchorBefore}}\n{{/if}}{{#if system}}{{system}}\n{{/if}}{{wiBefore}}{{description}}{{wiAfter}}{{#if anchorAfter}}{{anchorAfter}}\n{{/if}}', 'a template from before the injection anchors gets them, as the page\'s settings load adds them');
+    assert.equal(input.chatStart, '***', 'chatStart is the context template\'s chat_start');
     assert.equal(input.namesAsStopStrings, true, 'namesAsStopStrings resolves from power_user.context.names_as_stop_strings');
     assert.equal(input.customStoppingStringsRaw, '"CUSTOM_STOP"');
     assert.equal(input.noteSettings.default, 'Author note default text.', 'noteSettings passes extension_settings.note through unchanged (same field names)');

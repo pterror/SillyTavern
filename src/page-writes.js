@@ -1,6 +1,7 @@
 import { storedForm } from './chat-engine.js';
 import { recordStored, sentUserMessageOf } from './stored-messages.js';
 import { readPageMacroFacts } from './macro-facts.js';
+import { readPageInjections } from './page-injections.js';
 
 /**
  * @typedef {object} PageMessages Messages on the page that no action has stored, each with the ref the page gave it.
@@ -117,7 +118,7 @@ export function quietOf(body) {
  * @param {import('express').Response} response
  * @param {import('./chat-request.js').ChatContext} chat
  * @param {any} body The request body.
- * @returns {Promise<{ nodeId: string|null|undefined, userMessageText: string|undefined, userMessageExtra: object, userMessage: Record<string, any>|null, quiet: QuietPrompt, pageFacts: import('./macro-facts.js').PageMacroFacts }|null>}
+ * @returns {Promise<{ nodeId: string|null|undefined, userMessageText: string|undefined, userMessageExtra: object, userMessage: Record<string, any>|null, quiet: QuietPrompt, pageFacts: import('./macro-facts.js').PageMacroFacts, pageInjections: import('./extension-prompt-table.js').ExtensionPromptTable }|null>}
  * Null when the request has been answered with a failure.
  */
 export async function generateTurnOf(response, chat, body) {
@@ -131,6 +132,7 @@ export async function generateTurnOf(response, chat, body) {
         userMessage: sent?.content ?? null,
         quiet: quietOf(body),
         pageFacts: readPageMacroFacts(body?.macro_facts),
+        pageInjections: readPageInjections(body?.extension_prompts),
     };
 }
 

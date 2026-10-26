@@ -77,6 +77,7 @@ import {
 import { DictEntityStore } from './entity-store.js';
 import { DEFAULT_MACRO_COLORS, applyMacroColors, macroColorsOf } from './macro-colors.js';
 import { initHotkeyOverlay } from './hotkey-overlay.js';
+import { storyStringWithAnchors } from './story-string-anchors.js';
 
 export const toastPositionClasses = [
     'toast-top-left',
@@ -2249,37 +2250,7 @@ async function loadContextSettings() {
      * @param {ContextSettings} contextSettings Context settings instance
      */
     function autoFixStoryString(contextSettings) {
-        // Already migrated, no need to fix
-        if (!contextSettings || Object.hasOwn(contextSettings, 'story_string_position')) {
-            return;
-        }
-
-        let storyString = contextSettings.story_string || '';
-
-        /**
-         * @param {string} field Missing field name
-         * @param {'start'|'end'} position Position of auto-fix
-         */
-        function autoFixMissingField(field, position) {
-            if (storyString.includes(`{{${field}}}`)) {
-                return;
-            }
-
-            console.warn(`[Story String Validation] Story String is missing a field: ${field}. Adding it at the ${position}.`);
-            const fieldTemplate = `{{#if ${field}}}{{${field}}}\n{{/if}}`;
-            const firstCurlyPosition = storyString.includes('{{') ? storyString.indexOf('{{') : 0;
-            const lastCurlyPosition = storyString.includes('}}') ? storyString.lastIndexOf('}}') + '}}'.length : storyString.length;
-            const lastTrimPosition = storyString.includes('{{trim}}') ? storyString.lastIndexOf('{{trim}}') : storyString.length;
-            const endPosition = Math.min(lastTrimPosition, lastCurlyPosition);
-            storyString = position === 'start'
-                ? storyString.substring(0, firstCurlyPosition) + fieldTemplate + storyString.substring(firstCurlyPosition)
-                : storyString.substring(0, endPosition) + fieldTemplate + storyString.substring(endPosition);
-        }
-
-        autoFixMissingField('anchorBefore', 'start');
-        autoFixMissingField('anchorAfter', 'end');
-
-        contextSettings.story_string = storyString;
+        if (contextSettings) contextSettings.story_string = storyStringWithAnchors(contextSettings);
     }
 
     // Migrate story string to add missing fields

@@ -46,6 +46,9 @@ export const GENERATION_TYPE_TRIGGERS = [
  * Known injection IDs and helper functions for system extensions handling.
  */
 export const inject_ids = {
+    // Injections at one place join in the order of their keys: the note sorts after the memory's (`1_memory`).
+    AUTHORS_NOTE: '2_floating_prompt',
+    PERSONA_DESCRIPTION: 'PERSONA_DESCRIPTION',
     STORY_STRING: '__STORY_STRING__',
     QUIET_PROMPT: 'QUIET_PROMPT',
     DEPTH_PROMPT: 'DEPTH_PROMPT',

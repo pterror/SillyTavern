@@ -24,9 +24,25 @@ test.beforeEach(async ({ page }) => {
     await testSetup.awaitST({ page });
 });
 
-test.afterEach(async () => {
+/** @type {Record<string, unknown> | null} The settings the case replaced. */
+let restore = null;
+
+test.afterEach(async ({ page }) => {
     await llama.close();
+    if (restore) {
+        await page.evaluate(applyPowerUser, restore);
+        await saveSettings(page);
+        restore = null;
+    }
 });
+
+/** @param {import('@playwright/test').Page} page */
+async function saveSettings(page) {
+    await page.evaluate(async () => {
+        const { saveSettings } = await import('/script.js');
+        await saveSettings();
+    });
+}
 
 /**
  * Makes a character from card fields and opens its chat.
@@ -105,11 +121,9 @@ test.describe('text completion', () => {
             await connectLlamaCpp(page, llama.url);
             await openCard(page, parityCase.card);
             if (parityCase.powerUser) {
-                await page.evaluate(applyPowerUser, parityCase.powerUser);
-                await page.evaluate(async () => {
-                    const { saveSettings } = await import('/script.js');
-                    await saveSettings();
-                });
+                // Put back once the case is done: the cases in a worker share its server's settings.
+                restore = await page.evaluate(applyPowerUser, parityCase.powerUser);
+                await saveSettings(page);
             }
             for (const step of parityCase.steps) await slash(page, step);
             if (parityCase.chatMetadata) await page.evaluate(applyChatMetadata, parityCase.chatMetadata);
