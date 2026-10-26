@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
-import { DEAD_PATHS, DERIVED_PATHS, assemble, importUpstream } from './settings-compat.js';
+import { DEAD_PATHS, DERIVED_PATHS, applyWrites, assemble, importUpstream, routeSave, unitOfPath } from './settings-compat.js';
 
 const CONTENT = path.join(import.meta.dirname, '../../default/content');
 const SHIPPED = JSON.parse(fs.readFileSync(path.join(CONTENT, 'settings.json'), 'utf8'));
@@ -160,4 +160,89 @@ test('a settings file using every catalog comes back as it came', () => {
     // Captioning through Claude is the Claude connection text generation has.
     const claude = model.entities.find(e => e.values.type === 'openai:claude');
     assert.equal(model.statements.capabilities.captioning, claude.key);
+});
+
+/**
+ * The shipped settings as the model, and what assemble gives for it.
+ */
+function shippedModel() {
+    const model = JSON.parse(JSON.stringify(importUpstream(structuredClone(SHIPPED), { bundles: shippedBundles, newKey: keys() })));
+    const { settings } = assemble(model, { bundles: shippedBundles });
+    return { model, settings };
+}
+
+test('upstream paths name their units in the model', () => {
+    assert.deepEqual(unitOfPath(['oai_settings', 'temp_openai']), { kind: 'field', field: 'preset.openai/temperature', path: 'oai_settings.temp_openai' });
+    assert.deepEqual(unitOfPath(['oai_settings', 'claude_model']), { kind: 'connection', path: 'oai_settings.claude_model' });
+    assert.deepEqual(unitOfPath(['oai_settings', 'preset_settings_openai']), { kind: 'selection', group: 'preset.openai', path: 'oai_settings.preset_settings_openai' });
+    assert.deepEqual(unitOfPath(['textgenerationwebui_settings', 'temp']), { kind: 'field', field: 'preset.textgenerationwebui/temp', path: 'textgenerationwebui_settings.temp' });
+    assert.deepEqual(unitOfPath(['textgenerationwebui_settings', 'streaming']), { kind: 'field', field: 'textgenerationwebui_settings.streaming', path: 'textgenerationwebui_settings.streaming' });
+    assert.deepEqual(unitOfPath(['power_user', 'instruct', 'input_sequence']), { kind: 'field', field: 'template.instruct/input_sequence', path: 'power_user.instruct.input_sequence' });
+    assert.deepEqual(unitOfPath(['power_user', 'instruct', 'enabled']), { kind: 'field', field: 'power_user.instruct.enabled', path: 'power_user.instruct.enabled' });
+    assert.deepEqual(unitOfPath(['power_user', 'trim_sentences']), { kind: 'field', field: 'template.context/trim_sentences', path: 'power_user.trim_sentences' });
+    assert.deepEqual(unitOfPath(['power_user', 'main_text_color']), { kind: 'field', field: 'theme/main_text_color', path: 'power_user.main_text_color' });
+    assert.deepEqual(unitOfPath(['power_user', 'stscript', 'parser', 'flags']), { kind: 'field', field: 'power_user.stscript', path: 'power_user.stscript' });
+    assert.deepEqual(unitOfPath(['extension_settings', 'dice', 'x']), { kind: 'ext', key: 'dice' });
+    assert.deepEqual(unitOfPath(['extension_settings', 'regex', '0']), { kind: 'catalog', path: 'extension_settings.regex' });
+    assert.deepEqual(unitOfPath(['power_user', 'movingUIState']), { kind: 'ignored', path: 'power_user.movingUIState' });
+    assert.deepEqual(unitOfPath(['amount_gen']), { kind: 'field', field: 'amount_gen', path: 'amount_gen' });
+    assert.deepEqual(unitOfPath(['someday']), { kind: 'unknown', key: 'someday' });
+});
+
+test('saving what assemble gave routes nothing', () => {
+    const { model, settings } = shippedModel();
+    assert.deepEqual(routeSave(model, structuredClone(settings), { bundles: shippedBundles }), []);
+});
+
+test('a sampler edit is an override; setting it back to the preset\'s value removes it', () => {
+    const { model, settings } = shippedModel();
+    const edited = structuredClone(settings);
+    edited.oai_settings.temp_openai = 0.123;
+    const writes = routeSave(model, edited, { bundles: shippedBundles });
+    assert.deepEqual(writes, [{ op: 'set', field: 'preset.openai/temperature', value: 0.123 }]);
+    const after = applyWrites(model, writes);
+    const preset = shippedBundles('preset.openai', 'Default');
+    const back = structuredClone(edited);
+    back.oai_settings.temp_openai = preset.temperature;
+    assert.deepEqual(routeSave(after, back, { bundles: shippedBundles }), [{ op: 'delete', field: 'preset.openai/temperature' }]);
+});
+
+test('selecting a theme with its values loaded is one statement, dropping the old theme\'s edits', () => {
+    const { model, settings } = shippedModel();
+    const edited = structuredClone(settings);
+    edited.power_user.main_text_color = 'rgb(1, 2, 3)';
+    const withEdit = applyWrites(model, routeSave(model, edited, { bundles: shippedBundles }));
+    assert.equal(withEdit.user.overrides['theme/main_text_color'], 'rgb(1, 2, 3)');
+    const azure = shippedBundles('theme', 'Azure');
+    const switched = structuredClone(edited);
+    switched.power_user.theme = 'Azure';
+    for (const [key, value] of Object.entries(azure)) if (key !== 'name') switched.power_user[key] = value;
+    const writes = routeSave(withEdit, switched, { bundles: shippedBundles });
+    // Azure's fields replace the edits of them; an edit of a field Azure doesn't hold would stay.
+    const replaced = Object.keys(withEdit.user.overrides).filter(field => field.startsWith('theme/') && Object.hasOwn(azure, field.slice('theme/'.length)));
+    assert.ok(replaced.includes('theme/main_text_color'));
+    assert.deepEqual(writes, [{ op: 'bundle', group: 'theme', ref: 'Azure', drop: replaced }]);
+    const after = applyWrites(withEdit, writes);
+    assert.deepEqual(routeSave(after, switched, { bundles: shippedBundles }), []);
+});
+
+test('a preference, an extension\'s own settings, a connection key and an unknown key', () => {
+    const { model, settings } = shippedModel();
+    const edited = structuredClone(settings);
+    edited.power_user.auto_swipe = !settings.power_user.auto_swipe;
+    edited.extension_settings.dice = { ...settings.extension_settings.dice, rolled: 1 };
+    edited.oai_settings.claude_model = 'claude-y';
+    edited.someday = 1;
+    const writes = routeSave(model, edited, { bundles: shippedBundles });
+    assert.deepEqual(writes, [
+        { op: 'set', field: 'power_user.auto_swipe', value: edited.power_user.auto_swipe },
+        { op: 'ext', key: 'dice', value: edited.extension_settings.dice },
+        { op: 'connection', path: 'oai_settings.claude_model', value: 'claude-y' },
+        { op: 'unknown', key: 'someday', value: 1 },
+    ].sort((a, b) => writes.findIndex(w => w.op === a.op) - writes.findIndex(w => w.op === b.op)));
+    const after = applyWrites(model, writes.filter(w => w.op !== 'connection'));
+    const { settings: back } = assemble(after, { bundles: shippedBundles });
+    assert.equal(back.power_user.auto_swipe, edited.power_user.auto_swipe);
+    assert.deepEqual(back.extension_settings.dice, edited.extension_settings.dice);
+    assert.equal(back.someday, 1);
 });

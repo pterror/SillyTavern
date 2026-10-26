@@ -1,4 +1,5 @@
 import { TYPE } from '../library-codes.js';
+import { canonicalStringify } from '../../public/scripts/hash-utils.js';
 import { settingsToUpdate } from '../../public/scripts/chat-completion-defaults.js';
 import { CONTEXT_TEMPLATE_POWER_USER_KEYS, PRESET_EXCLUDED_KEYS, TEXT_PRESET_LENGTH_KEYS } from '../../public/scripts/preset-file-keys.js';
 import { THEME_FIELDS } from '../../public/scripts/theme-fields.js';
@@ -546,4 +547,214 @@ export function assemble(model, { bundles, extrasApiKey }) {
     for (const [key, value] of Object.entries(model.unknown)) settings[key] = structuredClone(value);
     for (const [key, value] of Object.entries(model.elsewhere)) settings[key] = structuredClone(value);
     return { settings, warnings };
+}
+
+/** The containers whose keys are each one preference (`power_user.<key>`, …), as import stores them. */
+const PREFERENCE_CONTAINERS = Object.freeze(['power_user', 'oai_settings', 'textgenerationwebui_settings', 'nai_settings', 'kai_settings', 'world_info_settings', 'background']);
+
+/** Paths a catalog module holds: a write to one is the catalog's, not a field's. */
+const CATALOG_PATHS = Object.freeze([
+    'proxies', 'selected_proxy', 'power_user.servers', 'power_user.model_templates_mappings', 'power_user.personas',
+    'power_user.persona_descriptions', 'power_user.persona_data', 'power_user.default_persona', 'user_avatar', 'username',
+    'oai_settings.bias_presets', 'extension_settings.connectionManager', 'extension_settings.regex',
+    'extension_settings.regex_presets', 'extension_settings.variables', 'extension_settings.attachments',
+    'extension_settings.character_attachments', 'extension_settings.disabled_attachments', 'extension_settings.quickReplyV2',
+]);
+
+/**
+ * What an upstream path is in the model: the unit a write to it (or to anything under it) changes.
+ * @param {string[]} keys The path's keys.
+ * @returns {{ kind: 'field', field: string, path: string } | { kind: 'selection', group: string, path: string } | { kind: 'connection', path: string } | { kind: 'catalog', path: string } | { kind: 'ext', key: string } | { kind: 'ignored', path: string } | { kind: 'unknown', key: string } | { kind: 'container' }}
+ *   A container holds units of its own (`power_user`, `power_user.instruct`, `extension_settings`).
+ */
+export function unitOfPath(keys) {
+    const dotted = keys.join('.');
+    if ((keys.length === 1 && [...PREFERENCE_CONTAINERS, 'extension_settings'].includes(keys[0]))
+        || (keys.length === 2 && keys[0] === 'power_user' && Object.hasOwn(TEMPLATE_SELECTED, keys[1]))) {
+        return { kind: 'container' };
+    }
+    const under = (/** @type {string} */ path) => dotted === path || dotted.startsWith(`${path}.`);
+    for (const path of [...DEAD_PATHS, ...DERIVED_PATHS]) if (under(path)) return { kind: 'ignored', path };
+    for (const path of CATALOG_PATHS) if (under(path)) return { kind: 'catalog', path };
+    const { selections } = bundleLayout({});
+    for (const [group, path] of selections) if (dotted === path) return { kind: 'selection', group, path };
+    const [top, second, third] = keys;
+    if (Object.values(TEXT_PRESET_LENGTH_KEYS).includes(top) && keys.length === 1) return { kind: 'field', field: top, path: top };
+    if (top === 'main_api' || top === 'horde_settings') return { kind: 'connection', path: top };
+    if (top === 'oai_settings' && second !== undefined) {
+        if (COVERED.chat.includes(second) && !CC_PREFERENCE_KEYS.includes(second)) return { kind: 'connection', path: `oai_settings.${second}` };
+        const presetKey = Object.keys(CC_PRESET_KEYS).find(key => CC_PRESET_KEYS[key] === second);
+        if (presetKey) return { kind: 'field', field: `preset.openai/${presetKey}`, path: `oai_settings.${second}` };
+    }
+    if (top === 'textgenerationwebui_settings' && (COVERED.text.includes(second) || second === 'type')) return { kind: 'connection', path: `${top}.${second}` };
+    if ((top === 'kai_settings' && second === 'api_server') || (top === 'nai_settings' && second === 'model_novel')) return { kind: 'connection', path: `${top}.${second}` };
+    const family = Object.keys(FAMILIES).find(f => f !== 'openai' && FAMILIES[f].object === top);
+    if (family && second !== undefined && !PRESET_EXCLUDED_KEYS.includes(second)) return { kind: 'field', field: `preset.${family}/${second}`, path: `${top}.${second}` };
+    if (top === 'power_user' && second !== undefined) {
+        if (Object.hasOwn(TEMPLATE_SELECTED, second) && third !== undefined && !PRESET_EXCLUDED_KEYS.includes(third) && third !== 'name') {
+            return { kind: 'field', field: `template.${second}/${third}`, path: `power_user.${second}.${third}` };
+        }
+        if (Object.hasOwn(TEMPLATE_SELECTED, second) && third !== undefined) return { kind: 'field', field: `power_user.${second}.${third}`, path: `power_user.${second}.${third}` };
+        if (CONTEXT_TEMPLATE_POWER_USER_KEYS.includes(second)) return { kind: 'field', field: `template.context/${second}`, path: `power_user.${second}` };
+        if (THEME_FIELDS.includes(second)) return { kind: 'field', field: `theme/${second}`, path: `power_user.${second}` };
+    }
+    if (top === 'extension_settings' && second !== undefined) {
+        if (['apiUrl', 'apiKey', 'autoConnect'].includes(second)) return { kind: 'connection', path: `extension_settings.${second}` };
+        return { kind: 'ext', key: second };
+    }
+    if (PREFERENCE_CONTAINERS.includes(top) && second !== undefined) return { kind: 'field', field: `${top}.${second}`, path: `${top}.${second}` };
+    if (TOP_PREFERENCES.includes(top)) return { kind: 'field', field: top, path: top };
+    if (ELSEWHERE.includes(top)) return { kind: 'ignored', path: top };
+    return { kind: 'unknown', key: top };
+}
+
+/**
+ * @typedef {{ op: 'set' | 'delete', field: string, value?: unknown }
+ *   | { op: 'bundle', group: string, ref: string | undefined, drop: string[] }
+ *   | { op: 'ext', key: string, value: unknown }
+ *   | { op: 'unknown', key: string, value: unknown }
+ *   | { op: 'connection' | 'catalog', path: string, value: unknown }} ModelWrite
+ *   `set`/`delete` an override at the user level; `bundle` a statement, dropping the level's overrides of the fields
+ *   the bundle holds (selecting a preset discards its unsaved edits, as upstream); `connection`/`catalog` hand the
+ *   changed value to that module.
+ */
+
+/**
+ * A full save routed: each path whose value isn't what `assemble` gives now, as the writes it is (Q13: only changed
+ * paths are routed, so a save made from a stale copy changes only what its sender changed).
+ * @param {UserModel} model
+ * @param {Record<string, any>} saved The upstream-shaped settings saved.
+ * @param {{ bundles: BundleFiles, extrasApiKey?: string }} options
+ * @returns {ModelWrite[]}
+ */
+export function routeSave(model, saved, options) {
+    const { settings: current } = assemble(model, options);
+    // The bundles the save selects: its field values are compared with these, as the page loaded them.
+    /** @type {Record<string, string | undefined>} */
+    const bundlesAfter = { ...model.user.bundles };
+    for (const [group, path] of bundleLayout({}).selections) {
+        const name = at(saved, path);
+        if (canonicalSame(name, at(current, path))) continue;
+        bundlesAfter[group] = typeof name === 'string' && !(group === 'preset.kobold' && name === KOBOLD_NO_PRESET) ? bundleRef(group, name) : undefined;
+    }
+    /** @type {Map<string, ModelWrite>} */
+    const writes = new Map();
+    /** @type {(a: unknown, b: unknown) => boolean} */
+    const equal = (a, b) => canonicalSame(a, b);
+    /**
+     * @param {unknown} before
+     * @param {unknown} after
+     * @param {string[]} keys
+     */
+    const walk = (before, after, keys) => {
+        if (equal(before, after)) return;
+        const isObject = (/** @type {unknown} */ v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+        const unit = keys.length ? unitOfPath(keys) : null;
+        const atUnit = unit && unit.kind !== 'container' && keys.join('.') === unitPath(unit);
+        if (unit && unit.kind !== 'container' && (atUnit || !isObject(before) || !isObject(after))) {
+            record(unit, after);
+            return;
+        }
+        for (const key of new Set([...Object.keys(isObject(before) ? before : {}), ...Object.keys(isObject(after) ? after : {})])) {
+            walk(isObject(before) ? before[key] : undefined, isObject(after) ? after[key] : undefined, [...keys, key]);
+        }
+    };
+    /**
+     * @param {ReturnType<typeof unitOfPath>} unit
+     * @param {unknown} value
+     */
+    const record = (unit, value) => {
+        switch (unit.kind) {
+            case 'ignored':
+            case 'container':
+                return;
+            case 'ext':
+                writes.set(`ext:${unit.key}`, { op: 'ext', key: unit.key, value: saved.extension_settings?.[unit.key] });
+                return;
+            case 'unknown':
+                writes.set(`key:${unit.key}`, { op: 'unknown', key: unit.key, value: saved[unit.key] });
+                return;
+            case 'connection':
+            case 'catalog':
+                writes.set(`${unit.kind}:${unit.path}`, { op: unit.kind, path: unit.path, value: at(saved, unit.path) });
+                return;
+            case 'selection': {
+                // The new bundle's fields replace the level's edits of them; a field it doesn't hold keeps its value,
+                // as upstream keeps a live value the preset lacks.
+                const ref = bundlesAfter[unit.group];
+                const held = ref !== undefined ? bundleFields(options.bundles, unit.group, ref) ?? {} : {};
+                const drop = Object.keys(model.user.overrides).filter(field => field.startsWith(`${unit.group}/`) && Object.hasOwn(held, field));
+                writes.set(`bundle:${unit.group}`, { op: 'bundle', group: unit.group, ref: bundlesAfter[unit.group], drop });
+                return;
+            }
+            case 'field': {
+                const after = at(saved, unit.path);
+                const field = unit.field;
+                if (after === undefined) {
+                    if (Object.hasOwn(model.user.overrides, field)) writes.set(`field:${field}`, { op: 'delete', field });
+                    return;
+                }
+                // An override equal to what the user's bundle gives is not stored (§1.1 Edits).
+                const group = field.includes('/') ? field.slice(0, field.indexOf('/')) : undefined;
+                const ref = group ? bundlesAfter[group] : undefined;
+                const held = ref !== undefined && group ? bundleFields(options.bundles, group, ref) : undefined;
+                if (held && Object.hasOwn(held, field) && canonicalSame(held[field], after)) {
+                    if (Object.hasOwn(model.user.overrides, field)) writes.set(`field:${field}`, { op: 'delete', field });
+                } else {
+                    writes.set(`field:${field}`, { op: 'set', field, value: after });
+                }
+            }
+        }
+    };
+    walk(current, saved, []);
+    // A selection first: it drops the overrides its bundle replaces, and the fields' writes then state what differs.
+    const dropped = new Set([...writes.values()].flatMap(write => (write.op === 'bundle' ? write.drop : [])));
+    return [...writes.values()]
+        .filter(write => !(write.op === 'delete' && dropped.has(write.field)))
+        .sort((a, b) => Number(b.op === 'bundle') - Number(a.op === 'bundle'));
+}
+
+/**
+ * @param {ReturnType<typeof unitOfPath>} unit
+ */
+function unitPath(unit) {
+    if (unit.kind === 'ext') return `extension_settings.${unit.key}`;
+    if (unit.kind === 'unknown') return unit.key;
+    return 'path' in unit ? unit.path : '';
+}
+
+/**
+ * Equal as JSON, whatever the key order.
+ * @param {unknown} a
+ * @param {unknown} b
+ */
+function canonicalSame(a, b) {
+    return a === b || canonicalStringify(a) === canonicalStringify(b);
+}
+
+/**
+ * The model with writes applied (the user level and the extensions' own settings; connection and catalog writes are
+ * their modules').
+ * @param {UserModel} model
+ * @param {ModelWrite[]} writes
+ * @returns {UserModel}
+ */
+export function applyWrites(model, writes) {
+    const next = structuredClone(model);
+    for (const write of writes) {
+        if (write.op === 'set') next.user.overrides[write.field] = structuredClone(write.value);
+        else if (write.op === 'delete') delete next.user.overrides[write.field];
+        else if (write.op === 'bundle') {
+            if (write.ref === undefined) delete next.user.bundles[write.group];
+            else next.user.bundles[write.group] = write.ref;
+            for (const field of write.drop) delete next.user.overrides[field];
+        } else if (write.op === 'ext') {
+            if (write.value === undefined) delete next.ext[write.key];
+            else next.ext[write.key] = structuredClone(write.value);
+        } else if (write.op === 'unknown') {
+            if (write.value === undefined) delete next.unknown[write.key];
+            else next.unknown[write.key] = structuredClone(write.value);
+        }
+    }
+    return next;
 }
