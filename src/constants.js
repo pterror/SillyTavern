@@ -1,3 +1,5 @@
+import { textgen_types } from '../public/scripts/textgen-connection-defaults.js';
+
 export const PUBLIC_DIRECTORIES = {
     images: 'public/img/',
     backups: 'backups/',
@@ -216,23 +218,7 @@ export const CHAT_COMPLETION_SOURCES = {
  */
 export const UPLOADS_DIRECTORY = '_uploads';
 
-export const TEXTGEN_TYPES = {
-    OOBA: 'ooba',
-    MANCER: 'mancer',
-    VLLM: 'vllm',
-    APHRODITE: 'aphrodite',
-    TABBY: 'tabby',
-    KOBOLDCPP: 'koboldcpp',
-    TOGETHERAI: 'togetherai',
-    LLAMACPP: 'llamacpp',
-    OLLAMA: 'ollama',
-    INFERMATICAI: 'infermaticai',
-    DREAMGEN: 'dreamgen',
-    OPENROUTER: 'openrouter',
-    FEATHERLESS: 'featherless',
-    HUGGINGFACE: 'huggingface',
-    GENERIC: 'generic',
-};
+export const TEXTGEN_TYPES = textgen_types;
 
 export const INFERMATICAI_KEYS = [
     'model',
