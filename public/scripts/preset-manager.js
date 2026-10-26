@@ -35,6 +35,7 @@ import {
     textgenerationwebui_preset_names,
     textgenerationwebui_presets,
 } from './textgen-settings.js';
+import { PRESET_EXCLUDED_KEYS, TEXT_PRESET_LENGTH_KEYS } from './preset-file-keys.js';
 import { debounce, download, ensurePlainObject, equalsIgnoreCaseAndAccents, getSanitizedFilename, parseJsonFile, waitUntilCondition } from './utils.js';
 
 const presetManagers = {};
@@ -710,70 +711,18 @@ class PresetManager {
             }
         }
 
-        const filteredKeys = [
-            'api_server',
-            'preset',
-            'streaming',
-            'truncation_length',
-            'n',
-            'streaming_url',
-            'stopping_strings',
-            'can_use_tokenization',
-            'can_use_streaming',
-            'preset_settings_novel',
-            'preset_settings',
-            'streaming_novel',
-            'nai_preamble',
-            'model_novel',
-            'streaming_kobold',
-            'enabled',
-            'bind_to_context',
-            'seed',
-            'legacy_api',
-            'mancer_model',
-            'togetherai_model',
-            'ollama_model',
-            'vllm_model',
-            'aphrodite_model',
-            'llamacpp_model',
-            'server_urls',
-            'type',
-            'custom_model',
-            'bypass_status_check',
-            'infermaticai_model',
-            'dreamgen_model',
-            'openrouter_model',
-            'featherless_model',
-            'max_tokens_second',
-            'openrouter_providers',
-            'openrouter_quantizations',
-            'openrouter_allow_fallbacks',
-            'tabby_model',
-            'derived',
-            'generic_model',
-            'include_reasoning',
-            'global_banned_tokens',
-            'send_banned_tokens',
-
-            // Reasoning exclusions
-            'auto_parse',
-            'add_to_prompts',
-            'auto_expand',
-            'show_hidden',
-            'max_additions',
-        ];
         /** @type {Record<string, any>} */
         const settings = Object.assign({}, getSettingsByApiId(this.apiId));
 
-        for (const key of filteredKeys) {
+        for (const key of PRESET_EXCLUDED_KEYS) {
             if (Object.hasOwn(settings, key)) {
                 delete settings[key];
             }
         }
 
         if (!this.isAdvancedFormatting() && this.apiId !== 'openai') {
-            settings.genamt = amount_gen;
-            settings.max_length = max_context;
+            const lengths = { amount_gen, max_context };
+            for (const [key, setting] of Object.entries(TEXT_PRESET_LENGTH_KEYS)) settings[key] = lengths[setting];
         }
 
         return settings;
