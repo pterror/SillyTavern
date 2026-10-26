@@ -209,7 +209,7 @@ export const CAPABILITY_SLOTS = Object.freeze(Object.keys(CAPABILITIES));
 /**
  * @param {Record<string, any>} extensionSettings Upstream's `extension_settings`.
  * @param {EntityDraft[]} connections The connections there are.
- * @param {() => string} newKey
+ * @param {(hint: string) => string} newKey The key of what `hint` names; the same hint, the same key.
  * @returns {CapabilitiesFromUpstream}
  */
 export function capabilitiesFromUpstream(extensionSettings, connections, newKey) {
@@ -219,7 +219,7 @@ export function capabilitiesFromUpstream(extensionSettings, connections, newKey)
     const connectionOf = (type) => {
         const found = [...connections, ...made].find(connection => connection.values.type === type);
         if (found) return found.key;
-        const connection = draft(TYPE.connection, newKey(), { type });
+        const connection = draft(TYPE.connection, newKey(`connection ${type}`), { type });
         made.push(connection);
         return connection.key;
     };
