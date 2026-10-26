@@ -225,7 +225,7 @@ function lengthFamily(mainApi) {
 /**
  * Upstream's settings file in the model.
  * @param {Record<string, any>} upstream
- * @param {{ bundles: BundleFiles, newKey: () => string }} options
+ * @param {{ bundles: BundleFiles, newKey: (hint: string) => string }} options
  * @returns {UserModel}
  */
 export function importUpstream(upstream, { bundles, newKey }) {

@@ -27,7 +27,7 @@ const PRESET_LISTS = Object.freeze(['global', 'scoped', 'preset']);
  * record kept whole, warned.
  * @param {Record<string, any>[]} records
  * @param {string} what
- * @param {() => string} newKey
+ * @param {(hint: string) => string} newKey The key of what `hint` names; the same hint, the same key.
  * @param {string[]} warnings
  * @returns {{ record: Record<string, any>, key: string, keyed: boolean }[]}
  */
@@ -39,7 +39,7 @@ function keyedById(records, what, newKey, warnings) {
             seen.add(id);
             return { record: record ?? {}, key: id, keyed: true };
         }
-        const key = `#${newKey()}`;
+        const key = `#${newKey(`${what} ${index}`)}`;
         warnings.push(`${what} ${index + 1} has ${typeof id === 'string' && id !== '' ? 'a repeated' : 'no usable'} id; kept as ${JSON.stringify(key)}`);
         return { record: record ?? {}, key, keyed: false };
     });
@@ -69,7 +69,7 @@ function withScriptLists(script, record) {
  * Regex scripts: the user's (`extension_settings.regex`) with `newKey`, or a card's or sampler preset's
  * (`regex_scripts`) with `holder`.
  * @param {Record<string, any>[]} scripts
- * @param {{ newKey: () => string } | { holder: string }} keying
+ * @param {{ newKey: (hint: string) => string } | { holder: string }} keying
  * @returns {{ scripts: EntityDraft[], warnings: string[] }}
  */
 export function regexScriptsFromUpstream(scripts, keying) {
@@ -107,7 +107,7 @@ export function regexScriptsToUpstream(scripts, holder) {
 /**
  * Regex presets (`extension_settings.regex_presets`), and the selected one.
  * @param {Record<string, any>[]} presets
- * @param {() => string} newKey
+ * @param {(hint: string) => string} newKey The key of what `hint` names; the same hint, the same key.
  * @returns {{ presets: EntityDraft[], selected: string | undefined, warnings: string[] }}
  */
 export function regexPresetsFromUpstream(presets, newKey) {

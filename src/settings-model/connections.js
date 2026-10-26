@@ -163,7 +163,7 @@ function bySource(flat, fields, defaults) {
  * the connection keys of a chat completion preset) that is `selected` or has a value of its own that isn't the
  * default.
  * @param {Record<string, any>} flat
- * @param {() => string} newKey
+ * @param {(hint: string) => string} newKey The key of what `hint` names; the same hint, the same key.
  * @returns {{ connections: EntityDraft[], selected: string | undefined, preferences: Record<string, unknown> }}
  */
 export function chatConnectionsFromUpstream(flat, newKey) {
@@ -174,7 +174,7 @@ export function chatConnectionsFromUpstream(flat, newKey) {
     const connections = [];
     let selected;
     for (const name of changed) {
-        const key = newKey();
+        const key = newKey(`connection openai:${name}`);
         if (name === source) selected = key;
         connections.push(draft(TYPE.connection, key, { type: `openai:${name}`, ...shared, ...own.get(name) }));
     }
@@ -189,7 +189,7 @@ export function chatConnectionsFromUpstream(flat, newKey) {
 /**
  * Upstream's settings' connections.
  * @param {UpstreamConnectionSettings} settings
- * @param {() => string} newKey Makes a connection's key (a uuid).
+ * @param {(hint: string) => string} newKey Makes the key of what `hint` names (a uuid); the same hint, the same key.
  * @returns {ConnectionsFromUpstream}
  */
 export function connectionsFromUpstream(settings, newKey) {
@@ -217,7 +217,7 @@ export function connectionsFromUpstream(settings, newKey) {
         }
         if (type !== undefined) changed.add(type);
         for (const name of changed) {
-            const key = newKey();
+            const key = newKey(`connection textgenerationwebui:${name}`);
             if (name === type) selected.textgenerationwebui = key;
             connections.push(draft(TYPE.connection, key, { type: `textgenerationwebui:${name}`, ...shared, ...own.get(name) }));
         }
@@ -235,7 +235,7 @@ export function connectionsFromUpstream(settings, newKey) {
     const secrets = [];
     for (const [type, values] of singles) {
         if (!values) continue;
-        const key = newKey();
+        const key = newKey(`connection ${type}`);
         selected[type] = key;
         connections.push(draft(TYPE.connection, key, { type, ...values }));
         if (type === 'extras' && settings.extras.apiKey) secrets.push({ connection: key, value: settings.extras.apiKey });

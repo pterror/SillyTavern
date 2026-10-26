@@ -33,7 +33,7 @@ function same(a, b) {
  * Every bundle file of a user as drafts, with the connections their chat completion presets need.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {EntityDraft[]} connections The user's connections, a preset's found among them.
- * @param {() => string} newKey
+ * @param {(hint: string) => string} newKey The key of what `hint` names; the same hint, the same key.
  * @returns {{ bundles: EntityDraft[], connections: EntityDraft[], warnings: string[] }}
  */
 export function bundleDraftsFromFiles(directories, connections, newKey) {
@@ -50,7 +50,8 @@ export function bundleDraftsFromFiles(directories, connections, newKey) {
             const from = presetFromUpstream(api, name, file);
             warnings.push(...from.warnings);
             if (from.connection) {
-                const cc = chatConnectionsFromUpstream(from.connection, newKey);
+                // The preset's own connection, if it is one, is keyed by the preset: not the user's of that source.
+                const cc = chatConnectionsFromUpstream(from.connection, hint => newKey(`preset ${api}:${name} ${hint}`));
                 const chosen = cc.connections.find(c => c.key === cc.selected);
                 if (chosen) {
                     const found = [...connections, ...made].find(c => c.values.type === chosen.values.type && same(c.values, chosen.values));

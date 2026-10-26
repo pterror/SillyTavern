@@ -1,11 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
-import { createHash } from 'node:crypto';
 
 import { setConfigFilePath } from '../util.js';
 import { USER_DIRECTORY_TEMPLATE } from '../constants.js';
 import { loadOneOffEngine, parseOneOffArgs, probeConfiguredServer } from './one-off.js';
+import { keyOf } from '../settings-model/keys.js';
 
 /**
  * Converts a user's settings to the settings model (its step 9): the settings files, every sampler preset,
@@ -18,13 +18,14 @@ import { loadOneOffEngine, parseOneOffArgs, probeConfiguredServer } from './one-
  * Extras key into secrets.json), refused when the user is converted already (--again first deletes the model the
  * last run made: only while nothing reads it, before the model's switch), then reads it back and checks that it gives
  * the same settings. The keys it makes (connections, entries without an id of their own) are derived from the
- * handle and the import's order, so a run again makes the same ones.
+ * handle and what they are (keyOf), so a run again makes the same ones.
  *
  *   node src/migrations/convert-settings-to-model.js --dry-run [--data-root ./data] [--handle default-user] [--config ./config.yaml]
  *   node src/migrations/convert-settings-to-model.js --apply [--again] [the same]
  */
 
 const LOG_PREFIX = '[convert-settings-to-model]';
+
 
 /**
  * A user's directories under a data root.
@@ -47,7 +48,7 @@ export function directoriesFor(dataRoot, handle) {
  * @param {boolean} [options.again] Delete the model a last run made, first.
  * @param {() => Promise<any>} options.engine Loads the engine binding.
  * @param {() => Promise<{ running: boolean, lines: string[] }>} [options.probeServer]
- * @param {() => string} [options.newKey] A new connection's or catalog entry's key (a uuid).
+ * @param {(hint: string) => string} [options.newKey] The key of what `hint` names (keyOf()).
  * @param {(line: string) => void} [options.log]
  * @param {(line: string) => void} [options.warn]
  * @returns {Promise<number>} The exit code: 0 done, 1 refused or failed.
@@ -56,11 +57,7 @@ export async function runConvert(options) {
     const log = options.log ?? console.log;
     const warnLine = options.warn ?? console.warn;
     const probeServer = options.probeServer ?? probeConfiguredServer;
-    let made = 0;
-    const newKey = options.newKey ?? (() => {
-        const h = createHash('sha256').update(`${options.handle}\u0000${made++}`).digest('hex');
-        return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
-    });
+    const newKey = options.newKey ?? ((/** @type {string} */ hint) => keyOf(options.handle, hint));
     // Their imports read config when they load: after the config path is set.
     const { setStoreEngine, userStore, closeUserStores, STORE_DIR } = await import('../user-stores.js');
     const { readAllSettings } = await import('../settings-store.js');
