@@ -5,7 +5,8 @@
     "exports": {
         ".": "./src/index.ts",
         "./backgrounds": "./src/backgrounds.ts",
-        "./settings": "./src/settings.ts"
+        "./settings": "./src/settings.ts",
+        "./model-limits": "./src/model-limits.ts"
     },
     "dependencies": {
         "@st/protocol": "*",

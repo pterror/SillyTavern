@@ -30,13 +30,16 @@ export function readSettingsFor(directories, context, paths) {
 }
 
 /**
- * The user's own settings, no chat or character's (preferences, catalogs, the library's options).
+ * The user's own settings, no chat or character's (preferences, catalogs, the library's options), each limited value
+ * within what its model allows, as a generation's are.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string[]} paths
  * @returns {Record<string, any>}
  */
 export function readUserSettings(directories, paths) {
-    return readSettingsAtPaths(directories, paths);
+    const document = settingsDocumentOf(directories);
+    if (!document) return readSettingsAtPaths(directories, paths);
+    return valuesAtPaths(document.settingsFor({}), paths);
 }
 
 /**

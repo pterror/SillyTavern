@@ -3,8 +3,8 @@ import type { Level, LevelRange, Range, SettingsView } from '@st/protocol/settin
 import type { ChatOwner } from '@st/protocol';
 import { defineArea } from './index.ts';
 import type { ActionResult, ChatRef, User, ViewContext } from './index.ts';
-import { MODEL_SETTING, limitsFor } from './model-limits.ts';
-import type { ModelRecord } from './model-limits.ts';
+import { limitsOfSettings } from './model-limits.ts';
+import type { ModelLists, ModelRecord } from './model-limits.ts';
 
 // The AI response configuration panel's settings (packages/protocol/src/settings.ts): a tab's chat's settings over
 // the range of levels the tab shows, and edits of one field at a time, each written where its level says (the old
@@ -45,17 +45,14 @@ const textAt = (settings: Record<string, unknown>, path: string): string => {
  * Each limited field's range for these settings: the context and response limits by whether they're unlocked, and
  * what the chat completion source and model allow for its context size, temperature and penalties.
  */
-function rangesFor(settings: Record<string, unknown>, models: (source: string) => readonly ModelRecord[]) {
+function rangesFor(settings: Record<string, unknown>, models: ModelLists) {
     const ranges: Record<string, Range> = {};
     const unlocked = valueAt(settings, 'power_user.max_context_unlocked') === true;
     for (const field of FIELDS) if (field.limits) ranges[field.id] = rangeOf(field, unlocked);
-    const source = textAt(settings, 'oai_settings.chat_completion_source');
-    const setting = MODEL_SETTING[source];
-    const limits = limitsFor(
-        source,
-        setting ? textAt(settings, `oai_settings.${setting}`) : '',
-        valueAt(settings, 'oai_settings.max_context_unlocked') === true,
-        models(source),
+    const oai = valueAt(settings, 'oai_settings');
+    const limits = limitsOfSettings(
+        oai !== null && typeof oai === 'object' ? (oai as Record<string, unknown>) : {},
+        models,
     );
     ranges['openai_max_context'] = { min: 512, max: limits.context, step: 1 };
     ranges['temp_openai'] = { min: 0, max: limits.temperature, step: 0.01 };
