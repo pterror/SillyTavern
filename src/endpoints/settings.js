@@ -19,6 +19,7 @@ import {
     settingsExist,
 } from '../settings-store.js';
 import { requestStore, storeRoute, userStore } from '../user-stores.js';
+import { listBundleFiles } from '../bundle-files.js';
 
 const ENABLE_EXTENSIONS = !!getConfigValue('extensions.enabled', true, 'boolean');
 const ENABLE_EXTENSIONS_AUTO_UPDATE = !!getConfigValue('extensions.autoUpdate', true, 'boolean');
@@ -99,73 +100,12 @@ async function reportIgnoredCharLore(request, charLore) {
 }
 
 /**
- * Reads and parses files from a directory.
- * @param {string} directoryPath Path to the directory
- * @param {string} fileExtension File extension
- * @returns {Array} Parsed files
- */
-function readAndParseFromDirectory(directoryPath, fileExtension = '.json') {
-    const files = fs
-        .readdirSync(directoryPath)
-        .filter(x => path.parse(x).ext == fileExtension)
-        .sort();
-
-    const parsedFiles = [];
-
-    files.forEach(item => {
-        try {
-            const file = fs.readFileSync(path.join(directoryPath, item), 'utf-8');
-            parsedFiles.push(fileExtension == '.json' ? JSON.parse(file) : file);
-        } catch {
-            // skip
-        }
-    });
-
-    return parsedFiles;
-}
-
-/**
- * Gets a sort function for sorting strings.
- * @param {*} _
- * @returns {(a: string, b: string) => number} Sort function
- */
-function sortByName(_) {
-    return (a, b) => a.localeCompare(b);
-}
-
-/**
  * Gets backup file prefix for user settings.
  * @param {string} handle User handle
  * @returns {string} File prefix
  */
 export function getSettingsBackupFilePrefix(handle) {
     return `settings_${handle}_`;
-}
-
-function readPresetsFromDirectory(directoryPath, options = {}) {
-    const {
-        sortFunction,
-        removeFileExtension = false,
-        fileExtension = '.json',
-    } = options;
-
-    const files = fs.readdirSync(directoryPath).sort(sortFunction).filter(x => path.parse(x).ext == fileExtension);
-    const fileContents = [];
-    const fileNames = [];
-
-    files.forEach(item => {
-        try {
-            const file = fs.readFileSync(path.join(directoryPath, item), 'utf8');
-            JSON.parse(file);
-            fileContents.push(file);
-            fileNames.push(removeFileExtension ? item.replace(/\.[^/.]+$/, '') : item);
-        } catch {
-            // skip
-            console.warn(`${item} is not a valid JSON`);
-        }
-    });
-
-    return { fileContents, fileNames };
 }
 
 async function backupSettings() {
@@ -400,40 +340,27 @@ router.post('/get', storeRoute('reading settings', async (request, response) => 
         return response.sendStatus(500);
     }
 
-    // NovelAI Settings
-    const { fileContents: novelai_settings, fileNames: novelai_setting_names }
-        = readPresetsFromDirectory(request.user.directories.novelAI_Settings, {
-            sortFunction: sortByName(request.user.directories.novelAI_Settings),
-            removeFileExtension: true,
-        });
-
-    // OpenAI Settings
-    const { fileContents: openai_settings, fileNames: openai_setting_names }
-        = readPresetsFromDirectory(request.user.directories.openAI_Settings, {
-            sortFunction: sortByName(request.user.directories.openAI_Settings), removeFileExtension: true,
-        });
-
-    // TextGenerationWebUI Settings
-    const { fileContents: textgenerationwebui_presets, fileNames: textgenerationwebui_preset_names }
-        = readPresetsFromDirectory(request.user.directories.textGen_Settings, {
-            sortFunction: sortByName(request.user.directories.textGen_Settings), removeFileExtension: true,
-        });
-
-    //Kobold
-    const { fileContents: koboldai_settings, fileNames: koboldai_setting_names }
-        = readPresetsFromDirectory(request.user.directories.koboldAI_Settings, {
-            sortFunction: sortByName(request.user.directories.koboldAI_Settings), removeFileExtension: true,
-        });
+    const { directories } = request.user;
+    // Sampler presets as their files' text, by name in locale order; the other bundles parsed, in code-unit order.
+    const presets = (/** @type {string} */ group) => {
+        const listed = listBundleFiles(directories, group, { order: 'locale' });
+        return { texts: listed.map(entry => entry.text), names: listed.map(entry => entry.name) };
+    };
+    const parsed = (/** @type {string} */ group) => listBundleFiles(directories, group).map(entry => entry.file);
+    const { texts: novelai_settings, names: novelai_setting_names } = presets('preset.novel');
+    const { texts: openai_settings, names: openai_setting_names } = presets('preset.openai');
+    const { texts: textgenerationwebui_presets, names: textgenerationwebui_preset_names } = presets('preset.textgenerationwebui');
+    const { texts: koboldai_settings, names: koboldai_setting_names } = presets('preset.kobold');
 
     const world_names = (await (await requestStore(request)).lib.books.list()).map(book => book.file_id);
 
-    const themes = readAndParseFromDirectory(request.user.directories.themes);
-    const quickReplyPresets = readAndParseFromDirectory(request.user.directories.quickreplies);
+    const themes = parsed('theme');
+    const quickReplyPresets = parsed('quickReplies');
 
-    const instruct = readAndParseFromDirectory(request.user.directories.instruct);
-    const context = readAndParseFromDirectory(request.user.directories.context);
-    const sysprompt = readAndParseFromDirectory(request.user.directories.sysprompt);
-    const reasoning = readAndParseFromDirectory(request.user.directories.reasoning);
+    const instruct = parsed('template.instruct');
+    const context = parsed('template.context');
+    const sysprompt = parsed('template.sysprompt');
+    const reasoning = parsed('template.reasoning');
 
     // The hashes are of the settings as stored, without charLore; the page gets it filled in.
     const keyHashes = {};

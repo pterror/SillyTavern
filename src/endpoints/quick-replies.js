@@ -1,9 +1,8 @@
 import fs from 'node:fs';
-import path from 'node:path';
 
 import express from 'express';
-import sanitize from 'sanitize-filename';
-import { sync as writeFileAtomicSync } from 'write-file-atomic';
+
+import { bundleFilePath, deleteBundleFile, writeBundleFile } from '../bundle-files.js';
 
 export const router = express.Router();
 
@@ -12,10 +11,7 @@ router.post('/save', (request, response) => {
         return response.sendStatus(400);
     }
 
-    const filename = path.join(request.user.directories.quickreplies, sanitize(`${request.body.name}.json`));
-    writeFileAtomicSync(filename, JSON.stringify(request.body, null, 4), 'utf8');
-
-    return response.sendStatus(200);
+    return response.sendStatus(writeBundleFile(request.user.directories, 'quickReplies', request.body.name, request.body) ? 200 : 400);
 });
 
 router.post('/save-partial', (request, response) => {
@@ -24,7 +20,10 @@ router.post('/save-partial', (request, response) => {
         return response.sendStatus(400);
     }
 
-    const filename = path.join(request.user.directories.quickreplies, sanitize(`${name}.json`));
+    const filename = bundleFilePath(request.user.directories, 'quickReplies', name);
+    if (!filename) {
+        return response.sendStatus(400);
+    }
 
     // Read current state (synchronous read-modify-write, same concurrency model as settings/save-partial)
     let current = {};
@@ -38,7 +37,9 @@ router.post('/save-partial', (request, response) => {
 
     // 1. Merge set-level properties (shallow, never touches qrList/name)
     if (setProps && typeof setProps === 'object' && !Array.isArray(setProps)) {
-        const { qrList: _ql, name: _n, ...safeProps } = setProps;
+        const safeProps = { ...setProps };
+        delete safeProps.qrList;
+        delete safeProps.name;
         Object.assign(current, safeProps);
     }
 
@@ -82,7 +83,7 @@ router.post('/save-partial', (request, response) => {
         current.qrList = [...ordered, ...remaining];
     }
 
-    writeFileAtomicSync(filename, JSON.stringify(current, null, 4), 'utf8');
+    writeBundleFile(request.user.directories, 'quickReplies', name, current);
     return response.send({ ok: true, assignedIds });
 });
 
@@ -91,10 +92,6 @@ router.post('/delete', (request, response) => {
         return response.sendStatus(400);
     }
 
-    const filename = path.join(request.user.directories.quickreplies, sanitize(`${request.body.name}.json`));
-    if (fs.existsSync(filename)) {
-        fs.unlinkSync(filename);
-    }
-
+    deleteBundleFile(request.user.directories, 'quickReplies', request.body.name);
     return response.sendStatus(200);
 });
