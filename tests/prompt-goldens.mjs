@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
-import { PARITY_CASES, applyChatMetadata, applyPowerUser } from './frontend/prompt-parity-cases.js';
+import { PARITY_CASES, applyChatMetadata, applyPowerUser, createLorebook } from './frontend/prompt-parity-cases.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const out = path.join(here, 'frontend', 'prompt-goldens');
@@ -30,6 +30,7 @@ try {
             $('#main_api').val('textgenerationwebui').trigger('change');
             $('#textgen_type').val('llamacpp').trigger('change');
         });
+        if (parityCase.lorebook) await page.evaluate(createLorebook, parityCase.lorebook);
         await page.evaluate(async (card) => {
             // @ts-ignore
             const context = SillyTavern.getContext();
