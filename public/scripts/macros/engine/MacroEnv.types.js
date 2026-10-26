@@ -73,6 +73,7 @@
  * @property {string[]} [bannedWords] Where {{banned}} puts each word it bans, for a text-completion request.
  * @property {(key: string) => string} [outlet] A world info outlet's text.
  * @property {boolean} [isMobile]
+ * @property {number} [utcOffset] The user's offset from UTC in minutes, for the time macros; left out: this process's own.
  * @property {string} [lastGenerationType]
  * @property {{ names: string[], disabled: string[] }} [extensions] The extensions there are, and those turned off.
  * @property {Record<string, any>} [instruct] The instruct template, when instruct mode is on.

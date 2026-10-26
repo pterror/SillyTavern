@@ -13,6 +13,7 @@ import { recordStored } from './stored-messages.js';
  * @property {string} [input] What is typed in the message box.
  * @property {number|null} [firstDisplayedMessageId] The first message shown.
  * @property {boolean} [isMobile]
+ * @property {number} [utcOffset] The user's offset from UTC in minutes.
  * @property {{ names: string[], disabled: string[] }} [extensions] The extensions there are, and those turned off.
  */
 
@@ -32,6 +33,7 @@ export function readPageMacroFacts(body) {
         ...(typeof facts.input === 'string' ? { input: facts.input } : {}),
         ...(typeof facts.firstDisplayedMessageId === 'number' ? { firstDisplayedMessageId: facts.firstDisplayedMessageId } : {}),
         ...(typeof facts.isMobile === 'boolean' ? { isMobile: facts.isMobile } : {}),
+        ...(Number.isFinite(facts.utcOffset) && Math.abs(facts.utcOffset) <= 16 * 60 ? { utcOffset: facts.utcOffset } : {}),
         ...(isNameList(facts.extensions?.names) && isNameList(facts.extensions?.disabled) ? { extensions: { names: facts.extensions.names, disabled: facts.extensions.disabled } } : {}),
     };
 }
@@ -66,6 +68,7 @@ export function generationMacroFacts({ powerUser, extensionSettings, mainApi, ty
         currentInput: pageFacts.input,
         firstDisplayedMessageId: pageFacts.firstDisplayedMessageId,
         isMobile: pageFacts.isMobile,
+        utcOffset: pageFacts.utcOffset,
         extensions: pageFacts.extensions,
     };
 }
