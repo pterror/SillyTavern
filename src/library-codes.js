@@ -47,6 +47,13 @@ export const FIELD = Object.freeze({
 export const TAG_KEY_PREFIX = 'tag:';
 
 /**
+ * A character's or group's values stating its settings (the settings model's character level: its connected
+ * personas, data bank files, quick reply sets), `<prefix><what>`: written by the settings model, never by a card or
+ * group write, and not the card's or group's own.
+ */
+export const STATEMENT_PREFIX = 'stmt:';
+
+/**
  * The `metaValue` name of a file in `characters/` the conversion converted, whose value is `[size, mtimeMs]` as it
  * was then: `/metadata/rescan` doesn't import it again (the conversion leaves the old store's PNGs there).
  * @param {string} name The file's name in `characters/`.

@@ -5,8 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { loadEngine } from '../../engine/load.js';
-import { LibraryEngine } from '../library-engine.js';
-import { TYPE } from '../library-codes.js';
+import { LibraryEngine, cardParts } from '../library-engine.js';
+import { STATEMENT_PREFIX, TYPE } from '../library-codes.js';
 import { readCatalog, readDraft, writeDrafts } from './model-store.js';
 import { presetFromUpstream } from './sampler-presets.js';
 import { profilesFromUpstream } from './connection-catalogs.js';
@@ -116,4 +116,17 @@ test('a catalog reads a page at a time in key order, parts with their holders, a
     await writeDrafts(lib, [presetFromUpstream('openai', 'P', { prompts: [{ identifier: 'x' }, { identifier: 'y' }] }).preset]);
     await writeDrafts(lib, [presetFromUpstream('openai', 'P', { prompts: [{ identifier: 'y' }] }).preset]);
     assert.deepEqual((await readCatalog(lib, TYPE.chatPrompt, { limit: 10 })).drafts.map(d => d.key), ['openai:P:y']);
+});
+
+test('a character\'s statements outlive a write of its card, and aren\'t the card\'s', async () => {
+    const lib = await open('statements');
+    const card = name => JSON.stringify({ name, description: '', personality: '', scenario: '', first_mes: 'Hello.', mes_example: '', spec: 'chara_card_v2', spec_version: '2.0', data: { name, description: '', personality: '', scenario: '', first_mes: 'Hello.', mes_example: '', creator_notes: '', system_prompt: '', post_history_instructions: '', alternate_greetings: [], tags: [], creator: '', character_version: '', extensions: {} } });
+    const { id } = await lib.writeCard({}, 'cara.png', card('Cara'));
+    await lib.store.commit([{ kind: 'jsonValue', entity: id, field: `${STATEMENT_PREFIX}personas`, json: '["7"]' }]);
+    await lib.writeCard({}, 'cara.png', card('Cara Prime'));
+    const [stored] = await lib.entities([id]);
+    assert.equal(stored.values.find(v => v.field === `${STATEMENT_PREFIX}personas`)?.json, '["7"]');
+    const parts = cardParts(stored);
+    assert.equal(parts.columns.name, 'Cara Prime');
+    assert.deepEqual(parts.extra.filter(x => x.path.startsWith(STATEMENT_PREFIX)), []);
 });
