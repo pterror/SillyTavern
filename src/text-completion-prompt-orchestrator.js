@@ -22,6 +22,7 @@ import { createNovelGenerationData } from './novel-generation-data.js';
 import { baseChatReplace, substituteParams } from './macro-substitution.js';
 import { formatInstructModeExamples } from './instruct-mode-examples.js';
 import { createExtensionPromptTable, setExtensionPrompt, getExtensionPrompt, doChatInject, extension_prompt_types } from './extension-prompt-table.js';
+import { inject_ids } from '../public/scripts/constants.js';
 
 /**
  * Server-side orchestrator that reproduces the TEXT-COMPLETION-FAMILY prompt-assembly pipeline of
@@ -304,6 +305,8 @@ function parseMesExamplesBlocks(examplesStr, isInstruct, exampleSeparator = '') 
  *   getRegexedString() call. Default `true`.
  *
  * --- Context/token budget -------------------------------------------------------------------------
+ * @property {import('./extension-prompt-table.js').ExtensionPromptTable} [pageInjections] What the page's extensions inject
+ *   (src/page-injections.js), under the page's keys.
  * @property {number} thisMaxContext How many tokens the prompt may take, before CFG takes its share: upstream's
  *   getMaxContextSize(), the context less the reply's length.
  * @property {number} [maxContext] The context size setting, sent as is to a backend that takes it (KoboldAI's
@@ -690,6 +693,11 @@ export async function assembleTextCompletionPrompt(input) {
     // ~5773-5776, which in turn happens before renderStoryString() is called - so a note positioned at
     // BEFORE_PROMPT/IN_PROMPT can only ever reach assembleStoryString() if it's written first.
     const extensionPromptTable = createExtensionPromptTable();
+    // What the page's extensions inject (`/inject`, an extension's setExtensionPrompt()), under the page's keys, as
+    // the page's own table holds them beside what the build adds.
+    for (const [key, entry] of Object.entries(input.pageInjections ?? {})) {
+        setExtensionPrompt(extensionPromptTable, key, entry.value, entry.position, entry.depth, entry.scan, entry.role);
+    }
 
     // Author's note. JUDGMENT CALL (updated from the prior task): resolveAuthorsNote()'s own doc
     // comment states `authorsNote.position` is "One of extension_prompt_types positions" - i.e. it is
@@ -719,7 +727,7 @@ export async function assembleTextCompletionPrompt(input) {
             ? `${anBefore.join('\n')}\n${authorsNote.value}\n${anAfter.join('\n')}`.replace(/(^\n)|(\n$)/g, '')
             : authorsNote.value;
         setExtensionPrompt(
-            extensionPromptTable, 'authors_note', noteValue,
+            extensionPromptTable, inject_ids.AUTHORS_NOTE, noteValue,
             authorsNote.position, authorsNote.depth, false, authorsNote.role,
         );
     }
@@ -798,7 +806,7 @@ export async function assembleTextCompletionPrompt(input) {
     for (const depthEntry of worldInfoDepthEntries) {
         setExtensionPrompt(
             extensionPromptTable,
-            `wi_depth_${depthEntry.depth}_${depthEntry.role}`,
+            inject_ids.CUSTOM_WI_DEPTH_ROLE(depthEntry.depth, depthEntry.role),
             depthEntry.entries.join('\n'),
             extension_prompt_types.IN_CHAT,
             depthEntry.depth,
@@ -811,7 +819,7 @@ export async function assembleTextCompletionPrompt(input) {
     // only when power_user.context.story_string_position === IN_CHAT on the client).
     if (storyStringInjection) {
         setExtensionPrompt(
-            extensionPromptTable, 'story_string', storyStringInjection.content,
+            extensionPromptTable, inject_ids.STORY_STRING, storyStringInjection.content,
             extension_prompt_types.IN_CHAT, storyStringInjection.depth, false, storyStringInjection.role,
         );
     }
@@ -848,13 +856,13 @@ export async function assembleTextCompletionPrompt(input) {
     if (groupCharacterDepthPrompts.length > 0) {
         groupCharacterDepthPrompts.forEach((depthPrompt, index) => {
             setExtensionPrompt(
-                extensionPromptTable, `depth_prompt_${index}`, depthPrompt.text,
+                extensionPromptTable, inject_ids.DEPTH_PROMPT_INDEX(index), depthPrompt.text,
                 extension_prompt_types.IN_CHAT, depthPrompt.depth, noteSettings.allowWIScan, depthPrompt.role,
             );
         });
     } else if (hasCharacterOrGroup && fields.charDepthPrompt) {
         setExtensionPrompt(
-            extensionPromptTable, 'depth_prompt', fields.charDepthPrompt || '',
+            extensionPromptTable, inject_ids.DEPTH_PROMPT, fields.charDepthPrompt || '',
             extension_prompt_types.IN_CHAT, fields.charDepthPromptDepth, noteSettings.allowWIScan, fields.charDepthPromptRole,
         );
     }

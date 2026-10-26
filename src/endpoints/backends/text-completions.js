@@ -536,6 +536,7 @@ router.post('/props', async function (request, response) {
  * @param {string} [params.userMessageText] The literal text the user typed this turn. Omit for
  * generation types that don't add a new message (continue/swipe).
  * @param {import('../../macro-facts.js').PageMacroFacts} [params.pageFacts] What only the page knows, for the macros.
+ * @param {import('../../extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections] What the page's extensions inject (src/page-injections.js).
  * @param {object} [params.userMessageExtra] Already-SERVER-VALIDATED `extra` (see
  * `sanitizeUserMessageExtra()` in user-message-extra.js) for the new user message being appended -
  * forwarded verbatim to `resolveTextCompletionGenerationInput()` and reused as-is for the real
@@ -549,7 +550,7 @@ router.post('/props', async function (request, response) {
  */
 export async function buildRawActionTextCompletionRequest(directories, {
     request, characterAvatar, groupId, chat, nodeId,
-    type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra, pageFacts = {},
+    type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra, pageFacts = {}, pageInjections = {},
     // Test-only injection point, forwarded straight through to encodeWithTokenizerType()'s own
     // `encodeLocal`/`encodeTextgenRemote`/`fetchImpl` options (see that function's JSDoc) - lets a
     // test exercise this function end-to-end without real tokenizer model files or a live backend
@@ -633,7 +634,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
     // Step 4
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, chatContext: chat, nodeId,
-        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts,
+        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts, pageInjections,
         countTokens, encodeTokens, countPromptTokens, macroExtras: textCompletionQuietInput(quiet),
     });
 
@@ -835,14 +836,14 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             answerSessionOnHeaders(response, chat.session);
             const turn = await generateTurnOf(response, chat, request.body);
             if (!turn) return;
-            const { nodeId, userMessageText, userMessageExtra, quiet, pageFacts } = turn;
+            const { nodeId, userMessageText, userMessageExtra, quiet, pageFacts, pageInjections } = turn;
 
             /** @type {Awaited<ReturnType<typeof buildRawActionTextCompletionRequest>>} */
             let built;
             try {
                 built = await buildRawActionTextCompletionRequest(directories, {
                     request, characterAvatar, groupId, chat, nodeId,
-                    type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, quiet, pageFacts,
+                    type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, quiet, pageFacts, pageInjections,
                 });
             } catch (error) {
                 console.error('Failed to build raw-action text completion request:', error);

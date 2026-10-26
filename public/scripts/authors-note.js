@@ -13,7 +13,7 @@ import { extension_settings, getContext, saveMetadataDebounced } from './extensi
 import { getCharaFilename, debounce, delay } from './utils.js';
 import { getRememberedTokenizerAnswer, getTokenCountWithAnswer } from './tokenizers.js';
 import { renderCountBasis } from './tokenizer-notices.js';
-import { debounce_timeout } from './constants.js';
+import { debounce_timeout, inject_ids } from './constants.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument } from './slash-commands/SlashCommandArgument.js';
@@ -21,7 +21,7 @@ export { MODULE_NAME as NOTE_MODULE_NAME };
 import { t } from './i18n.js';
 import { macros, MacroCategory } from './macros/macro-system.js';
 
-const MODULE_NAME = '2_floating_prompt'; // <= Deliberate, for sorting lower than memory
+const MODULE_NAME = inject_ids.AUTHORS_NOTE;
 
 export var shouldWIAddPrompt = false;
 

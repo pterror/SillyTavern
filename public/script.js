@@ -3382,7 +3382,7 @@ function cleanGroupMessage(getMessage) {
 }
 
 export function addPersonaDescriptionExtensionPrompt() {
-    const INJECT_TAG = 'PERSONA_DESCRIPTION';
+    const INJECT_TAG = inject_ids.PERSONA_DESCRIPTION;
     setExtensionPrompt(INJECT_TAG, '', extension_prompt_types.IN_PROMPT, 0);
 
     const personaDescription = getPersonaDescription();

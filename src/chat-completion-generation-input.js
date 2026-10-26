@@ -680,6 +680,8 @@ async function resolveChatHistory(chat, { branchName, nodeId }) {
  * @param {string} [params.quietImage] Image inlined into the quiet-prompt message.
  * @param {object} [params.macroExtras] Shallow-merged over the resolved input object.
  * @param {import('./macro-facts.js').PageMacroFacts} [params.pageFacts] What only the page knows, for the macros.
+ * @param {import('./extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections] What the page's extensions
+ *   inject (src/page-injections.js).
  * @param {import('./llamacpp-props.js').LlamaCppPropsCheck} [params.llamaCppProps] The send's `/props`
  * check for a custom URL that is llama.cpp (see ChatCompletionConnection).
  * @param {import('./token-count-store.js').PendingTokenRows} [params.tokenCountRows] Where the default
@@ -698,7 +700,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     model: modelOverride, modelList, characterId = PROMPT_ORDER_DUMMY_ID,
     countTokenAsyncFn: countTokenAsyncFnOverride, tokenHandler: tokenHandlerOverride,
     quietPrompt, quietImage,
-    macroExtras = {}, llamaCppProps, tokenCountRows: tokenCountRowsParam, pageFacts = {},
+    macroExtras = {}, llamaCppProps, tokenCountRows: tokenCountRowsParam, pageFacts = {}, pageInjections = {},
 } = {}) {
     void isImpersonate; void isContinue; // Folded into `type` by the caller; kept as documented params for parity with the task's signature, matching text-completion-generation-input.js's own equivalents (which are likewise not separately re-derived from `type` there either).
     // `isSwipe` IS read (see `promptChat` below) - unlike isImpersonate/isContinue, it drives real

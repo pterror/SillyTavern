@@ -99,6 +99,32 @@ export function forgetStored(nodeIds) {
     for (const id of nodeIds) if (typeof id === 'string') _messageSnapshots.delete(id);
 }
 
+/** The injections the page's own prompt build writes: the server's build writes them too, from the chat and settings. */
+const BUILD_INJECTIONS = new Set([inject_ids.AUTHORS_NOTE, inject_ids.PERSONA_DESCRIPTION, inject_ids.STORY_STRING, inject_ids.QUIET_PROMPT, inject_ids.DEPTH_PROMPT]);
+
+/** @param {string} key */
+const isBuildInjection = key => BUILD_INJECTIONS.has(key)
+    || key.startsWith(`${inject_ids.DEPTH_PROMPT}_`)
+    || key.startsWith(inject_ids.CUSTOM_WI_DEPTH)
+    || key.startsWith(inject_ids.CUSTOM_WI_OUTLET(''));
+
+/**
+ * What the page's extensions and scripts inject into the prompt now (`/inject`, an extension's setExtensionPrompt()),
+ * sent with a generation the server builds (src/page-injections.js): they run here. One whose filter says no, now,
+ * is left out, as the page's own build leaves it out.
+ * @returns {Promise<Record<string, { value: string, position: number, depth: number, scan: boolean, role: number }>>}
+ */
+async function pageInjections() {
+    /** @type {Record<string, { value: string, position: number, depth: number, scan: boolean, role: number }>} */
+    const out = {};
+    for (const [key, prompt] of Object.entries(extension_prompts)) {
+        if (isBuildInjection(key) || !prompt?.value) continue;
+        if (typeof prompt.filter === 'function' && !await prompt.filter()) continue;
+        out[key] = { value: prompt.value, position: prompt.position, depth: prompt.depth, scan: !!prompt.scan, role: prompt.role };
+    }
+    return out;
+}
+
 /**
  * Whether `message` is as last stored at its node_id (nothing changed on the page since).
  * @param {ChatMessage|null|undefined} message
@@ -1415,6 +1441,8 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 user_message_ref: sentMessage !== undefined ? storeRefOf(sentUserMessage) : undefined,
                 // What only the page knows of what the macros read.
                 macro_facts: pageMacroFacts(),
+                // What the page's extensions and scripts inject; the server builds the prompt.
+                extension_prompts: await pageInjections(),
                 // Kobold-only: mirrors the EXACT real condition getKoboldGenerationData() (public/
                 // scripts/kai-settings.js) and its server-side port createKoboldGenerationData()
                 // (src/kobold-generation-data.js) both use for their own `streaming` field -
@@ -1724,6 +1752,8 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 user_message_ref: sentMessage !== undefined ? storeRefOf(sentUserMessage) : undefined,
                 // What only the page knows of what the macros read.
                 macro_facts: pageMacroFacts(),
+                // What the page's extensions and scripts inject; the server builds the prompt.
+                extension_prompts: await pageInjections(),
                 // Chunk (c) - see this block's own comment on `clientToolsPayload` immediately above.
                 client_tools: clientToolsPayload,
                 // THIS TASK - see this block's own comment on `stealthToolNamesPayload` immediately above.

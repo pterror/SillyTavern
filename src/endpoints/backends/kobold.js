@@ -64,6 +64,7 @@ export const router = express.Router();
  * @param {boolean} [params.isSwipe]
  * @param {string} [params.userMessageText]
  * @param {import('../../macro-facts.js').PageMacroFacts} [params.pageFacts] What only the page knows, for the macros.
+ * @param {import('../../extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections] What the page's extensions inject (src/page-injections.js).
  * @param {object} [params.userMessageExtra] Already-SERVER-VALIDATED `extra` (see
  * `sanitizeUserMessageExtra()` in user-message-extra.js) for the new user message being appended -
  * identical contract to buildRawActionTextCompletionRequest()'s own equivalent param. Kobold has no
@@ -83,7 +84,7 @@ export const router = express.Router();
  */
 export async function buildRawActionKoboldRequest(directories, {
     request, characterAvatar, groupId, chat, nodeId,
-    type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra, pageFacts = {},
+    type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra, pageFacts = {}, pageInjections = {},
     tokenizerOptions = {}, macroExtras = {},
 } = {}) {
     if (!characterAvatar && !groupId) {
@@ -141,7 +142,7 @@ export async function buildRawActionKoboldRequest(directories, {
 
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, mainApi: 'kobold', chatContext: chat, nodeId,
-        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts,
+        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts, pageInjections,
         countTokens, encodeTokens, macroExtras,
     });
 
@@ -224,13 +225,13 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
         answerSessionOnHeaders(response_generate, chat.session);
         const turn = await generateTurnOf(response_generate, chat, request.body);
         if (!turn) return;
-        const { nodeId, userMessageText, userMessageExtra, quiet, pageFacts } = turn;
+        const { nodeId, userMessageText, userMessageExtra, quiet, pageFacts, pageInjections } = turn;
 
         let built;
         try {
             built = await buildRawActionKoboldRequest(directories, {
                 request, characterAvatar, groupId, chat, nodeId,
-                type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts,
+                type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts, pageInjections,
                 macroExtras: textCompletionQuietInput(quiet),
             });
         } catch (error) {
