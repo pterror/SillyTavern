@@ -4,8 +4,10 @@ import path from 'node:path';
 import sanitize from 'sanitize-filename';
 import { createUi } from '@st/server-ui';
 import { backgroundsArea } from '@st/server-ui/backgrounds';
+import { settingsArea } from '@st/server-ui/settings';
 
 import { userStore } from './user-stores.js';
+import { TYPE } from './library-engine.js';
 import { getImages, clientRelativePath, humanizedDateTime, isPathUnderParent } from './util.js';
 import { getThumbnailVersion, invalidateThumbnail } from './endpoints/thumbnails.js';
 import {
@@ -205,7 +207,36 @@ const backgroundPorts = {
 /** The backgrounds' views (packages/protocol/src/backgrounds.ts). */
 export const BACKGROUND_VIEWS = ['backgrounds', 'backgrounds.chat'];
 
-export const ui = createUi([backgroundsArea(backgroundPorts)], {
+/** The settings' view (packages/protocol/src/settings.ts). */
+export const SETTINGS_VIEWS = ['settings'];
+
+/**
+ * The settings document's context for a chat's owner.
+ * @param {import('@st/protocol').ChatOwner | null} owner
+ */
+const contextOf = owner => ({ avatar: owner && 'avatar' in owner ? owner.avatar : null, groupId: owner && 'group' in owner ? owner.group : null });
+
+/** @type {import('@st/server-ui/settings').Ports} */
+const settingsPorts = {
+    async view(user, owner, range) {
+        const document = settingsDocumentOf(user.directories);
+        if (!document) return { settings: readAllSettings(directoriesOf(user)), sources: {} };
+        return document.view(contextOf(owner), range);
+    },
+    async writeAt(user, owner, range, path, value) {
+        const document = settingsDocumentOf(user.directories);
+        if (!document) throw new Error(`The settings of ${user.handle} aren't open`);
+        await document.writeAt(contextOf(owner), range, path, value);
+    },
+    async ownerOf(user, chat) {
+        const store = await userStore(directoriesOf(user), user.handle);
+        const [key] = await store.lib.store.libraryKeys([BigInt(chat.tree)]);
+        if (!key) return null;
+        return key.type === TYPE.group ? { group: key.key } : { avatar: key.key };
+    },
+};
+
+export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts)], {
     userOf: request => (request.user ? uiUser(request) : null),
     async chatOf(user, owner) {
         const store = await userStore(directoriesOf(user), user.handle);

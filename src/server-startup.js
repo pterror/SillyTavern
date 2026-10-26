@@ -37,7 +37,7 @@ import { router as settingsRouter } from './endpoints/settings.js';
 import { router as tagsRouter } from './endpoints/tags.js';
 import { router as viewsRouter } from './endpoints/views.js';
 import { router as backgroundsRouter } from './endpoints/backgrounds.js';
-import { ui, uiUser, BACKGROUND_VIEWS } from './ui-wiring.js';
+import { ui, uiUser, BACKGROUND_VIEWS, SETTINGS_VIEWS } from './ui-wiring.js';
 import { router as spritesRouter } from './endpoints/sprites.js';
 import { router as stableDiffusionRouter } from './endpoints/stable-diffusion.js';
 import { router as hordeRouter } from './endpoints/horde.js';
@@ -177,13 +177,17 @@ export function setupPrivateEndpoints(app) {
     app.use('/api/groups', groupsRouter);
     app.use('/api/worldinfo', worldInfoRouter);
     app.use('/api/stats', statsRouter);
-    // The old routes that write backgrounds or their folders (upstream's, kept for extensions): what they change is
-    // pushed to the user's tabs that show it, as the new page's own actions are.
-    const OLD_BACKGROUND_WRITES = /^\/api\/(backgrounds\/(delete|rename|upload)|image-metadata\/folders\/(create|set-thumbnails|update|delete|assign|set-membership|unassign))$/;
+    // The old routes that write what the new page shows (upstream's, kept for the old page and extensions): what they
+    // change is pushed to the user's tabs that show it, as the new page's own actions are.
+    const OLD_WRITES = [
+        [/^\/api\/(backgrounds\/(delete|rename|upload)|image-metadata\/folders\/(create|set-thumbnails|update|delete|assign|set-membership|unassign))$/, BACKGROUND_VIEWS],
+        [/^\/api\/settings\/(save|save-partial|level|toggle-extension)$/, SETTINGS_VIEWS],
+    ];
     app.use((request, response, next) => {
-        if (request.method === 'POST' && OLD_BACKGROUND_WRITES.test(request.path) && request.user) {
+        const views = request.method === 'POST' && request.user ? OLD_WRITES.find(([route]) => route.test(request.path))?.[1] : undefined;
+        if (views) {
             response.on('finish', () => {
-                if (response.statusCode < 400) ui.changed(uiUser(request), BACKGROUND_VIEWS).catch(error => console.error('[ui] backgrounds not pushed:', error));
+                if (response.statusCode < 400) ui.changed(uiUser(request), views).catch(error => console.error('[ui] not pushed:', error));
             });
         }
         next();
