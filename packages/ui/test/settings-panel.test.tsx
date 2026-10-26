@@ -1,11 +1,16 @@
 import { createRoot, createSignal } from 'solid-js';
+import type { JSX } from 'solid-js';
 import { render } from 'solid-js/web';
 import { expect, test } from 'vite-plus/test';
 import { FIELDS } from '@st/protocol/settings';
 import type { SettingsView } from '@st/protocol/settings';
 import type { Client } from '../src/client.ts';
 import { UiProvider } from '../src/context.ts';
-import { LevelSlider, SettingsPanel, isShown } from '../src/areas/settings/Panel.tsx';
+import { LevelSlider } from '../src/areas/settings/LevelSlider.tsx';
+import { CcOptions, CcSamplers, CcUtility } from '../src/areas/settings/cc.tsx';
+import type { Support } from '../src/areas/settings/cc.tsx';
+import { isShown } from '../src/areas/settings/fields.tsx';
+import { settingsCompat } from '../src/areas/settings/compat.ts';
 
 // The panel against a stand-in client: it draws the view it's given and sends what the user does.
 
@@ -13,7 +18,14 @@ function viewOf(over: Partial<SettingsView> = {}): SettingsView {
     return {
         context: { avatar: 'cara.png' },
         range: { from: 'default', to: 'user' },
-        values: { 'oai_settings.temp_openai': 1.2, 'oai_settings.names_behavior': 0 },
+        values: {
+            'oai_settings.temp_openai': 1.2,
+            'oai_settings.names_behavior': 0,
+            'oai_settings.show_thoughts': false,
+            'oai_settings.function_calling': true,
+            'oai_settings.assistant_prefill': '',
+            'oai_settings.assistant_impersonation': '',
+        },
         sources: { 'oai_settings.temp_openai': 'user' },
         counts: { user: 1, character: 3 },
         ranges: {},
@@ -22,7 +34,7 @@ function viewOf(over: Partial<SettingsView> = {}): SettingsView {
     };
 }
 
-function mount(view: SettingsView, answer: { ok: true } | { ok: false; error: string } = { ok: true }) {
+function stand(view: SettingsView, answer: { ok: true } | { ok: false; error: string } = { ok: true }) {
     const [current, setCurrent] = createSignal<SettingsView>(view);
     const sent: { type: string; payload: unknown }[] = [];
     const client: Client = {
@@ -35,26 +47,33 @@ function mount(view: SettingsView, answer: { ok: true } | { ok: false; error: st
         reconnected: async () => {},
         reread: async () => {},
     };
-    const host = document.createElement('div');
-    document.body.append(host);
-    createRoot(() =>
-        render(
-            () => (
-                <UiProvider value={{ client, t: (text) => text }}>
-                    <LevelSlider />
-                    <SettingsPanel family="cc" />
-                </UiProvider>
-            ),
-            host,
-        ),
-    );
-    return { host, sent, setCurrent };
+    return { client, sent, setCurrent };
 }
 
+function mount(
+    view: SettingsView,
+    surface: () => JSX.Element,
+    answer: { ok: true } | { ok: false; error: string } = { ok: true },
+) {
+    const stood = stand(view, answer);
+    const host = document.createElement('div');
+    host.id = 'openai_settings';
+    document.body.append(host);
+    createRoot(() =>
+        render(() => <UiProvider value={{ client: stood.client, t: (text) => text }}>{surface()}</UiProvider>, host),
+    );
+    return { host, ...stood };
+}
+
+const support = () => ({ functionCalling: true, image: false, video: false, audio: false }) satisfies Support;
 const field = (id: string) => {
     const found = FIELDS.find((f) => f.id === id);
     if (!found) throw new Error(id);
     return found;
+};
+const settle = async () => {
+    await Promise.resolve();
+    await Promise.resolve();
 };
 
 test('a field shows for the sources, backends and APIs it names', () => {
@@ -66,46 +85,78 @@ test('a field shows for the sources, backends and APIs it names', () => {
     expect(isShown(field('amount_gen'), api)).toBe(false);
 });
 
-test('each field is drawn with its value, under its old id, colored by the level it comes from', () => {
-    const { host } = mount(viewOf());
-    const temp = host.querySelector<HTMLInputElement>('#temp_openai');
-    expect(temp?.value).toBe('1.2');
-    expect(temp?.closest('[data-settings-level]')?.getAttribute('data-settings-level')).toBe('user');
-    // A source that hides it: not drawn.
+test('each field is drawn under its old ids with its value, and only for the sources it names', () => {
+    const { host } = mount(viewOf(), () => <CcSamplers />);
+    expect(host.querySelector<HTMLInputElement>('#temp_openai')?.value).toBe('1.2');
+    expect(host.querySelector<HTMLInputElement>('#temp_counter_openai')?.value).toBe('1.2');
+    expect(host.querySelector('#temp_openai')?.closest('[data-field]')?.getAttribute('data-field')).toBe('temp_openai');
     expect(host.querySelector('#freq_pen_openai')).not.toBeNull();
-    expect(host.querySelector('#top_k_textgenerationwebui')).toBeNull();
+    // Top K isn't OpenAI's.
+    expect(host.querySelector('#top_k_openai')).toBeNull();
 });
 
-test('a range above the defaults dims what no level in it sets', () => {
-    const { host } = mount(viewOf({ range: { from: 'user', to: 'character' }, sources: {} }));
-    expect(
-        host.querySelector('#temp_openai')?.closest('[data-settings-level]')?.getAttribute('data-settings-level'),
-    ).toBe('unset');
+test("a chat's level is marked; a range above the defaults dims what nothing in it sets", () => {
+    const character = mount(
+        viewOf({ range: { from: 'default', to: 'character' }, sources: { 'oai_settings.temp_openai': 'character' } }),
+        () => <CcSamplers />,
+    );
+    const block = character.host.querySelector('[data-field="temp_openai"]');
+    expect(block?.getAttribute('data-settings-level')).toBe('character');
+    // The chat's own value can be taken away.
+    block?.querySelector<HTMLButtonElement>('.settings_unset')?.click();
+    expect(character.sent.at(-1)).toEqual({ type: 'settings.unset', payload: { path: 'oai_settings.temp_openai' } });
+
+    const above = mount(viewOf({ range: { from: 'user', to: 'character' }, sources: {} }), () => <CcSamplers />);
+    expect(above.host.querySelector('[data-field="temp_openai"]')?.getAttribute('data-settings-level')).toBe('unset');
 });
 
 test("an edit is sent as the field's value; a refused one goes back and says why", async () => {
-    const { host, sent } = mount(viewOf(), { ok: false, error: 'Temperature: at most 2' });
-    const temp = host.querySelector<HTMLInputElement>('#temp_openai');
+    const { host, sent } = mount(viewOf(), () => <CcSamplers />, { ok: false, error: 'Temperature: at most 2' });
+    const temp = host.querySelector<HTMLInputElement>('#temp_counter_openai');
     if (!temp) throw new Error('no control');
     temp.value = '1.9';
     temp.dispatchEvent(new Event('change', { bubbles: true }));
-    await Promise.resolve();
-    await Promise.resolve();
+    await settle();
     expect(sent).toEqual([{ type: 'settings.set', payload: { path: 'oai_settings.temp_openai', value: 1.9 } }]);
     expect(temp.value).toBe('1.2');
     expect(host.querySelector('.settings_refusal')?.textContent).toBe('Temperature: at most 2');
 });
 
-test('a choice is its radios, under their old ids, one checked', () => {
-    const { host, sent } = mount(viewOf());
-    const radio = host.querySelector<HTMLInputElement>('#character_names_completion');
+test('a choice is its radios under their old ids, its choice named in the header', () => {
+    const { host, sent } = mount(viewOf(), () => <CcOptions support={support} />);
     expect(host.querySelector<HTMLInputElement>('#character_names_default')?.checked).toBe(true);
-    radio?.click();
+    expect(host.querySelector('#character_names_display')?.textContent).toBe('Default');
+    host.querySelector<HTMLInputElement>('#character_names_completion')?.click();
     expect(sent.at(-1)).toEqual({ type: 'settings.set', payload: { path: 'oai_settings.names_behavior', value: 1 } });
 });
 
+test('what depends on another field follows its value: tool reasoning, the prefill warning', () => {
+    const { host, setCurrent } = mount(viewOf({ api: { main: 'openai', source: 'claude', textgen: '' } }), () => (
+        <CcOptions support={support} />
+    ));
+    expect(host.querySelector<HTMLSelectElement>('#tool_reasoning_mode')).toBeNull();
+    expect(host.querySelector('#claude_function_prefill_warning')).toBeNull();
+    setCurrent(
+        viewOf({
+            api: { main: 'openai', source: 'claude', textgen: '' },
+            values: { ...viewOf().values, 'oai_settings.assistant_prefill': 'Sure,' },
+        }),
+    );
+    expect(host.querySelector('#claude_function_prefill_warning')).not.toBeNull();
+
+    setCurrent(viewOf({ api: { main: 'openai', source: 'openrouter', textgen: '' } }));
+    expect(host.querySelector<HTMLSelectElement>('#tool_reasoning_mode')?.disabled).toBe(true);
+    expect(host.querySelector('#openrouter_interleaved_thinking_disabled_hint')).not.toBeNull();
+});
+
+test('a restore button sets the default', () => {
+    const { host, sent } = mount(viewOf(), () => <CcUtility />);
+    host.querySelector<HTMLElement>('#wi_format_restore')?.click();
+    expect(sent.at(-1)).toEqual({ type: 'settings.reset', payload: { path: 'oai_settings.wi_format' } });
+});
+
 test('the slider sends the range; a level shows how many fields it sets', () => {
-    const { host, sent } = mount(viewOf());
+    const { host, sent } = mount(viewOf(), () => <LevelSlider />);
     expect(host.querySelector('[data-level="character"] .settings_level_count')?.textContent).toBe('3');
     const to = host.querySelector<HTMLInputElement>('#settings_level_to');
     if (!to) throw new Error('no slider');
@@ -115,7 +166,48 @@ test('the slider sends the range; a level shows how many fields it sets', () => 
 });
 
 test('a view the server sends redraws the panel', () => {
-    const { host, setCurrent } = mount(viewOf());
+    const { host, setCurrent } = mount(viewOf(), () => <CcSamplers />);
     setCurrent(viewOf({ values: { 'oai_settings.temp_openai': 0.4 } }));
     expect(host.querySelector<HTMLInputElement>('#temp_openai')?.value).toBe('0.4');
+});
+
+test("upstream's settings object reads the view and writes actions; a value already there isn't sent", async () => {
+    const { client, sent, setCurrent } = stand(viewOf());
+    const oai: Record<string, unknown> = { temp_openai: 0.9, custom_url: 'http://x' };
+    createRoot(() => settingsCompat(client).bind(oai, 'oai_settings'));
+    expect(oai['temp_openai']).toBe(1.2);
+    oai['temp_openai'] = 1.2;
+    expect(sent).toEqual([]);
+    oai['temp_openai'] = 0.5;
+    expect(sent).toEqual([{ type: 'settings.set', payload: { path: 'oai_settings.temp_openai', value: 0.5 } }]);
+    // Read at once, it's what was written.
+    expect(oai['temp_openai']).toBe(0.5);
+    // Not a field of the panel: the object's own.
+    oai['custom_url'] = 'http://y';
+    expect(oai['custom_url']).toBe('http://y');
+    setCurrent(viewOf({ values: { 'oai_settings.temp_openai': 0.5 } }));
+    await Promise.resolve();
+    expect(oai['temp_openai']).toBe(0.5);
+    expect(JSON.parse(JSON.stringify(oai))).toMatchObject({ temp_openai: 0.5 });
+});
+
+test('a refused write reads as the view again once the server answers', async () => {
+    const { client } = stand(viewOf(), { ok: false, error: 'no' });
+    const oai: Record<string, unknown> = { temp_openai: 0.9 };
+    createRoot(() => settingsCompat(client).bind(oai, 'oai_settings'));
+    oai['temp_openai'] = 7;
+    expect(oai['temp_openai']).toBe(7);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(oai['temp_openai']).toBe(1.2);
+});
+
+test('a watch runs when its paths change in the view, not for the first', () => {
+    const { client, setCurrent } = stand(viewOf());
+    let runs = 0;
+    settingsCompat(client).watch(['oai_settings.openai_max_context'], () => runs++);
+    setCurrent(viewOf({ values: { 'oai_settings.temp_openai': 0.3 } }));
+    expect(runs).toBe(0);
+    setCurrent(viewOf({ values: { 'oai_settings.openai_max_context': 9000 } }));
+    expect(runs).toBe(1);
 });

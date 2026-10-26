@@ -813,16 +813,8 @@ class PromptManager {
             this.saveServiceSettings().then(() => this.renderDebounced());
         });
 
-        // Trigger re-render when token settings are changed
-        document.getElementById('openai_max_context').addEventListener('change', (event) => {
-            if (!(event.target instanceof HTMLInputElement)) return;
-            this.serviceSettings.openai_max_context = event.target.value;
-            if (this.activeCharacter) this.renderDebounced();
-        });
-
-        document.getElementById('openai_max_tokens').addEventListener('change', (event) => {
-            if (this.activeCharacter) this.renderDebounced();
-        });
+        // The token budget's settings re-render it when they change: chat-completion-settings.js watches them (the
+        // server's settings view).
 
         // Prepare prompt edit form buttons
         document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_save').addEventListener('click', this.handleSavePrompt);

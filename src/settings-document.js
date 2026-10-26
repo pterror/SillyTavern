@@ -17,6 +17,7 @@ import { userConnections } from './settings-model/settings-compat.js';
 import { keyOf } from './settings-model/keys.js';
 import { serverDirectory } from './server-directory.js';
 import { withinLimits } from '@st/server-ui/model-limits';
+import { SERVER_OWNED_PATHS } from './settings-hash.js';
 import { modelListOf, modelListsVersion } from './model-lists.js';
 
 /**
@@ -92,6 +93,21 @@ export function openSettingsDocument(directories, handle) {
  * @param {import('./settings-model/entity-draft.js').EntityDraft[]} connections
  * @returns {Promise<import('./settings-model/settings-compat.js').BundleFiles>}
  */
+/**
+ * The fields of a bundle the server owns (packages/protocol/src/settings.ts SERVER_FAMILIES): each one's settings path,
+ * its key in the bundle's file, and its field id in the model.
+ * @param {string} group
+ * @param {Record<string, unknown>} file
+ */
+function ownedFieldsOf(group, file) {
+    return SERVER_OWNED_PATHS.flatMap(path => {
+        const unit = unitOfPath(path.split('.'));
+        if (unit.kind !== 'field' || !unit.field.startsWith(`${group}/`)) return [];
+        const key = unit.field.slice(group.length + 1);
+        return Object.hasOwn(file, key) ? [{ path, key, field: unit.field }] : [];
+    });
+}
+
 async function bundlesOf(lib, settings, connections) {
     /** @type {Map<string, Record<string, unknown> | undefined>} */
     const files = new Map();
@@ -236,6 +252,16 @@ async function open(directories, handle) {
                 await writeAt(context, range, path, value);
             }
         }
+        // A bundle a chat's level selects: that level's own values of the fields the server owns go, so the bundle's
+        // show (the user's selections do the same in replace()).
+        for (const [path, unit] of units) {
+            const route = routeOf(context, range, path);
+            if (unit.kind !== 'selection' || route.to !== 'level') continue;
+            const name = getAtPath(saved, path);
+            const file = typeof name === 'string' ? await bundleFileFromStore(lib, unit.group, name, userConnections(current)) : undefined;
+            const held = file ? ownedFieldsOf(unit.group, file) : [];
+            if (held.length) await document.writeLevel(route.holder, { delete: held.map(({ field }) => field) });
+        }
         if (userChanged) await document.replace(user);
     };
 
@@ -376,11 +402,19 @@ async function open(directories, handle) {
             return run;
         },
         replace(next) {
+            const before = document.settings;
             const shown = structuredClone(next);
             document.settings = shown;
             const mine = ++latest;
             const run = writing.then(async () => {
                 const bundles = await bundlesOf(lib, shown, userConnections(current));
+                // A bundle the write selects: the fields of it the server owns take its values, as the old page wrote
+                // them with the selection (only settings.set writes them now).
+                const was = new Map(selectedBundles(before).map(({ group, name }) => [group, name]));
+                for (const { group, name } of selectedBundles(shown)) {
+                    const file = was.get(group) === name ? undefined : bundles(group, name);
+                    for (const { path, key } of file ? ownedFieldsOf(group, file) : []) setAtPath(shown, path, structuredClone(file?.[key]));
+                }
                 const nextModel = importUpstream(structuredClone(shown), { bundles, newKey });
                 // The characters' and groups' statements are the model's own: upstream's settings don't carry them.
                 nextModel.statements.levels = current.statements.levels;

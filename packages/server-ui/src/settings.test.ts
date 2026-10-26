@@ -1,5 +1,5 @@
 import type { ChatOwner } from '@st/protocol';
-import { LEVELS, LIMITS } from '@st/protocol/settings';
+import { LAB_RANGE, LEVELS, LIMITS } from '@st/protocol/settings';
 import type { Level, LevelRange, SettingsView } from '@st/protocol/settings';
 import { expect, test } from 'vite-plus/test';
 import { settingsArea } from './settings.ts';
@@ -55,6 +55,7 @@ function world() {
         },
         ownerOf: async (_user, chat) => ({ avatar: `${chat.tree}.png` }),
         models: (_user, source) => models[source] ?? [],
+        defaults: () => ({ oai_settings: { temp_openai: 1, wi_format: '{0}' } }),
     };
     const area = settingsArea(ports);
     const context = (session = 's1', chat: { tree: string } | null = { tree: 'cara' }): ActionContext => ({
@@ -169,4 +170,30 @@ test("the chat completion source and model decide the context size's, temperatur
     expect(await w.act('settings.set', { path: 'oai_settings.openai_max_context', value: 40_000 })).toMatchObject({
         refused: expect.any(String),
     });
+});
+
+test('lab mode frees the ranges of the fields it names, and their validation with them', async () => {
+    const w = world();
+    expect(await w.act('settings.set', { path: 'oai_settings.tool_call_recurse_limit', value: 500 })).toMatchObject({
+        refused: expect.any(String),
+    });
+    w.levels.user['power_user.enableLabMode'] = true;
+    expect((await w.view()).ranges['tool_call_recurse_limit']).toEqual(LAB_RANGE);
+    expect(await w.act('settings.set', { path: 'oai_settings.tool_call_recurse_limit', value: 500 })).toEqual({
+        changed: ['settings'],
+    });
+});
+
+test("reset sets the app's default at the range's top", async () => {
+    const w = world();
+    w.levels.user['oai_settings.wi_format'] = 'mine {0}';
+    expect(await w.act('settings.reset', { path: 'oai_settings.wi_format' })).toEqual({ changed: ['settings'] });
+    expect(w.writes.at(-1)).toMatchObject({ path: 'oai_settings.wi_format', value: '{0}' });
+});
+
+test("a field no level states is the app's default", async () => {
+    const w = world();
+    const view = await w.view();
+    expect(view.values['oai_settings.wi_format']).toBe('{0}');
+    expect(view.sources['oai_settings.wi_format']).toBeUndefined();
 });

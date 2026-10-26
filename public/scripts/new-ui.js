@@ -1,4 +1,7 @@
 import { start } from '/ui/entry.js';
+
+/** The settings paths the server owns: the new page shows them, and the old page neither writes nor saves them. */
+export { SERVER_OWNED } from '/ui/entry.js';
 import { getRequestHeaders } from './request-headers.js';
 import { attachNewPage } from './tab-session.js';
 import { translate } from './i18n.js';
@@ -28,13 +31,18 @@ export function startNewUi({ quietPrompt, currentChat }) {
     };
     started = start({
         headers: () => getRequestHeaders(),
-        t: text => translate(text),
+        t: (text, key) => translate(text, key ?? null),
         quietPrompt,
         currentChat,
         containers: {
             backgrounds: element('Backgrounds'),
             backgroundLayer: element('bg1'),
             backgroundAnimation: element('background_animation_option'),
+            settingsLevels: element('settings_levels'),
+            ccContext: element('cc_context_fields'),
+            ccSamplers: element('cc_sampler_fields'),
+            ccUtility: element('cc_utility_fields'),
+            ccOptions: element('cc_option_fields'),
         },
     });
     const page = started;
@@ -66,6 +74,9 @@ export function startNewUi({ quietPrompt, currentChat }) {
     }));
     return started;
 }
+
+/** Whether script.js's init started the new page yet. */
+export const newUiStarted = () => started !== null;
 
 /** The started new page; old code calls in only after script.js's init started it. */
 export function newUi() {

@@ -16,6 +16,7 @@ import {
 } from './endpoints/image-metadata.js';
 import { settingsDocumentOf } from './settings-documents.js';
 import { modelListOf, rememberModelList } from './model-lists.js';
+import { default_settings as chatCompletionDefaults } from '../public/scripts/chat-completion-defaults.js';
 import { writeNamedSettings, readAllSettings } from './settings-store.js';
 
 /**
@@ -259,6 +260,8 @@ const settingsPorts = {
         return key.type === TYPE.group ? { group: key.key } : { avatar: key.key };
     },
     models: (user, source) => modelListOf(user.directories, source),
+    // The chat completion defaults the old page and the server's generations fill settings from.
+    defaults: () => ({ oai_settings: chatCompletionDefaults }),
 };
 
 export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts)], {

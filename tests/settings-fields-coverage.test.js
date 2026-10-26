@@ -37,10 +37,13 @@ describe('settings declarations', () => {
         expect(missing).toEqual([]);
     });
 
-    test('every declared control is in the old markup, by its id', async () => {
-        const { FIELDS } = await import('../packages/protocol/src/settings.ts');
+    test('every declared control of a family the old page still shows is in its markup, by its id; the new page\'s families\' aren\'t', async () => {
+        const { FIELDS, SERVER_FAMILIES } = await import('../packages/protocol/src/settings.ts');
         const html = fs.readFileSync(path.join(process.cwd(), '..', 'public', 'index.html'), 'utf8');
-        const ids = FIELDS.flatMap(field => [field.id, ...(field.inputs ?? [])]);
-        expect(ids.filter(id => !html.includes(`id="${id}"`))).toEqual([]);
+        const idsOf = (/** @type {typeof FIELDS} */ fields) => fields.flatMap(field => [field.id, ...(field.inputs ?? [])]);
+        const old = FIELDS.filter(field => !SERVER_FAMILIES.includes(field.family));
+        const moved = FIELDS.filter(field => SERVER_FAMILIES.includes(field.family));
+        expect(idsOf(old).filter(id => !html.includes(`id="${id}"`))).toEqual([]);
+        expect(idsOf(moved).filter(id => html.includes(`id="${id}"`))).toEqual([]);
     });
 });

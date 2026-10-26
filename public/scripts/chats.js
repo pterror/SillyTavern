@@ -2366,14 +2366,17 @@ export function initChatUtilities() {
         textarea.classList.add('height100p', 'wide100p', 'maximized_textarea');
         bro.hasClass('monospace') && textarea.classList.add('monospace');
         bro.hasClass('mdHotkeys') && textarea.classList.add('mdHotkeys');
+        // Native events, so both jQuery handlers and native listeners (the new page's fields) hear them.
         textarea.addEventListener('input', function () {
             if (contentEditable) {
                 bro[0].innerText = textarea.value;
-                bro.trigger('input');
             } else {
-                bro.val(textarea.value).trigger('input');
+                bro[0].value = textarea.value;
             }
+            bro[0].dispatchEvent(new Event('input', { bubbles: true }));
         });
+        // Leaving the editor is leaving the field: what commits on change (a new page field) commits then.
+        const committed = () => bro[0].dispatchEvent(new Event('change', { bubbles: true }));
         wrapper.appendChild(textarea);
 
         if (textarea.dataset.macros !== undefined) {
@@ -2417,11 +2420,13 @@ export function initChatUtilities() {
         // A modal popup blocks everything outside it, a layer included, so a field inside one still expands in a popup.
         if (this.closest('dialog:modal')) {
             await callGenericPopup(wrapper, POPUP_TYPE.TEXT, '', { wide: true, large: true });
+            committed();
             return;
         }
         openEditorLayer(wrapper, {
             closeTitle: t`Restore`,
             onClose: () => {
+                committed();
                 if (bro[0].isConnected) bro[0].focus({ preventScroll: true });
             },
         });

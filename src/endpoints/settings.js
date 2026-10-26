@@ -10,7 +10,7 @@ import { getConfigValue, generateTimestamp, removeOldBackups } from '../util.js'
 import { getAllUserHandles, getUserDirectories } from '../users.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
 import { CHAR_LORE_PATH, getStringHash, seedKeyHashes, setAtPath, settingsWithoutCharLore } from '../../public/scripts/hash-utils.js';
-import { pageSettingsHash, pageWrite, withServerOwned } from '../settings-hash.js';
+import { pageSettings, pageSettingsHash, pageWrite, withServerOwned } from '../settings-hash.js';
 import {
     readAllSettings,
     valuesAtPaths,
@@ -284,7 +284,7 @@ router.post('/save', async function (request, response) {
         // without what nothing reads), for the client's next conflict check; a context's as it shows them.
         const stored = settingsSavedOver(request, directories);
         const keyHashes = {};
-        seedKeyHashes(keyHashes, stored);
+        seedKeyHashes(keyHashes, pageSettings(stored));
         response.send({ result: 'ok', settingsHash: pageSettingsHash(stored), keyHashes });
     } catch (err) {
         console.error(err);
@@ -318,7 +318,7 @@ router.post('/save-partial', async function (request, response) {
 
         if (expectedHashes && typeof expectedHashes === 'object' && !Array.isArray(expectedHashes)) {
             const paths = Object.keys(expectedHashes);
-            const currentValues = valuesAtPaths(settingsSavedOver(request, directories), paths);
+            const currentValues = valuesAtPaths(pageSettings(over), paths);
             const conflictingKeys = paths.filter(path => getStringHash(JSON.stringify(currentValues[path], null, 4)) !== expectedHashes[path]);
             if (conflictingKeys.length > 0) {
                 return response.status(409).send({
@@ -356,8 +356,9 @@ router.post('/save-partial', async function (request, response) {
         // the hashes of each top-level key written, as stored (a context's as it shows them).
         const stored = settingsSavedOver(request, directories);
         const keyHashes = {};
+        const known = pageSettings(stored);
         for (const top of new Set(Object.keys(keys).map(key => key.split('.')[0]))) {
-            if (Object.hasOwn(stored, top)) seedKeyHashes(keyHashes, stored[top], top);
+            if (Object.hasOwn(known, top)) seedKeyHashes(keyHashes, known[top], top);
         }
         response.send({ result: 'ok', settingsHash: pageSettingsHash(stored), keyHashes });
     } catch (err) {
@@ -520,7 +521,7 @@ router.post('/get', storeRoute('reading settings', async (request, response) => 
 
     // The hashes are of the settings as stored, without charLore; the page gets it filled in.
     const keyHashes = {};
-    seedKeyHashes(keyHashes, JSON.parse(settings));
+    seedKeyHashes(keyHashes, pageSettings(JSON.parse(settings)));
     const { lib } = await requestStore(request);
     const filled = JSON.stringify(await withCharLore(lib, JSON.parse(settings)), null, 4);
 
