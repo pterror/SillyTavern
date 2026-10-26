@@ -226,7 +226,7 @@ router.post('/status', async function (req, res) {
 export async function buildRawActionNovelRequest(directories, {
     request, characterAvatar, groupId, chat, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra, pageFacts = {}, pageInjections = {},
-    tokenizerOptions = {}, quiet = {},
+    tokenizerOptions = {}, quiet = {}, responseLength,
 } = {}) {
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
@@ -282,7 +282,7 @@ export async function buildRawActionNovelRequest(directories, {
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, mainApi: 'novel', chatContext: chat, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts, pageInjections,
-        countTokens, encodeTokens,
+        countTokens, encodeTokens, amountGen: responseLength,
         macroExtras: { encodeTokensByType, novelTokenizerType, ...textCompletionQuietInput(quiet) },
     });
 
@@ -345,13 +345,13 @@ router.post('/generate', withGenerationStop(async function (req, res) {
         answerSessionOnHeaders(res, chat.session);
         const turn = await generateTurnOf(res, chat, req.body);
         if (!turn) return;
-        const { nodeId, userMessageText, userMessageExtra, quiet, pageFacts, pageInjections } = turn;
+        const { nodeId, userMessageText, userMessageExtra, quiet, responseLength, pageFacts, pageInjections } = turn;
 
         let built;
         try {
             built = await buildRawActionNovelRequest(directories, {
                 request: req, characterAvatar, groupId, chat, nodeId,
-                type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, quiet, pageFacts, pageInjections,
+                type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, quiet, responseLength, pageFacts, pageInjections,
             });
         } catch (error) {
             console.error('Failed to build raw-action NovelAI request:', error);

@@ -314,11 +314,11 @@ async function buildRawActionHordePayload(request, response) {
     answerSessionOnHeaders(response, chat.session);
     const turn = await generateTurnOf(response, chat, request.body);
     if (!turn) return null;
-    const { nodeId, userMessageText, userMessageExtra, quiet } = turn;
+    const { nodeId, userMessageText, userMessageExtra, quiet, responseLength } = turn;
 
     const built = await buildRawActionKoboldRequest(directories, {
         request, characterAvatar, groupId, chat, nodeId,
-        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
+        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, responseLength,
         macroExtras: { isHorde: true, ...textCompletionQuietInput(quiet) },
     });
 

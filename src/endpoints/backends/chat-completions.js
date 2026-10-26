@@ -2813,7 +2813,7 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
 export async function buildRawActionChatCompletionRequest(directories, {
     characterAvatar, groupId, ownerId, chat, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra, pageFacts = {}, pageInjections = {},
-    clientToolSchemas, stealthClientToolNames, jsonSchema = null, quiet = {},
+    clientToolSchemas, stealthClientToolNames, jsonSchema = null, quiet = {}, responseLength,
 } = {}) {
     if (!ownerId) {
         throw new Error('owner_id is required');
@@ -2857,7 +2857,9 @@ export async function buildRawActionChatCompletionRequest(directories, {
     }
 
     // Step 3
-    const { oai_settings: settings = {}, power_user: powerUser = {} } = readSettingsFor(directories, settingsContextOf({ avatar: characterAvatar, groupId, chat, nodeId }), ['oai_settings', 'power_user']);
+    const { oai_settings: savedSettings = {}, power_user: powerUser = {} } = readSettingsFor(directories, settingsContextOf({ avatar: characterAvatar, groupId, chat, nodeId }), ['oai_settings', 'power_user']);
+    // A quiet or raw generation's own response length, in place of the setting's.
+    const settings = responseLength === undefined ? savedSettings : { ...savedSettings, openai_max_tokens: responseLength };
 
     // Step 4
     // `imageInlining`/`videoInlining`/`audioInlining` OVERRIDE via `macroExtras` (resolveChatCompletionGenerationInput()'s
@@ -2884,7 +2886,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
     const orchestratorInput = await resolveChatCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, chatContext: chat, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts, pageInjections, llamaCppProps, tokenCountRows,
-        quietPrompt: quiet.quietPrompt, quietImage: quiet.quietImage,
+        quietPrompt: quiet.quietPrompt, quietImage: quiet.quietImage, responseLength,
         macroExtras: {
             imageInlining: mediaInliningEnabled, videoInlining: mediaInliningEnabled, audioInlining: mediaInliningEnabled,
         },
@@ -4112,7 +4114,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             answerSessionOnHeaders(response, chat.session);
             const turn = await generateTurnOf(response, chat, request.body);
             if (!turn) return;
-            const { nodeId, userMessageText, userMessageExtra, quiet, pageFacts, pageInjections } = turn;
+            const { nodeId, userMessageText, userMessageExtra, quiet, responseLength, pageFacts, pageInjections } = turn;
 
             // Chunk (c), wire step 3: `type: 'tool_result'` is NOT one of the "generation types" this
             // route otherwise dispatches on (normal/impersonate/continue/swipe/regenerate/quiet) - it
@@ -4163,6 +4165,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                     stealthClientToolNames,
                     jsonSchema,
                     quiet: isToolResult ? undefined : quiet,
+                    responseLength: isToolResult ? undefined : responseLength,
                 });
             } catch (error) {
                 console.error('Failed to build raw-action chat completion request:', error);

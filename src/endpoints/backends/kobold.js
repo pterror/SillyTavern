@@ -85,7 +85,7 @@ export const router = express.Router();
 export async function buildRawActionKoboldRequest(directories, {
     request, characterAvatar, groupId, chat, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra, pageFacts = {}, pageInjections = {},
-    tokenizerOptions = {}, macroExtras = {},
+    tokenizerOptions = {}, macroExtras = {}, responseLength,
 } = {}) {
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
@@ -143,7 +143,7 @@ export async function buildRawActionKoboldRequest(directories, {
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, mainApi: 'kobold', chatContext: chat, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts, pageInjections,
-        countTokens, encodeTokens, macroExtras,
+        countTokens, encodeTokens, amountGen: responseLength, macroExtras,
     });
 
     // `nodeId === null` goes on from the tree's root only when that is current - see
@@ -225,13 +225,13 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
         answerSessionOnHeaders(response_generate, chat.session);
         const turn = await generateTurnOf(response_generate, chat, request.body);
         if (!turn) return;
-        const { nodeId, userMessageText, userMessageExtra, quiet, pageFacts, pageInjections } = turn;
+        const { nodeId, userMessageText, userMessageExtra, quiet, responseLength, pageFacts, pageInjections } = turn;
 
         let built;
         try {
             built = await buildRawActionKoboldRequest(directories, {
                 request, characterAvatar, groupId, chat, nodeId,
-                type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts, pageInjections,
+                type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts, pageInjections, responseLength,
                 macroExtras: textCompletionQuietInput(quiet),
             });
         } catch (error) {

@@ -1323,13 +1323,13 @@ test.describe('emitted indices: CHARACTER_DELETED id (step 13)', () => {
 });
 
 test.describe('#9 saveSettings and saveSettingsDebounced', () => {
-    // saveSettings' retry messages, and TempResponseLength.restore's log.
+    // Upstream's retry messages and TempResponseLength.restore's log, which nothing prints now (a response length
+    // asked for no longer changes the setting, so saves don't wait for it).
     const RESPONSE_LENGTH_WARNING = 'Response length is currently being overridden, scheduling another save';
     const RESPONSE_LENGTH_ERROR = 'Response length is currently being overridden, but the save loop has reached the maximum number of retries';
     const RESTORE_LOG = '[TempResponseLength] Restored original response length:';
     // Longer than the save debounce (DEFAULT_SAVE_EDIT_TIMEOUT, 1000 ms), so a window started before it has run.
     const PAST_WINDOW = 2500;
-    // Three rescheduled windows plus the final save.
     const RETRY_TIMEOUT = 15000;
 
     test.beforeEach(async ({ page }) => {
@@ -1430,8 +1430,8 @@ test.describe('#9 saveSettings and saveSettingsDebounced', () => {
     }
 
     /**
-     * Makes TempResponseLength customized, as an in-flight generateRawData({ responseLength }) does: the generation
-     * is held in a GENERATE_AFTER_COMBINE_PROMPTS listener until releaseResponseLength().
+     * Asks for a response length, as an in-flight generateRawData({ responseLength }) does: the generation is held in
+     * a GENERATE_AFTER_COMBINE_PROMPTS listener until releaseResponseLength().
      * @param {import('@playwright/test').Page} page
      * @returns {Promise<{original: number, overridden: number}>} amount_gen before and during the override.
      */
@@ -1480,20 +1480,6 @@ test.describe('#9 saveSettings and saveSettingsDebounced', () => {
         });
     }
 
-    /**
-     * The retry messages for a save that starts at count 0: three reschedules, then the error and the restore.
-     * @param {number} original amount_gen before the override.
-     */
-    function retriesFromZero(original) {
-        return [
-            { kind: 'warning', text: RESPONSE_LENGTH_WARNING },
-            { kind: 'warning', text: RESPONSE_LENGTH_WARNING },
-            { kind: 'warning', text: RESPONSE_LENGTH_WARNING },
-            { kind: 'error', text: RESPONSE_LENGTH_ERROR },
-            { kind: 'log', text: `${RESTORE_LOG} ${original}` },
-        ];
-    }
-
     test('saveSettings(1) does a full save and does not cancel a pending debounced save', async ({ page }) => {
         const timeline = recordSettingsSaves(page);
         const a = newProbe();
@@ -1524,52 +1510,31 @@ test.describe('#9 saveSettings and saveSettingsDebounced', () => {
         ]);
     });
 
-    test('with TempResponseLength customized, saveSettings(0) reschedules through counters 1, 2 and 3, then restores and saves, with upstream\'s messages', async ({ page }) => {
+    test('with a response length asked for, the setting is unchanged: saveSettings(0) saves at once with the setting\'s amount_gen, and no retry messages', async ({ page }) => {
         const { original, overridden } = await holdResponseLength(page);
-        expect(overridden).not.toBe(original);
+        expect(overridden).toBe(original);
         const timeline = recordSettingsSaves(page);
         const a = newProbe();
         await runSteps(page, [
             { probe: a },
             { call: 'saveSettings', args: [0] },
         ]);
-        await settle(page, timeline, 6);
+        await settle(page, timeline, 1);
         expect(project(timeline, [a])).toEqual([
-            ...retriesFromZero(original),
             { kind: 'save', probes: [a.value], amountGen: original },
         ]);
     });
 
-    test('saveSettingsDebounced(2) followed by saveSettingsDebounced() in one window runs with count 0', async ({ page }) => {
-        // Count 2 alone: one reschedule (to 3), then the error, the restore and the save.
-        let { original } = await holdResponseLength(page);
+    test('a number as the first argument (upstream\'s retry count) is a full save', async ({ page }) => {
         const timeline = recordSettingsSaves(page);
         const a = newProbe();
         await runSteps(page, [
             { probe: a },
             { call: 'saveSettingsDebounced', args: [2] },
         ]);
-        await settle(page, timeline, 4);
+        await settle(page, timeline, 1);
         expect(project(timeline, [a])).toEqual([
-            { kind: 'warning', text: RESPONSE_LENGTH_WARNING },
-            { kind: 'error', text: RESPONSE_LENGTH_ERROR },
-            { kind: 'log', text: `${RESTORE_LOG} ${original}` },
-            { kind: 'save', probes: [a.value], amountGen: original },
-        ]);
-        await releaseResponseLength(page);
-
-        // Count 2, then no count, in one window: the run has count 0, so three reschedules.
-        ({ original } = await holdResponseLength(page));
-        const b = newProbe();
-        await runSteps(page, [
-            { probe: b },
-            { call: 'saveSettingsDebounced', args: [2] },
-            { call: 'saveSettingsDebounced', args: [] },
-        ]);
-        await settle(page, timeline, 4 + 6);
-        expect(project(timeline.slice(4), [b])).toEqual([
-            ...retriesFromZero(original),
-            { kind: 'save', probes: [b.value], amountGen: original },
+            { kind: 'save', probes: [a.value], amountGen: expect.any(Number) },
         ]);
     });
 
@@ -1627,17 +1592,16 @@ test.describe('#9 saveSettings and saveSettingsDebounced', () => {
         ]);
     });
 
-    test('with TempResponseLength customized, saveSettings(\'key\') reschedules through counts 1, 2 and 3 as keyed saves, then restores and sends a keyed partial save of key; no full save is sent', async ({ page }) => {
-        const { original } = await holdResponseLength(page);
+    test('with a response length asked for, saveSettings(\'key\') sends its keyed partial save at once', async ({ page }) => {
+        await holdResponseLength(page);
         const timeline = recordSettingsSaves(page);
         const a = newProbe();
         await runSteps(page, [
             { probe: a },
             { call: 'saveSettings', args: [a.key] },
         ]);
-        await settle(page, timeline, 6);
+        await settle(page, timeline, 1);
         expect(project(timeline, [a])).toEqual([
-            ...retriesFromZero(original),
             { kind: 'save-partial', keys: { [a.key]: a.value }, hasExpectedHashes: true },
         ]);
     });

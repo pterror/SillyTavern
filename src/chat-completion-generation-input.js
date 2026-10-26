@@ -662,6 +662,7 @@ async function resolveChatHistory(chat, { branchName, nodeId }) {
  * @param {string} [params.quietPrompt] The turn's quiet prompt (upstream `Generate()`'s `quiet_prompt`): the
  * `quietPrompt` system prompt, and scanned by world info like the client's `scan: true` QUIET_PROMPT slot.
  * @param {string} [params.quietImage] Image inlined into the quiet-prompt message.
+ * @param {number} [params.responseLength] A quiet or raw generation's own response length, in place of the setting's.
  * @param {object} [params.macroExtras] Shallow-merged over the resolved input object.
  * @param {import('./macro-facts.js').PageMacroFacts} [params.pageFacts] What only the page knows, for the macros.
  * @param {import('./extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections] What the page's extensions
@@ -683,7 +684,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     regexScripts = [], regexExtensionEnabled = true,
     model: modelOverride, modelList, characterId = PROMPT_ORDER_DUMMY_ID,
     countTokenAsyncFn: countTokenAsyncFnOverride, tokenHandler: tokenHandlerOverride,
-    quietPrompt, quietImage,
+    quietPrompt, quietImage, responseLength,
     macroExtras = {}, llamaCppProps, tokenCountRows: tokenCountRowsParam, pageFacts = {}, pageInjections = {},
 } = {}) {
     void isImpersonate; void isContinue; // Folded into `type` by the caller; kept as documented params for parity with the task's signature, matching text-completion-generation-input.js's own equivalents (which are likewise not separately re-derived from `type` there either).
@@ -717,7 +718,8 @@ export async function resolveChatCompletionGenerationInput(directories, {
             'oai_settings', 'power_user', 'world_info_settings', 'extension_settings', 'username', 'user_avatar',
         ]));
     // As the page loads them (loadOpenAISettings()): older settings migrated, a missing one its default.
-    const oaiSettings = /** @type {OaiSettingsShape} */ (chatCompletionSettingsWithDefaults(savedOaiSettings));
+    const withDefaults = /** @type {OaiSettingsShape} */ (chatCompletionSettingsWithDefaults(savedOaiSettings));
+    const oaiSettings = responseLength === undefined ? withDefaults : { ...withDefaults, openai_max_tokens: responseLength };
     // The client's getWorldInfoSettings() (public/scripts/world-info.js) nests the real selection
     // object under world_info_settings.world_info, and world_info_character_strategy alongside it -
     // there is no separate top-level `world_info`/`world_info_character_strategy` settings key on disk.
