@@ -8,6 +8,7 @@ import { serveUi } from './index.ts';
 
 const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-ui-build-'));
 const servers: { close(): void }[] = [];
+const entries: string[] = [];
 afterAll(() => {
     for (const server of servers) server.close();
     fs.rmSync(outDir, { recursive: true, force: true });
@@ -15,7 +16,9 @@ afterAll(() => {
 
 async function start(dev: boolean) {
     const app = express();
-    app.use(await serveUi({ outDir, dev }));
+    const served = await serveUi({ outDir, dev });
+    entries.push(served.entry());
+    app.use(served.router);
     app.use((_request, response) => void response.status(404).send('not the page'));
     const server = app.listen(0);
     servers.push(server);
@@ -34,6 +37,8 @@ test('built: the entry the manifest names is served under /ui/, nothing else is'
     const response = await fetch(`${origin}/ui/${entry?.file}`);
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toMatch(/javascript/);
+    // The old page imports the new one's `start` from it.
+    expect(await response.text()).toMatch(/export\s*\{[^}]*\bstart\b/);
     expect((await fetch(`${origin}/elsewhere.js`)).status).toBe(404);
 });
 
@@ -42,7 +47,8 @@ test("dev: a module is compiled when asked for, JSX to Solid's h", async () => {
     const response = await fetch(`${origin}/ui/test/jsx-fixture.tsx`);
     expect(response.status).toBe(200);
     const code = await response.text();
-    expect(code).toMatch(/solid-js_h_jsx-(dev-)?runtime/);
+    expect(code).toMatch(/@st\/jsx\/jsx-(dev-)?runtime|packages\/jsx\/src\/jsx-runtime/);
     expect(code).not.toContain('<b>');
+    expect(await (await fetch(`${origin}/ui/entry.js`)).text()).toBe(`export * from '/ui/src/main.tsx';\n`);
     expect((await fetch(`${origin}/elsewhere.js`)).status).toBe(404);
 });

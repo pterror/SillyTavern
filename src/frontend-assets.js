@@ -74,6 +74,8 @@ export class FrontendAssets {
      * @param {() => string|undefined} options.globalExtensionsDirectory
      * @param {() => string|undefined} options.userCssPath
      * @param {() => boolean} options.extensionsEnabled
+     * @param {() => Record<string, string>} [options.moduleAliases] Module URLs the import map points elsewhere
+     *   (the new page's stable entry, at its built file).
      */
     constructor(options) {
         this.options = options;
@@ -301,6 +303,7 @@ export class FrontendAssets {
             return hash ? `${before}${withVersion(reference, hash)}${after}` : match;
         });
 
+        Object.assign(imports, this.options.moduleAliases?.() ?? {});
         const importMap = JSON.stringify({ imports });
         const runtimeMap = JSON.stringify(runtime);
         const buildId = contentHash(`${importMap}\n${runtimeMap}\n${page}`);

@@ -40,6 +40,7 @@ import { convertedFileKey } from '../library-codes.js';
 import { avatarFile, avatarImage, avatarPathOf, inAvatarLane, writeWithAvatar } from '../character-avatars.js';
 import { chatNamesOf, compatChatIdOf, compatChatIds, droppedOf, labelBaseOf, moveToChatNamed } from '../chat-request.js';
 import { requestSession } from '../request-session.js';
+import { ui, uiUser } from '../ui-wiring.js';
 import { sessionCompatId } from '../chat-engine.js';
 
 import { groupDigests, groupObjects } from './groups.js';
@@ -2551,6 +2552,8 @@ router.get('/changes/stream', async function (request, response) {
 
     const send = (/** @type {object} */ frame) => response.write(`data: ${JSON.stringify(frame)}\n\n`);
     const tab = await tabStreamSession(request, store, send);
+    // The new code's views are pushed on this stream too (one connection per tab).
+    const detachUi = tab ? ui.attach(uiUser(request), tab.session, send) : null;
 
     const presenceInterval = setInterval(() => {
         response.write(':ping\n\n');
@@ -2590,6 +2593,10 @@ router.get('/changes/stream', async function (request, response) {
                 told.add(id);
                 send(frame);
             }
+            // The new page's views that follow the tab's chat, after the old frames (and never holding them up).
+            if (tab && records.some(r => CHAT_MOVES.has(/** @type {any} */ (r).kind))) {
+                ui.chatMoved(uiUser(request), tab.session).catch(error => console.error('[ui] chat views not pushed:', error));
+            }
         } catch (err) {
             console.error('[characters/changes/stream] A change could not be told:', err);
         }
@@ -2619,12 +2626,15 @@ router.get('/changes/stream', async function (request, response) {
         savedViewsEvents.off('changed', onViewsChanged);
         for (const f of [writeChanged, writeGroupsChanged, writeTagsChanged, writeViewsChanged]) f.cancel();
         clearInterval(presenceInterval);
+        detachUi?.();
         tab?.release();
     });
 });
 
 const SESSION_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TAB_TOKEN = /^[0-9A-Za-z_-]{8,64}$/;
+/** Records after which a chat's state may read otherwise where a tab is: its state changed, or a session moved. */
+const CHAT_MOVES = new Set(['stateChange', 'stateRevert', 'pointerMove', 'pointerRoot', 'historyStep', 'currentChat']);
 /** Records that move a session, or switch its current chat. */
 const SESSION_KINDS = new Set(['pointerMove', 'pointerRoot', 'historyStep', 'sessionFork', 'messageAppend', 'currentChat']);
 
@@ -2638,7 +2648,8 @@ const SESSION_KINDS = new Set(['pointerMove', 'pointerRoot', 'historyStep', 'ses
  * @param {import('express').Request} request
  * @param {import('../user-stores.js').UserStore} store
  * @param {(frame: object) => void} send
- * @returns {Promise<{ told(records: object[]): Promise<void>, release(): void } | null>} null: a stream with no tab.
+ * @returns {Promise<{ session: string, told(records: object[]): Promise<void>, release(): void } | null>} null: a stream
+ *   with no tab.
  */
 async function tabStreamSession(request, store, send) {
     const token = typeof request.query.token === 'string' && TAB_TOKEN.test(request.query.token) ? request.query.token : null;
@@ -2674,6 +2685,7 @@ async function tabStreamSession(request, store, send) {
     /** @type {bigint | null} */
     let sid = await chats.sessionId(session);
     return {
+        session,
         async told(records) {
             const ours = /** @type {any[]} */ (records).filter(r => SESSION_KINDS.has(r.kind) && r.session !== undefined);
             if (!ours.length) return;

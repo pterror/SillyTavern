@@ -81,6 +81,23 @@ function eraseSettings() {
 }
 
 describe('POST /api/settings/save conflict detection', () => {
+    test('the keys the server owns (background) are kept as stored and left out of the hash the page holds', async () => {
+        writeSettingsFile({ a: 1, background: { name: 'mine.png' } });
+        const pageHash = String(getStringHash(JSON.stringify({ a: 1 }, null, 4)));
+
+        const saved = await postSave({ a: 2, background: { name: 'stale.png' } }, pageHash);
+        expect(saved.status).toBe(200);
+        expect(readSettingsFile()).toEqual({ a: 2, background: { name: 'mine.png' } });
+
+        // The server changes the background (an action of the new page): the page's next save is no conflict.
+        const { settingsHash } = await saved.json();
+        settingsStore.writeNamedSettings(directories, { background: { name: 'other.png' } });
+        const next = await postSave({ a: 3 }, String(settingsHash));
+        expect(next.status).toBe(200);
+        expect(readSettingsFile()).toEqual({ a: 3, background: { name: 'other.png' } });
+        eraseSettings();
+    });
+
     test('writes unconditionally when no X-Settings-Hash header is sent (backward compatible)', async () => {
         const response = await postSave({ a: 1 });
         expect(response.status).toBe(200);

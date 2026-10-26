@@ -5,5 +5,10 @@ import { FIXTURES, lintConfig } from './packages/lint/config.ts';
 export default defineConfig({
     lint: { ...lintConfig, ignorePatterns: [...lintConfig.ignorePatterns, FIXTURES] },
     fmt: { singleQuote: true, tabWidth: 4, printWidth: 120, ignorePatterns: [FIXTURES] },
-    test: { include: ['packages/**/*.test.ts'] },
+    test: {
+        projects: [
+            'packages/ui/vite.config.ts',
+            { extends: false, test: { name: 'node', include: ['packages/**/*.test.ts'], exclude: ['packages/ui/**', '**/node_modules/**'] } },
+        ],
+    },
 });

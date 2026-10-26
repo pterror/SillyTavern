@@ -3,9 +3,13 @@
     "private": true,
     "type": "module",
     "dependencies": {
+        "@st/jsx": "*",
+        "@st/protocol": "*",
         "solid-js": "1.9.17"
     },
     "devDependencies": {
-        "vite": "8.3.4"
+        "happy-dom": "21.0.1",
+        "vite": "8.3.4",
+        "vite-plus": "1.1.0"
     }
 }

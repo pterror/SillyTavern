@@ -2,14 +2,14 @@ import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
 import { Fuse } from '../../../lib.js';
 import { isMobile } from '../../RossAscends-mods.js';
-import { background_settings } from '../../backgrounds.js';
+import { background_settings, listBackgroundFiles, selectBackground } from '../../backgrounds.js';
 import { t } from '../../i18n.js';
 import { playMessageSound } from '../../power-user.js';
 import { ARGUMENT_TYPE, SlashCommandArgument } from '../SlashCommandArgument.js';
 import { commonEnumProviders } from '../SlashCommandCommonEnumsProvider.js';
 import { showFontAwesomePicker } from '../../utils.js';
 
-function setBackgroundCallback(_, bg) {
+async function setBackgroundCallback(_, bg) {
     if (!bg) {
         // Report the background name when called without args
         return background_settings.name;
@@ -17,9 +17,7 @@ function setBackgroundCallback(_, bg) {
 
     console.log('Set background to ' + bg);
 
-    const bgElements = Array.from(document.querySelectorAll('.bg_example')).map((x) => ({ element: x, bgfile: x.getAttribute('bgfile') }));
-
-    const fuse = new Fuse(bgElements, { keys: ['bgfile'] });
+    const fuse = new Fuse(listBackgroundFiles(), { keys: ['file'] });
     const result = fuse.search(bg);
 
     if (!result.length) {
@@ -27,12 +25,9 @@ function setBackgroundCallback(_, bg) {
         return '';
     }
 
-    const bgElement = result[0].item.element;
-
-    if (bgElement instanceof HTMLElement) {
-        bgElement.click();
-    }
-
+    const { file, chat } = result[0].item;
+    const refused = await selectBackground(file, chat);
+    if (refused) toastr.warning(refused);
     return '';
 }
 
