@@ -41,7 +41,7 @@ export const REF_VALUES = Object.freeze({
         ...Object.fromEntries(Object.entries(BUNDLE_TYPES).map(([group, type]) => [`b:${group}`, type])),
         's:textGeneration': TYPE.connection, 's:remembered.openai': TYPE.connection, 's:remembered.textgenerationwebui': TYPE.connection,
         ...Object.fromEntries(CAPABILITY_SLOTS.map(slot => [`s:capability.${slot}`, TYPE.connection])),
-        's:proxy': TYPE.proxy, 's:profile': TYPE.connectionProfile, 's:persona': TYPE.persona, 's:regexPreset': TYPE.regexPreset,
+        's:proxy': TYPE.proxy, 's:profile': TYPE.connectionProfile, 's:persona': TYPE.persona, 's:currentPersona': TYPE.persona, 's:regexPreset': TYPE.regexPreset,
     }),
     [TYPE.samplerPreset]: Object.freeze({ connection: TYPE.connection }),
     [TYPE.connectionProfile]: Object.freeze({

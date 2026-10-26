@@ -65,7 +65,7 @@ import { refreshLlamaCppDetection } from '../../custom-llamacpp.js';
 import { createLlamaCppPropsCheck } from '../../llamacpp-props.js';
 import { writeBack } from '../../token-count-store.js';
 import { readSettingsFor, settingsContextOf } from '../../settings-reads.js';
-import { readBundleFile } from '../../bundle-files.js';
+import { readBundle } from '../../bundle-store.js';
 import { resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
 import { resolveTokenizer, sendTokenizerWarnings, createTokenizerOutcome } from '../../tokenizer-resolve.js';
 import { readConnectionStateHeader } from '../../connection-state-header.js';
@@ -4036,7 +4036,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
 
             // A generation in no chat: the user's own settings.
             const { 'oai_settings': baseSettings, proxies } = readSettingsFor(request.user.directories, settingsContextOf({}), ['oai_settings', 'proxies']);
-            const preset = profile.preset ? readBundleFile(request.user.directories, 'preset.openai', profile.preset) : null;
+            const preset = profile.preset ? await readBundle(request.user.directories, 'preset.openai', profile.preset) : null;
             const settings = mergeChatCompletionPreset({ ...baseSettings, chat_completion_source: selectedApiMap.source }, preset);
 
             // Connection profile takes precedence over the preset/settings value for every

@@ -60,8 +60,9 @@ test('the shipped settings come back as they came, but what is dead or derived',
     assert.equal(model.user.bundles['preset.openai'], 'openai:Default');
     assert.equal(model.user.bundles.theme, 'Dark Lite');
     for (const path of DEAD_PATHS) assert.equal(at(back, path), undefined, path);
-    // The shipped file has no default persona: the current one becomes the user's.
-    assert.equal(back.power_user.default_persona, SHIPPED.user_avatar);
+    // The shipped file has no default persona, and the current one is its own.
+    assert.equal(back.power_user.default_persona, null);
+    assert.equal(back.user_avatar, SHIPPED.user_avatar);
 });
 
 test('a live value the selected preset doesn\'t have is an override; the preset\'s own values are not stored', () => {
@@ -220,4 +221,23 @@ test('a preference, an extension\'s own settings, a connection key and an unknow
     assert.equal(back.power_user.auto_swipe, edited.power_user.auto_swipe);
     assert.deepEqual(back.extension_settings.dice, edited.extension_settings.dice);
     assert.equal(back.someday, 1);
+});
+
+test('KoboldAI with no preset: \'gui\' stays the choice, and none stated stays none (the page reads its fallback)', () => {
+    const none = structuredClone(SHIPPED);
+    delete none.kai_settings.preset_settings;
+    assert.equal(roundTrip(none).back.kai_settings?.preset_settings, undefined);
+    const gui = structuredClone(SHIPPED);
+    gui.kai_settings.preset_settings = 'gui';
+    const { model, back } = roundTrip(gui);
+    assert.equal(back.kai_settings.preset_settings, 'gui');
+    assert.equal(model.user.bundles['preset.kobold'], undefined);
+});
+
+test('a field the settings lack stays the page\'s default, not the selected bundle\'s', () => {
+    assert.equal(Object.hasOwn(SHIPPED.power_user, 'bogus_folders'), false);
+    assert.equal(shippedBundles('theme', SHIPPED.power_user.theme).bogus_folders, true);
+    const { model, back } = roundTrip(SHIPPED);
+    assert.equal(Object.hasOwn(back.power_user, 'bogus_folders'), false);
+    assert.deepEqual(model.user.overrides['theme/bogus_folders'], { $default: true });
 });

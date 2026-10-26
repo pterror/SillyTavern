@@ -11,6 +11,7 @@ import { getAllUserHandles, getUserDirectories } from '../users.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
 import { CHAR_LORE_PATH, getStringHash, seedKeyHashes, settingsWithoutCharLore } from '../../public/scripts/hash-utils.js';
 import {
+    readAllSettings,
     readAllSettingsAsJson,
     readSettingsAtPaths,
     writeSettingsKeys,
@@ -19,7 +20,9 @@ import {
     settingsExist,
 } from '../settings-store.js';
 import { requestStore, storeRoute, userStore } from '../user-stores.js';
-import { listBundleFiles } from '../bundle-files.js';
+import { listBundles } from '../bundle-store.js';
+import { settingsDocumentOf } from '../settings-documents.js';
+import { openSettingsDocument } from '../settings-document.js';
 
 const ENABLE_EXTENSIONS = !!getConfigValue('extensions.enabled', true, 'boolean');
 const ENABLE_EXTENSIONS_AUTO_UPDATE = !!getConfigValue('extensions.autoUpdate', true, 'boolean');
@@ -131,6 +134,8 @@ async function backupUserSettings(handle, preventDuplicates, userDirectories = g
     if (!fs.existsSync(userDirectories.root)) {
         return;
     }
+    // Run outside any request (the periodic backup): the settings as the user's settings document holds them.
+    await openSettingsDocument(userDirectories, handle);
 
     if (!settingsExist(userDirectories)) {
         return;
@@ -219,7 +224,7 @@ function checkSettingsConflict(request, directories) {
     return { ok: currentHash === expectedHash };
 }
 
-router.post('/save', function (request, response) {
+router.post('/save', async function (request, response) {
     try {
         const directories = request.user.directories;
 
@@ -233,12 +238,17 @@ router.post('/save', function (request, response) {
 
         // Keeps the key files the body leaves out: the client's full save has no tags, tag_map or accountStorage.
         // Its charLore isn't stored (writeNamedSettings() leaves it out).
-        writeNamedSettings(directories, request.body);
+        await writeNamedSettings(directories, request.body);
         void reportIgnoredCharLore(request, settingsWithoutCharLore('', request.body).charLore);
         triggerAutoSave(request.user.profile.handle, request.user.directories);
         // Key order in the reconstructed store may differ from the client's payload, so the client can't just
         // hash its own JSON locally - it must use this returned hash.
-        response.send({ result: 'ok', settingsHash: getStringHash(readAllSettingsAsJson(directories)) });
+        // The hashes of the settings as stored (the settings model may store them otherwise than sent: its key order,
+        // without what nothing reads), for the client's next conflict check.
+        const stored = readAllSettings(directories);
+        const keyHashes = {};
+        seedKeyHashes(keyHashes, stored);
+        response.send({ result: 'ok', settingsHash: getStringHash(JSON.stringify(stored, null, 4)), keyHashes });
     } catch (err) {
         console.error(err);
         response.send(err);
@@ -251,7 +261,7 @@ router.post('/save', function (request, response) {
  * synchronously (no `await` between read and write) to keep concurrent calls from interleaving; would need real
  * locking if this process is ever clustered.
  */
-router.post('/save-partial', function (request, response) {
+router.post('/save-partial', async function (request, response) {
     try {
         const directories = request.user.directories;
 
@@ -278,7 +288,7 @@ router.post('/save-partial', function (request, response) {
 
         try {
             // A charLore among the keys isn't stored (writeSettingsKeys() leaves it out).
-            writeSettingsKeys(directories, keys);
+            await writeSettingsKeys(directories, keys);
         } catch (err) {
             console.error('Could not write partial settings update', err);
             return response.status(400).send({ result: 'error', error: err.message });
@@ -288,8 +298,14 @@ router.post('/save-partial', function (request, response) {
 
         triggerAutoSave(request.user.profile.handle, request.user.directories);
         // Same reasoning as /save's response above: return the server's own canonical whole-store hash so the
-        // client's knownServerSettingsHash stays correct without needing to know how the store reconstructs it.
-        response.send({ result: 'ok', settingsHash: getStringHash(readAllSettingsAsJson(directories)) });
+        // client's knownServerSettingsHash stays correct without needing to know how the store reconstructs it; and
+        // the hashes of each top-level key written, as stored.
+        const stored = readAllSettings(directories);
+        const keyHashes = {};
+        for (const top of new Set(Object.keys(keys).map(key => key.split('.')[0]))) {
+            if (Object.hasOwn(stored, top)) seedKeyHashes(keyHashes, stored[top], top);
+        }
+        response.send({ result: 'ok', settingsHash: getStringHash(JSON.stringify(stored, null, 4)), keyHashes });
     } catch (err) {
         console.error(err);
         response.send(err);
@@ -300,7 +316,7 @@ router.post('/save-partial', function (request, response) {
  * Toggles one extension's membership in extension_settings.disabledExtensions. The server owns the
  * merge so the client only ever asserts the raw fact (which extension, enabled or not).
  */
-router.post('/toggle-extension', function (request, response) {
+router.post('/toggle-extension', async function (request, response) {
     try {
         const directories = request.user.directories;
         const { name, enabled } = request.body ?? {};
@@ -318,7 +334,7 @@ router.post('/toggle-extension', function (request, response) {
             ? disabledExtensions.filter(x => x !== name)
             : disabledExtensions.includes(name) ? disabledExtensions : [...disabledExtensions, name];
 
-        writeSettingsKeys(directories, { [path]: nextDisabledExtensions });
+        await writeSettingsKeys(directories, { [path]: nextDisabledExtensions });
         triggerAutoSave(request.user.profile.handle, request.user.directories);
         response.send({
             result: 'ok',
@@ -342,25 +358,25 @@ router.post('/get', storeRoute('reading settings', async (request, response) => 
 
     const { directories } = request.user;
     // Sampler presets as their files' text, by name in locale order; the other bundles parsed, in code-unit order.
-    const presets = (/** @type {string} */ group) => {
-        const listed = listBundleFiles(directories, group, { order: 'locale' });
+    const presets = async (/** @type {string} */ group) => {
+        const listed = await listBundles(directories, group, { order: 'locale' });
         return { texts: listed.map(entry => entry.text), names: listed.map(entry => entry.name) };
     };
-    const parsed = (/** @type {string} */ group) => listBundleFiles(directories, group).map(entry => entry.file);
-    const { texts: novelai_settings, names: novelai_setting_names } = presets('preset.novel');
-    const { texts: openai_settings, names: openai_setting_names } = presets('preset.openai');
-    const { texts: textgenerationwebui_presets, names: textgenerationwebui_preset_names } = presets('preset.textgenerationwebui');
-    const { texts: koboldai_settings, names: koboldai_setting_names } = presets('preset.kobold');
+    const parsed = async (/** @type {string} */ group) => (await listBundles(directories, group)).map(entry => entry.file);
+    const { texts: novelai_settings, names: novelai_setting_names } = await presets('preset.novel');
+    const { texts: openai_settings, names: openai_setting_names } = await presets('preset.openai');
+    const { texts: textgenerationwebui_presets, names: textgenerationwebui_preset_names } = await presets('preset.textgenerationwebui');
+    const { texts: koboldai_settings, names: koboldai_setting_names } = await presets('preset.kobold');
 
     const world_names = (await (await requestStore(request)).lib.books.list()).map(book => book.file_id);
 
-    const themes = parsed('theme');
-    const quickReplyPresets = parsed('quickReplies');
+    const themes = await parsed('theme');
+    const quickReplyPresets = await parsed('quickReplies');
 
-    const instruct = parsed('template.instruct');
-    const context = parsed('template.context');
-    const sysprompt = parsed('template.sysprompt');
-    const reasoning = parsed('template.reasoning');
+    const instruct = await parsed('template.instruct');
+    const context = await parsed('template.context');
+    const sysprompt = await parsed('template.sysprompt');
+    const reasoning = await parsed('template.reasoning');
 
     // The hashes are of the settings as stored, without charLore; the page gets it filled in.
     const keyHashes = {};
@@ -469,15 +485,20 @@ router.post('/restore-snapshot', getFileNameValidationFunction('name'), async (r
         const snapshotContent = fs.readFileSync(snapshotPath, 'utf8');
         const snapshotSettings = JSON.parse(snapshotContent);
 
-        writeAllSettings(request.user.directories, snapshotSettings);
+        await writeAllSettings(request.user.directories, snapshotSettings);
 
         // A restored snapshot holding tags is imported again; the import marks itself done once no source is left.
         if (snapshotSettings && typeof snapshotSettings === 'object'
             && (Object.hasOwn(snapshotSettings, 'tags') || Object.hasOwn(snapshotSettings, 'tag_map'))) {
             const { lib } = await requestStore(request);
-            await lib.tags.restartSettingsImport();
-            lib.tags.importSettingsTags(request.user.directories)
-                .catch(err => console.error('Could not run the settings tags import', err));
+            if (settingsDocumentOf(request.user.directories)) {
+                // The settings model keeps no tags: the snapshot's go to the tag store from here.
+                await lib.tags.importSettingsSource(`settings tags import (${snapshotName})`, snapshotSettings);
+            } else {
+                await lib.tags.restartSettingsImport();
+                lib.tags.importSettingsTags(request.user.directories)
+                    .catch(err => console.error('Could not run the settings tags import', err));
+            }
         }
 
         response.sendStatus(204);

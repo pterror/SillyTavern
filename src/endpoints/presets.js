@@ -1,37 +1,36 @@
-import fs from 'node:fs';
-
 import express from 'express';
 import _ from 'lodash';
 import sanitize from 'sanitize-filename';
 
 import { getDefaultPresetFile, getDefaultPresets } from './content-manager.js';
-import { bundleFilePath, bundleFolder, deleteBundleFile, groupOfApi, renameBundleFile, writeBundleFile } from '../bundle-files.js';
+import { bundleFolder, groupOfApi } from '../bundle-files.js';
+import { deleteBundle, readBundle, renameBundle, writeBundle } from '../bundle-store.js';
 
 export const router = express.Router();
 
-router.post('/save', function (request, response) {
+router.post('/save', async function (request, response) {
     const group = groupOfApi(request.body.apiId);
     if (!request.body.preset || !group) {
         return response.sendStatus(400);
     }
-    const name = writeBundleFile(request.user.directories, group, request.body.name, request.body.preset);
+    const name = await writeBundle(request.user.directories, group, request.body.name, request.body.preset);
     return name ? response.send({ name }) : response.sendStatus(400);
 });
 
-router.post('/delete', function (request, response) {
+router.post('/delete', async function (request, response) {
     const group = groupOfApi(request.body.apiId);
-    if (!group || !bundleFilePath(request.user.directories, group, request.body.name)) {
+    if (!group || !sanitize(String(request.body.name ?? ''))) {
         return response.sendStatus(400);
     }
-    return response.sendStatus(deleteBundleFile(request.user.directories, group, request.body.name) ? 200 : 404);
+    return response.sendStatus(await deleteBundle(request.user.directories, group, request.body.name) ? 200 : 404);
 });
 
-router.post('/rename', function (request, response) {
+router.post('/rename', async function (request, response) {
     const group = groupOfApi(request.body.apiId);
     if (!group) {
         return response.sendStatus(400);
     }
-    switch (renameBundleFile(request.user.directories, group, request.body.name, request.body.newName)) {
+    switch (await renameBundle(request.user.directories, group, request.body.name, request.body.newName)) {
         case 'invalid':
             return response.sendStatus(400);
         case 'missing':
@@ -47,22 +46,15 @@ router.post('/rename', function (request, response) {
  * Merges a value into a preset's `extensions` object at the given lodash path, without touching the rest
  * of the preset. Mirrors the settings-store /save-partial pattern.
  */
-router.post('/save-partial', function (request, response) {
+router.post('/save-partial', async function (request, response) {
     const group = groupOfApi(request.body.apiId);
-    const fullpath = group ? bundleFilePath(request.user.directories, group, request.body.name) : undefined;
-    if (!fullpath) {
+    if (!group || !sanitize(String(request.body.name ?? ''))) {
         return response.sendStatus(400);
     }
-    if (!fs.existsSync(fullpath)) {
+    // None, or a file that isn't JSON: nothing to merge into.
+    const preset = await readBundle(request.user.directories, group, request.body.name);
+    if (!preset) {
         return response.sendStatus(404);
-    }
-
-    let preset;
-    try {
-        preset = JSON.parse(fs.readFileSync(fullpath, 'utf-8'));
-    } catch (err) {
-        console.error('Could not read preset for partial update', err);
-        return response.status(500).send({ error: 'Preset file is not valid JSON' });
     }
 
     const fieldPath = request.body.path;
@@ -78,7 +70,7 @@ router.post('/save-partial', function (request, response) {
         preset.extensions = value;
     }
 
-    writeBundleFile(request.user.directories, group, request.body.name, preset);
+    await writeBundle(request.user.directories, group, request.body.name, preset);
     return response.send({ ok: true });
 });
 

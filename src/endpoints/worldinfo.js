@@ -425,7 +425,7 @@ router.post('/rename', storeRoute('renaming a World Info book', async (request, 
         }
         if (personasChanged) settings['power_user.persona_data'] = personaData;
     }
-    if (Object.keys(settings).length) writeSettingsKeys(directories, settings);
+    if (Object.keys(settings).length) await writeSettingsKeys(directories, settings);
 
     const keys = moved.length ? await lib.store.libraryKeys(moved) : [];
     return response.send({

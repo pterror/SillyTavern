@@ -7,6 +7,7 @@ import { RateLimiterMemory, RateLimiterRes } from 'rate-limiter-flexible';
 
 import { getUserAvatar, toKey, getPasswordHash, getPasswordSalt, createBackupArchive, ensurePublicDirectoriesExist, toAvatarKey, getAccountVersion } from '../users.js';
 import { deleteAllSettings } from '../settings-store.js';
+import { settingsDocumentOf } from '../settings-documents.js';
 import { checkForNewContent, CONTENT_TYPES } from './content-manager.js';
 import { color, Cache, getConfigValue } from '../util.js';
 import { getIpAddress, retryAfter } from '../express-common.js';
@@ -189,10 +190,11 @@ router.post('/reset-settings', async (request, response) => {
             return response.status(403).json({ error: 'Incorrect password' });
         }
 
-        // Must delete the sharded settings/ store too, not just legacy settings.json, or ensureMigrated()
-        // treats it as already-migrated and the reset silently no-ops.
-        deleteAllSettings(request.user.directories);
-        await checkForNewContent([request.user.directories], [CONTENT_TYPES.SETTINGS]);
+        // The settings model resets to a new user's settings itself; files are deleted (the sharded settings/ store
+        // too, or ensureMigrated() treats it as already migrated) and the shipped ones copied in again.
+        const modeled = Boolean(settingsDocumentOf(request.user.directories));
+        await deleteAllSettings(request.user.directories);
+        if (!modeled) await checkForNewContent([request.user.directories], [CONTENT_TYPES.SETTINGS]);
 
         return response.sendStatus(204);
     } catch (error) {

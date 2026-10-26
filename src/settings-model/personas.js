@@ -7,7 +7,9 @@ import { draft, without } from './entity-draft.js';
  * settings and given back as them.
  *
  * The persona is a slot of the cascade:
- * - the user-level statement is upstream's `default_persona ?? user_avatar` (§2.4.12);
+ * - the user-level statement is upstream's `default_persona` (null: none), what opening an unlocked chat selects;
+ * - upstream's `user_avatar`, the persona selected now, is a statement of its own (`currentPersona`): the two differ
+ *   while a persona other than the default is selected, and `{{user}}` is the current one's;
  * - a character's or group's connected personas are a character-level statement each, a list of persona keys, so a
  *   persona's `connections` is derived from them (an index, persona → characters), stored once;
  * - the chat lock (`chat_metadata.persona`) is the chat's, not here.
@@ -26,7 +28,8 @@ import { draft, without } from './entity-draft.js';
  * @property {string} [username]
  * @typedef {object} PersonasFromUpstream
  * @property {EntityDraft[]} personas
- * @property {string | undefined} userPersona The user-level statement.
+ * @property {string | null | undefined} userPersona The user-level statement (the default).
+ * @property {string | undefined} currentPersona The persona selected now.
  * @property {{ holder: PersonaConnection, personas: string[] }[]} connected Character-level statements, in the order
  *   upstream's lists first name each holder.
  * @property {string | undefined} username An override, kept only when no persona has the user's avatar.
@@ -61,14 +64,11 @@ export function personasFromUpstream(settings) {
         }
         return draft(TYPE.persona, avatar, without(record, ['connections']));
     });
-    const userPersona = settings.default_persona || settings.user_avatar || undefined;
-    if (settings.default_persona && settings.user_avatar && settings.default_persona !== settings.user_avatar) {
-        warnings.push(`the current persona ${JSON.stringify(settings.user_avatar)} and the default ${JSON.stringify(settings.default_persona)} become one user-level persona, the default`);
-    }
     const hasEntry = settings.user_avatar !== undefined && avatars.includes(settings.user_avatar);
     return {
         personas,
-        userPersona,
+        userPersona: settings.default_persona,
+        currentPersona: settings.user_avatar,
         connected: [...connected.values()],
         username: hasEntry ? undefined : settings.username,
         warnings,
@@ -78,7 +78,7 @@ export function personasFromUpstream(settings) {
 /**
  * Upstream's persona settings from the personas and the statements.
  * @param {EntityDraft[]} personas
- * @param {{ userPersona?: string, connected?: { holder: PersonaConnection, personas: string[] }[], username?: string }} statements
+ * @param {{ userPersona?: string | null, currentPersona?: string, connected?: { holder: PersonaConnection, personas: string[] }[], username?: string }} statements
  * @returns {{ persona_data: Record<string, Record<string, unknown>>, personas: Record<string, unknown>, persona_descriptions: Record<string, Record<string, unknown>>, default_persona: string | null, user_avatar: string | undefined, username: string | undefined }}
  */
 export function personasToUpstream(personas, statements) {
@@ -95,15 +95,15 @@ export function personasToUpstream(personas, statements) {
     for (const persona of personas) {
         persona_data[persona.key] = { ...persona.values, connections: connectionsOf.get(persona.key) ?? [] };
     }
-    const user = statements.userPersona;
-    const userEntry = user !== undefined ? persona_data[user] : undefined;
+    const current = statements.currentPersona;
+    const currentEntry = current !== undefined ? persona_data[current] : undefined;
     return {
         persona_data,
         personas: Object.fromEntries(Object.entries(persona_data).map(([avatar, record]) => [avatar, record.name])),
         // This fork's persona_descriptions is a view of the records, name and all (power-user.js).
         persona_descriptions: structuredClone(persona_data),
-        default_persona: user ?? null,
-        user_avatar: user,
-        username: userEntry ? /** @type {string} */ (userEntry.name) : statements.username,
+        default_persona: statements.userPersona ?? null,
+        user_avatar: current,
+        username: currentEntry ? /** @type {string} */ (currentEntry.name) : statements.username,
     };
 }

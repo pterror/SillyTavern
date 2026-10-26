@@ -1254,6 +1254,22 @@ function seedSettingsHashes(value, key = '') {
     const { value: hashed, skip } = settingsWithoutCharLore(key, value);
     if (!skip) seedKeyHashes(serverKeyHashes, hashed, key);
 }
+
+/**
+ * Takes the hashes a save answered for the settings as the server stored them (it may store them otherwise than
+ * sent: in its key order, without what nothing reads): each key under `tops` (every key for null) is the server's.
+ * @param {Record<string, number> | undefined} keyHashes
+ * @param {string[] | null} tops The top-level keys written; null for the whole settings.
+ * @returns {boolean} Whether the answer had them.
+ */
+function takeServerKeyHashes(keyHashes, tops) {
+    if (!keyHashes || typeof keyHashes !== 'object') return false;
+    for (const key of Object.keys(serverKeyHashes)) {
+        if (!tops || tops.some(top => key === top || key.startsWith(`${top}.`))) delete serverKeyHashes[key];
+    }
+    Object.assign(serverKeyHashes, keyHashes);
+    return true;
+}
 // Kind and count of the pending debounced save window (see scheduleSettingsSave()); reset when the window runs or is cancelled.
 /** @type {{ full: boolean, count: any }} */
 let _settingsSaveWindow = { full: false, count: 0 };
@@ -7891,12 +7907,14 @@ async function performSave({ full }) {
                 throw new Error(`Failed to save partial settings: ${result.statusText}`);
             }
 
-            for (const key of Object.keys(partialPayload)) {
-                seedSettingsHashes(partialPayload[key], key);
-            }
             // Not lastSavedSettingsHash: it only ever means "this exact full payload reached the server", and a keyed save sent only part of it.
             // Server-returned hash keeps knownServerSettingsHash in sync without a full copy of the settings content.
             const partialSaveResponse = await result.json().catch(() => ({}));
+            if (!takeServerKeyHashes(partialSaveResponse.keyHashes, Object.keys(partialPayload).map(key => key.split('.')[0]))) {
+                for (const key of Object.keys(partialPayload)) {
+                    seedSettingsHashes(partialPayload[key], key);
+                }
+            }
             if (partialSaveResponse.settingsHash != null) {
                 knownServerSettingsHash = partialSaveResponse.settingsHash;
             }
@@ -7935,11 +7953,11 @@ async function performSave({ full }) {
                 throw new Error(`Failed to save settings: ${result.statusText}`);
             }
 
-            // Update per-key hashes from the full payload (recursively - see seedKeyHashes()).
-            seedSettingsHashes(payload);
             lastSavedSettingsHash = payloadHash;
-            // Server-returned hash, not a local JSON.stringify(payload) computation.
+            // Server-returned hashes, not a local JSON.stringify(payload) computation.
             const saveResponse = await result.json().catch(() => ({}));
+            // Per-key hashes as stored (recursively - see seedKeyHashes()); the payload's for a server not answering them.
+            if (!takeServerKeyHashes(saveResponse.keyHashes, null)) seedSettingsHashes(payload);
             if (saveResponse.settingsHash != null) {
                 knownServerSettingsHash = saveResponse.settingsHash;
             }
@@ -7988,9 +8006,13 @@ export async function savePartialSettings(partialSettings) {
         throw new Error(`Failed to save partial settings: ${result.statusText}`);
     }
 
-    for (const key of Object.keys(partialSettings)) {
-        seedSettingsHashes(partialSettings[key], key);
+    const answer = await result.json().catch(() => ({}));
+    if (!takeServerKeyHashes(answer.keyHashes, Object.keys(partialSettings).map(key => key.split('.')[0]))) {
+        for (const key of Object.keys(partialSettings)) {
+            seedSettingsHashes(partialSettings[key], key);
+        }
     }
+    if (answer.settingsHash != null) knownServerSettingsHash = answer.settingsHash;
     return true;
 }
 
