@@ -1,3 +1,4 @@
+import { STATEMENT_PREFIX } from './library-codes.js';
 import { textEdit } from './text-edit.js';
 
 /**
@@ -13,6 +14,17 @@ import { textEdit } from './text-edit.js';
  */
 export function pushAll(list, items) {
     for (const x of items) list.push(x);
+}
+
+/**
+ * A stored entity less its settings statements (STATEMENT_PREFIX), for a write of the card or group's own values
+ * that leaves them as they are.
+ * @param {StoredEntity | null} entity
+ * @returns {StoredEntity | null}
+ */
+export function withoutStatements(entity) {
+    if (!entity) return entity;
+    return { ...entity, values: entity.values.filter(v => !(typeof v.field === 'string' && v.field.startsWith(STATEMENT_PREFIX))) };
 }
 
 /** A list item's text is the text value of this field. */

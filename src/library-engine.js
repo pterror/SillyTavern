@@ -8,10 +8,10 @@ import { parseCreateDateToEpochMs } from './util.js';
 import { tagDerivedColumns } from './tag-order.js';
 import { LibraryTags } from './library-engine-tags.js';
 import { textEdit, wtf8Length } from './text-edit.js';
-import { itemField, pushAll, storedValues, valueRecords } from './entity-values.js';
+import { itemField, pushAll, storedValues, valueRecords, withoutStatements } from './entity-values.js';
 import { SPACE, actorIds } from './actor-ids.js';
 import { LINKS, linkListRecords, storedLinks } from './character-links.js';
-import { FIELD, NAME_HISTORY, TAG_KEY_PREFIX, TYPE, renameItem, renamesOf } from './library-codes.js';
+import { FIELD, NAME_HISTORY, STATEMENT_PREFIX, TAG_KEY_PREFIX, TYPE, renameItem, renamesOf } from './library-codes.js';
 import { bookKey } from './world-info-keys.js';
 import { LIBRARY_LABELS, cursorWeights, cursorWeightsOf, searchClauses } from './search-clauses.js';
 import { SLOT, WorldInfoEngine, isEntryList } from './world-info-engine.js';
@@ -220,6 +220,7 @@ export function cardParts(entity) {
     const { values, lists } = storedValues(entity);
     for (const [field, v] of values) {
         if (typeof field === 'string') {
+            if (field.startsWith(STATEMENT_PREFIX)) continue;
             if (field.startsWith(EXTENSION_PREFIX)) parts.extensions.push({ key: field.slice(EXTENSION_PREFIX.length), value: /** @type {string} */ (v.json) });
             else parts.extra.push({ path: field, value: v.json === '' ? null : /** @type {string} */ (v.json) });
             continue;
@@ -280,7 +281,7 @@ function groupRecords(id, stored, group) {
     const records = [];
     const fav = normalizeFav(group.fav);
     if (stored ? stored.fav !== fav : fav) records.push({ kind: 'fav', entity: id, fav });
-    records.push(...valueRecords(id, stored, groupValues(group)));
+    records.push(...valueRecords(id, withoutStatements(stored), groupValues(group)));
     return records;
 }
 
@@ -623,7 +624,7 @@ export class LibraryEngine {
                 const name = (await this.bookNames([links[1].book])).get(links[1].book);
                 if (typeof name === 'string') identityCard = _.set(_.cloneDeep(card), 'data.extensions.world', name);
             }
-            records.push(...valueRecords(id, stored, next));
+            records.push(...valueRecords(id, withoutStatements(stored), next));
             // Loaded here, not at the top: it reaches the world book reads, which reach the user stores, which load this module.
             const { getCharaCardV2 } = await import('./character-card-normalize.js');
             const normalized = getCharaCardV2(JSON.parse(cardJson), directories, false);
