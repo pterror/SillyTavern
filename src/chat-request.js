@@ -1,5 +1,6 @@
 import { requestStore } from './user-stores.js';
 import { requestSession } from './request-session.js';
+import { ChatNamesPendingError } from './chat-engine.js';
 
 /**
  * @typedef {object} ChatContext The chat a request acts in.
@@ -10,6 +11,25 @@ import { requestSession } from './request-session.js';
  * @property {import('./chat-engine.js').StateOp[]} [replyChanges] The state changes the page made while producing the
  * reply the request generates (`reply_changes`), stored with the reply.
  */
+
+/**
+ * Express middleware for the routes that serve chats: refuses them (503, saying what to run) while the user's chats
+ * aren't all named (`ChatEngine.assertNamed()`), so no chat is served with no name; the user's other routes, and
+ * other users, go on.
+ * @type {import('express').RequestHandler}
+ */
+export async function chatNamesMiddleware(request, response, next) {
+    try {
+        if (!request.user?.directories) return next();
+        const { chats } = await requestStore(request);
+        if (chats.namesPendingFor === null) return next();
+        const error = new ChatNamesPendingError(chats.namesPendingFor);
+        console.warn(`[chats] refused ${request.path}: ${error.message}`);
+        return response.status(503).send({ error: true, reason: 'chat names pending', message: error.message });
+    } catch (err) {
+        return next(err);
+    }
+}
 
 /**
  * The chat a request acts in: a group's (by `group`) when it names one, else a character's (by `avatar`); null when
@@ -153,6 +173,8 @@ export function answerSessionOnHeaders(response, session) {
 export async function compatChatIds(store, request, trees) {
     /** @type {Map<bigint, string>} */
     const out = new Map();
+    // Chats not all named yet (`chatNamesMiddleware()` refuses their routes): the library lists with no chat named.
+    if (store.chats.namesPendingFor !== null) return out;
     for (const tree of trees) {
         const session = await requestSession(store.chats, request, tree);
         out.set(tree, await store.chats.compatChatId(session.reader().session, session.identifier, tree));

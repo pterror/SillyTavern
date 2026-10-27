@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { LibraryEngine } from './library-engine.js';
-import { ChatEngine } from './chat-engine.js';
+import { CHAT_NAMES_META, ChatEngine } from './chat-engine.js';
 import { libraryPeople } from './chat-people.js';
 import { TokenCache } from './token-cache-engine.js';
 import { markUpstreamImportPending } from './upstream-import.js';
@@ -131,6 +131,9 @@ async function openStore(root, handle) {
         };
         const people = libraryPeople(lib);
         const chats = await ChatEngine.open(lib.store, people, await lib.nextIds());
+        // A store made now has its chats named as they're made; an older one, once name-every-chat has run.
+        if (made) await lib.store.commit([{ kind: 'metaValue', key: CHAT_NAMES_META, json: 'true' }]);
+        else if ((await lib.store.meta([CHAT_NAMES_META]))[0] == null) chats.namesPendingFor = handle;
         return { lib, chats, people, tokens: new TokenCache(lib.store), handle, events };
     } catch (err) {
         await lib.close();
