@@ -692,10 +692,33 @@ impl Store {
         clauses: &[crate::search::query::Clause],
         ordered: library_search::Ordered,
     ) -> StoreResult<library_search::Searched> {
-        let found = self
-            .derived(|v| library_search::page(v, q, clauses, ordered, &self.inner.search_stats))?;
-        self.inner.tighten(&found.tighten);
-        Ok(found)
+        // A relevance walk that stops at the work limit goes on in a read of its own, from where it stopped, until
+        // the page is known: the limit costs time, never matches. The rest of the walk ranks by the first read's
+        // idfs.
+        let mut ordered = ordered;
+        let mut partial = None;
+        loop {
+            let found = self.derived(|v| {
+                library_search::page_continued(
+                    v,
+                    q,
+                    clauses,
+                    ordered.clone(),
+                    &self.inner.search_stats,
+                    partial.take(),
+                )
+            })?;
+            self.inner.tighten(&found.tighten);
+            let Some(p) = found.partial else {
+                return Ok(found);
+            };
+            if let library_search::Ordered::Relevance { weights, .. } = &mut ordered
+                && weights.is_none()
+            {
+                *weights = found.weights;
+            }
+            partial = Some(p);
+        }
     }
 
     /// Each entity with its values, or None where there is none, in the order asked.
@@ -2092,6 +2115,8 @@ mod fault_tests;
 mod history_tests;
 #[cfg(test)]
 mod library_search_tests;
+#[cfg(test)]
+mod library_search_diff_tests;
 #[cfg(test)]
 mod library_tests;
 #[cfg(test)]
