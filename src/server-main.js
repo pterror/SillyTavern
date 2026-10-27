@@ -403,6 +403,13 @@ async function preSetupTasks() {
     // Set up event listeners for a graceful shutdown
     process.on('SIGINT', exitProcess);
     process.on('SIGTERM', exitProcess);
+    // A closed terminal makes every console write fail with EPIPE. Unhandled, that error reaches
+    // the uncaughtException handler below, whose console.error fails the same way, forever.
+    for (const stream of [process.stdout, process.stderr]) {
+        stream.on('error', (err) => {
+            if (err?.code !== 'EPIPE') throw err;
+        });
+    }
     process.on('uncaughtException', (err) => {
         console.error('Uncaught exception:', err);
         exitProcess();
