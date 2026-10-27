@@ -185,7 +185,7 @@ export async function resumeStoreWork(directoriesList, also) {
             const store = await userStore(d);
             const { lib } = store;
             lib.tags.startPass();
-            lib.runPairPostings();
+            void lib.buildPairs();
             await lib.tags.importSettingsTags(d);
             if (also) await also(store, d);
         } catch (err) {
