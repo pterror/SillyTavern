@@ -590,7 +590,7 @@ impl Store {
 
     /// A derived value read: waits for replay, and holds off file removal between finding a position and
     /// reading it.
-    fn derived<T>(&self, f: impl FnOnce(&View) -> StoreResult<T>) -> StoreResult<T> {
+    pub(crate) fn derived<T>(&self, f: impl FnOnce(&View) -> StoreResult<T>) -> StoreResult<T> {
         self.inner.wait_ready()?;
         let _g = self.inner.gate.read().unwrap();
         // Every read of one request sees one state of the keyspace.

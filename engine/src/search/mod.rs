@@ -317,9 +317,9 @@ pub fn unmax_slot(group: u64, slot: u32) -> (u64, Option<u32>, bool) {
 }
 
 /// The readings a term has a maximum for: whole, and as a prefix when a query reads it as one: of `GRAM_MIN` to
-/// `GRAM_MAX` characters (a longer prefix is read through its first `GRAM_MAX`).
+/// `GRAM_MAX` characters (a longer prefix is read through its first `GRAM_MAX`). A pair is read whole only.
 pub fn readings(term: &str) -> &'static [bool] {
-    if (text::GRAM_MIN..=text::GRAM_MAX).contains(&text::char_len(term)) {
+    if !pairs::is_pair(term) && (text::GRAM_MIN..=text::GRAM_MAX).contains(&text::char_len(term)) {
         &[false, true]
     } else {
         &[false]

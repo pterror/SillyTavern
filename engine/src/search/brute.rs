@@ -94,9 +94,17 @@ impl<'a> Doc<'a> {
 }
 
 fn occurs(toks: &[String], phrase: &[String], prefix: bool) -> bool {
+    occurrences(toks, phrase, prefix) > 0
+}
+
+/// How many times `phrase` occurs in one value's tokens, overlapping occurrences each counted.
+fn occurrences(toks: &[String], phrase: &[String], prefix: bool) -> u64 {
     let last = phrase.len() - 1;
-    toks.len() >= phrase.len()
-        && toks.windows(phrase.len()).any(|w| {
+    if toks.len() < phrase.len() {
+        return 0;
+    }
+    toks.windows(phrase.len())
+        .filter(|w| {
             (0..phrase.len()).all(|i| {
                 if i == last && prefix {
                     w[i].starts_with(phrase[i].as_str())
@@ -105,6 +113,7 @@ fn occurs(toks: &[String], phrase: &[String], prefix: bool) -> bool {
                 }
             })
         })
+        .count() as u64
 }
 
 /// A field length as scoring takes it: its length code's length.
@@ -175,12 +184,15 @@ impl Shape {
         let mut out = Vec::new();
         for f in (0..scope.fields().len()).filter(|&f| self.allowed(f)) {
             let vals = &doc.fields[f];
-            if self.phrase
-                && (self.toks[..self.toks.len() - 1]
+            if self.phrase {
+                // A phrase is one part: its count in the field.
+                let n: u64 = vals
                     .iter()
-                    .any(|t| doc.count(f, t, false) == 0)
-                    || !vals.iter().any(|v| occurs(v, &self.toks, self.prefix)))
-            {
+                    .map(|v| occurrences(v, &self.toks, self.prefix))
+                    .sum();
+                if n > 0 {
+                    out.push((f, vec![(0, n)]));
+                }
                 continue;
             }
             let mut ps = Vec::new();
@@ -191,7 +203,7 @@ impl Shape {
                     ps.push((i, tf));
                 }
             }
-            if self.phrase || !ps.is_empty() {
+            if !ps.is_empty() {
                 out.push((f, ps));
             }
         }
@@ -208,9 +220,11 @@ impl Shape {
             .collect()
     }
 
-    /// The clause's score, `tagged` when the document carries a tag whose name holds it.
+    /// The clause's score, `tagged` when the document carries a tag whose name holds it. A phrase scores as one
+    /// term: its count per field, its tokens' idfs summed.
     fn score(&self, scope: Scope, stats: &Stats, parts: &Parts, doc: &Doc, tagged: bool) -> f64 {
-        let texts: Vec<f64> = (0..self.toks.len())
+        let units = if self.phrase { 1 } else { self.toks.len() };
+        let texts: Vec<f64> = (0..units)
             .map(|i| {
                 word_text(
                     scope,
@@ -223,6 +237,9 @@ impl Shape {
                 )
             })
             .collect();
+        if self.phrase {
+            return clause_score(&[self.idfs(stats).iter().sum()], &texts, tagged);
+        }
         clause_score(&self.idfs(stats), &texts, tagged)
     }
 }

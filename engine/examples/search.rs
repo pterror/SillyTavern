@@ -1011,6 +1011,264 @@ impl PositionalEstimate {
     }
 }
 
+/// `pair-curve <generator> <cards> <T,T,..>`: the pair index's size for each threshold T, a pair indexed when both
+/// its words are in more than T documents: distinct pairs, posting entries (pair, block of `1 << BLOCK_BITS` ids),
+/// slots (pair, document, field) and occurrences; and the words over T. From the generated text alone, no store:
+/// one pass counts the words' documents, then one pass per threshold.
+fn pair_curve(kind: &str, cards: usize, thresholds: &str) {
+    use std::collections::HashSet;
+    use std::hash::{Hash, Hasher};
+    let hash = |x: &dyn Fn(&mut std::collections::hash_map::DefaultHasher)| {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        x(&mut h);
+        h.finish()
+    };
+    // The cards' searched values per field: (library field, value tokens).
+    let values = |card: &Card| -> Vec<(u32, Vec<String>)> {
+        card.fields
+            .iter()
+            .enumerate()
+            .filter(|(f, _)| *f != RESOLVED)
+            .flat_map(|(f, vals)| vals.iter().map(move |v| (library_field(f), tokens(v.as_bytes()))))
+            .collect()
+    };
+    let started = Instant::now();
+    let mut df: HashMap<String, u64> = HashMap::new();
+    let mut g = generator(kind, cards);
+    let tag_count = g.tags().len();
+    for _ in 0..cards {
+        let card = g.card();
+        let words: HashSet<String> = values(&card).into_iter().flat_map(|(_, t)| t).collect();
+        for w in words {
+            *df.entry(w).or_default() += 1;
+        }
+    }
+    println!(
+        "{{\"phase\":\"pair_curve_words\",\"cards\":{cards},\"words\":{},\"s\":{:.1}}}",
+        df.len(),
+        started.elapsed().as_secs_f64()
+    );
+    for t in thresholds.split(',').map(|x| x.parse::<u64>().unwrap()) {
+        let started = Instant::now();
+        let common: HashSet<&str> = df.iter().filter(|x| *x.1 > t).map(|(w, _)| w.as_str()).collect();
+        let (mut terms, mut entries) = (HashSet::new(), HashSet::new());
+        let (mut slots, mut occurrences) = (0u64, 0u64);
+        let mut g = generator(kind, cards);
+        for i in 0..cards {
+            let card = g.card();
+            let block = card_id(i, tag_count) >> st_engine::search::BLOCK_BITS;
+            let mut here: HashSet<(u32, u64)> = HashSet::new();
+            for (field, toks) in values(&card) {
+                for w in toks.windows(2) {
+                    if !common.contains(w[0].as_str()) || !common.contains(w[1].as_str()) {
+                        continue;
+                    }
+                    occurrences += 1;
+                    let p = hash(&|h| {
+                        w[0].hash(h);
+                        w[1].hash(h);
+                    });
+                    here.insert((field, p));
+                    terms.insert(p);
+                    entries.insert(hash(&|h| {
+                        p.hash(h);
+                        block.hash(h);
+                    }));
+                }
+            }
+            slots += here.len() as u64;
+        }
+        println!(
+            "{{\"phase\":\"pair_curve\",\"t\":{t},\"common_words\":{},\"pairs\":{},\"entries\":{},\"slots\":{slots},\"occurrences\":{occurrences},\"s\":{:.1}}}",
+            common.len(),
+            terms.len(),
+            entries.len(),
+            started.elapsed().as_secs_f64()
+        );
+    }
+}
+
+/// One term's postings, summed as the generator's documents arrive in id order.
+#[derive(Default, Clone, Copy)]
+struct TermAcc {
+    df: u32,
+    /// Slots (document, field).
+    slots: u64,
+    blocks: u32,
+    /// Its posting blocks' entries, key and value bytes, as the index writes them.
+    posting_bytes: u64,
+    /// Its postings inline in one entry: the documents as deltas, each field with its count.
+    inline_bytes: u64,
+    last_doc: u64,
+    /// Its block maxima's slots: per block, one over every field and one per field holding it, per reading.
+    max_slots: u64,
+    key_len: u16,
+    readings: u8,
+}
+
+fn varint_bytes(v: u64) -> u64 {
+    varint_len(v)
+}
+
+/// `layout-curve <generator> <cards> <K,K,..>`: the index's size, pairs and words apart, with postings inline in
+/// one entry for a term in at most K documents (no count or maxima entries), and for the rest posting blocks, a
+/// count, and maxima only for a term in more than one block. Posting bytes are exact (the index's own key and map
+/// encodings); maxima are estimated at `MAX_SLOT_BYTES` per slot plus a key per group of blocks. K = 0 with maxima
+/// for every term is the index as it is.
+fn layout_curve(kind: &str, cards: usize, ks: &str) {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use st_engine::search::{self as se, BLOCK_BITS, Scope};
+    const MAX_SLOT_BYTES: u64 = 5;
+    let scope = Scope::LIBRARY;
+    let defs = scope.fields();
+    let started = Instant::now();
+    // Per kind (0 words, 1 pairs): term hash → its sums.
+    let mut acc: [HashMap<u64, TermAcc>; 2] = [HashMap::new(), HashMap::new()];
+    let mut g = generator(kind, cards);
+    let tag_count = g.tags().len();
+    // The current block's postings per kind: term hash → (key length, readings, slot → (exact, gram)).
+    type BlockTerms = HashMap<u64, (u16, u8, BTreeMap<u32, (u64, u64)>)>;
+    let mut block_terms: [BlockTerms; 2] = [HashMap::new(), HashMap::new()];
+    let mut cur_block = None;
+    let flush = |block: u64, bt: &mut [BlockTerms; 2], acc: &mut [HashMap<u64, TermAcc>; 2]| {
+        for k in 0..2 {
+            for (h, (key_len, readings, slots)) in bt[k].drain() {
+                let a = acc[k].entry(h).or_default();
+                a.key_len = key_len;
+                a.readings = readings;
+                a.blocks += 1;
+                let pairs: Vec<(u32, u32)> = slots
+                    .iter()
+                    .map(|(&sl, &(e, gr))| {
+                        let f = sl & ((1 << se::FIELD_BITS) - 1);
+                        (sl, se::pack(defs[f as usize].prefix, se::FieldHit { exact: e, gram: gr }))
+                    })
+                    .collect();
+                // posting_block's key: the term's key and the block.
+                let mut kb = Vec::new();
+                st_engine::keyspace::val::put_u64(&mut kb, block);
+                a.posting_bytes += u64::from(key_len) + kb.len() as u64
+                    + st_engine::keyspace::val::map_bytes(&pairs).len() as u64;
+                let mut fields_held: u64 = 0;
+                let mut last_doc_in_block = None;
+                for (&sl, &(e, gr)) in &slots {
+                    let (doc, f) = se::unslot(block, sl);
+                    fields_held |= 1 << f;
+                    a.slots += 1;
+                    if last_doc_in_block != Some(doc) {
+                        a.df += 1;
+                        a.inline_bytes += varint_bytes(doc - a.last_doc);
+                        a.last_doc = doc;
+                        last_doc_in_block = Some(doc);
+                    }
+                    a.inline_bytes += 1 + varint_bytes(e.max(gr));
+                }
+                a.max_slots += u64::from(readings) * (1 + u64::from(fields_held.count_ones()));
+            }
+        }
+    };
+    for i in 0..cards {
+        let card = g.card();
+        let doc = card_id(i, tag_count);
+        let block = doc >> BLOCK_BITS;
+        if cur_block.is_some_and(|b| b != block) {
+            flush(cur_block.unwrap(), &mut block_terms, &mut acc);
+        }
+        cur_block = Some(block);
+        for (f, vals) in card.fields.iter().enumerate() {
+            if f == RESOLVED {
+                continue;
+            }
+            let field = library_field(f);
+            let prefix = defs[field as usize].prefix;
+            let sl = se::slot(doc, field);
+            for v in vals {
+                let toks = tokens(v.as_bytes());
+                let mut add = |k: usize, term: &str, exact: u64, gram: u64| {
+                    let mut h = DefaultHasher::new();
+                    term.hash(&mut h);
+                    let e = block_terms[k].entry(h.finish()).or_insert_with(|| {
+                        let key_len = se::postings(scope, term).len() as u16;
+                        (key_len, se::readings(term).len() as u8, BTreeMap::new())
+                    });
+                    let s = e.2.entry(sl).or_default();
+                    s.0 += exact;
+                    s.1 += gram;
+                };
+                for w in toks.windows(2) {
+                    add(1, &st_engine::search::pairs::term(&w[0], &w[1]), 1, 0);
+                }
+                for tok in &toks {
+                    if prefix {
+                        for gr in st_engine::search::text::grams(tok) {
+                            add(0, gr, 0, 1);
+                        }
+                        add(0, tok, 1, 0);
+                    } else {
+                        add(0, tok, 1, 1);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(b) = cur_block {
+        flush(b, &mut block_terms, &mut acc);
+    }
+    eprintln!("layout-curve: read in {:.1}s", started.elapsed().as_secs_f64());
+    // A term count's entry: its key (the term's, under its own structure) and an added map's few bytes.
+    let count_bytes = |a: &TermAcc| u64::from(a.key_len) + 4;
+    // A maxima entry's key per group of `1 << GROUP_BITS` blocks it spans (at most one at these sizes), and slots.
+    let maxima_bytes = |a: &TermAcc| u64::from(a.key_len) + 4 + a.max_slots * MAX_SLOT_BYTES;
+    for (k, name) in [(0usize, "words"), (1, "pairs")] {
+        let terms = acc[k].len() as u64;
+        let slots: u64 = acc[k].values().map(|a| a.slots).sum();
+        // As it is: posting blocks, a count and maxima for every term.
+        let (mut now_bytes, mut now_keys) = (0u64, 0u64);
+        for a in acc[k].values() {
+            now_bytes += a.posting_bytes + count_bytes(a) + maxima_bytes(a);
+            now_keys += u64::from(a.blocks) + 2;
+        }
+        println!(
+            "{{\"phase\":\"layout\",\"kind\":\"{name}\",\"cards\":{cards},\"k\":\"now\",\"terms\":{terms},\"slots\":{slots},\"bytes\":{now_bytes},\"keys\":{now_keys}}}"
+        );
+        for kk in ks.split(',').map(|x| x.parse::<u32>().unwrap()) {
+            let (mut bytes, mut keys, mut inlined) = (0u64, 0u64, 0u64);
+            for a in acc[k].values() {
+                if a.df <= kk {
+                    // One entry: the term's key, its document count and its postings.
+                    bytes += u64::from(a.key_len) + varint_bytes(u64::from(a.df)) + a.inline_bytes;
+                    keys += 1;
+                    inlined += 1;
+                } else {
+                    bytes += a.posting_bytes + count_bytes(a);
+                    keys += u64::from(a.blocks) + 1;
+                    if a.blocks > 1 {
+                        bytes += maxima_bytes(a);
+                        keys += 1;
+                    }
+                }
+            }
+            println!(
+                "{{\"phase\":\"layout\",\"kind\":\"{name}\",\"cards\":{cards},\"k\":{kk},\"terms\":{terms},\"inlined\":{inlined},\"bytes\":{bytes},\"keys\":{keys}}}"
+            );
+        }
+        // How documents per term spread: terms and slots by df bucket.
+        let mut buckets: BTreeMap<u32, (u64, u64)> = BTreeMap::new();
+        for a in acc[k].values() {
+            let b = a.df.next_power_of_two();
+            let e = buckets.entry(b).or_default();
+            e.0 += 1;
+            e.1 += a.slots;
+        }
+        let parts: Vec<String> = buckets
+            .iter()
+            .map(|(b, (t, s))| format!("\"{b}\":[{t},{s}]"))
+            .collect();
+        println!("{{\"phase\":\"layout_df\",\"kind\":\"{name}\",\"cards\":{cards},\"by_df_pow2\":{{{}}}}}", parts.join(","));
+    }
+}
+
 /// The best matches and the number of matches.
 type Answer = (Vec<(u64, f64)>, u64);
 
@@ -1041,6 +1299,14 @@ fn main() {
             total += c.fields.iter().flatten().map(String::len).sum::<usize>();
         }
         println!("{total}");
+        return;
+    }
+    if args[1] == "pair-curve" {
+        pair_curve(&args[2], args[3].parse().unwrap(), &args[4]);
+        return;
+    }
+    if args[1] == "layout-curve" {
+        layout_curve(&args[2], args[3].parse().unwrap(), &args[4]);
         return;
     }
     let dir = PathBuf::from(&args[1]);
@@ -1365,6 +1631,63 @@ fn load_and_space(
         parts.join(",")
     );
     space_detail(s);
+    if std::env::args().any(|a| a == "--pair-build") {
+        pair_build(s);
+    }
+}
+
+/// `--pair-build`: the pair postings built over the loaded library (the `searchPairs` option's pass), timed, and
+/// their entries counted apart from the words' (terms joined by `pairs::SEPARATOR`).
+fn pair_build(s: &Store) {
+    use st_engine::search::pairs::SEPARATOR;
+    let started = Instant::now();
+    s.commit_wait(vec![rec("searchPairs", vec![Value::Bit(true)])]).unwrap();
+    let mut slices = 0u64;
+    loop {
+        let (tx, rx) = std::sync::mpsc::channel();
+        s.pairs_step(Box::new(move |r| tx.send(r).unwrap()));
+        slices += 1;
+        if !rx.recv().unwrap().unwrap() {
+            break;
+        }
+    }
+    settle(s);
+    let build_s = started.elapsed().as_secs_f64();
+    let start = key::of(key::SEARCH_POSTING);
+    let end = key::prefix_end(&start);
+    let mut from = start.clone();
+    let (mut pair_blocks, mut pair_bytes, mut pair_slots) = (0u64, 0u64, 0u64);
+    let (mut word_blocks, mut word_bytes) = (0u64, 0u64);
+    let mut terms = std::collections::HashSet::new();
+    loop {
+        let page = s.scan(&from, &end, 65536).unwrap();
+        for (k, v) in &page {
+            let Some((term, _)) = st_engine::search::parse_posting_block(Scope::LIBRARY, k) else {
+                continue;
+            };
+            if term.contains(SEPARATOR) {
+                pair_blocks += 1;
+                pair_bytes += (k.len() + v.len()) as u64;
+                pair_slots += st_engine::keyspace::val::map_pairs(v).map_or(0, |p| p.len() as u64);
+                terms.insert(term);
+            } else {
+                word_blocks += 1;
+                word_bytes += (k.len() + v.len()) as u64;
+            }
+        }
+        match page.last() {
+            Some((k, _)) if page.len() == 65536 => {
+                from = k.clone();
+                from.push(0);
+            }
+            _ => break,
+        }
+    }
+    println!(
+        "{{\"phase\":\"pair_build\",\"build_s\":{build_s:.1},\"slices\":{slices},\"pair_terms\":{},\"pair_blocks\":{pair_blocks},\
+         \"pair_slots\":{pair_slots},\"pair_bytes\":{pair_bytes},\"word_blocks\":{word_blocks},\"word_bytes\":{word_bytes}}}",
+        terms.len()
+    );
 }
 
 /// Search entries by structure and term kind: entries, key bytes, value bytes and map pairs.

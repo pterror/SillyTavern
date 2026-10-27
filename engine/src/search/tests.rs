@@ -1261,6 +1261,12 @@ fn pairs_on(s: &Store, on: bool) {
         .unwrap();
 }
 
+/// Runs the pairs' pass to its end.
+fn pairs_built(s: &Store) {
+    pairs_on(s, true);
+    while pairs_step(s) {}
+}
+
 /// Every pair posting slot: (scope, term, document, field) → count.
 fn pair_slots(s: &Store) -> std::collections::BTreeMap<(u64, String, u64, u32), u64> {
     let mut out = std::collections::BTreeMap::new();
@@ -1273,7 +1279,7 @@ fn pair_slots(s: &Store) -> std::collections::BTreeMap<(u64, String, u64, u32), 
             let term = crate::keyspace::val::get_bytes(&k, &mut at).unwrap();
             let block = get_u64(&k, &mut at).unwrap();
             let term = String::from_utf8(term).unwrap();
-            if !term.contains(super::pairs::SEPARATOR) {
+            if !super::pairs::is_pair(&term) {
                 continue;
             }
             for (slot, n) in crate::keyspace::val::map_pairs(&v).unwrap() {
@@ -1304,16 +1310,66 @@ fn pair_slots_of(w: &World) -> std::collections::BTreeMap<(u64, String, u64, u32
     out
 }
 
+/// Each pair's document count as stored, and as the slots call for: (scope, term) → documents.
+fn pair_counts(
+    s: &Store,
+    slots: &std::collections::BTreeMap<(u64, String, u64, u32), u64>,
+) -> (
+    std::collections::BTreeMap<(u64, String), u64>,
+    std::collections::BTreeMap<(u64, String), u64>,
+) {
+    let mut want: std::collections::BTreeMap<(u64, String), std::collections::BTreeSet<u64>> =
+        std::collections::BTreeMap::new();
+    for (kind, term, doc, _) in slots.keys() {
+        want.entry((*kind, term.clone())).or_default().insert(*doc);
+    }
+    let want: std::collections::BTreeMap<(u64, String), u64> =
+        want.into_iter().map(|(k, d)| (k, d.len() as u64)).collect();
+    let got = want
+        .keys()
+        .map(|(kind, term)| {
+            let scope = if *kind == Scope::LIBRARY.kind {
+                Scope::LIBRARY
+            } else {
+                Scope::TAGS
+            };
+            let k = super::term_counts_of(scope, term);
+            let counts = s
+                .derived(|v| {
+                    Ok(v.get_val(&k)?
+                        .map_or_else(Vec::new, |x| x.into_counts(&k).unwrap()))
+                })
+                .unwrap();
+            let n = super::query::count_at(&counts, super::DOCS_SLOT);
+            ((*kind, term.clone()), n)
+        })
+        .collect();
+    (got, want)
+}
+
 #[test]
-fn pair_postings_are_built_kept_and_deleted_while_writes_go_on() {
+fn pairs_are_indexed_over_existing_text_while_writes_go_on() {
     let _turn = turn();
     let dir = temp_dir("pairs");
     let mut lib = build(&dir, 9, 300);
     let docs: Vec<u64> = lib.world.library.docs.keys().copied().collect();
     let mut r = Rng(5);
+    // A store made before pairs were indexed has none; phrases answer as a scan meanwhile.
     assert!(pair_slots(&lib.store).is_empty());
+    let c = |t: &str| clause(t, None, false, false);
+    let phrases = [
+        vec![clause("dark knight", None, false, true)],
+        vec![clause("the dark knight", None, false, true), c("love")],
+        vec![c("foo-bar"), c("x9")],
+        vec![clause("knight the", None, false, true), c("dragon")],
+        vec![c("the dark kn")],
+    ];
+    for clauses in &phrases {
+        check(&lib, &query(clauses.clone(), 6));
+    }
     pairs_on(&lib.store, true);
-    // Writes between the build's slices, before and after where it has reached.
+    assert_eq!(lib.store.pairs_mode().unwrap(), super::pairs::INDEXING);
+    // Writes between the pass's slices, before and after where it has reached.
     let (mut i, mut slices) = (0, 0);
     let swap = temp_dir("pairs-swap");
     while pairs_step(&lib.store) {
@@ -1323,29 +1379,32 @@ fn pair_postings_are_built_kept_and_deleted_while_writes_go_on() {
             drop(std::mem::replace(&mut lib.store, open(&swap)));
             lib.store = open(&dir);
         }
+        for clauses in &phrases[..2] {
+            check(&lib, &query(clauses.clone(), 6));
+        }
         for _ in 0..3 {
             random_edit(&mut lib, &mut r, &docs, i);
             i += 1;
         }
     }
     assert!(slices > 10, "{slices}");
-    assert_eq!(lib.store.pairs_mode().unwrap(), super::pairs::ON);
-    assert_eq!(pair_slots(&lib.store), pair_slots_of(&lib.world));
+    assert_eq!(lib.store.pairs_mode().unwrap(), super::pairs::INDEXED);
+    let slots = pair_slots(&lib.store);
+    assert_eq!(slots, pair_slots_of(&lib.world));
+    let (got, want) = pair_counts(&lib.store, &slots);
+    assert_eq!(got, want);
     for _ in 0..40 {
         random_edit(&mut lib, &mut r, &docs, i);
         i += 1;
     }
-    assert_eq!(pair_slots(&lib.store), pair_slots_of(&lib.world));
-    // Phrases answer as a scan; two whole words are decided by their pair, with no text read.
-    let c = |t: &str| clause(t, None, false, false);
-    for clauses in [
-        vec![clause("dark knight", None, false, true)],
-        vec![clause("the dark knight", None, false, true), c("love")],
-        vec![c("foo-bar"), c("x9")],
-        vec![clause("knight the", None, false, true), c("dragon")],
-    ] {
-        check(&lib, &query(clauses, 6));
+    let slots = pair_slots(&lib.store);
+    assert_eq!(slots, pair_slots_of(&lib.world));
+    let (got, want) = pair_counts(&lib.store, &slots);
+    assert_eq!(got, want);
+    for clauses in &phrases {
+        check(&lib, &query(clauses.clone(), 6));
     }
+    // Two whole words are decided by their pair, with no text read.
     let f = lib
         .store
         .search(&query(vec![clause("dark knight", None, false, true)], 1000))
@@ -1354,7 +1413,7 @@ fn pair_postings_are_built_kept_and_deleted_while_writes_go_on() {
     assert_eq!(f.texts, 0);
     // The phrase's candidates are the documents holding its pair, not every document holding both words.
     let pair = super::pairs::term("dark", "knight");
-    let holding: std::collections::BTreeSet<u64> = pair_slots(&lib.store)
+    let holding: std::collections::BTreeSet<u64> = slots
         .keys()
         .filter(|(k, t, _, _)| *k == Scope::LIBRARY.kind && *t == pair)
         .map(|&(_, _, d, _)| d)
@@ -1365,21 +1424,45 @@ fn pair_postings_are_built_kept_and_deleted_while_writes_go_on() {
         f.checked,
         holding.len()
     );
-    // Off: deleted while writes go on.
-    pairs_on(&lib.store, false);
+    drop(lib);
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&swap);
+}
+
+#[test]
+fn the_old_options_pairs_are_deleted_then_pairs_are_indexed() {
+    let _turn = turn();
+    let dir = temp_dir("pairs-legacy");
+    let mut lib = build(&dir, 11, 200);
+    let docs: Vec<u64> = lib.world.library.docs.keys().copied().collect();
+    let mut r = Rng(7);
+    // A store with the old option on: its writes keep pair postings with no counts or maxima.
+    let mut state = Vec::new();
+    crate::log::format::put_uvarint(&mut state, super::pairs::LEGACY_ON);
+    lib.store.keyspace().insert(
+        [(key::of(key::SEARCH_PAIRS), crate::keyspace::val::Val::Put(state))],
+        None,
+    );
+    let mut i = 0;
+    for _ in 0..30 {
+        random_edit(&mut lib, &mut r, &docs, i);
+        i += 1;
+    }
+    assert!(!pair_slots(&lib.store).is_empty());
+    pairs_on(&lib.store, true);
+    assert_eq!(lib.store.pairs_mode().unwrap(), super::pairs::LEGACY_DELETING);
     while pairs_step(&lib.store) {
         random_edit(&mut lib, &mut r, &docs, i);
         i += 1;
     }
-    assert_eq!(lib.store.pairs_mode().unwrap(), 0);
-    assert!(pair_slots(&lib.store).is_empty());
-    check(
-        &lib,
-        &query(vec![clause("dark knight", None, false, true)], 6),
-    );
+    assert_eq!(lib.store.pairs_mode().unwrap(), super::pairs::INDEXED);
+    let slots = pair_slots(&lib.store);
+    assert_eq!(slots, pair_slots_of(&lib.world));
+    let (got, want) = pair_counts(&lib.store, &slots);
+    assert_eq!(got, want);
+    check(&lib, &query(vec![clause("dark knight", None, false, true)], 6));
     drop(lib);
     let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&swap);
 }
 
 /// A varint whose continuation bit is set with nothing after it: no reader decodes it.
@@ -1480,11 +1563,12 @@ fn the_reference_scores_cases_computed_by_hand() {
         assert!(*d == wd && close(*s, ws), "{got:?} against {want:?}");
     }
 
-    // A phrase: each token's idf times its text, and the tag part at its rarest token's idf.
+    // A phrase scores as one term: its count per field (once in the description), its tokens' idfs summed, with
+    // the tag part at that idf.
     let q = query(vec![clause("elf ranger", None, false, true)], 10);
     let (got, total) = brute::search(&w, &q);
     assert_eq!(total, 1);
-    let want = idf_elf * desc2 + idf_ranger * desc2 + idf_elf.max(idf_ranger) * 10.0;
+    let want = (idf_elf + idf_ranger) * (desc2 + 10.0);
     assert!(
         got[0].0 == 2 && close(got[0].1, want),
         "{got:?} against {want}"
