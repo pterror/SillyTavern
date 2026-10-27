@@ -1,6 +1,6 @@
 # The prompt model
 
-What's sent to a model, as one structure for every API: sections placed relative to each other, filled by entries
+What's sent to a model, as one structure for every API: a tree of sections, each placed by a parent and a position in it, filled by entries
 that say when they're active. Replaces the chat completion prompt manager, Advanced Formatting's templates and System
 Prompt, the utility prompts, the Author's Note and character's note, lorebook positions and the injection table
 (`src/prompt-injections.js`), and the fixed positions in `extension_prompt_types`, `world_info_position` and
@@ -8,39 +8,56 @@ Prompt, the utility prompts, the Author's Note and character's note, lorebook po
 
 ## Sections
 
-The prompt is a tree of **sections**. A section has:
-- a **name** (unique in the prompt; what others anchor to);
+The prompt is a tree of **sections**. Each has exactly one parent and a position among its siblings. A section has:
+- an **id** (stable; what placements refer to) and a display name;
 - **content**: text with macros, which may reference its children by name (`{{outlet::name}}`) to place them inside
   its text; children it doesn't reference follow its text, in order;
 - a **role** (system, user, assistant), or none to take its parent's;
-- **budget**: whether it's kept whole, dropped whole, or trimmed (from its oldest child) when the prompt is over the
-  context; and its priority among what's dropped.
+- **budget**: kept whole, dropped whole, or trimmed (from its oldest child) when the prompt is over the context; and
+  its priority among what's dropped.
 
-Some sections come from the chat, not from entries: **sources**. Each is a section with generated children:
-- `history`: one child per message in the chat (role from who wrote it), oldest first;
-- `examples`: one child per example dialogue block;
-- `card` with children `description`, `personality`, `scenario`, `system`, `after-history` (the card's fields);
-- `persona`: the active persona's description;
-- `notes` and other names a layout or book declares empty, to be filled (**outlets**).
+The core knows sections, placement, entries and **providers**, and no section names. A provider makes sections from
+the chat, registered the same way an extension registers one, and declares what it produces:
+- history: one child per message (role from who wrote it), oldest first;
+- examples: one child per example dialogue block;
+- the card: `description`, `personality`, `scenario`, `system`, `after-history`;
+- the persona: its description.
 
-## Placement: relative to another section
+A layout's names (`lore-before`, `note`, an outlet) are data: sections declared empty, to be filled.
 
-Every entry, and every section a layout declares, is placed relative to an **anchor** section:
+## Placement: a position in a parent
 
-| Relation | Means |
+Every section, a layout's own included, is placed by a parent and a position in it. A layout is a book of always-on
+sections; the editor shows siblings as a list, and dragging one writes its position.
+
+| Position | Means |
 |---|---|
-| `before x` / `after x` | as x's sibling, just before or after it |
-| `first in x` / `last in x` | as x's first or last child |
-| `in x, n from the end` / `n from the start` | among x's children, with n of them after it (or before it) |
+| `first in x` / `last in x` | x's first or last child |
+| `before y` / `after y` | in y's parent, next to y (resolved to a sort key beside y's) |
+| `in x, n from the end` / `n from the start` | among the children x's provider made, with n of them after it (or before it); other placed sections don't count |
+| `order` | the sort key among siblings at the same position, then id |
 
-- "Depth n in the chat" is `in history, n from the end`. "Top / bottom of the Author's Note" is
-  `first in note` / `last in note`. "Before / after the character" is `before card` / `after card`. A lorebook outlet
-  is `last in <outlet>`.
-- Anything can be an anchor, entries included: "after my style guide entry", "first in the persona".
-- Several things in the same place go by **order** (a number), then by name.
-- An entry whose anchor isn't in this prompt (inactive, or a source with nothing in it) isn't placed. It can name a
-  **fallback** anchor to use instead.
-- Placements must not loop (A after B after A). Edits that would make a loop are refused, so a prompt always builds.
+- What should move with a section goes inside it, as a child: siblings never depend on each other.
+- A section whose parent isn't in this prompt (an inactive entry, a provider with nothing in it) isn't placed. It can
+  name a **fallback** parent; otherwise the preview says why it's missing.
+- Placements must not loop. Edits that would make one are refused, so a prompt always builds.
+
+Upstream's lore positions, and extensions' prompts, are each one case:
+
+| Upstream | In the model |
+|---|---|
+| ↑Char / ↓Char | last in `lore-before` / `lore-after`, which the default layout puts where the story string has `{{wiBefore}}` / `{{wiAfter}}` and the prompt manager its World Info markers |
+| ↑AN / ↓AN | first in / last in `note`; not placed when the note isn't sent this turn, as today |
+| ↑EM / ↓EM | first in / last in `examples` |
+| @D n with a role | in history, n from the end, with that role |
+| outlet `name` | last in `name` |
+| `order` | the sort key, and the priority when the lore budget is short |
+| `setExtensionPrompt` IN_CHAT / BEFORE_PROMPT / IN_PROMPT / NONE | entries in an extensions book: by depth and role / at the layout's matching places / scanned for lore, never placed |
+
+Two details the import keeps exactly: upstream joins all @D entries with the same depth and role into one message, so
+the import wraps them in one section per depth and role that joins its children; and depth counts only messages, as
+the position above does. Export back gives an entry its upstream position where it has one; any other is listed as
+lost, not dropped silently.
 
 ## Entries and books
 
@@ -90,6 +107,28 @@ So one prompt preset works over both formats, and choosing a backend never switc
 
 Format templates ("[Scenario: {0}]", World Info format) are a section's content wrapping its children.
 
+**The instruct template is a fact of the model**, worked out at connect time from the model's own chat template (the
+Jinja `chat_template` the backend reports, else the model repo's `tokenizer_config.json`): a fixed probe conversation
+is rendered through it and through each known instruct template, and the one with identical output is used; when
+none matches, the role prefixes and suffixes are read off the probe's output. A connection can pin a template
+instead. This replaces the activation regex, the template-hash table (`public/scripts/chat-templates.js`), Bind Model
+to Templates and the derive bolts.
+
+## Budget
+
+One rule for every format, applied to the tree before rendering:
+1. Each section is counted as it will be sent (wrapped in its role's sequences for text, with the per-message
+   overhead for chat), by the connection's tokenizer.
+2. Kept sections are counted first. If they alone exceed the budget, the request is refused, naming the sections and
+   their sizes; a prompt is never sent over the context.
+3. Trimmed sources fill what's left in one declared order: history whole messages newest first, examples whole
+   blocks after history (before it when pinned). Entries placed inside history count as kept.
+4. A section fits when the total stays at or under the budget.
+
+Today's builders follow the same order but differ at the edges: text completion fits on a strict `<`
+(`src/chat-history-budget.js`), counts strings without their wrapping, and sends an over-budget prompt with its
+history emptied; chat completion fits on `≤` and throws. Both are replaced by the rule above.
+
 ## Parameters by name
 
 Generation parameters are stored as `{ parameter: value }`, where the parameter is its own id (`temperature`,
@@ -102,11 +141,10 @@ table doesn't know can be added per connection as `{ wire name: value }`.
 
 - Server: one builder instead of `assembleTextCompletionPrompt` and `prepareOpenAIMessages` (with
   `preparePromptsForChatCompletion` and `populateChatCompletion`) and the injection table: resolve active entries,
-  place them, apply the budget, render. Prompt parity tests (`tests/frontend/PromptParity.e2e.js`) pin today's
-  output for imported presets.
+  place them, apply the budget, render. Prompt parity tests (`tests/frontend/PromptParity.e2e.js`) pin upstream's
+  output for imported presets where the prompt fits the budget; over the budget the rule above is tested on its own,
+  and the differences from upstream are listed in `tests/frontend/prompt-parity-known.js`.
 - Import: upstream presets, templates, lorebooks and notes convert into layouts, books and entries; export goes back
   to upstream's formats (lossy where upstream can't say it, listed).
-- To check while building: the budget order today (chat completion keeps prompts, then fills examples and history;
-  text completion trims history and examples against the story string), so the defaults keep today's output; token
-  counting per section for the budget; where lore scanning reads injected text from (today the page scans extension
-  prompts, the server only the note and quiet prompt).
+- To check while building: where lore scanning reads injected text from (today the page scans extension prompts,
+  the server only the note and quiet prompt); which backends report a chat template, and how.
