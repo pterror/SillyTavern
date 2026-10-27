@@ -132,3 +132,54 @@ snapshot run again.
   predate the engine: what's still needed is decided while building the archives (each native module either ships
   prebuilt or goes).
 - Remote access (`Remote-Link.cmd`) and the config file become launcher settings shown in the page.
+
+## Running elsewhere, and reaching it
+
+### Headless
+
+A one-line install (downloads the launcher, checks its signature) that installs it as a service: a systemd unit on
+Linux, a launchd agent on macOS, a Windows service. Everything over SSH with `st` (status, logs, update, versions,
+rollback); updates on a schedule the user sets, never during a generation, with the health check and rollback.
+
+### From other devices
+
+One "Access from other devices" setup in the page, a choice per situation that writes the few settings it needs
+(listen addresses, allowed ranges, login, TLS):
+
+| Situation | What it sets up |
+|---|---|
+| same network | listens on the LAN address; allows the LAN range; login required |
+| Tailscale | `tailscale serve` (HTTPS on the tailnet name, no certificates to manage); allows tailnet addresses; Funnel (public through Tailscale) only as its own explicit choice |
+| WireGuard or another VPN | listens on that interface's address; allows the VPN's subnet |
+| public, with a domain | HTTPS by ACME (Let's Encrypt) itself, or behind the user's reverse proxy (Caddy, nginx) with trusted proxy headers |
+| tunnel | Cloudflare Tunnel (what `Remote-Link.cmd` does), run by the launcher |
+
+Always: localhost only until one is chosen; never beyond localhost without a login; never public without HTTPS; the
+page shows how and from where it is reachable now.
+
+### Installing it somewhere else, from the desktop
+
+The app needs a long-running process and a persistent disk (the store; long streamed generations):
+- **fits**: a VPS or VM (DigitalOcean Droplets, Hetzner, OVH, Linode, Vultr, AWS Lightsail / EC2, Oracle Cloud's free
+  tier); containers with a persistent volume (Fly.io, Railway, Render); home hardware (a NAS, a Raspberry Pi);
+- **not yet**: containers without a disk that survives a restart (DO App Platform, Cloud Run, App Runner): see
+  object storage below;
+- **no**: serverless (Vercel, Netlify, Workers): no long-running process, no disk, execution limits.
+
+The launcher's "Run it somewhere else", with one adapter per provider (a module with its own API host,
+`modules.md`):
+1. a server the user has: its SSH address; the one-line install over SSH, the service set up;
+2. a new server: a provider and an API token; the smallest fitting machine made, its first boot (cloud-init)
+   installing the launcher and the service;
+3. container platforms: the platform's own config written and deployed (`fly.toml` with a volume, …).
+Then access (join the user's tailnet — the easiest, nothing public — or a domain with HTTPS) and data (start empty,
+or copy the library across, its size and time shown first; keeping two in sync is OT2). The token is used for the
+setup only and kept only if the user lets it manage updates and backups there.
+
+### Object storage (later)
+
+Runs are written once and never changed, which object storage suits: uploaded as made, a local disk only a cache.
+The log stays local and is shipped in segments (as Litestream does); a fresh container restores runs and the log
+after them. Writes since the last shipped segment are lost if the container dies (seconds); one instance at a time
+(scaling to zero works). Uploaded files go to the bucket. This opens containers without a disk (DO App Platform,
+App Runner, Cloud Run), and gives everyone off-site backups.
