@@ -1092,7 +1092,8 @@ fn several_words_next_page_ranks_by_the_first_pages_idfs() {
             let Some(next) = first.next.clone() else {
                 continue;
             };
-            assert_eq!(first.weights.as_ref().map(Vec::len), Some(2), "{words}");
+            // Each is one clause of two tokens, a phrase: its tokens' idfs and its short idf.
+            assert_eq!(first.weights.as_ref().map(Vec::len), Some(3), "{words}");
             tied_cursors += usize::from(!matches!(next, Resume::Score(..)));
             let before = relevance_order_under(&s, &q, &c, &None);
             create_cards(&s, from, 40);

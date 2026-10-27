@@ -1261,12 +1261,6 @@ fn pairs_on(s: &Store, on: bool) {
         .unwrap();
 }
 
-/// Runs the pairs' pass to its end.
-fn pairs_built(s: &Store) {
-    pairs_on(s, true);
-    while pairs_step(s) {}
-}
-
 /// Every pair posting slot: (scope, term, document, field) → count.
 fn pair_slots(s: &Store) -> std::collections::BTreeMap<(u64, String, u64, u32), u64> {
     let mut out = std::collections::BTreeMap::new();
@@ -1392,6 +1386,8 @@ fn pairs_are_indexed_over_existing_text_while_writes_go_on() {
     }
     assert!(slices > 10, "{slices}");
     assert_eq!(lib.store.pairs_mode().unwrap(), super::pairs::INDEXED);
+    // Once every document has its pairs, a phrase's idf in short fields is its rarest pair's.
+    lib.world.pairs = true;
     let slots = pair_slots(&lib.store);
     assert_eq!(slots, pair_slots_of(&lib.world));
     let (got, want) = pair_counts(&lib.store, &slots);
@@ -1472,6 +1468,7 @@ fn the_old_options_pairs_are_deleted_then_pairs_are_indexed() {
         i += 1;
     }
     assert_eq!(lib.store.pairs_mode().unwrap(), super::pairs::INDEXED);
+    lib.world.pairs = true;
     let slots = pair_slots(&lib.store);
     assert_eq!(slots, pair_slots_of(&lib.world));
     let (got, want) = pair_counts(&lib.store, &slots);
@@ -1597,6 +1594,22 @@ fn the_reference_scores_cases_computed_by_hand() {
     let idf_el = (1.0f64 + 3.5 / 1.5).ln();
     assert_eq!(total, 3);
     let want = [(1, idf_el * name1), (2, idf_el * 10.0), (3, idf_el * 10.0)];
+    for ((d, s), (wd, ws)) in got.iter().zip(want) {
+        assert!(*d == wd && close(*s, ws), "{got:?} against {want:?}");
+    }
+
+    // With pairs, a phrase in a short field is at its pair's idf: "elf ranger" is a pair in one name (a
+    // description holds no pairs). n = 5; "elf" is in 3 documents, "ranger" in 4. Body text and the tag part keep
+    // the tokens' idfs.
+    w.pairs = true;
+    w.library.docs.insert(5, library_doc(&[(0, "elf ranger")]));
+    let q = query(vec![clause("elf ranger", None, false, true)], 10);
+    let (got, total) = brute::search(&w, &q);
+    let idf_pair = (1.0f64 + 4.5 / 1.5).ln();
+    let unit = (1.0f64 + 2.5 / 3.5).ln() + (1.0f64 + 1.5 / 4.5).ln();
+    let name2 = 20.0 * tfn(1.0, 2.0, super::REF_NAME);
+    assert_eq!(total, 2);
+    let want = [(5, idf_pair * name2), (2, unit * (desc2 + 10.0))];
     for ((d, s), (wd, ws)) in got.iter().zip(want) {
         assert!(*d == wd && close(*s, ws), "{got:?} against {want:?}");
     }
@@ -2179,13 +2192,17 @@ fn a_words_next_page_goes_on_where_it_was_after_documents_are_created() {
 
 /// Several words' later pages rank by the idfs page 1 ranked by (`Found::weights`, sent back as `Query::weights`):
 /// documents created between pages 1 and 2 change the words' counts, and page 2 is the reference's order on the
-/// new view under page 1's idfs after page 1's last hit, none repeated or skipped. Words, a phrase, a word in a
-/// field, words matching tag names (tied documents), and one word beside a negated one (no weights).
+/// new view under page 1's idfs after page 1's last hit, none repeated or skipped. Words, a phrase (its short idf,
+/// its pair's, among its idfs), a word in a field, words matching tag names (tied documents), and one word beside
+/// a negated one (no weights).
 #[test]
 fn several_words_next_page_ranks_by_the_first_pages_idfs() {
     let _turn = turn();
     let dir = temp_dir("weights-stay");
     let mut lib = build_ids(&dir, 6, 300, |d| d);
+    pairs_on(&lib.store, true);
+    while pairs_step(&lib.store) {}
+    lib.world.pairs = true;
     let mut r = Rng(91);
     let mut next_doc = 2000;
     let c = |t: &str| clause(t, None, false, false);
@@ -2208,7 +2225,7 @@ fn several_words_next_page_ranks_by_the_first_pages_idfs() {
             let words: usize = clauses
                 .iter()
                 .filter(|c| !c.negate && c.fields != Some(vec![8]))
-                .map(|c| tokens(&c.text).len())
+                .map(|c| super::query::weights_of(tokens(&c.text).len()))
                 .sum();
             match &first.weights {
                 Some(w) => {
@@ -2244,7 +2261,7 @@ fn several_words_next_page_ranks_by_the_first_pages_idfs() {
 }
 
 /// A query's `weights` must give one idf per token of each positive clause that scores (a clause in the tags field
-/// only filters), none for one word: any other count is refused as an invalid cursor.
+/// only filters) and a phrase's short idf, none for one word: any other count is refused as an invalid cursor.
 #[test]
 fn weights_that_dont_fit_the_query_are_an_invalid_cursor() {
     let _turn = turn();
@@ -2254,7 +2271,7 @@ fn weights_that_dont_fit_the_query_are_an_invalid_cursor() {
     for (clauses, n) in [
         (vec![c("the"), c("knight")], 1),
         (vec![c("the"), c("knight")], 3),
-        (vec![clause("dark knight", None, false, true)], 1),
+        (vec![clause("dark knight", None, false, true)], 2),
         (vec![c("the")], 1),
         (vec![c("love"), clause("la", None, true, false)], 2),
         (vec![clause("dragon", Some(vec![8]), false, false), c("the")], 2),
@@ -2267,7 +2284,7 @@ fn weights_that_dont_fit_the_query_are_an_invalid_cursor() {
     // The fitting counts are taken.
     for (clauses, n) in [
         (vec![c("the"), c("knight")], 2),
-        (vec![clause("dark knight", None, false, true)], 2),
+        (vec![clause("dark knight", None, false, true)], 3),
         (vec![c("the")], 0),
         (vec![c("love"), clause("la", None, true, false)], 0),
         (vec![clause("dragon", Some(vec![8]), false, false), c("the")], 0),
