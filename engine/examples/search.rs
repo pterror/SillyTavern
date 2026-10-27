@@ -43,6 +43,10 @@ trait Generator: Send {
     /// Every tag: id, name.
     fn tags(&self) -> &[(u64, String)];
     fn card(&mut self) -> Card;
+    /// The text's vocabulary, most frequent first (`--phrases`); none for a generator without one.
+    fn vocab(&self) -> &[String] {
+        &[]
+    }
 }
 
 const NAME: usize = 0;
@@ -553,6 +557,10 @@ impl Generator for Synth {
         &self.tags
     }
 
+    fn vocab(&self) -> &[String] {
+        &self.vocab
+    }
+
     fn card(&mut self) -> Card {
         let i = self.i;
         self.i += 1;
@@ -913,6 +921,96 @@ fn queries(tags: &[(u64, String)]) -> Vec<(String, usize, Vec<Clause>, Vec<Filte
     out
 }
 
+fn phrases_mode() -> bool {
+    std::env::args().any(|a| a == "--phrases")
+}
+
+/// `--phrases`: closed-quote phrases of 2 to 4 tokens over every field and over the name: all common (the
+/// vocabulary's most frequent words, as "in the", "she said that"), or led by a rare word (`RARE`th by
+/// frequency). Text phrases follow the unigram Zipf text, so a common phrase's documents grow with the library.
+fn phrase_queries(vocab: &[String]) -> Vec<(String, usize, Vec<Clause>, Vec<Filter>)> {
+    const RARE: usize = 20_000;
+    let w = |i: usize| vocab[i].clone();
+    let sets: Vec<(&str, Vec<String>)> = vec![
+        ("common2", vec![w(0), w(1)]),
+        ("common3", vec![w(0), w(1), w(2)]),
+        ("common4", vec![w(0), w(1), w(2), w(3)]),
+        ("rare2", vec![w(0), w(RARE)]),
+        ("rare3", vec![w(0), w(1), w(RARE)]),
+        ("rare4", vec![w(0), w(1), w(2), w(RARE)]),
+    ];
+    let mut out = Vec::new();
+    for (label, words) in sets {
+        for name in [false, true] {
+            let mut cl = c(&words.join(" "));
+            cl.quoted = true;
+            if name {
+                cl.fields = Some(vec![library_field(NAME)]);
+            }
+            let l = format!("{label}{} \"{}\"", if name { " name:" } else { "" }, words.join(" "));
+            out.push((l, words.len(), vec![cl], Vec::new()));
+        }
+    }
+    out
+}
+
+/// A positional index's size, estimated from the text: per (document, term) one entry whose key is the term and
+/// the document (`KEY_FIXED` bytes besides the term), and whose value is, per field holding the term, the field,
+/// the count and the positions as varint deltas (a value's first token one past the last one's, so a phrase never
+/// spans two values).
+#[derive(Default)]
+struct PositionalEstimate {
+    entries: u64,
+    occurrences: u64,
+    key_bytes: u64,
+    value_bytes: u64,
+}
+
+const KEY_FIXED: u64 = 1 + 8 + 8 + 8;
+
+fn varint_len(mut v: u64) -> u64 {
+    let mut n = 1;
+    while v >= 0x80 {
+        v >>= 7;
+        n += 1;
+    }
+    n
+}
+
+impl PositionalEstimate {
+    fn add(&mut self, card: &Card) {
+        // term -> per field, its positions
+        let mut by: HashMap<String, BTreeMap<u32, Vec<u64>>> = HashMap::new();
+        for (f, vals) in card.fields.iter().enumerate() {
+            if f == RESOLVED {
+                continue;
+            }
+            let field = library_field(f);
+            let mut pos = 0u64;
+            for v in vals {
+                for t in tokens(v.as_bytes()) {
+                    by.entry(t).or_default().entry(field).or_default().push(pos);
+                    pos += 1;
+                    self.occurrences += 1;
+                }
+                pos += 1;
+            }
+        }
+        for (term, fields) in by {
+            self.entries += 1;
+            self.key_bytes += KEY_FIXED + term.len() as u64;
+            for (field, ps) in fields {
+                self.value_bytes += varint_len(u64::from(field)) + varint_len(ps.len() as u64);
+                let mut last = 0;
+                for p in ps {
+                    self.value_bytes += varint_len(p - last);
+                    last = p;
+                }
+            }
+        }
+    }
+}
+
 /// The best matches and the number of matches.
 type Answer = (Vec<(u64, f64)>, u64);
 
@@ -966,7 +1064,11 @@ fn main() {
     }
 
     // ---- queries: latency (median of 7 after one warm-up) and reads ----
-    let qs = queries(&tags);
+    let qs = if phrases_mode() {
+        phrase_queries(generator(kind, 0).vocab())
+    } else {
+        queries(&tags)
+    };
     let mut results = Vec::new();
     for (label, words, clauses, filters) in &qs {
         let q = Query {
@@ -977,12 +1079,24 @@ fn main() {
             limit: 50,
             after: None,
             weights: None,
-            limits: Limits::default(),
+            // `--phrases`: a page's whole cost, its walk never stopped.
+            limits: if phrases_mode() {
+                Limits {
+                    enumerate: u64::MAX / 4,
+                    ranked: u64::MAX / 4,
+                    walked: u64::MAX / 4,
+                    tags: u64::MAX / 4,
+                }
+            } else {
+                Limits::default()
+            },
         };
         let first = s.search(&q).unwrap();
         let mut times = Vec::new();
         let ks0 = s.stats().ks;
-        for _ in 0..7 {
+        // `--once`: one timed run after the warm-up, for queries too slow to repeat.
+        let runs = if std::env::args().any(|a| a == "--once") { 1 } else { 7 };
+        for _ in 0..runs {
             let t = Instant::now();
             s.search(&q).unwrap();
             times.push(t.elapsed());
@@ -994,9 +1108,9 @@ fn main() {
             *words,
             q,
             first,
-            times[3],
-            (ks1.blocks - ks0.blocks) / 7,
-            (ks1.file_reads - ks0.file_reads) / 7,
+            times[runs / 2],
+            (ks1.blocks - ks0.blocks) / runs as u64,
+            (ks1.file_reads - ks0.file_reads) / runs as u64,
         ));
     }
 
@@ -1105,6 +1219,7 @@ fn load_and_space(
         commit_all(s, tags.iter().flat_map(|(id, n)| tag_records(*id, n)), 1000);
     }
     let mut text_bytes = 0u64;
+    let mut positional = PositionalEstimate::default();
     // Tags and cards share ids: in a load, id by id, so each partition comes once.
     let by_id: HashMap<u64, &str> = if tags_first {
         HashMap::new()
@@ -1125,6 +1240,9 @@ fn load_and_space(
             .flat_map(|i| {
                 let id = card_id(i, tag_count);
                 let card = g.card();
+                if phrases_mode() {
+                    positional.add(&card);
+                }
                 text_bytes += card
                     .fields
                     .iter()
@@ -1191,6 +1309,12 @@ fn load_and_space(
         st.log_bytes,
         proc_kb("VmHWM:")
     );
+    if phrases_mode() {
+        println!(
+            "{{\"phase\":\"positional_estimate\",\"entries\":{},\"occurrences\":{},\"key_bytes\":{},\"value_bytes\":{}}}",
+            positional.entries, positional.occurrences, positional.key_bytes, positional.value_bytes
+        );
+    }
 
     // ---- space by structure: every entry's key and value bytes ----
     let mut by: BTreeMap<u64, (u64, u64)> = BTreeMap::new();
