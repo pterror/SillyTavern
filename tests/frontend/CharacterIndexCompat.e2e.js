@@ -1152,14 +1152,7 @@ test.describe('emitted indices: CHARACTER_EDITOR_OPENED (step 12)', () => {
             const onSelect = await takeEditorOpened(page);
             expect(onSelect.length).toBeGreaterThan(0);
             expect(onSelect).toEqual(onSelect.map(() => emitted(targetIndex)));
-
-            // The navbar's selected-character button.
-            await page.locator('#rm_button_selected_ch').click();
-            await expect.poll(() => page.evaluate(() => {
-                // @ts-ignore
-                return window.__editorOpened.length;
-            })).toBe(1);
-            expect(await takeEditorOpened(page)).toEqual([emitted(targetIndex)]);
+            // (A click on the name at the top of the character's info edits the name; it no longer reopens the info.)
         } finally {
             await deleteCharacters(page, [current, target]);
         }

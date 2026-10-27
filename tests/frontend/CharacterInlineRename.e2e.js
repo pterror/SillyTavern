@@ -1,7 +1,7 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// The character's name at the top of its info renames it in place: the pen beside it, or a double click on it, turns
+// The character's name at the top of its info renames it in place: the pen beside it, or a click on it, turns
 // it into a text box; Enter renames, past messages showing the new name too, without asking; Escape doesn't.
 
 /** @param {import('@playwright/test').Page} page @param {string} name */
@@ -34,7 +34,7 @@ test('Escape leaves the name; Enter renames it, past messages too, without askin
     await expect(heading(page)).toHaveText(name);
     await expect(page.locator('#character_rename_inline')).toBeVisible();
 
-    await heading(page).dblclick();
+    await heading(page).click();
     const box = heading(page).locator('input');
     await expect(box).toBeFocused();
     await expect(box).toHaveValue(name);
