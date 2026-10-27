@@ -1294,12 +1294,15 @@ fn pair_slots(s: &Store) -> std::collections::BTreeMap<(u64, String, u64, u32), 
     out
 }
 
-/// The pair slots the documents' values call for.
+/// The pair slots the documents' values call for: in their short fields.
 fn pair_slots_of(w: &World) -> std::collections::BTreeMap<(u64, String, u64, u32), u64> {
     let mut out = std::collections::BTreeMap::new();
     for (scope, corpus) in [(Scope::LIBRARY, &w.library), (Scope::TAGS, &w.tags)] {
         for (doc, fields) in &corpus.docs {
             for (f, values) in fields.iter().enumerate() {
+                if !scope.fields()[f].pairs {
+                    continue;
+                }
                 let items: Vec<&[u8]> = values.iter().map(Vec::as_slice).collect();
                 for (t, n) in super::pairs::of(&items) {
                     out.insert((scope.kind, t, *doc, f as u32), n);
@@ -1404,15 +1407,28 @@ fn pairs_are_indexed_over_existing_text_while_writes_go_on() {
     for clauses in &phrases {
         check(&lib, &query(clauses.clone(), 6));
     }
-    // Two whole words are decided by their pair, with no text read.
+    // In a short field, two whole words are decided by their pair, with no text read: two words of a name.
+    let (a, b) = lib
+        .world
+        .library
+        .docs
+        .values()
+        .find_map(|fields| {
+            let t = tokens(fields[0].first()?);
+            (t.len() >= 2).then(|| (t[0].clone(), t[1].clone()))
+        })
+        .expect("a name of two words");
+    let phrase = format!("{a} {b}");
+    let name = Some(vec![0]);
+    check(&lib, &query(vec![clause(&phrase, name.clone(), false, true)], 6));
     let f = lib
         .store
-        .search(&query(vec![clause("dark knight", None, false, true)], 1000))
+        .search(&query(vec![clause(&phrase, name, false, true)], 1000))
         .unwrap();
     assert!(!f.hits.is_empty());
     assert_eq!(f.texts, 0);
     // The phrase's candidates are the documents holding its pair, not every document holding both words.
-    let pair = super::pairs::term("dark", "knight");
+    let pair = super::pairs::term(&a, &b);
     let holding: std::collections::BTreeSet<u64> = slots
         .keys()
         .filter(|(k, t, _, _)| *k == Scope::LIBRARY.kind && *t == pair)

@@ -6,7 +6,8 @@
 //! prefix fields): a prefix field's slot holds both counts, so the query's last word reads the same list. Per
 //! block the most a document there scores for the term, whole and as a prefix (its block maxima), bounds the
 //! block's scores (block-max WAND); per block and field the shortest length bounds each document's. No positions:
-//! a phrase is checked on the candidates' text.
+//! in a short, title-like field a phrase is read through its word pairs (`pairs`); in body text it is checked on
+//! the candidates' text.
 //!
 //! A scope is one searchable set of documents: the library (documents are characters and groups), the tag names
 //! (documents are tags), one owner's chat messages (documents are messages), the session names (documents are
@@ -95,6 +96,9 @@ pub struct FieldDef {
     /// The field's reference length in tokens: a field this long weighs its counts as BM25 weighs a field of
     /// average length.
     pub ref_len: f64,
+    /// A short, title-like field (a name, a label, a keyword): its word pairs are index terms (`pairs`), so a
+    /// phrase there is read through them. Body text isn't: its phrases are its words' documents, checked.
+    pub pairs: bool,
 }
 
 const fn field(name: &'static str, weight: f64, prefix: bool, ref_len: f64) -> FieldDef {
@@ -103,7 +107,29 @@ const fn field(name: &'static str, weight: f64, prefix: bool, ref_len: f64) -> F
         weight,
         prefix,
         ref_len,
+        pairs: false,
     }
+}
+
+/// `field`, short and title-like: its pairs indexed.
+const fn short(name: &'static str, weight: f64, prefix: bool, ref_len: f64) -> FieldDef {
+    FieldDef {
+        name,
+        weight,
+        prefix,
+        ref_len,
+        pairs: true,
+    }
+}
+
+/// The fields of `scope` whose pairs are indexed, as a mask.
+pub fn pair_fields(scope: Scope) -> u64 {
+    scope
+        .fields()
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| d.pairs)
+        .fold(0, |m, (i, _)| m | 1 << i)
 }
 
 // Reference lengths, in tokens. These values are meant to be tuned.
@@ -145,15 +171,15 @@ pub const REF_BOOK_AUTOMATION_ID: f64 = 25.73;
 /// tags an entity carries (upstream's `#tags`, 10) are not indexed per entity: they are read through tag
 /// membership (`tagged`) and score at `TAG_WEIGHT`.
 pub static LIBRARY_FIELDS: &[FieldDef] = &[
-    field("name", 20.0, true, REF_NAME),
+    short("name", 20.0, true, REF_NAME),
     field("description", 3.0, false, REF_DESCRIPTION),
     field("mes_example", 3.0, false, REF_MES_EXAMPLE),
     field("scenario", 2.0, false, REF_SCENARIO),
     field("personality", 2.0, false, REF_PERSONALITY),
     field("first_mes", 2.0, false, REF_FIRST_MES),
     field("creator_notes", 2.0, false, REF_CREATOR_NOTES),
-    field("creator", 1.0, true, REF_CREATOR),
-    field("tags", 1.0, true, REF_CARD_TAGS),
+    short("creator", 1.0, true, REF_CREATOR),
+    short("tags", 1.0, true, REF_CARD_TAGS),
     field("alternate_greetings", 1.0, false, REF_ALTERNATE_GREETINGS),
     field("members", 15.0, false, REF_MEMBERS),
     field("id", 1.0, false, REF_ID),
@@ -172,18 +198,18 @@ pub fn tag_field(scope: Scope) -> Option<u32> {
     (scope == Scope::LIBRARY).then_some(TAG_FIELD)
 }
 
-pub static TAG_FIELDS: &[FieldDef] = &[field("name", 1.0, true, REF_TAG_NAME)];
+pub static TAG_FIELDS: &[FieldDef] = &[short("name", 1.0, true, REF_TAG_NAME)];
 
 pub static CHAT_FIELDS: &[FieldDef] = &[field("text", 1.0, false, REF_CHAT_TEXT)];
 
-pub static SESSION_FIELDS: &[FieldDef] = &[field("name", 1.0, true, REF_SESSION_NAME)];
+pub static SESSION_FIELDS: &[FieldDef] = &[short("name", 1.0, true, REF_SESSION_NAME)];
 
 /// Upstream's `fuzzySearchWorldInfo` keys and weights; `uid` and `automationId` match whole tokens only.
 pub static BOOK_FIELDS: &[FieldDef] = &[
-    field("key", 20.0, true, REF_BOOK_KEY),
-    field("group", 15.0, false, REF_BOOK_GROUP),
-    field("comment", 10.0, true, REF_BOOK_COMMENT),
-    field("keysecondary", 10.0, false, REF_BOOK_KEYSECONDARY),
+    short("key", 20.0, true, REF_BOOK_KEY),
+    short("group", 15.0, false, REF_BOOK_GROUP),
+    short("comment", 10.0, true, REF_BOOK_COMMENT),
+    short("keysecondary", 10.0, false, REF_BOOK_KEYSECONDARY),
     field("content", 3.0, false, REF_BOOK_CONTENT),
     field("uid", 1.0, false, REF_BOOK_UID),
     field("automationId", 1.0, false, REF_BOOK_AUTOMATION_ID),

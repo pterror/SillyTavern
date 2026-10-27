@@ -1,6 +1,7 @@
-//! Word pairs as index terms (build path 5d): each pair of adjacent tokens within one value of a field is a term
-//! (`term(a, b)`), written with the words' (`index`): its postings hold the document's count of the pair per
-//! field, with its document count and block maxima as a word's. A phrase is read through its pairs (`query`): two
+//! Word pairs as index terms (build path 5d): each pair of adjacent tokens within one value of a short,
+//! title-like field (`FieldDef::pairs`: names, labels, keywords; never body text) is a term (`term(a, b)`),
+//! written with the words' (`index`): its postings hold the document's count of the pair per field, with its
+//! document count and block maxima as a word's. A phrase in those fields is read through its pairs (`query`): two
 //! whole words are one pair; more are their pairs, checked on the text only where a document can enter the page.
 //!
 //! A store indexes pairs from its start. One made before them builds them over its existing text, a slice at a
@@ -190,11 +191,15 @@ pub fn step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
         };
         let lengths = map_pairs(v)
             .ok_or_else(|| StoreError::Entry("a length block doesn't decode".into()))?;
-        // Each document's fields with text, in order.
+        // Each document's fields with text, in order: every field to delete the old option's pairs, the short
+        // ones to index pairs.
         let mut docs: Vec<(u64, Vec<u32>)> = Vec::new();
         for (s, len) in lengths {
             let field = s & ((1 << FIELD_BITS) - 1);
             if len == 0 || field as usize >= scope.fields().len() {
+                continue;
+            }
+            if mode == INDEXING && !scope.fields()[field as usize].pairs {
                 continue;
             }
             let doc = block << LENGTH_BITS | u64::from(s >> FIELD_BITS);

@@ -488,14 +488,16 @@ fn query(scope: Scope, word: &str, fields: Option<Vec<u32>>) -> Query {
     }
 }
 
-/// Whether a value holds the one-token `word` as a query's last word: a whole token, or in a prefix field a token's prefix of
-/// two characters or more.
+/// Whether a value holds `word` as a query's last clause: one token, whole, or in a prefix field a token's prefix of
+/// two characters or more; several (a phrase), adjacent in one value, its last a prefix in any field.
 fn holds(values: &[String], word: &str, prefix: bool) -> bool {
-    let w = &tokens(word.as_bytes())[0];
+    let w = tokens(word.as_bytes());
+    let n = w.len();
+    let last_prefix = (prefix || n > 1) && w[n - 1].chars().count() >= 2;
     values.iter().any(|v| {
-        tokens(v.as_bytes())
-            .iter()
-            .any(|t| t == w || (prefix && w.chars().count() >= 2 && t.starts_with(w.as_str())))
+        tokens(v.as_bytes()).windows(n).any(|t| {
+            (0..n).all(|i| t[i] == w[i] || (i == n - 1 && last_prefix && t[i].starts_with(w[i].as_str())))
+        })
     })
 }
 
@@ -629,14 +631,23 @@ fn a_tags_name_is_searched_only_while_it_has_its_definition_marker() {
 
 #[test]
 fn searched_values_follow_every_change_and_equal_a_fresh_store() {
-    for seed in [0x9e37_79b9_7f4a_7c15, 7, 0x1234_5678] {
-        follow(seed);
+    // With word pairs written from the start (in the short fields), and without.
+    for (seed, pairs) in [(0x9e37_79b9_7f4a_7c15, true), (7, false), (0x1234_5678, true)] {
+        follow(seed, pairs);
     }
 }
 
-fn follow(seed: u64) {
+fn pairs_on(s: &Store, on: bool) {
+    if on {
+        s.commit_wait(vec![rec("searchPairs", vec![Value::Bit(true)])])
+            .unwrap();
+    }
+}
+
+fn follow(seed: u64, pairs: bool) {
     let (da, db) = (temp_dir("changes"), temp_dir("fresh"));
     let a = Store::open_in(&da, SMALL, pool()).unwrap();
+    pairs_on(&a, pairs);
     a.commit_wait(books()).unwrap();
     let mut m = Model {
         ents: BTreeMap::new(),
@@ -667,6 +678,7 @@ fn follow(seed: u64) {
         }
     }
     let b = Store::open_in(&db, SMALL, pool()).unwrap();
+    pairs_on(&b, pairs);
     b.commit_wait(m.records_of_state()).unwrap();
     let (ea, eb) = (search_entries(&a), search_entries(&b));
     let (sa, sb): (BTreeSet<_>, BTreeSet<_>) =
@@ -698,7 +710,20 @@ fn check(s: &Store, m: &Model) {
     ]
     .concat();
     for (scope, field) in scopes {
-        for w in ["dark", "dr", "quokka", "12", "élan", "elan", "k1"] {
+        for w in [
+            "dark",
+            "dr",
+            "quokka",
+            "12",
+            "élan",
+            "elan",
+            "k1",
+            "dark knight",
+            "the dark",
+            "dark dr",
+            "o'neil dark",
+            "knight the dragon",
+        ] {
             let q = query(scope, w, Some(vec![field]));
             assert_eq!(
                 found(s, &q),

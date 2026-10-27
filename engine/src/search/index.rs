@@ -172,9 +172,9 @@ struct Terms {
 
 impl Terms {
     /// `items` are the field's values (one, or each item of a list). In a prefix field a token also counts
-    /// toward each of its prefix terms; elsewhere a term's prefix count is its whole-token count. With `pairs`,
-    /// each pair of adjacent tokens within a value is a term too (`pairs::term`), counted whole only: it adds
-    /// nothing to the field's length.
+    /// toward each of its prefix terms; elsewhere a term's prefix count is its whole-token count. With `pairs` (a
+    /// short field's, where a write keeps them), each pair of adjacent tokens within a value is a term too
+    /// (`pairs::term`), counted whole only: it adds nothing to the field's length.
     fn of(items: &[&[u8]], prefix: bool, pairs: bool) -> Terms {
         let mut t = Terms::default();
         for item in items {
@@ -355,6 +355,7 @@ fn update_one(
 ) -> Result<(), StoreError> {
     let defs = scope.fields();
     let prefix = defs[field as usize].prefix;
+    let with_pairs = with_pairs && defs[field as usize].pairs;
     let (before, after) = (
         Terms::of(old, prefix, with_pairs),
         Terms::of(new, prefix, with_pairs),
@@ -734,9 +735,9 @@ fn carried(view: &View, term: &str, as_prefix: bool, block: u64) -> Result<Vec<u
 /// A field's values, for `whole`.
 pub type FieldValues<'a> = (u32, &'a [&'a [u8]]);
 
-/// The entries for the pairs of document `doc`, whose words are indexed, coming with these values (every field it
-/// has text in): the pass indexing pairs over a store's existing text (`pairs::step`). As `whole` writes a term's,
-/// with no tag part: a pair is never in a tag's name terms.
+/// The entries for the pairs of document `doc`, whose words are indexed, coming with these values (its short
+/// fields' with text): the pass indexing pairs over a store's existing text (`pairs::step`). As `whole` writes a
+/// term's, with no tag part: a pair is never in a tag's name terms.
 pub fn pairs_whole(
     view: &View,
     out: &mut Out,
@@ -792,7 +793,10 @@ pub fn whole(
     let kept = super::pairs::kept(view, scope, doc)?;
     let mut fields: Vec<(u32, &[&[u8]], Terms)> = fields
         .iter()
-        .map(|&(f, v)| (f, v, Terms::of(v, defs[f as usize].prefix, kept == Kept::Terms)))
+        .map(|&(f, v)| {
+            let d = &defs[f as usize];
+            (f, v, Terms::of(v, d.prefix, kept == Kept::Terms && d.pairs))
+        })
         .collect();
     fields.sort_by_key(|x| x.0);
     // Each term's fields with its counts there, by field.

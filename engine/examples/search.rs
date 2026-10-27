@@ -1253,6 +1253,25 @@ fn layout_curve(kind: &str, cards: usize, ks: &str) {
                 "{{\"phase\":\"layout\",\"kind\":\"{name}\",\"cards\":{cards},\"k\":{kk},\"terms\":{terms},\"inlined\":{inlined},\"bytes\":{bytes},\"keys\":{keys}}}"
             );
         }
+        // Postings chunked by count, not by id range: a term's postings in entries of at most `chunk` documents
+        // (each keyed by the term and its first document), as delta varints; a count and per-chunk maxima only
+        // for a term in more than one chunk; with `inline`, a term in one chunk is one dictionary entry.
+        for chunk in [64u64, 128, 256] {
+            let (mut bytes, mut keys, mut dict) = (0u64, 0u64, 0u64);
+            for a in acc[k].values() {
+                let chunks = u64::from(a.df).div_ceil(chunk);
+                bytes += chunks * (u64::from(a.key_len) + 5) + a.inline_bytes;
+                keys += chunks;
+                dict += u64::from(a.key_len);
+                if chunks > 1 {
+                    bytes += count_bytes(a) + u64::from(a.key_len) + 4 + chunks * u64::from(a.readings) * MAX_SLOT_BYTES;
+                    keys += 2;
+                }
+            }
+            println!(
+                "{{\"phase\":\"layout_chunked\",\"kind\":\"{name}\",\"cards\":{cards},\"chunk\":{chunk},\"bytes\":{bytes},\"keys\":{keys},\"dictionary_key_bytes\":{dict}}}"
+            );
+        }
         // How documents per term spread: terms and slots by df bucket.
         let mut buckets: BTreeMap<u32, (u64, u64)> = BTreeMap::new();
         for a in acc[k].values() {
@@ -1653,40 +1672,59 @@ fn pair_build(s: &Store) {
     }
     settle(s);
     let build_s = started.elapsed().as_secs_f64();
-    let start = key::of(key::SEARCH_POSTING);
-    let end = key::prefix_end(&start);
-    let mut from = start.clone();
-    let (mut pair_blocks, mut pair_bytes, mut pair_slots) = (0u64, 0u64, 0u64);
-    let (mut word_blocks, mut word_bytes) = (0u64, 0u64);
-    let mut terms = std::collections::HashSet::new();
-    loop {
-        let page = s.scan(&from, &end, 65536).unwrap();
-        for (k, v) in &page {
-            let Some((term, _)) = st_engine::search::parse_posting_block(Scope::LIBRARY, k) else {
-                continue;
-            };
-            if term.contains(SEPARATOR) {
-                pair_blocks += 1;
-                pair_bytes += (k.len() + v.len()) as u64;
-                pair_slots += st_engine::keyspace::val::map_pairs(v).map_or(0, |p| p.len() as u64);
-                terms.insert(term);
-            } else {
-                word_blocks += 1;
-                word_bytes += (k.len() + v.len()) as u64;
+    // Per structure (postings, block maxima, term counts): pairs' and words' entries and bytes, by the term in
+    // each key.
+    let mut parts = Vec::new();
+    let mut pair_terms = std::collections::HashSet::new();
+    let (mut pair_total, mut word_total) = (0u64, 0u64);
+    for (name, prefix) in [
+        ("postings", key::of(key::SEARCH_POSTING)),
+        ("maxima", key::of(key::SEARCH_BLOCK_MAX)),
+        ("counts", key::SEARCH_TERM_COUNTS.prefix()),
+    ] {
+        let mut scoped = prefix.clone();
+        st_engine::keyspace::val::put_u64(&mut scoped, Scope::LIBRARY.kind);
+        st_engine::keyspace::val::put_u64(&mut scoped, Scope::LIBRARY.owner);
+        let end = key::prefix_end(&scoped);
+        let mut from = scoped.clone();
+        let (mut pe, mut pb, mut we, mut wb) = (0u64, 0u64, 0u64, 0u64);
+        loop {
+            let page = s.scan(&from, &end, 65536).unwrap();
+            for (k, v) in &page {
+                let mut at = scoped.len();
+                let Some(term) = st_engine::keyspace::val::get_bytes(k, &mut at) else {
+                    continue;
+                };
+                let n = (k.len() + v.len()) as u64;
+                if term.contains(&(SEPARATOR as u8)) {
+                    pe += 1;
+                    pb += n;
+                    if name == "counts" {
+                        pair_terms.insert(term);
+                    }
+                } else {
+                    we += 1;
+                    wb += n;
+                }
+            }
+            match page.last() {
+                Some((k, _)) if page.len() == 65536 => {
+                    from = k.clone();
+                    from.push(0);
+                }
+                _ => break,
             }
         }
-        match page.last() {
-            Some((k, _)) if page.len() == 65536 => {
-                from = k.clone();
-                from.push(0);
-            }
-            _ => break,
-        }
+        pair_total += pb;
+        word_total += wb;
+        parts.push(format!(
+            "\"{name}\":{{\"pair_entries\":{pe},\"pair_bytes\":{pb},\"word_entries\":{we},\"word_bytes\":{wb}}}"
+        ));
     }
     println!(
-        "{{\"phase\":\"pair_build\",\"build_s\":{build_s:.1},\"slices\":{slices},\"pair_terms\":{},\"pair_blocks\":{pair_blocks},\
-         \"pair_slots\":{pair_slots},\"pair_bytes\":{pair_bytes},\"word_blocks\":{word_blocks},\"word_bytes\":{word_bytes}}}",
-        terms.len()
+        "{{\"phase\":\"pair_build\",\"build_s\":{build_s:.1},\"slices\":{slices},\"pair_terms\":{},\"pair_bytes\":{pair_total},\"word_bytes\":{word_total},{}}}",
+        pair_terms.len(),
+        parts.join(",")
     );
 }
 

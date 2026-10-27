@@ -306,7 +306,7 @@ pub fn run_taking(
     let mut plan = Plan::new(&mut ctx, q, take, names)?;
     let plan_micros = started.elapsed().as_micros() as u64;
     let mut found = match &q.order {
-        Order::Relevance => plan.by_relevance(&mut ctx, q, Read::Chosen)?,
+        Order::Relevance => plan.by_relevance(&mut ctx, q, Read::Chosen, names)?,
         Order::Key(k) => plan.by_key(&mut ctx, q, k.as_ref())?,
     };
     if !plan.complete {
@@ -358,8 +358,9 @@ pub(super) fn run_chosen(view: &View, q: &Query, cache: &StatsCache) -> StoreRes
 #[cfg(test)]
 fn run_read(view: &View, q: &Query, cache: &StatsCache, read: Read) -> StoreResult<Found> {
     let mut ctx = Ctx::new(view, Some(cache));
-    let mut plan = Plan::new(&mut ctx, q, Take::Untied, &TagNames::default())?;
-    let found = plan.by_relevance(&mut ctx, q, read)?;
+    let names = TagNames::default();
+    let mut plan = Plan::new(&mut ctx, q, Take::Untied, &names)?;
+    let found = plan.by_relevance(&mut ctx, q, read, &names)?;
     Ok(Found {
         work: ctx.work,
         gets: ctx.gets,
@@ -2089,11 +2090,11 @@ impl Matcher {
             m.part.push(Part { token: 0 });
         }
         if phrase {
-            // Its whole tokens' pairs, once every document has them; else its whole tokens. A prefix last token
-            // has no list: it is checked on the text. Each list bounds the phrase's count, so its bound is the
-            // least of theirs.
+            // In short fields only, its whole tokens' pairs, once every document has them; else (body text, or
+            // pairs not built) its whole tokens. A prefix last token has no list: it is checked on the text. Each
+            // list bounds the phrase's count, so its bound is the least of theirs.
             let whole = if prefix { last_i } else { last_i + 1 };
-            if whole >= 2 && ctx.pairs_on()? {
+            if whole >= 2 && mask & !super::pair_fields(scope) == 0 && ctx.pairs_on()? {
                 m.paired = true;
                 for i in 0..whole - 1 {
                     m.lists
@@ -4101,7 +4102,13 @@ impl Plan {
     /// for the same words.
     const CHECKED_WHOLE: u64 = 128;
 
-    fn by_relevance(&mut self, ctx: &mut Ctx, q: &Query, read: Read) -> StoreResult<Found> {
+    fn by_relevance(
+        &mut self,
+        ctx: &mut Ctx,
+        q: &Query,
+        read: Read,
+        names: &TagNames,
+    ) -> StoreResult<Found> {
         let (after, resumed) = match &q.after {
             Some(After::Score(s, d)) => (Some(Ranked(*s, *d)), None),
             Some(After::Partial(p)) => (p.after.map(|(s, d)| Ranked(s, d)), Some(p.as_ref())),
@@ -4182,7 +4189,56 @@ impl Plan {
             best.set.clear();
             counting = true;
         }
+        if !counting && after.is_none() {
+            self.seed_short(ctx, q, names, &mut best)?;
+        }
         self.walk_relevance_from(ctx, q, after, best, 0, 0, false, counting, docs, partial)
+    }
+
+    /// A first page of one phrase over short fields and body text both, begun from its short fields: their
+    /// matches, read best first through the pairs, scored over every field (their body text read for them alone),
+    /// start the page, so the walk over every field passes over each block whose bound can't beat them. The page
+    /// is what the walk alone gives: the seeds are matches at their exact scores, which the walk would have kept.
+    /// The body is still read for page 1 wherever a block's bound (its words' maxima in the body fields, the least
+    /// of the phrase's words', summed over those fields) can beat the page's last seed, and everywhere when the
+    /// short fields have fewer matches than the page holds.
+    fn seed_short(
+        &mut self,
+        ctx: &mut Ctx,
+        q: &Query,
+        names: &TagNames,
+        best: &mut Best,
+    ) -> StoreResult<()> {
+        let [m] = self.pos.as_slice() else {
+            return Ok(());
+        };
+        let short = super::pair_fields(self.scope) & m.mask;
+        if !m.phrase || m.paired || short == 0 || !ctx.pairs_on()? {
+            return Ok(());
+        }
+        let mut sq = q.clone();
+        sq.clauses[self.pos_at[0]].fields = Some(fields_of(self.scope, short).collect());
+        let none = TagNames::default();
+        let mut sub = Plan::new(ctx, &sq, Take::All, &none)?;
+        let found = sub.by_relevance(ctx, &sq, Read::Chosen, &none)?;
+        if found.hits.is_empty() {
+            return Ok(());
+        }
+        // Their exact scores over every field, as the query itself scores them.
+        let mut full = Plan::new(ctx, q, self.take, names)?;
+        for h in found.hits {
+            let mut matched = Vec::with_capacity(full.pos.len());
+            for m in &mut full.pos {
+                match m.check(ctx, h.doc)? {
+                    Some(x) => matched.push(x),
+                    None => break,
+                }
+            }
+            if matched.len() == full.pos.len() && full.takes(&matched) && full.passes(ctx, h.doc)? {
+                best.push(Ranked(full.score(&matched), h.doc));
+            }
+        }
+        Ok(())
     }
 
     /// Relevance order continued where a walk stopped (`After::Partial`): from `from`, with the best matches and
