@@ -108,7 +108,8 @@ async function openNewCharacter(page, name) {
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button_label').click();
-    await page.locator('.character_select', { hasText: name }).first().click();
+    // Creating a character opens it.
+    await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
     // The create form has a tag input too: it is the clicked character that has to be open.
     await page.waitForFunction(name => {
         const context = window['SillyTavern'].getContext();

@@ -75,7 +75,7 @@ async function createCharacterAndCloseEditor(page) {
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button').evaluate(el => el.click());
-    await page.locator('.character_select', { hasText: name }).first().click();
+    // Creating a character opens it.
     await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
     await openInfoTab(page, 'description');
     await page.locator('.field_edit_toggle[data-for="description_textarea"]').click();

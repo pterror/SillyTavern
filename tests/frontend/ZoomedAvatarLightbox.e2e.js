@@ -19,7 +19,7 @@ async function openChatWithCharacterMessage(page) {
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button').evaluate(el => el.click());
-    await page.locator('.character_select', { hasText: name }).first().click();
+    // Creating a character opens it.
     await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
     await chatBox(page).fill(`/sendas name="${name}" hello`);
     // Enter can go unhandled while the freshly selected chat loads; the text stays in the box until it is sent.

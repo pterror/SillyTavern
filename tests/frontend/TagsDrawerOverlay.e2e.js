@@ -17,7 +17,8 @@ async function openCharacterWithTags(page) {
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button_label').click();
-    await page.locator('.character_select', { hasText: name }).first().click();
+    // Creating a character opens it.
+    await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
     // #tagInput counts as visible even in a closed panel, so wait for the selection itself: typing sooner is undone
     // when the form is filled with the selected character.
     await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);

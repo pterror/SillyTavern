@@ -29,7 +29,8 @@ async function createAndSelectTestCharacter(page) {
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button_label').click();
-    await page.locator('.character_select', { hasText: name }).first().click();
+    // Creating a character opens it.
+    await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
     await openInfoTab(page, 'description');
     await page.locator('.field_preview[data-for="description_textarea"]').waitFor({ state: 'visible', timeout: 10000 });
     // Selecting a character for the first time legitimately dirties active_character (and, via

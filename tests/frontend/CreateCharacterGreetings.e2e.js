@@ -92,7 +92,9 @@ test.describe('creating a character with greetings', () => {
         expect((await createRequest).postData()).toContain(tagId);
         const avatar = await (await createResponse).text();
         try {
-            await expect(page.locator(`.character_select[data-avatar="${avatar}"] .tag`, { hasText: `tag-${s}` }).first()).toBeVisible({ timeout: 10000 });
+            // Created, the character opens with its tag.
+            await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar, { timeout: 10000 });
+            await expect(page.locator('#tagList .tag', { hasText: `tag-${s}` })).toHaveCount(1);
             await page.reload();
             await testSetup.awaitST({ page });
             await openCharacterManagementDrawer(page);
@@ -120,8 +122,8 @@ test.describe('creating a character with greetings', () => {
             $('#create_button').click();
         });
         const avatar = await (await createResponse).text();
-        // The create shows the list with the new character; the next create starts once it has.
-        await expect(page.locator(`.character_select[data-avatar="${avatar}"]`)).toBeVisible({ timeout: 10000 });
+        // The create opens the new character; the next create starts once it has.
+        await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar, { timeout: 10000 });
         // A character created with no greeting gets its first one in the inline editor.
         const createResponse2 = page.waitForResponse(response => new URL(response.url()).pathname === '/api/characters/create');
         await openCharacterManagementDrawer(page);
