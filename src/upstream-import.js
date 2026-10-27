@@ -4,7 +4,7 @@ import path from 'node:path';
 import writeFileAtomic from 'write-file-atomic';
 
 import { parseChatFile } from './chat-header.js';
-import { bookmarkCompatId, newSessionKey } from './chat-engine.js';
+import { newSessionKey } from './chat-engine.js';
 import { normalizeGroupRecord, storedGroup } from './group-id.js';
 import { TYPE } from './library-engine.js';
 
@@ -178,8 +178,9 @@ async function runImport(store, directories) {
             report.notImported.push({ file: where, why: `the chat couldn't be stored (${imported.reason})` });
             return;
         }
-        // Internal: read back by the itemization import (bookmarkIdOf()), so the bookmark's id, not its chat id.
-        map.chats[where] = bookmarkCompatId(imported.bookmark);
+        // Internal: read back by the itemization import (`importedBookmarkOf()`), so the bookmark's id, not its chat
+        // id; `b<id>`, as maps written before have it.
+        map.chats[where] = `b${imported.bookmark}`;
         report.imported[kind]++;
         report.imported.messages += parsed.messages.length;
         // The map is kept as it grows, so a stop loses no file's bookmark; a chat stored before a stop that left it

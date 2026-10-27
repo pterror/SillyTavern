@@ -9,6 +9,7 @@ import path from 'node:path';
 import { after, test } from 'node:test';
 
 import { loadEngine } from '../engine/load.js';
+import { fakeOwners } from './chat-test-people.js';
 
 const { ChatEngine, MODE } = await import('./chat-engine.js');
 
@@ -20,6 +21,7 @@ const people = {
     speakers: async (/** @type {bigint[]} */ ids) => new Map(ids.filter(id => id === cara.id).map(id => [id, cara])),
     byAvatar: async (/** @type {string[]} */ avatars) => new Map(avatars.filter(a => a === cara.avatar).map(a => [a, cara])),
 };
+people.owners = fakeOwners(people);
 const one = { user: 'tester', session: '0190a1b2-0000-7000-8000-0000000000a1' };
 const two = { user: 'tester', session: '0190a1b2-0000-7000-8000-0000000000a2' };
 const three = { user: 'tester', session: '0190a1b2-0000-7000-8000-0000000000a3' };
@@ -182,13 +184,14 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const chats = await ChatEngine.open(store, people);
         const t = cara.id;
         const empty = await chats.createBookmark({ tree: t, node_id: null, name: 'Empty chat', actor: one });
-        const pinned = await chats.createBookmark({ tree: t, node_id: null, name: 'Empty chat', mode: MODE.pinned, actor: one });
-        assert.deepEqual([empty.ok, empty.name, pinned.name], [true, 'Empty chat', 'Empty chat']);
+        // A chat's name is once in its tree: the second, suggested so, is the next free one.
+        const pinned = await chats.createBookmark({ tree: t, node_id: null, name: 'Empty chat', suggested: true, mode: MODE.pinned, actor: one });
+        assert.deepEqual([empty.ok, empty.name, pinned.name], [true, 'Empty chat', 'Empty chat (2)']);
         const rows = (await chats.bookmarks({ tree: t, limit: 10 })).rows;
-        assert.deepEqual(rows.map(r => [r.id, r.name, r.at, r.made_at]), [[String(empty.bookmark), 'Empty chat', null, null], [String(pinned.bookmark), 'Empty chat', null, null]]);
+        assert.deepEqual(rows.map(r => [r.id, r.name, r.at, r.made_at]), [[String(empty.bookmark), 'Empty chat', null, null], [String(pinned.bookmark), 'Empty chat (2)', null, null]]);
         const listed = (await chats.chatList({ tree: t, limit: 10 })).rows;
         // Both at the root, by when each was made: the newest first.
-        assert.deepEqual(listed.map(r => [r.bookmark, r.name, r.at, r.message_count]), [[String(pinned.bookmark), 'Empty chat', null, 0], [String(empty.bookmark), 'Empty chat', null, 0]]);
+        assert.deepEqual(listed.map(r => [r.bookmark, r.name, r.at, r.message_count]), [[String(pinned.bookmark), 'Empty chat (2)', null, 0], [String(empty.bookmark), 'Empty chat', null, 0]]);
         assert.deepEqual(await chats.changeBookmark({ tree: t, bookmark: String(pinned.ok && pinned.bookmark), change: { name: 'Kept' } }), { ok: true, name: 'Kept' });
         assert.deepEqual((await chats.changeBookmark({ tree: 99n, bookmark: String(pinned.ok && pinned.bookmark), change: { name: 'x' } })).ok, false);
         const [greeting] = (await chats.appendMessages({ tree: t, treeSpeaker: cara, after: null, contents: [msg(false, 'Hello!')], actor: { user: one.user } })).node_ids;

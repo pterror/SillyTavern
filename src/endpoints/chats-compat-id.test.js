@@ -13,12 +13,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // chats.js's import chain reads process-wide config at import time, so the config path is set first.
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
-// Upstream's compat chat id (`getCurrentChatId()`, `characters[].chat`) names the conversation, not the tab: a tab's
-// current chat's `b<id>`, else its own conversation in the tree, `s<UUID>.<tree>`. Extensions key per-chat data by it
-// (vectors, regex, tts, stable-diffusion) and the page keys the send box's draft by it, so it must differ per
-// character and stay put through appends.
+// Upstream's compat chat id (`getCurrentChatId()`, `characters[].chat`) names the conversation, not the tab: its name,
+// as upstream names a chat by its file name: a tab's current chat's label, else its own conversation's name in the
+// tree, `<character> - <the session's time>` (docs/design/chat-names.md). Extensions key per-chat data by it (vectors,
+// regex, tts, stable-diffusion) and the page keys the send box's draft by it, so it must differ per character and stay
+// put through appends.
 const { router: chatsRouter } = await import('./chats.js');
-const { newSessionKey, MODE } = await import('../chat-engine.js');
+const { newSessionKey, MODE, chatNameAt, sessionTime } = await import('../chat-engine.js');
 const { SESSION_HEADER } = await import('../request-session.js');
 const { buildDraftStorageKey } = await import('../../public/scripts/chat-draft.js');
 const { convertedUser, writeLibraryCard, treeOf } = await import('../../tests/converted-user.fixture.js');
@@ -65,6 +66,9 @@ async function writeCharacter(avatar, name) {
 
 const message = (/** @type {boolean} */ isUser, /** @type {string} */ mes) => ({ name: isUser ? 'You' : 'Char', is_user: isUser, mes, send_date: 'x', extra: {} });
 
+/** A tab's own conversation's name with a character, before anything names it otherwise. */
+const conversationOf = (/** @type {string} */ name, /** @type {string} */ tab) => chatNameAt({ group: false, name }, /** @type {number} */ (sessionTime(tab)));
+
 /** The id the page holds after opening a character in a tab (`characters[].chat`). */
 const openedId = async (/** @type {string} */ avatar, /** @type {string} */ tab) => (await postJson('/api/chats/open', { avatar_url: avatar }, tab)).data.chat;
 
@@ -79,18 +83,16 @@ test('two characters in one tab have different ids, each gets its own back, and 
     await writeCharacter('ann.png', 'Ann');
     await writeCharacter('ben.png', 'Ben');
     const tab = newSessionKey();
-    const annTree = await treeOf(user.store, { avatar: 'ann.png' });
-    const benTree = await treeOf(user.store, { avatar: 'ben.png' });
 
     const ann = await openedId('ann.png', tab);
-    assert.equal(ann, `s${tab}.${annTree}`);
+    assert.equal(ann, conversationOf('Ann', tab));
     await saveAs('ann.png', tab, ann, [message(false, 'Hi.'), message(true, 'Hello Ann.')]);
     // An extension keeps data per chat, by the id (as vectors' collection, regex's scoped scripts, tts's voice map).
     /** @type {Map<string, string>} */
     const perChat = new Map([[ann, 'Ann\'s memories']]);
 
     const ben = await openedId('ben.png', tab);
-    assert.equal(ben, `s${tab}.${benTree}`);
+    assert.equal(ben, conversationOf('Ben', tab));
     assert.notEqual(ben, ann, 'the same tab names each character\'s conversation apart');
     assert.equal(perChat.get(ben), undefined, 'Ben sees none of Ann\'s data');
     perChat.set(ben, 'Ben\'s memories');
@@ -110,7 +112,7 @@ test('two characters in one tab have different ids, each gets its own back, and 
     assert.notEqual(await openedId('ann.png', other), ann);
 });
 
-test('the id stays through appends and bookmarks made at the pointer; only opening a chat switches it', async () => {
+test('the id stays through appends and bookmarks made at the pointer; opening a chat switches it, and a new chat is named anew', async () => {
     await writeCharacter('cal.png', 'Cal');
     const tab = newSessionKey();
     const id = await openedId('cal.png', tab);
@@ -131,12 +133,12 @@ test('the id stays through appends and bookmarks made at the pointer; only openi
 
     // Opening the bookmark switches to it.
     const opened = await postJson('/api/chats/open', { avatar_url: 'cal.png', chat: made.data.id, make_current: true }, tab);
-    assert.equal(opened.data.chat, made.data.id);
-    assert.equal(opened.data.label_base, 'Here');
-    // A new chat switches to none: the tab's own conversation again.
+    assert.equal(opened.data.chat, 'Here');
+    // A new chat switches to none, its own conversation named anew, as upstream names a new chat file.
     const fresh = await postJson('/api/chats/new', { avatar_url: 'cal.png', chat: '' }, tab);
-    assert.equal(fresh.data.chat, id);
-    assert.equal(fresh.data.label_base, 'Cal');
+    assert.match(fresh.data.chat, /^Cal - \d{4}-/);
+    assert.notEqual(fresh.data.chat, id);
+    assert.equal(await openedId('cal.png', tab), fresh.data.chat);
 });
 
 test('a reply on a pinned current bookmark keeps the id and the draft; the bookmark stays, and the id still names the tab\'s conversation', async () => {
@@ -149,7 +151,8 @@ test('a reply on a pinned current bookmark keeps the id and the draft; the bookm
     const id = made.data.opened.chat;
     assert.equal(id, made.data.id);
     const tree = await treeOf(user.store, { avatar: 'dot.png' });
-    assert.ok((await user.store.chats.changeBookmark({ tree, bookmark: id.slice(1), change: { mode: MODE.pinned } })).ok);
+    const [pinned] = (await user.store.chats.bookmarks({ tree, limit: 500 })).rows.filter(r => r.name === id);
+    assert.ok((await user.store.chats.changeBookmark({ tree, bookmark: pinned.id, change: { mode: MODE.pinned } })).ok);
     const draftKey = buildDraftStorageKey({ type: 'character', id: 'dot.png', chatId: id });
 
     // The reply is stored after the message it answers: the tab's own conversation goes on past the pinned bookmark.
@@ -162,7 +165,7 @@ test('a reply on a pinned current bookmark keeps the id and the draft; the bookm
     assert.deepEqual((await postJson('/api/chats/get', { avatar_url: 'dot.png', file_name: id }, newSessionKey())).data.slice(1).map(m => m.mes), ['Hi.', 'One.']);
 });
 
-test('an s-id resolves to its session\'s conversation in its tree: opening another tab\'s moves this tab there, never taking it over', async () => {
+test('a conversation\'s name resolves to its session\'s conversation in its tree: opening another tab\'s moves this tab there, never taking it over', async () => {
     await writeCharacter('eva.png', 'Eva');
     const first = newSessionKey();
     const second = newSessionKey();
@@ -173,11 +176,12 @@ test('an s-id resolves to its session\'s conversation in its tree: opening anoth
 
     const opened = await postJson('/api/chats/open', { avatar_url: 'eva.png', chat: firstId, make_current: true }, second);
     assert.deepEqual(opened.data.messages.map(m => m.mes), ['Hi.', 'From the first tab.']);
-    // The second tab is there in its own session: its own id, no current chat.
+    // The second tab is there in its own session: its own conversation's name, no current chat.
+    assert.match(opened.data.chat, /^Eva - \d{4}-/);
+    assert.notEqual(opened.data.chat, firstId);
+    // An old id names nothing.
     const tree = await treeOf(user.store, { avatar: 'eva.png' });
-    assert.equal(opened.data.chat, `s${second}.${tree}`);
-    // An id of another tree names nothing here.
-    assert.equal((await postJson('/api/chats/get', { avatar_url: 'eva.png', file_name: `s${first}.${tree + 1n}` }, second)).status, 404);
+    assert.equal((await postJson('/api/chats/get', { avatar_url: 'eva.png', file_name: `s${first}.${tree}` }, second)).status, 404);
 });
 
 after(async () => {

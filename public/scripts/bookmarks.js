@@ -4,7 +4,6 @@ import {
     system_message_types,
     openCharacterChat,
     getThumbnailUrl,
-    getChatLabelBase,
     updateMessage,
     hydrateSwipes,
     switchToNode,
@@ -41,7 +40,6 @@ import { compressRequest } from './request-compression.js';
 import { t } from './i18n.js';
 
 import {
-    getUniqueName,
     isTrueBoolean,
 } from './utils.js';
 import { normalizeFav } from './hash-utils.js';
@@ -83,16 +81,13 @@ async function getExistingChatNames() {
 }
 
 async function getBookmarkName({ isReplace = false, forceName = null } = {}) {
-    // What the user sees the chat as (the server's label base), never its id.
-    const mainChatName = getChatLabelBase();
-
-    function buildCheckpointName(name, i) {
-        let cleanName = name.replace(new RegExp(` - ${bookmarkNameToken}\\d+$`), '');
-        cleanName = cleanName.replace(new RegExp(`^${bookmarkNameToken}\\d+ - `), '');
-        return `${cleanName} - ${bookmarkNameToken}${i}`;
+    // The server suggests the name (one no chat of the scope has); the page never makes one up.
+    const suggestion = await fetch('/api/chats/bookmark-name', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(_labelOwner()) });
+    if (!suggestion.ok) {
+        toastr.error('Could not suggest a bookmark name.', 'Bookmark');
+        return null;
     }
-    const existingChats = await getExistingChatNames();
-    const suggestedName = getUniqueName(mainChatName, (x) => existingChats.includes(x), { nameBuilder: buildCheckpointName, startIndex: 1 });
+    const suggestedName = String((await suggestion.json()).name);
 
     const body = await renderTemplateAsync('createCheckpoint', { isReplace: isReplace, suggestedName: suggestedName });
     let name = forceName ?? await Popup.show.input('Bookmark', body, suggestedName);
@@ -166,7 +161,7 @@ function _labelOwner() {
 
 /**
  * @typedef {object} BookmarkAnswer
- * @property {string} id The bookmark's compat chat id (`b<id>`).
+ * @property {string} id The bookmark's chat id (its label).
  * @property {string} label The name the bookmark got.
  * @property {string[]} [chats] A group's chats, the bookmark among them.
  * @property {import('../script.js').ChatOpenAnswer} [opened] With `open`: the bookmark, opened.
@@ -774,7 +769,7 @@ export function initBookmarks() {
     });
 
     $(document).on('click', '.select_chat_block', async function () {
-        // A row's `file_name` is its chat's compat id (a bookmark's `b<id>`, a session's UUID); `node_id` is where it is.
+        // A row's `file_name` is its chat's id (a bookmark's label, a conversation's name); `node_id` is where it is.
         const nodeId = $(this).attr('node_id');
         const target = $(this).attr('file_name');
 

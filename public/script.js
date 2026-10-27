@@ -1810,7 +1810,6 @@ async function pointToFreshChat(replace = null) {
         });
         if (!response.ok) throw new Error(String(response.status));
         const answer = await response.json();
-        takeChatLabelBase(answer);
         if (typeof answer.chat === 'string') current = answer.chat;
         for (const name of answer.deleted ?? []) await eventSource.emit(event_types.CHAT_DELETED, name);
     } catch (error) {
@@ -7004,8 +7003,8 @@ export async function unshallowCharacter(characterId) {
 /**
  * The answer to POST /api/chats/open (see src/endpoints/chats.js).
  * @typedef {object} ChatOpenAnswer
- * @property {string} chat Upstream's identifier for the open chat (its current chat's `b<id>`, else `s<session>.<tree>`).
- * @property {string} [label_base] What the open chat's suggested bookmark and branch names start from.
+ * @property {string} chat Upstream's identifier for the open chat: its name (its current chat's label, else its
+ * conversation's name).
  * @property {ChatMetadata} chat_metadata
  * @property {ChatMessage[]} messages
  * @property {import('./scripts/chat-store.js').OpeningsResponse|null} openings
@@ -7019,26 +7018,6 @@ export async function unshallowCharacter(characterId) {
  * @property {{ key: string, version: number, value: unknown }[]} [ui_views] The new page's views that follow the chat,
  * as they are for the chat opened.
  */
-
-/** What the open chat's suggested bookmark and branch names start from, as the server last answered it. */
-let chatLabelBase = '';
-
-/**
- * What the open chat's suggested bookmark names start from (the server's `label_base`: the current chat's label, else
- * the session's, else the character's or group's name); never an id.
- * @returns {string}
- */
-export function getChatLabelBase() {
-    return chatLabelBase;
-}
-
-/**
- * Takes on the `label_base` an answer that switched the current chat carries.
- * @param {{ label_base?: unknown } | null | undefined} answer
- */
-export function takeChatLabelBase(answer) {
-    if (typeof answer?.label_base === 'string') chatLabelBase = answer.label_base;
-}
 
 /**
  * Opens a character's or group's conversation on the server, which resolves which one, records what was
@@ -7086,7 +7065,6 @@ export function chatOpenSendKeys(body) {
  * @returns {ChatOpenAnswer}
  */
 export function takeChatOpenAnswer(body, answer) {
-    takeChatLabelBase(answer);
     // The new page's views for the chat now open (its background...).
     takeViews(answer.ui_views);
     forgetStoredSends(chatOpenOwner(body), Array.isArray(answer.stored_sends) ? answer.stored_sends : []);
@@ -7333,8 +7311,7 @@ async function _openingFromTree(cardGreetings, preferredIndex, prefetched = null
  * Switches the tab to a character's chat by name ('' a new chat; POST /api/characters/chat).
  * @param {string} avatar
  * @param {string} chat
- * @returns {Promise<{ chat: string, label_base: string } | false>} The tab's compat chat id there and its label base;
- * false when it wasn't saved.
+ * @returns {Promise<{ chat: string } | false>} The tab's compat chat id there; false when it wasn't saved.
  */
 export async function saveActiveChat(avatar, chat) {
     try {
@@ -7344,9 +7321,8 @@ export async function saveActiveChat(avatar, chat) {
             body: JSON.stringify({ avatar, chat }),
         });
         if (!response.ok) throw new Error(String(response.status));
-        /** @type {{ chat: string, label_base: string }} */
+        /** @type {{ chat: string }} */
         const answer = await response.json();
-        if (avatar === getCurrentCharacter()?.avatar) takeChatLabelBase(answer);
         return answer;
     } catch (error) {
         console.error('Failed to save active chat', error);
@@ -8614,7 +8590,7 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
             for (const chat of page.results) {
                 if (shown.has(chat.file_name)) continue;
                 shown.add(chat.file_name);
-                // `file_name` is the chat's compat id (a bookmark's `b<id>`, a session's UUID), `label` the name it was given.
+                // `file_name` is the chat's id (a bookmark's label, a conversation's name), `label` a bookmark's label.
                 const isSelected = currentChat === chat.file_name;
                 const template = $chatTemplate.clone();
                 template.find('.select_chat_block').attr('file_name', chat.file_name).attr('chat_label', chat.label ?? '');

@@ -112,7 +112,8 @@ function deleteChat(groupId, chatId) {
 }
 
 // The group's chat list is its bookmarks, newest first, and the tab's own session when no bookmark is where it is; a
-// tab's current chat (`chat_id`) is a bookmark's `b<id>`, else its own conversation's `s<UUID>.<tree>`.
+// tab's current chat (`chat_id`) is a chat's name: a bookmark's label, else its own conversation's (as upstream names a
+// group chat, its time). A new chat is named anew.
 describe('/api/chats/group/delete removes the id from the group\'s chats', () => {
     test('deleting the tab\'s own chat (its session), then new-chat: the id is gone from the list and the answer', async () => {
         const group = await createGroupWithChat();
@@ -126,8 +127,9 @@ describe('/api/chats/group/delete removes the id from the group\'s chats', () =>
 
         // No chats left, so the client asks for a new one (createNewGroupChat()).
         const newChat = await postOk('/api/groups/new-chat', { id: group.id });
-        // No current chat: the tab's own conversation in the group's tree, `s<UUID>.<tree>`.
-        expect(newChat.chat_id.startsWith(`s${tab}.`)).toBe(true);
+        // No current chat: the tab's own conversation in the group's tree, named anew.
+        expect(newChat.chat_id).toMatch(/^\d{4}-\d{2}-\d{2}@\d{2}h\d{2}m\d{2}s\d{3}ms$/);
+        expect(newChat.chat_id).not.toBe(deletedId);
         expect(newChat.chats).toEqual([newChat.chat_id]);
         expect((await readGroupFile(group.id)).chats).toEqual([newChat.chat_id]);
         expect((await readGroupFile(group.id)).chat_id).toBe(newChat.chat_id);
@@ -141,10 +143,11 @@ describe('/api/chats/group/delete removes the id from the group\'s chats', () =>
         expect((await deleteChat(group.id, other)).status).toBe(200);
         expect((await readGroupFile(group.id))).toMatchObject({ chats: [group.chat_id], chat_id: group.chat_id });
 
-        // A new chat is the tab's session at the group's root: the same id, listed once.
+        // A new chat is the tab's session at the group's root, named anew: listed once.
         const newChat = await postOk('/api/groups/new-chat', { id: group.id });
-        expect(newChat).toEqual({ chat_id: group.chat_id, chats: [group.chat_id] });
-        expect((await readGroupFile(group.id)).chats).toEqual([group.chat_id]);
+        expect(newChat.chat_id).not.toBe(group.chat_id);
+        expect(newChat).toEqual({ chat_id: newChat.chat_id, chats: [newChat.chat_id] });
+        expect((await readGroupFile(group.id)).chats).toEqual([newChat.chat_id]);
     });
 
     test('deleting the bookmark the tab is at leaves the tab there, listed as its session', async () => {
@@ -175,8 +178,7 @@ describe('/api/chats/group/delete removes the id from the group\'s chats', () =>
 
         const file = (await readGroupFile(group.id));
         expect(file.fav).toBe(true);
-        expect(file.chats).toEqual([group.chat_id]);
-        expect(newChat.body.chat_id).toBe(group.chat_id);
+        expect(file.chats).toEqual([newChat.body.chat_id]);
     });
 
     test('a bookmark with no saved messages is removed from the list, and new-chat does not bring it back', async () => {
@@ -186,7 +188,7 @@ describe('/api/chats/group/delete removes the id from the group\'s chats', () =>
         const tree = await fixture.treeOf(user.store, { group: group.id });
         const made = await user.store.chats.createBookmark({ tree, node_id: null, name: empty, actor: { user: user.user.profile.handle, session: (await otherTab()).tab } });
         expect(made).toMatchObject({ ok: true, name: empty });
-        const emptyId = `b${made.bookmark}`;
+        const emptyId = empty;
         expect((await readGroupFile(group.id)).chats).toContain(emptyId);
 
         const result = await deleteChat(group.id, emptyId);
@@ -196,7 +198,7 @@ describe('/api/chats/group/delete removes the id from the group\'s chats', () =>
 
         const newChat = await postOk('/api/groups/new-chat', { id: group.id });
         expect(newChat.chats).not.toContain(emptyId);
-        expect((await readGroupFile(group.id)).chats).toEqual([group.chat_id]);
+        expect((await readGroupFile(group.id)).chats).toEqual([newChat.chat_id]);
     });
 
     test('deleting an id the group does not have leaves the group file untouched', async () => {

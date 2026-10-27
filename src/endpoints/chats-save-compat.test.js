@@ -128,8 +128,8 @@ test('an unnamed save is the tab\'s session; a save named by a message id makes 
         chat: [header({}), { name: 'Qin', is_user: false, mes: 'Hi.', send_date: 'x', extra: {} }],
     }, tab);
     const nodeId = saved.data.assigned_node_ids[0].node_id;
-    const qinTree = await treeOf(user.store, { avatar: 'qin.png' });
-    assert.equal(saved.data.file_name, `s${tab}.${qinTree}`, 'an unnamed chat is answered by the tab\'s own conversation');
+    const { chatNameAt, sessionTime } = await import('../chat-engine.js');
+    assert.equal(saved.data.file_name, chatNameAt({ group: false, name: 'Qin' }, /** @type {number} */ (sessionTime(tab))), 'an unnamed chat is answered by the tab\'s own conversation\'s name');
     assert.equal((await sessionPath(user.store, { avatar: 'qin.png' }, tab))[0]?.node_id, nodeId, 'the character is on it');
 
     const again = await postJson('/api/chats/save', {

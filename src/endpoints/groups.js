@@ -16,7 +16,6 @@ import { requestStore, userStore } from '../user-stores.js';
 import { TYPE } from '../library-engine.js';
 import { requestSession } from '../request-session.js';
 import { droppedOf, moveToChatNamed } from '../chat-request.js';
-import { sessionCompatId } from '../chat-engine.js';
 
 export const router = express.Router();
 
@@ -296,8 +295,7 @@ async function groupChats(store, request, tree, acted) {
     let after;
     for (;;) {
         const page = await store.chats.chatList({ tree, session: session.reader().session ?? undefined, after, limit: 500 });
-        const ids = await store.chats.bookmarkChatIds(tree, page.rows.flatMap(r => (r.bookmark != null ? [r.bookmark] : [])));
-        chats.push(...page.rows.map(r => (r.bookmark != null ? /** @type {string} */ (ids.get(String(r.bookmark))) : sessionCompatId(String(r.session), tree))));
+        chats.push(...await store.chats.chatIdsOf(tree, page.rows));
         if (!page.more || page.rows.length === 0) break;
         after = page.rows[page.rows.length - 1].position;
     }
@@ -586,8 +584,7 @@ router.post('/new-chat', validateGroupIdBody, async (request, response) => {
             return response.sendStatus(404);
         }
         const session = await requestSession(store.chats, request, tree);
-        await store.chats.newChat({ tree, actor: session.actor(), group: true });
-        await store.chats.setCurrentChat({ tree, bookmark: null, actor: session.actor() });
+        await store.chats.startChat({ tree, actor: session.actor(), group: true });
         session.answer(response, { moved: true });
         return response.send(await groupChats(store, request, tree, session));
     } catch (error) {

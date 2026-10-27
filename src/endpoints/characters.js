@@ -38,10 +38,9 @@ import { requestStore, userStore } from '../user-stores.js';
 import { FIELD, HASH, TYPE } from '../library-engine.js';
 import { convertedFileKey } from '../library-codes.js';
 import { avatarFile, avatarImage, avatarPathOf, inAvatarLane, writeWithAvatar } from '../character-avatars.js';
-import { chatNamesOf, compatChatIdOf, compatChatIds, droppedOf, labelBaseOf, moveToChatNamed } from '../chat-request.js';
+import { chatNamesOf, compatChatIdOf, compatChatIds, droppedOf, moveToChatNamed } from '../chat-request.js';
 import { requestSession } from '../request-session.js';
 import { ui, uiUser } from '../ui-wiring.js';
-import { sessionCompatId } from '../chat-engine.js';
 
 import { groupDigests, groupObjects } from './groups.js';
 // Use shallow character data for the character list
@@ -1663,8 +1662,7 @@ router.post('/fav', getFileNameValidationFunction('avatar'), async function (req
 
 /**
  * A write of a character's current chat: the requesting tab switches to the chat `chat` names (`moveToChatNamed()`);
- * '' or null is a new chat. Answers `{ chat, label_base }`: the tab's compat chat id there after, and what its
- * suggested names start from.
+ * '' or null is a new chat. Answers `{ chat }`: the tab's compat chat id there after.
  */
 router.post('/chat', getFileNameValidationFunction('avatar'), async function (request, response) {
     try {
@@ -1677,7 +1675,7 @@ router.post('/chat', getFileNameValidationFunction('avatar'), async function (re
         }
         const opened = await moveToChatNamed(request, response, { avatar }, chat);
         if (!opened) return response.status(404).send({ error: true, reason: 'not-tracked' });
-        return response.send({ chat: await compatChatIdOf(opened), label_base: await labelBaseOf(opened) });
+        return response.send({ chat: await compatChatIdOf(opened) });
     } catch (err) {
         console.error('[characters/chat] Failed to move to the chat:', err);
         return response.status(500).send({ error: true });
@@ -2853,8 +2851,8 @@ router.post('/chats', validateAvatarUrlMiddleware, async function (request, resp
             if (!page.more || page.rows.length === 0) break;
             after = page.rows[page.rows.length - 1].position;
         }
-        const ids = await store.chats.bookmarkChatIds(tree, rows.flatMap(r => (r.bookmark != null ? [r.bookmark] : [])));
-        const named = rows.map(r => ({ ...r, file_id: r.bookmark != null ? /** @type {string} */ (ids.get(String(r.bookmark))) : sessionCompatId(String(r.session), tree) }));
+        const ids = await store.chats.chatIdsOf(tree, rows);
+        const named = rows.map((r, i) => ({ ...r, file_id: ids[i] }));
         if (request.body.simple) {
             return response.send(named.map(r => ({ file_name: `${r.file_id}.jsonl`, file_id: r.file_id, label: r.name ?? null })));
         }

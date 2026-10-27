@@ -518,6 +518,15 @@ fn bookmark(view: &View, b: u64) -> Result<Js, StoreError> {
         ),
         ("name", position_name(view, b)?),
         ("createdAt", opt_big(made_at)),
+        // Its place in the tree's order by time (the receive time of the message it is at, or when it was made at
+        // the root), ms.
+        (
+            "time",
+            match view.get(&key::id(key::BOOKMARK_TIME, b))? {
+                Some(t) => Js::Num((parse_varints::<1>(&t)?[0] as i64 - (1 << 53)) as f64),
+                None => Js::Null,
+            },
+        ),
         ("session", Js::Big(id(2))),
         ("user", Js::Big(id(3))),
     ]))

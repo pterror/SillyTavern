@@ -19,7 +19,7 @@ setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
 const { router } = await import('./chats.js');
 const { writeAllSettings, readSettingsAtPaths } = await import('../settings-store.js');
-const { newSessionKey, defaultSessionKey } = await import('../chat-engine.js');
+const { newSessionKey, chatNameAt, sessionTime } = await import('../chat-engine.js');
 const { SESSION_HEADER } = await import('../request-session.js');
 const { convertedUser, writeLibraryCard, seedMessages, sessionPath, treeOf } = await import('../../tests/converted-user.fixture.js');
 
@@ -62,6 +62,9 @@ async function open(body, tab) {
 
 const message = (mes, extra = {}) => ({ name: 'Rex', is_user: false, mes, send_date: 1, extra, ...extra });
 
+/** A tab's own conversation's name: the character's (none for a group) and the session's time. */
+const conversationOf = (/** @type {string | null} */ character, /** @type {string} */ tab) => chatNameAt({ group: character === null, name: character ?? '' }, /** @type {number} */ (sessionTime(tab)));
+
 /**
  * A chat as a tab saves it: stored through a session of its own, named `name`; `chat` is `[header, ...messages]`.
  * @param {Record<string, any>} owner
@@ -92,11 +95,9 @@ test('a card nobody has chatted with opens on its greeting, writing only the las
     await writeCharacter('Fresh.png', 'Fresh', 'Hello there.');
     const first = await open({ avatar_url: 'Fresh.png' });
     assert.equal(first.status, 200);
-    // A caller with no tab and no session there: the user's deterministic session's conversation in the tree, derived,
-    // not stored; named after the character.
-    const freshTree = await treeOf(user.store, { avatar: 'Fresh.png' });
-    assert.equal(first.body.chat, `s${defaultSessionKey('u', freshTree)}.${freshTree}`);
-    assert.equal(first.body.label_base, 'Fresh');
+    // A caller with no tab and no session there: the user's deterministic session's conversation in the tree, named
+    // (not stored) after the character and when it was made, as upstream names a character's first chat.
+    assert.match(first.body.chat, /^Fresh - \d{4}-\d{2}-\d{2}@\d{2}h\d{2}m\d{2}s\d{3}ms$/);
     assert.deepEqual(first.body.messages, []);
     assert.equal(first.body.openings.alternatives[0].mes, 'Hello there.');
     assert.equal(fs.existsSync(path.join(directories.chats, 'Fresh')), false, 'no chat folder is created');
@@ -104,6 +105,7 @@ test('a card nobody has chatted with opens on its greeting, writing only the las
     assert.equal(typeof first.body.settings_hash, 'number', 'the new settings hash comes with a write');
     const again = await open({ avatar_url: 'Fresh.png' });
     assert.equal(again.body.settings_hash, undefined, 'opening it again writes nothing');
+    assert.equal(again.body.chat, first.body.chat);
 });
 
 // The chat the tab is on; a stale one falls to the most recently active bookmark.
@@ -113,10 +115,9 @@ test('a character opens on its current chat, a named one, or a new one', async (
     const older = await saveWholeChat(owner, 'older', [{ chat_metadata: { note: 'old' } }, message('Hi, before.'), message('older reply')]);
     const newer = await saveWholeChat(owner, 'newer', [{ chat_metadata: { note: 'new' } }, message('Hi.'), message('newer reply')]);
 
-    const tree = await treeOf(user.store, owner);
     const onPointer = await open({ avatar_url: 'Rex.png' }, older);
     // No current chat: the tab's own conversation (`older` is a bookmark where it is, never opened).
-    assert.equal(onPointer.body.chat, `s${older}.${tree}`);
+    assert.equal(onPointer.body.chat, conversationOf('Rex', older));
     assert.deepEqual(onPointer.body.messages.map(m => m.mes), ['Hi, before.', 'older reply']);
     assert.equal(onPointer.body.chat_metadata.note, 'old');
 
@@ -126,13 +127,12 @@ test('a character opens on its current chat, a named one, or a new one', async (
     // Naming a chat opens it; the tab moves there only when asked.
     const named = await open({ avatar_url: 'Rex.png', chat: 'older' }, newer);
     assert.deepEqual(named.body.messages.map(m => m.mes), ['Hi, before.', 'older reply']);
-    assert.equal(named.body.chat, `s${newer}.${tree}`);
+    assert.equal(named.body.chat, conversationOf('Rex', newer));
     assert.deepEqual((await sessionPath(user.store, owner, newer)).map(m => m.mes), ['Hi.', 'newer reply']);
     const switched = await open({ avatar_url: 'Rex.png', chat: 'older', make_current: true }, newer);
     assert.deepEqual((await sessionPath(user.store, owner, newer)).map(m => m.mes), ['Hi, before.', 'older reply']);
     // Opened by name, the bookmark is the tab's current chat.
-    assert.match(switched.body.chat, /^b\d+$/);
-    assert.equal(switched.body.label_base, 'older');
+    assert.equal(switched.body.chat, 'older');
 
     // A new chat's greetings only (the page's /new switches the chat after).
     const fresh = await open({ avatar_url: 'Rex.png', fresh: true }, newer);
@@ -151,7 +151,9 @@ test('with no current chat and no bookmark, a character opens on the choices las
     assert.deepEqual(opened.body.messages.map(m => m.mes), ['Hey.', 'Hi Ivy']);
     // A caller with no tab: the user's last session in the tree, else the deterministic one.
     const tree = await treeOf(user.store, { avatar: 'Ivy.png' });
-    assert.equal(opened.body.chat, `s${(await user.store.chats.resolveSession({ tree, user: 'u', header: undefined })).identifier}.${tree}`);
+    const session = await user.store.chats.resolveSession({ tree, user: 'u', header: undefined });
+    assert.equal(opened.body.chat, await user.store.chats.conversationName(session.session, session.identifier, tree));
+    assert.match(opened.body.chat, /^Ivy - \d{4}-/);
 
     // Of the send keys the page kept, the ones stored for this character are named.
     await user.store.chats.appendMessages({
@@ -171,11 +173,9 @@ test('a group opens on its current chat, or a named one, made current only when 
     await user.store.chats.newChat({ tree: await treeOf(user.store, { group: 'g1' }), actor: { user: 'u', session: c1 }, group: true });
     await user.store.chats.nameSession({ session: c1, name: 'c1', actor: { user: 'u', session: c1 } });
     await saveWholeChat({ group: 'g1' }, 'c2', [{ chat_metadata: {} }, message('group says')]);
-    const groupTree = await treeOf(user.store, { group: 'g1' });
     const current = await open({ group_id: 'g1' }, c1);
-    // No current chat: the session's conversation in the tree, named or not; its names start from the session's label.
-    assert.equal(current.body.chat, `s${c1}.${groupTree}`);
-    assert.equal(current.body.label_base, 'c1');
+    // No current chat: the session's conversation in the tree, named as upstream names a group chat (its time).
+    assert.equal(current.body.chat, conversationOf(null, c1));
     assert.deepEqual(current.body.messages, [], 'a chat with no messages yet');
     assert.deepEqual(readSettingsAtPaths(directories, ['active_character', 'active_group']), { active_character: null, active_group: 'g1' });
 
@@ -184,8 +184,7 @@ test('a group opens on its current chat, or a named one, made current only when 
     const switched = await open({ group_id: 'g1', chat: 'c2', make_current: true }, c1);
     // The tab's session (named `c1`) moved to bookmark `c2`'s message, now its current chat.
     assert.deepEqual(switched.body.messages.map(m => m.mes), ['group says']);
-    assert.match(switched.body.chat, /^b\d+$/);
-    assert.equal(switched.body.label_base, 'c2');
+    assert.equal(switched.body.chat, 'c2');
     assert.ok(switched.body.date_last_chat > 5);
 });
 

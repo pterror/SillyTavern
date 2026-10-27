@@ -7,6 +7,7 @@ import path from 'node:path';
 import { after, test } from 'node:test';
 
 import { loadEngine } from '../engine/load.js';
+import { fakeOwners } from './chat-test-people.js';
 
 const { ChatEngine } = await import('./chat-engine.js');
 const { baselineAfter, baselineOf, metadataChanges, replaceInPlace } = await import('../public/scripts/state-sync.js');
@@ -19,6 +20,7 @@ const people = {
     speakers: async ids => new Map(ids.filter(id => id === cara.id).map(id => [id, cara])),
     byAvatar: async avatars => new Map(avatars.filter(a => a === cara.avatar).map(a => [a, cara])),
 };
+people.owners = fakeOwners(people);
 const tabA = { user: 'ann', session: '0190a1b2-0000-7000-8000-0000000000a1' };
 const tabB = { user: 'bea', session: '0190a1b2-0000-7000-8000-0000000000b2' };
 const greeting = { name: 'Cara', is_user: false, is_system: false, send_date: '2025-10-10T10:00:00.000Z', mes: 'Hello!', extra: {} };

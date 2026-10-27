@@ -44,6 +44,24 @@ export function libraryPeople(lib) {
             });
             return out;
         },
+        /**
+         * Each tree's owner as chats there are named after it: a group or a character, its name, and when it was made
+         * (a card's create date, else when it was added). A tree that is neither is left out.
+         * @param {bigint[]} ids
+         */
+        async owners(ids) {
+            const found = await lib.entities(ids, ONLY);
+            /** @type {Map<bigint, { group: boolean, name: string, created: number }>} */
+            const out = new Map();
+            found.forEach((e, i) => {
+                if (!e || (e.type !== TYPE.character && e.type !== TYPE.group)) return;
+                // A character's and a group's name are both field 1 (`FIELD.name`, `GROUP_FIELD.name`).
+                const v = e.values.find(x => x.field === FIELD.name);
+                const name = v === undefined ? '' : v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json));
+                out.set(ids[i], { group: e.type === TYPE.group, name: typeof name === 'string' ? name : '', created: e.type === TYPE.group ? e.added : (e.createMs ?? e.added) });
+            });
+            return out;
+        },
         /** @type {import('./chat-engine.js').Books} */
         books: {
             lane: (keys, fn) => lib.books.lane(keys, fn),

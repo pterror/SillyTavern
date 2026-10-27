@@ -173,23 +173,7 @@ export function shouldSendOnEnter() {
 }
 
 // Format: YYYY-MM-DD@HHhMMmSSsMSms
-export function humanizedDateTime(timestamp = Date.now()) {
-    const date = new Date(timestamp);
-    const dt = {
-        year: date.getFullYear(),
-        month: date.getMonth() + 1,
-        day: date.getDate(),
-        hour: date.getHours(),
-        minute: date.getMinutes(),
-        second: date.getSeconds(),
-        millisecond: date.getMilliseconds(),
-    };
-    for (const key in dt) {
-        const padLength = key === 'millisecond' ? 3 : 2;
-        dt[key] = dt[key].toString().padStart(padLength, '0');
-    }
-    return `${dt.year}-${dt.month}-${dt.day}@${dt.hour}h${dt.minute}m${dt.second}s${dt.millisecond}ms`;
-}
+export { humanizedDateTime } from './humanized-date.js';
 
 export function getMessageTimeStamp(timestamp = Date.now()) {
     const date = new Date(timestamp);
