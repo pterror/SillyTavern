@@ -28,7 +28,7 @@ import { drawerStackChanged } from './drawer-stack.js';
  * @property {number} autoSaveTimeout Milliseconds of typing pause before an autosave.
  * @property {(value: string) => Promise<boolean>} saveCreatorNotesField
  * @property {(value: string) => Promise<boolean>} saveDescriptionField
- * @property {(value: string) => Promise<boolean>} saveGreetingField
+ * @property {(value: string, options?: { confirmed?: boolean }) => Promise<boolean>} saveGreetingField
  * @property {(value: string) => Promise<boolean>} saveSystemPromptField
  * @property {(value: string) => Promise<boolean>} savePostHistoryInstructionsField
  * @property {(value: string) => Promise<boolean>} savePersonalityField
@@ -74,7 +74,8 @@ function renderGreetingPreview(text, valueOf) {
 
 /**
  * @typedef {object} EditableField
- * @property {() => (value: string) => Promise<boolean>} save
+ * @property {() => (value: string, options?: { confirmed?: boolean }) => Promise<boolean>} save `confirmed`: the edit's
+ *   Done, not an autosave or a write by code.
  * @property {(text: string, valueOf: import('./safe-macros.js').MacroValueOf) => string} render
  */
 
@@ -547,7 +548,7 @@ async function confirmEdit() {
         cancelAutoSave();
     }
     const value = String(getTextarea(edit.id).val() ?? '');
-    const saved = await FIELDS[edit.id].save()(value);
+    const saved = await FIELDS[edit.id].save()(value, { confirmed: true });
     edit.saving = false;
     getPanel(edit.id).removeClass('field_edit_saving');
     if (saved) edit.original = value;

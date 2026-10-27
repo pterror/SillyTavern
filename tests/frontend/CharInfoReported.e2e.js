@@ -61,7 +61,8 @@ async function writeGreeting(page, text) {
     await expect(page.locator('#charInfoTab_greeting .cm-editor')).toBeVisible();
     await page.locator('#charInfoTab_greeting .cm-content').click();
     await page.keyboard.press('Control+A');
-    await page.keyboard.type(text);
+    if (text === '') await page.keyboard.press('Backspace');
+    else await page.keyboard.type(text);
     await page.locator('.field_edit_done[data-for="greeting_field"]').click();
     await expect(page.locator('#charInfoTab_greeting .cm-editor')).toHaveCount(0);
 }
@@ -121,16 +122,64 @@ test.describe('character info greeting pager', () => {
         await expect(page.locator('#greeting_field')).toHaveValue('three');
     });
 
-    test('CL5: deleting a new, unsaved greeting slot just drops it', async ({ page }) => {
+    test('GR1: a new greeting slot left blank leaves the list when its edit ends, cancelled or confirmed', async ({ page }) => {
         const avatar = await createAndOpen(page, ['one']);
         await openInfoTab(page, 'greeting');
         await page.locator('.greeting-pager-add').click();
-        await page.locator('.field_edit_cancel[data-for="greeting_field"]').click();
         await expect(page.locator('.greeting-pager-total')).toHaveText('/2');
-        await page.locator('.greeting-pager-delete').click();
+        await page.locator('.field_edit_cancel[data-for="greeting_field"]').click();
+        await expect(page.locator('.greeting-pager-total')).toHaveText('/1');
+        await expect(page.locator('#greeting_field')).toHaveValue('one');
+
+        await page.locator('.greeting-pager-add').click();
+        await expect(page.locator('.greeting-pager-total')).toHaveText('/2');
+        await page.locator('.field_edit_done[data-for="greeting_field"]').click();
+        await expect(page.locator('#charInfoTab_greeting')).not.toHaveClass(/field_editing/);
         await expect(page.locator('.greeting-pager-total')).toHaveText('/1');
         await expect(page.locator('#greeting_field')).toHaveValue('one');
         expect(await storedGreetings(page, avatar)).toEqual(['one']);
+    });
+
+    test('GR2: the only greeting confirmed blank is removed, with no conflict', async ({ page }) => {
+        const avatar = await createAndOpen(page, ['only']);
+        await openInfoTab(page, 'greeting');
+        await page.locator('.field_edit_toggle[data-for="greeting_field"]').click();
+        await writeGreeting(page, '');
+        await expect.poll(() => storedGreetings(page, avatar)).toEqual(['']);
+        await expect(page.locator('.greeting-pager-total')).toHaveText('/1');
+        await expect(page.locator('#greeting_field')).toHaveValue('');
+        await expect(page.locator('#toast-container .toast', { hasText: 'not saved' })).toHaveCount(0);
+    });
+
+    test('GR3: a greeting among others confirmed blank is removed, with no conflict', async ({ page }) => {
+        const avatar = await createAndOpen(page, ['one', 'two', 'three']);
+        await openInfoTab(page, 'greeting');
+        await page.locator('.greeting-pager-next').click();
+        await expect(page.locator('#greeting_field')).toHaveValue('two');
+        await page.locator('.field_edit_toggle[data-for="greeting_field"]').click();
+        await writeGreeting(page, '');
+        await expect.poll(() => storedGreetings(page, avatar)).toEqual(['one', 'three']);
+        await expect(page.locator('.greeting-pager-total')).toHaveText('/2');
+        await expect(page.locator('#toast-container .toast', { hasText: 'not saved' })).toHaveCount(0);
+    });
+
+    test('GR3: a greeting emptied mid-edit is kept until the edit is confirmed', async ({ page }) => {
+        const avatar = await createAndOpen(page, ['one', 'two']);
+        await openInfoTab(page, 'greeting');
+        await page.locator('.greeting-pager-next').click();
+        await page.locator('.field_edit_toggle[data-for="greeting_field"]').click();
+        await expect(page.locator('#charInfoTab_greeting .cm-editor')).toBeVisible();
+        await page.locator('#charInfoTab_greeting .cm-content').click();
+        await page.keyboard.press('Control+A');
+        await page.keyboard.press('Backspace');
+        // Past the autosave's pause: an empty autosave neither removes the greeting nor reports a conflict.
+        // eslint-disable-next-line playwright/no-wait-for-timeout
+        await page.waitForTimeout(1600);
+        expect(await storedGreetings(page, avatar)).toEqual(['one', 'two']);
+        await expect(page.locator('#toast-container .toast', { hasText: 'not saved' })).toHaveCount(0);
+        await page.keyboard.type('two again');
+        await page.locator('.field_edit_done[data-for="greeting_field"]').click();
+        await expect.poll(() => storedGreetings(page, avatar)).toEqual(['one', 'two again']);
     });
 
     test('CL7: the pager input shows every digit', async ({ page }) => {
