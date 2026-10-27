@@ -1426,6 +1426,8 @@ router.post('/greetings/add', validateAvatarUrlMiddleware, async function (reque
         const text = request.body.text;
         if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
         if (typeof text !== 'string') return response.status(400).send({ ok: false, reason: 'text is required' });
+        // Invalid input, not a conflict: a 409 tells the page another session changed the list.
+        if (text === '') return response.status(400).send({ ok: false, reason: 'refused to add empty greeting text' });
         if (request.body.append === true) {
             if (request.body.position !== undefined || request.body.expected_length !== undefined) {
                 return response.status(400).send({ ok: false, reason: 'append takes no position or expected_length' });
@@ -1460,6 +1462,8 @@ router.post('/greetings/edit', validateAvatarUrlMiddleware, async function (requ
         const text = request.body.text;
         if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
         if (typeof text !== 'string') return response.status(400).send({ ok: false, reason: 'text is required' });
+        // Invalid input, not a conflict: emptying a greeting is deleting it (/greetings/delete).
+        if (text === '') return response.status(400).send({ ok: false, reason: 'refused to blank stored greeting text' });
         if (!Number.isInteger(position)) return response.status(400).send({ ok: false, reason: 'position must be an integer' });
         if (!Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'expected_hash is required' });
 

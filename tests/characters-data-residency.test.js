@@ -503,7 +503,8 @@ describe('/greetings/add with append appends without a length check', () => {
     test('append with empty text is refused', async () => {
         await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
         const appended = await post('greetings/add', { avatar_url: 'Alice.png', append: true, text: '' });
-        expect(appended.status).toBe(409);
+        // Invalid input, not a conflict.
+        expect(appended.status).toBe(400);
         expect((await appended.json()).reason).toBe('refused to add empty greeting text');
     });
 });

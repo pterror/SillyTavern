@@ -10178,7 +10178,15 @@ function beginGreetingPagerEdit() {
 function endGreetingPagerEdit() {
     const edit = greetingPagerEdit;
     greetingPagerEdit = null;
-    if (!edit?.pending) return;
+    if (!edit) return;
+    if (!edit.pending) {
+        // A New Greeting slot left empty isn't a greeting: it leaves the list (the one blank slot shown when there
+        // are no greetings stays).
+        if (!edit.committed && greetingPagerState.greetings.length > 1 && String($('#greeting_field').val() ?? '') === '') {
+            dropUncommittedPagerSlot(edit.position);
+        }
+        return;
+    }
     const { greetings, defaultIndex, hashes } = edit.pending;
     if (edit.committed && Number.isFinite(edit.hash)) {
         if (hashes[edit.position] === edit.hash) {
@@ -10189,6 +10197,26 @@ function endGreetingPagerEdit() {
         }
     }
     setGreetingPagerGreetings(greetings, defaultIndex, hashes);
+}
+
+/**
+ * Takes a slot no add has saved out of the pager (in create mode, out of `create_save` too).
+ * @param {number} position
+ */
+function dropUncommittedPagerSlot(position) {
+    const { greetings, committed, defaultIndex } = greetingPagerState;
+    greetings.splice(position, 1);
+    committed.splice(position, 1);
+    greetingPagerState.defaultIndex = reindexDefaultAfterRemoval(defaultIndex, position);
+    greetingPagerState.index = Math.min(greetingPagerState.index, greetings.length - 1);
+    if (menu_type === 'create') {
+        const fields = greetingsModelToCardFields({ greetings, defaultIndex: greetingPagerState.defaultIndex });
+        create_save.first_message = fields.firstMes;
+        create_save.alternate_greetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'greeting pager slot dropped (create mode)');
+        if (!create_save.extensions) create_save.extensions = {};
+        create_save.extensions[GREETING_DEFAULT_POSITION_KEY] = fields.greetingDefaultPosition;
+    }
+    renderGreetingPager();
 }
 
 /**
@@ -10435,10 +10463,13 @@ async function saveGreetingPagerEdit(avatar, character, position, expectedHash, 
 /**
  * Commits a value for the greeting currently shown in the pager: a still-pending (uncommitted) slot is
  * added once it has text, a committed one is edited in place; in create mode it goes to `create_save`.
+ * An empty value removes the greeting, but only when the edit is confirmed: an autosave of a greeting emptied
+ * mid-edit saves nothing (typing goes on), and a still-pending slot left empty is dropped when its edit ends.
  * @param {string} value
+ * @param {{ confirmed?: boolean }} [options] `confirmed`: the edit's Done, not an autosave.
  * @returns {Promise<boolean>} Whether the value was saved.
  */
-async function commitGreetingFieldValue(value) {
+async function commitGreetingFieldValue(value, { confirmed = false } = {}) {
     const { index, defaultIndex } = greetingPagerState;
     greetingPagerState.greetings[index] = value;
     if (menu_type === 'create') {
@@ -10456,6 +10487,23 @@ async function commitGreetingFieldValue(value) {
     return await queueGreetingSave(avatar, async () => {
         const edit = greetingPagerEdit;
         const target = edit ?? { position: index, committed: greetingPagerState.committed[index] !== false, hash: greetingPagerState.hashes[index] };
+        if (target.committed && value === '') {
+            if (!confirmed || !Number.isFinite(target.hash)) return false;
+            const removed = await postGreetingOp('delete', { avatar_url: avatar, position: target.position, expected_hash: target.hash });
+            if (removed.ok) {
+                applyGreetingOpSuccess(character, removed);
+                if (edit && greetingPagerEdit === edit) {
+                    edit.committed = false;
+                    edit.hash = undefined;
+                }
+                return true;
+            }
+            console.error('Greeting delete failed', { avatar, position: target.position, status: removed.status, reason: removed.reason });
+            toastr.error(removed.status === 409
+                ? t`This character was changed in another session, so the greeting was not deleted. Reopen the character to see the current version.`
+                : t`Failed to delete the greeting.`, t`Greeting not deleted`);
+            return false;
+        }
         if (target.committed) {
             const landed = await saveGreetingPagerEdit(avatar, character, target.position, target.hash, value);
             if (!landed) return false;
@@ -10465,7 +10513,8 @@ async function commitGreetingFieldValue(value) {
             }
             return true;
         }
-        if (value === '') return false;
+        // Nothing to add: confirmed, the edit ends and its empty slot is dropped (endGreetingPagerEdit()).
+        if (value === '') return confirmed;
         const expectedLength = greetingPagerState.hashes.length;
         const result = await postGreetingOp('add', { avatar_url: avatar, position: target.position, expected_length: expectedLength, text: value });
         if (result.ok) {
@@ -10502,10 +10551,7 @@ async function deleteGreetingPagerGreeting() {
     // The greeting shown when asked: if it has changed by the time the delete is sent, the server refuses it.
     const expectedHash = hashes[index];
     if (committed[index] === false && menu_type !== 'create') {
-        greetings.splice(index, 1);
-        committed.splice(index, 1);
-        greetingPagerState.index = Math.min(index, greetings.length - 1);
-        renderGreetingPager();
+        dropUncommittedPagerSlot(index);
         return;
     }
 
@@ -10545,10 +10591,11 @@ async function deleteGreetingPagerGreeting() {
 /**
  * Saves the greeting currently shown in the pager with this value.
  * @param {string} value
+ * @param {{ confirmed?: boolean }} [options] `confirmed`: the edit's Done (see {@link commitGreetingFieldValue}).
  * @returns {Promise<boolean>} Whether the value was saved.
  */
-export async function saveGreetingField(value) {
-    return await commitGreetingFieldValue(value);
+export async function saveGreetingField(value, { confirmed = false } = {}) {
+    return await commitGreetingFieldValue(value, { confirmed });
 }
 
 /** @type {{value: string}|null} A write to `#firstmessage_textarea` queued behind an earlier save, not yet sent. */
@@ -11063,6 +11110,9 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
             await queueGreetingSave(avatar, async () => {
                 const expectedHash = row.greetingHash;
                 if (!Number.isFinite(expectedHash)) return;
+                // An emptied row has nothing to save (a greeting is never stored empty): the stored text stays until
+                // the row has text again; removing it is the row's delete.
+                if (text === '') return;
 
                 const result = await postGreetingOp('edit', { avatar_url: avatar, position: rowIndex, expected_hash: expectedHash, text });
                 if (result.ok) {
