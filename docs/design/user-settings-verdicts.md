@@ -93,7 +93,7 @@ Verdicts:
 | Import Card Tags | at import: asked in the import dialog, with "remember" |
 | Never resize avatars | behaviour: the original image is kept, thumbnails are made from it |
 | Spoiler Free Mode | at the character: definitions folded until opened, remembered per character |
-| Forbid Linked Lorebooks | at import, and not a setting: a Chub card can name lorebooks it doesn't contain, which the server then fetches from Chub (`src/endpoints/content-manager.js:464`). The import shows them by name ("this card uses 2 lorebooks from Chub: …"), each to get or skip. No double negative, no global switch |
+| Forbid Linked Lorebooks | cut: a Chub card can name lorebooks it doesn't contain, which the server fetches from Chub (`src/endpoints/content-manager.js:464`). They're imported with the card when the site is allowed, by the sites rule (`modules.md`), and kept as links otherwise |
 | Always Allow Custom CSS | at the character (already asked per card), with the user's default |
 | Keep recently used characters, How many | cut: a cache size is the app's to decide |
 | Lorebook Import Dialog | cut: hidden, nothing reads it |
