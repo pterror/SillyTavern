@@ -25,7 +25,69 @@ use super::{KsError, KsResult};
 use crate::log::format::{get_uvarint, put_uvarint};
 
 const MAGIC: &[u8; 8] = b"st-run\0\x01";
+/// A run that says which kinds of key it holds (`Kinds`): the set and its checksum just before the footer.
+const MAGIC_KINDS: &[u8; 8] = b"st-run\0\x02";
 const FOOTER: usize = 64;
+const KINDS_BYTES: usize = 36;
+
+/// The kinds of key a run holds, by a key's first part (`keyspace::val::put_u64`, the structure it belongs to):
+/// bit k for kind k below 255, bit 255 for every kind from 255 on. A read skips a run that holds none of its kinds.
+/// A run written before runs said so holds every kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Kinds([u64; 4]);
+
+impl Kinds {
+    pub const ALL: Kinds = Kinds([u64::MAX; 4]);
+    pub const NONE: Kinds = Kinds([0; 4]);
+
+    /// A key's kind bit; None for a key whose first part doesn't decode (its run then holds every kind).
+    fn bit(key: &[u8]) -> Option<usize> {
+        let n = usize::from(*key.first()?);
+        let b = key.get(1..1 + n).filter(|_| n <= 8)?;
+        let v = b.iter().fold(0u64, |v, &x| v << 8 | u64::from(x));
+        Some(v.min(255) as usize)
+    }
+
+    fn add(&mut self, key: &[u8]) {
+        match Kinds::bit(key) {
+            Some(b) => self.0[b / 64] |= 1 << (b % 64),
+            None => *self = Kinds::ALL,
+        }
+    }
+
+    fn union(&mut self, other: Kinds) {
+        for (a, b) in self.0.iter_mut().zip(other.0) {
+            *a |= b;
+        }
+    }
+
+    /// Whether some key in `[from, to]` may be of a kind held.
+    fn may_hold(&self, from: &[u8], to: &[u8]) -> bool {
+        let (Some(a), Some(b)) = (Kinds::bit(from), Kinds::bit(to)) else {
+            return true;
+        };
+        (a..=b.max(a)).any(|k| self.0[k / 64] >> (k % 64) & 1 == 1)
+    }
+
+    fn bytes(&self) -> Vec<u8> {
+        let mut out: Vec<u8> = self.0.iter().flat_map(|x| x.to_le_bytes()).collect();
+        let crc = crc32c::crc32c(&out);
+        out.extend_from_slice(&crc.to_le_bytes());
+        out
+    }
+
+    fn parse(b: &[u8]) -> Option<Kinds> {
+        let (set, crc) = b.split_at(32);
+        if crc32c::crc32c(set).to_le_bytes() != crc {
+            return None;
+        }
+        let mut k = Kinds::NONE;
+        for (i, w) in set.chunks(8).enumerate() {
+            k.0[i] = u64::from_le_bytes(w.try_into().unwrap());
+        }
+        Some(k)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Handle {
@@ -232,6 +294,8 @@ pub struct Run {
     top: Arc<Block>,
     /// The run's largest key (empty for a run with no entries).
     pub max_key: Vec<u8>,
+    /// The kinds of key it holds.
+    pub kinds: Kinds,
     /// Set once a merge has replaced this run: its file is removed when the last reader lets go of it.
     pub obsolete: AtomicBool,
 }
@@ -313,9 +377,22 @@ impl Run {
         file.read_exact_at(&mut f, bytes - FOOTER as u64)?;
         let u64_at = |i: usize| u64::from_le_bytes(f[i..i + 8].try_into().unwrap());
         let u32_at = |i: usize| u32::from_le_bytes(f[i..i + 4].try_into().unwrap());
-        if &f[..8] != MAGIC || crc32c::crc32c(&f[..56]) != u32_at(56) {
+        if (&f[..8] != MAGIC && &f[..8] != MAGIC_KINDS) || crc32c::crc32c(&f[..56]) != u32_at(56) {
             return Err(corrupt("footer doesn't check out".into()));
         }
+        // The blocks end before the footer, and before the kinds when the run has them.
+        let (kinds, blocks_end) = if &f[..8] == MAGIC_KINDS {
+            if bytes < (FOOTER + KINDS_BYTES) as u64 {
+                return Err(corrupt("shorter than a footer and its kinds".into()));
+            }
+            let mut k = [0u8; KINDS_BYTES];
+            let at = bytes - (FOOTER + KINDS_BYTES) as u64;
+            file.read_exact_at(&mut k, at)?;
+            let kinds = Kinds::parse(&k).ok_or_else(|| corrupt("its kinds don't check out".into()))?;
+            (kinds, at)
+        } else {
+            (Kinds::ALL, bytes - FOOTER as u64)
+        };
         let top = Handle {
             offset: u64_at(8),
             len: u64::from(u32_at(16)),
@@ -325,7 +402,7 @@ impl Run {
         if (u64_at(40), u64_at(48)) != (lo, hi) {
             return Err(corrupt("footer holds other flushes than its name".into()));
         }
-        if levels == 0 || top.offset + top.len > bytes - FOOTER as u64 {
+        if levels == 0 || top.offset + top.len > blocks_end {
             return Err(corrupt("top block outside the file".into()));
         }
         let mut buf = vec![0; top.len as usize];
@@ -353,8 +430,14 @@ impl Run {
             dels,
             top,
             max_key,
+            kinds,
             obsolete: AtomicBool::new(false),
         })
+    }
+
+    /// Whether the run may hold a key in `[from, to]`, by the kinds of key it holds.
+    pub fn may_hold(&self, from: &[u8], to: &[u8]) -> bool {
+        self.kinds.may_hold(from, to)
     }
 
     pub fn top_size(&self) -> usize {
@@ -579,6 +662,9 @@ impl Run {
             if *key > self.max_key.as_slice() {
                 break;
             }
+            if !self.may_hold(key, key) {
+                continue;
+            }
             if held.as_ref().is_none_or(|(_, last)| *key > last.as_slice()) {
                 held = None;
                 let mut block = self.top.clone();
@@ -608,7 +694,7 @@ impl Run {
 
     /// The run's value for `key`.
     pub fn get(&self, key: &[u8], cache: &Cache, counts: &ReadCounts) -> KsResult<Option<Val>> {
-        if key > self.max_key.as_slice() {
+        if key > self.max_key.as_slice() || !self.may_hold(key, key) {
             return Ok(None);
         }
         SEEK_KEY.with_borrow_mut(|k| {
@@ -1040,7 +1126,7 @@ pub fn restamp(path: &Path, covered: u64, lo: u64, hi: u64) -> io::Result<()> {
     let bytes = file.metadata()?.len();
     let mut f = [0u8; FOOTER];
     read_exact_at(&file, &mut f, bytes - FOOTER as u64)?;
-    if &f[..8] != MAGIC {
+    if &f[..8] != MAGIC && &f[..8] != MAGIC_KINDS {
         return Err(io::Error::other("not a run file"));
     }
     f[32..40].copy_from_slice(&covered.to_le_bytes());
@@ -1071,11 +1157,56 @@ pub struct RunWriter {
     index: Vec<(BlockBuilder, u64)>,
     entries: u64,
     dels: u64,
+    kinds: Kinds,
 }
 
 #[cfg(test)]
 mod writer_tests {
     use super::*;
+
+    /// A key of kind `kind` (`keyspace::val::put_u64`) and then `rest`.
+    fn kinded(kind: u64, rest: u32) -> Vec<u8> {
+        let mut k = Vec::new();
+        crate::keyspace::val::put_u64(&mut k, kind);
+        k.extend_from_slice(&rest.to_be_bytes());
+        k
+    }
+
+    #[test]
+    fn a_run_skips_reads_of_kinds_it_holds_none_of() {
+        let mut writer = RunWriter::in_memory(256, 0);
+        let mine: Vec<Vec<u8>> = (0..200).map(|i| kinded(32, i)).collect();
+        for k in &mine {
+            writer.add(k, &Val::Add(1)).unwrap();
+        }
+        let bytes = writer.finish_in_memory(0, 0, 0).unwrap();
+        let run = Run::in_memory(Path::new("kinds.run"), bytes.clone(), 0, 0).unwrap();
+        let cache = Cache::new(1 << 20);
+        let counts = ReadCounts::default();
+        // Another kind, below and inside the run's key range: answered with no block read.
+        for other in [kinded(18, 5), kinded(33, 0), kinded(300, 1)] {
+            assert_eq!(run.get(&other, &cache, &counts).unwrap(), None);
+        }
+        assert_eq!(counts.blocks.load(Ordering::Relaxed), 0);
+        assert!(!run.may_hold(&kinded(18, 0), &kinded(31, 0)));
+        assert!(run.may_hold(&kinded(18, 0), &kinded(40, 0)));
+        // Its own keys are found as before.
+        for k in &mine {
+            assert_eq!(run.get(k, &cache, &counts).unwrap(), Some(Val::Add(1)));
+        }
+        // A run written before runs said their kinds holds every kind: its reads go down its index.
+        let mut old = bytes;
+        let at = old.len() - FOOTER;
+        old[at..at + 8].copy_from_slice(MAGIC);
+        let crc = crc32c::crc32c(&old[at..at + 56]);
+        old[at + 56..at + 60].copy_from_slice(&crc.to_le_bytes());
+        let run = Run::in_memory(Path::new("old.run"), old, 0, 0).unwrap();
+        assert_eq!(run.kinds, Kinds::ALL);
+        assert!(run.may_hold(&kinded(18, 0), &kinded(18, 0)));
+        for k in &mine {
+            assert_eq!(run.get(k, &cache, &counts).unwrap(), Some(Val::Add(1)));
+        }
+    }
 
     #[test]
     fn oversized_index_keys_finish_and_remain_seekable() {
@@ -1136,6 +1267,7 @@ impl RunWriter {
             index: Vec::new(),
             entries: 0,
             dels: 0,
+            kinds: Kinds::NONE,
         }
     }
 
@@ -1215,6 +1347,7 @@ impl RunWriter {
             self.push_index(0, &last, at)?;
         }
         self.entries += run.entries;
+        self.kinds.union(run.kinds);
         Ok(())
     }
 
@@ -1226,6 +1359,7 @@ impl RunWriter {
             self.flush_data()?;
         }
         self.data.add(key, val);
+        self.kinds.add(key);
         self.entries += 1;
         if matches!(val, Val::Del) {
             self.dels += 1;
@@ -1251,8 +1385,10 @@ impl RunWriter {
         }
         let top_bytes = self.index[level].0.finish(KIND_INDEX);
         let top = self.write_block(&top_bytes)?;
+        let kinds = self.kinds.bytes();
+        self.write_block(&kinds)?;
         let mut f = Vec::with_capacity(FOOTER);
-        f.extend_from_slice(MAGIC);
+        f.extend_from_slice(MAGIC_KINDS);
         f.extend_from_slice(&top.offset.to_le_bytes());
         f.extend_from_slice(&(top.len as u32).to_le_bytes());
         f.extend_from_slice(&(self.index.len() as u32).to_le_bytes());

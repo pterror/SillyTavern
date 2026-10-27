@@ -704,7 +704,7 @@ impl Keyspace {
                 sources.push(Box::new(VecSource::new(p)));
             }
             for r in runs {
-                if r.max_key.as_slice() < start {
+                if r.max_key.as_slice() < start || !r.may_hold(start, &to) {
                     continue;
                 }
                 sources.push(Box::new(run::RunRevIter::new(
@@ -764,7 +764,7 @@ impl Keyspace {
                 sources.push(Box::new(VecSource::new(p)));
             }
             for r in runs {
-                if from.as_slice() <= r.max_key.as_slice() {
+                if from.as_slice() <= r.max_key.as_slice() && r.may_hold(&from, end) {
                     sources.push(Box::new(RunIter::new(
                         r.clone(),
                         &from,
