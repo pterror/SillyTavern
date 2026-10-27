@@ -89,6 +89,27 @@ test('a write is shown at once and kept: the reopened model gives it', async () 
     assert.equal(settingsStore.readAllSettings(directories).swipes, SHIPPED.swipes);
 });
 
+test('statements at a character not in the library are warned of once, not at every save that keeps them', async () => {
+    const directories = seedUser('kept');
+    const upstream = structuredClone(SHIPPED);
+    upstream.power_user.persona_descriptions = { 'me.png': { description: '', position: 0, connections: [{ type: 'character', id: 'Gone.png' }] } };
+    fs.writeFileSync(path.join(directories.root, 'settings.json'), JSON.stringify(upstream));
+    /** @type {string[]} */
+    const warned = [];
+    const warn = console.warn;
+    console.warn = (/** @type {unknown[]} */ ...args) => { warned.push(args.map(String).join(' ')); };
+    try {
+        await openSettingsDocument(directories, 'kept');
+        assert.equal(warned.filter(w => w.includes('Gone.png')).length, 1);
+        await settingsStore.writeSettingsKeys(directories, { 'power_user.auto_swipe': true });
+        await settingsStore.writeSettingsKeys(directories, { 'power_user.auto_swipe': false });
+        await settingsStore.writeNamedSettings(directories, settingsStore.readAllSettings(directories));
+        assert.equal(warned.filter(w => w.includes('Gone.png')).length, 1);
+    } finally {
+        console.warn = warn;
+    }
+});
+
 test('bundles are the store\'s: listed, saved, renamed and deleted, a selected one\'s values in the settings', async () => {
     const directories = seedUser('bundles');
     await openSettingsDocument(directories, 'bundles');

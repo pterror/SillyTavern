@@ -103,6 +103,9 @@ test('a statement at a character not in the library is kept as it came, warned',
     assert.ok(warnings.some(w => w.includes('Bob.png')));
     const back = await readUserModel(lib, 'default-user');
     assert.deepEqual(back?.statements.personasConnected, [{ holder: { type: 'character', id: 'Bob.png' }, personas: ['a.png'] }]);
+    // Warned once: a later write that still keeps them says nothing of it again.
+    const again = await writeUserModel(lib, 'default-user', /** @type {any} */ (back), { previous: back ?? undefined });
+    assert.ok(!again.warnings.some(w => w.includes('Bob.png')));
 });
 
 /**
