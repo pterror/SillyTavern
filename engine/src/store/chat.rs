@@ -459,6 +459,35 @@ pub fn bookmarks_named(view: &View, tree: u64, name: &[u8]) -> Result<Vec<u64>, 
         .collect()
 }
 
+/// Per (name, tree, which, holder): a chat of the tree is named so, by its name's exact bytes: a bookmark (which 0,
+/// holder the bookmark) or a session's conversation (which 1, holder the session). How a name alone finds its tree.
+pub const CHAT_NAMED: u64 = 167;
+
+pub fn chat_named_key(name: &[u8], tree: u64, which: u64, holder: u64) -> Vec<u8> {
+    let mut k = key::of(CHAT_NAMED);
+    put_bytes(&mut k, name);
+    put_u64(&mut k, tree);
+    put_u64(&mut k, which);
+    put_u64(&mut k, holder);
+    k
+}
+
+/// The chats named exactly `name` in any tree, `(tree, which, holder)` in that order, at most `limit`.
+pub fn chats_named(view: &View, name: &[u8], limit: usize) -> Result<Vec<(u64, u64, u64)>, StoreError> {
+    let mut p = key::of(CHAT_NAMED);
+    put_bytes(&mut p, name);
+    view.scan(&p, &key::prefix_end(&p), limit)?
+        .into_iter()
+        .map(|(k, _)| {
+            let mut at = p.len();
+            let mut next = || {
+                get_u64(&k, &mut at).ok_or_else(|| StoreError::Entry("a chat name key doesn't decode".into()))
+            };
+            Ok((next()?, next()?, next()?))
+        })
+        .collect()
+}
+
 /// The message a bookmark is at.
 pub fn bookmark_at(view: &View, b: u64) -> Result<Option<u64>, StoreError> {
     view.get(&key::id(key::BOOKMARK_AT, b))?
@@ -1143,9 +1172,11 @@ impl Deriver for PositionName {
             };
             if let Some(o) = super::searched::position_name(view, p)? {
                 out.del(bookmark_named_key(tree, &o, p));
+                out.del(chat_named_key(&o, tree, 0, p));
             }
             if let Some(n) = name {
                 out.put(bookmark_named_key(tree, n, p), Vec::new());
+                out.put(chat_named_key(n, tree, 0, p), Vec::new());
             }
         }
         if let Some(v) = view.get(&k)? {
@@ -1347,12 +1378,14 @@ pub(super) fn bookmark_gone(view: &View, out: &mut Out, b: u64, cl: Loc) -> Resu
         let tree = id(&r, APPEND_OWNER);
         if let Some(n) = super::searched::position_name(view, b)? {
             out.del(bookmark_named_key(tree, &n, b));
+            out.del(chat_named_key(&n, tree, 0, b));
         }
         bookmark_entries(out, b, tree, m, false);
         bookmark_time_del(view, out, b, tree)?;
     } else if let Some(tree) = bookmark_root(view, b)? {
         if let Some(n) = super::searched::position_name(view, b)? {
             out.del(bookmark_named_key(tree, &n, b));
+            out.del(chat_named_key(&n, tree, 0, b));
         }
         root_bookmark_entries(out, b, tree, false);
         bookmark_time_del(view, out, b, tree)?;
@@ -1520,6 +1553,32 @@ impl Deriver for CurrentChat {
         out: &mut Out,
     ) -> Result<(), StoreError> {
         sessions::current_chat_repoint(view, out, id(rec, 0), id(rec, 2), from, to)
+    }
+}
+
+/// `conversationName`: a session's conversation in a tree is named; the record is the name's while it is.
+pub struct ConversationName;
+
+impl Deriver for ConversationName {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let (s, u, tree) = (id(rec, 0), id(rec, 1), id(rec, 2));
+        sessions::check_actor(view, Some(s), Some(u))?;
+        sessions::convo_name_set(view, out, s, tree, bytes(rec, 3), at)
+    }
+
+    fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
+        live_at(view, &sessions::convo_name_key(id(rec, 0), id(rec, 2)), pos)
+    }
+
+    fn repoint(
+        &self,
+        rec: &Record,
+        from: u64,
+        to: Loc,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        repoint_at(view, out, &sessions::convo_name_key(id(rec, 0), id(rec, 2)), from, to)
     }
 }
 
@@ -1714,6 +1773,7 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "sessionFork" => &SessionFork,
         "userPosition" => &UserPosition,
         "currentChat" => &CurrentChat,
+        "conversationName" => &ConversationName,
         "conversationActive" => &ConversationActive,
         "openingChoice" => &OpeningChoice,
         "forkSelection" => &ForkSelection,

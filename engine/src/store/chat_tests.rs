@@ -1861,6 +1861,67 @@ fn a_current_chat_is_per_session_and_tree_and_changes_only_by_its_records() {
 }
 
 #[test]
+fn a_conversation_name_is_per_session_and_tree_and_names_find_their_chats_in_any_tree() {
+    let dir = temp_dir("convo-names");
+    let (s, mut model) = open_with_actors(&dir, small_pool());
+    let recs = vec![
+        append(&mut model, 1, None, 1, "a", None, None, 1),
+        append(&mut model, 2, None, 2, "b", None, None, 1),
+    ];
+    s.commit_wait(recs).unwrap();
+    let named = |ses: u64, tree: u64, name: &str| {
+        rec(
+            "conversationName",
+            vec![Value::Id(ses), Value::Id(1), Value::Id(tree), Value::Text(text(name))],
+        )
+    };
+    let label = |b: u64, name: Option<&str>| {
+        rec("positionName", vec![Value::Id(b), name.map_or(Value::Absent, |n| Value::Text(text(n)))])
+    };
+    let read = |s: &Store, ses: u64, tree: u64| {
+        s.derived(|v| sessions::convo_name(v, ses, tree))
+            .unwrap()
+            .map(|n| String::from_utf8(n).unwrap())
+    };
+    let find = |s: &Store, name: &str| s.derived(|v| chat::chats_named(v, &text(name), usize::MAX)).unwrap();
+    assert_eq!(read(&s, 1, 1), None);
+    s.commit_wait(vec![named(1, 1, "Ann - 2026-10-27@12h00m00s000ms")]).unwrap();
+    // Per (session, tree): the other tree and the other session have none.
+    assert_eq!(read(&s, 1, 1).as_deref(), Some("Ann - 2026-10-27@12h00m00s000ms"));
+    assert_eq!((read(&s, 1, 2), read(&s, 2, 1)), (None, None));
+    assert_eq!(find(&s, "Ann - 2026-10-27@12h00m00s000ms"), vec![(1, 1, 1)]);
+    // A rename replaces the name in the index; the old one finds nothing.
+    s.commit_wait(vec![named(1, 1, "walk")]).unwrap();
+    assert_eq!(read(&s, 1, 1).as_deref(), Some("walk"));
+    assert!(find(&s, "Ann - 2026-10-27@12h00m00s000ms").is_empty());
+    // A bookmark's label is in the same index, by its tree: one name, several trees, each found.
+    s.commit_wait(vec![
+        rec(
+            "positionCreate",
+            vec![Value::Id(9), Value::UInt(PINNED), Value::Id(1), Value::Id(1), Value::Id(1)],
+        ),
+        label(9, Some("walk")),
+    ])
+    .unwrap();
+    assert_eq!(find(&s, "walk"), vec![(1, 1, 1), (2, 0, 9)]);
+    s.commit_wait(vec![label(9, None)]).unwrap();
+    assert_eq!(find(&s, "walk"), vec![(1, 1, 1)]);
+    s.commit_wait(vec![label(9, Some("walk"))]).unwrap();
+    s.commit_wait(vec![rec("positionDelete", vec![Value::Id(9)])]).unwrap();
+    assert_eq!(find(&s, "walk"), vec![(1, 1, 1)]);
+    // The name survives a reopen.
+    drop(s);
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    assert_eq!(read(&s, 1, 1).as_deref(), Some("walk"));
+    // A session that goes takes its names.
+    s.commit_wait(vec![rec("positionDelete", vec![Value::Id(1)])]).unwrap();
+    assert_eq!(read(&s, 1, 1), None);
+    assert!(find(&s, "walk").is_empty());
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn conversations_are_ordered_by_the_meaningful_activity_of_the_acting_sessions_current_chat() {
     use sessions::Convo::{Bookmark, Session};
     let dir = temp_dir("convos");

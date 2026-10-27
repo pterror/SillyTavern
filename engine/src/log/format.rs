@@ -402,6 +402,19 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
+    // `session`'s conversation in `tree` (its own chat there, with no current chat) is named `name`, by `user`:
+    // written with the conversation's first write (the name it was shown by until then), and by a rename.
+    Kind {
+        name: "conversationName",
+        base: 1410,
+        slots: &[
+            req("session", Ty::Id(Space::Position)),
+            req("user", Ty::Id(Space::User)),
+            req("tree", Ty::Id(Space::Entity)),
+            req("name", Ty::Text),
+        ],
+        internal: false,
+    },
     // A session steps back or forward to the `n`-th entry of its history: the cursor and the pointer go there, and
     // no entry is added. `time`: when (a step to a root is when the session got there).
     Kind {
