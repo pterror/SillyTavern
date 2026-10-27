@@ -1,4 +1,3 @@
-import { bookmarkIdOf } from './chat-engine.js';
 import { TYPE } from './library-engine.js';
 import { importedChatBookmarks } from './upstream-import.js';
 
@@ -55,6 +54,16 @@ export async function importUpstreamItemizations(store, root, chats) {
 }
 
 /**
+ * The bookmark an import map entry names (`b<id>`, as the chat import writes it), or null.
+ * @param {string} entry
+ * @returns {bigint | null}
+ */
+function importedBookmarkOf(entry) {
+    const m = /^b(0|[1-9][0-9]*)$/.exec(entry);
+    return m ? BigInt(m[1]) : null;
+}
+
+/**
  * The chat an upstream chat id names: its tree and its bookmark's message.
  * @param {import('./user-stores.js').UserStore} store
  * @param {Map<string, string[]>} mapped {@link importedChatBookmarks}
@@ -68,10 +77,11 @@ async function chatOf(store, mapped, chatId) {
     /** @type {{ tree: bigint, bookmark: bigint }[]} */
     let candidates = [];
     if (bookmarks.length === 1) {
-        const id = bookmarkIdOf(bookmarks[0]);
-        const tree = id === null ? null : await chats.treeOfChatId(bookmarks[0]);
+        const id = importedBookmarkOf(bookmarks[0]);
+        const [b] = id === null ? [] : await chats.store.chatRead('bookmarks', { ids: [id] });
+        const tree = !b ? null : b.at === null ? b.root : (await chats.stored([b.at])).get(b.at)?.owner ?? null;
         if (id === null || tree === null) return { status: 'not-found', why: `the chat imported from "${chatId}" is gone` };
-        candidates = [{ tree, bookmark: BigInt(id) }];
+        candidates = [{ tree, bookmark: id }];
     } else {
         candidates = await labelled(store, chatId);
         if (candidates.length > 1) return { status: 'ambiguous', why: `${candidates.length} chats are named "${chatId}"` };

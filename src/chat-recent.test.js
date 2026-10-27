@@ -7,8 +7,9 @@ import path from 'node:path';
 import { after, test } from 'node:test';
 
 import { loadEngine } from '../engine/load.js';
+import { fakeOwners } from './chat-test-people.js';
 
-const { ChatEngine, sessionCompatId } = await import('./chat-engine.js');
+const { ChatEngine, chatNameAt, sessionTime } = await import('./chat-engine.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-recent-test-'));
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -18,6 +19,7 @@ const people = {
     speakers: async (/** @type {bigint[]} */ ids) => new Map(cast.filter(c => ids.includes(c.id)).map(c => [c.id, c])),
     byAvatar: async (/** @type {string[]} */ avatars) => new Map(cast.filter(c => avatars.includes(c.avatar)).map(c => [c.avatar, c])),
 };
+people.owners = fakeOwners(people);
 const a = { user: 'tester', session: '0190a1b2-0000-7000-8000-0000000000c1' };
 const b = { user: 'tester', session: '0190a1b2-0000-7000-8000-0000000000c2' };
 const msg = (/** @type {string} */ mes) => ({ name: 'Someone', is_user: false, is_system: false, mes, extra: {} });
@@ -39,10 +41,11 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const one = await send(1n, null, 'one');
         const two = await send(2n, null, 'two', b);
         await send(3n, null, 'three');
-        const s = (/** @type {any} */ actor, /** @type {bigint} */ tree) => sessionCompatId(actor.session, tree);
+        // A session's conversation's chat id: its name, the character's and the session's time.
+        const s = (/** @type {any} */ actor, /** @type {bigint} */ tree) => chatNameAt({ group: false, name: `Char${tree}` }, /** @type {number} */ (sessionTime(actor.session)));
         assert.deepEqual(await ids({ limit: 10 }), [s(a, 3n), s(b, 2n), s(a, 1n)]);
 
-        // A row's shape: the compat id, the message it is at, and that message's text and time.
+        // A row's shape: the chat id, the message it is at, and that message's text and time.
         const [top] = (await chats.recentConversations({ limit: 1 })).rows;
         assert.equal(top.name, null);
         assert.equal(top.tree, 3n);

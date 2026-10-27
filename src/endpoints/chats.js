@@ -21,11 +21,11 @@ import { cardToGreetingsModel } from '../greeting-list.js';
 import { applyPageWrites } from '../page-writes.js';
 import { storedMessagesOf } from '../stored-messages.js';
 import { engineStoreHere, requestStore } from '../user-stores.js';
-import { chatContext, chatNamePosition, compatChatIdOf, isOwnChat, labelBaseOf, openChatNamed } from '../chat-request.js';
+import { chatContext, chatNamePosition, compatChatIdOf, isOwnChat, openChatNamed, ownOf } from '../chat-request.js';
 import { SESSION_GONE_HEADER, sessionHeaderOf } from '../request-session.js';
 import { ui, uiUser } from '../ui-wiring.js';
 import { pageSettingsHash } from '../settings-hash.js';
-import { loadSync, resolveChatNameSync, sessionCompatId, storedForm, treeOfChatIdSync } from '../chat-engine.js';
+import { loadSync, resolveChatNameSync, storedForm, treeOfChatIdSync } from '../chat-engine.js';
 import { TYPE } from '../library-engine.js';
 import { USER_DIRECTORY_TEMPLATE } from '../constants.js';
 
@@ -506,8 +506,8 @@ function chatName(name) {
 }
 
 /**
- * A chat's list, newest first (`chatList()`), each by its compat chat id (`file_id`: a bookmark's `b<id>`, the
- * tab's own conversation's `s<UUID>.<tree>`) and its `label` (the name the user gave it, or null).
+ * A chat's list, newest first (`chatList()`), each by its compat chat id (`file_id`: a bookmark's label, a session's
+ * conversation's name, `chatIdsOf()`) and its `label` (a bookmark's label, or null).
  * @param {import('../chat-request.js').ChatContext} chat
  * @param {{ withMetadata?: boolean }} [o]
  */
@@ -517,8 +517,8 @@ async function chatListOf(chat, { withMetadata = false } = {}) {
     let after;
     for (;;) {
         const page = await chat.store.chats.chatList({ tree: chat.tree, session: chat.session.reader().session ?? undefined, after, limit: 500, withMetadata });
-        const ids = await chat.store.chats.bookmarkChatIds(chat.tree, page.rows.flatMap(r => (r.bookmark != null ? [r.bookmark] : [])));
-        rows.push(...page.rows.map(r => ({ ...r, file_id: r.bookmark != null ? /** @type {string} */ (ids.get(String(r.bookmark))) : sessionCompatId(String(r.session), chat.tree), label: r.name ?? null })));
+        const ids = await chat.store.chats.chatIdsOf(chat.tree, page.rows);
+        rows.push(...page.rows.map((r, i) => ({ ...r, file_id: ids[i], label: r.name ?? null })));
         if (!page.more || page.rows.length === 0) return rows;
         after = page.rows[page.rows.length - 1].position;
     }
@@ -610,7 +610,7 @@ async function saveCompatChat(request, response, chat, name, chatData) {
     const messages = chatData.slice(1);
     const own = chat.session.reader().session;
     const unique = request.body.unique === true;
-    const found = name === '' || name === own || unique ? null : await chats.resolveChatName({ tree: chat.tree, name });
+    const found = name === '' || name === own || unique ? null : await chats.resolveChatName({ tree: chat.tree, name, own: ownOf(chat) });
     const isOwn = name === '' || name === own || (found !== null && await isOwnChat(chat, found));
 
     if (!isOwn && found === null) {
@@ -637,7 +637,7 @@ async function saveCompatChat(request, response, chat, name, chatData) {
     const at = isOwn ? await chats.landingOf(chat.tree, actor) : await chatNamePosition(chat, name);
     if (at === undefined) return { status: 400, body: { error: 'not_found' } };
     const fileName = isOwn ? await compatChatIdOf(chat)
-        : found !== null && 'bookmark' in found ? await chats.bookmarkChatId(chat.tree, found.bookmark) : sessionCompatId(String(found?.session), chat.tree);
+        : found !== null && 'bookmark' in found ? await chats.bookmarkChatId(chat.tree, found.bookmark) : await chats.conversationName(String(found?.session), String(found?.session), chat.tree);
 
     if (at === null && isOwn && messages.length > 0) {
         const imported = await chats.importChat({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, name: null, messages, metadata, actor, bookmark: false });
@@ -818,7 +818,7 @@ function chatNamePositionSync(store, tree, name) {
         const [b] = store.chatReadSync('bookmarks', { ids: [found.bookmark] });
         return b ? outside(b.at) : undefined;
     }
-    // An `s<UUID>.<tree>` names that session's position there, else where the tree lands.
+    // A session's conversation names that session's position there, else where the tree lands.
     const where = found.session === null ? null : store.chatReadSync('sessionInTree', { session: found.session, tree });
     if (!where && 'derived' in found) return outside(store.chatReadSync('landing', { tree, ...(found.session === null ? {} : { session: found.session }) }));
     return where ? outside(where.at) : undefined;
@@ -950,10 +950,9 @@ async function openingsForPage(chat, avatar) {
  * there; else the session's own place in the tree (where it lands); `fresh` (a character): no conversation, only
  * the card's greetings. Records which character or group was opened last.
  *
- * Answers `{ chat, label_base, chat_metadata, messages, openings, card_openings, stored_sends, active_character,
- * active_group, settings_hash? }`: `chat` is upstream's identifier for the open chat (`compatChatIdOf()`), `label_base`
- * what its suggested bookmark names start from (`labelBaseOf()`), `messages` as /get answers
- * them after the header; `openings`/`card_openings` for a character only (null for a group); for a group also
+ * Answers `{ chat, chat_metadata, messages, openings, card_openings, stored_sends, active_character,
+ * active_group, settings_hash? }`: `chat` is upstream's identifier for the open chat (`compatChatIdOf()`), `messages`
+ * as /get answers them after the header; `openings`/`card_openings` for a character only (null for a group); for a group also
  * `chats` and `date_last_chat`. 404 when the character or group doesn't exist.
  * @param {import('express').Request} request
  * @param {import('express').Response} response
@@ -982,7 +981,6 @@ async function openChatAnswer(request, response, body) {
     const common = {
         ui_views,
         chat: await compatChatIdOf(chat),
-        label_base: await labelBaseOf(chat),
         chat_metadata: { ...metadata },
         messages: loaded?.messages ?? [],
         stored_sends: await chats.storedSendKeys(chat.tree, body.send_keys),
@@ -1024,7 +1022,8 @@ router.post('/open', validateAvatarUrlMiddleware, async function (request, respo
 });
 
 /**
- * Bookmarks a message: a bookmark named `label` at `node_id`; no `label` suggests one (a branch's, `branchLabel()`). A
+ * Bookmarks a message: a bookmark named `label` at `node_id` (refused when another chat of its scope has that name;
+ * with `unique`, the next free one). No `label` suggests one: a branch's (`suggestedLabel()`). A
  * greeting shown without a row (`opening`) is stored first, as /message/select stores it. For a group the answer
  * carries its chat list (`chats`). With `open`, the bookmark is opened as /open opens a chat (`make_current`),
  * answered as `opened`. `also_node_id` is accepted and ignored.
@@ -1034,7 +1033,7 @@ router.post('/bookmark', validateAvatarUrlMiddleware, async function (request, r
         const chat = await chatOf(request);
         if (!chat) return response.sendStatus(404);
         const given = typeof request.body.label === 'string' ? request.body.label.trim() : '';
-        const label = given || await branchLabel(chat);
+        const label = given || await suggestedLabel(chat);
 
         let nodeId = String(request.body.node_id || '');
         if (!nodeId && request.body.opening) {
@@ -1044,8 +1043,9 @@ router.post('/bookmark', validateAvatarUrlMiddleware, async function (request, r
         }
         if (!nodeId) return response.status(400).send({ error: 'node_id is required' });
 
-        const made = await chat.store.chats.createBookmark({ tree: chat.tree, node_id: nodeId, name: label, actor: chat.session.actor() });
-        if (!made.ok || made.name === null) return response.status(409).send({ ok: false, reason: made.ok ? 'no name' : made.reason });
+        // `unique`: always a new bookmark, so a label a chat has is a suggestion (the next free one).
+        const made = await chat.store.chats.createBookmark({ tree: chat.tree, node_id: nodeId, name: label, suggested: given === '' || request.body.unique === true, actor: chat.session.actor() });
+        if (!made.ok) return response.status(409).send({ ok: false, reason: made.reason });
         const chats = request.body.group_id ? (await chatListOf(chat)).map(r => r.file_id) : undefined;
         const opened = request.body.open === true
             ? (await openChatAnswer(request, response, { avatar_url: request.body.avatar_url, group_id: request.body.group_id, chat: await chat.store.chats.bookmarkChatId(chat.tree, made.bookmark), make_current: true, send_keys: request.body.send_keys })).answer
@@ -1060,21 +1060,38 @@ router.post('/bookmark', validateAvatarUrlMiddleware, async function (request, r
 });
 
 /**
- * A branch's suggested label (upstream's `createBranch()` naming): the chat's label base with any branch suffix taken
- * off, then ` - Branch #<n>`, the lowest n from 1 no bookmark of the tree is labelled.
+ * A suggested bookmark label as upstream names branches and bookmarks (`createBranch()`, `getBookmarkName()`): the
+ * chat's name (what the user sees it as: its current chat's label, else its conversation's) with any such suffix taken
+ * off, then ` - <token><n>`, the lowest n from 1 no chat of the scope is named (`nameTaken()`).
  * @param {import('../chat-request.js').ChatContext} chat
+ * @param {'Branch #' | 'Bookmark #'} [token]
  */
-async function branchLabel(chat) {
-    const base = (await labelBaseOf(chat)).replace(/ - Branch #\d+$/, '').replace(/^Branch #\d+ - /, '');
+async function suggestedLabel(chat, token = 'Branch #') {
+    const base = (await compatChatIdOf(chat)).replace(new RegExp(` - ${token}\\d+$`), '').replace(new RegExp(`^${token}\\d+ - `), '');
     for (let i = 1; ; i++) {
-        const name = `${base} - Branch #${i}`;
-        if ((await chat.store.chats.store.chatRead('bookmarksNamed', { tree: chat.tree, name })).length === 0) return name;
+        const name = `${base} - ${token}${i}`;
+        if (!await chat.store.chats.nameTaken(chat.tree, name)) return name;
     }
 }
 
 /**
+ * The name a bookmark of the chat would be suggested (`suggestedLabel()`, upstream's `Bookmark #<n>`), for the dialog
+ * that asks for one: the page shows the server's suggestion, never one of its own.
+ */
+router.post('/bookmark-name', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const chat = await chatOf(request);
+        if (!chat) return response.sendStatus(404);
+        return response.send({ name: await suggestedLabel(chat, 'Bookmark #') });
+    } catch (error) {
+        console.error('Error suggesting a bookmark name:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
  * The group a chat id names when the request names no group (upstream's group routes send the chat id they were
- * given): a bookmark's `b<id>`, an `s<UUID>.<tree>`, or a session's UUID; a bare label names none.
+ * given): the one group with a chat of that name (`treeOfChatId()`), or a session's UUID.
  * @param {import('express').Request} request
  * @param {string} name
  * @returns {Promise<string | null>} The group's id.
@@ -1098,8 +1115,9 @@ async function groupChatOf(request, name) {
 }
 
 /**
- * Relabels a chat: the bookmark or session the identifier names (`resolveChatName()`), the new label as given.
- * Answers `{ ok, sanitizedFileName, label }`: its compat chat id, unchanged by the relabel, and the label.
+ * Renames a chat: the bookmark or session's conversation the identifier names (`resolveChatName()`), the new name as
+ * given, refused when another chat of its scope has it; a session named by its UUID or label gets that label. Answers
+ * `{ ok, sanitizedFileName, label }`: its chat id after (the new name, or a session's UUID), and the name.
  */
 router.post('/rename', validateAvatarUrlMiddleware, async function (request, response) {
     try {
@@ -1111,14 +1129,16 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
         const chat = request.body.is_group ? await groupChatOf(request, oldName) : await chatOf(request, { avatar_url: request.body.avatar_url });
         if (!chat) return response.status(400).send({ error: true });
         const { chats } = chat.store;
-        const found = await chats.resolveChatName({ tree: chat.tree, name: oldName });
+        const found = await chats.resolveChatName({ tree: chat.tree, name: oldName, own: ownOf(chat) });
         if (found === null) return response.status(400).send({ error: true });
         const renamed = 'bookmark' in found
             ? await chats.changeBookmark({ tree: chat.tree, bookmark: String(found.bookmark), change: { name: newName } })
-            : await chats.nameSession({ session: found.session, name: newName, actor: chat.session.actor() });
-        if (!renamed.ok) return response.status(400).send({ error: true });
-        // Upstream code goes on with the name it is answered: a bookmark's chat id after the rename (its new label).
-        const id = 'bookmark' in found ? await chats.bookmarkChatId(chat.tree, found.bookmark) : 'derived' in found ? sessionCompatId(found.session, chat.tree) : found.session;
+            : 'derived' in found
+                ? await chats.nameConversation({ tree: chat.tree, name: newName, actor: { ...chat.session.actor(), session: found.session } })
+                : await chats.nameSession({ session: found.session, name: newName, actor: chat.session.actor() });
+        if (!renamed.ok) return response.status(400).send({ error: true, reason: renamed.reason });
+        // Upstream code goes on with the name it is answered: the chat's id after the rename (its new name).
+        const id = 'derived' in found || 'bookmark' in found ? newName : found.session;
         return response.send({ ok: true, sanitizedFileName: id, label: newName });
     } catch (error) {
         console.error('Error renaming chat file:', error);
@@ -1138,7 +1158,7 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
  */
 async function deleteChatNamed(request, response, chat, name) {
     const { chats } = chat.store;
-    const found = await chats.resolveChatName({ tree: chat.tree, name });
+    const found = await chats.resolveChatName({ tree: chat.tree, name, own: ownOf(chat) });
     if (found === null) return false;
     if ('bookmark' in found) {
         const deleted = await chats.changeBookmark({ tree: chat.tree, bookmark: String(found.bookmark), change: { delete: true } });
@@ -1181,24 +1201,21 @@ router.post('/new', validateAvatarUrlMiddleware, async function (request, respon
         /** @type {string[]} */
         const deleted = [];
         if (replace !== null) {
-            const found = await chats.resolveChatName({ tree: chat.tree, name: replace });
+            const found = await chats.resolveChatName({ tree: chat.tree, name: replace, own: ownOf(chat) });
             if (found !== null && 'bookmark' in found && (await chats.changeBookmark({ tree: chat.tree, bookmark: String(found.bookmark), change: { delete: true } })).ok) {
                 deleted.push(replace);
             }
         }
         if (request.body.group_id) {
-            await chats.newChat({ tree: chat.tree, actor, group: true });
-            await chats.setCurrentChat({ tree: chat.tree, bookmark: null, actor });
+            await chats.startChat({ tree: chat.tree, actor, group: true });
             chat.session.answer(response, { moved: true });
             const opened = (await openChatAnswer(request, response, { group_id: request.body.group_id, send_keys: request.body.send_keys })).answer;
             return response.send({ ok: true, chat_id: await compatChatIdOf(chat), chats: (await chatListOf(chat)).map(r => r.file_id), deleted, opened });
         }
         const opening = typeof request.body.chat === 'string' && request.body.chat !== '' ? request.body.chat : null;
-        if (opening === null) await chats.newChat({ tree: chat.tree, actor });
-        else await chats.goTo({ tree: chat.tree, node_id: opening, actor });
-        await chats.setCurrentChat({ tree: chat.tree, bookmark: null, actor });
+        await chats.startChat({ tree: chat.tree, actor, node_id: opening });
         chat.session.answer(response, { moved: true });
-        return response.send({ ok: true, deleted, chat: await compatChatIdOf(chat), label_base: await labelBaseOf(chat) });
+        return response.send({ ok: true, deleted, chat: await compatChatIdOf(chat) });
     } catch (error) {
         console.error('Error starting a new chat:', error);
         return response.status(500).send({ error: true });
@@ -1207,7 +1224,7 @@ router.post('/new', validateAvatarUrlMiddleware, async function (request, respon
 
 /**
  * A bookmark named `branch_name` at `node_id` (the chat's metadata is the state there, nothing is copied), opened as
- * upstream opens the fork: the session goes there and it is the current chat. Answers `chat` and `label_base` too.
+ * upstream opens the fork: the session goes there and it is the current chat. Answers `chat` too.
  */
 router.post('/fork', validateAvatarUrlMiddleware, async function (request, response) {
     try {
@@ -1217,12 +1234,13 @@ router.post('/fork', validateAvatarUrlMiddleware, async function (request, respo
         }
         const chat = await chatOf(request);
         if (!chat) return response.sendStatus(400);
-        const made = await chat.store.chats.createBookmark({ tree: chat.tree, node_id: String(node_id), name: String(branch_name), actor: chat.session.actor() });
+        // Upstream's page names a branch (`createBranch()`): a suggestion, the next free one when taken.
+        const made = await chat.store.chats.createBookmark({ tree: chat.tree, node_id: String(node_id), name: String(branch_name), suggested: true, actor: chat.session.actor() });
         if (made.ok) {
             const id = await chat.store.chats.bookmarkChatId(chat.tree, made.bookmark);
             await openChatNamed(chat, id);
             chat.session.answer(response, { moved: true });
-            return response.send({ ok: true, id, name: made.name, chat: id, label_base: await labelBaseOf(chat) });
+            return response.send({ ok: true, id, name: made.name, chat: id });
         }
         return response.status(400).send({ error: 'Fork failed — message node not found.' });
     } catch (error) {
@@ -1673,7 +1691,7 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
  * @param {import('../chat-request.js').ChatContext} chat
  * @param {string} chatText jsonl: a header line, then one message per line.
  * @param {string} name
- * @returns {Promise<string | null>} The bookmark's compat chat id (its label, or `b<id>`); null when it couldn't be stored.
+ * @returns {Promise<string | null>} The bookmark's chat id (its label); null when it couldn't be stored.
  */
 async function importChatText(chat, chatText, name) {
     const lines = chatText.split('\n').map(line => tryParse(line)).filter(x => x);
@@ -1941,9 +1959,8 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
         }
         const chat = await chatOf(request);
         if (!chat) return response.send(limit === undefined ? [] : { results: [], cursor: null, exact: true });
-        /** @param {Record<string, any>} r @param {Map<string, string>} ids */
-        const row = (r, ids) => {
-            const id = r.bookmark != null ? /** @type {string} */ (ids.get(String(r.bookmark))) : sessionCompatId(String(r.session), chat.tree);
+        /** @param {Record<string, any>} r @param {string} id */
+        const row = (r, id) => {
             return {
                 node_id: r.at,
                 file_name: id,
@@ -1955,8 +1972,8 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
             };
         };
         const rowsOf = async (/** @type {Record<string, any>[]} */ rows) => {
-            const ids = await chat.store.chats.bookmarkChatIds(chat.tree, rows.flatMap(r => (r.bookmark != null ? [r.bookmark] : [])));
-            return rows.map(r => row(r, ids));
+            const ids = await chat.store.chats.chatIdsOf(chat.tree, rows);
+            return rows.map((r, i) => row(r, ids[i]));
         };
         const search = typeof query === 'string' ? query : '';
         const session = chat.session.reader().session ?? undefined;
@@ -2116,7 +2133,7 @@ router.post('/recent', async function (request, response) {
             // A pin holds a chat id, or an old chat name (a label, resolved in its own tree while one bookmark has it).
             const found = await chat.store.chats.resolveChatName({ tree: chat.tree, name: chatName(pin.file_name) });
             if (!found) continue;
-            const id = 'bookmark' in found ? await chat.store.chats.bookmarkChatId(chat.tree, found.bookmark) : sessionCompatId(found.session, chat.tree);
+            const id = 'bookmark' in found ? await chat.store.chats.bookmarkChatId(chat.tree, found.bookmark) : await chat.store.chats.conversationName(found.session, found.session, chat.tree);
             const row = (await chatListOf(chat, { withMetadata })).find(r => r.file_id === id);
             if (row) pinned.push(info(row, owner, row.file_id));
         }

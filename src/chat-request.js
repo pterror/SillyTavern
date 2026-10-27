@@ -1,6 +1,5 @@
 import { requestStore } from './user-stores.js';
 import { requestSession } from './request-session.js';
-import { FIELD } from './library-codes.js';
 
 /**
  * @typedef {object} ChatContext The chat a request acts in.
@@ -33,8 +32,8 @@ export async function chatContext(request, { avatar, group }) {
 }
 
 /**
- * The request's session's compat chat id in its chat's tree (`getCurrentChatId()`): its current chat's `b<id>`, else
- * `s<UUID>.<tree>`.
+ * The request's session's compat chat id in its chat's tree (`getCurrentChatId()`): its current chat's label, else its
+ * conversation's name (`ChatEngine.compatChatId()`).
  * @param {ChatContext} chat
  */
 export function compatChatIdOf(chat) {
@@ -43,7 +42,7 @@ export function compatChatIdOf(chat) {
 
 /**
  * Whether a resolved chat name is the request's own conversation in the tree: its current chat's bookmark, or its own
- * `s<UUID>.<tree>`.
+ * conversation by its name.
  * @param {ChatContext} chat
  * @param {{ bookmark: bigint } | { session: string, derived?: true }} found
  */
@@ -55,17 +54,26 @@ export async function isOwnChat(chat, found) {
 }
 
 /**
+ * The asking session of a chat, as `resolveChatName()` takes it (`own`), so its conversation's name resolves before
+ * its first write; none for a read with no request.
+ * @param {ChatContext} chat
+ */
+export function ownOf(chat) {
+    return chat.session ? { session: chat.session.reader().session, identifier: chat.session.identifier } : undefined;
+}
+
+/**
  * Where a chat name upstream's routes take is in the chat's tree: the request's own conversation (its current chat's
- * `b<id>`, its own `s<UUID>.<tree>`) where its session is (it lands); another bookmark of that name its message;
- * another `s<UUID>.<tree>` that session's position there (where it lands, while it has none); a session with that name
- * or UUID its position in the tree; `undefined` when it names nothing there.
+ * label, its own conversation's name) where its session is (it lands); another bookmark of that name its message;
+ * another session's conversation of that name that session's position there (where it lands, while it has none); a
+ * session with that label or UUID its position in the tree; `undefined` when it names nothing there.
  * @param {ChatContext} chat
  * @param {string} name
  * @returns {Promise<string | null | undefined>} The message's outside id (null: the tree's root).
  */
 export async function chatNamePosition(chat, name) {
     const { chats } = chat.store;
-    const found = await chats.resolveChatName({ tree: chat.tree, name });
+    const found = await chats.resolveChatName({ tree: chat.tree, name, own: ownOf(chat) });
     if (found !== null && await isOwnChat(chat, found)) return chats.landingOf(chat.tree, chat.session.reader());
     if (found !== null && 'derived' in found) return chats.landingOf(chat.tree, { user: chat.session?.user ?? '', session: found.session });
     if (found !== null && 'bookmark' in found) {
@@ -136,7 +144,7 @@ export function answerSessionOnHeaders(response, session) {
 
 /**
  * Upstream's compat chat id of each tree for a request (`characters[].chat`, `group.chat_id`): the conversation the
- * request's session has there, its current chat's `b<id>`, else `s<UUID>.<tree>` (each tree's its own).
+ * request's session has there, its current chat's label, else its conversation's name (each tree's its own).
  * @param {import('./user-stores.js').UserStore} store
  * @param {any} request
  * @param {bigint[]} trees
@@ -150,31 +158,6 @@ export async function compatChatIds(store, request, trees) {
         out.set(tree, await store.chats.compatChatId(session.reader().session, session.identifier, tree));
     }
     return out;
-}
-
-/**
- * What a chat's names start from (the base of a suggested bookmark or branch label): the label of the session's
- * current chat, else the session's own label, else the character's or group's name; never an id.
- * @param {ChatContext} chat
- * @returns {Promise<string>}
- */
-export async function labelBaseOf(chat) {
-    const { chats } = chat.store;
-    const current = await chats.currentChat(chat.session.reader().session, chat.tree);
-    if (current !== null) {
-        const [b] = await chats.store.chatRead('bookmarks', { ids: [current] });
-        if (b?.name) return b.name;
-    }
-    const sid = await chats.sessionId(chat.session.reader().session ?? undefined);
-    if (sid !== null) {
-        const [s] = await chats.store.chatRead('sessions', { ids: [sid] });
-        if (s?.name) return s.name;
-    }
-    // A character's and a group's name are both field 1 (`FIELD.name`, `GROUP_FIELD.name`).
-    const [entity] = await chat.store.lib.entities([chat.tree], { fields: [FIELD.name], lists: [] });
-    const v = entity?.values.find(x => x.field === FIELD.name);
-    const name = v === undefined ? '' : v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json));
-    return typeof name === 'string' ? name : '';
 }
 
 /**
@@ -195,8 +178,7 @@ export async function moveToChatNamed(request, response, owner, chat) {
     const session = await requestSession(store.chats, request, tree);
     const context = { store, tree, treeSpeaker: null, session };
     if (chat === null || chat === '') {
-        await store.chats.newChat({ tree, actor: session.actor(), group: owner.group !== undefined });
-        await store.chats.setCurrentChat({ tree, bookmark: null, actor: session.actor() });
+        await store.chats.startChat({ tree, actor: session.actor(), group: owner.group !== undefined });
         session.answer(response, { moved: true });
         return context;
     }
@@ -208,18 +190,17 @@ export async function moveToChatNamed(request, response, owner, chat) {
 
 /**
  * Opens a chat by name as upstream switched chat files (the current chat changes; moving inside a conversation never
- * does): the tab's own conversation (its current chat's `b<id>`, its own `s<UUID>.<tree>`) stays where it is, its own
- * `s<UUID>.<tree>` leaving its current chat for none; another bookmark moves the session to its message and becomes
- * the current chat; another session's (`s<UUID>.<tree>`, or a session's UUID or label) moves the session to where
- * that one is in the tree, no current chat (a tab never takes over another's session). A name naming nothing changes
- * nothing.
+ * does): the tab's own conversation (its current chat's label, its own conversation's name) stays where it is;
+ * another bookmark moves the session to its message and becomes the current chat; another session's conversation (by
+ * its name, or a session's UUID or label) moves the session to where that one is in the tree, no current chat (a tab
+ * never takes over another's session). A name naming nothing changes nothing.
  * @param {ChatContext} chat
  * @param {string} name
  * @returns {Promise<boolean>} Whether it named a chat.
  */
 export async function openChatNamed(chat, name) {
     const { chats } = chat.store;
-    const found = await chats.resolveChatName({ tree: chat.tree, name });
+    const found = await chats.resolveChatName({ tree: chat.tree, name, own: ownOf(chat) });
     if (found === null) return false;
     const actor = chat.session.actor();
     const own = await isOwnChat(chat, found);
@@ -233,7 +214,7 @@ export async function openChatNamed(chat, name) {
 }
 
 /**
- * The compat chat ids of a tree's bookmarks (upstream's chats of a character or group): each bookmark's `b<id>`.
+ * The compat chat ids of a tree's bookmarks (upstream's chats of a character or group): each bookmark's label.
  * @param {import('../user-stores.js').UserStore} store
  * @param {bigint} tree
  * @returns {Promise<string[]>}

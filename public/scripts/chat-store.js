@@ -306,7 +306,7 @@ const _openingRowInFlight = new Map();
 // import of this function, is the same bidirectional pattern chat-store.js already has with
 // script.js - see .oxlint-cycle-baseline's own history for that precedent.
 /**
- * @param {string} chatId The current chat's compat id: its current chat's `b<id>`, else `s<session>.<tree>` ('' none).
+ * @param {string} chatId The current chat's id, its name: its current chat's label, else its conversation's ('' none).
  * @param {string|null} [integrity]
  * @param {{group_id: string}|{avatar_url: string}|null} [owner]
  */

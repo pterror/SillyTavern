@@ -18,7 +18,7 @@ setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 const { router: chatsRouter } = await import('./chats.js');
 const { router: charactersRouter } = await import('./characters.js');
 const { router: groupsRouter } = await import('./groups.js');
-const { newSessionKey } = await import('../chat-engine.js');
+const { newSessionKey, chatNameAt, sessionTime } = await import('../chat-engine.js');
 const { SESSION_HEADER } = await import('../request-session.js');
 const { convertedUser, writeLibraryCard, sessionPath, treeOf } = await import('../../tests/converted-user.fixture.js');
 
@@ -85,8 +85,11 @@ async function twoChats(avatar) {
     return tabs;
 }
 
-/** A tab's own conversation's compat chat id in a tree with no current chat: `s<UUID>.<tree>`. */
-const ownId = async (owner, tab) => `s${tab}.${await treeOf(user.store, owner)}`;
+/**
+ * A tab's own conversation's chat id in a tree with no current chat: its name, the character's (none for a group)
+ * and the session's time.
+ */
+const ownId = (/** @type {string | null} */ character, /** @type {string} */ tab) => chatNameAt({ group: character === null, name: character ?? '' }, /** @type {number} */ (sessionTime(tab)));
 
 /** The character's current chat as the tab sees it (the character's `chat`). */
 const activeOf = async (avatar, tab) => (await postJson('/api/characters/get', { avatar_url: avatar }, { [SESSION_HEADER]: tab })).data.chat ?? null;
@@ -108,9 +111,9 @@ test('deleting the current chat (the tab\'s session) lands the tab where the use
     await writeCharacter(avatar, 'Ida');
     const tabs = await twoChats(avatar);
     // No current chat: the tab's own conversation in the tree.
-    assert.equal(await activeOf(avatar, tabs.Old), await ownId({ avatar }, tabs.Old));
+    assert.equal(await activeOf(avatar, tabs.Old), ownId('Ida', tabs.Old));
 
-    const { status, data } = await postJson('/api/chats/delete', { avatar_url: avatar, chatfile: `${tabs.Old}.jsonl`, open: true }, { [SESSION_HEADER]: tabs.Old });
+    const { status, data } = await postJson('/api/chats/delete', { avatar_url: avatar, chatfile: `${ownId('Ida', tabs.Old)}.jsonl`, open: true }, { [SESSION_HEADER]: tabs.Old });
     assert.equal(status, 200);
     assert.deepEqual(data.opened.messages.map(m => m.mes), ['B.']);
     assert.deepEqual(await user.store.chats.store.chatRead('keyStates', { space: 1, keys: [tabs.Old] }), ['gone']);
@@ -123,7 +126,7 @@ test('deleting the bookmark the tab is at deletes only the bookmark: the tab sta
     const { status, data } = await postJson('/api/chats/delete', { avatar_url: avatar, chatfile: 'Old.jsonl' }, { [SESSION_HEADER]: tabs.Old });
     assert.equal(status, 200);
     assert.equal(data.activeChat, undefined);
-    assert.equal(await activeOf(avatar, tabs.Old), await ownId({ avatar }, tabs.Old));
+    assert.equal(await activeOf(avatar, tabs.Old), ownId('Jo', tabs.Old));
     assert.deepEqual((await sessionPath(user.store, { avatar }, tabs.Old)).map(m => m.mes), ['A.']);
     assert.ok(!(await chatNames({ avatar }, tabs.Old)).includes('Old'));
 });
@@ -134,7 +137,7 @@ test('deleting another chat leaves the current one', async () => {
     const tabs = await twoChats(avatar);
     const { data } = await postJson('/api/chats/delete', { avatar_url: avatar, chatfile: 'Old.jsonl' }, { [SESSION_HEADER]: tabs.Newer });
     assert.equal(data.activeChat, undefined);
-    assert.equal(await activeOf(avatar, tabs.Newer), await ownId({ avatar }, tabs.Newer));
+    assert.equal(await activeOf(avatar, tabs.Newer), ownId('Kai', tabs.Newer));
 });
 
 test('a new character chat moves the tab\'s session and deletes the one it replaces, in one request', async () => {
@@ -144,9 +147,11 @@ test('a new character chat moves the tab\'s session and deletes the one it repla
     const { status, data } = await postJson('/api/chats/new', { avatar_url: avatar, chat: '', replace: 'Newer' }, { [SESSION_HEADER]: tabs.Newer });
     assert.equal(status, 200);
     assert.deepEqual(data.deleted, ['Newer']);
-    // A new chat is the session at the first greeting, with no bookmark made: listed as the tab's session, first.
-    assert.equal(await activeOf(avatar, tabs.Newer), await ownId({ avatar }, tabs.Newer));
-    assert.equal(data.chat, await ownId({ avatar }, tabs.Newer));
+    // A new chat is the session at the first greeting, with no bookmark made, named anew as upstream names a new chat
+    // file: listed as the tab's session, first.
+    assert.match(data.chat, /^Lea - \d{4}-/);
+    assert.notEqual(data.chat, ownId('Lea', tabs.Newer));
+    assert.equal(await activeOf(avatar, tabs.Newer), data.chat);
     assert.deepEqual(await sessionPath(user.store, { avatar }, tabs.Newer), []);
     assert.deepEqual(await chatNames({ avatar }, tabs.Newer), [tabs.Newer, 'Old']);
 });
@@ -183,9 +188,9 @@ test('deleting the bookmark a group\'s tab is at leaves the tab there, listed as
     }
     const { status, data } = await postJson('/api/chats/group/delete', { id: 'b', group_id: groupId }, { [SESSION_HEADER]: tabs.b });
     assert.equal(status, 200);
-    // Newest first: the tab's own conversation (no current chat), then bookmark `a`, by its compat id.
-    assert.match(ids.a, /^b\d+$/);
-    const own = await ownId({ group: groupId }, tabs.b);
+    // Newest first: the tab's own conversation (no current chat), then bookmark `a`, by its name.
+    assert.equal(ids.a, 'a');
+    const own = ownId(null, tabs.b);
     assert.deepEqual({ chats: data.chats, chat_id: data.chat_id }, { chats: [own, ids.a], chat_id: own });
 });
 

@@ -9,6 +9,7 @@ import { after, test } from 'node:test';
 
 import { loadEngine } from '../engine/load.js';
 import { oldStoreOracle } from '../tests/util/old-store-oracle.js';
+import { fakeOwners } from './chat-test-people.js';
 
 const oracles = [await oldStoreOracle('chat-engine/message-tree', 'message-tree-db.js', () => directories, { files: false })];
 const tree = oracles[0].store;
@@ -35,12 +36,14 @@ const people = {
     speakers: async ids => new Map(ids.filter(id => id === cara.id).map(id => [id, cara])),
     byAvatar: async avatars => new Map(avatars.filter(a => a === cara.avatar).map(a => [a, cara])),
 };
+people.owners = fakeOwners(people);
 const actor = { user: 'tester', session: '0190a1b2-0000-7000-8000-0000000000aa' };
 const ivy = { id: 2n, name: 'Ivy', avatar: 'ivy.png' };
 const ivyPeople = {
     speakers: async ids => new Map(ids.filter(id => id === ivy.id).map(id => [id, ivy])),
     byAvatar: async avatars => new Map(avatars.filter(a => a === ivy.avatar).map(a => [a, ivy])),
 };
+ivyPeople.owners = fakeOwners(ivyPeople);
 
 const greeting = { name: 'Cara', is_user: false, is_system: false, send_date: '2025-10-10T10:00:00.000Z', mes: 'Hello!', extra: {} };
 const user1 = { name: 'You', is_user: true, is_system: false, send_date: '2025-10-10T10:01:00.000Z', mes: 'Hi Cara.', extra: { isSmallSys: false } };
@@ -81,19 +84,6 @@ function withBranchesOfLabels(messages) {
     });
 }
 
-/**
- * A loaded path with each bookmark's compat id (`b<id>` in `bookmark_link` and `branches`) replaced by its label, as
- * the old store named them.
- */
-async function withLinksAsLabels(chats, t, messages) {
-    const { rows } = await chats.bookmarks({ tree: t, limit: 100 });
-    const labels = new Map(rows.map(b => [`b${b.id}`, b.name]));
-    const label = id => labels.get(id) ?? id;
-    return messages.map(m => {
-        if (!m.extra || typeof m.extra !== 'object' || typeof m.extra.bookmark_link !== 'string') return m;
-        return { ...m, extra: { ...m.extra, bookmark_link: label(m.extra.bookmark_link), branches: m.extra.branches.map(label) } };
-    });
-}
 
 for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm: loadEngine({ platform: null }).binding })) {
     testAgainstOld(`${kind}: a conversation built both ways loads the same`, async () => {
@@ -143,7 +133,7 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
             const o = await tree.loadAtNode(directories, owner, og);
             const { at } = await chats.pointer(actor.session);
             const n = await chats.load({ tree: t, at });
-            assert.deepEqual(normalized(await withLinksAsLabels(chats, t, n.messages), newNames), normalized(withBranchesOfLabels(o.messages), oldNames), label);
+            assert.deepEqual(normalized(n.messages, newNames), normalized(withBranchesOfLabels(o.messages), oldNames), label);
         };
         await compare('after sends, a retry, an alternative and a choice');
 
@@ -182,13 +172,13 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await chats.createBookmark({ tree: t, node_id: new1.node_ids[0], name: 'Saved here', actor });
         await compare('after a bookmark on the path');
 
-        // A bookmark at the first reply: its name is the message's bookmark_link, and in `branches` there.
+        // A bookmark at the first reply: its chat id, its label, is the message's bookmark_link, and in `branches` there.
         await tree.labelNode(directories, old1.node_ids[1], 'Checkpoint', { ownerId: owner });
         const checkpoint = await chats.createBookmark({ tree: t, node_id: new1.node_ids[1], name: 'Checkpoint', mode: MODE.pinned, actor });
         const atFirst = await chats.load({ tree: t, at: new1.node_ids[1] });
         const reply = atFirst.messages.find(m => m.node_id === new1.node_ids[1]);
-        assert.equal(reply.extra.bookmark_link, `b${checkpoint.bookmark}`);
-        assert.deepEqual(reply.extra.branches, [`b${checkpoint.bookmark}`]);
+        assert.equal(reply.extra.bookmark_link, checkpoint.name);
+        assert.deepEqual(reply.extra.branches, [checkpoint.name]);
         // Opened at the bookmark, the path is the same; the old store hid the opened chat's own label there, and a
         // bookmark isn't a chat, so the new one shows it (checked above).
         const oldAtFirst = await tree.loadAtNode(directories, owner, old1.node_ids[1]);
@@ -199,7 +189,7 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
             }
             return m;
         });
-        assert.deepEqual(withoutLast(normalized(await withLinksAsLabels(chats, t, atFirst.messages), newNames)), withoutLast(normalized(withBranchesOfLabels(oldAtFirst.messages), oldNames)));
+        assert.deepEqual(withoutLast(normalized(atFirst.messages, newNames)), withoutLast(normalized(withBranchesOfLabels(oldAtFirst.messages), oldNames)));
 
         // Metadata keys set and removed at a position, variables each their own.
         await chats.mergeMetadata({ tree: t, at: new1.node_ids[1], set: { note_prompt: 'A', variables: { hp: 3 } }, unset: [], actor });
@@ -450,6 +440,7 @@ const groupPeople = {
     speakers: async ids => new Map(ids.flatMap(id => [cara, ivy, cara2].filter(c => c.id === id).map(c => [id, c]))),
     byAvatar: async avatars => new Map(avatars.flatMap(a => [cara, ivy, cara2].filter(c => c.avatar === a).map(c => [a, c]))),
 };
+groupPeople.owners = fakeOwners(groupPeople);
 
 for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm: loadEngine({ platform: null }).binding })) {
     testAgainstOld(`${kind}: a group's send keys, itemizations and a member's messages answer as the old store's`, async () => {

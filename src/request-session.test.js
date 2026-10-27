@@ -8,6 +8,7 @@ import { after, test } from 'node:test';
 import { loadEngine } from '../engine/load.js';
 import { ChatEngine, defaultSessionKey } from './chat-engine.js';
 import { requestSession, SESSION_GONE_HEADER, SESSION_MOVED_HEADER } from './request-session.js';
+import { fakeOwners } from './chat-test-people.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'request-session-test-'));
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -22,6 +23,7 @@ const response = () => {
     const headers = {};
     return { headers, setHeader: (/** @type {string} */ n, /** @type {string} */ v) => { headers[n] = v; } };
 };
+people.owners = fakeOwners(people);
 
 for (const kind of ['native', 'wasm']) {
     test(`a request's session and its answer (${kind})`, async () => {

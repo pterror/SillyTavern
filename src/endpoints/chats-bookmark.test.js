@@ -61,8 +61,8 @@ async function writeCharacter(avatar, name) {
 }
 
 /**
- * A tree's bookmark labelled `name` (or with that compat id, `b<id>`), with the message it is at and the state there;
- * undefined when it has none.
+ * A tree's bookmark labelled `name` (its chat id), with the message it is at and the state there; undefined when it has
+ * none.
  * @param {{ avatar?: string, group?: string }} owner
  * @param {string} name
  */
@@ -72,7 +72,7 @@ async function bookmarkNamed(owner, name) {
     let after;
     for (;;) {
         const page = await user.store.chats.bookmarks({ tree, after, limit: 500 });
-        const found = page.rows.find(b => b.name === name || `b${b.id}` === name);
+        const found = page.rows.find(b => b.name === name);
         if (found) return { ...found, metadata: (await user.store.chats.load({ tree, at: found.at }))?.metadata ?? {} };
         if (!page.more) return undefined;
         after = page.rows[page.rows.length - 1].id;
@@ -122,13 +122,12 @@ test('a branch gets a free name and is opened in the same answer; a fork at an a
         avatar_url: avatar, node_id: messages[1].node_id, label: 'Story', unique: true, from: 'Story', open: true,
     }, { [SESSION_HEADER]: messages.tab });
     assert.equal(first.status, 200);
-    // Always a new bookmark, labelled as asked (labels may repeat).
-    assert.equal(first.data.label, 'Story');
-    assert.match(first.data.id, /^b\d+$/);
+    // Always a new bookmark: a name a chat has is the next free one; its id is its name.
+    assert.equal(first.data.label, 'Story (2)');
+    assert.equal(first.data.id, 'Story (2)');
     assert.ok(await bookmarkAt({ avatar }, messages[1].node_id, first.data.id));
     // The tab's session moves there, and the branch is its current chat.
     assert.equal(first.data.opened.chat, first.data.id);
-    assert.equal(first.data.opened.label_base, 'Story');
     // Root down to the bookmarked message, nothing below it.
     assert.deepEqual(first.data.opened.messages.map(m => m.mes), ['One.', 'Two.']);
     // The state there: the save set the note at its last message, below this one.
@@ -137,31 +136,32 @@ test('a branch gets a free name and is opened in the same answer; a fork at an a
     const forked = await postJson('/api/chats/bookmark', {
         avatar_url: avatar, node_id: messages[2].node_id, label: 'Story', unique: true, from: 'Story', also_node_id: messages[0].node_id,
     }, { [SESSION_HEADER]: messages.tab });
-    assert.equal(forked.data.label, 'Story');
-    assert.notEqual(forked.data.id, first.data.id);
+    assert.equal(forked.data.label, 'Story (3)');
     // `also_node_id` is accepted and ignored: one bookmark, at `node_id`.
-    assert.equal((await bookmarkAt({ avatar }, messages[2].node_id, forked.data.id))?.name, 'Story');
+    assert.equal((await bookmarkAt({ avatar }, messages[2].node_id, forked.data.id))?.name, 'Story (3)');
 });
 
-test('a branch with no label is named from what the user sees, never an id: the current chat\'s label, the session\'s, else the character\'s name', async () => {
+test('a branch with no label is named from what the user sees, never an id: a branch of the chat\'s name', async () => {
     const avatar = 'eli.png';
     await writeCharacter(avatar, 'Eli');
     const messages = await chatWith(avatar, 'Saga');
     const headers = { [SESSION_HEADER]: messages.tab };
-    // No current chat, an unnamed session: the character's name.
+    const conversation = (await postJson('/api/chats/open', { avatar_url: avatar }, headers)).data.chat;
+    assert.match(conversation, /^Eli - \d{4}-\d{2}-\d{2}@\d{2}h\d{2}m\d{2}s\d{3}ms$/);
+    // No current chat: a branch of the tab's own conversation's name.
     const first = await postJson('/api/chats/bookmark', { avatar_url: avatar, node_id: messages[1].node_id, open: true }, headers);
     assert.equal(first.status, 200);
-    assert.equal(first.data.label, 'Eli - Branch #1');
-    assert.equal(first.data.opened.label_base, 'Eli - Branch #1');
-    // The branch is now the current chat: its label, its suffix replaced by the next free one.
+    assert.equal(first.data.label, `${conversation} - Branch #1`);
+    assert.equal(first.data.opened.chat, first.data.label);
+    // The branch is now the current chat: its name, its suffix replaced by the next free one.
     const second = await postJson('/api/chats/bookmark', { avatar_url: avatar, node_id: messages[2].node_id }, headers);
-    assert.equal(second.data.label, 'Eli - Branch #2');
-    // A new chat (none current) in a named session: the session's label.
-    await postJson('/api/chats/new', { avatar_url: avatar, chat: '' }, headers);
-    await user.store.chats.nameSession({ session: messages.tab, name: 'My tab', actor: { user: 'u', session: messages.tab } });
+    assert.equal(second.data.label, `${conversation} - Branch #2`);
+    // A new chat is named anew, as upstream names a new chat file; a branch of it starts from that name.
+    const fresh = (await postJson('/api/chats/new', { avatar_url: avatar, chat: '' }, headers)).data.chat;
+    assert.match(fresh, /^Eli - \d{4}-/);
+    assert.notEqual(fresh, conversation);
     const third = await postJson('/api/chats/bookmark', { avatar_url: avatar, node_id: messages[0].node_id }, headers);
-    assert.equal(third.data.label, 'My tab - Branch #1');
-    for (const label of [first.data.label, second.data.label, third.data.label]) assert.doesNotMatch(label, /[0-9a-f]{8}-[0-9a-f]{4}-/);
+    assert.equal(third.data.label, `${fresh} - Branch #1`);
 });
 
 test('a message that already carries metadata keeps its own', async () => {
@@ -187,32 +187,32 @@ test('a group\'s bookmark is among its chats', async () => {
     const node = (await sessionPath(user.store, { group: groupId }, tab))[0].node_id;
     const { status, data } = await postJson('/api/chats/bookmark', { group_id: groupId, node_id: node, label: 'Crew chat', unique: true, from: 'Crew chat' }, { [SESSION_HEADER]: tab });
     assert.equal(status, 200);
-    assert.equal(data.label, 'Crew chat');
-    assert.match(data.id, /^b\d+$/);
+    assert.equal(data.label, 'Crew chat (2)');
+    assert.equal(data.id, 'Crew chat (2)');
     assert.ok(data.chats.includes(data.id));
 });
 
-test('a chat is named by its compat id; a label only while one chat has it; a message id names nothing', async () => {
+test('a chat is named by its name, once in its tree; a message id or an old `b<id>` names nothing', async () => {
     const avatar = 'hal.png';
     await writeCharacter(avatar, 'Hal');
     const messages = await chatWith(avatar, 'Main');
     const get = name => postJson('/api/chats/get', { avatar_url: avatar, file_name: `${name}.jsonl` });
     const one = (await postJson('/api/chats/bookmark', { avatar_url: avatar, node_id: messages[1].node_id, label: 'Twice' })).data;
-    const two = (await postJson('/api/chats/bookmark', { avatar_url: avatar, node_id: messages[2].node_id, label: 'Twice' })).data;
-    assert.deepEqual([one.label, two.label], ['Twice', 'Twice']);
-    assert.notEqual(one.id, two.id);
-    assert.deepEqual((await get(one.id)).data.slice(1).map(m => m.mes), ['One.', 'Two.']);
-    assert.deepEqual((await get(two.id)).data.slice(1).map(m => m.mes), ['One.', 'Two.', 'Three.']);
-    // A label two chats have is the route's miss; so is a message's id, or a bookmark's number without its `b`.
-    assert.equal((await get('Twice')).status, 404);
-    assert.equal((await get(messages[1].node_id)).status, 404);
-    assert.equal((await get(one.id.slice(1))).status, 404);
-
-    // A rename relabels the chat and keeps its id; the label then names it again while it is the only one.
-    const renamed = await postJson('/api/chats/rename', { avatar_url: avatar, original_file: `${two.id}.jsonl`, renamed_file: 'Once.jsonl' });
-    assert.deepEqual(renamed.data, { ok: true, sanitizedFileName: two.id, label: 'Once' });
-    assert.deepEqual((await get('Once')).data.slice(1).map(m => m.mes), ['One.', 'Two.', 'Three.']);
+    // A name the user gives that a chat has is refused.
+    const two = await postJson('/api/chats/bookmark', { avatar_url: avatar, node_id: messages[2].node_id, label: 'Twice' });
+    assert.deepEqual([two.status, two.data], [409, { ok: false, reason: 'name taken' }]);
+    assert.equal(one.id, 'Twice');
     assert.deepEqual((await get('Twice')).data.slice(1).map(m => m.mes), ['One.', 'Two.']);
+    assert.equal((await get(messages[1].node_id)).status, 404);
+    const [b] = (await user.store.chats.bookmarks({ tree: await treeOf(user.store, { avatar }), limit: 500 })).rows.filter(r => r.name === 'Twice');
+    assert.equal((await get(`b${b.id}`)).status, 404);
+
+    // A rename gives the chat its new name, its id after; one taken is refused.
+    assert.equal((await postJson('/api/chats/rename', { avatar_url: avatar, original_file: 'Twice.jsonl', renamed_file: 'Main.jsonl' })).status, 400);
+    const renamed = await postJson('/api/chats/rename', { avatar_url: avatar, original_file: 'Twice.jsonl', renamed_file: 'Once.jsonl' });
+    assert.deepEqual(renamed.data, { ok: true, sanitizedFileName: 'Once', label: 'Once' });
+    assert.deepEqual((await get('Once')).data.slice(1).map(m => m.mes), ['One.', 'Two.']);
+    assert.equal((await get('Twice')).status, 404);
 });
 
 test('a greeting shown without a row is stored and bookmarked in one request', async () => {

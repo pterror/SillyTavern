@@ -9,6 +9,7 @@ import { after, test } from 'node:test';
 import { loadEngine } from '../engine/load.js';
 import { ChatEngine } from './chat-engine.js';
 import { claimTabSession, heldByOther } from './session-presence.js';
+import { fakeOwners } from './chat-test-people.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'session-presence-test-'));
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -18,6 +19,7 @@ const people = {
     speakers: async (/** @type {bigint[]} */ ids) => new Map(ids.filter(id => id === cara.id).map(id => [id, cara])),
     byAvatar: async (/** @type {string[]} */ avatars) => new Map(avatars.filter(a => a === cara.avatar).map(a => [a, cara])),
 };
+people.owners = fakeOwners(people);
 const t = 1n;
 const user = 'u';
 const S1 = '0190a1b2-0000-7000-8000-000000000001';

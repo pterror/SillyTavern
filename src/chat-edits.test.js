@@ -7,8 +7,9 @@ import path from 'node:path';
 import { after, test } from 'node:test';
 
 import { loadEngine } from '../engine/load.js';
+import { fakeOwners } from './chat-test-people.js';
 
-const { ChatEngine, MODE, bookmarkCompatId } = await import('./chat-engine.js');
+const { ChatEngine, MODE } = await import('./chat-engine.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-edits-test-'));
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -18,6 +19,7 @@ const people = {
     speakers: async (/** @type {bigint[]} */ ids) => new Map(ids.filter(id => id === cara.id).map(id => [id, cara])),
     byAvatar: async (/** @type {string[]} */ avatars) => new Map(avatars.filter(a => a === cara.avatar).map(a => [a, cara])),
 };
+people.owners = fakeOwners(people);
 const a = { user: 'tester', session: '0190a1b2-0000-7000-8000-0000000000b1' };
 const b = { user: 'tester', session: '0190a1b2-0000-7000-8000-0000000000b2' };
 const msg = (/** @type {string} */ mes) => ({ name: mes.startsWith('u') ? 'You' : 'Cara', is_user: mes.startsWith('u'), is_system: false, mes, extra: {} });
@@ -252,33 +254,37 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await store.close();
     });
 
-    test(`${kind}: bookmark labels may repeat; a route's chat id names a bookmark by b<id>, a session by its UUID, a label only when one has it`, async () => {
+    test(`${kind}: a chat's name is its id, once in its tree; a session goes by its UUID or its label`, async () => {
         const { store, chats, t, id, send } = await fresh(engine);
         assert.equal((await chats.openingAlternatives({ tree: t, actor: a })).has_saved_chats, false);
         await send(null, ['g']);
         await send('g', ['u1']);
         assert.equal((await chats.openingAlternatives({ tree: t, actor: a })).has_saved_chats, true);
         const first = /** @type {any} */ (await chats.createBookmark({ tree: t, node_id: id.g, name: 'Morning', actor: a }));
-        const second = /** @type {any} */ (await chats.createBookmark({ tree: t, node_id: id.u1, name: 'Morning', actor: a }));
-        assert.equal(second.name, 'Morning');
-        assert.deepEqual(await chats.resolveChatName({ tree: t, name: 'Morning' }), null);
-        assert.deepEqual(await chats.resolveChatName({ tree: t, name: bookmarkCompatId(first.bookmark) }), { bookmark: first.bookmark });
-        assert.deepEqual(await chats.resolveChatName({ tree: t, name: bookmarkCompatId(second.bookmark) }), { bookmark: second.bookmark });
-        // A bare decimal is a label: neither a bookmark's number nor a message's id names anything.
+        // A name the user gives is refused when another chat of the tree has it; a suggested one is the next free one.
+        assert.deepEqual(await chats.createBookmark({ tree: t, node_id: id.u1, name: 'Morning', actor: a }), { ok: false, reason: 'name taken' });
+        const second = /** @type {any} */ (await chats.createBookmark({ tree: t, node_id: id.u1, name: 'Morning', suggested: true, actor: a }));
+        assert.equal(second.name, 'Morning (2)');
+        assert.deepEqual(await chats.resolveChatName({ tree: t, name: 'Morning' }), { bookmark: first.bookmark });
+        assert.deepEqual(await chats.resolveChatName({ tree: t, name: 'Morning (2)' }), { bookmark: second.bookmark });
+        // No other form names a chat: not `b<id>`, not a bare decimal, not a message's id.
+        assert.equal(await chats.resolveChatName({ tree: t, name: `b${first.bookmark}` }), null);
         assert.equal(await chats.resolveChatName({ tree: t, name: String(first.bookmark) }), null);
         assert.equal(await chats.resolveChatName({ tree: t, name: id.u1 }), null);
+        assert.deepEqual(await chats.changeBookmark({ tree: t, bookmark: String(second.bookmark), change: { name: 'Morning' } }), { ok: false, reason: 'name taken' });
+        assert.deepEqual(await chats.changeBookmark({ tree: t, bookmark: String(second.bookmark), change: { name: null } }), { ok: false, reason: 'a chat needs a name' });
         assert.deepEqual(await chats.changeBookmark({ tree: t, bookmark: String(second.bookmark), change: { name: 'Noon' } }), { ok: true, name: 'Noon' });
-        assert.deepEqual(await chats.resolveChatName({ tree: t, name: 'Morning' }), { bookmark: first.bookmark });
         assert.deepEqual(await chats.resolveChatName({ tree: t, name: 'Noon' }), { bookmark: second.bookmark });
+        assert.equal(await chats.resolveChatName({ tree: t, name: 'Morning (2)' }), null);
         // A session: by its UUID, or by a label one session has.
         await chats.goTo({ tree: t, node_id: id.u1, actor: b });
         await chats.nameSession({ session: b.session, name: 'Evening', actor: b });
         assert.deepEqual(await chats.resolveChatName({ tree: t, name: b.session }), { session: b.session });
         assert.deepEqual(await chats.resolveChatName({ tree: t, name: 'Evening' }), { session: b.session });
         assert.equal(await chats.resolveChatName({ tree: t, name: 'Dusk' }), null);
-        assert.equal(await chats.treeOfChatId(bookmarkCompatId(first.bookmark)), t);
-        assert.equal(await chats.treeOfChatId(String(first.bookmark)), null);
-        // A label another bookmark holds is stored as given.
+        // A name alone finds a group's chat only (a character's tree is named in every character route).
+        assert.equal(await chats.treeOfChatId('Morning'), null);
+        // A label another bookmark holds (as a store made before names were checked may have it) names neither.
         await store.commit([{ kind: 'positionName', id: first.bookmark, name: 'Noon' }]);
         assert.equal(await chats.resolveChatName({ tree: t, name: 'Noon' }), null);
         await store.close();

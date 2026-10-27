@@ -44,12 +44,19 @@ conversations both), which is how a name alone finds its tree.
 
 ## The one-off
 
-`src/migrations/name-every-chat.js`, run once with the server stopped (`--dry-run`, then `--apply`, then
-`--verify`):
-- gives every unlabelled bookmark a label: its base (the character's name, a group's none) and the time it was made,
-  as a conversation's;
-- makes repeated labels in a scope unique: the later ones (by bookmark id) get " (2)", " (3)" … appended;
-- writes each labelled bookmark's label again, so the name index (new) holds it;
-- moves old-form chat ids (`s<UUID>.<tree>`, `b<id>`) found in the settings store's extension settings to the names
-  they now have;
+`src/migrations/name-every-chat.js`, run once with the server stopped (`--dry-run`, then `--apply`, which reads
+everything back and checks it):
+- gives every unlabelled bookmark a label: as a new chat is named, from the bookmark's time;
+- makes repeated labels in a scope unique: the later ones (by bookmark id) get the next free name (`freeName()`: a name
+  ending in a chat's time a millisecond later, else " (2)", " (3)" …);
+- writes each bookmark's label again, so the name index (new) holds it;
+- moves old-form chat ids (`s<UUID>.<tree>`, `b<id>`) found in the settings store's extension settings, as keys or
+  values, to the names they now have, storing a session conversation's name so it stays;
 and lists every change.
+
+## Names a chat is given
+
+- A label the user types (saving a bookmark, renaming a chat) is refused when another chat of its scope has it.
+- A suggested one (a branch's `<name> - Branch #n`, a bookmark's `<name> - Bookmark #n` the dialog shows, an imported
+  chat's file name, a save with `unique`) becomes the next free one.
+- A new chat (the new-chat routes) is named anew, `chatNameAt()` now, as upstream names a new chat file.

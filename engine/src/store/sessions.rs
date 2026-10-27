@@ -1287,8 +1287,9 @@ pub fn current_chat_set(
     }
     match b {
         Some(b) => {
-            // The session's conversation there became the bookmark's.
+            // The session's conversation there became the bookmark's, its name too.
             convo_gone(view, out, Convo::Session(s, tree))?;
+            convo_name_gone(view, out, s, tree)?;
             out.put(k, varints(&[b, at.pos, at.len]));
         }
         None => {
@@ -1353,6 +1354,19 @@ pub fn convo_name_set(
     }
     out.put(chat::chat_named_key(name, tree, 1, s), Vec::new());
     out.put(k, loc_bytes(at));
+    Ok(())
+}
+
+/// The name of the session's conversation in the tree goes.
+fn convo_name_gone(view: &View, out: &mut Out, s: u64, tree: u64) -> Result<(), StoreError> {
+    let k = convo_name_key(s, tree);
+    if let Some(v) = view.get(&k)? {
+        let l = parse_loc(&v)?;
+        let (rec, _) = view.record(l.pos)?;
+        out.del(chat::chat_named_key(bytes(&rec, 3), tree, 1, s));
+        dead(out, l);
+        out.del(k);
+    }
     Ok(())
 }
 

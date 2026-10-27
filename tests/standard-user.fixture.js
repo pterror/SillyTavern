@@ -97,8 +97,8 @@ export async function buildStandardUser({ directories, store, handle = 'u' }) {
         return { assigned_node_ids: imported.node_ids.map((/** @type {string} */ node_id, /** @type {number} */ index) => ({ index, node_id })) };
     };
 
-    // Alice: a chat with swipes, metadata with variables and a lorebook, a fork, two bookmarks sharing a label, an
-    // itemization, a send key and a chat with no name.
+    // Alice: a chat with swipes, metadata with variables and a lorebook, a fork, a bookmark whose suggested label was
+    // taken (named the next free one), an itemization, a send key and a chat with no name.
     const alice = await treeOf({ avatar: 'Alice.png' });
     const saved = await storeConversation(alice, [
         header({}),
@@ -119,7 +119,7 @@ export async function buildStandardUser({ directories, store, handle = 'u' }) {
     ok(await chats.select({ ...alice, node_id: ids[3] }));
     ok(await chats.goTo({ ...alice, node_id: sent[1] }));
     for (const name of ['Alice - 2024-05-01@10h00m00s', 'Alice - 2024-05-01@10h00m00s - Branch #1', 'Odd name', 'Odd name']) {
-        ok(await chats.createBookmark({ ...alice, node_id: sent[1], name }));
+        ok(await chats.createBookmark({ ...alice, node_id: sent[1], name, suggested: true }));
     }
 
     // Bob: a checkpoint, and his card greeting chosen.

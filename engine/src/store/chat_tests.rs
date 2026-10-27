@@ -1913,6 +1913,19 @@ fn a_conversation_name_is_per_session_and_tree_and_names_find_their_chats_in_any
     drop(s);
     let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     assert_eq!(read(&s, 1, 1).as_deref(), Some("walk"));
+    // The conversation becoming a bookmark (its current chat) takes its name out; a name given again is back.
+    s.commit_wait(vec![
+        rec(
+            "positionCreate",
+            vec![Value::Id(12), Value::UInt(PINNED), Value::Id(1), Value::Id(1), Value::Id(0)],
+        ),
+        rec("currentChat", vec![Value::Id(1), Value::Id(1), Value::Id(1), Value::Id(12)]),
+    ])
+    .unwrap();
+    assert_eq!(read(&s, 1, 1), None);
+    assert!(find(&s, "walk").is_empty());
+    s.commit_wait(vec![named(1, 1, "walk")]).unwrap();
+    assert_eq!(find(&s, "walk"), vec![(1, 1, 1)]);
     // A session that goes takes its names.
     s.commit_wait(vec![rec("positionDelete", vec![Value::Id(1)])]).unwrap();
     assert_eq!(read(&s, 1, 1), None);

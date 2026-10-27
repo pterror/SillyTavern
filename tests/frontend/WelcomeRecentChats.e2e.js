@@ -69,7 +69,8 @@ test('recent chats are the conversations by last activity, one row each', async 
     // Each character's conversation of the tab's session, the last act first.
     let rows = (await recentChats(page)).filter((/** @type {any} */ r) => [first, second].includes(r.avatar));
     expect(rows.map((/** @type {any} */ r) => r.avatar)).toEqual([second, first]);
-    expect(rows.every((/** @type {any} */ r) => /^s[^.]+\.\d+\.jsonl$/.test(r.file_name) && r.label === null)).toBe(true);
+    // Each named as upstream names a new chat: the character's name and the session's time.
+    expect(rows.every((/** @type {any} */ r) => /^Recent(One|Two)-\S+ - \d{4}-\d{2}-\d{2}@\d{2}h\d{2}m\d{2}s\d{3}ms\.jsonl$/.test(r.file_name) && r.label === null)).toBe(true);
     expect(rows.map((/** @type {any} */ r) => r.mes)).toEqual(['two', 'one']);
 
     // The page shows them in that order, titled by the character's name (a label would be shown after it).

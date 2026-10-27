@@ -102,7 +102,7 @@ function charMsg(text, extra = {}) {
     return { name: 'Bot', is_user: false, is_system: false, mes: text, send_date: 'x', extra };
 }
 
-test('POST /api/chats/save with unique:true makes a bookmark labelled as asked, answered by its compat id, and mints integrity', async () => {
+test('POST /api/chats/save with unique:true makes a bookmark labelled as asked, answered by its name (its chat id), and mints integrity', async () => {
     const app = buildTestApp();
     const tab = newSessionKey();
     const { status, data } = await postJson(app, '/api/chats/save', {
@@ -115,7 +115,7 @@ test('POST /api/chats/save with unique:true makes a bookmark labelled as asked, 
 
     assert.equal(status, 200);
     assert.equal(data.ok, true);
-    assert.match(data.file_name, /^b\d+$/);
+    assert.equal(data.file_name, 'Fresh Chat');
     assert.equal(typeof data.integrity, 'string');
     assert.ok(data.integrity.length > 0);
     assert.ok((await bookmarkNames({ avatar: 'alice.png' })).includes('Fresh Chat'));
@@ -137,7 +137,7 @@ test('POST /api/chats/save with unique:true makes a new bookmark when a chat has
         avatar_url: 'bob.png',
         chat: [chatHeader({ integrity: 'ignored' }), userMsg('untouched')],
     }, tab1);
-    assert.match(first.data.file_name, /^b\d+$/);
+    assert.equal(first.data.file_name, 'Main Chat');
 
     const { status, data } = await postJson(app, '/api/chats/save', {
         ch_name: 'Bob',
@@ -149,20 +149,20 @@ test('POST /api/chats/save with unique:true makes a new bookmark when a chat has
 
     assert.equal(status, 200);
     assert.equal(data.ok, true);
-    assert.match(data.file_name, /^b\d+$/);
-    assert.notEqual(data.file_name, first.data.file_name);
+    // A name a chat has is the next free one: a chat's name is once in its tree.
+    assert.equal(data.file_name, 'Main Chat (2)');
 
     const original = await chatNamed({ avatar: 'bob.png' }, first.data.file_name, tab1);
     assert.equal(original.messages.length, 1, 'the original branch must be untouched by the collision save');
-    // Two chats share the label now, so it names neither.
-    assert.equal(await chatNamed({ avatar: 'bob.png' }, 'Main Chat', tab1), null);
+    // The name still names the first.
+    assert.equal((await chatNamed({ avatar: 'bob.png' }, 'Main Chat', tab1)).messages.length, 1);
 
     const branch = await chatNamed({ avatar: 'bob.png' }, data.file_name, tab2);
     assert.ok(branch);
     assert.equal(branch.metadata.integrity, data.integrity);
     assert.equal(branch.messages.length, 2);
 
-    // Again: a third bookmark, labelled the same.
+    // Again: a third bookmark, the next free name.
     const second = await postJson(app, '/api/chats/save', {
         ch_name: 'Bob',
         file_name: 'Main Chat',
@@ -171,7 +171,8 @@ test('POST /api/chats/save with unique:true makes a new bookmark when a chat has
         unique: true,
     }, newSessionKey());
     assert.ok(![first.data.file_name, data.file_name].includes(second.data.file_name));
-    assert.deepEqual(await bookmarkNames({ avatar: 'bob.png' }), ['Main Chat', 'Main Chat', 'Main Chat']);
+    assert.equal(second.data.file_name, 'Main Chat (3)');
+    assert.deepEqual(await bookmarkNames({ avatar: 'bob.png' }), ['Main Chat', 'Main Chat (2)', 'Main Chat (3)']);
 });
 
 /**
@@ -216,8 +217,7 @@ test('POST /api/chats/group/save with unique:true makes a new bookmark of the gr
 
     assert.equal(status, 200);
     assert.equal(data.ok, true);
-    assert.match(data.chat_id, /^b\d+$/);
-    assert.notEqual(data.chat_id, first.data.chat_id);
+    assert.equal(data.chat_id, 'Team Chat (2)');
     const branch = await chatNamed({ group: 'group-1' }, data.chat_id, tab2);
     assert.ok(branch);
     const original = await chatNamed({ group: 'group-1' }, first.data.chat_id, tab1);
@@ -248,10 +248,13 @@ test('POST /api/chats/group/save with a fresh (non-unique) id also registers it 
     }, tab);
 
     assert.equal(status, 200);
-    assert.match(data.chat_id, /^b\d+$/);
+    assert.equal(data.chat_id, 'Checkpoint #1');
     assert.deepEqual(await bookmarkNames({ group: 'group-3' }), ['Checkpoint #1']);
     const groupOnDisk = await groupOf(app, 'group-3', tab);
-    assert.deepEqual(groupOnDisk.chats, [`s${tab}.${await treeOf(user.store, { group: 'group-3' })}`, data.chat_id]);
+    // The tab's own conversation (named as upstream names a group chat, its time), then the bookmark.
+    assert.equal(groupOnDisk.chats.length, 2);
+    assert.match(groupOnDisk.chats[0], /^\d{4}-\d{2}-\d{2}@\d{2}h\d{2}m\d{2}s\d{3}ms$/);
+    assert.equal(groupOnDisk.chats[1], data.chat_id);
 });
 
 test('POST /api/chats/group/save with an already-registered id does not rewrite the group descriptor', async () => {
@@ -281,7 +284,7 @@ test('a whole save to a bookmark\'s name edits what it names by id and its metad
     const other = newSessionKey();
     const saved = await save([chatHeader({ note_prompt: 'kept' }), { ...seed, mes: 'seed, edited' }, charMsg('more')], other);
     assert.equal(saved.status, 200);
-    assert.match(saved.data.chat_id, /^b\d+$/);
+    assert.equal(saved.data.chat_id, 'Moving Chat');
     assert.deepEqual(saved.data.not_saved, [{ index: 1, reason: 'no id' }]);
     const shown = await chatNamed({ group: 'group-6' }, 'Moving Chat', tab);
     assert.deepEqual(shown.messages.map(m => m.mes), ['seed, edited']);
