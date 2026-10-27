@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
 /**
  * Covers the gallery-style character browsing view: the character list always renders as a fullscreen
@@ -44,5 +44,19 @@ test.describe('Character Gallery View', () => {
         // Reuses the same rendered rows.
         const firstCardAvatar = await firstCard.getAttribute('data-avatar');
         expect(firstCardAvatar).toBeTruthy();
+    });
+
+    test('a search with few results keeps its cards their own height', async ({ page }) => {
+        await openCharacterManagementDrawer(page);
+        const cards = page.locator('#rm_print_characters_block .character_select');
+        await expect(cards.first()).toBeVisible();
+        const fullHeight = (await cards.first().boundingBox()).height;
+        await page.locator('#character_search_bar').fill('Seraphina');
+        await expect(cards).toHaveCount(1);
+        // The one row is as tall as a card, not the whole list.
+        const listHeight = (await page.locator('#rm_print_characters_block').boundingBox()).height;
+        const cardHeight = (await cards.first().boundingBox()).height;
+        expect(cardHeight).toBeLessThan(listHeight / 2);
+        expect(Math.abs(cardHeight - fullHeight)).toBeLessThanOrEqual(2);
     });
 });

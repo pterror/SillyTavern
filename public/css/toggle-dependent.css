@@ -427,6 +427,8 @@ body.charGalleryView #right-nav-panel.galleryFullscreen #rm_print_characters_pag
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    /* Rows as tall as their cards: a few results don't stretch to fill the list. */
+    align-content: start;
     align-items: stretch;
     gap: 12px;
     padding: 10px 15px 15px;
