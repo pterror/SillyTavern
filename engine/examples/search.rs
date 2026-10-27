@@ -1341,6 +1341,11 @@ fn main() {
     }
     let s = Store::open(&dir, StoreConfig::default()).unwrap();
     s.wait_ready().unwrap();
+    // `--pairs-first`: pairs indexed from the start, as a new store has them, so the load writes them (with
+    // `--pair-build` only measured after).
+    if !reuse && args.iter().any(|a| a == "--pairs-first") {
+        s.commit_wait(vec![rec("searchPairs", vec![Value::Bit(true)])]).unwrap();
+    }
 
     let mut g = generator(kind, cards);
     let tags = g.tags().to_vec();
