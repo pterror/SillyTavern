@@ -12,12 +12,14 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 test.beforeEach(testSetup.awaitST);
 
 /**
- * Makes a character whose description is `description`, with the global variable `mood` set, and opens it.
+ * Makes a character whose description is `description` (and creator's notes `notes`), with the global variable `mood`
+ * set, and opens it.
  * @param {import('@playwright/test').Page} page
  * @param {string} description
+ * @param {string} [notes]
  */
-async function openWithDescription(page, description) {
-    const avatar = await page.evaluate(async (description) => {
+async function openWithDescription(page, description, notes = '') {
+    const avatar = await page.evaluate(async ({ description, notes }) => {
         // @ts-ignore
         const context = SillyTavern.getContext();
         context.variables.global.set('mood', 'sunny');
@@ -27,9 +29,10 @@ async function openWithDescription(page, description) {
         form.set('ch_name', `Macro values ${Date.now()}`);
         form.set('first_mes', 'Hello.');
         form.set('description', description);
+        form.set('creator_notes', notes);
         const response = await fetch('/api/characters/create', { method: 'POST', headers: context.getRequestHeaders({ omitContentType: true }), body: form });
         return (await response.text()).trim();
-    }, description);
+    }, { description, notes });
     await openCharacter(page, avatar);
 }
 
@@ -43,8 +46,8 @@ test('a field\'s preview shows the values the server fills in; a macro run only 
     await expect(preview.locator('.macro-pill[data-macro-name="roll"]')).toHaveCount(1);
 });
 
-test('a mention\'s card shows who it names\' description with its macros filled in, its inline markdown rendered', async ({ page }) => {
-    await openWithDescription(page, 'I am **{{char}}**, feeling {{getglobalvar::mood}}. ![x](/img/ai4.png)');
+test('a character mention\'s card shows its creator\'s notes with their macros filled in, their inline markdown rendered', async ({ page }) => {
+    await openWithDescription(page, 'I am **{{char}}**, not shown on the card.', 'I am **{{char}}**, feeling {{getglobalvar::mood}}. ![x](/img/ai4.png)');
     const pill = page.locator('.field_preview[data-for="description_textarea"] .macro-pill[data-macro-name="char"]');
     await expect(pill).toHaveCount(1);
     const name = await pill.textContent();

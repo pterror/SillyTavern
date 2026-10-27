@@ -6904,7 +6904,7 @@ export function macroPerson(macroName, { avatar, name } = {}) {
         ?? (name ? exposedCharacters.find(c => c?.name === name) : undefined)
         ?? getCurrentCharacter();
     if (!found) return null;
-    return { name: name || found.name, avatarUrl: getThumbnailUrl('avatar', found.avatar), about: String(found.description ?? found.data?.description ?? '') };
+    return { name: name || found.name, avatarUrl: getThumbnailUrl('avatar', found.avatar), about: String(found.data?.creator_notes ?? found.creatorcomment ?? '') };
 }
 
 /**
