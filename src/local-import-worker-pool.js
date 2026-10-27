@@ -44,7 +44,11 @@ export class LocalImportWorkerPool {
     }
 
     _spawnSlot() {
-        const worker = new Worker(WORKER_MODULE_PATH, { workerData: { configFilePath: getConfigFilePath() } });
+        // The worker's output is relayed by write, not piped: Node pipes each worker's stdout/stderr into the main
+        // process's, one `error` listener on them per worker, which a pool of workers runs past the listener limit.
+        const worker = new Worker(WORKER_MODULE_PATH, { workerData: { configFilePath: getConfigFilePath() }, stdout: true, stderr: true });
+        worker.stdout.on('data', chunk => process.stdout.write(chunk));
+        worker.stderr.on('data', chunk => process.stderr.write(chunk));
         const slot = { worker, currentTask: null };
 
         worker.on('message', (result) => {
