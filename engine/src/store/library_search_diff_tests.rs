@@ -2,13 +2,15 @@
 //! reached once through the pages, in relevance order (through `next` and through offsets) and in the list's
 //! orders (through cursors), whatever the work limits. The limits are set small so a test library runs past them
 //! as a large one does: a phrase over every field has far more candidates than the same phrase in names alone.
+//! Phrases of up to four words, closed or ending in a prefix, over every field, one, or a list field's values;
+//! with pairs indexed from the start, indexed by their pass after the library was written, or not at all.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 
-use super::library::{BY_NAME, CHARACTER, GROUP, TAG, fold_name};
+use super::library::{BY_NAME, CHARACTER, GROUP, TAG, fold_name, item_field};
 use super::library_read::{Filter, Query, Sort};
 use super::library_search::{Ordered, Resume, TEST_LIMITS};
 use super::*;
@@ -100,6 +102,25 @@ const NAME: (u32, u64) = (0, 1);
 const DESCRIPTION: (u32, u64) = (1, 10);
 const SCENARIO: (u32, u64) = (3, 12);
 const CREATOR: (u32, u64) = (7, 2);
+/// A list field: each alternate greeting is a value of its own, which a phrase never spans.
+const ALTERNATE: (u32, u64) = (9, 0);
+
+/// When the library's pairs are indexed (`search::pairs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pairs {
+    /// Never: phrases are read through their whole words.
+    No,
+    /// From the start: written with the words.
+    Written,
+    /// By their pass, over the library once written.
+    Built,
+}
+
+fn pairs_step(s: &Store) -> bool {
+    let (tx, rx) = std::sync::mpsc::channel();
+    s.pairs_step(Box::new(move |r| tx.send(r).unwrap()));
+    rx.recv().unwrap().unwrap()
+}
 
 struct Ent {
     kind: u64,
@@ -119,8 +140,12 @@ fn words(r: &mut Rng, n: u64) -> String {
     (0..n).map(|_| r.pick(WORDS)).collect::<Vec<_>>().join(" ")
 }
 
-fn build(dir: &PathBuf, seed: u64, n: u64) -> Lib {
+fn build(dir: &PathBuf, seed: u64, n: u64, pairs: Pairs) -> Lib {
     let s = Store::open_in(dir, SMALL, pool()).unwrap();
+    if pairs == Pairs::Written {
+        s.commit_wait(vec![rec("searchPairs", vec![Value::Bit(true)])])
+            .unwrap();
+    }
     let mut world = World::default();
     let mut recs = Vec::new();
     for (t, name) in TAGS.iter().zip(TAG_NAMES) {
@@ -176,6 +201,24 @@ fn build(dir: &PathBuf, seed: u64, n: u64) -> Lib {
                     fields[f.0 as usize].push(v.into_bytes());
                 }
             }
+            for item in 0..r.below(3) {
+                let len = 2 + r.below(6);
+                let v = words(&mut r, len);
+                let FieldRef::Code(code) = item_field(ALTERNATE.1, item) else {
+                    unreachable!()
+                };
+                recs.push(set(e, code, &v));
+                recs.push(rec(
+                    "itemPlace",
+                    vec![
+                        Value::Id(e),
+                        Value::UInt(ALTERNATE.1),
+                        Value::UInt(item),
+                        Value::UInt(item),
+                    ],
+                ));
+                fields[ALTERNATE.0 as usize].push(v.into_bytes());
+            }
         } else {
             // A group's id is its own field (its key).
             fields[11].push(key.as_bytes().to_vec());
@@ -208,6 +251,11 @@ fn build(dir: &PathBuf, seed: u64, n: u64) -> Lib {
         );
     }
     world.library = library;
+    if pairs == Pairs::Built {
+        s.commit_wait(vec![rec("searchPairs", vec![Value::Bit(true)])])
+            .unwrap();
+        while pairs_step(&s) {}
+    }
     Lib {
         store: s,
         ents,
@@ -349,7 +397,7 @@ fn clause(text: String, fields: Option<Vec<u32>>, negate: bool, quoted: bool) ->
 }
 
 fn random_clause(r: &mut Rng) -> Clause {
-    let n = 1 + r.below(3);
+    let n = 1 + r.below(4);
     let mut t = words(r, n);
     // Sometimes the last word cut short: a prefix (unless the phrase is closed).
     if r.chance(4) {
@@ -359,10 +407,12 @@ fn random_clause(r: &mut Rng) -> Clause {
                 .min(2);
         t.truncate(keep.max(2));
     }
-    let fields = match r.below(4) {
+    let fields = match r.below(6) {
         0 | 1 => None,
         2 => Some(vec![NAME.0]),
-        _ => Some(vec![DESCRIPTION.0]),
+        3 => Some(vec![DESCRIPTION.0]),
+        4 => Some(vec![ALTERNATE.0]),
+        _ => Some(vec![NAME.0, ALTERNATE.0]),
     };
     clause(t, fields, false, r.chance(2))
 }
@@ -530,9 +580,9 @@ fn minimize(lib: &Lib, mut case: Case) -> Case {
 }
 
 /// Runs random cases under the limits; panics with the seed and a minimized case on the first failure.
-fn run(seed: u64, n: u64, cases: usize, limits: Option<Limits>) {
+fn run(seed: u64, n: u64, cases: usize, limits: Option<Limits>, pairs: Pairs) {
     let dir = temp_dir(&format!("s{seed}"));
-    let lib = build(&dir, seed, n);
+    let lib = build(&dir, seed, n, pairs);
     TEST_LIMITS.with(|l| l.set(limits));
     let mut r = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     for i in 0..cases {
@@ -542,7 +592,7 @@ fn run(seed: u64, n: u64, cases: usize, limits: Option<Limits>) {
             let why = check(&lib, &small).unwrap_or(e);
             TEST_LIMITS.with(|l| l.set(None));
             panic!(
-                "seed {seed} n {n} limits {limits:?} case {i}:\n{why}\nclauses {:?}\nfilter {:?} limit {}",
+                "seed {seed} n {n} limits {limits:?} pairs {pairs:?} case {i}:\n{why}\nclauses {:?}\nfilter {:?} limit {}",
                 small
                     .clauses
                     .iter()
@@ -574,7 +624,7 @@ const TIGHT: Limits = Limits {
 /// One case of a library, checked under the tight limits.
 fn regression(seed: u64, case: Case) {
     let dir = temp_dir(&format!("reg{seed}"));
-    let lib = build(&dir, seed, 400);
+    let lib = build(&dir, seed, 400, Pairs::No);
     TEST_LIMITS.with(|l| l.set(Some(TIGHT)));
     let failed = check(&lib, &case);
     TEST_LIMITS.with(|l| l.set(None));
@@ -628,8 +678,8 @@ fn an_offset_past_the_tied_matches_skips_their_exact_number() {
 
 #[test]
 fn random_searches_reach_every_match_under_the_default_limits() {
-    for seed in [1, 2, 3] {
-        run(seed, 300, 60, None);
+    for (seed, pairs) in [(1, Pairs::No), (2, Pairs::Written), (3, Pairs::Built)] {
+        run(seed, 300, 60, None, pairs);
     }
 }
 
@@ -640,6 +690,7 @@ fn random_searches_reach_every_match_past_the_work_limits() {
         Err(_) => vec![11, 12, 13],
     };
     for seed in seeds {
-        run(seed, 400, 60, Some(TIGHT));
+        let pairs = [Pairs::No, Pairs::Written, Pairs::Built][(seed % 3) as usize];
+        run(seed, 400, 60, Some(TIGHT), pairs);
     }
 }

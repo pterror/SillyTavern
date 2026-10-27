@@ -14,6 +14,7 @@ use super::{
     length_code, local_r, local_text, max_bits, max_doc, max_slot, node_of, pack, posting_block,
     readings, shortest, slot, slot_in, term_counts, top_level, unpack, unslot,
 };
+use super::pairs::Kept;
 use crate::keyspace::val::{map_bytes, map_pairs};
 use crate::store::StoreError;
 use crate::store::carriers::Term;
@@ -171,11 +172,23 @@ struct Terms {
 
 impl Terms {
     /// `items` are the field's values (one, or each item of a list). In a prefix field a token also counts
-    /// toward each of its prefix terms; elsewhere a term's prefix count is its whole-token count.
-    fn of(items: &[&[u8]], prefix: bool) -> Terms {
+    /// toward each of its prefix terms; elsewhere a term's prefix count is its whole-token count. With `pairs`,
+    /// each pair of adjacent tokens within a value is a term too (`pairs::term`), counted whole only: it adds
+    /// nothing to the field's length.
+    fn of(items: &[&[u8]], prefix: bool, pairs: bool) -> Terms {
         let mut t = Terms::default();
         for item in items {
-            for tok in tokens(item) {
+            let toks = tokens(item);
+            if pairs {
+                for w in toks.windows(2) {
+                    let e = t.tf.entry(super::pairs::term(&w[0], &w[1])).or_default();
+                    e.0 += 1;
+                    if !prefix {
+                        e.1 += 1;
+                    }
+                }
+            }
+            for tok in toks {
                 t.len += 1;
                 if prefix {
                     for g in grams(&tok) {
@@ -189,6 +202,13 @@ impl Terms {
                 }
             }
         }
+        t
+    }
+
+    /// The pairs alone of `of(items, prefix, true)`, its length the field's.
+    fn pairs_of(items: &[&[u8]], prefix: bool) -> Terms {
+        let mut t = Terms::of(items, prefix, true);
+        t.tf.retain(|term, _| super::pairs::is_pair(term));
         t
     }
 }
@@ -291,11 +311,11 @@ pub fn update_fields(
     changes: &[FieldChange],
 ) -> Result<(), StoreError> {
     let mut seen = Seen::default();
-    let pairs = super::pairs::kept(view, scope, doc)?;
+    let kept = super::pairs::kept(view, scope, doc)?;
     for &(field, old, new) in changes {
-        update_one(view, out, scope, doc, field, old, new, &mut seen)?;
-        if pairs {
-            super::pairs::update(
+        update_one(view, out, scope, doc, field, old, new, kept == Kept::Terms, &mut seen)?;
+        if kept == Kept::Legacy {
+            super::pairs::legacy(
                 out,
                 scope,
                 doc,
@@ -330,11 +350,15 @@ fn update_one(
     field: u32,
     old: &[&[u8]],
     new: &[&[u8]],
+    with_pairs: bool,
     seen: &mut Seen,
 ) -> Result<(), StoreError> {
     let defs = scope.fields();
     let prefix = defs[field as usize].prefix;
-    let (before, after) = (Terms::of(old, prefix), Terms::of(new, prefix));
+    let (before, after) = (
+        Terms::of(old, prefix, with_pairs),
+        Terms::of(new, prefix, with_pairs),
+    );
     let (lo, ln) = (before.len, after.len);
     let block = doc >> BLOCK_BITS;
     let lblock = doc >> LENGTH_BITS;
@@ -710,6 +734,46 @@ fn carried(view: &View, term: &str, as_prefix: bool, block: u64) -> Result<Vec<u
 /// A field's values, for `whole`.
 pub type FieldValues<'a> = (u32, &'a [&'a [u8]]);
 
+/// The entries for the pairs of document `doc`, whose words are indexed, coming with these values (every field it
+/// has text in): the pass indexing pairs over a store's existing text (`pairs::step`). As `whole` writes a term's,
+/// with no tag part: a pair is never in a tag's name terms.
+pub fn pairs_whole(
+    view: &View,
+    out: &mut Out,
+    scope: Scope,
+    doc: u64,
+    fields: &[FieldValues],
+) -> Result<(), StoreError> {
+    let _ = view;
+    let defs = scope.fields();
+    let block = doc >> BLOCK_BITS;
+    let mut slots: HashMap<String, Slots> = HashMap::new();
+    let mut lens: Lens = [0; 1 << FIELD_BITS];
+    let mut sorted: Vec<FieldValues> = fields.to_vec();
+    sorted.sort_by_key(|x| x.0);
+    for &(f, v) in &sorted {
+        let t = Terms::pairs_of(v, defs[f as usize].prefix);
+        lens[f as usize] = t.len;
+        for (term, (exact, gram)) in t.tf {
+            slots
+                .entry(term)
+                .or_default()
+                .push((f, FieldHit { exact, gram }));
+        }
+    }
+    for (term, hits) in &slots {
+        out.map(
+            posting_block(scope, term, block),
+            hits.iter()
+                .map(|&(f, h)| (slot(doc, f), pack(defs[f as usize].prefix, h)))
+                .collect(),
+        );
+        raise(out, scope, term, doc, (&[], &lens), (hits, &lens), None);
+        out.add_map(term_counts(scope, term), vec![(DOCS_SLOT, 1)]);
+    }
+    Ok(())
+}
+
 /// The entries for every field of document `doc` coming (`on`) with these values, or going with them: a create
 /// meets a document with no entries, and a delete meets the entries these values made, so nothing of the document
 /// is read but, on a library create, the tags it carries (`tag_terms`). Each term's posting and block maximum is one write over all its fields; a delete leaves the bounds
@@ -725,9 +789,10 @@ pub fn whole(
     let defs = scope.fields();
     let block = doc >> BLOCK_BITS;
     let sign = if on { 1 } else { -1 };
+    let kept = super::pairs::kept(view, scope, doc)?;
     let mut fields: Vec<(u32, &[&[u8]], Terms)> = fields
         .iter()
-        .map(|&(f, v)| (f, v, Terms::of(v, defs[f as usize].prefix)))
+        .map(|&(f, v)| (f, v, Terms::of(v, defs[f as usize].prefix, kept == Kept::Terms)))
         .collect();
     fields.sort_by_key(|x| x.0);
     // Each term's fields with its counts there, by field.
@@ -825,10 +890,10 @@ pub fn whole(
             out.max(max_doc(scope), doc);
         }
     }
-    if super::pairs::kept(view, scope, doc)? {
+    if kept == Kept::Legacy {
         for &(f, v, _) in &fields {
             let (old, new) = if on { (&[][..], v) } else { (v, &[][..]) };
-            super::pairs::update(
+            super::pairs::legacy(
                 out,
                 scope,
                 doc,

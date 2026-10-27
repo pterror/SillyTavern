@@ -113,6 +113,33 @@ pub fn phrase_in(text: &[u8], phrase: &[String], prefix: bool, prefix_count: boo
     (found, count)
 }
 
+/// How many times `phrase` occurs in `text` (its tokens adjacent and in order, the last one a prefix when
+/// `prefix`), overlapping occurrences each counted: a phrase's count in one value, as a word's is its tokens'.
+pub fn phrase_count(text: &[u8], phrase: &[String], prefix: bool) -> u64 {
+    let n = phrase.len();
+    if n == 0 || n > 64 {
+        return 0;
+    }
+    // Bit i: the phrase's first i + 1 tokens end at the current token.
+    let (mut state, mut count) = (0u64, 0u64);
+    for_each_token(text, |t| {
+        let mut m = 0u64;
+        for (i, p) in phrase.iter().enumerate() {
+            let hit = if i == n - 1 && prefix {
+                t.starts_with(p.as_str())
+            } else {
+                t == p
+            };
+            if hit {
+                m |= 1 << i;
+            }
+        }
+        state = ((state << 1) | 1) & m;
+        count += state >> (n - 1) & 1;
+    });
+    count
+}
+
 /// A token's prefix terms: its first `GRAM_MIN..=GRAM_MAX` characters.
 pub fn grams(token: &str) -> impl Iterator<Item = &str> {
     token

@@ -35,7 +35,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeSet, BinaryHeap, HashMap};
 use std::sync::Arc;
 
-use super::text::{GRAM_MAX, GRAM_MIN, char_len, first_chars, phrase_in, tokens};
+use super::text::{GRAM_MAX, GRAM_MIN, char_len, first_chars, phrase_count, phrase_in, tokens};
 use super::{
     BLOCK_BITS, DOCS_SLOT, FIELD_BITS, FieldHit, GROUP_BITS, LENGTH_BITS, LEVELS, SHORTEST_BASE,
     Scope, TermKind, block_maxima, block_maxima_at, bound_slot, code_length, doc_count,
@@ -926,10 +926,12 @@ trait Docs {
 }
 
 /// Block maps under a prefix, each entry block → `slot` → value, read a document at a time: a term's postings
-/// (`bits` = `BLOCK_BITS`) or the field lengths (`LENGTH_BITS`), slots being place and field.
+/// (`bits` = `BLOCK_BITS`) or the field lengths (`LENGTH_BITS`), slots being place and field. Only the slots of
+/// the fields in `mask` are read: a document is in the list when it has one of them.
 struct BlockDocs {
     prefix: Vec<u8>,
     bits: u32,
+    mask: u64,
     cur: Cursor,
     block: Option<u64>,
     pairs: Vec<(u32, u32)>,
@@ -945,6 +947,7 @@ impl BlockDocs {
             cur: Cursor::new(&prefix),
             prefix,
             bits,
+            mask: u64::MAX,
             block: None,
             pairs: Vec::new(),
             at: 0,
@@ -968,14 +971,18 @@ impl BlockDocs {
         Ok(Some(self.doc == Some(d)))
     }
 
-    fn postings(scope: Scope, term: &str) -> BlockDocs {
-        BlockDocs::new(postings(scope, term), BLOCK_BITS)
+    /// A term's postings in the fields `mask`.
+    fn postings(scope: Scope, term: &str, mask: u64) -> BlockDocs {
+        let mut b = BlockDocs::new(postings(scope, term), BLOCK_BITS);
+        b.mask = mask;
+        b
     }
 
     /// The list's first and last documents, read afresh (None when it has none): its first from the start, and the
     /// highest live posting of its last block, or that block's last id when none there is live.
     fn ends(&self, ctx: &mut Ctx) -> StoreResult<Option<(u64, u64)>> {
         let mut b = BlockDocs::new(self.prefix.clone(), self.bits);
+        b.mask = self.mask;
         b.seek(ctx, 0)?;
         let Some(first) = b.doc else {
             return Ok(None);
@@ -1042,6 +1049,10 @@ impl BlockDocs {
                 v => v,
             };
             self.pairs = ctx.pairs(&key, v)?;
+            if self.mask != u64::MAX {
+                let mask = self.mask;
+                self.pairs.retain(|p| mask >> (p.0 & ((1 << FIELD_BITS) - 1)) & 1 == 1);
+            }
         }
         Ok(())
     }
@@ -1694,6 +1705,7 @@ fn list_next_block(
     scope: Scope,
     term: &str,
     as_prefix: bool,
+    fields: Option<u64>,
     block: u64,
 ) -> StoreResult<Option<u64>> {
     let last = last_block(ctx, scope)?;
@@ -1720,9 +1732,15 @@ fn list_next_block(
         };
         let from = if g == group { first } else { 0 };
         let at = m.partition_point(|p| p.0 < from);
+        // A maximum in the reading over every field; for a list in some fields, in one of them.
         if let Some(&(sl, _)) = m[at..].iter().find(|p| {
             let (_, field, prefix) = unmax_slot(g, p.0);
-            field.is_none() && prefix == as_prefix
+            prefix == as_prefix
+                && match (fields, field) {
+                    (None, None) => true,
+                    (Some(mask), Some(f)) => mask >> f & 1 == 1,
+                    _ => false,
+                }
         }) {
             return Ok(Some(unmax_slot(g, sl).0));
         }
@@ -1782,12 +1800,11 @@ fn add_bound(texts: &mut Texts, token: usize, b: f64) {
     texts[token][0] += b;
 }
 
-/// A list a clause reads: a term's postings, in the fields `mask`, standing for token `token`; counted as a
-/// prefix term in the prefix fields when `as_prefix`. A phrase's pair list (`pair`: two adjacent whole tokens'
-/// pair postings) only says where the phrase may be: it has no block maxima and scores nothing.
+/// A list a clause reads: a term's postings, in the fields `mask`, standing for token `token` (a phrase's lists,
+/// its pairs or its whole tokens, all stand for the phrase, token 0); counted as a prefix term in the prefix
+/// fields when `as_prefix`.
 struct List {
     term: String,
-    pair: bool,
     mask: u64,
     token: usize,
     as_prefix: bool,
@@ -1988,6 +2005,10 @@ struct Matcher {
     part: Vec<Part>,
     /// Per token, its idf.
     idf: Vec<f64>,
+    /// A phrase scores as one term (`super::clause_score` of one token): its tokens' idfs summed.
+    unit_idf: f64,
+    /// A phrase read through its pairs (`super::pairs`), each list a pair of adjacent whole tokens.
+    paired: bool,
     doc: Option<u64>,
     /// Where the text lists stand together after `align` (None: past the end, or not aligned).
     text_doc: Option<u64>,
@@ -2019,6 +2040,7 @@ impl Matcher {
         let prefix_mask: u64 = (0..defs.len())
             .filter(|&i| defs[i].prefix)
             .fold(0, |m, i| m | 1 << i);
+        let all = (1u64 << defs.len()) - 1;
         let phrase = toks.len() > 1;
         let last_i = toks.len() - 1;
         let prefix = last && char_len(&toks[last_i]) >= GRAM_MIN;
@@ -2032,13 +2054,14 @@ impl Matcher {
             parts: HashMap::new(),
             part: Vec::new(),
             idf: Vec::new(),
+            unit_idf: 0.0,
+            paired: false,
             doc: None,
             text_doc: None,
             tagged: None,
         };
         for (i, tok) in toks.iter().enumerate() {
             let is_prefix = prefix && i == last_i;
-            let long = is_prefix && char_len(tok) > GRAM_MAX;
             let gram_term = first_chars(tok, GRAM_MAX).to_string();
             match idfs {
                 Some(w) => m.idf.push(w[i]),
@@ -2048,56 +2071,54 @@ impl Matcher {
                     m.idf.push(idf(df as f64, stats.n));
                 }
             }
-            for f in fields_of(scope, mask) {
-                m.parts.insert((i, f), m.part.len());
-                m.part.push(Part { token: i });
-            }
-            if phrase && is_prefix {
-                // Checked on the text.
-                continue;
-            }
-            let list = |term: &str, mask, as_prefix| List {
-                term: term.to_string(),
-                pair: false,
-                mask,
-                token: i,
-                as_prefix,
-                dir: BlockDocs::postings(scope, term),
-                bound: None,
-                shortest: None,
-                next: None,
-            };
-            if !is_prefix {
-                m.lists.push(list(tok, mask, false));
-            } else if !long {
-                // Prefix terms in the prefix fields, whole tokens elsewhere: one list.
-                m.lists.push(list(tok, mask, true));
-            } else {
-                if mask & prefix_mask != 0 {
-                    m.lists.push(list(&gram_term, mask & prefix_mask, true));
-                }
-                if mask & !prefix_mask != 0 {
-                    m.lists.push(list(tok, mask & !prefix_mask, false));
-                }
-            }
         }
-        // With pair postings, a phrase's candidates are where every pair of its adjacent whole tokens is: the
-        // pairs' lists are walked with the words', so the walk goes from one document holding them all to the next.
-        let whole = if prefix { last_i } else { last_i + 1 };
-        if phrase && whole >= 2 && ctx.pairs_on()? {
-            for i in 0..whole - 1 {
-                let term = super::pairs::term(&toks[i], &toks[i + 1]);
-                m.lists.push(List {
-                    dir: BlockDocs::postings(scope, &term),
-                    term,
-                    pair: true,
-                    mask,
-                    token: usize::MAX,
-                    as_prefix: false,
-                    bound: None,
-                    shortest: None,
-                    next: None,
-                });
+        m.unit_idf = m.idf.iter().sum();
+        let list = |term: &str, mask, as_prefix| List {
+            term: term.to_string(),
+            mask,
+            token: 0,
+            as_prefix,
+            dir: BlockDocs::postings(scope, term, if mask == all { u64::MAX } else { mask }),
+            bound: None,
+            shortest: None,
+            next: None,
+        };
+        // One part per field: a word's count there, or a phrase's.
+        for f in fields_of(scope, mask) {
+            m.parts.insert((0, f), m.part.len());
+            m.part.push(Part { token: 0 });
+        }
+        if phrase {
+            // Its whole tokens' pairs, once every document has them; else its whole tokens. A prefix last token
+            // has no list: it is checked on the text. Each list bounds the phrase's count, so its bound is the
+            // least of theirs.
+            let whole = if prefix { last_i } else { last_i + 1 };
+            if whole >= 2 && ctx.pairs_on()? {
+                m.paired = true;
+                for i in 0..whole - 1 {
+                    m.lists
+                        .push(list(&super::pairs::term(&toks[i], &toks[i + 1]), mask, false));
+                }
+            } else {
+                for tok in &toks[..whole] {
+                    m.lists.push(list(tok, mask, false));
+                }
+            }
+            return Ok(Some(m));
+        }
+        let tok = &toks[0];
+        if !prefix {
+            m.lists.push(list(tok, mask, false));
+        } else if char_len(tok) <= GRAM_MAX {
+            // Prefix terms in the prefix fields, whole tokens elsewhere: one list.
+            m.lists.push(list(tok, mask, true));
+        } else {
+            if mask & prefix_mask != 0 {
+                m.lists
+                    .push(list(first_chars(tok, GRAM_MAX), mask & prefix_mask, true));
+            }
+            if mask & !prefix_mask != 0 {
+                m.lists.push(list(tok, mask & !prefix_mask, false));
             }
         }
         Ok(Some(m))
@@ -2105,7 +2126,8 @@ impl Matcher {
 
     /// Whether the clause is one list (a word) and its documents are those with the word.
     fn single(&self) -> Option<usize> {
-        (self.word() && self.tagged.as_ref().is_none_or(|t| t.lead == Lead::Text)).then_some(0)
+        let one = self.word() || (self.phrase && self.lists.len() == 1);
+        (one && self.tagged.as_ref().is_none_or(|t| t.lead == Lead::Text)).then_some(0)
     }
 
     /// Whether the clause is a word whose prefix is longer than the prefix terms (`super::word_text`).
@@ -2133,7 +2155,8 @@ impl Matcher {
         if let Some(f) = super::tag_field(self.scope) {
             self.parts.insert((0, f), part);
         }
-        let covered = !self.long_prefix() && !(self.phrase && self.prefix);
+        // A phrase's lists' maxima hold no tag part at its idf.
+        let covered = !self.long_prefix() && !self.phrase;
         let mut unraised = Vec::new();
         if covered {
             let unraised_of = |m: &Mover| Unraised {
@@ -2214,30 +2237,34 @@ impl Matcher {
 
     /// No text in any field.
     fn no_text(&self) -> Texts {
-        vec![[0.0; 1 << FIELD_BITS]; self.tokens.len()]
+        vec![[0.0; 1 << FIELD_BITS]; if self.phrase { 1 } else { self.tokens.len() }]
     }
 
     /// The clause's score from its text's parts (`Texts`): each token's summed in field order, as `local` sums
-    /// them; `tagged` when the document carries a tag whose name holds the clause. Higher parts give a score at
-    /// least as high, so it bounds as it scores.
+    /// them; `tagged` when the document carries a tag whose name holds the clause. A phrase is one token, its idf
+    /// its tokens' summed. Higher parts give a score at least as high, so it bounds as it scores.
     fn combine(&self, texts: &Texts, tagged: bool) -> f64 {
         let long = self.long_prefix();
         let sums: Vec<f64> = texts
             .iter()
             .map(|fs| super::sum_parts(self.scope, (0..).zip(fs.iter().copied()), long))
             .collect();
-        super::clause_score(&self.idf, &sums, tagged)
+        self.clause_score(&sums, tagged)
     }
 
-    /// A phrase's last token, a prefix, has no list: in each field it scores below its weight times `K1 + 1`.
-    fn prefix_bound(&self, texts: &mut Texts) {
-        if self.phrase && self.prefix {
-            let last = self.tokens.len() - 1;
-            for f in fields_of(self.scope, self.mask) {
-                texts[last][f as usize] =
-                    self.scope.fields()[f as usize].weight * (super::K1 + 1.0);
-            }
+    /// `super::clause_score` of the clause's tokens' texts (`sums`, one for a phrase).
+    fn clause_score(&self, sums: &[f64], tagged: bool) -> f64 {
+        if self.phrase {
+            super::clause_score(&[self.unit_idf], sums, tagged)
+        } else {
+            super::clause_score(&self.idf, sums, tagged)
         }
+    }
+
+    /// Takes a phrase list's bound `b` into the phrase's: the least of its lists'.
+    fn least(texts: &mut Texts, first: bool, b: f64) {
+        let t = &mut texts[0][0];
+        *t = if first { b } else { t.min(b) };
     }
 
     /// The most a document in list `li`'s block `block` scores for its term in the list's reading, before the
@@ -2251,9 +2278,6 @@ impl Matcher {
     /// reading. Not for node 0 of a level above 0, which holds no maximum.
     fn node_bound(&mut self, ctx: &mut Ctx, li: usize, level: u64, node: u64) -> StoreResult<f64> {
         debug_assert!(level == 0 || node != 0);
-        if self.lists[li].pair {
-            return Ok(0.0);
-        }
         if let Some((l, n, s)) = self.lists[li].bound
             && (l, n) == (level, node)
         {
@@ -2353,21 +2377,17 @@ impl Matcher {
         let mut texts = self.no_text();
         let mut any = false;
         for li in 0..self.lists.len() {
-            // A pair has no maxima; `next_block` found it in the block.
-            if self.lists[li].pair {
-                continue;
-            }
             let b = self.node_bound(ctx, li, level, node)?;
             if b > 0.0 {
                 any = true;
             } else if self.phrase {
                 return Ok(None);
             }
-            add_bound(&mut texts, self.lists[li].token, b);
-        }
-        if self.phrase && self.prefix {
-            self.prefix_bound(&mut texts);
-            any |= self.lists.is_empty();
+            if self.phrase {
+                Self::least(&mut texts, li == 0, b);
+            } else {
+                add_bound(&mut texts, self.lists[li].token, b);
+            }
         }
         Ok(any.then_some(texts))
     }
@@ -2404,14 +2424,9 @@ impl Matcher {
                 let x = match self.lists[li].next {
                     Some((asked, answer)) if asked <= b && answer.is_none_or(|a| b <= a) => answer,
                     _ => {
-                        let l = &mut self.lists[li];
-                        // A pair's blocks are its postings' (it has no maxima).
-                        let x = if l.pair {
-                            l.dir.seek(ctx, b << BLOCK_BITS)?;
-                            l.dir.block
-                        } else {
-                            list_next_block(ctx, self.scope, &l.term, l.as_prefix, b)?
-                        };
+                        let l = &self.lists[li];
+                        let fields = (l.mask != self.mask_all()).then_some(l.mask);
+                        let x = list_next_block(ctx, self.scope, &l.term, l.as_prefix, fields, b)?;
                         self.lists[li].next = Some((b, x));
                         x
                     }
@@ -2502,15 +2517,18 @@ impl Matcher {
             carried = t.any_in(ctx, d, end)?;
         }
         let mut texts = self.no_text();
+        let mut first = true;
         for li in 0..self.lists.len() {
-            if let Some(b) = self.lists[li].dir.block
-                && !self.lists[li].pair
-            {
+            if let Some(b) = self.lists[li].dir.block {
                 let b = self.block_bound(ctx, li, b)?;
-                add_bound(&mut texts, self.lists[li].token, b);
+                if self.phrase {
+                    Self::least(&mut texts, first, b);
+                    first = false;
+                } else {
+                    add_bound(&mut texts, self.lists[li].token, b);
+                }
             }
         }
-        self.prefix_bound(&mut texts);
         if carried && let Some(t) = self.tagged.as_mut().filter(|t| t.covered) {
             let unraised = t.unraised_in(ctx, d, end)?;
             let text = self.combine(&texts, unraised);
@@ -2529,8 +2547,10 @@ impl Matcher {
         let defs = self.scope.fields();
         let block = d >> BLOCK_BITS;
         let mut texts = self.no_text();
+        // A phrase's count in a field is at most each of its lists' there: per field, the least.
+        let mut least: Option<[f64; 1 << FIELD_BITS]> = None;
         for li in 0..self.lists.len() {
-            if self.lists[li].dir.doc() != Some(d) || self.lists[li].pair {
+            if self.lists[li].dir.doc() != Some(d) {
                 continue;
             }
             if self.lists[li].shortest.is_none_or(|(b, _)| b != block) {
@@ -2539,16 +2559,32 @@ impl Matcher {
             }
             let l = &self.lists[li];
             let lens = l.shortest.unwrap().1;
+            let mut here = [0.0f64; 1 << FIELD_BITS];
             for (f, v) in l.dir.doc_pairs() {
                 if l.mask >> f & 1 == 1 {
                     let tf = unpack(defs[f as usize].prefix, v).most();
-                    let x = field_score(self.scope, f, tf as f64, lens[f as usize]);
-                    let t = &mut texts[l.token][f as usize];
+                    here[f as usize] = field_score(self.scope, f, tf as f64, lens[f as usize]);
+                }
+            }
+            if self.phrase {
+                least = Some(match least {
+                    None => here,
+                    Some(mut x) => {
+                        for (a, b) in x.iter_mut().zip(here) {
+                            *a = a.min(b);
+                        }
+                        x
+                    }
+                });
+            } else {
+                for (t, x) in texts[l.token].iter_mut().zip(here) {
                     *t = t.max(x);
                 }
             }
         }
-        self.prefix_bound(&mut texts);
+        if let Some(x) = least {
+            texts[0] = x;
+        }
         Ok(self.combine(&texts, carried))
     }
 
@@ -2617,6 +2653,8 @@ impl Matcher {
         total: &mut [f64],
     ) {
         const TABLE: usize = 16;
+        // A phrase's lists would bound it by their least, not their sum: one reaches here (its descent).
+        debug_assert!(!self.phrase || lists.len() <= 1);
         let defs = self.scope.fields();
         // Each field's part per document, by its slot: in field order per document, as `local` sums them.
         let mut parts: Vec<(u32, f64)> = Vec::new();
@@ -2670,7 +2708,7 @@ impl Matcher {
                 b &= b - 1;
                 let i = w * 64 + place;
                 let carries = tagged && c >> place & 1 == 1;
-                total[i] += super::clause_score(&self.idf, &[texts[i]], carries);
+                total[i] += self.clause_score(&[texts[i]], carries);
             }
         }
     }
@@ -2694,9 +2732,6 @@ impl Matcher {
         carried: &BlockBits,
     ) -> StoreResult<()> {
         let l = &self.lists[li];
-        if l.pair {
-            return Ok(());
-        }
         let (scope, r) = (self.scope, l.as_prefix);
         let defs = scope.fields();
         let all = l.mask == self.mask_all();
@@ -2844,7 +2879,6 @@ impl Matcher {
             }
             data.push((token, li, p));
         }
-        let last = self.tokens.len() - 1;
         let long = self.long_prefix();
         if !self.phrase {
             for (_, li, p) in &data {
@@ -2868,58 +2902,33 @@ impl Matcher {
             }
             out.parts.sort_unstable_by_key(|x| (x.0, x.1));
         } else if !data.is_empty() {
-            // Fields holding every exact token.
+            // Fields every list holds (each a pair of the phrase, or one of its whole tokens).
             let common = data
                 .iter()
                 .map(|(_, _, p)| p.iter().fold(0u64, |m, x| m | 1 << x.0))
                 .fold(u64::MAX, |a, b| a & b);
-            // Each exact token's (field, tf, length code).
-            let mut tok: HashMap<usize, Tfs> = HashMap::new();
-            for (t, _, p) in &data {
-                tok.insert(*t, p.clone());
-            }
-            // With pair postings, `common` holds only fields holding every pair of whole tokens (their lists are
-            // among the clause's); two whole tokens are decided by their pair.
-            let whole = if self.prefix { last } else { last + 1 };
-            let paired = self.lists.iter().any(|l| l.pair);
+            // Two whole tokens are one pair: its count is the phrase's. Otherwise the phrase is counted on the
+            // text, read only here, where a document can enter the page.
+            let decided = self.paired && self.lists.len() == 1 && !self.prefix;
             for f in fields_of(scope, common & self.mask) {
-                let prefix_field = scope.fields()[f as usize].prefix;
-                let mut last_tf = 0;
-                let mut found = paired && whole == self.tokens.len() && whole == 2;
-                for t in if found {
-                    Vec::new()
+                let (tf, code) = data[0]
+                    .2
+                    .iter()
+                    .find(|x| x.0 == f)
+                    .map_or((0, 0), |x| (x.1, x.2));
+                let tf = if decided {
+                    tf
                 } else {
                     ctx.texts(scope, doc, f)?
-                } {
-                    // The prefix token scores as a prefix term in a prefix field, as a whole token elsewhere.
-                    let (here, n) = phrase_in(&t, &self.tokens, self.prefix, prefix_field);
-                    found |= here;
-                    last_tf += n;
-                }
-                if !found {
+                        .iter()
+                        .map(|t| phrase_count(t, &self.tokens, self.prefix))
+                        .sum()
+                };
+                if tf == 0 {
                     continue;
                 }
                 hit = true;
-                let code = tok
-                    .values()
-                    .flat_map(|p| p.iter())
-                    .find(|x| x.0 == f)
-                    .map_or(0, |x| x.2);
-                for i in 0..=last {
-                    let Some(&p) = self.parts.get(&(i, f)) else {
-                        continue;
-                    };
-                    let tf = if i == last && self.prefix {
-                        last_tf
-                    } else {
-                        tok.get(&i)
-                            .and_then(|p| p.iter().find(|x| x.0 == f))
-                            .map_or(0, |x| x.1)
-                    };
-                    if tf > 0 {
-                        out.parts.push((f, p, tf, code));
-                    }
-                }
+                out.parts.push((f, self.parts[&(0, f)], tf, code));
             }
         }
         if let Some(t) = &mut self.tagged
@@ -2932,7 +2941,8 @@ impl Matcher {
     }
 
     fn score(&self, m: &Matched) -> f64 {
-        let texts: Vec<f64> = (0..self.tokens.len())
+        let units = if self.phrase { 1 } else { self.tokens.len() };
+        let texts: Vec<f64> = (0..units)
             .map(|i| {
                 let fields = m
                     .parts
@@ -2943,7 +2953,7 @@ impl Matcher {
             })
             .collect();
         let tagged = m.parts.iter().any(|x| self.part[x.1].token == TAG_PART);
-        super::clause_score(&self.idf, &texts, tagged)
+        self.clause_score(&texts, tagged)
     }
 }
 
@@ -3590,7 +3600,7 @@ impl Plan {
                             let (text, carriers) = m.block_held(ctx, block)?;
                             let lead = m.lead();
                             if lead != Lead::Carriers {
-                                for (li, l) in m.lists.iter().enumerate().filter(|x| !x.1.pair) {
+                                for (li, l) in m.lists.iter().enumerate() {
                                     match l.shortest {
                                         Some((b, lens)) if l.dir.block == Some(block) && b == block => {
                                             opened.lists.push((ci, li, l.dir.pairs.clone(), lens))

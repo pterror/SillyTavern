@@ -1,13 +1,16 @@
-//! Pair postings (build path 5d, an option off by default): each pair of adjacent tokens within one value of a
-//! field is a term (`term(a, b)`), its postings holding the document's count of the pair per field. A phrase's
-//! candidate field must hold each of its whole-token pairs before its text is read, and a two-word phrase whose
-//! words are both whole is decided by its pair alone.
+//! Word pairs as index terms (build path 5d): each pair of adjacent tokens within one value of a field is a term
+//! (`term(a, b)`), written with the words' (`index`): its postings hold the document's count of the pair per
+//! field, with its document count and block maxima as a word's. A phrase is read through its pairs (`query`): two
+//! whole words are one pair; more are their pairs, checked on the text only where a document can enter the page.
 //!
-//! Turning the option on (`searchPairs` with `on`) starts a build over every searched document's text, a slice at a
-//! time (`step`) in the order of the documents' length entries; turning it off starts a delete the same way. While
-//! one is under way, a write keeps the pairs of documents the pass has reached (building) or not yet reached
-//! (deleting), so the pass and the writes leave every document as the option says. Reads use pairs only once the
-//! option is on and built. A slice lost in a crash is done again from the cursor the last flush kept.
+//! A store indexes pairs from its start. One made before them builds them over its existing text, a slice at a
+//! time (`step`), in the order of the documents' length entries; meanwhile a write keeps the pairs of the documents
+//! the pass has reached, and reads use pairs only once every document has them (`on`), so a query answers the same
+//! during the pass. A slice lost in a crash is done again from the cursor the last flush kept. The `searchPairs`
+//! record starts it (the server writes one when a store's pairs aren't indexed).
+//!
+//! Before pairs were index terms they were an option (`LEGACY_*`): pair postings with no counts or maxima. A store
+//! that had them deletes them first (with the option's own pass), then indexes them.
 
 use std::collections::HashMap;
 
@@ -18,11 +21,15 @@ use crate::store::StoreError;
 use crate::store::derive::{Out, View};
 use crate::store::kinds::{key, search_texts};
 
-/// The pass and the option: `[mode]` then the cursor (a length entry's key; the pass resumes after it, from the
-/// start when empty).
-pub const BUILDING: u64 = 1;
-pub const ON: u64 = 2;
-pub const DELETING: u64 = 3;
+/// The state: `[mode]` then the pass's cursor (a length entry's key; the pass resumes after it, from the start
+/// when empty). No state: pairs not indexed, and no pass under way.
+pub const LEGACY_BUILDING: u64 = 1;
+pub const LEGACY_ON: u64 = 2;
+pub const LEGACY_DELETING: u64 = 3;
+/// The pass indexing pairs over the existing text.
+pub const INDEXING: u64 = 4;
+/// Every document's pairs are indexed.
+pub const INDEXED: u64 = 5;
 
 /// Joins a pair's tokens; the tokenizer never yields it inside a token.
 pub const SEPARATOR: char = '\u{1}';
@@ -34,7 +41,12 @@ pub fn term(a: &str, b: &str) -> String {
     format!("{a}{SEPARATOR}{b}")
 }
 
-/// The option's mode (0: off) and the pass's cursor.
+/// Whether an index term is a pair.
+pub fn is_pair(term: &str) -> bool {
+    term.contains(SEPARATOR)
+}
+
+/// The mode (0: none) and the pass's cursor.
 pub fn state(view: &View) -> Result<(u64, Vec<u8>), StoreError> {
     let Some(b) = view.get(&key::of(key::SEARCH_PAIRS))? else {
         return Ok((0, Vec::new()));
@@ -56,25 +68,50 @@ fn put_state(out: &mut Out, mode: u64, cursor: &[u8]) {
     out.put(key::of(key::SEARCH_PAIRS), v);
 }
 
-/// The option turned on or off: a pass starts unless it is already so or going there.
-pub fn turned(view: &View, out: &mut Out, on: bool) -> Result<(), StoreError> {
+/// Whether some document has search text.
+fn any_text(view: &View) -> Result<bool, StoreError> {
+    let start = key::of(key::SEARCH_LENGTH);
+    Ok(!view.scan(&start, &key::prefix_end(&start), 1)?.is_empty())
+}
+
+/// The mode a store whose pairs aren't indexed goes to: indexed at once with no text, else the pass.
+fn index_mode(view: &View) -> Result<u64, StoreError> {
+    Ok(if any_text(view)? { INDEXING } else { INDEXED })
+}
+
+/// A `searchPairs` record: pairs indexed (its value, the old option's on or off, no longer matters). A store with
+/// the old option's pairs deletes them first.
+pub fn turned(view: &View, out: &mut Out, _on: bool) -> Result<(), StoreError> {
     let (mode, _) = state(view)?;
-    match (on, mode) {
-        (true, BUILDING | ON) | (false, 0 | DELETING) => {}
-        (true, _) => put_state(out, BUILDING, &[]),
-        (false, _) => put_state(out, DELETING, &[]),
+    match mode {
+        INDEXING | INDEXED | LEGACY_DELETING => {}
+        LEGACY_BUILDING | LEGACY_ON => put_state(out, LEGACY_DELETING, &[]),
+        _ => put_state(out, index_mode(view)?, &[]),
     }
     Ok(())
 }
 
-/// Whether a write to `doc` in `scope` keeps its pairs.
-pub fn kept(view: &View, scope: Scope, doc: u64) -> Result<bool, StoreError> {
+/// What a write to a document keeps of its pairs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kept {
+    /// Nothing: not indexed yet.
+    None,
+    /// The old option's pair postings (`legacy`).
+    Legacy,
+    /// Pairs as index terms (`index::Terms`).
+    Terms,
+}
+
+/// What a write to `doc` in `scope` keeps.
+pub fn kept(view: &View, scope: Scope, doc: u64) -> Result<Kept, StoreError> {
     let (mode, cursor) = state(view)?;
     Ok(match mode {
-        ON => true,
-        BUILDING => reached(scope, doc, &cursor),
-        DELETING => !reached(scope, doc, &cursor),
-        _ => false,
+        INDEXED => Kept::Terms,
+        INDEXING if reached(scope, doc, &cursor) => Kept::Terms,
+        LEGACY_ON => Kept::Legacy,
+        LEGACY_BUILDING if reached(scope, doc, &cursor) => Kept::Legacy,
+        LEGACY_DELETING if !reached(scope, doc, &cursor) => Kept::Legacy,
+        _ => Kept::None,
     })
 }
 
@@ -83,12 +120,12 @@ fn reached(scope: Scope, doc: u64, cursor: &[u8]) -> bool {
     !cursor.is_empty() && length_block(scope, doc >> LENGTH_BITS).as_slice() <= cursor
 }
 
-/// Whether reads may use pairs.
+/// Whether reads may use pairs: every document's are indexed.
 pub fn on(view: &View) -> Result<bool, StoreError> {
-    Ok(state(view)?.0 == ON)
+    Ok(state(view)?.0 == INDEXED)
 }
 
-/// A field's pairs with their counts, over its values.
+/// A field's values' pairs with their counts.
 pub fn of(items: &[&[u8]]) -> HashMap<String, u64> {
     let mut out = HashMap::new();
     for item in items {
@@ -100,8 +137,8 @@ pub fn of(items: &[&[u8]]) -> HashMap<String, u64> {
     out
 }
 
-/// The entries for a field's pairs going from `old` to `new`.
-pub fn update(
+/// The old option's entries for a field's pairs going from `old` to `new`: postings alone.
+pub fn legacy(
     out: &mut Out,
     scope: Scope,
     doc: u64,
@@ -134,7 +171,7 @@ fn parse_length_key(k: &[u8]) -> Option<(Scope, u64)> {
 /// One slice of the pass under way; whether more follow.
 pub fn step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
     let (mode, cursor) = state(view)?;
-    if mode != BUILDING && mode != DELETING {
+    if mode != INDEXING && mode != LEGACY_DELETING {
         return Ok(false);
     }
     let start = key::of(key::SEARCH_LENGTH);
@@ -153,22 +190,38 @@ pub fn step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
         };
         let lengths = map_pairs(v)
             .ok_or_else(|| StoreError::Entry("a length block doesn't decode".into()))?;
+        // Each document's fields with text, in order.
+        let mut docs: Vec<(u64, Vec<u32>)> = Vec::new();
         for (s, len) in lengths {
-            if len == 0 {
+            let field = s & ((1 << FIELD_BITS) - 1);
+            if len == 0 || field as usize >= scope.fields().len() {
                 continue;
             }
             let doc = block << LENGTH_BITS | u64::from(s >> FIELD_BITS);
-            let field = s & ((1 << FIELD_BITS) - 1);
-            if field as usize >= scope.fields().len() {
-                continue;
+            match docs.last_mut() {
+                Some((d, fs)) if *d == doc => fs.push(field),
+                _ => docs.push((doc, vec![field])),
             }
-            let texts = search_texts(view, scope, doc, field)?;
-            let now = of(&texts.iter().map(Vec::as_slice).collect::<Vec<_>>());
-            let none = HashMap::new();
-            if mode == BUILDING {
-                update(out, scope, doc, field, &none, &now);
+        }
+        for (doc, fields) in docs {
+            let texts: Vec<(u32, Vec<Vec<u8>>)> = fields
+                .iter()
+                .map(|&f| Ok((f, search_texts(view, scope, doc, f)?)))
+                .collect::<Result<_, StoreError>>()?;
+            if mode == INDEXING {
+                let values: Vec<(u32, Vec<&[u8]>)> = texts
+                    .iter()
+                    .map(|(f, t)| (*f, t.iter().map(Vec::as_slice).collect()))
+                    .collect();
+                let fields: Vec<(u32, &[&[u8]])> =
+                    values.iter().map(|(f, v)| (*f, v.as_slice())).collect();
+                super::index::pairs_whole(view, out, scope, doc, &fields)?;
             } else {
-                update(out, scope, doc, field, &now, &none);
+                let none = HashMap::new();
+                for (f, t) in &texts {
+                    let now = of(&t.iter().map(Vec::as_slice).collect::<Vec<_>>());
+                    legacy(out, scope, doc, *f, &now, &none);
+                }
             }
         }
     }
@@ -177,8 +230,13 @@ pub fn step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
             put_state(out, mode, k);
             Ok(true)
         }
+        _ if mode == LEGACY_DELETING => {
+            // The old option's pairs are gone: now the pairs are indexed.
+            put_state(out, index_mode(view)?, &[]);
+            Ok(true)
+        }
         _ => {
-            put_state(out, if mode == BUILDING { ON } else { 0 }, &[]);
+            put_state(out, INDEXED, &[]);
             Ok(false)
         }
     }
