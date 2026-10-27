@@ -9108,6 +9108,7 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
     $('#character_media_forbidden_icon').toggle(!externalMediaState);
 
     // Update some stuff about the char management dropdown
+    $('#char-management-dropdown option').not('[value="default"]').prop('disabled', false);
     $('#character_source').attr('disabled', !getCharacterSource(character) ? '' : null);
 
     // An index is emitted as passed. The avatar and object forms emit `this_chid` only when they resolve to the
@@ -9188,6 +9189,9 @@ function select_rm_create({ switchMenu = true } = {}) {
     _loadedCharacterFieldHashesAvatar = null;
     $('.form_create_bottom_buttons_block .chat_lorebook_button').hide();
     $('#character_open_media_overrides').hide();
+    // The character being created isn't saved yet: every action on a saved character (extensions' included) is off,
+    // so none of them acts on the character whose chat is open. Linking lorebooks is staged for the new one.
+    $('#char-management-dropdown option').not('[value="default"], #set_character_world').prop('disabled', true);
 }
 
 function select_rm_characters() {
@@ -9902,8 +9906,8 @@ async function openCharacterWorldPopup() {
         const el = evt?.currentTarget ?? this;
         const selectedValues = $(el).val();
         const selected = Array.isArray(selectedValues) ? selectedValues : [];
-        const fileName = getCharaFilename(null, {});
         const nextList = selected.map(i => world_names[i]).filter(Boolean);
+        // The popup's character (undefined while one is being created: staged for it), not the open chat's.
         charSetAuxWorlds(fileName, nextList);
     }
 
@@ -14990,110 +14994,114 @@ jQuery(async function () {
     $('#char-management-dropdown').on('change', async (e) => {
         const targetElement = /** @type {HTMLSelectElement} */ (e.target);
         const target = $(targetElement.selectedOptions).attr('id');
-        switch (target) {
-            case 'set_character_world':
-                await openCharacterWorldPopup();
-                break;
-            case 'set_chat_character_settings':
-                await setCharacterSettingsOverrides();
-                break;
-            case 'import_character_info':
-                await importEmbeddedWorldInfo();
-                break;
-            case 'edit_embedded_lore':
-                await openEmbeddedLoreEditor();
-                break;
-            case 'character_source': {
-                const source = getCharacterSource(getCurrentCharacter());
-                if (source && isValidUrl(source)) {
-                    const url = new URL(source);
-                    const confirm = await Popup.show.confirm('Open Source', `<span>Do you want to open the link to ${url.hostname} in a new tab?</span><var>${url}</var>`);
-                    if (confirm) {
-                        window.open(source, '_blank');
-                    }
-                } else {
-                    toastr.info('This character doesn\'t seem to have a source.');
-                }
-            } break;
-            case 'replace_update': {
-                let onlineUrl = getCharacterSource(getCurrentCharacter());
-
-                const POPUP_RESULT_URL = POPUP_RESULT.CUSTOM1, POPUP_RESULT_FILE = POPUP_RESULT.CUSTOM2;
-                const result = await Popup.show.confirm(t`Replace Character`,
-                    `<p>${t`Choose a new character card to replace this character with.`}</p>` +
-                    `<p>${t`You can also replace this character with the one from the online source.`}${onlineUrl ? `<br />This character was downloaded from: <var>${onlineUrl}</var>` : ''}</p>` +
-                    `<p>${t`All chats, assets and group memberships will be preserved, but local changes to the character data will be lost.`}<br />${t`Proceed?`}</p>`,
-                    {
-                        okButton: false,
-                        customButtons: [{
-                            text: t`Replace with URL`,
-                            result: POPUP_RESULT_URL,
-                            classes: ['popup-button-ok'],
-                        }, {
-                            text: t`Replace with File`,
-                            result: POPUP_RESULT_FILE,
-                            classes: ['popup-button-ok'],
-                        }],
-                        defaultResult: onlineUrl ? POPUP_RESULT_URL : POPUP_RESULT_FILE,
-                    });
-
-                // Remember the chat currently selected, so we can reload it after the replacement
-                const currentChatFile = getCurrentCharacter().chat;
-                async function postReplace() {
-                    await openCharacterChat(currentChatFile);
-                }
-
-                switch (result) {
-                    case POPUP_RESULT_FILE: {
-                        async function uploadReplacementCard(e) {
-                            const file = e.target.files[0];
-                            if (!file) {
-                                return;
-                            }
-
-                            try {
-                                const data = new Map();
-                                data.set(file, getCurrentCharacter().avatar);
-                                await processDroppedFiles([file], data);
-                                await postReplace();
-                            } catch {
-                                toastr.error('Failed to replace the character card.', 'Something went wrong');
-                            }
+        try {
+            switch (target) {
+                case 'set_character_world':
+                    await openCharacterWorldPopup();
+                    break;
+                case 'set_chat_character_settings':
+                    await setCharacterSettingsOverrides();
+                    break;
+                case 'import_character_info':
+                    await importEmbeddedWorldInfo();
+                    break;
+                case 'edit_embedded_lore':
+                    await openEmbeddedLoreEditor();
+                    break;
+                case 'character_source': {
+                    const source = getCharacterSource(getCurrentCharacter());
+                    if (source && isValidUrl(source)) {
+                        const url = new URL(source);
+                        const confirm = await Popup.show.confirm('Open Source', `<span>Do you want to open the link to ${url.hostname} in a new tab?</span><var>${url}</var>`);
+                        if (confirm) {
+                            window.open(source, '_blank');
                         }
-                        $('#character_replace_file').off('change').on('change', uploadReplacementCard).trigger('click');
-                        break;
+                    } else {
+                        toastr.info('This character doesn\'t seem to have a source.');
                     }
-                    case POPUP_RESULT_URL: {
-                        const inputUrl = await Popup.show.input(t`Replace Character from URL`,
-                            `<p>${t`Enter the URL of the character card to replace this character with.`}</p>` +
-                            (onlineUrl ? `<p>${t`This character was downloaded from: <var>${onlineUrl}</var>`}</p>` : ''),
-                            onlineUrl);
-                        if (!inputUrl) {
+                } break;
+                case 'replace_update': {
+                    let onlineUrl = getCharacterSource(getCurrentCharacter());
+
+                    const POPUP_RESULT_URL = POPUP_RESULT.CUSTOM1, POPUP_RESULT_FILE = POPUP_RESULT.CUSTOM2;
+                    const result = await Popup.show.confirm(t`Replace Character`,
+                        `<p>${t`Choose a new character card to replace this character with.`}</p>` +
+                        `<p>${t`You can also replace this character with the one from the online source.`}${onlineUrl ? `<br />This character was downloaded from: <var>${onlineUrl}</var>` : ''}</p>` +
+                        `<p>${t`All chats, assets and group memberships will be preserved, but local changes to the character data will be lost.`}<br />${t`Proceed?`}</p>`,
+                        {
+                            okButton: false,
+                            customButtons: [{
+                                text: t`Replace with URL`,
+                                result: POPUP_RESULT_URL,
+                                classes: ['popup-button-ok'],
+                            }, {
+                                text: t`Replace with File`,
+                                result: POPUP_RESULT_FILE,
+                                classes: ['popup-button-ok'],
+                            }],
+                            defaultResult: onlineUrl ? POPUP_RESULT_URL : POPUP_RESULT_FILE,
+                        });
+
+                    // Remember the chat currently selected, so we can reload it after the replacement
+                    const currentChatFile = getCurrentCharacter().chat;
+                    async function postReplace() {
+                        await openCharacterChat(currentChatFile);
+                    }
+
+                    switch (result) {
+                        case POPUP_RESULT_FILE: {
+                            async function uploadReplacementCard(e) {
+                                const file = e.target.files[0];
+                                if (!file) {
+                                    return;
+                                }
+
+                                try {
+                                    const data = new Map();
+                                    data.set(file, getCurrentCharacter().avatar);
+                                    await processDroppedFiles([file], data);
+                                    await postReplace();
+                                } catch {
+                                    toastr.error('Failed to replace the character card.', 'Something went wrong');
+                                }
+                            }
+                            $('#character_replace_file').off('change').on('change', uploadReplacementCard).trigger('click');
                             break;
                         }
-                        onlineUrl = inputUrl;
-                        await importFromExternalUrl(onlineUrl, { preserveFileName: getCurrentCharacter().avatar });
-                        await postReplace();
-                        break;
+                        case POPUP_RESULT_URL: {
+                            const inputUrl = await Popup.show.input(t`Replace Character from URL`,
+                                `<p>${t`Enter the URL of the character card to replace this character with.`}</p>` +
+                                (onlineUrl ? `<p>${t`This character was downloaded from: <var>${onlineUrl}</var>`}</p>` : ''),
+                                onlineUrl);
+                            if (!inputUrl) {
+                                break;
+                            }
+                            onlineUrl = inputUrl;
+                            await importFromExternalUrl(onlineUrl, { preserveFileName: getCurrentCharacter().avatar });
+                            await postReplace();
+                            break;
+                        }
                     }
-                }
-            } break;
-            case 'import_tags': {
-                await importTags(getCurrentCharacter(), { importSetting: tag_import_setting.ASK });
-            } break;
-            /*case 'delete_button':
-                popup_type = "del_ch";
-                callPopup(`
-                        <h3>Delete the character?</h3>
-                        <b>THIS IS PERMANENT!<br><br>
-                        THIS WILL ALSO DELETE ALL<br>
-                        OF THE CHARACTER'S CHAT FILES.<br><br></b>`
-                );
-                break;*/
-            default:
-                await eventSource.emit(event_types.CHARACTER_MANAGEMENT_DROPDOWN, target);
+                } break;
+                case 'import_tags': {
+                    await importTags(getCurrentCharacter(), { importSetting: tag_import_setting.ASK });
+                } break;
+                /*case 'delete_button':
+                    popup_type = "del_ch";
+                    callPopup(`
+                            <h3>Delete the character?</h3>
+                            <b>THIS IS PERMANENT!<br><br>
+                            THIS WILL ALSO DELETE ALL<br>
+                            OF THE CHARACTER'S CHAT FILES.<br><br></b>`
+                    );
+                    break;*/
+                default:
+                    await eventSource.emit(event_types.CHARACTER_MANAGEMENT_DROPDOWN, target);
+            }
+        } finally {
+            // Back to "More..." however the action ended, so picking the same option again fires again.
+            $('#char-management-dropdown').prop('selectedIndex', 0);
         }
-        $('#char-management-dropdown').prop('selectedIndex', 0);
     });
 
     $(window).on('beforeunload', () => {

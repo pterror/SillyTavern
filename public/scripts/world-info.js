@@ -7963,8 +7963,6 @@ function applyAuxBooksOp(charLore, fileName, op, books) {
  * @param {string[]} books
  */
 async function updateAuxBooks(fileName, op, books) {
-    if (!fileName) return;
-
     if (menu_type === 'create') {
         // Character doesn't exist server-side yet - stage locally, applied on actual creation.
         const current = create_save.extra_books ?? [];
@@ -7972,6 +7970,8 @@ async function updateAuxBooks(fileName, op, books) {
         create_save.extra_books = normalizeArray(next);
         return;
     }
+
+    if (!fileName) return;
 
     await sendAuxBooksOp(fileName, op, books);
 }
