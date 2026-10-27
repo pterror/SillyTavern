@@ -139,14 +139,8 @@ test.describe('creating a character with greetings', () => {
             expect(first.data.first_mes).toBe(`First ${s}`);
             expect(first.data.alternate_greetings).toEqual([]);
 
-            await page.evaluate(async (avatar) => {
-                // @ts-ignore
-                await SillyTavern.getContext().getCharacters();
-                const { selectCharacterByAvatar } = await import('/script.js');
-                await selectCharacterByAvatar(avatar);
-            }, avatar2);
+            // The create opens the new character.
             await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar2, { timeout: 10000 });
-            await openCharacterManagementDrawer(page);
             await openInfoTab(page, 'greeting');
             await page.locator('.field_edit_toggle[data-for="greeting_field"]').click();
             await page.locator('#charInfoTab_greeting .cm-content').click();
