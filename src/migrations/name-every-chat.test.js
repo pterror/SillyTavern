@@ -16,7 +16,8 @@ const { setStoreEngine, userStore, closeUserStores } = await import('../user-sto
 const { readUserModel, writeUserModel } = await import('../settings-model/user-store.js');
 const { importUpstream } = await import('../settings-model/settings-compat.js');
 const { keyOf } = await import('../settings-model/keys.js');
-const { SPACE } = await import('../chat-engine.js');
+const { SPACE, CHAT_NAMES_META, ChatNamesPendingError } = await import('../chat-engine.js');
+const { chatNamesMiddleware } = await import('../chat-request.js');
 const { humanizedDateTime } = await import('../../public/scripts/humanized-date.js');
 const { loadEngine } = await import('../../engine/load.js');
 
@@ -73,6 +74,8 @@ async function seed(handle) {
     settings.extension_settings = { ...settings.extension_settings, notes: { [`b${ids.walk}`]: 'kept', last: `s${SESSION}.${cara}`, other: `b${ids.g2}` } };
     const model = importUpstream(settings, { bundles: () => null, newKey: hint => keyOf(handle, hint) });
     await writeUserModel(lib, handle, model);
+    // A store from before chats were named carries no mark that they are.
+    await lib.store.commit([{ kind: 'metaValue', key: CHAT_NAMES_META }]);
     await closeUserStores();
     return { directories, trees: { cara, g1, g2 }, ids };
 }
@@ -111,6 +114,44 @@ test('every bookmark gets a label once in its scope, and old chat ids in extensi
         // The conversation named so has its name stored.
         const [sid] = await store.chats.store.chatRead('ids', { space: SPACE.session, keys: [SESSION] });
         assert.equal(await store.chats.store.chatRead('conversationName', { session: sid, tree: trees.cara }), conversation);
+    } finally {
+        await closeUserStores();
+    }
+});
+
+test('a store whose chats aren\'t named is refused its chat routes, saying what to run, until the one-off has run', async () => {
+    const handle = 'u2';
+    const { directories, trees } = await seed(handle);
+    /**
+     * What the chat routes' guard answers for the user (`chatNamesMiddleware()`).
+     * @returns {Promise<{ status: number, body: any } | 'next'>}
+     */
+    const guarded = async () => {
+        const request = /** @type {any} */ ({ user: { directories, profile: { handle } }, path: '/get' });
+        return new Promise((resolve, reject) => {
+            const response = /** @type {any} */ ({ status: code => ({ send: body => resolve({ status: code, body }) }) });
+            chatNamesMiddleware(request, response, err => (err ? reject(err) : resolve('next')));
+        });
+    };
+    setStoreEngine(() => binding);
+    try {
+        const refused = /** @type {any} */ (await guarded());
+        assert.equal(refused.status, 503);
+        assert.match(refused.body.message, /node src\/migrations\/name-every-chat\.js --dry-run --handle u2/);
+        // The store opened: the library and settings are there; only chats are refused, by the engine too.
+        const store = await userStore({ root: directories.root }, handle);
+        assert.ok(await readUserModel(store.lib, handle));
+        await assert.rejects(() => store.chats.resolveChatName({ tree: trees.cara, name: 'Walk' }), ChatNamesPendingError);
+    } finally {
+        await closeUserStores();
+    }
+
+    assert.equal(await runNameEveryChat({ dataRoot, handle, apply: true, engine: async () => binding, probeServer: noServer, log: () => {}, warn: () => {} }), 0);
+    setStoreEngine(() => binding);
+    try {
+        assert.equal(await guarded(), 'next');
+        const store = await userStore({ root: directories.root }, handle);
+        assert.ok(await store.chats.resolveChatName({ tree: trees.cara, name: 'Walk' }));
     } finally {
         await closeUserStores();
     }

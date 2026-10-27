@@ -17,7 +17,8 @@ import { loadOneOffEngine, parseOneOffArgs, probeConfiguredServer } from './one-
  * - Old chat ids an extension kept in its settings (`s<UUID>.<tree>`, `b<id>`, as keys or as values) become the chats'
  *   names; a session's conversation named so has its name stored, so it stays.
  *
- * The dry run lists every change and writes nothing. --apply writes them, then reads everything back and checks it.
+ * The dry run lists every change and writes nothing. --apply writes them, reads everything back and checks it, and then
+ * marks the store's chats named (`CHAT_NAMES_META`): until then the server refuses that user's chat routes.
  *
  *   node src/migrations/name-every-chat.js --dry-run [--data-root ./data] [--handle default-user] [--config ./config.yaml]
  *   node src/migrations/name-every-chat.js --apply [the same]
@@ -166,7 +167,7 @@ export async function runNameEveryChat(options) {
     // Their imports read config when they load: after the config path is set.
     const { setStoreEngine, userStore, closeUserStores, STORE_DIR } = await import('../user-stores.js');
     const { readUserModel, writeUserModel } = await import('../settings-model/user-store.js');
-    const { SPACE } = await import('../chat-engine.js');
+    const { CHAT_NAMES_META, SPACE } = await import('../chat-engine.js');
 
     const directories = directoriesFor(options.dataRoot, options.handle);
     log(`${LOG_PREFIX} ${options.apply ? 'apply' : 'dry run'} for ${directories.root}`);
@@ -186,6 +187,8 @@ export async function runNameEveryChat(options) {
     const store = await userStore({ root: directories.root });
     try {
         const { chats } = store;
+        // This is what names them: the guard against serving unnamed chats doesn't apply here.
+        chats.namesPendingFor = null;
         const plan = await plannedLabels(chats, await allBookmarks(chats));
         const changed = plan.filter(p => p.from !== p.to);
         for (const p of changed) log(`${LOG_PREFIX} bookmark ${p.id} (tree ${p.tree}): ${p.from === null ? '(no label)' : JSON.stringify(p.from)} -> ${JSON.stringify(p.to)}`);
@@ -233,7 +236,8 @@ export async function runNameEveryChat(options) {
             warnLine(`${LOG_PREFIX} FAILED: ${wrong.length} label(s) read back otherwise, ${repeated.length} not unique, ${left.length} old id(s) left`);
             return 1;
         }
-        log(`${LOG_PREFIX} written and read back: every chat named, each once in its scope`);
+        await store.lib.store.commit([{ kind: 'metaValue', key: CHAT_NAMES_META, json: 'true' }]);
+        log(`${LOG_PREFIX} written and read back: every chat named, each once in its scope; the store is marked so`);
         return 0;
     } finally {
         await closeUserStores();
