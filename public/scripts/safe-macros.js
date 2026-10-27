@@ -92,7 +92,8 @@ export function isSafeMacro(macroText) {
 }
 
 /** For each mention, the macro whose value is its card's text: who it names' description, its macros filled in. */
-const MENTION_ABOUT = Object.freeze({ user: '{{persona}}', char: '{{description}}', charifnotgroup: '{{description}}' });
+// A character's card shows its creator's notes (what the character list shows of it), a persona its description.
+const MENTION_ABOUT = Object.freeze({ user: '{{persona}}', char: '{{charCreatorNotes}}', charifnotgroup: '{{charCreatorNotes}}' });
 
 /**
  * @param {string} macroName
@@ -103,7 +104,7 @@ export function mentionAboutMacro(macroName) {
 }
 
 /**
- * Who a mention names, their description as filled in (its macros' values); none until it is known.
+ * Who a mention names, their card text as filled in (its macros' values); none until it is known.
  * @template {{ about: string }} P
  * @param {P | null} person
  * @param {string} macroName
