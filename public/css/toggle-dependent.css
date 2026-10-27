@@ -533,17 +533,25 @@ body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_blo
     overflow-y: auto;
 }
 
-/* Base template hides this inline and relies on the .is_fav outline instead; gallery cards have room to show it. */
+/* Base template hides this inline and relies on the .is_fav outline instead; gallery cards have room to show it:
+   in the top-right corner, inside the card's padding (clear of its rounded border and the avatar). */
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .character_select.is_fav .ch_fav_icon,
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .group_select.is_fav .ch_fav_icon {
     display: inline-block !important;
     position: absolute;
-    top: 6px;
-    left: 6px;
+    top: 10px;
+    right: 10px;
     margin: 0;
     padding: 0;
     font-size: 16px;
+    line-height: 1;
     order: unset;
+}
+
+/* The name doesn't run under the star. */
+body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .character_select.is_fav .character_name_block,
+body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .group_select.is_fav .group_name_block {
+    padding-right: 22px;
 }
 
 /*big avatars mode page-wide changes*/
