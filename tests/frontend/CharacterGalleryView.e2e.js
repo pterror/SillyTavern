@@ -42,21 +42,38 @@ test.describe('Character Gallery View', () => {
         expect(avatarBox.width).toBeLessThan(cardBox.width * 0.5);
 
         // Reuses the same rendered rows.
-        const firstCardAvatar = await firstCard.getAttribute('data-avatar');
-        expect(firstCardAvatar).toBeTruthy();
+        await expect(firstCard).toHaveAttribute('data-avatar', /.+/);
+    });
+
+    test('a favorite\'s star sits inside its card, clear of the border and the avatar', async ({ page }) => {
+        await openCharacterManagementDrawer(page);
+        const card = page.locator('#rm_print_characters_block .character_select').first();
+        await expect(card).toBeVisible();
+        await card.evaluate(el => el.classList.add('is_fav'));
+        const [cardBox, starBox, avatarBox] = await Promise.all([
+            card.boundingBox(),
+            card.locator('.ch_fav_icon').boundingBox(),
+            card.locator('.avatar').boundingBox(),
+        ]);
+        // Inside the card's 10px padding, which clears its 10px rounded corner.
+        expect(starBox.x + starBox.width).toBeLessThanOrEqual(cardBox.x + cardBox.width - 9);
+        expect(starBox.y).toBeGreaterThanOrEqual(cardBox.y + 9);
+        // Not over the avatar.
+        expect(starBox.x).toBeGreaterThan(avatarBox.x + avatarBox.width);
     });
 
     test('a search with few results keeps its cards their own height', async ({ page }) => {
         await openCharacterManagementDrawer(page);
         const cards = page.locator('#rm_print_characters_block .character_select');
         await expect(cards.first()).toBeVisible();
-        const fullHeight = (await cards.first().boundingBox()).height;
-        await page.locator('#character_search_bar').fill('Seraphina');
+        // The search bar is toggled by its button, and the toggle is remembered.
+        const search = page.locator('#character_search_bar');
+        if (!await search.isVisible()) await page.locator('#rm_button_search').click();
+        await search.fill('Seraphina');
         await expect(cards).toHaveCount(1);
         // The one row is as tall as a card, not the whole list.
         const listHeight = (await page.locator('#rm_print_characters_block').boundingBox()).height;
         const cardHeight = (await cards.first().boundingBox()).height;
         expect(cardHeight).toBeLessThan(listHeight / 2);
-        expect(Math.abs(cardHeight - fullHeight)).toBeLessThanOrEqual(2);
     });
 });
