@@ -1536,24 +1536,6 @@ router.post('/message/cut-many', validateAvatarUrlMiddleware, async function (re
     }
 });
 
-/** Swaps two adjacent messages of the path. */
-router.post('/message/swap-adjacent', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const upper = String(request.body.upper_node_id || '');
-        if (!upper) return response.status(400).send({ error: 'upper_node_id is required' });
-        const lower = String(request.body.lower_node_id || '');
-        if (!lower) return response.status(400).send({ error: 'lower_node_id is required' });
-        const chat = await chatOf(request);
-        if (!chat) return response.status(409).send({ ok: false, reason: 'unknown chat' });
-        const result = await chat.store.chats.swapAdjacent({ tree: chat.tree, upper, lower, actor: chat.session.actor() });
-        chat.session.answer(response, { moved: result.ok });
-        return response.status(result.ok ? 200 : 409).send(result);
-    } catch (error) {
-        console.error('Error swapping adjacent messages:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
 /**
  * Deletes a swipe and everything below it. `preview` answers what else it would drop (bookmarks, state changes),
  * writing nothing; `confirm` names exactly those (as the preview did), else it is refused with them.

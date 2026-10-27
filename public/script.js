@@ -296,13 +296,13 @@ export { messageFormatting };
 // Lives in chat-store.js, the only module allowed to write messages; re-exported for existing importers.
 import {
     updateMessage, updateIn,
-    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpCut, chatOpSelect, chatOpGraft, chatOpSwapAdjacent, chatOpReadyAlternativeDelete, chatOpDeleteAlternativeNode,
+    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpCut, chatOpSelect, chatOpGraft, chatOpReadyAlternativeDelete, chatOpDeleteAlternativeNode,
     _mergeCardGreetingsIntoOpening, isComposedSlot, chatOpStoreComposed, _setCurrentTarget, setStoreRef, storeRefOf, adoptStored, chatOpAppendAfter, setSendStoredListener,
     openingForRequest, setUnstoredExtra,
 } from './scripts/chat-store.js';
 export {
     updateMessage, updateIn, adoptStored, openingForRequest,
-    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpCut, chatOpSelect, chatOpGraft, chatOpSwapAdjacent, chatOpReadyAlternativeDelete, chatOpDeleteAlternativeNode,
+    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpCut, chatOpSelect, chatOpGraft, chatOpReadyAlternativeDelete, chatOpDeleteAlternativeNode,
 };
 // Lives in node-identity.js, a standalone module with no dependency on anything else in this cluster; re-exported for existing importers.
 import { isStoredNodeId, isProvisionalNodeId, provisionalNodeId } from './scripts/node-identity.js';
@@ -8354,54 +8354,6 @@ async function messageEditCancel(messageId = this_edit_mes_id) {
     showSwipeButtons();
 }
 
-/**
- * Swaps chat[sourceId] with chat[targetId]. They must be adjacent.
- * @param {number} sourceId Index of the message to move
- * @param {number} targetId Index of the target message
- * @returns {Promise<boolean>} True if the messages were moved, false otherwise
- */
-async function messageEditMove(sourceId, targetId) {
-    if (is_send_press) {
-        console.warn(`The message #${sourceId} was not moved to #${targetId} because a generation is in progress.`);
-        return false;
-    }
-
-    if (Math.abs(sourceId - targetId) !== 1) {
-        console.error(`Message #${sourceId} and #${targetId} are not adjacent.`);
-        return false;
-    }
-
-    const targetMessageDiv = chatElement.find(`.mes[mesid="${targetId}"]`);
-    const sourceMessageDiv = chatElement.find(`.mes[mesid="${sourceId}"]`);
-
-    if (sourceMessageDiv.length === 0 || targetMessageDiv.length === 0) {
-        console.error(`Message #${sourceId} or #${targetId} were not found.`);
-        return false;
-    }
-
-    if (sourceId <= targetId) {
-        sourceMessageDiv.insertAfter(targetMessageDiv);
-    } else {
-        sourceMessageDiv.insertBefore(targetMessageDiv);
-    }
-
-    //Swap Ids.
-    targetMessageDiv.attr('mesid', sourceId);
-    sourceMessageDiv.attr('mesid', targetId);
-
-    await chatOpSwapAdjacent(sourceId, targetId).catch(error =>
-        console.error('Could not save the reordered messages:', error));
-
-    // Update edited message id
-    if (this_edit_mes_id === sourceId) {
-        this_edit_mes_id = targetId;
-    }
-
-    updateViewMessageIds();
-    refreshSwipeButtons();
-    return true;
-}
-
 async function messageEditDone(div) {
     if (!(this_edit_mes_id >= 0)) {
         console.trace('this_edit_mes_id cannot be blank when calling messageEditDone.');
@@ -9806,20 +9758,11 @@ export function updateEditArrowClasses() {
 
     const message = chatElement.children('.mes').filter(`.mes[mesid="${this_edit_mes_id}"]`);
 
-    const downButton = message.find('.mes_edit_down');
-    const upButton = message.find('.mes_edit_up');
     const copyButton = message.find('.mes_edit_copy');
     const deleteButton = message.find('.mes_edit_delete');
-    const lastId = Number(chatElement.find('.mes').last().attr('mesid'));
-    const firstId = Number(chatElement.find('.mes').first().attr('mesid'));
 
     copyButton.removeClass('disabled');
     deleteButton.removeClass('disabled');
-
-    // The last message cannot be moved down.
-    downButton.toggleClass('disabled', lastId === Number(this_edit_mes_id));
-    // The first message cannot be moved up.
-    upButton.toggleClass('disabled', firstId === Number(this_edit_mes_id));
 }
 
 /**
@@ -14560,23 +14503,6 @@ jQuery(async function () {
 
     $(document).on('click', '.mes_edit_cancel', async function () {
         await messageEditCancel.call(this, this_edit_mes_id);
-    });
-
-    $(document).on('click', '.mes_edit_up', async function () {
-        if (this_edit_mes_id <= 0) {
-            return;
-        }
-        const targetId = Number(this_edit_mes_id) - 1;
-        await messageEditMove(this_edit_mes_id, targetId);
-    });
-
-    $(document).on('click', '.mes_edit_down', async function () {
-        if (this_edit_mes_id >= chat.length - 1) {
-            return;
-        }
-
-        const targetId = Number(this_edit_mes_id) + 1;
-        await messageEditMove(this_edit_mes_id, targetId);
     });
 
     $(document).on('click', '.mes_edit_copy', async function () {

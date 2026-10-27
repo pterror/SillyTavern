@@ -156,61 +156,6 @@ describe('POST /api/chats/message/cut', () => {
     });
 });
 
-describe('POST /api/chats/message/swap-adjacent', () => {
-    test('swaps two adjacent messages and keeps the new order', async () => {
-        const { avatar, ids: [n0, n1, n2] } = await seedChain();
-
-        const res = await postJson('/api/chats/message/swap-adjacent', { avatar_url: avatar, upper_node_id: n1, lower_node_id: n2 });
-        expect(res.status).toBe(200);
-        expect(res.body).toEqual({ ok: true });
-
-        const messages = await shown(avatar);
-        expect(messages.map(m => m.mes)).toEqual(['m0', 'm2', 'm1']);
-        expect(messages.map(m => m.node_id)).toEqual([n0, n2, n1]);
-    });
-
-    test('400s when upper_node_id is missing', async () => {
-        const { avatar, ids: [, , n2] } = await seedChain();
-        const res = await postJson('/api/chats/message/swap-adjacent', { avatar_url: avatar, lower_node_id: n2 });
-        expect(res.status).toBe(400);
-    });
-
-    test('400s when lower_node_id is missing', async () => {
-        const { avatar, ids: [, n1] } = await seedChain();
-        const res = await postJson('/api/chats/message/swap-adjacent', { avatar_url: avatar, upper_node_id: n1 });
-        expect(res.status).toBe(400);
-    });
-
-    test('409s and refuses non-adjacent nodes', async () => {
-        const { avatar, ids: [n0, , n2] } = await seedChain();
-        const res = await postJson('/api/chats/message/swap-adjacent', { avatar_url: avatar, upper_node_id: n0, lower_node_id: n2 });
-        expect(res.status).toBe(409);
-        expect(res.body).toEqual({ ok: false, reason: 'not adjacent' });
-    });
-
-    test('409s and refuses when the upper node is not the lower one\'s parent', async () => {
-        const { avatar, ids: [, n1, n2] } = await seedChain();
-        const altRes = await postJson('/api/chats/message/alternative', { avatar_url: avatar, sibling_node_id: n1, contents: [makeMessage('alt-m1')] });
-        const altId = altRes.body.node_ids[0];
-
-        const res = await postJson('/api/chats/message/swap-adjacent', { avatar_url: avatar, upper_node_id: altId, lower_node_id: n2 });
-        expect(res.status).toBe(409);
-        expect(res.body).toEqual({ ok: false, reason: 'not adjacent' });
-    });
-
-    test('swapping twice in a row returns to the original order', async () => {
-        const { avatar, ids: [n0, n1, n2] } = await seedChain();
-        expect((await postJson('/api/chats/message/swap-adjacent', { avatar_url: avatar, upper_node_id: n1, lower_node_id: n2 })).body).toEqual({ ok: true });
-        expect((await postJson('/api/chats/message/swap-adjacent', { avatar_url: avatar, upper_node_id: n2, lower_node_id: n1 })).body).toEqual({ ok: true });
-
-        const messages = await shown(avatar);
-        expect(messages.map(m => m.mes)).toEqual(['m0', 'm1', 'm2']);
-        expect(messages.map(m => m.node_id)).toEqual([n0, n1, n2]);
-    });
-});
-
-// A swipe delete is "delete this swipe and all descendants" (5b addendum: the old route maps to `deleteSubtree`);
-// what else it would drop is answered and has to be confirmed.
 describe('POST /api/chats/message/alternative/delete', () => {
     test('deletes an unshown alternative, leaving the path as it was', async () => {
         const { avatar, ids: [, n1] } = await seedChain();
