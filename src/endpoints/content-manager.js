@@ -803,11 +803,18 @@ async function downloadGenericPng(url) {
  * @param {string} url Risu Realm URL
  * @returns {string | null} UUID of the character
  */
-function parseRisuUrl(url) {
+export function parseRisuUrl(url) {
     // Example: https://realm.risuai.net/character/7adb0ed8d81855c820b3506980fb40f054ceef010ff0c4bab73730c0ebe92279
     // or https://realm.risuai.net/character/7adb0ed8-d818-55c8-20b3-506980fb40f0
-    const pattern = /^https?:\/\/realm\.risuai\.net\/character\/([a-f0-9-]+)\/?$/i;
-    const match = url.match(pattern);
+    // A query string or fragment (a shared link's) isn't part of the id.
+    let parsed;
+    try {
+        parsed = new URL(url);
+    } catch {
+        return null;
+    }
+    if (parsed.hostname.toLowerCase() !== 'realm.risuai.net') return null;
+    const match = parsed.pathname.match(/^\/character\/([a-f0-9-]+)\/?$/i);
     return match ? match[1] : null;
 }
 
@@ -853,10 +860,18 @@ function isPerchanceUUID(uuid) {
  * @param {string} url Perchance character URL
  * @returns {string} Slug of the character
  */
-function parsePerchanceSlug(url) {
+export function parsePerchanceSlug(url) {
     // Example: https://perchance.org/ai-character-chat?data=Personality_Advisor~6903e991c90fd1dba52c036d917e99c6.gz
     // or: Personality_Advisor~6903e991c90fd1dba52c036d917e99c6.gz
-    return url?.split('~')[1] || '';
+    // or the link a stored card's source makes, whose `data` is the slug alone: ...?data=6903e991c90fd1dba52c036d917e99c6.gz
+    let data = url ?? '';
+    try {
+        data = new URL(data).searchParams.get('data') ?? '';
+    } catch {
+        // Not a URL: the `Name~slug` form itself.
+    }
+    const match = data.match(/(?:^|~)([a-f0-9]{32}\.gz)$/i);
+    return match ? match[1] : '';
 }
 
 /**
