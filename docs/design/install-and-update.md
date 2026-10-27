@@ -80,16 +80,47 @@ native modules, prebuilt and tested on that platform.
 
 Replaces the one-offs and the "stop the server and run" guards.
 
-- Each migration is code in the version, with an id, recorded in the store when done.
-- At start, before serving, the server runs the pending ones in order: first a snapshot of the store (the engine's
-  own checkpoint, cheap: its files are immutable runs), then each migration, resumable after a crash (it records
-  how far it got), with a progress page shown meanwhile.
-- A migration that fails stops the start, says which and why, and leaves the snapshot to go back to (the launcher's
-  rollback restores it with the version).
-- Downgrading across a migration restores that migration's snapshot (changes made since are listed and kept aside
-  first, not silently lost).
-- The current one-offs (`convert-settings-to-model`, `name-every-chat`) become the first two, already recorded as
-  done on stores that ran them.
+- Each migration is code in the version (`src/store-migrations/`), registered with an id and a description, and
+  recorded in the user's store when done (a meta value `migration.<id>`). Migrations are per user store; there is
+  no global migration state (nothing outside the users' stores needs one yet; when something does, it gets a file
+  in the data root with the same shape).
+- A store made by this version has nothing to migrate: it's made with every registered migration recorded done.
+- A store that ran a one-off by hand counts it done: `name-every-chat` by its old mark (`chat_names`).
+
+### Data flow at start
+
+| Step | Who | What |
+|---|---|---|
+| boot, before listening | server | every user is "checking"; `userStore()` for a user waits until that user's migrations are done (so nothing in the background reads or writes a store before them), and fails for a user whose migration failed |
+| boot, before listening | server | starts each user's migrations (not awaited): the server listens meanwhile |
+| a request from a user who isn't done | page, server | `/api/migrations/status` answers the user's state; any other `/api/` answers 503 with it; a page load answers the progress page, which polls the status and reloads when done; static files are served as usual |
+| per user | migrations | opens the store (past the gate), reads which registered migrations aren't recorded; none: done |
+| per user, some pending | migrations | unless a run was cut short (its marker, below, is there): closes the store, snapshots it, writes the marker naming the snapshot and the pending ids, opens it again |
+| per user, each pending in order | migrations | runs it; it reports progress for the page and may save how far it got (meta `migration.<id>.state`), so a crash resumes it from there; then records it done |
+| per user, all done | migrations | removes the marker, keeps the two newest snapshots; the user is done and `userStore()` opens for everyone |
+| per user, one fails | migrations | the user is "failed: <migration>: <why>", logged and shown on the progress page; the store, the snapshot and the marker stay; other users go on; the next start tries again from where it stopped |
+
+### Snapshots
+
+The engine's files are a log (`log-*.blk`, appended to, the newest only) and runs (`runs/*.run`, written once,
+renamed into place, only ever removed). A snapshot is taken with the store closed, under
+`<user>/store-snapshots/<time>-before-<first id>/`: every run and every log file but the newest hard-linked (no
+copy; a file the engine removes later stays in the snapshot), the newest log file copied (the engine goes on
+appending to it), and `snapshot.json` (the pending ids, when). Where hard links aren't possible (another filesystem)
+files are copied. A snapshot costs the newest log file's size until the engine merges and cleans past it; then it
+holds the files it still names.
+
+Restoring (the launcher's rollback; by hand until it exists): with the server stopped, rename `store/` aside, copy
+the snapshot's `store/` to `store/` (`restoreStoreSnapshot()`), and start. The migrations recorded after the
+snapshot run again.
+
+### The one-offs
+
+- `name-every-chat` is the first registered migration. Its 503 guard and "stop the server and run" message are gone:
+  the server doesn't serve a store before its migrations ran.
+- `convert-settings-to-model` is deleted: the settings document converts a user's settings files the first time it
+  opens them (`src/settings-document.js`), so nothing is left for it to do.
+- `src/migrations/` (with `one-off.js`, the stopped-server probe) is gone.
 
 ## Also
 
