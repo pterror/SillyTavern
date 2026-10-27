@@ -1582,6 +1582,8 @@ impl Store {
     /// - `stats { owners }`: `{ owners, totals }`; `itemization { message }`; `sent { owner, keys }`;
     /// - `itemized { after?, limit }`: `{ ids, more }`, messages with an itemization in id order;
     /// - `tokenCache { table, identity, hash }`: `{ used, value }` or null; `tokenCacheCount { table }`;
+    /// - `conversationName { session, tree }`: the stored name of the session's conversation in the tree, or null;
+    /// - `chatsNamed { name, limit }`: `[{ tree, bookmark, session }]`, the chats named exactly `name` in any tree;
     /// - `bookmarksNamed { tree, name }`: the tree's bookmark named exactly `name`, as a list;
     /// - `branchEnd { tree, at?, session?, user? }`: the end of the followed path below `at` (or `at`);
     /// - `subtreeDrops { tree, roots, keep?, root? }`: what deleting those subtrees (less those of `keep`), and with
@@ -2559,6 +2561,19 @@ fn chat_read_job(op: String, args: &Object) -> Result<TreeRead> {
         "currentChat" => {
             let (ses, tree) = (req_integer(a, "session")?, req_integer(a, "tree")?);
             Box::new(move |s| s.chat_read(|v| cr::current_chat(v, ses, tree)).map(JsTree))
+        }
+        "conversationName" => {
+            let (ses, tree) = (req_integer(a, "session")?, req_integer(a, "tree")?);
+            Box::new(move |s| s.chat_read(|v| cr::conversation_name(v, ses, tree)).map(JsTree))
+        }
+        "chatsNamed" => {
+            let name = string(
+                "name",
+                a.get::<Unknown>("name")?
+                    .ok_or_else(|| invalid("chatsNamed needs a name".into()))?,
+            )?;
+            let limit = limit(a)?;
+            Box::new(move |s| s.chat_read(|v| cr::chats_named(v, &name, limit)).map(JsTree))
         }
         "currentChats" => {
             let (ses, after, limit) = (

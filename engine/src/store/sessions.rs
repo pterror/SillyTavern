@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use super::StoreError;
 use super::chat::{self, APPEND_OWNER, children_prefix, message_loc, parent_of, require_message};
 use super::derive::{Layer, Loc, Out, View};
-use super::kinds::{dead, id, key, parse_varints, varints};
+use super::kinds::{bytes, dead, id, key, loc_bytes, parse_loc, parse_varints, varints};
 use super::library::counter;
 use crate::keyspace::val::{Val, get_bytes, get_u64, put_bytes, put_u64};
 use crate::log::format::Record;
@@ -88,6 +88,10 @@ pub const REMEMBERED_IN: u64 = 154;
 /// Per (session, tree): the session's current chat there (upstream's open chat file), a bookmark,
 /// `[bookmark, record position, record length]`; none has no entry. Set only by a `currentChat` (an explicit switch).
 pub const CURRENT_CHAT: u64 = 175;
+
+/// Per (session, tree): the name of the session's conversation there (`conversationName`), its record's place
+/// (`loc_bytes`); none until the conversation's first write stores one.
+pub const CONVO_NAME: u64 = 166;
 
 /// Per session made by a `sessionFork`: `[original, length, record position, record length]`; its history's entries
 /// 1 to length are the original's. Per (original, length, fork): the fork reads the original's entries up to length,
@@ -1318,6 +1322,55 @@ pub fn current_chat_repoint(
     Ok(())
 }
 
+pub fn convo_name_key(s: u64, tree: u64) -> Vec<u8> {
+    key::ids(CONVO_NAME, s, tree)
+}
+
+/// The stored name of the session's conversation in the tree.
+pub fn convo_name(view: &View, s: u64, tree: u64) -> Result<Option<Vec<u8>>, StoreError> {
+    let Some(v) = view.get(&convo_name_key(s, tree))? else {
+        return Ok(None);
+    };
+    let (rec, _) = view.record(parse_loc(&v)?.pos)?;
+    Ok(Some(bytes(&rec, 3).to_vec()))
+}
+
+/// The session's conversation in the tree is named `name`, by the record at `at`.
+pub fn convo_name_set(
+    view: &View,
+    out: &mut Out,
+    s: u64,
+    tree: u64,
+    name: &[u8],
+    at: Loc,
+) -> Result<(), StoreError> {
+    let k = convo_name_key(s, tree);
+    if let Some(v) = view.get(&k)? {
+        let old = parse_loc(&v)?;
+        let (rec, _) = view.record(old.pos)?;
+        out.del(chat::chat_named_key(bytes(&rec, 3), tree, 1, s));
+        dead(out, old);
+    }
+    out.put(chat::chat_named_key(name, tree, 1, s), Vec::new());
+    out.put(k, loc_bytes(at));
+    Ok(())
+}
+
+/// The session's conversation names go with it.
+fn convo_names_gone(view: &View, out: &mut Out, s: u64) -> Result<(), StoreError> {
+    let p = key::id(CONVO_NAME, s);
+    for (k, v) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
+        let mut at = p.len();
+        let tree = get_u64(&k, &mut at).ok_or_else(|| bad("a conversation name key"))?;
+        let l = parse_loc(&v)?;
+        let (rec, _) = view.record(l.pos)?;
+        out.del(chat::chat_named_key(bytes(&rec, 3), tree, 1, s));
+        dead(out, l);
+        out.del(k);
+    }
+    Ok(())
+}
+
 /// The card greeting the session chose for the tree with no message stored, by its index in the card's list.
 pub fn opening_choice(view: &View, s: u64, tree: u64) -> Result<Option<u64>, StoreError> {
     Ok(get_vals::<3>(view, &key::ids(OPENING_CHOICE, s, tree))?.map(|[i, _, _]| i))
@@ -1610,6 +1663,7 @@ pub fn session_gone(view: &View, out: &mut Out, s: u64) -> Result<(), StoreError
         );
     }
     out.del(key::id(HISTORY_CUR, s));
+    convo_names_gone(view, out, s)?;
     for space in [OPENING_CHOICE, CURRENT_CHAT] {
         let op = key::id(space, s);
         for (k, v) in view.scan(&op, &key::prefix_end(&op), usize::MAX)? {

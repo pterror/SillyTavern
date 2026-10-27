@@ -693,6 +693,27 @@ pub fn sent(view: &View, owner: u64, keys: &[Vec<u8>]) -> Result<Js, StoreError>
     Ok(Js::Arr(out))
 }
 
+/// The stored name of a session's conversation in a tree, or null.
+pub fn conversation_name(view: &View, s: u64, tree: u64) -> Result<Js, StoreError> {
+    Ok(sessions::convo_name(view, s, tree)?.map_or(Js::Null, Js::Text))
+}
+
+/// The chats named exactly `name` in any tree: `[{ tree, bookmark, session }]`, one of the last two set.
+pub fn chats_named(view: &View, name: &[u8], limit: usize) -> Result<Js, StoreError> {
+    Ok(Js::Arr(
+        chat::chats_named(view, name, limit)?
+            .into_iter()
+            .map(|(tree, which, holder)| {
+                Js::Obj(vec![
+                    ("tree", Js::Big(tree)),
+                    ("bookmark", if which == 0 { Js::Big(holder) } else { Js::Null }),
+                    ("session", if which == 1 { Js::Big(holder) } else { Js::Null }),
+                ])
+            })
+            .collect(),
+    ))
+}
+
 /// The tree's bookmarks named exactly `name` (names are unique in a tree: at most one).
 pub fn bookmarks_named(view: &View, tree: u64, name: &[u8]) -> Result<Js, StoreError> {
     Ok(Js::Arr(
