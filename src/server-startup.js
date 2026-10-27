@@ -3,7 +3,6 @@ import http from 'node:http';
 import fs from 'node:fs';
 import { color, urlHostnameToIPv6, getHasIP } from './util.js';
 import { settingsDocumentMiddleware } from './settings-document.js';
-import { chatNamesMiddleware } from './chat-request.js';
 
 // Express routers
 import { router as userDataRouter } from './users.js';
@@ -173,8 +172,6 @@ export function setupPrivateEndpoints(app) {
     app.use('/api/extensions', extensionsRouter);
     app.use('/api/assets', assetsRouter);
     app.use('/api/files', filesRouter);
-    // A store whose chats aren't all named yet serves none of them (name-every-chat runs first).
-    app.use(['/api/chats', '/api/groups', '/api/characters/chat', '/api/characters/chats'], chatNamesMiddleware);
     app.use('/api/characters', charactersRouter);
     app.use('/api/chats', chatsRouter);
     app.use('/api/groups', groupsRouter);

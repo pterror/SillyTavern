@@ -74,6 +74,7 @@ import { init as settingsInit } from './endpoints/settings.js';
 import { redirectDeprecatedEndpoints, ServerStartup, setupPrivateEndpoints } from './server-startup.js';
 import { diskCache, dropStoppedRuns, startDroppedWatch, stopDroppedWatches } from './endpoints/characters.js';
 import { OldFormatError, assertConverted, closeUserStores, resumeStoreWork, setStoreEngine } from './user-stores.js';
+import { migrationGateMiddleware, startStoreMigrations } from './store-migrations/run.js';
 import { openSettingsDocument } from './settings-document.js';
 import { initializeLocalImportScan, disposeLocalImportScan } from './local-import-scan.js';
 import { migrateFlatSecrets } from './endpoints/secrets.js';
@@ -169,6 +170,8 @@ app.use(cookieSession({
 }));
 
 app.use(setUserDataMiddleware);
+// A user whose data is being migrated (src/store-migrations/) is shown the progress, nothing else of theirs served.
+app.use(migrationGateMiddleware);
 
 // CSRF Protection //
 if (!cliArgs.disableCsrf) {
@@ -553,7 +556,7 @@ async function postSetupTasks(result) {
 /**
  * Fetches (when needed) and loads the engine, before anything that reads or writes a user's store (the old public
  * folders' import included); a user directory still in the format before the engine stops the server with one line
- * naming the conversion.
+ * naming the conversion. Then starts each user's pending data migrations (src/store-migrations/).
  */
 async function loadStoreEngine() {
     try {
@@ -574,6 +577,9 @@ async function loadStoreEngine() {
         console.error(color.red(err.message));
         process.exit(1);
     }
+    // Not awaited: the server listens meanwhile, a user's routes answering the progress and their store opening for
+    // anything once their migrations are done.
+    startStoreMigrations(await getUserDirectoriesList());
 }
 
 /**
