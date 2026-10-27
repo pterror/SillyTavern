@@ -6721,7 +6721,6 @@ export async function renameCharacter(name = null, { silent = false, renameChats
         return false;
     }
     if (newValue === getCurrentCharacter().name) {
-        toastr.info(t`Same character name provided, so name did not change.`, t`Rename Character`);
         return false;
     }
 
@@ -6793,11 +6792,9 @@ export async function renameCharacter(name = null, { silent = false, renameChats
                     throw new Error('New character not selected');
                 }
 
+                // The new name shows where it was typed: no toast.
                 if (renamePastChats) {
                     await reloadCurrentChat();
-                    toastr.success(t`Character renamed and past chats updated!`, t`Rename Character`);
-                } else {
-                    toastr.success(t`Character renamed!`, t`Rename Character`);
                 }
             } else {
                 throw new Error('Newly renamed character was lost?');
@@ -13604,6 +13601,12 @@ jQuery(async function () {
         select_rm_create();
     });
     $('#rm_button_selected_ch').on('click', function () {
+        // On the character's own info the name is a field: a click edits it. Elsewhere (the list, a group, a group
+        // member's info under the group's name) the name leads to its panel.
+        if (!selected_group && menu_type === 'character_edit') {
+            beginInlineCharacterRename();
+            return;
+        }
         if (selected_group) {
             select_group_chats(selected_group, false);
         } else {
@@ -14033,13 +14036,12 @@ jQuery(async function () {
         }, true);
     }
 
-    // The character's name at the top of its info renames it in place: the pen, or a double click on the name.
+    // The character's name at the top of its info renames it in place: the pen, or a click on the name.
     const nameHeading = document.querySelector('#rm_button_selected_ch h2');
     const showRenameButton = () => $('#character_rename_inline').toggle(getSelectionState().type === 'character' && Boolean(nameHeading?.textContent));
     if (nameHeading) new MutationObserver(showRenameButton).observe(nameHeading, { childList: true, characterData: true, subtree: true });
     eventSource.on(event_types.CHAT_CHANGED, showRenameButton);
     $(document).on('click', '#character_rename_inline', () => beginInlineCharacterRename());
-    $(document).on('dblclick', '#rm_button_selected_ch h2', () => beginInlineCharacterRename());
 
     $(document).on('click', '.renameChatButton', async function (e) {
         e.stopPropagation();
