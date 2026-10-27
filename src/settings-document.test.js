@@ -6,12 +6,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { setConfigFilePath } from './util.js';
+import { USER_DIRECTORY_TEMPLATE } from './constants.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // user-stores.js reads the config at import time.
 setConfigFilePath(path.join(here, '..', 'config.yaml'));
 
-const { directoriesFor } = await import('./migrations/convert-settings-to-model.js');
 const { setStoreEngine, closeUserStores } = await import('./user-stores.js');
 const settingsStore = await import('./settings-store.js');
 const { openSettingsDocument } = await import('./settings-document.js');
@@ -27,6 +27,16 @@ after(async () => {
     await closeUserStores();
     fs.rmSync(dataRoot, { recursive: true, force: true });
 });
+
+/**
+ * A user's directories under the test's data root.
+ * @param {string} root
+ * @param {string} handle
+ * @returns {any}
+ */
+function directoriesFor(root, handle) {
+    return Object.fromEntries(Object.entries(USER_DIRECTORY_TEMPLATE).map(([key, sub]) => [key, path.join(root, handle, sub)]));
+}
 
 /**
  * A new user as the content manager makes one: the shipped settings and some shipped bundles in files.

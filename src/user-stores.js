@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { LibraryEngine } from './library-engine.js';
-import { CHAT_NAMES_META, ChatEngine } from './chat-engine.js';
+import { ChatEngine } from './chat-engine.js';
+import { MIGRATIONS, doneRecords } from './store-migrations/registry.js';
 import { libraryPeople } from './chat-people.js';
 import { TokenCache } from './token-cache-engine.js';
 import { markUpstreamImportPending } from './upstream-import.js';
@@ -31,6 +32,12 @@ export class OldFormatError extends Error {}
 
 /** @type {Map<string, Promise<UserStore>>} By the user's root directory. */
 const open = new Map();
+/**
+ * By the user's root directory: the user's migrations under way (`store-migrations/run.js`), which `userStore()` waits
+ * for, so nothing reads or writes a store before them.
+ * @type {Map<string, Promise<unknown>>}
+ */
+const gates = new Map();
 /**
  * By the user's root directory: the engine store a read on this thread opened (`openSync`: the same store `open`
  * gives for the directory, one per user).
@@ -85,13 +92,38 @@ export async function assertConverted(directoriesList) {
 }
 
 /**
- * The user's store, opened on first use. A store made here is marked so its first settings tags import decides the
- * default tags.
+ * Makes `userStore()` for a user wait for `migrations` (and fail when they fail).
+ * @param {{ root: string }} directories
+ * @param {Promise<unknown>} migrations
+ */
+export function gateUserStore(directories, migrations) {
+    const key = path.resolve(directories.root);
+    gates.set(key, migrations);
+    // Done: the gate goes. Failed: it stays, refusing the store.
+    migrations.then(() => {
+        if (gates.get(key) === migrations) gates.delete(key);
+    }, () => {});
+}
+
+/**
+ * The user's store, opened on first use, once the user's migrations are done. A store made here is marked so its
+ * first settings tags import decides the default tags.
  * @param {{ root: string }} directories
  * @param {string} [handle] The user's handle (default: the root's last part).
  * @returns {Promise<UserStore>}
  */
 export function userStore(directories, handle = path.basename(directories.root)) {
+    const gate = gates.get(path.resolve(directories.root));
+    return gate ? gate.then(() => migratingStore(directories, handle)) : migratingStore(directories, handle);
+}
+
+/**
+ * The user's store, past the migrations' gate: for the migrations themselves.
+ * @param {{ root: string }} directories
+ * @param {string} [handle]
+ * @returns {Promise<UserStore>}
+ */
+export function migratingStore(directories, handle = path.basename(directories.root)) {
     const key = path.resolve(directories.root);
     let found = open.get(key);
     if (!found) {
@@ -131,9 +163,8 @@ async function openStore(root, handle) {
         };
         const people = libraryPeople(lib);
         const chats = await ChatEngine.open(lib.store, people, await lib.nextIds());
-        // A store made now has its chats named as they're made; an older one, once name-every-chat has run.
-        if (made) await lib.store.commit([{ kind: 'metaValue', key: CHAT_NAMES_META, json: 'true' }]);
-        else if ((await lib.store.meta([CHAT_NAMES_META]))[0] == null) chats.namesPendingFor = handle;
+        // A store made by this version has nothing to migrate.
+        if (made) await lib.store.commit(doneRecords(MIGRATIONS.map(m => m.id)));
         return { lib, chats, people, tokens: new TokenCache(lib.store), handle, events };
     } catch (err) {
         await lib.close();
@@ -190,6 +221,7 @@ export async function closeUserStores() {
     const here = [...openedHere.values()];
     openedHere.clear();
     madeHere.clear();
+    gates.clear();
     const all = [...open.values()];
     open.clear();
     for (const p of all) {
@@ -203,6 +235,28 @@ export async function closeUserStores() {
     }
     // The same stores as `open`'s, or ones only a read on this thread opened: closing one closed is nothing.
     for (const store of here) await store.close();
+}
+
+/**
+ * Closes one user's store (a snapshot is taken with it closed); the next `userStore()` opens it again.
+ * @param {{ root: string }} directories
+ */
+export async function closeUserStore(directories) {
+    const key = path.resolve(directories.root);
+    const here = openedHere.get(key);
+    openedHere.delete(key);
+    const found = open.get(key);
+    open.delete(key);
+    if (found) {
+        try {
+            const s = await found;
+            await s.tokens.idle?.();
+            await s.lib.close();
+        } catch {
+            // A store that failed to open has nothing to close.
+        }
+    }
+    if (here) await here.close();
 }
 
 /**

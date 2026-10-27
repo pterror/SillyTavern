@@ -361,18 +361,9 @@ function alternativeEntry(nodeId, o, itemized) {
  * @typedef {{ ok: true, preview?: true, drops?: Drops, copied?: Record<string, string> } | { ok: false, reason: string, drops?: Drops }} EditAnswer
  */
 
-/** The store meta key saying every chat of the store is named (`src/migrations/name-every-chat.js` ran, or the store
- * was made with names). */
+/** The store meta key saying every chat of the store is named: the mark the hand-run `name-every-chat` one-off left,
+ * which counts as that migration done (`src/store-migrations/`). */
 export const CHAT_NAMES_META = 'chat_names';
-
-/** A chat's name asked of a store whose chats aren't all named yet. */
-export class ChatNamesPendingError extends Error {
-    /** @param {string} handle */
-    constructor(handle) {
-        super(`The chats of user "${handle}" aren't named yet. Stop the server and run: node src/migrations/name-every-chat.js --dry-run --handle ${handle}, then --apply`);
-        this.name = 'ChatNamesPendingError';
-    }
-}
 
 export class ChatEngine {
     /**
@@ -387,8 +378,6 @@ export class ChatEngine {
         /** @type {Map<string, Promise<unknown>>} */
         this.writing = new Map();
         this.now = () => Date.now();
-        /** @type {string | null} The user whose chats aren't all named yet (`CHAT_NAMES_META`); null when they are. */
-        this.namesPendingFor = null;
     }
 
     /**
@@ -519,14 +508,13 @@ export class ChatEngine {
 
     /**
      * The chat id upstream's routes give each of these bookmarks, by the bookmark's id as a string: its label, as
-     * upstream names a chat by its file name (unique in its scope, `nameTaken()`). Every bookmark has one; one made
-     * before labels were required has '' until the one-off `name-every-chat.js` gives it one.
+     * upstream names a chat by its file name (unique in its scope, `nameTaken()`). Every bookmark has one (one made
+     * before labels were required got one from the `name-every-chat` migration, run before the store is served).
      * @param {bigint} _tree
      * @param {(bigint | number | string)[]} bookmarks
      * @returns {Promise<Map<string, string>>}
      */
     async bookmarkChatIds(_tree, bookmarks) {
-        this.assertNamed();
         const ids = [...new Set(bookmarks.map(b => BigInt(b)))];
         /** @type {Map<string, string>} */
         const out = new Map();
@@ -543,14 +531,6 @@ export class ChatEngine {
      */
     async bookmarkChatId(tree, bookmark) {
         return /** @type {string} */ ((await this.bookmarkChatIds(tree, [bookmark])).get(String(BigInt(bookmark))));
-    }
-
-    /**
-     * Refuses to name or find a chat while the store's chats aren't all named (`ChatNamesPendingError`): a chat with no
-     * name would be served as ''.
-     */
-    assertNamed() {
-        if (this.namesPendingFor !== null) throw new ChatNamesPendingError(this.namesPendingFor);
     }
 
     /**
@@ -605,7 +585,6 @@ export class ChatEngine {
      * @param {bigint} tree
      */
     async conversationName(session, identifier, tree) {
-        this.assertNamed();
         const sid = session ? await this.sessionId(session) : null;
         if (sid !== null) {
             const stored = await this.store.chatRead('conversationName', { session: sid, tree });
@@ -2110,7 +2089,6 @@ export class ChatEngine {
      * @returns {Promise<{ bookmark: bigint } | { session: string, derived?: true } | null>}
      */
     async resolveChatName({ tree, name, own }) {
-        this.assertNamed();
         const [state] = await this.store.chatRead('keyStates', { space: SPACE.session, keys: [name] });
         if (state !== null && state !== 'gone') return { session: name };
         const rows = (await this.store.chatRead('chatsNamed', { name, limit: 64 })).filter((/** @type {any} */ r) => r.tree === tree);
@@ -2132,7 +2110,6 @@ export class ChatEngine {
      * @returns {Promise<bigint | null>}
      */
     async treeOfChatId(id) {
-        this.assertNamed();
         const rows = await this.store.chatRead('chatsNamed', { name: id, limit: 64 });
         const owners = await this.people.owners([...new Set(rows.map((/** @type {any} */ r) => r.tree))]);
         const groups = [...owners].filter(([, o]) => o.group).map(([tree]) => tree);
