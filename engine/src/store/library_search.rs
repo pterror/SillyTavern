@@ -64,6 +64,9 @@ pub struct Searched {
     pub weights: Option<Vec<f64>>,
     /// The searches' reports of blocks with maxima too high (`query::Found::tighten`).
     pub tighten: Vec<query::Tighten>,
+    /// Relevance order: the walk stopped at the work limit, and the page goes on from here
+    /// (`page_continued`); nothing else of it is set.
+    pub partial: Option<query::Partial>,
 }
 
 /// The search filters standing for the list's filter: its ids and the tags it requires may lead the search (each
@@ -86,6 +89,20 @@ pub(super) fn filters(view: &View, q: &Query) -> Result<Vec<Filter>, StoreError>
     Ok(out)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Tests' work limits for this thread's searches, so a small library runs past them as a large one does.
+    pub(super) static TEST_LIMITS: std::cell::Cell<Option<Limits>> = const { std::cell::Cell::new(None) };
+}
+
+fn limits() -> Limits {
+    #[cfg(test)]
+    if let Some(l) = TEST_LIMITS.with(std::cell::Cell::get) {
+        return l;
+    }
+    Limits::default()
+}
+
 fn search_query(
     filters: &[Filter],
     clauses: &[Clause],
@@ -101,7 +118,7 @@ fn search_query(
         limit,
         after,
         weights,
-        limits: Limits::default(),
+        limits: limits(),
     }
 }
 
@@ -125,12 +142,25 @@ pub fn page(
     ordered: Ordered,
     cache: &StatsCache,
 ) -> Result<Searched, StoreError> {
+    page_continued(view, q, clauses, ordered, cache, None)
+}
+
+/// `page`, going on from where a relevance walk stopped at the work limit (`Searched::partial` of the read
+/// before): a page whose walk stops again says so in its own `partial`, and has no ids yet.
+pub fn page_continued(
+    view: &View,
+    q: &Query,
+    clauses: &[Clause],
+    ordered: Ordered,
+    cache: &StatsCache,
+    partial: Option<query::Partial>,
+) -> Result<Searched, StoreError> {
     // Every pass of the request plans the same clauses: the tags their names match are found once.
     let names = TagNames::default();
     let filters = filters(view, q)?;
     match ordered {
         Ordered::Relevance { after, weights } => {
-            by_relevance(view, q, &filters, clauses, after, weights, cache, &names)
+            by_relevance(view, q, &filters, clauses, after, weights, partial, cache, &names)
         }
         Ordered::List => by_list(view, q, &filters, clauses, cache, Take::All, &names),
     }
@@ -144,6 +174,7 @@ fn by_relevance(
     clauses: &[Clause],
     after: Option<Resume>,
     weights: Option<Vec<f64>>,
+    partial: Option<query::Partial>,
     cache: &StatsCache,
     names: &TagNames,
 ) -> Result<Searched, StoreError> {
@@ -154,11 +185,12 @@ fn by_relevance(
         q.offset as usize
     };
     let want = skip.saturating_add(q.limit);
-    // Matches that aren't tied, from where the page starts among them.
-    let from = match &after {
-        Some(Resume::Score(s, d)) => Some(After::Score(*s, *d)),
-        Some(Resume::Tied(t, _) | Resume::Below(t)) => Some(After::Score(*t, u64::MAX)),
-        None => None,
+    // Matches that aren't tied, from where the page starts among them; or where the walk reading them stopped.
+    let from = match (&after, partial) {
+        (_, Some(p)) => Some(After::Partial(Box::new(p))),
+        (Some(Resume::Score(s, d)), None) => Some(After::Score(*s, *d)),
+        (Some(Resume::Tied(t, _) | Resume::Below(t)), None) => Some(After::Score(*t, u64::MAX)),
+        (None, None) => None,
     };
     let f = query::run_taking(
         view,
@@ -167,6 +199,15 @@ fn by_relevance(
         Take::Untied,
         names,
     )?;
+    if f.partial.is_some() {
+        // The walk stopped at the work limit: the page isn't known until it goes on.
+        return Ok(Searched {
+            tighten: f.tighten,
+            weights: f.weights,
+            partial: f.partial,
+            ..Searched::default()
+        });
+    }
     let mut out = Searched {
         total: f.total,
         total_exact: f.total_exact,
@@ -240,7 +281,16 @@ fn by_relevance(
             out.next = Some(Resume::Tied(tie, c));
             return Ok(out);
         }
-        below_skip = below_skip.saturating_sub(tied_total as usize);
+        // Past the tied, by their exact number: an estimate (their count past its work, or from the carriers'
+        // counts) would start the matches below them in the wrong place.
+        if below_skip > 0 {
+            let tied_exact_total = if tied_exact {
+                tied_total
+            } else {
+                query::tied_count_exact(view, &search_query(filters, clauses, 0, None, None), cache, names)?
+            };
+            below_skip = below_skip.saturating_sub(tied_exact_total as usize);
+        }
         if out.ids.len() == q.limit {
             out.more = below_more || !below.is_empty();
             out.next = out.more.then_some(Resume::Below(tie));

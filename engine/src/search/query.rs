@@ -160,6 +160,21 @@ pub enum After {
     /// A hit's `rank`, and its document.
     Score(f64, u64),
     Key(Vec<u8>, u64),
+    /// Relevance order: a walk that stopped at the work limit, continued (`Found::partial`).
+    Partial(Box<Partial>),
+}
+
+/// Where a relevance walk in id order stopped at the work limit, so a later read can go on from there: the page's
+/// own `after` (a hit's rank and document), the document the walk goes on at, the best matches it found before
+/// (rank, document), the matches it counted, and whether it passed over any blocks by their bounds. A walk that
+/// stops never cuts the matches short: it only takes more reads.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Partial {
+    pub after: Option<(f64, u64)>,
+    pub from: u64,
+    pub best: Vec<(f64, u64)>,
+    pub total: u64,
+    pub skipped: bool,
 }
 
 #[derive(Clone)]
@@ -227,6 +242,9 @@ pub struct Found {
     /// The idfs the page ranked by, for later pages' `Query::weights`: one per token of each positive clause that
     /// scores, in clause and token order; None for one word (`Hit::rank`) or none.
     pub weights: Option<Vec<f64>>,
+    /// Relevance order: the walk stopped at the work limit before it had read every match (the hits are the best
+    /// of those it had read); where to go on from (`After::Partial`).
+    pub partial: Option<Partial>,
     /// Blocks the query opened whose maxima are above what every document there can score, for the commit
     /// queue to lower (`super::index::tighten`).
     pub tighten: Vec<Tighten>,
@@ -459,6 +477,32 @@ pub fn tied_count(
             }
             Step::End => return Ok((n, plan.complete)),
             Step::Stopped(at) => return Ok((plan.estimate(&mut ctx, n, at)?, false)),
+        }
+    }
+}
+
+/// The tied documents (`Found::tied`), counted one by one however long that takes: for paging past them by
+/// offset, where an estimate would start the page in the wrong place.
+pub fn tied_count_exact(
+    view: &View,
+    q: &Query,
+    cache: &StatsCache,
+    names: &TagNames,
+) -> StoreResult<u64> {
+    let mut ctx = Ctx::new(view, Some(cache));
+    let mut plan = Plan::new(&mut ctx, q, Take::Tied, names)?;
+    if plan.tied().is_none() {
+        return Ok(0);
+    }
+    let mut n = 0;
+    let mut d = 0;
+    loop {
+        match plan.next_match(&mut ctx, d, u64::MAX, u64::MAX, None, &mut Walk::default())? {
+            Step::Match(doc, _) => {
+                n += 1;
+                d = doc + 1;
+            }
+            Step::End | Step::Stopped(_) => return Ok(n),
         }
     }
 }
@@ -4048,14 +4092,26 @@ impl Plan {
     const CHECKED_WHOLE: u64 = 128;
 
     fn by_relevance(&mut self, ctx: &mut Ctx, q: &Query, read: Read) -> StoreResult<Found> {
-        let after = match &q.after {
-            Some(After::Score(s, d)) => Some(Ranked(*s, *d)),
-            _ => None,
+        let (after, resumed) = match &q.after {
+            Some(After::Score(s, d)) => (Some(Ranked(*s, *d)), None),
+            Some(After::Partial(p)) => (p.after.map(|(s, d)| Ranked(s, d)), Some(p.as_ref())),
+            _ => (None, None),
         };
         let mut best = Best {
             cap: q.limit + 1,
             set: BTreeSet::new(),
         };
+        // Where a walk stopped at the work limit goes on when this read continues it.
+        let partial = |after: &Option<Ranked>, from: u64, best: &Best, total: u64, skipped: bool| Partial {
+            after: after.as_ref().map(|r| (r.0, r.1)),
+            from,
+            best: best.set.iter().map(|r| (r.0, r.1)).collect(),
+            total,
+            skipped,
+        };
+        if let Some(p) = resumed {
+            return self.walk_relevance(ctx, q, read, after, best, p.from, p.total, p.skipped, partial);
+        }
         // A prefix word over every field: its documents are those its count counts. With few of them, every
         // one is checked, so the total is exact whatever the filters; with more, the count is the total when
         // nothing filters.
@@ -4073,7 +4129,6 @@ impl Plan {
             || !self.exclude.is_empty()
             || !self.neg.is_empty()
             || !ctx.checks.is_empty();
-        let (mut total, mut d, mut stopped) = (0u64, 0u64, None);
         let mut counting = read == Read::Counting;
         if !counting && !whole && self.pos.len() == 1 && self.pos[0].single().is_some() {
             // With an include, the descent gets about the work of the walk led by the rarer of it and the word;
@@ -4102,11 +4157,71 @@ impl Plan {
                     // Out of id order: no share of the ids passed to estimate by.
                     total = self.estimate_descended(ctx, total, walk.checked)?;
                 }
-                return Ok(page_of(best, q.limit, total, total_exact, done, self.scale));
+                let mut found = page_of(best, q.limit, total, total_exact, done, self.scale);
+                if !done {
+                    // A descent that stopped can't go on where it was (its heap of nodes isn't kept): a read
+                    // that continues it walks in id order from the start.
+                    let empty = Best {
+                        cap: q.limit + 1,
+                        set: BTreeSet::new(),
+                    };
+                    found.partial = Some(partial(&after, 0, &empty, 0, false));
+                }
+                return Ok(found);
             }
             best.set.clear();
             counting = true;
         }
+        self.walk_relevance_from(ctx, q, after, best, 0, 0, false, counting, docs, partial)
+    }
+
+    /// Relevance order continued where a walk stopped (`After::Partial`): from `from`, with the best matches and
+    /// the count it had.
+    #[allow(clippy::too_many_arguments)]
+    fn walk_relevance(
+        &mut self,
+        ctx: &mut Ctx,
+        q: &Query,
+        read: Read,
+        after: Option<Ranked>,
+        mut best: Best,
+        from: u64,
+        total: u64,
+        skipped: bool,
+        partial: impl Fn(&Option<Ranked>, u64, &Best, u64, bool) -> Partial,
+    ) -> StoreResult<Found> {
+        let resumed = q.after.as_ref().and_then(|a| match a {
+            After::Partial(p) => Some(p),
+            _ => None,
+        });
+        for &(s, d) in resumed.map_or(&[][..], |p| p.best.as_slice()) {
+            best.push(Ranked(s, d));
+        }
+        self.walk_relevance_from(ctx, q, after, best, from, total, skipped, read == Read::Counting, None, partial)
+    }
+
+    /// The relevance walk in id order from `d`, under the enumerate limit; one that stops says where it would go
+    /// on (`Found::partial`).
+    #[allow(clippy::too_many_arguments)]
+    fn walk_relevance_from(
+        &mut self,
+        ctx: &mut Ctx,
+        q: &Query,
+        after: Option<Ranked>,
+        mut best: Best,
+        mut d: u64,
+        mut total: u64,
+        skipped_before: bool,
+        counting: bool,
+        docs: Option<u64>,
+        partial: impl Fn(&Option<Ranked>, u64, &Best, u64, bool) -> Partial,
+    ) -> StoreResult<Found> {
+        let whole = docs.is_some_and(|n| n <= Self::CHECKED_WHOLE);
+        let filtered = !self.include.is_empty()
+            || !self.exclude.is_empty()
+            || !self.neg.is_empty()
+            || !ctx.checks.is_empty();
+        let mut stopped = None;
         let mut walk = Walk {
             counting,
             ..Walk::default()
@@ -4138,8 +4253,10 @@ impl Plan {
         }
         self.report_opened(ctx)?;
         total += walk.counted;
+        let skipped = skipped_before || walk.skipped;
+        let next = stopped.map(|at| partial(&after, at, &best, total, skipped));
         let page_exact = stopped.is_none();
-        let mut total_exact = page_exact && !walk.skipped;
+        let mut total_exact = page_exact && !skipped;
         if let Some(n) = docs
             && !filtered
         {
@@ -4148,7 +4265,9 @@ impl Plan {
         if !total_exact {
             total = self.estimate_walked(ctx, total, &walk, stopped)?;
         }
-        Ok(page_of(best, q.limit, total, total_exact, page_exact, self.scale))
+        let mut found = page_of(best, q.limit, total, total_exact, page_exact, self.scale);
+        found.partial = next;
+        Ok(found)
     }
 
     fn by_key(&mut self, ctx: &mut Ctx, q: &Query, order: &dyn SortKey) -> StoreResult<Found> {
