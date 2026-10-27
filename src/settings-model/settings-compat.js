@@ -104,6 +104,8 @@ const TOP_PREFERENCES = Object.freeze(['firstRun', 'currentVersion', 'swipes', '
  *   capabilities, personas' character-level lists, …).
  * @property {{ connection: string, value: string }[]} secrets
  * @property {string[]} warnings
+ * @property {string[]} [kept] As read from the store: the characters and groups not in the library whose statements
+ *   are kept as they came (already warned of).
  */
 
 /**

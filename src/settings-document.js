@@ -424,7 +424,7 @@ async function open(directories, handle) {
                 const nextModel = { ...current, statements: { ...current.statements, levels } };
                 const written = await writeUserModel(lib, handle, nextModel, { previous: current });
                 for (const warning of written.warnings) console.warn(`[settings] ${handle}: ${warning}`);
-                current = nextModel;
+                current = { ...nextModel, kept: written.kept };
                 userSourcesMemo = null;
                 await loadLevelBundles();
             });
@@ -467,7 +467,7 @@ async function open(directories, handle) {
                 const written = await writeUserModel(lib, handle, nextModel, { previous: current });
                 for (const warning of written.warnings) console.warn(`[settings] ${handle}: ${warning}`);
                 // What was written is the model now: the store isn't read back.
-                current = { ...nextModel, elsewhere: {} };
+                current = { ...nextModel, elsewhere: {}, kept: written.kept };
                 userBundles = bundles;
                 userSourcesMemo = null;
                 contexts.clear();

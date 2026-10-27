@@ -148,7 +148,8 @@ export function userDraftOf(handle, model, holders) {
  * @param {{ actor?: import('../world-info-engine.js').Actor | null, bundles?: EntityDraft[], previous?: UserModel }} [options]
  *   `bundles`: the bundles (presets, templates, themes, quick reply sets) written with it. `previous`: the model as
  *   stored now, so only the entities that differ are written and those it no longer has deleted (history kept).
- * @returns {Promise<{ warnings: string[] }>}
+ * @returns {Promise<{ warnings: string[], kept: string[] }>} `kept`: the characters and groups whose statements are kept
+ *   aside as they came (not in the library).
  */
 export async function writeUserModel(lib, handle, model, { actor = null, bundles = [], previous } = {}) {
     /** @type {string[]} */
@@ -162,7 +163,8 @@ export async function writeUserModel(lib, handle, model, { actor = null, bundles
         if (holderIds[i] !== null) return;
         orphans.push(holder);
         holders.delete(id);
-        warnings.push(`${holder.key} isn't in the library: the statements made at it are kept as they came`);
+        // Warned once, when its statements are first kept aside, not again at every write that still keeps them.
+        if (!previous?.kept?.includes(holder.key)) warnings.push(`${holder.key} isn't in the library: the statements made at it are kept as they came`);
     });
     /** @type {[number, string][]} */
     const refs = [];
@@ -220,7 +222,7 @@ export async function writeUserModel(lib, handle, model, { actor = null, bundles
             return [...records, ...removed];
         },
     });
-    return { warnings };
+    return { warnings, kept: orphans.map(o => o.key) };
 }
 
 /**
@@ -318,7 +320,7 @@ export async function readUserModel(lib, handle) {
         if (says.quickReplies) (statements.quickReplies ??= { user: { items: [], hidden: [] }, characters: [] }).characters.push({ avatar: key, ...says.quickReplies });
         if (says.settings) (statements.levels ??= {})[`${type === TYPE.group ? 'group' : 'character'}:${key}`] = says.settings;
     }
-    return { user: level, entities, ext, unknown, elsewhere: {}, statements, secrets: [], warnings: [] };
+    return { user: level, entities, ext, unknown, elsewhere: {}, statements, secrets: [], warnings: [], kept: orphans.map(o => o.key) };
 }
 
 
