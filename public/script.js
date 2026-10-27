@@ -11506,21 +11506,13 @@ export async function createCharacterFromCreateSave({ jsonData } = {}) {
             $('#add_avatar_button').val('').clone(true),
         );
 
-        let oldSelectedChar = null;
-        if (getSelectionState().type === 'character') {
-            oldSelectedChar = getCurrentCharacter().avatar;
-        }
-
         console.log(`new avatar id: ${avatarId}`);
         warnUnassignedCreateTags(fetchResult.headers.get('X-Unassigned-Tag-Ids'));
-        // select_rm_info() below does its own real, targeted lookup+page-navigation for 'char_create' (see
-        // its own body) - no separate list refresh needed here first.
-        await getCharacters({ silent: true, skipPrint: true });
-        charactersStore.reportCreated(avatarId);
-
-        select_rm_info('char_create', avatarId, oldSelectedChar, newCharacterName);
-
         crop_data = undefined;
+
+        // The new character opens, as picking it in the list does: its one card is read, not the library, and the
+        // list shows it through the server's change message like any other new character. No toast: it's on screen.
+        await selectCharacterByAvatar(avatarId);
     } catch (error) {
         console.error('Error creating character', error);
         toastr.error(t`Failed to create character`);

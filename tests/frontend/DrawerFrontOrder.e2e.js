@@ -66,7 +66,7 @@ async function openChatWithCharacterMessage(page) {
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button').evaluate(el => el.click());
-    await page.locator('.character_select', { hasText: name }).first().click();
+    // Creating a character opens it.
     await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
     // Fullscreen character management still covers the chat behind character info: close it. Its icon brings it
     // forward first while character info covers part of it, and closes it on the next click.

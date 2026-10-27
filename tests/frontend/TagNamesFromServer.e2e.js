@@ -69,7 +69,8 @@ async function openNewCharacter(page, name) {
     const created = page.waitForResponse(response => response.url().endsWith('/api/characters/create'));
     await page.locator('#create_button_label').click();
     const avatar = await (await created).text();
-    await page.locator('.character_select', { hasText: name }).first().click();
+    // Creating a character opens it.
+    await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
     await page.locator('#tagInput').waitFor({ state: 'visible', timeout: 10000 });
     return avatar;
 }

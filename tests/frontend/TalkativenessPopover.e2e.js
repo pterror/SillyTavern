@@ -32,7 +32,8 @@ async function createAndOpenCharacter(page, name) {
     const createResponse = page.waitForResponse(response => response.url().endsWith('/api/characters/create'));
     await page.locator('#create_button_label').click();
     const avatar = await (await createResponse).text();
-    await page.locator('.character_select', { hasText: name }).first().click();
+    // Creating a character opens it.
+    await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
     await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar, { timeout: 10000 });
     await expect(page.locator('#right-nav-panel')).toHaveAttribute('data-menu-type', 'character_edit');
     return avatar;

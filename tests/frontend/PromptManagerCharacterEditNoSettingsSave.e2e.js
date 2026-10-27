@@ -48,10 +48,9 @@ async function createTestCharacter(page) {
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button_label').click();
-    // Creation closes the advanced editing popup and returns to the character list - select the
-    // newly created character to reopen the definitions panel on it (the panel a user actually
-    // types description/personality/etc into, and the one that emits CHARACTER_EDITED on edit).
-    await page.locator('.character_select', { hasText: name }).first().click();
+    // Creating a character opens it: its definitions panel (the one a user types description/personality/etc
+    // into, and the one that emits CHARACTER_EDITED on edit).
+    await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
     await openInfoTab(page, 'description');
     await page.locator('.field_preview[data-for="description_textarea"]').waitFor({ state: 'visible', timeout: 10000 });
     // Selecting the character fires its own CHAT_LOADED-driven settings save (prompt order setup
