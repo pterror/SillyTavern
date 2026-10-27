@@ -93,7 +93,10 @@ Replaces the one-offs and the "stop the server and run" guards.
 
 ## Also
 
-- `start.sh` / `Start.bat` and the update scripts go once the launcher exists (a checkout uses `st use`).
+- `start.sh` / `Start.bat` stay: git installs, their guides, Termux and headless setups, and third-party installers
+  (SillyTavern Launcher, Pinokio, StabilityMatrix) call them. They become thin: in a launcher install they hand
+  off to the launcher; in a plain checkout they run it as a version, as now (dependencies, the page and engine fetched
+  or built, then start), the server running pending migrations itself.
 - The start script's probes for better-sqlite3 and inotify, and its "falls back to Fuse.js search" message,
   predate the engine: what's still needed is decided while building the archives (each native module either ships
   prebuilt or goes).
