@@ -276,7 +276,6 @@ import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMess
 import { event_types, eventSource } from './scripts/events.js';
 import { token, setToken, getRequestHeaders } from './scripts/request-headers.js';
 import { observeSessionAnswers, onChangeStream, prepareTabSession } from './scripts/tab-session.js';
-import { initPairPostings } from './scripts/pair-postings.js';
 import { beginServerGeneration, endServerGeneration, takeStopResult } from './scripts/generation-stop.js';
 import { chat, chat_metadata, setChatMetadata } from './scripts/chat-state.js';
 import { active_character, active_group, name1, default_user_name, setActiveCharacter, setActiveGroup, setActiveCharacterAndGroupFromSettings, setName1Raw } from './scripts/app-selection-state.js';
@@ -1337,7 +1336,6 @@ async function firstLoadInit() {
         toastr.error(t`Couldn't open this tab's session. Please refresh the page.`, t`Error`, { timeOut: 0, extendedTimeOut: 0, preventDuplicates: true });
         throw new Error('Initialization failed');
     }
-    initPairPostings(t);
 
     const initLoaderOverlay = loader.createOverlay();
     initLoaderOverlay.classList.add('splash-screen');

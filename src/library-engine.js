@@ -137,8 +137,8 @@ function listSort(field, order, seed) {
     return { key: SORT_KEYS.name, desc: false };
 }
 
-/** The pair postings' modes (`search::pairs`; 0 is off). */
-const PAIRS = Object.freeze({ building: 1, on: 2, deleting: 3 });
+/** The word pairs' modes (`search::pairs`): their pass building them, and every document's built. */
+const PAIRS = Object.freeze({ indexing: 4, indexed: 5 });
 
 /** Sort key codes of `Store.libraryPage`. */
 export const SORT_KEYS = Object.freeze({ name: 0, create_date: 1, date_added: 2, date_last_chat: 3, chat_size: 4, data_size: 5 });
@@ -451,32 +451,33 @@ export class LibraryEngine {
     }
 
     /**
-     * The pair postings option (quoted phrases searched faster, more disk): whether it is on, and whether its
-     * build or delete is under way.
-     * @returns {Promise<{ on: boolean, pending: boolean }>}
+     * Whether the word pairs (`search::pairs`, the index terms quoted phrases are read through) are built: false
+     * while their pass is under way, or before a store made without them has started it.
+     * @returns {Promise<boolean>}
      */
-    async pairPostings() {
-        const mode = await this.store.pairsMode();
-        return { on: mode === PAIRS.building || mode === PAIRS.on, pending: mode === PAIRS.building || mode === PAIRS.deleting };
+    async pairsBuilt() {
+        return await this.store.pairsMode() === PAIRS.indexed;
     }
 
     /**
-     * Turns pair postings on or off (nothing is written when it already is so), then runs the build or delete.
-     * @param {boolean} on
-     */
-    async setPairPostings(on) {
-        if ((await this.pairPostings()).on !== on) await this.store.commit([{ kind: 'searchPairs', on }]);
-        this.runPairPostings();
-    }
-
-    /**
-     * Runs the pair postings' build or delete under way, if any, a slice at a time with `pauseMs` between, until
-     * done or the store closes; one run at a time. Called after the server listens (a stop leaves one to resume)
-     * and after the option changes.
+     * Builds the word pairs over the store's text if it hasn't them (a store made before they were index terms, or
+     * with the old option's pairs, which go first), then runs their pass.
      * @param {number} [pauseMs]
      * @returns {Promise<void>}
      */
-    runPairPostings(pauseMs = 10) {
+    async buildPairs(pauseMs) {
+        const mode = await this.store.pairsMode();
+        if (mode !== PAIRS.indexing && mode !== PAIRS.indexed) await this.store.commit([{ kind: 'searchPairs', on: true }]);
+        return this.runPairs(pauseMs);
+    }
+
+    /**
+     * Runs the word pairs' pass under way, if any, a slice at a time with `pauseMs` between, until done or the store
+     * closes; one run at a time.
+     * @param {number} [pauseMs]
+     * @returns {Promise<void>}
+     */
+    runPairs(pauseMs = 10) {
         if (this.pairsRun) {
             this.pairsAgain = true;
             return this.pairsRun;
