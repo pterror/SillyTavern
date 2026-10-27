@@ -30,6 +30,22 @@ owns versions; the app is data to it.
 - **Developers**: a git checkout is a version too (`st use ./path`), built by the checkout's own scripts, so working
   on the app needs no second setup.
 
+## Fitting into the system
+
+The launcher's install step, per platform:
+
+| Platform | Added |
+|---|---|
+| Windows | Start menu entry; optional desktop shortcut; an Installed apps entry (uninstall, version); optional start at login |
+| macOS | the app in Applications (Dock, Launchpad); optional Login Item |
+| Linux | a `.desktop` file in `~/.local/share/applications`, icons in the hicolor theme; optional autostart; AppImage and tarball installs get it from `st integrate`, Flatpak does its own |
+| Termux | a Termux:Widget shortcut |
+
+- File associations: "Open with" for `.charx`, `.byaf`, lorebook and preset files, handed to the input handlers
+  (`modules.md`); not PNG or JSON (too generic to claim).
+- A link scheme, `sillytavern://import?url=…`, so a site's "open in SillyTavern" lands in the import handlers.
+- Uninstalling removes the app and its integration; the data stays unless the user asks for it to go.
+
 ## Packages
 
 Per platform, the launcher in the platform's usual form; each fetches the current version on first run (or carries
