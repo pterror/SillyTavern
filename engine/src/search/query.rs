@@ -240,7 +240,8 @@ pub struct Found {
     pub tied: Option<f64>,
     pub tied_score: Option<f64>,
     /// The idfs the page ranked by, for later pages' `Query::weights`: one per token of each positive clause that
-    /// scores, in clause and token order; None for one word (`Hit::rank`) or none.
+    /// scores, in clause and token order, a phrase's followed by its short idf (`Matcher::short_idf`, negative for
+    /// none); None for one word (`Hit::rank`) or none.
     pub weights: Option<Vec<f64>>,
     /// Relevance order: the walk stopped at the work limit before it had read every match (the hits are the best
     /// of those it had read); where to go on from (`After::Partial`).
@@ -2006,8 +2007,13 @@ struct Matcher {
     part: Vec<Part>,
     /// Per token, its idf.
     idf: Vec<f64>,
-    /// A phrase scores as one term (`super::clause_score` of one token): its tokens' idfs summed.
+    /// A phrase scores as one term (`super::clause_score` of one token): in body text (and for its tag part) its
+    /// tokens' idfs summed.
     unit_idf: f64,
+    /// A phrase's idf in short fields once every document has its pairs (`super::pairs`): its rarest pair's. No
+    /// document holds the phrase there without each of its pairs, so the rarest pair's count is the closest the
+    /// index has to the phrase's own; body text has no pairs.
+    short_idf: Option<f64>,
     /// A phrase read through its pairs (`super::pairs`), each list a pair of adjacent whole tokens.
     paired: bool,
     doc: Option<u64>,
@@ -2056,6 +2062,7 @@ impl Matcher {
             part: Vec::new(),
             idf: Vec::new(),
             unit_idf: 0.0,
+            short_idf: None,
             paired: false,
             doc: None,
             text_doc: None,
@@ -2074,6 +2081,21 @@ impl Matcher {
             }
         }
         m.unit_idf = m.idf.iter().sum();
+        // A phrase's idfs end with its short idf, or a negative one for none.
+        let whole = if prefix { last_i } else { last_i + 1 };
+        if phrase {
+            m.short_idf = match idfs {
+                Some(w) => Some(w[toks.len()]).filter(|&x| x >= 0.0),
+                None if whole >= 2 && mask & super::pair_fields(scope) != 0 && ctx.pairs_on()? => {
+                    let mut least = u64::MAX;
+                    for i in 0..whole - 1 {
+                        least = least.min(ctx.term_docs(scope, &super::pairs::term(&toks[i], &toks[i + 1]))?);
+                    }
+                    Some(idf(least as f64, stats.n))
+                }
+                None => None,
+            };
+        }
         let list = |term: &str, mask, as_prefix| List {
             term: term.to_string(),
             mask,
@@ -2093,7 +2115,6 @@ impl Matcher {
             // In short fields only, its whole tokens' pairs, once every document has them; else (body text, or
             // pairs not built) its whole tokens. A prefix last token has no list: it is checked on the text. Each
             // list bounds the phrase's count, so its bound is the least of theirs.
-            let whole = if prefix { last_i } else { last_i + 1 };
             if whole >= 2 && mask & !super::pair_fields(scope) == 0 && ctx.pairs_on()? {
                 m.paired = true;
                 for i in 0..whole - 1 {
@@ -2242,9 +2263,22 @@ impl Matcher {
     }
 
     /// The clause's score from its text's parts (`Texts`): each token's summed in field order, as `local` sums
-    /// them; `tagged` when the document carries a tag whose name holds the clause. A phrase is one token, its idf
-    /// its tokens' summed. Higher parts give a score at least as high, so it bounds as it scores.
+    /// them; `tagged` when the document carries a tag whose name holds the clause. A phrase is one token, scored
+    /// per field at its idf there (`phrase_score`). Higher parts give a score at least as high, so it bounds as it
+    /// scores.
     fn combine(&self, texts: &Texts, tagged: bool) -> f64 {
+        if self.phrase {
+            let short = self.short_fields();
+            let (mut body, mut shorts) = (0.0, 0.0);
+            for (f, &x) in texts[0].iter().enumerate() {
+                if short >> f & 1 == 1 {
+                    shorts += x;
+                } else {
+                    body += x;
+                }
+            }
+            return self.phrase_score(body, shorts, tagged);
+        }
         let long = self.long_prefix();
         let sums: Vec<f64> = texts
             .iter()
@@ -2253,7 +2287,7 @@ impl Matcher {
         self.clause_score(&sums, tagged)
     }
 
-    /// `super::clause_score` of the clause's tokens' texts (`sums`, one for a phrase).
+    /// `super::clause_score` of the clause's tokens' texts (`sums`, one for a phrase, all of it body text).
     fn clause_score(&self, sums: &[f64], tagged: bool) -> f64 {
         if self.phrase {
             super::clause_score(&[self.unit_idf], sums, tagged)
@@ -2262,9 +2296,33 @@ impl Matcher {
         }
     }
 
-    /// Takes a phrase list's bound `b` into the phrase's: the least of its lists'.
-    fn least(texts: &mut Texts, first: bool, b: f64) {
-        let t = &mut texts[0][0];
+    /// A phrase's score from its text in body fields (`body`) and in short fields (`short`): each at its idf there.
+    fn phrase_score(&self, body: f64, short: f64, tagged: bool) -> f64 {
+        let s = super::clause_score(&[self.unit_idf], &[body], tagged);
+        match self.short_idf {
+            Some(idf) => s + idf * short,
+            None => s + self.unit_idf * short,
+        }
+    }
+
+    /// The fields a phrase scores in at its short idf (none without one).
+    fn short_fields(&self) -> u64 {
+        match self.short_idf {
+            Some(_) => super::pair_fields(self.scope),
+            None => 0,
+        }
+    }
+
+    /// Takes a phrase list's bound `b` over its fields into the phrase's: the least of its lists', held where the
+    /// phrase scores at its higher idf, so `combine` bounds wherever in those fields its text is.
+    fn least(&self, texts: &mut Texts, first: bool, b: f64) {
+        let short = self.short_fields();
+        let at = if self.short_idf.is_some_and(|s| s >= self.unit_idf) {
+            short.trailing_zeros()
+        } else {
+            (!short).trailing_zeros()
+        } as usize;
+        let t = &mut texts[0][at];
         *t = if first { b } else { t.min(b) };
     }
 
@@ -2385,7 +2443,7 @@ impl Matcher {
                 return Ok(None);
             }
             if self.phrase {
-                Self::least(&mut texts, li == 0, b);
+                self.least(&mut texts, li == 0, b);
             } else {
                 add_bound(&mut texts, self.lists[li].token, b);
             }
@@ -2523,7 +2581,7 @@ impl Matcher {
             if let Some(b) = self.lists[li].dir.block {
                 let b = self.block_bound(ctx, li, b)?;
                 if self.phrase {
-                    Self::least(&mut texts, first, b);
+                    self.least(&mut texts, first, b);
                     first = false;
                 } else {
                     add_bound(&mut texts, self.lists[li].token, b);
@@ -2684,14 +2742,19 @@ impl Matcher {
         if lists.len() > 1 {
             parts.sort_unstable_by_key(|p| p.0);
         }
-        // Each document's parts summed as `super::sum_parts` sums them.
+        // Each document's parts summed as `super::sum_parts` sums them; a phrase's short fields apart.
         let long = self.long_prefix();
+        let short = self.short_fields();
         let mut texts = [0.0f64; 1 << BLOCK_BITS];
         let mut prefixed = [0.0f64; 1 << BLOCK_BITS];
+        let mut shorts = [0.0f64; 1 << BLOCK_BITS];
         for (sl, x) in parts {
             let i = (sl >> FIELD_BITS) as usize;
-            if long && defs[(sl & ((1 << FIELD_BITS) - 1)) as usize].prefix {
+            let f = sl & ((1 << FIELD_BITS) - 1);
+            if long && defs[f as usize].prefix {
                 prefixed[i] += x;
+            } else if short >> f & 1 == 1 {
+                shorts[i] += x;
             } else {
                 texts[i] += x;
             }
@@ -2709,7 +2772,11 @@ impl Matcher {
                 b &= b - 1;
                 let i = w * 64 + place;
                 let carries = tagged && c >> place & 1 == 1;
-                total[i] += self.clause_score(&[texts[i]], carries);
+                total[i] += if self.phrase {
+                    self.phrase_score(texts[i], shorts[i], carries)
+                } else {
+                    self.clause_score(&[texts[i]], carries)
+                };
             }
         }
     }
@@ -2942,7 +3009,20 @@ impl Matcher {
     }
 
     fn score(&self, m: &Matched) -> f64 {
-        let units = if self.phrase { 1 } else { self.tokens.len() };
+        let tagged = m.parts.iter().any(|x| self.part[x.1].token == TAG_PART);
+        if self.phrase {
+            let short = self.short_fields();
+            let text = |at_short: bool| {
+                let fields = m
+                    .parts
+                    .iter()
+                    .filter(|x| self.part[x.1].token == 0 && (short >> x.0 & 1 == 1) == at_short)
+                    .map(|&(f, _, tf, code)| (f, tf, code_length(code)));
+                super::word_text(self.scope, fields, false)
+            };
+            return self.phrase_score(text(false), text(true), tagged);
+        }
+        let units = self.tokens.len();
         let texts: Vec<f64> = (0..units)
             .map(|i| {
                 let fields = m
@@ -2953,9 +3033,13 @@ impl Matcher {
                 super::word_text(self.scope, fields, self.long_prefix())
             })
             .collect();
-        let tagged = m.parts.iter().any(|x| self.part[x.1].token == TAG_PART);
         self.clause_score(&texts, tagged)
     }
+}
+
+/// How many idfs a clause of `n` tokens ranks by (`Plan::weights`): a phrase's tokens' and its short idf.
+pub(crate) fn weights_of(n: usize) -> usize {
+    if n > 1 { n + 1 } else { n }
 }
 
 // ---- the query ----
@@ -3123,12 +3207,13 @@ impl Plan {
         let member_count = |t: u64| key::id(key::MEMBER_COUNT, t);
         let mut complete = true;
         let tags_field = tags_field(q.scope);
-        // The tokens of each positive clause that scores; one word ranks without idfs (`Hit::rank`).
+        // The idfs of each positive clause that scores, a phrase's tokens' and its short idf; one word ranks without
+        // idfs (`Hit::rank`).
         let scored: Vec<usize> = q
             .clauses
             .iter()
             .filter(|c| !c.negate && !tags_only(tags_field, c))
-            .map(|c| tokens(&c.text).len())
+            .map(|c| weights_of(tokens(&c.text).len()))
             .filter(|&n| n > 0)
             .collect();
         let one_word = scored == [1];
@@ -3170,7 +3255,7 @@ impl Plan {
             }
             let idfs = match &mut weights {
                 Some(w) if !c.negate => {
-                    let (these, rest) = w.split_at(toks.len());
+                    let (these, rest) = w.split_at(weights_of(toks.len()));
                     *w = rest;
                     Some(these)
                 }
@@ -3288,7 +3373,14 @@ impl Plan {
         match self.pos.as_slice() {
             [] => None,
             [m] if m.tokens.len() == 1 => None,
-            pos => Some(pos.iter().flat_map(|m| m.idf.iter().copied()).collect()),
+            pos => Some(
+                pos.iter()
+                    .flat_map(|m| {
+                        let short = m.phrase.then(|| m.short_idf.unwrap_or(-1.0));
+                        m.idf.iter().copied().chain(short)
+                    })
+                    .collect(),
+            ),
         }
     }
 

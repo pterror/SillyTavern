@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::query::{Clause, Filter, Query};
 use super::text::{GRAM_MAX, GRAM_MIN, char_len, first_chars, tokens};
-use super::{Scope, clause_score, idf, long_prefix, word_text};
+use super::{Scope, clause_score, idf, long_prefix, pair_fields, pairs, word_text};
 
 /// A document: per field, its values' tokens.
 pub type Fields = Vec<Vec<Vec<String>>>;
@@ -32,11 +32,14 @@ pub struct World {
     pub library: Corpus,
     pub tags: Corpus,
     pub members: BTreeMap<u64, BTreeSet<u64>>,
+    /// The index has every document's pairs (`super::pairs`): a phrase's idf in short fields is its rarest pair's.
+    pub pairs: bool,
 }
 
 /// A document's tokens counted, per field: whole tokens, and their first 2–20 characters.
 pub struct Doc<'a> {
     pub fields: &'a Fields,
+    scope: Scope,
     exact: Vec<HashMap<&'a str, u64>>,
     grams: Vec<HashMap<&'a str, u64>>,
 }
@@ -63,6 +66,7 @@ impl<'a> Doc<'a> {
         }
         Doc {
             fields,
+            scope,
             exact,
             grams,
         }
@@ -83,9 +87,16 @@ impl<'a> Doc<'a> {
             .count() as u64
     }
 
-    /// Whether some field holds `term` as a whole token, or a prefix field as a prefix term: the documents a
-    /// term's document count counts (`DOCS_SLOT`).
+    /// Whether some field holds `term` as a whole token, or a prefix field as a prefix term, or (a pair) a short
+    /// field's value its two tokens adjacent: the documents a term's document count counts (`DOCS_SLOT`).
     pub fn holds(&self, term: &str) -> bool {
+        if let Some((a, b)) = term.split_once(pairs::SEPARATOR) {
+            let short = pair_fields(self.scope);
+            return (0..self.fields.len())
+                .filter(|&f| short >> f & 1 == 1)
+                .flat_map(|f| &self.fields[f])
+                .any(|v| v.windows(2).any(|w| w[0] == a && w[1] == b));
+        }
         self.exact
             .iter()
             .chain(&self.grams)
@@ -135,8 +146,12 @@ struct Shape {
     carried: Option<BTreeSet<u64>>,
     /// Over every library field: the tags whose names it matches, whose carriers it matches too.
     tagged: BTreeSet<u64>,
-    /// Its tokens' idfs as the query gives them (`Query::weights`); else from the counts.
+    /// Its tokens' idfs as the query gives them (`Query::weights`), a phrase's short idf after them; else from the
+    /// counts.
     weights: Option<Vec<f64>>,
+    /// A phrase's pairs of adjacent whole tokens, when the index has pairs and it may match in a short field: its
+    /// idf there is the rarest's.
+    pairs: Vec<String>,
 }
 
 impl Shape {
@@ -146,9 +161,9 @@ impl Shape {
         fields: Option<Vec<u32>>,
         last: bool,
         negate: bool,
+        with_pairs: bool,
     ) -> Shape {
-        let _ = scope;
-        Shape {
+        let mut s = Shape {
             prefix: last && char_len(toks.last().unwrap()) >= GRAM_MIN,
             phrase: toks.len() > 1,
             toks,
@@ -157,7 +172,14 @@ impl Shape {
             carried: None,
             tagged: BTreeSet::new(),
             weights: None,
+            pairs: Vec::new(),
+        };
+        let whole = s.toks.len() - usize::from(s.prefix);
+        let short = (0..scope.fields().len()).any(|f| pair_fields(scope) >> f & 1 == 1 && s.allowed(f));
+        if with_pairs && s.phrase && short {
+            s.pairs = (1..whole).map(|i| pairs::term(&s.toks[i - 1], &s.toks[i])).collect();
         }
+        s
     }
 
     fn allowed(&self, f: usize) -> bool {
@@ -213,33 +235,47 @@ impl Shape {
     /// Each token's idf.
     fn idfs(&self, stats: &Stats) -> Vec<f64> {
         if let Some(w) = &self.weights {
-            return w.clone();
+            return w[..self.toks.len()].to_vec();
         }
         (0..self.toks.len())
             .map(|i| idf(stats.df[&self.df_term(i)] as f64, stats.n))
             .collect()
     }
 
-    /// The clause's score, `tagged` when the document carries a tag whose name holds it. A phrase scores as one
-    /// term: its count per field, its tokens' idfs summed.
-    fn score(&self, scope: Scope, stats: &Stats, parts: &Parts, doc: &Doc, tagged: bool) -> f64 {
-        let units = if self.phrase { 1 } else { self.toks.len() };
-        let texts: Vec<f64> = (0..units)
-            .map(|i| {
-                word_text(
-                    scope,
-                    parts.iter().filter_map(|(f, ps)| {
-                        let &(_, tf) = ps.iter().find(|p| p.0 == i)?;
-                        let len = quantized(doc.fields[*f].iter().map(Vec::len).sum::<usize>());
-                        Some((*f as u32, tf, len))
-                    }),
-                    long_prefix(self.phrase, self.is_prefix(i), &self.toks[i]),
-                )
-            })
-            .collect();
-        if self.phrase {
-            return clause_score(&[self.idfs(stats).iter().sum()], &texts, tagged);
+    /// A phrase's idf in short fields: its rarest pair's (None without pairs).
+    fn short_idf(&self, stats: &Stats) -> Option<f64> {
+        if let Some(w) = &self.weights {
+            return w.get(self.toks.len()).copied().filter(|&x| x >= 0.0);
         }
+        let least = self.pairs.iter().map(|p| stats.df[p]).min()?;
+        Some(idf(least as f64, stats.n))
+    }
+
+    /// The clause's score, `tagged` when the document carries a tag whose name holds it. A phrase scores as one
+    /// term: its count per field, in short fields at its short idf (when it has one), elsewhere (and its tag part)
+    /// at its tokens' idfs summed.
+    fn score(&self, scope: Scope, stats: &Stats, parts: &Parts, doc: &Doc, tagged: bool) -> f64 {
+        let text = |i: usize, keep: &dyn Fn(usize) -> bool| {
+            word_text(
+                scope,
+                parts.iter().filter(|(f, _)| keep(*f)).filter_map(|(f, ps)| {
+                    let &(_, tf) = ps.iter().find(|p| p.0 == i)?;
+                    let len = quantized(doc.fields[*f].iter().map(Vec::len).sum::<usize>());
+                    Some((*f as u32, tf, len))
+                }),
+                long_prefix(self.phrase, self.is_prefix(i), &self.toks[i]),
+            )
+        };
+        if self.phrase {
+            let unit: f64 = self.idfs(stats).iter().sum();
+            let Some(short_idf) = self.short_idf(stats) else {
+                return clause_score(&[unit], &[text(0, &|_| true)], tagged);
+            };
+            let short = pair_fields(scope);
+            let body = text(0, &|f| short >> f & 1 == 0);
+            return clause_score(&[unit], &[body], tagged) + short_idf * text(0, &|f| short >> f & 1 == 1);
+        }
+        let texts: Vec<f64> = (0..self.toks.len()).map(|i| text(i, &|_| true)).collect();
         clause_score(&self.idfs(stats), &texts, tagged)
     }
 }
@@ -286,8 +322,8 @@ pub struct Checker {
 }
 
 impl Checker {
-    /// `tags`: every tag's name. Keeps the best `keep` matches.
-    pub fn new(q: &Query, tags: &BTreeMap<u64, Vec<u8>>, keep: usize) -> Checker {
+    /// `tags`: every tag's name. Keeps the best `keep` matches; `pairs` when the index has every document's pairs.
+    pub fn new(q: &Query, tags: &BTreeMap<u64, Vec<u8>>, keep: usize, pairs: bool) -> Checker {
         let scope = q.scope;
         let last = q
             .clauses
@@ -302,7 +338,7 @@ impl Checker {
         for (i, c) in q.clauses.iter().enumerate() {
             let toks = tokens(&c.text);
             if !toks.is_empty() {
-                let mut s = Shape::new(scope, toks, c.fields.clone(), Some(i) == last, c.negate);
+                let mut s = Shape::new(scope, toks, c.fields.clone(), Some(i) == last, c.negate, pairs);
                 let named: BTreeSet<u64> = tags
                     .iter()
                     .filter(|(_, name)| occurs(&tokens(name), &s.toks, s.prefix))
@@ -323,15 +359,16 @@ impl Checker {
         if let Some(w) = q.weights.as_ref().filter(|w| !w.is_empty()) {
             let mut at = 0;
             for s in shapes.iter_mut().filter(|s| !s.negate && s.carried.is_none()) {
-                s.weights = Some(w[at..at + s.toks.len()].to_vec());
-                at += s.toks.len();
+                let n = super::query::weights_of(s.toks.len());
+                s.weights = Some(w[at..at + n].to_vec());
+                at += n;
             }
             assert_eq!(at, w.len(), "a weight per scoring token");
         }
         let mut terms: Vec<String> = shapes
             .iter()
             .filter(|s| s.carried.is_none())
-            .flat_map(|s| (0..s.toks.len()).map(|i| s.df_term(i)))
+            .flat_map(|s| (0..s.toks.len()).map(|i| s.df_term(i)).chain(s.pairs.iter().cloned()))
             .collect();
         terms.sort();
         terms.dedup();
@@ -498,7 +535,7 @@ pub fn search(w: &World, q: &Query) -> (Vec<(u64, f64)>, u64) {
             )
         })
         .collect();
-    let mut c = Checker::new(q, &names, usize::MAX);
+    let mut c = Checker::new(q, &names, usize::MAX, w.pairs);
     for d in &ids {
         c.stats(
             &Doc::new(docs.get(d).unwrap_or(&empty), q.scope),

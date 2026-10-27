@@ -146,7 +146,10 @@ fn build(dir: &PathBuf, seed: u64, n: u64, pairs: Pairs) -> Lib {
         s.commit_wait(vec![rec("searchPairs", vec![Value::Bit(true)])])
             .unwrap();
     }
-    let mut world = World::default();
+    let mut world = World {
+        pairs: pairs != Pairs::No,
+        ..World::default()
+    };
     let mut recs = Vec::new();
     for (t, name) in TAGS.iter().zip(TAG_NAMES) {
         recs.push(set(*t, 1, name));
