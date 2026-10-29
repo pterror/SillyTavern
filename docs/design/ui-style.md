@@ -30,7 +30,8 @@ a dialog (a choice with an end); character info is a side panel (a record).
 
 Every surface opens through the page shell: it gets its layer, its clip of what's under it, focus (returned where it
 was on close, lee-app `Panel`), and Escape (the innermost thing closes first; an edit in progress is innermost). There
-is no other way to put something on top (DR11).
+is no other way to put something on top (DR11). Whether a surface in front hides what's behind it or lets it show through
+is the theme's choice (it matters only for translucent panels), applied to every surface alike.
 
 ## Actions
 
