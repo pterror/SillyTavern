@@ -1071,7 +1071,8 @@ export function initRossMods() {
             ) {
                 const isUserMesList = document.querySelectorAll('div[is_user="true"]');
                 const lastIsUserMes = isUserMesList[isUserMesList.length - 1];
-                const editMes = lastIsUserMes.querySelector('.mes_block .mes_edit');
+                // A chat with no user message has nothing to edit.
+                const editMes = lastIsUserMes?.querySelector('.mes_block .mes_edit') ?? null;
                 if (editMes !== null) {
                     $(editMes).trigger('click');
                     return;

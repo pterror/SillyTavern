@@ -9533,8 +9533,7 @@ export function refreshSwipeButtons(updateCounters = false, fade = true) {
 
             //The swipe button will be shown if an overswipe would trigger REGENERATE or EDIT_GENERATE.
             const isOverswipeable = isLastSwipe &&
-                overswipe == OVERSWIPE_BEHAVIOR.REGENERATE ||
-                overswipe == OVERSWIPE_BEHAVIOR.EDIT_GENERATE;
+                (overswipe == OVERSWIPE_BEHAVIOR.REGENERATE || overswipe == OVERSWIPE_BEHAVIOR.EDIT_GENERATE);
 
             div.classList.toggle('last_swipe', isOverswipeable);
 
