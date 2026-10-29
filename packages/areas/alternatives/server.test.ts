@@ -1,8 +1,19 @@
 import type { CountsView, GreetingOp, ListView, MatchesView, Target } from './protocol.ts';
 import { expect, test } from 'vite-plus/test';
-import { FIRST_PART, alternativesArea, itemsOf } from './server.ts';
+import { FIRST_PART, SEARCH_STEP, alternativesArea, itemsOf } from './server.ts';
 import type { Alternative, Listed, Ports } from './server.ts';
+import { patchOf } from '@st/server-ui';
 import type { ActionContext, ActionResult, User } from '@st/server-ui';
+
+/** A patch merged as the page merges it: objects key by key, anything else replaced. */
+function merged(held: unknown, change: unknown): unknown {
+    const isRecord = (value: unknown): value is Record<string, unknown> =>
+        typeof value === 'object' && value !== null && !Array.isArray(value);
+    if (!isRecord(held) || !isRecord(change)) return change;
+    const out: Record<string, unknown> = { ...held };
+    for (const [key, value] of Object.entries(change)) out[key] = merged(held[key], value);
+    return out;
+}
 
 const user: User = { handle: 'u', directories: { root: '/u' } };
 const tokenizer = { api: 'textgenerationwebui' };
@@ -23,10 +34,9 @@ function world(listed: (target: Target) => Listed | null, stored: Record<string,
     const state = {
         stored: { ...stored },
         counted: [] as string[][],
-        pushes: [] as string[][],
         ops: [] as GreetingOp[],
         refuse: null as string | null,
-        /** Counting waits for this, when set. */
+        /** Counting each text waits for this, when set. */
         hold: null as Promise<void> | null,
     };
     const ports: Ports = {
@@ -34,10 +44,12 @@ function world(listed: (target: Target) => Listed | null, stored: Record<string,
         hash,
         counts: {
             stored: async (_u, _t, texts) => texts.map((text) => state.stored[text] ?? null),
-            count: async (_u, _t, texts) => {
-                await state.hold;
+            count: async (_u, _t, texts, each) => {
                 state.counted.push(texts);
-                return texts.map((text) => (text.includes('uncountable') ? null : text.split(' ').length));
+                for (const [i, text] of texts.entries()) {
+                    await state.hold;
+                    each(i, text.includes('uncountable') ? null : text.split(' ').length);
+                }
             },
         },
         match: (query, texts) =>
@@ -50,7 +62,6 @@ function world(listed: (target: Target) => Listed | null, stored: Record<string,
             state.ops.push(op);
             return { ok: true };
         },
-        changed: async (_u, _s, keys) => void state.pushes.push(keys),
     };
     const area = alternativesArea(ports);
     const context: ActionContext = { user, session: 's', chat: { tree: '1' }, upload: null };
@@ -63,9 +74,20 @@ function world(listed: (target: Target) => Listed | null, stored: Record<string,
     };
     /** The list as it ends up. */
     const list = async () => (await listParts()).at(-1)!;
-    const counts = () => area.views['alternatives.counts']!(context) as Promise<CountsView>;
-    const matches = () => area.views['alternatives.matches']!(context) as Promise<MatchesView>;
-    return { state, act, list, listParts, counts, matches };
+    /** A view's parts as they're read: the first at once, the next when asked for. */
+    const parts = (key: string) => (area.views[key]!(context) as AsyncIterable<unknown>)[Symbol.asyncIterator]();
+    /** A view as it ends up: its parts, each patch merged into what came before. */
+    const whole = async <T>(key: string): Promise<T> => {
+        let value: unknown;
+        for await (const part of area.views[key]!(context) as AsyncIterable<unknown>) {
+            const patched = patchOf(part);
+            value = patched ? merged(value, patched.value) : part;
+        }
+        return value as T;
+    };
+    const counts = () => whole<CountsView>('alternatives.counts');
+    const matches = () => whole<MatchesView>('alternatives.matches');
+    return { state, act, list, listParts, parts, counts, matches };
 }
 
 const swipes = (texts: string[], current = 0): Listed => ({
@@ -88,19 +110,22 @@ test("a message's alternatives are its swipes in order, each by its node, the cu
     expect(view.current).toBe(1);
 });
 
-test('a long list comes in two parts: the rows around the current one, then all of them', async () => {
-    const texts = Array.from({ length: 200 }, (_, i) => `t${i}`);
-    const w = world(() => swipes(texts, 150));
-    await w.act('alternatives.open', { target: { message: 'n150' }, tokenizer });
-    const [first, all, ...more] = await w.listParts();
-    expect(more).toEqual([]);
-    expect(first!.complete).toBe(false);
-    expect(first!.total).toBe(200);
-    expect(first!.items.map((i) => i.index)).toEqual(Array.from({ length: FIRST_PART }, (_, i) => 130 + i));
-    expect(all!.complete).toBe(true);
-    expect(all!.items.map((i) => i.index)).toEqual(texts.map((_, i) => i));
-    // Near the end, the part is the last rows.
-    const end = world(() => swipes(texts, 199));
+test('a long list comes in parts: the rows around the current one first, then more and more, then all', async () => {
+    const texts = Array.from({ length: 1000 }, (_, i) => `t${i}`);
+    const w = world(() => swipes(texts, 600));
+    await w.act('alternatives.open', { target: { message: 'n600' }, tokenizer });
+    const parts = await w.listParts();
+    expect(parts.map((p) => p.items.length)).toEqual([FIRST_PART, FIRST_PART * 4, FIRST_PART * 16, 1000]);
+    expect(parts.map((p) => p.complete)).toEqual([false, false, false, true]);
+    expect(parts.every((p) => p.total === 1000)).toBe(true);
+    expect(parts[0]!.items.map((i) => i.index)).toEqual(Array.from({ length: FIRST_PART }, (_, i) => 580 + i));
+    // Each part has the one before it in it.
+    for (const [n, part] of parts.slice(1).entries()) {
+        const ids = new Set(part.items.map((i) => i.id));
+        expect(parts[n]!.items.every((i) => ids.has(i.id))).toBe(true);
+    }
+    // Near the end, the first part is the last rows.
+    const end = world(() => swipes(texts.slice(0, 200), 199));
     await end.act('alternatives.open', { target: { message: 'n199' }, tokenizer });
     expect((await end.listParts())[0]!.items.at(-1)!.index).toBe(199);
     // A short list is one part.
@@ -121,7 +146,7 @@ test('nothing open: every view is empty, and a search is refused', async () => {
         chatOpen: false,
     });
     expect(await w.counts()).toEqual({ counts: {} });
-    expect((await w.matches()).matches).toBeNull();
+    expect(await w.matches()).toEqual({ query: '', matches: null, checked: 0, total: 0 });
     expect(await w.act('alternatives.search', { query: 'x' })).toMatchObject({ refused: expect.any(String) });
 });
 
@@ -186,32 +211,33 @@ test('with no chat of the character open, no greeting can be shown in one', asyn
     expect(view.items[0]!.opening).toBeNull();
 });
 
-test('counts: what the store has comes at once; the misses are counted once, in the background, and pushed', async () => {
+test('counts: what the store has comes at once; each miss follows as soon as it is counted, once', async () => {
     const w = world(() => swipes(['a b', 'c d e', 'f']), { 'a b': 2 });
     let release = () => {};
     w.state.hold = new Promise((resolve) => (release = resolve));
     await w.act('alternatives.open', { target: { message: 'n0' }, tokenizer });
     await w.list();
-    expect((await w.counts()).counts).toEqual({ n0: 2 });
-    // Read again before the count finished: nothing is asked for twice.
-    expect((await w.counts()).counts).toEqual({ n0: 2 });
+    const counts = w.parts('alternatives.counts');
+    expect((await counts.next()).value).toEqual({ counts: { n0: 2 } });
+    // Read again while counting: nothing is asked for twice.
+    const again = w.parts('alternatives.counts');
+    expect((await again.next()).value).toEqual({ counts: { n0: 2 } });
     release();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Each count is its own patch, with only what's new.
+    expect(patchOf((await counts.next()).value)?.value).toEqual({ counts: { n1: 3 } });
+    expect(patchOf((await counts.next()).value)?.value).toEqual({ counts: { n2: 1 } });
+    expect((await counts.next()).done).toBe(true);
     expect(w.state.counted).toEqual([['c d e', 'f']]);
-    expect(w.state.pushes).toEqual([['alternatives.counts']]);
-    expect((await w.counts()).counts).toEqual({ n0: 2, n1: 3, n2: 1 });
+    expect(await w.counts()).toEqual({ counts: { n0: 2, n1: 3, n2: 1 } });
 });
 
 test("a text that can't be counted isn't asked for again, and has no count", async () => {
     const w = world(() => swipes(['uncountable']));
     await w.act('alternatives.open', { target: { message: 'n0' }, tokenizer });
     await w.list();
-    await w.counts();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await w.counts();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(await w.counts()).toEqual({ counts: {} });
+    expect(await w.counts()).toEqual({ counts: {} });
     expect(w.state.counted).toEqual([['uncountable']]);
-    expect((await w.counts()).counts).toEqual({});
 });
 
 test('misses are counted nearest the current one first', async () => {
@@ -219,7 +245,6 @@ test('misses are counted nearest the current one first', async () => {
     await w.act('alternatives.open', { target: { message: 'n3' }, tokenizer });
     await w.list();
     await w.counts();
-    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(w.state.counted[0]!.slice(0, 3)).toEqual(['d', 'c', 'e']);
 });
 
@@ -236,12 +261,40 @@ test('search: the matching items by id with their ranges; an empty query is no s
     await w.act('alternatives.open', { target: { message: 'n0' }, tokenizer });
     await w.list();
     expect(await w.act('alternatives.search', { query: 'big' })).toEqual({ changed: ['alternatives.matches'] });
-    expect(await w.matches()).toEqual({ query: 'big', matches: { n0: [4, 7], n2: [0, 3] } });
+    expect(await w.matches()).toEqual({
+        query: 'big',
+        matches: { n0: [4, 7], n2: [0, 3] },
+        checked: 3,
+        total: 3,
+    });
     await w.act('alternatives.search', { query: '  ' });
     expect((await w.matches()).matches).toBeNull();
     await w.act('alternatives.search', { query: 'big' });
     await w.act('alternatives.open', { target: { message: 'n0' }, tokenizer });
-    expect(await w.matches()).toEqual({ query: '', matches: null });
+    expect(await w.matches()).toEqual({ query: '', matches: null, checked: 0, total: 0 });
+});
+
+test('a search over many sends what each step found as it finds it, with how far it is; a newer search stops it', async () => {
+    const texts = Array.from({ length: SEARCH_STEP * 2 + 10 }, (_, i) => (i % 100 === 0 ? `big ${i}` : `small ${i}`));
+    const w = world(() => swipes(texts));
+    await w.act('alternatives.open', { target: { message: 'n0' }, tokenizer });
+    await w.list();
+    await w.act('alternatives.search', { query: 'big' });
+    const found = w.parts('alternatives.matches');
+    expect((await found.next()).value).toEqual({
+        query: 'big',
+        total: texts.length,
+        checked: SEARCH_STEP,
+        matches: { n0: [0, 3], n100: [0, 3] },
+    });
+    expect(patchOf((await found.next()).value)?.value).toEqual({
+        checked: SEARCH_STEP * 2,
+        matches: { n200: [0, 3], n300: [0, 3] },
+    });
+    // Another search: this one stops.
+    await w.act('alternatives.search', { query: 'small' });
+    expect((await found.next()).done).toBe(true);
+    expect((await w.matches()).checked).toBe(texts.length);
 });
 
 test('closing forgets the look: the views are empty again', async () => {

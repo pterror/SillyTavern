@@ -110,6 +110,11 @@ function Dialog(props: {
     const counts = () => (isOurs(props.views.list()) ? props.views.counts()?.counts : seen()?.counts.counts) ?? {};
     const current = () => list()?.current ?? null;
     const matches = () => props.views.matches()?.matches ?? null;
+    /** The server is still checking alternatives for the search. */
+    const searching = () => {
+        const view = props.views.matches();
+        return view?.matches != null && view.checked < view.total;
+    };
     // What the matches are, read through: the store merges a new answer into the one before, in place.
     const matchesKey = createMemo(() => JSON.stringify(matches()));
 
@@ -370,13 +375,14 @@ function Dialog(props: {
         if (greetingsList) await props.old.go(0, item.opening!);
         else await props.old.go(mesId!, index);
     };
-    const canRemove = (item: Item) => (greetingsList ? true : item.nodeId !== null && total() > 1);
-    const remove = async (item: Item, index: number) => {
-        if (!greetingsList) {
-            await props.old.remove(mesId!, index);
-            return;
-        }
-        const sure = await ask({ kind: 'confirm', message: t('Delete this greeting?') }, t);
+    // The card's controls are on the card's greetings wherever the list shows them; a stored alternative is the chat's.
+    const isCardRow = (item: Item) => item.card !== null && list()?.card != null;
+    const canRemove = (item: Item) => !greetingsList && item.nodeId !== null && total() > 1;
+    const remove = async (index: number) => {
+        await props.old.remove(mesId!, index);
+    };
+    const removeGreeting = async (item: Item) => {
+        const sure = await ask({ kind: 'confirm', message: t('Delete this greeting from the card?') }, t);
         if (sure) await greeting({ op: 'delete', position: item.card!.position, hash: item.card!.hash }, null);
     };
 
@@ -474,15 +480,18 @@ function Dialog(props: {
         handle.addEventListener('pointercancel', cancel);
     };
     // The arrow keys move a greeting by one; Home and End to the start and the end.
-    const keyMove = (item: Item, index: number, event: KeyboardEvent) => {
+    // Among the card's greetings (a chat's openings list has stored ones between them, which aren't the card's).
+    const keyMove = (item: Item, event: KeyboardEvent) => {
+        const cards = items().filter((i) => i.card !== null);
+        const at = cards.findIndex((i) => i.id === item.id);
         const to: Record<string, [number, 'before' | 'after']> = {
-            ArrowUp: [index - 1, 'before'],
-            ArrowDown: [index + 1, 'after'],
+            ArrowUp: [at - 1, 'before'],
+            ArrowDown: [at + 1, 'after'],
             Home: [0, 'before'],
-            End: [total() - 1, 'after'],
+            End: [cards.length - 1, 'after'],
         };
-        const [at, side] = to[event.key] ?? [-1, 'after'];
-        const target = itemAt(at);
+        const [index, side] = to[event.key] ?? [-1, 'after'];
+        const target = cards[index];
         if (!target) return;
         event.preventDefault();
         move(item, target, side);
@@ -569,7 +578,7 @@ function Dialog(props: {
                             {greetingsList ? t('Show in chat') : t('Go')}
                         </button>
                     </form>
-                    <Show when={greetingsList}>
+                    <Show when={list()?.card}>
                         <button
                             type="button"
                             class="menu_button alternatives-add"
@@ -596,9 +605,19 @@ function Dialog(props: {
                 </Show>
                 <Show when={matches() !== null}>
                     <p class="alternatives-found" role="status">
-                        {shownCount() === 0
-                            ? t('Nothing matches.')
-                            : t('${0} match').replace('${0}', String(shownCount()))}
+                        <Show
+                            when={searching()}
+                            fallback={
+                                shownCount() === 0
+                                    ? t('Nothing matches.')
+                                    : t('${0} match').replace('${0}', String(shownCount()))
+                            }
+                        >
+                            {t('Searching… ${0} of ${1} checked, ${2} found')
+                                .replace('${0}', String(props.views.matches()?.checked ?? 0))
+                                .replace('${1}', String(props.views.matches()?.total ?? 0))
+                                .replace('${2}', String(shownCount()))}
+                        </Show>
                     </p>
                 </Show>
                 <div class="alternatives-frame">
@@ -628,7 +647,7 @@ function Dialog(props: {
                                     }}
                                 >
                                     <div class="alternative-head">
-                                        <Show when={greetingsList}>
+                                        <Show when={isCardRow(item)}>
                                             <span
                                                 class="alternative-drag fa-solid fa-grip-vertical"
                                                 role="button"
@@ -636,7 +655,7 @@ function Dialog(props: {
                                                 title={t('Drag to reorder (or use the arrow keys, Home and End)')}
                                                 aria-label={t('Reorder')}
                                                 onPointerDown={(event) => dragFrom(item, event)}
-                                                onKeyDown={(event) => keyMove(item, item.index, event)}
+                                                onKeyDown={(event) => keyMove(item, event)}
                                             />
                                         </Show>
                                         <span class="alternative-number">#{item.index + 1}</span>
@@ -684,7 +703,7 @@ function Dialog(props: {
                                                 aria-label={t('Copy')}
                                                 onClick={() => void props.old.copy(item.text)}
                                             />
-                                            <Show when={greetingsList}>
+                                            <Show when={isCardRow(item)}>
                                                 <button
                                                     type="button"
                                                     class="menu_button alternative-default fa-star"
@@ -706,14 +725,21 @@ function Dialog(props: {
                                                     aria-label={t('Edit')}
                                                     onClick={() => setEditing(item.id)}
                                                 />
+                                                <button
+                                                    type="button"
+                                                    class="menu_button alternative-delete-greeting fa-solid fa-trash-can"
+                                                    title={t('Delete from the card')}
+                                                    aria-label={t('Delete from the card')}
+                                                    onClick={() => void removeGreeting(item)}
+                                                />
                                             </Show>
                                             <Show when={canRemove(item)}>
                                                 <button
                                                     type="button"
-                                                    class="menu_button alternative-delete fa-solid fa-trash-can"
-                                                    title={t('Delete')}
-                                                    aria-label={t('Delete')}
-                                                    onClick={() => void remove(item, item.index)}
+                                                    class="menu_button alternative-delete fa-solid fa-comment-slash"
+                                                    title={t('Delete from the chat')}
+                                                    aria-label={t('Delete from the chat')}
+                                                    onClick={() => void remove(item.index)}
                                                 />
                                             </Show>
                                         </span>

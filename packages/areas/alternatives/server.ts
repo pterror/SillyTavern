@@ -1,6 +1,6 @@
 import { actions, COUNTS_VIEW, LIST_VIEW, MATCHES_VIEW, VIEWS } from './protocol.ts';
-import type { CountsView, GreetingOp, Item, ListView, MatchesView, Target, TokenizerState } from './protocol.ts';
-import { defineArea } from '@st/server-ui';
+import type { GreetingOp, Item, ListView, Target, TokenizerState } from './protocol.ts';
+import { defineArea, patch } from '@st/server-ui';
 import type { ActionResult, User, ViewContext } from '@st/server-ui';
 
 // The alternatives of a message (packages/areas/alternatives/protocol.ts), over the chat tree, the card and the
@@ -35,16 +35,51 @@ export type Ports = {
     counts: {
         /** What the count store has for each text (null: not stored). */
         stored(user: User, tokenizer: TokenizerState, texts: string[]): Promise<(number | null)[]>;
-        /** Counts the texts, storing what it counted; null where a text couldn't be counted. */
-        count(user: User, tokenizer: TokenizerState, texts: string[]): Promise<(number | null)[]>;
+        /**
+         * Counts the texts, storing what it counted; `each` is told each count as it's done (null: the text couldn't be
+         * counted).
+         */
+        count(
+            user: User,
+            tokenizer: TokenizerState,
+            texts: string[],
+            each: (index: number, count: number | null) => void,
+        ): Promise<void>;
     };
     /** The chat search's matcher: each text's matched source ranges (flat [start, end) pairs), null where it doesn't match. */
     match(query: string, texts: string[]): (number[] | null)[];
     /** A card greeting operation; refused with the reason when the card changed under it, or isn't there. */
     greeting(user: User, avatar: string, op: GreetingOp): Promise<{ ok: true } | { ok: false; reason: string }>;
-    /** Pushes views to one tab (what changed came from elsewhere: counting finished). */
-    changed(user: User, session: string, keys: string[]): Promise<void>;
 };
+
+/** A look at a target, nothing read or counted yet. */
+function freshLook(target: Target, tokenizer: TokenizerState | null): Look {
+    const look: Look = {
+        target,
+        tokenizer,
+        query: '',
+        items: [],
+        current: null,
+        card: null,
+        counted: new Map(),
+        asked: new Set(),
+        counting: null,
+        counted1: Promise.resolve(),
+        tell: () => {},
+    };
+    waitForCount(look);
+    return look;
+}
+
+/** The look's next count kept as a promise, and how to keep it. */
+function waitForCount(look: Look) {
+    look.counted1 = new Promise((resolve) => {
+        look.tell = () => {
+            resolve();
+            waitForCount(look);
+        };
+    });
+}
 
 /** A tab's look at a target. */
 type Look = {
@@ -59,14 +94,22 @@ type Look = {
     counted: Map<string, number>;
     /** Texts being counted, or that couldn't be: not asked for again. */
     asked: Set<string>;
+    /** The misses being counted (null: none), and a promise kept each time one is counted. */
+    counting: Promise<void> | null;
+    counted1: Promise<void>;
+    tell: () => void;
 };
 
 /** Tabs that went away without closing their look leave it; the oldest go past this many. */
 const LOOKS_KEPT = 32;
-/** How many rows around the current one a long list's first part has. */
+/** How many rows around the current one a long list's first part has; each part after has this many times more. */
 export const FIRST_PART = 40;
-/** Counted misses are pushed this many at a time, so the counts fill in as they come. */
-const COUNT_BATCH = 64;
+const GROWTH = 4;
+/** How many texts a search checks before it sends what it found. */
+export const SEARCH_STEP = 200;
+
+/** Lets what's waiting run (an answer's lines go out) before the next step. */
+const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 const sameTarget = (a: Target, b: Target) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -122,7 +165,7 @@ export function alternativesArea(ports: Ports) {
         chatOpen: false,
     };
 
-    // A long list comes in two parts: the rows around the current one, at once, then all of them.
+    // A long list comes in parts: the rows around the current one at once, then more and more around them, then all.
     async function* readList(context: ViewContext): AsyncGenerator<ListView, void, undefined> {
         const look = lookOf(context);
         if (!look) {
@@ -154,32 +197,44 @@ export function alternativesArea(ports: Ports) {
                 : null,
             chatOpen: listed.openings !== null,
         };
-        if (items.length > FIRST_PART) {
-            const from = Math.max(0, Math.min(items.length - FIRST_PART, (listed.current ?? 0) - FIRST_PART / 2));
-            yield { ...view, items: items.slice(from, from + FIRST_PART), complete: false };
+        for (let size = FIRST_PART; size < items.length; size *= GROWTH) {
+            const from = Math.max(0, Math.min(items.length - size, (listed.current ?? 0) - size / 2));
+            yield { ...view, items: items.slice(from, from + size), complete: false };
+            await turn();
         }
         yield view;
     }
 
-    /** Counts the misses, nearest the current one first, pushing each batch's counts as it's done. */
-    const countMisses = async (user: User, session: string, look: Look, texts: string[]) => {
+    /** Counts the misses, nearest the current one first, telling the look each count as it's done. */
+    const countMisses = async (user: User, look: Look, texts: string[]) => {
         const tokenizer = look.tokenizer;
         if (!tokenizer) return;
-        for (let from = 0; from < texts.length; from += COUNT_BATCH) {
-            if (looks.get(session) !== look) return;
-            const batch = texts.slice(from, from + COUNT_BATCH);
-            const counts = await ports.counts.count(user, tokenizer, batch);
-            batch.forEach((text, i) => {
-                const count = counts[i];
-                if (typeof count === 'number') look.counted.set(text, count);
-            });
-            if (looks.get(session) === look) await ports.changed(user, session, [COUNTS_VIEW]);
-        }
+        await ports.counts.count(user, tokenizer, texts, (index, count) => {
+            const text = texts[index];
+            if (text !== undefined && typeof count === 'number') look.counted.set(text, count);
+            look.tell();
+        });
     };
 
-    const readCounts = async (context: ViewContext): Promise<CountsView> => {
+    /** The counts of the look's items known now, by item id, but those already sent. */
+    const countsOf = (look: Look, sent: Set<string>) => {
+        const counts: Record<string, number> = {};
+        for (const item of look.items) {
+            const count = look.counted.get(item.text);
+            if (count === undefined || sent.has(item.id)) continue;
+            counts[item.id] = count;
+            sent.add(item.id);
+        }
+        return counts;
+    };
+
+    // The counts the store has at once, then each miss as it's counted (a patch with what's new).
+    async function* readCounts(context: ViewContext): AsyncGenerator<unknown, void, undefined> {
         const look = lookOf(context);
-        if (!look?.tokenizer) return { counts: {} };
+        if (!look?.tokenizer) {
+            yield { counts: {} };
+            return;
+        }
         const unknown = [...new Set(look.items.map((item) => item.text))].filter(
             (text) => !look.counted.has(text) && !look.asked.has(text),
         );
@@ -197,33 +252,57 @@ export function alternativesArea(ports: Ports) {
                 const current = look.current ?? 0;
                 const place = new Map(look.items.map((item, index) => [item.text, Math.abs(index - current)]));
                 misses.sort((a, b) => (place.get(a) ?? 0) - (place.get(b) ?? 0));
-                countMisses(context.user, context.session, look, misses).catch((error: unknown) =>
-                    console.error('[alternatives] counting failed:', error),
-                );
+                const before = look.counting ?? Promise.resolve();
+                const counting = before
+                    .then(() => countMisses(context.user, look, misses))
+                    .catch((error: unknown) => console.error('[alternatives] counting failed:', error))
+                    .finally(() => {
+                        if (look.counting === counting) look.counting = null;
+                        look.tell();
+                    });
+                look.counting = counting;
             }
         }
-        const counts: Record<string, number> = {};
-        for (const item of look.items) {
-            const count = look.counted.get(item.text);
-            if (count !== undefined) counts[item.id] = count;
+        const sent = new Set<string>();
+        yield { counts: countsOf(look, sent) };
+        while (look.counting && lookOf(context) === look) {
+            await look.counted1;
+            const fresh = countsOf(look, sent);
+            if (Object.keys(fresh).length > 0) yield patch({ counts: fresh });
         }
-        return { counts };
-    };
+        const rest = countsOf(look, sent);
+        if (Object.keys(rest).length > 0) yield patch({ counts: rest });
+    }
 
-    const readMatches = async (context: ViewContext): Promise<MatchesView> => {
+    // A search checks the texts a step at a time and sends what each step found (a patch), with how far it is.
+    async function* readMatches(context: ViewContext): AsyncGenerator<unknown, void, undefined> {
         const look = lookOf(context);
-        if (!look || look.query.trim() === '') return { query: look?.query ?? '', matches: null };
-        const found = ports.match(
-            look.query,
-            look.items.map((item) => item.text),
-        );
-        const matches: Record<string, number[]> = {};
-        look.items.forEach((item, i) => {
-            const spans = found[i];
-            if (spans) matches[item.id] = spans;
-        });
-        return { query: look.query, matches };
-    };
+        if (!look || look.query.trim() === '') {
+            yield { query: look?.query ?? '', matches: null, checked: 0, total: 0 };
+            return;
+        }
+        const { query, items } = look;
+        const step = (from: number) => {
+            const part = items.slice(from, from + SEARCH_STEP);
+            const found = ports.match(
+                query,
+                part.map((item) => item.text),
+            );
+            const matches: Record<string, number[]> = {};
+            part.forEach((item, i) => {
+                const spans = found[i];
+                if (spans) matches[item.id] = spans;
+            });
+            return { matches, checked: Math.min(items.length, from + SEARCH_STEP) };
+        };
+        yield { query, total: items.length, ...step(0) };
+        for (let from = SEARCH_STEP; from < items.length; from += SEARCH_STEP) {
+            await turn();
+            // Another search took its place: this one stops.
+            if (lookOf(context) !== look || look.query !== query) return;
+            yield patch(step(from));
+        }
+    }
 
     const all: ActionResult = { changed: [...VIEWS] };
 
@@ -238,16 +317,7 @@ export function alternativesArea(ports: Ports) {
                     sameTarget(before.target, target) &&
                     JSON.stringify(before.tokenizer) === JSON.stringify(tokenizer);
                 looks.delete(context.session);
-                looks.set(context.session, {
-                    target,
-                    tokenizer,
-                    query: '',
-                    items: keep ? before.items : [],
-                    current: keep ? before.current : null,
-                    card: keep ? before.card : null,
-                    counted: keep ? before.counted : new Map(),
-                    asked: keep ? before.asked : new Set(),
-                });
+                looks.set(context.session, keep ? { ...before, query: '' } : freshLook(target, tokenizer));
                 for (const session of looks.keys()) {
                     if (looks.size <= LOOKS_KEPT) break;
                     looks.delete(session);

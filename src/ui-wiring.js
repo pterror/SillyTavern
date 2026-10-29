@@ -276,6 +276,9 @@ const settingsPorts = {
 /** The alternatives' views (packages/areas/alternatives/protocol.ts). */
 export const ALTERNATIVES_VIEWS = ['alternatives.list', 'alternatives.counts', 'alternatives.matches'];
 
+/** How many texts are counted at once. */
+const COUNTING_AT_ONCE = 8;
+
 /** Every alternative there is: an opening list is read whole. */
 const WHOLE = { offset: 0, limit: Number.MAX_SAFE_INTEGER };
 
@@ -376,13 +379,25 @@ const alternativesPorts = {
                 ? 0
                 : readCount(directoriesOf(user), identity, tokenKeyHash(TOKEN_KEY_KINDS.TEXT, text)).catch(() => null)));
         },
-        async count(user, tokenizer, texts) {
+        async count(user, tokenizer, texts, each) {
             const opened = await tokenizerOf(user, tokenizer);
-            if (!opened) return texts.map(() => null);
+            if (!opened) {
+                texts.forEach((_, i) => each(i, null));
+                return;
+            }
             const counter = await opened.storedCounter();
-            const counts = await Promise.all(texts.map(text => (text === '' ? 0 : counter.countText(text).catch(() => null))));
+            // A few at a time (a remote tokenizer is a request each), each told as soon as it's counted.
+            let next = 0;
+            const worker = async () => {
+                for (let i = next++; i < texts.length; i = next++) {
+                    const text = texts[i];
+                    each(i, text === '' ? 0 : await counter.countText(text).catch(() => null));
+                    // A local tokenizer counts on this thread: what else is waiting (a search's next step) runs between.
+                    await new Promise(resolve => setImmediate(resolve));
+                }
+            };
+            await Promise.all(Array.from({ length: COUNTING_AT_ONCE }, worker));
             await opened.writeCounted();
-            return counts;
         },
     },
     match: (query, texts) => textMatches(getEngine(), query, texts),
@@ -390,7 +405,6 @@ const alternativesPorts = {
         const result = await applyGreetingOperation(directoriesOf(user), avatar, greetingOperation(op));
         return result.ok ? { ok: true } : { ok: false, reason: result.reason ?? 'The greetings changed.' };
     },
-    changed: (user, session, keys) => ui.changedFor(user, session, keys),
 };
 
 export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts), alternativesArea(alternativesPorts)], {
