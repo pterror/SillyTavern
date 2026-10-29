@@ -1,4 +1,11 @@
-# User Settings: a verdict per control
+# User Settings: an inventory of controls (superseded: not to be built from)
+
+**Status (10-29): inventory only.** Each verdict below was judged one control at a time, with no model of the whole UI
+behind it, so none of them can be trusted (user: "if the verdicts can be wrong at all this is very worrying"). The
+list of controls stays as an inventory. Each control's fate will be derived from the models of design-agenda steps
+2-4 (page shell, command registry and notices, prompt and settings places), and every resulting row will name the
+model rule it follows from. The rows are not patched one by one meanwhile (two corrections of 10-29 aside: long press,
+Stacked Drawers).
 
 Every control in the User Settings drawer (inventory of staging 55a45f2d9, 126 controls), with what becomes of it.
 Verdicts:
