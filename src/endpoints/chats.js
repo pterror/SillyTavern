@@ -902,17 +902,17 @@ async function recordLastOpened(request, opened) {
 }
 
 /**
- * A card's greetings in the message shape the openings merge against, and its greeting texts by card position;
- * both empty when the character can't be read.
+ * A card's greetings in the message shape the openings merge against, its greeting texts by card position, its
+ * default greeting's position and its name; null when the character can't be read.
  * @param {import('../user-stores.js').UserStore} store
  * @param {string} avatar
- * @returns {Promise<{ greetings: Record<string, any>[], texts: string[] }>}
+ * @returns {Promise<{ greetings: Record<string, any>[], texts: string[], defaultIndex: number|null, name: string } | null>}
  */
-async function cardGreetingsOf(store, avatar) {
+export async function readCardGreetings(store, avatar) {
     try {
         const [character] = /** @type {any[]} */ (await store.lib.cards([avatar]));
-        if (!character) return { greetings: [], texts: [] };
-        const { greetings } = cardToGreetingsModel(character);
+        if (!character) return null;
+        const { greetings, defaultIndex } = cardToGreetingsModel(character);
         const speaker = character?.name ?? character?.data?.name ?? '';
         const sendDate = Date.now();
         return {
@@ -920,11 +920,24 @@ async function cardGreetingsOf(store, avatar) {
                 .filter(text => typeof text === 'string' && text.length > 0)
                 .map(text => ({ name: speaker, is_user: false, is_system: false, send_date: sendDate, mes: text, extra: {} })),
             texts: greetings,
+            defaultIndex,
+            name: speaker,
         };
     } catch (error) {
         console.error(`Error reading card greetings for "${avatar}":`, error);
-        return { greetings: [], texts: [] };
+        return null;
     }
+}
+
+/**
+ * A card's greetings in the message shape the openings merge against, and its greeting texts by card position;
+ * both empty when the character can't be read.
+ * @param {import('../user-stores.js').UserStore} store
+ * @param {string} avatar
+ * @returns {Promise<{ greetings: Record<string, any>[], texts: string[] }>}
+ */
+async function cardGreetingsOf(store, avatar) {
+    return (await readCardGreetings(store, avatar)) ?? { greetings: [], texts: [] };
 }
 
 /**
