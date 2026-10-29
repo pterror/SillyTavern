@@ -58,3 +58,44 @@ test('the swipe picker pages a message\'s swipes, searches them, and Go jumps to
     await expect.poll(() => page.evaluate(() => SillyTavern.getContext().chat[0].swipe_id)).toBe(30);
     await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toContainText('A red Lighthouse.');
 });
+
+// Opening the picker fetches only the page it shows (a character can have thousands of greetings: fetching every
+// one froze the page on a phone); the first search fetches the rest once, and typing doesn't redo work per key.
+test('opening the swipe picker fetches the shown page only; a search fetches the rest once', async ({ page }) => {
+    test.setTimeout(180000);
+    await testSetup.awaitST({ page });
+    const name = `ManyGreetings-${Date.now()}`;
+    const avatar = await page.evaluate(async (name) => {
+        // @ts-ignore
+        const context = SillyTavern.getContext();
+        const form = new FormData();
+        form.set('ch_name', name);
+        form.set('first_mes', 'Greeting 0.');
+        for (let i = 1; i < 200; i++) form.append('alternate_greetings', `Greeting ${i}.${i === 150 ? ' A lighthouse.' : ''}`);
+        const response = await fetch('/api/characters/create', { method: 'POST', headers: context.getRequestHeaders({ omitContentType: true }), body: form });
+        return (await response.text()).trim();
+    }, name);
+    await page.evaluate(async (avatar) => {
+        // @ts-ignore
+        await SillyTavern.getContext().getCharacters();
+        const { selectCharacterByAvatar } = await import('/script.js');
+        await selectCharacterByAvatar(avatar);
+    }, avatar);
+    await expect(page.locator('#chat .mes[mesid="0"] .swipes-counter')).toContainText('/200', { timeout: 15000 });
+
+    /** @type {number[]} */
+    const limits = [];
+    page.on('request', request => {
+        if (new URL(request.url()).pathname === '/api/chats/openings') limits.push(Number(request.postDataJSON()?.limit ?? 0));
+    });
+    await page.locator('#chat .mes[mesid="0"] .swipes-counter').click();
+    const popup = page.locator('.swipe_picker_popup');
+    await expect(popup.locator('.swipe_picker_block')).toHaveCount(50);
+    await expect(popup.locator('.swipe_picker_block').nth(49)).toContainText('Greeting 49.');
+    expect(Math.max(0, ...limits)).toBeLessThanOrEqual(51);
+
+    await popup.locator('.swipe_picker_search').pressSequentially('lighthouse');
+    await expect(popup.locator('.swipe_picker_block')).toHaveCount(1);
+    await expect(popup.locator('.swipe_picker_block')).toContainText('Greeting 150.');
+    expect(limits.filter(limit => limit > 51)).toHaveLength(1);
+});
