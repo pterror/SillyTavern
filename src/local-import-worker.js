@@ -84,8 +84,8 @@ parentPort.on('message', async (msg) => {
 });
 
 /**
- * Answers a write with the card's image: the PNG's own (else the default avatar), its card data stripped, and its
- * identity hash; the main thread stores it.
+ * Answers a write with the card's image, its card data stripped, and its identity hash; the main thread stores it.
+ * Asked for a JSON card (the default avatar): a PNG's image is its source file, reflinked by the main thread.
  * @param {{ id: number, outcome: 'no-write' | 'write' }} msg
  * @param {{ sourcePath: string, sourceBuffer: Buffer, chunks: Array<{name: string, data: Uint8Array}> | null, format: string }} pending
  */
@@ -96,7 +96,7 @@ async function finishWrite(msg, pending) {
         return;
     }
     try {
-        const image = stripCardData(pending.format === 'png' ? pending.sourceBuffer : fs.readFileSync(DEFAULT_AVATAR_PATH));
+        const image = stripCardData(fs.readFileSync(DEFAULT_AVATAR_PATH));
         const avatarIdentityHash = computeAvatarIdentityHashFromImageBuffer(image);
         parentPort.postMessage({ id, phase: 'done', ok: true, outcome: 'write', image, avatarIdentityHash });
     } catch (err) {

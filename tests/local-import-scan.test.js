@@ -357,6 +357,46 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
         expect(row.name).toBe('Ghost');
     });
 
+    test('a PNG card\'s image is its source file as it is (reflinked or copied, never re-encoded or hardlinked); it goes out without its text chunks, and the store is its card', async () => {
+        const cardBuffer = cardParser.write(BLANK_PNG, JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', data: { name: 'Ghost' } }));
+        const sourcePath = path.join(sourceDir, 'ghost.png');
+        fs.writeFileSync(sourcePath, cardBuffer);
+
+        await localImportScan.scanDirectory(buildState(), directories);
+
+        const [avatar] = await characters();
+        const file = path.join(directories.characters, avatar);
+        // The source's bytes, its card chunk included: no image write of its own.
+        expect(fs.readFileSync(file).equals(cardBuffer)).toBe(true);
+        // Its own file, not the source's inode: a program rewriting the source in place doesn't change it.
+        expect(fs.statSync(file).ino).not.toBe(fs.statSync(sourcePath).ino);
+        expect(fs.statSync(file).nlink).toBe(1);
+        // Nothing staged beside it.
+        expect(fs.readdirSync(directories.characters).filter(name => name.endsWith('.next'))).toEqual([]);
+
+        // Sent without its text chunks: the image alone.
+        const { stripPngText } = await import('../src/png-text-strip.js');
+        const { pipeline } = await import('node:stream/promises');
+        const { Writable } = await import('node:stream');
+        /** @type {Buffer[]} */
+        const sent = [];
+        await pipeline(fs.createReadStream(file), stripPngText(), new Writable({ write(chunk, _e, done) { sent.push(chunk); done(); } }));
+        const { default: extract } = await import('png-chunks-extract');
+        const sentChunks = extract(new Uint8Array(Buffer.concat(sent)));
+        expect(sentChunks.map(c => c.name)).not.toContain('tEXt');
+        expect(sentChunks.filter(c => c.name === 'IDAT')).toEqual(extract(new Uint8Array(BLANK_PNG)).filter(c => c.name === 'IDAT'));
+
+        // The store is the card: changed there, an export carries the change, not the bytes the file still holds.
+        const { materializeCardPng } = await import('../src/endpoints/characters.js');
+        const stored = structuredClone((await user.store.lib.cards([avatar]))[0]);
+        stored.data.name = 'Ghost Renamed';
+        stored.name = 'Ghost Renamed';
+        await user.store.lib.writeCard(directories, avatar, JSON.stringify(stored));
+        const exported = await materializeCardPng(directories, avatar);
+        expect(JSON.parse(cardParser.read(exported.buffer)).data.name).toBe('Ghost Renamed');
+        expect(JSON.parse(cardParser.read(fs.readFileSync(file))).data.name).toBe('Ghost');
+    });
+
     test('a source directory that does not exist is skipped without throwing', async () => {
         const missingState = { sourceDir: path.join(tempDir, 'does-not-exist'), lastSeenMtimeMs: new Map(), watcher: null, watchTimers: new Map() };
         await expect(localImportScan.scanDirectory(missingState, directories)).resolves.toBeUndefined();

@@ -13,7 +13,7 @@ import { copyCharacterFile } from './local-import-copy.js';
 import { importCharacterFileHeadless, buildPngImportData, buildJsonImportData, mintCharacterId } from './endpoints/characters.js';
 import { userStore } from './user-stores.js';
 import { HASH, TYPE } from './library-engine.js';
-import { writeWithAvatar } from './character-avatars.js';
+import { linkWithAvatar, writeWithAvatar } from './character-avatars.js';
 import { attachLinuxDirectoryWatch, isWindowsOverflowSignal } from './watch-overflow.js';
 import { detectFormat } from './local-import-classify.js';
 import { LocalImportWorkerPool, resolveWorkerPoolSize } from './local-import-worker-pool.js';
@@ -30,9 +30,10 @@ import { importFailure } from './character-import-error.js';
  * that confirmed, the periodic full pass is replaced by a cheap heartbeat probe (checkWatcherHeartbeat()) that
  * falls back to a full pass on any miss.
  *
- * png/json files are read, hashed and classified by the worker pool (local-import-worker.js), which also strips the
- * card's image; the main thread builds the card with buildPngImportData()/buildJsonImportData() from the browser
- * `/import` path and stores both. charx/byaf/yaml are staged into
+ * png/json files are read, hashed and classified by the worker pool (local-import-worker.js); the main thread builds
+ * the card with buildPngImportData()/buildJsonImportData() from the browser `/import` path and stores it, a PNG's
+ * image being the source file itself, reflinked (linkWithAvatar(); a JSON card's is the default avatar, which the
+ * worker answers). charx/byaf/yaml are staged into
  * the uploads directory and imported via importCharacterFileHeadless(), unchanged from before the worker pool.
  *
  * Single-user only: every discovered file lands in DEFAULT_USER's library regardless of `enableUserAccounts`.
@@ -387,6 +388,7 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
         try {
             const freshStat = await fsPromises.stat(sourcePath);
             stat.mtimeMs = freshStat.mtimeMs;
+            stat.size = freshStat.size;
         } catch (err) {
             if (err.code === 'ENOENT') {
                 await cleanupRemovedFile(state, directories, filename);
@@ -478,13 +480,31 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     await pipelineResult.finish({ type: 'no-write' });
                     console.warn(`[local-import] Failed to import ${sourcePath} (unrecognized content or import error) - will retry next pass.`);
                 } else {
-                    importedCharacterId = `${pngName}.png`;
-                    const { image } = await pipelineResult.finish({ type: 'write' });
-                    if (!image) throw new Error('the import worker answered no image');
                     // Dated by its source file, as the library shows when a card arrived.
-                    await writeWithAvatar(lib, directories, `${pngName}.png`, image, () => lib.writeCard(directories, `${pngName}.png`, data, {
-                        contentHash, avatarIdentityHash: image.avatarIdentityHash, dateAdded: Math.round(stat.mtimeMs),
-                    }));
+                    const writeCard = (/** @type {string} */ avatarIdentityHash) => () => lib.writeCard(directories, `${pngName}.png`, data, {
+                        contentHash, avatarIdentityHash, dateAdded: Math.round(stat.mtimeMs),
+                    });
+                    let stored = true;
+                    if (format === 'png') {
+                        // The source file itself is the card's image, reflinked (character-avatars.js): no image write.
+                        // It must still be the bytes the worker read and hashed, else it's imported again when seen.
+                        await pipelineResult.finish({ type: 'no-write' });
+                        if (!pipelineResult.avatarIdentityHash) throw new Error('the import worker answered no image hash');
+                        stored = await linkWithAvatar(lib, directories, `${pngName}.png`, sourcePath, async () => {
+                            await writeCard(pipelineResult.avatarIdentityHash)();
+                            return true;
+                        }, { size: stat.size, mtimeMs: stat.mtimeMs }) ?? false;
+                    } else {
+                        // A JSON card's image is the default avatar, made here.
+                        const { image } = await pipelineResult.finish({ type: 'write' });
+                        if (!image) throw new Error('the import worker answered no image');
+                        await writeWithAvatar(lib, directories, `${pngName}.png`, image, writeCard(image.avatarIdentityHash));
+                    }
+                    if (!stored) {
+                        console.debug(`[local-import] ${sourcePath} changed while it was imported; it is imported as it is now when next seen.`);
+                        return;
+                    }
+                    importedCharacterId = `${pngName}.png`;
                     state.scanProgress?.add();
                     if (tagImportSetting !== 2) {
                         try {

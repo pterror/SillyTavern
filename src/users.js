@@ -1119,10 +1119,12 @@ function characterFilesHandler() {
                 const { userStore } = await import('./user-stores.js');
                 const { avatarPathOf } = await import('./character-avatars.js');
                 const { lib } = await userStore(req.user.directories, req.user.profile.handle);
-                const file = await avatarPathOf(lib, req.user.directories, avatar);
+                // A PNG there the store doesn't know yet (dropped, not yet imported) goes out stripped too.
+                const dropped = path.join(req.user.directories.characters, avatar);
+                const file = await avatarPathOf(lib, req.user.directories, avatar) ?? (fs.existsSync(dropped) ? dropped : null);
                 if (file !== null) {
                     invalidateFirefoxCache(file, req, res);
-                    return res.sendFile(path.resolve(file));
+                    return (await import('./png-text-strip.js')).sendPngWithoutText(req, res, path.resolve(file));
                 }
             }
         } catch (error) {
