@@ -24,7 +24,7 @@ import { applyGreetingOperation } from './endpoints/characters.js';
 import { openTokenizer } from './endpoints/tokenizers-current.js';
 import { readTokenizerState } from './connection-state-header.js';
 import { TOKEN_KEY_KINDS, readCount, tokenKeyHash } from './token-count-store.js';
-import { searchClauses } from './search-clauses.js';
+import { textMatches } from './text-matches.js';
 import { getEngine } from '../engine/load.js';
 import { hashGreetingText, opAppend, opDelete, opEdit, opMove, opSetDefault, opUnsetDefaultByHash } from './greeting-ops.js';
 
@@ -385,16 +385,7 @@ const alternativesPorts = {
             return counts;
         },
     },
-    match(query, texts) {
-        const clauses = searchClauses(query);
-        // The chat search's rule: the last word of the last clause, unquoted, is a prefix of a word.
-        const matched = getEngine().textMatches(clauses.map((clause, i) => ({
-            text: clause.text,
-            prefix: i === clauses.length - 1 && !clause.quoted,
-            negate: clause.negate,
-        })), texts);
-        return matched.map(spans => spans ?? null);
-    },
+    match: (query, texts) => textMatches(getEngine(), query, texts),
     async greeting(user, avatar, op) {
         const result = await applyGreetingOperation(directoriesOf(user), avatar, greetingOperation(op));
         return result.ok ? { ok: true } : { ok: false, reason: result.reason ?? 'The greetings changed.' };
