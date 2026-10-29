@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js';
+import { listEdit, openGreetingsList } from './alternatives-list.js';
 import { testSetup, openCharacterManagementDrawer, openInfoTab } from './frontent-test-utils.js';
 import { cardToGreetingsModel } from '../../src/greeting-list.js';
 import { hashGreetingText } from '../../src/greeting-ops.js';
@@ -85,31 +86,6 @@ async function showSwipe(page, swipeId, text) {
     }, swipeId);
     await expect.poll(async () => (await openingState(page)).mes, { timeout: 10000 }).toBe(text);
     await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(text);
-}
-
-/**
- * @param {import('@playwright/test').Page} page
- */
-function greetingsPopup(page) {
-    return page.locator('.popup', { has: page.locator('.alternate_greetings_list') }).last();
-}
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {number} index
- */
-function popupRow(page, index) {
-    return greetingsPopup(page).locator(`.alternate_greetings_list .alternate_greeting[data-index="${index}"]`);
-}
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {number} count Number of greetings the popup should list.
- */
-async function openGreetingsPopup(page, count) {
-    await openInfoTab(page, 'greeting');
-    await page.locator('.open_alternate_greetings').click();
-    await expect(greetingsPopup(page).locator('.alternate_greetings_list .alternate_greeting')).toHaveCount(count, { timeout: 10000 });
 }
 
 const stamp = () => `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
@@ -242,7 +218,7 @@ async function editAcrossRemoteDeletes(page, browser, { name, greetings, index, 
 test.describe('editing the showing provisional greeting keeps it shown', () => {
     test.beforeEach(testSetup.awaitST);
 
-    test('greetings modal: typing on while the row\'s save is in flight keeps the same greeting shown with its new text', async ({ page }) => {
+    test('greetings list: editing the showing greeting keeps it shown, with its new text', async ({ page }) => {
         const s = stamp();
         const [g0, g1, g2] = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
         const avatar = await createCharacter(page, `ProvTypeOn-${s}`, [g0, g1, g2]);
@@ -250,53 +226,19 @@ test.describe('editing the showing provisional greeting keeps it shown', () => {
         await showSwipe(page, 1, g1);
         expect((await openingState(page)).node_id.startsWith('card:')).toBe(true);
 
-        // Hold the first greeting edit request so the row's save is in flight while typing goes on.
-        /** @type {string[]} */
-        const editTexts = [];
-        /** @type {() => void} */
-        let releaseFirst = () => {};
-        const firstHeld = new Promise((resolveHeld) => {
-            page.route('**/api/characters/greetings/edit', async (route) => {
-                editTexts.push(route.request().postDataJSON().text);
-                if (editTexts.length === 1) {
-                    const released = new Promise(resolve => { releaseFirst = () => resolve(undefined); });
-                    resolveHeld(undefined);
-                    await released;
-                }
-                await route.continue();
-            });
-        });
-
-        await openGreetingsPopup(page, 3);
+        await openGreetingsList(page, 3);
         const typed = `One edited ${s}`;
-        const more = ' and more';
-        const finalText = typed + more;
-        const textarea = popupRow(page, 1).locator('.alternate_greeting_text');
+        await listEdit(page, 1, typed);
 
-        const firstResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/characters/greetings/edit', { timeout: 15000 });
-        await textarea.fill(typed);
-        await firstHeld;
-
-        await textarea.press('End');
-        await textarea.pressSequentially(more);
-        await expect(textarea).toHaveValue(finalText);
-
-        const secondResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/characters/greetings/edit'
-            && response.request().postDataJSON().text === finalText, { timeout: 15000 });
-        releaseFirst();
-        expect((await firstResponse).ok()).toBe(true);
-        expect((await secondResponse).ok()).toBe(true);
-        expect(editTexts).toEqual([typed, finalText]);
-
-        await expect.poll(async () => (await openingState(page)).mes, { timeout: 10000 }).toBe(finalText);
+        await expect.poll(async () => (await openingState(page)).mes, { timeout: 10000 }).toBe(typed);
         const after = await openingState(page);
         expect(after.length).toBe(1);
         expect(after.swipe_id).toBe(1);
-        expect(after.swipes).toEqual([g0, finalText, g2]);
-        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(finalText);
+        expect(after.swipes).toEqual([g0, typed, g2]);
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(typed);
     });
 
-    test('greetings modal: another session editing the same greeting again before the openings are read keeps that greeting shown, with the other session\'s text', async ({ page, browser }) => {
+    test('greetings list: another session editing the same greeting again before the openings are read keeps that greeting shown, with the other session\'s text', async ({ page, browser }) => {
         const s = stamp();
         const [g0, g1, g2] = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
         const avatar = await createCharacter(page, `ProvOtherReEdit-${s}`, [g0, g1, g2]);
@@ -312,9 +254,9 @@ test.describe('editing the showing provisional greeting keeps it shown', () => {
             // page's next openings read reaches the server, so that read no longer holds `typed`.
             let armed = false;
             let otherEdited = false;
-            await page.route('**/api/characters/greetings/edit', async (route) => {
+            await page.route('**/api/ui/action', async (route) => {
                 const response = await route.fetch();
-                armed = true;
+                if (route.request().postDataJSON()?.type === 'alternatives.greeting') armed = true;
                 await route.fulfill({ response });
             });
             await page.route('**/api/chats/openings', async (route) => {
@@ -335,10 +277,8 @@ test.describe('editing the showing provisional greeting keeps it shown', () => {
                 await route.continue();
             });
 
-            await openGreetingsPopup(page, 3);
-            const editResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/characters/greetings/edit', { timeout: 15000 });
-            await popupRow(page, 1).locator('.alternate_greeting_text').fill(typed);
-            expect((await editResponse).ok()).toBe(true);
+            await openGreetingsList(page, 3);
+            await listEdit(page, 1, typed);
 
             await expect.poll(() => otherEdited, { timeout: 10000 }).toBe(true);
             expect(await storedGreetings(other, avatar)).toEqual([g0, otherText, g2]);

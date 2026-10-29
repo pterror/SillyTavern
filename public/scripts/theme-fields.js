@@ -10,5 +10,5 @@ export const THEME_FIELDS = Object.freeze([
     'chat_width', 'chat_width_max', 'timer_enabled', 'timestamps_enabled', 'timestamp_model_icon', 'mesIDDisplay_enabled',
     'hideChatAvatars_enabled', 'message_token_count_enabled', 'expand_message_actions', 'enableZenSliders',
     'enableLabMode', 'hotswap_enabled', 'custom_css', 'bogus_folders', 'zoomed_avatar_magnification', 'reduced_motion',
-    'compact_input_area', 'show_swipe_num_all_messages', 'click_to_edit', 'media_display',
+    'compact_input_area', 'click_to_edit', 'media_display',
 ]);

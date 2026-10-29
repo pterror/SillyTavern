@@ -3,6 +3,7 @@
     "private": true,
     "type": "module",
     "dependencies": {
+        "@st/alternatives": "*",
         "@st/backgrounds": "*",
         "@st/page": "*",
         "@st/protocol": "*",

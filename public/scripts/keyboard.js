@@ -8,7 +8,6 @@ const interactableSelectors = [
     '.inline-drawer-icon',
     '.paginationjs-pages li a',
     '.group_select, .character_select, .bogus_folder_select',
-    '.swipe_picker_block',
     '.avatar-container',
     '.tag .tag_remove',
     '.bg_example',

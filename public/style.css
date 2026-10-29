@@ -18,6 +18,7 @@
 @import url(css/radio-tabs.css);
 @import url(css/chat-backups.css);
 @import url(css/streaming-display.css);
+@import url(css/alternatives.css);
 
 /* Set only on the drawer it applies to, never inherited (see .drawer-content). */
 @property --drawerContainerTop {
@@ -1357,6 +1358,16 @@ body .panelControlBar {
 
 .swipes-counter.swipe-picker-enabled {
     cursor: pointer;
+    position: relative;
+}
+
+/* A finger needs more than the counter's text to hit: the area that takes a tap reaches past it. */
+@media (pointer: coarse) {
+    .swipes-counter.swipe-picker-enabled::after {
+        content: '';
+        position: absolute;
+        inset: -14px -4px;
+    }
 }
 
 .swipes-counter.swipe-picker-enabled:hover,
@@ -1364,26 +1375,6 @@ body .panelControlBar {
     opacity: 0.7;
 }
 
-.swipe_picker_header {
-    position: sticky;
-    top: 0;
-    z-index: 1;
-}
-
-.swipe_picker_popup .popup-body,
-.swipe_picker_popup .popup-content {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    overflow: hidden;
-}
-
-
-body.swipeAllMessages .mes:not(.last_mes) .swipes-counter {
-    /* Avoid expensive DOM queries */
-    opacity: 0.3;
-    display: flex;
-}
 
 .swipe_left {
     right: auto;
@@ -1420,8 +1411,8 @@ body.swipeAllMessages .mes:not(.last_mes) .swipes-counter {
     }
 }
 
-/* Unlike the swipe counter, the arrows are shown on any message with more than one alternative, not just the last. */
-body:not(.swipeAllMessages) .mes:not(.last_mes) .swipes-counter,
+/* The counter shows on any message with more than one alternative, and on the last. */
+.mes:not(.last_mes) .swipes-counter[data-alternatives="1"],
 /* Hide non-visible swipe_left. */
 .mes:not(.swipes_visible) .swipe_left,
 /* Only hide swipe_right if it's not visible, and not the last swipe. */
@@ -4442,33 +4433,6 @@ grammarly-extension {
     display: none;
 }
 
-.alternate_greeting details {
-    padding: 2px;
-}
-
-.alternate_greeting:first-of-type .move_up_alternate_greeting,
-.alternate_greeting:last-of-type .move_down_alternate_greeting {
-    filter: brightness(75%) grayscale(1);
-    opacity: 0.5;
-    pointer-events: none;
-}
-
-.alternate_greeting summary {
-    list-style-position: outside;
-    margin-left: 1em;
-    padding-left: 5px;
-}
-
-.alternate_greeting textarea {
-    field-sizing: content;
-    max-height: none;
-}
-
-.alternate_greeting summary::marker,
-.alternate_greeting summary strong {
-    cursor: pointer;
-}
-
 .buttons_block {
     display: flex;
     flex: 1;
@@ -5538,15 +5502,13 @@ h5 {
     cursor: pointer;
 }
 
-#select_chat_div,
-.swipe_picker_div {
+#select_chat_div {
     padding: 0;
     height: 100%;
     overflow-y: auto;
 }
 
-#select_chat_div hr,
-.swipe_picker_div hr {
+#select_chat_div hr {
     margin: 0;
 }
 
@@ -5560,70 +5522,19 @@ h5 {
     cursor: pointer;
 }
 
-.select_chat_block,
-.swipe_picker_block {
+.select_chat_block {
     border-radius: 5px;
     margin-top: 5px;
     border: 1px solid var(--SmartThemeBorderColor);
     padding: 5px 7px;
 }
 
-.select_chat_block:hover,
-.swipe_picker_block:hover {
+.select_chat_block:hover {
     background-color: var(--white30a);
 }
 
-.select_chat_block[highlight],
-.swipe_picker_block[highlight] {
+.select_chat_block[highlight] {
     background-color: var(--cobalt30a);
-}
-
-.swipe_picker_block {
-    cursor: pointer;
-    -webkit-user-select: none;
-    user-select: none;
-}
-
-.swipe_picker_block .select_chat_block_mes {
-    text-align: left;
-}
-
-.swipe_picker_block .select_chat_actions {
-    align-items: baseline;
-}
-
-.swipe_picker_expand_toggle {
-    display: none !important;
-}
-
-.swipe_picker_block:has(.swipe_picker_expand_toggle:checked) .select_chat_block_mes {
-    display: block;
-    -webkit-line-clamp: unset;
-    line-clamp: unset;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-}
-
-.swipe_picker_expand_label {
-    cursor: pointer;
-    opacity: 0.5;
-}
-
-.swipe_picker_expand_label:hover {
-    opacity: 1;
-}
-
-.swipe_picker_copy {
-    cursor: pointer;
-    opacity: 0.5;
-}
-
-.swipe_picker_copy:hover {
-    opacity: 1;
-}
-
-.swipe_picker_block:has(.swipe_picker_expand_toggle:checked) .swipe_picker_expand_label {
-    transform: rotate(180deg);
 }
 
 .select_chat_block .avatar {
@@ -5667,20 +5578,6 @@ h5 {
     filter: drop-shadow(0 0 2px red);
     -webkit-animation: infinite-spinning 1s ease-out 0s infinite normal;
     animation: infinite-spinning 1s ease-out 0s infinite normal;
-}
-
-.swipe_picker_delete.disabled {
-    cursor: default !important;
-    opacity: 0.2;
-}
-
-.swipe_picker_delete.disabled:hover {
-    cursor: default !important;
-    color: inherit;
-    filter: none;
-    -webkit-animation: none;
-    animation: none;
-    opacity: 0.2 !important;
 }
 
 #export_character_div {
@@ -7251,18 +7148,6 @@ body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDraw
 
 }
 
-/* Constrict the scroll of alternate greetings to only the dynamic form section */
-.alternate_grettings {
-    display: grid;
-    grid-template-rows: auto auto auto 1fr;
-    max-height: 100%;
-    overflow: hidden;
-}
-
-.alternate_greetings_list {
-    overflow-y: scroll;
-}
-
 .mes_text div[data-type="assistant_note"]:has(.assistant_note_export) {
     display: flex;
     flex-direction: row;
@@ -7429,42 +7314,6 @@ body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDraw
     border-radius: 5px;
     margin: 2px 0;
     height: 32px;
-}
-
-/* pick-and-place (public/scripts/pick-and-place.js) */
-.pick-place-picked {
-    outline: 2px solid var(--SmartThemeQuoteColor, #e69500);
-    outline-offset: -2px;
-}
-
-.pick-place-slot {
-    height: 32px;
-    margin: 4px 0;
-    background: color-mix(in srgb, var(--SmartThemeQuoteColor, #e69500) 15%, transparent);
-    border: 2px dashed var(--SmartThemeQuoteColor, #e69500);
-    border-radius: 6px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.8em;
-    color: var(--SmartThemeQuoteColor, #e69500);
-    opacity: 0.7;
-    transition: opacity 0.15s, background 0.15s;
-}
-
-.pick-place-slot::before {
-    content: 'Place here';
-    font-weight: 500;
-}
-
-.pick-place-slot:hover {
-    opacity: 1;
-    background: color-mix(in srgb, var(--SmartThemeQuoteColor, #e69500) 25%, transparent);
-}
-
-.greeting-filter-input {
-    margin-bottom: 8px;
 }
 
 /* A textarea a live editor is mounted on: still in the page with its id, value and events, but not shown. Only its

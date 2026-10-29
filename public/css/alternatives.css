@@ -1,0 +1,236 @@
+/* The alternatives of a message (packages/areas/alternatives): one list, every alternative rendered as the chat
+ * renders it. */
+
+:root {
+    /* What a search matched, in any list that marks it. Custom CSS can set it. */
+    --match-color: color-mix(in srgb, var(--SmartThemeQuoteColor, #e69500) 45%, transparent);
+}
+
+mark.match {
+    background-color: var(--match-color);
+    color: inherit;
+    border-radius: 2px;
+}
+
+.popup.alternatives {
+    text-align: left;
+}
+
+.alternatives-body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
+}
+
+.alternatives-header,
+.alternatives-tools {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.alternatives-title {
+    margin: 0;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.alternatives-place {
+    opacity: 0.7;
+}
+
+.alternatives-search {
+    flex: 1;
+    min-width: 10em;
+    margin: 0;
+}
+
+.alternatives-select {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+}
+
+.alternatives-select-label {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.alternatives-select-n {
+    width: 6em;
+    margin: 0;
+    text-align: center;
+}
+
+.alternatives-notice,
+.alternatives-found {
+    margin: 0;
+    opacity: 0.8;
+}
+
+.alternatives-frame {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+}
+
+.alternatives-list {
+    flex: 1;
+    min-height: 0;
+    margin: 0;
+    padding: 0 4px 0 0;
+    list-style: none;
+    overflow-y: auto;
+    position: relative;
+    /* The markers sit beside the scrollbar, which never comes and goes under them. */
+    scrollbar-gutter: stable;
+}
+
+.alternative {
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 5px;
+    margin-top: 5px;
+    padding: 5px 7px;
+    /* A row off screen isn't laid out or painted; the size it last had holds its place. */
+    content-visibility: auto;
+    contain-intrinsic-size: auto 12em;
+}
+
+.alternative.current {
+    border-color: var(--SmartThemeQuoteColor);
+}
+
+.alternative.selected {
+    background-color: var(--cobalt30a);
+}
+
+.alternative:focus-visible {
+    outline: 2px solid var(--SmartThemeQuoteColor);
+}
+
+.alternative.drop-before {
+    box-shadow: 0 -3px 0 var(--SmartThemeQuoteColor);
+}
+
+.alternative.drop-after {
+    box-shadow: 0 3px 0 var(--SmartThemeQuoteColor);
+}
+
+.alternative-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: calc(var(--mainFontSize) * 0.9);
+}
+
+.alternative-number {
+    font-weight: bold;
+}
+
+.alternative-badge {
+    padding: 0 6px;
+    border-radius: 8px;
+    border: 1px solid var(--SmartThemeQuoteColor);
+    font-size: 0.85em;
+}
+
+.alternative-name,
+.alternative-date,
+.alternative-size {
+    opacity: 0.6;
+}
+
+.alternative-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 4px;
+}
+
+.alternative-actions .menu_button,
+.alternatives-tools .menu_button,
+.alternatives-close {
+    margin: 0;
+}
+
+.menu_button[aria-disabled="true"] {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.alternative-drag {
+    cursor: grab;
+    touch-action: none;
+    opacity: 0.6;
+    padding: 4px;
+}
+
+.alternative-text {
+    padding: 4px 0;
+}
+
+.alternative-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.alternative-editor textarea {
+    field-sizing: content;
+    max-height: none;
+}
+
+.alternative-editor-buttons {
+    display: flex;
+    gap: 6px;
+    justify-content: flex-end;
+}
+
+.alternatives-markers {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: 0;
+    width: 6px;
+    pointer-events: none;
+}
+
+.alternatives-marker {
+    position: absolute;
+    right: 0;
+    width: 6px;
+    height: 3px;
+    background-color: var(--match-color);
+}
+
+.alternatives-marker.current {
+    background-color: var(--SmartThemeQuoteColor);
+    height: 4px;
+}
+
+/* Fingers: every control big enough to hit. */
+@media (pointer: coarse) {
+    .alternatives .menu_button,
+    .alternative-drag {
+        min-width: 44px;
+        min-height: 44px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .alternatives-search,
+    .alternatives-select-n {
+        min-height: 44px;
+    }
+}

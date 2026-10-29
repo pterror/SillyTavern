@@ -15,9 +15,9 @@ import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 
 /**
  * Starts it, once the page's DOM and the old modules it calls into are ready (script.js's init).
- * @param {{ quietPrompt: (prompt: string) => Promise<string>, currentChat: () => ({ avatar: string } | { group: string } | null) }} options
+ * @param {{ quietPrompt: (prompt: string) => Promise<string>, currentChat: () => ({ avatar: string } | { group: string } | null), alternatives: import('/ui/entry.js').StartOptions['alternatives'] }} options
  */
-export function startNewUi({ quietPrompt, currentChat }) {
+export function startNewUi({ quietPrompt, currentChat, alternatives }) {
     if (newUiStarted()) return newUi();
     const element = (/** @type {string} */ id) => {
         const found = document.getElementById(id);
@@ -29,6 +29,7 @@ export function startNewUi({ quietPrompt, currentChat }) {
         t: (text, key) => translate(text, key ?? null),
         quietPrompt,
         currentChat,
+        alternatives,
         containers: {
             backgrounds: element('Backgrounds'),
             backgroundLayer: element('bg1'),

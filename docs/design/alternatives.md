@@ -13,23 +13,32 @@ rendered as chat renders it, read-only; an editor only for the greeting being ed
 Targets:
 - `{ message: <node id> }`: a stored chat message's alternatives (its siblings in the tree, the engine's
   `alternatives()`), in the tab's open chat.
-- `{ opening: true }`: the open chat's first message: its stored openings, then the card's greetings no stored
-  opening already is (the engine's `openingAlternatives()`, the order message 0's swipes have). A stored opening
-  whose text a card greeting has carries that greeting's card position, so every card greeting is in the list once
-  and can be edited.
-- `{ greetings: <avatar> }`: a character's card greetings alone, in card order (character info, when no chat of that
-  character is open, and while one is being created: see below).
+- `{ opening: true }`: the open chat's first message (a character's chat): its stored openings, then the card's
+  greetings no stored opening already is (the engine's `openingAlternatives()`, the order message 0's swipes have).
+  A stored opening whose text a card greeting has is marked with that greeting's card position.
+- `{ greetings: <avatar> }`: a character's card greetings, in card order (the greetings button in character info).
+  The card's operations (add, edit, reorder, default, delete) are this list's; when the tab's open chat is this
+  character's, each greeting also says where it is among the chat's openings, so it can be shown in the chat.
+
+An item's id is its node id; a card greeting not stored in the chat is known by its text's hash (the same text twice
+by which it is), so it keeps its row, and an editor open on it, while other greetings move.
+
+The tab looks at one target at a time. The server keeps the look per tab (target, tokenizer, search, the list last
+read) and answers three views: `alternatives.list` (the items), `alternatives.counts` (token counts by item id) and
+`alternatives.matches` (the search's matches by item id), so a search or a count never resends the texts.
 
 ## Data flow
 
 | Step | The page sends | The server does | It answers / pushes | Who holds what |
 |---|---|---|---|---|
-| open | `alternatives.open { target, tokenizer }` (`tokenizer`: the on-screen connection state the count routes already take) | keeps the tab's target and tokenizer; reads the target's alternatives | the `alternatives` view: target, items (id, kind, number, text, name, role, date, card position and hash, node id, default), counts the count store has (null for the rest), the current index | server: the list, counts, the tab's target and query; page: the latest view (the client's view store, so a later open shows it at once and revalidates) |
-| counts | nothing | counts the texts the store didn't have, once, through the token count store (stored for every later read) | the view pushed again with them | the count store |
+| open | `alternatives.open { target, tokenizer }` (`tokenizer`: the on-screen connection state the count routes already take) | keeps the tab's look; reads the target's alternatives | the three views: the list (items: id, text, name, role, date, node id, card position and hash; the current one; the card's list), the counts the count store has, no matches | server: the list, counts, the tab's look; page: the latest views, and the last list of each target it showed (shown at once when that target opens again, then the server's) |
+| counts | nothing | counts the texts the store didn't have, once each, nearest the current one first, in batches, through the token count store (stored for every later read) | the counts view pushed to the tab after each batch | the count store |
+| changes elsewhere | — | a commit that adds, removes, edits or picks a message, or writes a card, pushes the tab's views (`changedFor`), read again | the views | the tree, the card |
 | search | `alternatives.search { query }` | parses it with the library and chat search's parser (`searchClauses`), matches every item's text with the engine's tokenizer (`textMatches`: the chat search's tokens and folding) | the view with `matches`: each matching item's index and the source tokens matched | server: the tab's query; page: nothing but the view |
-| go | (old page) the swipe the old chat code makes: `swipe(…, { forceSwipeId })` with the item's index | the chat's select action (node-addressed) | the chat redraws as for any swipe | the tree |
+| select | (page) a number typed, or a click on a row: that row is selected and scrolled to | — | — | page: which row is selected |
+| go | (old page) the swipe the old chat code makes: `swipe(…, { forceSwipeId })` with the item's index (a greeting: message 0, at its place among the openings); from a row's Go, the selected one's Go (or Enter), and `/swipe-go [message=<id>] <n>` | the chat's select action (node-addressed) | the chat redraws as for any swipe | the tree |
 | delete (chat alternative) | (old page) `deleteSwipe(index, mesId, { ask })` | the node-addressed delete | the view pushed again (the old page tells the client to read it) | the tree |
-| greeting ops | `alternatives.greeting { op, … }` with the greeting's card position and hash (edit, delete, move, default set / unset, add) | the card's greeting operation (`applyGreetingOperation`: refuses on a stale hash) | the view; a refusal says why, with the list as stored | the card |
+| greeting ops | `alternatives.greeting { op, … }` with the greeting's card position and hash (edit, delete, move, default set / unset, add) | the card's greeting operation (`applyGreetingOperation`: refuses on a stale hash; one card's operations run one after another, whoever sends them) | the views; a refusal says why, and the editor keeps what was typed | the card |
 | greetings changed | (page) hands the new list to the old page | — | the old page applies it as a greeting save does (pager, CHARACTER_EDITED for the chat's first message) | the card |
 | close | `alternatives.close` | forgets the tab's target and query | — | — |
 
@@ -55,7 +64,8 @@ the rendered text. (Exact positions in the rendered text need the one markdown p
 
 ## Finding your place
 
-- Numbering `#12 of 340`; "Go to #n" in the list (and the command palette, Q7).
+- Numbering `#12 of 340`; a number typed selects that one and scrolls to it (it doesn't send the chat anywhere: Go
+  does, and Enter in the number box, and `/swipe-go`).
 - Opens scrolled to the current alternative, marked.
 - Search hides what doesn't match without redrawing anything; clearing it scrolls back to the current one.
 - Markers beside the list for matches and the current one; the list reserves its scrollbar (`scrollbar-gutter:
@@ -63,9 +73,15 @@ the rendered text. (Exact positions in the rendered text need the one markdown p
 
 ## Opening it
 
-- The swipe counter on any message with more than one alternative, a tap or a click on every device. The counter
-  shows on every such message (the "Swipe # for All Messages" setting goes); user messages are included.
+- The swipe counter on any message with more than one alternative, a tap or a click on every device (on a touch
+  screen the counter takes taps past its text). The counter shows on every such message (the "Swipe # for All
+  Messages" setting goes); user messages are included.
 - The greetings button in character info.
+
+## Not on the server
+
+The list is what the server has. Alternatives only the page holds (swipes added to a chat's first message before
+anything in that chat is saved: the opening is still provisional) aren't in it until they're stored.
 
 ## Creating a character
 

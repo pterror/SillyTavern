@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer, openInfoTab } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 import { cardToGreetingsModel } from '../../src/greeting-list.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
@@ -65,39 +65,6 @@ async function storedModel(page, avatar) {
 }
 
 /**
- * @param {import('@playwright/test').Page} page
- */
-function greetingsPopup(page) {
-    return page.locator('.popup', { has: page.locator('.alternate_greetings_list') }).last();
-}
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {number} index
- */
-function popupRow(page, index) {
-    return greetingsPopup(page).locator(`.alternate_greetings_list .alternate_greeting[data-index="${index}"]`);
-}
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {number} count Number of greetings the popup should list.
- */
-async function openGreetingsPopup(page, count) {
-    await openInfoTab(page, 'greeting');
-    await page.locator('.open_alternate_greetings').click();
-    await expect(greetingsPopup(page).locator('.alternate_greetings_list .alternate_greeting')).toHaveCount(count, { timeout: 10000 });
-}
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {string} op e.g. 'delete', 'default/set'
- */
-function greetingOpResponse(page, op) {
-    return page.waitForResponse(response => new URL(response.url()).pathname === `/api/characters/greetings/${op}`, { timeout: 15000 });
-}
-
-/**
  * Records every greeting op request in order, and holds the first one's response (after the server has applied
  * it) until `release()`, so that write is still in flight when the next one is started.
  * @param {import('@playwright/test').Page} page
@@ -140,70 +107,6 @@ const OVERLAP_GRACE_MS = 1500;
 
 test.describe('one character\'s greeting writes never overlap', () => {
     test.beforeEach(testSetup.awaitST);
-
-    /**
-     * Popup: types into row 1 and holds that edit's response, runs `act` (another popup op), checks the op is
-     * not sent while the edit is in flight, then releases the edit and waits for the op.
-     * @param {import('@playwright/test').Page} page
-     * @param {string} name
-     * @param {string} op
-     * @param {(page: import('@playwright/test').Page) => Promise<void>} act
-     */
-    async function popupOpAfterHeldEdit(page, name, op, act) {
-        const s = stamp();
-        const [g0, g1, g2] = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
-        const edited = `One edited ${s}`;
-        const avatar = await createCharacter(page, `${name}-${s}`, [g0, g1, g2]);
-        await openCharacter(page, avatar);
-        await openGreetingsPopup(page, 3);
-        const state = await holdFirstGreetingWrite(page);
-
-        await popupRow(page, 1).locator('.alternate_greeting_text').fill(edited);
-        await state.held;
-        expect(state.started).toEqual(['edit']);
-
-        await act(page);
-        await page.waitForTimeout(OVERLAP_GRACE_MS);
-        expect(state.started, `"${op}" must not be sent while the earlier edit is in flight`).toEqual(['edit']);
-
-        const opResponse = greetingOpResponse(page, op);
-        state.release();
-        expect((await opResponse).status()).toBe(200);
-        expect(state.started).toEqual(['edit', op]);
-        expect(state.maxInFlight).toBe(1);
-        return { avatar, g0, g2, edited };
-    }
-
-    test('popup delete waits for the row edit in flight and deletes the edited greeting', async ({ page }) => {
-        const { avatar, g0, g2 } = await popupOpAfterHeldEdit(page, 'QueueDelete', 'delete', async (page) => {
-            await popupRow(page, 1).locator('.delete_alternate_greeting').click();
-            await page.locator('.popup', { hasText: 'Are you sure you want to delete' }).locator('.popup-button-ok').click();
-        });
-        expect(await storedModel(page, avatar)).toEqual({ greetings: [g0, g2], defaultIndex: 0 });
-        await expect(greetingsPopup(page).locator('.alternate_greetings_list .alternate_greeting')).toHaveCount(2, { timeout: 10000 });
-    });
-
-    test('popup set default waits for the row edit in flight and makes the edited greeting the default', async ({ page }) => {
-        const { avatar, g0, g2, edited } = await popupOpAfterHeldEdit(page, 'QueueSetDefault', 'default/set', async (page) => {
-            await popupRow(page, 1).locator('.set_default_greeting').click();
-        });
-        expect(await storedModel(page, avatar)).toEqual({ greetings: [g0, edited, g2], defaultIndex: 1 });
-    });
-
-    test('popup demote waits for the row edit in flight and clears the default', async ({ page }) => {
-        const { avatar, g0, g2, edited } = await popupOpAfterHeldEdit(page, 'QueueDemote', 'default/unset', async (page) => {
-            await popupRow(page, 0).locator('.demote_default_greeting').click();
-        });
-        expect(await storedModel(page, avatar)).toEqual({ greetings: [g0, edited, g2], defaultIndex: null });
-    });
-
-    test('popup move waits for the row edit in flight and moves the edited greeting', async ({ page }) => {
-        const { avatar, g0, g2, edited } = await popupOpAfterHeldEdit(page, 'QueueMove', 'move', async (page) => {
-            await popupRow(page, 1).locator('.pick_up_greeting').click();
-            await greetingsPopup(page).locator('.pick-place-slot').last().click();
-        });
-        expect(await storedModel(page, avatar)).toEqual({ greetings: [g0, g2, edited], defaultIndex: 0 });
-    });
 
     test('a #character_json_data greeting save waits for the pager save in flight', async ({ page }) => {
         const s = stamp();

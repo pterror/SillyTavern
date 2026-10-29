@@ -626,7 +626,7 @@ test.describe('character field edit mode', () => {
                             // Its button is on the greeting tab, which can't be opened mid-edit; other code can still press it.
                             await page.locator('.open_alternate_greetings').first().evaluate(el => (/** @type {HTMLElement} */ (el)).click());
                             await expectBlockedByFlash(page, f);
-                            await expect(page.locator('.popup .alternate_greetings_list')).toHaveCount(0);
+                            await expect(page.locator('dialog.alternatives')).toHaveCount(0);
                             await expectEditMode(page, field);
                             await expect(f.textarea).toHaveValue('in progress');
                             await f.cancel.click();
