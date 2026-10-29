@@ -11,14 +11,28 @@ const bob: User = { handle: 'bob', directories: { root: '/users/bob' } };
 
 // A counter per user, and a view of it that also says which chat the tab shows.
 const counts = new Map<string, number>();
+let release = () => {};
+let held = Promise.resolve();
+function hold() {
+    held = new Promise((resolve) => {
+        release = () => resolve();
+    });
+}
 const area = defineArea({
     schemas: {
         'count.add': v.object({ by: v.pipe(v.number(), v.minValue(1)) }),
         'count.refuse': v.object({}),
         'count.fail': v.object({}),
+        'parts.touch': v.object({}),
     },
     views: {
         count: async ({ user, chat }) => ({ count: counts.get(user.handle) ?? 0, chat: chat?.tree ?? null }),
+        // A view read in parts, the later one held until `release`.
+        parts: async function* () {
+            yield { part: 1 };
+            await held;
+            yield { part: 2 };
+        },
     },
     actions: {
         'count.add': async ({ user }, { by }) => {
@@ -26,6 +40,7 @@ const area = defineArea({
             return { changed: ['count'] };
         },
         'count.refuse': async () => ({ refused: 'not now' }),
+        'parts.touch': async () => ({ changed: ['parts'] }),
         'count.fail': async ({ user }) => {
             counts.set(user.handle, (counts.get(user.handle) ?? 0) + 100);
             throw new Error('failed after writing');
@@ -58,7 +73,9 @@ async function send(session: string, type: string, payload: unknown, user = 'ali
         headers: { 'Content-Type': 'application/json', 'X-ST-Session': session, 'X-User': user },
         body: JSON.stringify({ type, payload }),
     });
-    return { status: response.status, answer: (await response.json()) as ActionAnswer };
+    // An answer in parts (NDJSON) is its first line.
+    const [first = ''] = (await response.text()).split('\n');
+    return { status: response.status, answer: JSON.parse(first) as ActionAnswer };
 }
 
 const pushes = { a1: [] as ViewPush[], a2: [] as ViewPush[], b1: [] as ViewPush[] };
@@ -182,4 +199,42 @@ test("an action that fails partway answers its area's views as they are now", as
         ok: false,
         views: [{ key: 'count', value: { count: counts.get('alice') } }],
     });
+});
+
+test('a view read in parts: its first part is answered at once, the rest follow on the same answer (NDJSON), each newer; other tabs get each by push', async () => {
+    await send(sessions.a2, 'view.open', { key: 'parts' });
+    hold();
+    const response = await fetch(`${origin()}/api/ui/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-ST-Session': sessions.a1, 'X-User': 'alice' },
+        body: JSON.stringify({ type: 'view.open', payload: { key: 'parts' } }),
+    });
+    expect(response.headers.get('Content-Type')).toContain('application/x-ndjson');
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    // The first line comes while the second part is still held.
+    while (!text.includes('\n')) text += decoder.decode((await reader.read()).value, { stream: true });
+    const first = JSON.parse(text.slice(0, text.indexOf('\n'))) as ActionAnswer;
+    expect(first).toMatchObject({ ok: true, views: [{ key: 'parts', value: { part: 1 } }] });
+    pushes.a2.length = 0;
+    release();
+    for (let next = await reader.read(); !next.done; next = await reader.read())
+        text += decoder.decode(next.value, { stream: true });
+    const lines = text
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { views: { version: number; value: unknown }[] });
+    expect(lines).toHaveLength(2);
+    expect(lines[1]!.views[0]!.value).toEqual({ part: 2 });
+    expect(lines[1]!.views[0]!.version).toBeGreaterThan(first.views[0]!.version);
+
+    hold();
+    pushes.a2.length = 0;
+    const touched = send(sessions.a1, 'parts.touch', {});
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    release();
+    await touched;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(pushes.a2.map((p) => p.views[0]!.value)).toEqual([{ part: 1 }, { part: 2 }]);
 });

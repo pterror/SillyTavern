@@ -23,6 +23,8 @@ export type Client = {
     reconnected: (chat: ChatOwner | null) => Promise<void>;
     /** Reads a view again (for an extension that changed it through an old route). */
     reread: (key: string) => Promise<void>;
+    /** The version of the view held now (0: none yet): what a copy kept elsewhere is of. */
+    version: (key: string) => number;
 };
 
 export type ClientOptions = {
@@ -31,6 +33,26 @@ export type ClientOptions = {
 };
 
 const ENDPOINT = '/api/ui/action';
+
+/** A body's lines, as they arrive. */
+async function* readLines(body: ReadableStream<Uint8Array>): AsyncGenerator<string, void, undefined> {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let rest = '';
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        rest += decoder.decode(value, { stream: true });
+        let end = rest.indexOf('\n');
+        while (end >= 0) {
+            const line = rest.slice(0, end);
+            rest = rest.slice(end + 1);
+            if (line.trim() !== '') yield line;
+            end = rest.indexOf('\n');
+        }
+    }
+    if (rest.trim() !== '') yield rest;
+}
 
 export function createClient({ headers }: ClientOptions): Client {
     const views = new Map<string, { version: number; set: (value: unknown) => void; get: Accessor<unknown> }>();
@@ -62,7 +84,7 @@ export function createClient({ headers }: ClientOptions): Client {
     /** An answer, whatever came back: a network failure or a body that isn't one is a refusal with no views. */
     const post = async (type: string, payload: unknown, file?: File): Promise<ActionAnswer> => {
         try {
-            const answer = (await request(type, payload, file)) as {
+            const answer = (await request(type, payload, file, apply)) as {
                 ok?: unknown;
                 error?: unknown;
                 views?: ViewFrame[];
@@ -79,7 +101,16 @@ export function createClient({ headers }: ClientOptions): Client {
         }
     };
 
-    const request = async (type: string, payload: unknown, file?: File): Promise<unknown> => {
+    /**
+     * The answer's body. An answer in parts (NDJSON: views read in parts) is the first line; each later line's views go
+     * to `later` as they arrive.
+     */
+    const request = async (
+        type: string,
+        payload: unknown,
+        file: File | undefined,
+        later: (frames: ViewFrame[]) => void,
+    ): Promise<unknown> => {
         let body: BodyInit;
         const head = { ...headers() };
         if (file) {
@@ -95,7 +126,21 @@ export function createClient({ headers }: ClientOptions): Client {
             head['Content-Type'] = 'application/json';
         }
         const response = await fetch(ENDPOINT, { method: 'POST', headers: head, body });
-        return response.json().catch(() => ({ ok: false, error: `The server answered ${response.status}.` }));
+        const refused = { ok: false, error: `The server answered ${response.status}.` };
+        if (!(response.headers.get('Content-Type') ?? '').includes('ndjson') || !response.body) {
+            return response.json().catch(() => refused);
+        }
+        const lines = readLines(response.body);
+        const first = await lines.next();
+        void (async () => {
+            for await (const line of { [Symbol.asyncIterator]: () => lines }) {
+                const part = JSON.parse(line) as { views?: ViewFrame[] };
+                if (Array.isArray(part.views)) later(part.views);
+            }
+        })().catch(() => {
+            // The answer was cut off: the views keep what came; the stream's next push or a reread brings the rest.
+        });
+        return first.done === true ? refused : (JSON.parse(first.value) as unknown);
     };
 
     const open = async (key: string) => {
@@ -125,5 +170,6 @@ export function createClient({ headers }: ClientOptions): Client {
             await Promise.all([...views.keys()].map((key) => open(key)));
         },
         reread: (key) => open(key),
+        version: (key) => views.get(key)?.version ?? 0,
     };
 }

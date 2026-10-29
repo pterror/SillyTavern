@@ -28,9 +28,16 @@ type Handlers<S extends ActionSchemas> = {
     [T in keyof S]: (context: ActionContext, payload: v.InferOutput<S[T]>) => Promise<ActionResult>;
 };
 
+/**
+ * A view's reader: its value, or its value in parts (an async iterable: a long list, what's in view first, then the
+ * rest). Each part is the whole view as it stands, newer than the one before; the first is answered at once and the
+ * rest follow on the same answer (NDJSON) or push.
+ */
+export type ViewReader = (context: ViewContext) => Promise<unknown> | AsyncIterable<unknown>;
+
 export type Area = {
     schemas: ActionSchemas;
-    views: Record<string, (context: ViewContext) => Promise<unknown>>;
+    views: Record<string, ViewReader>;
     actions: Record<string, (context: ActionContext, payload: unknown) => Promise<ActionResult>>;
     /** Views that depend on the tab's chat: read again when it changes. */
     followChat: string[];
@@ -68,6 +75,11 @@ type Tab = {
 type MulterFile = { path: string; originalname: string; mimetype: string; size: number };
 
 const SESSION_HEADER = 'X-ST-Session';
+/** Versions a read in parts keeps for its later parts. */
+const PARTS = 1000;
+
+const isParts = (value: unknown): value is AsyncIterable<unknown> =>
+    typeof value === 'object' && value !== null && Symbol.asyncIterator in value;
 const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export type UiOptions = {
@@ -135,31 +147,63 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
         return tab;
     };
 
-    const frame = async (tab: Tab, key: string): Promise<ViewFrame> => {
+    /** Views read: the frames there are now, and the later parts of those read in parts. */
+    type Read = { frames: ViewFrame[]; later: AsyncIterable<ViewFrame>[] };
+
+    const frame = async (tab: Tab, key: string): Promise<Read> => {
         const read = views.get(key);
         if (!read) throw new Error(`No view ${key}`);
         // Numbered when the read starts: a read that began before another write can't come out newer than one
-        // that began after it.
+        // that began after it. A read in parts keeps the next numbers for its later parts, so they're newer than its
+        // first and older than any read that starts after it.
         const version = nextVersion();
-        const value = await read({ user: tab.user, session: tab.session, chat: tab.chat });
-        return { key, version, value };
+        lastVersion += PARTS;
+        const value = read({ user: tab.user, session: tab.session, chat: tab.chat });
+        if (!isParts(value)) return { frames: [{ key, version, value: await value }], later: [] };
+        const parts = value[Symbol.asyncIterator]();
+        const first = await parts.next();
+        if (first.done === true) throw new Error(`The view ${key} read nothing`);
+        const later = (async function* () {
+            for (let part = 1; ; part++) {
+                const next = await parts.next();
+                if (next.done === true) return;
+                yield { key, version: version + Math.min(part, PARTS), value: next.value as unknown };
+            }
+        })();
+        return { frames: [{ key, version, value: first.value as unknown }], later: [later] };
     };
 
     /** The views among `keys` the tab shows, read for it. */
-    const framesOf = async (tab: Tab, keys: Iterable<string>) => {
-        const frames: ViewFrame[] = [];
-        for (const key of new Set(keys)) if (tab.open.has(key)) frames.push(await frame(tab, key));
-        return frames;
+    const framesOf = async (tab: Tab, keys: Iterable<string>): Promise<Read> => {
+        const all: Read = { frames: [], later: [] };
+        for (const key of new Set(keys)) {
+            if (!tab.open.has(key)) continue;
+            const { frames, later } = await frame(tab, key);
+            all.frames.push(...frames);
+            all.later.push(...later);
+        }
+        return all;
+    };
+
+    /** Pushes views to a tab's streams: those there are now, then each later part as it's read. */
+    const push = (tab: Tab, { frames, later }: Read) => {
+        if (frames.length > 0) for (const stream of tab.streams) stream({ type: 'views', views: frames });
+        for (const parts of later) {
+            void (async () => {
+                for await (const part of parts)
+                    for (const stream of tab.streams) stream({ type: 'views', views: [part] });
+            })().catch((error: unknown) => console.error("[ui] a view's later part not read:", error));
+        }
     };
 
     /** The changed views each tab of the user shows: answered to `actor` (returned), pushed to the others. */
-    const spread = async (user: User, keys: string[], actor: Tab | null): Promise<ViewFrame[]> => {
-        let answer: ViewFrame[] = [];
+    const spread = async (user: User, keys: string[], actor: Tab | null): Promise<Read> => {
+        let answer: Read = { frames: [], later: [] };
         for (const tab of tabs.values()) {
             if (tab.user.directories.root !== user.directories.root) continue;
-            const frames = await framesOf(tab, keys);
-            if (tab === actor) answer = frames;
-            else if (frames.length > 0) for (const push of tab.streams) push({ type: 'views', views: frames });
+            const read = await framesOf(tab, keys);
+            if (tab === actor) answer = read;
+            else push(tab, read);
         }
         if (actor && !tabs.has(actor.session)) answer = await framesOf(actor, keys);
         return answer;
@@ -168,12 +212,30 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
     const pushTo = async (user: User, session: string, keys: Iterable<string>) => {
         const tab = tabs.get(session);
         if (!tab || tab.user.directories.root !== user.directories.root) return;
-        const frames = await framesOf(tab, keys);
-        if (frames.length > 0) for (const push of tab.streams) push({ type: 'views', views: frames });
+        push(tab, await framesOf(tab, keys));
     };
 
     const act = async (request: Request, response: Response) => {
-        const answer = (result: ActionAnswer, status = 200) => void response.status(status).send(result);
+        /**
+         * The answer: one JSON object, or, when views it carries are read in parts, NDJSON: the answer first, then a
+         * line `{ views }` for each later part as it's read.
+         */
+        const answer = async (result: ActionAnswer, status = 200, later: AsyncIterable<ViewFrame>[] = []) => {
+            if (later.length === 0) {
+                response.status(status).send(result);
+                return;
+            }
+            response.status(status).type('application/x-ndjson');
+            response.write(`${JSON.stringify(result)}\n`);
+            try {
+                for (const parts of later) {
+                    for await (const part of parts) response.write(`${JSON.stringify({ views: [part] })}\n`);
+                }
+            } catch (error) {
+                console.error("[ui] a view's later part not read:", error);
+            }
+            response.end();
+        };
         const file = (request as Request & { file?: MulterFile }).file;
         const upload = file ? { path: file.path, name: file.originalname, type: file.mimetype, size: file.size } : null;
         const body = request.body as { type?: unknown; payload?: unknown } | undefined;
@@ -185,7 +247,7 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
             const user = userOf(request);
             const session = request.get(SESSION_HEADER);
             if (!user || session === undefined || !SESSION.test(session)) {
-                answer({ ok: false, error: 'no session', views: [] }, 400);
+                await answer({ ok: false, error: 'no session', views: [] }, 400);
                 return;
             }
             tab = tabOf(user, session);
@@ -195,53 +257,57 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
                 try {
                     payload = JSON.parse(payload);
                 } catch {
-                    answer({ ok: false, error: 'the payload is not JSON', views: [] }, 400);
+                    await answer({ ok: false, error: 'the payload is not JSON', views: [] }, 400);
                     return;
                 }
             }
             if (type === 'chat.show' || type === 'chat.close') {
                 const parsed = v.safeParse(viewActions[type], payload);
                 if (!parsed.success) {
-                    answer({ ok: false, error: 'not a chat', views: [] }, 400);
+                    await answer({ ok: false, error: 'not a chat', views: [] }, 400);
                     return;
                 }
                 tab.chat = type === 'chat.show' ? await chatOf(user, parsed.output as ChatOwner) : null;
-                answer({ ok: true, views: await framesOf(tab, followChat) });
+                const read = await framesOf(tab, followChat);
+                await answer({ ok: true, views: read.frames }, 200, read.later);
                 return;
             }
             if (type === 'view.open' || type === 'view.close') {
                 const parsed = v.safeParse(viewActions[type], payload);
                 if (!parsed.success || !views.has(parsed.output.key)) {
-                    answer({ ok: false, error: 'no such view', views: [] }, 400);
+                    await answer({ ok: false, error: 'no such view', views: [] }, 400);
                     return;
                 }
                 if (type === 'view.close') {
                     tab.open.delete(parsed.output.key);
-                    answer({ ok: true, views: [] });
+                    await answer({ ok: true, views: [] });
                     return;
                 }
                 tab.open.add(parsed.output.key);
-                answer({ ok: true, views: [await frame(tab, parsed.output.key)] });
+                const read = await frame(tab, parsed.output.key);
+                await answer({ ok: true, views: read.frames }, 200, read.later);
                 return;
             }
             const action = actions.get(type);
             if (!action) {
-                answer({ ok: false, error: `no action ${type}`, views: [] }, 400);
+                await answer({ ok: false, error: `no action ${type}`, views: [] }, 400);
                 return;
             }
             const parsed = v.safeParse(action.schema, payload);
             if (!parsed.success) {
                 const issue = parsed.issues.map((i) => `${v.getDotPath(i) ?? type}: ${i.message}`).join('; ');
-                answer({ ok: false, error: issue, views: [] }, 400);
+                await answer({ ok: false, error: issue, views: [] }, 400);
                 return;
             }
             mayHaveChanged = action.views;
             const result = await action.run({ user, session, chat: tab.chat, upload }, parsed.output);
             const changed = await spread(user, result.changed ?? [], tab);
-            answer(
+            await answer(
                 'refused' in result
-                    ? { ok: false, error: result.refused, views: changed }
-                    : { ok: true, views: changed },
+                    ? { ok: false, error: result.refused, views: changed.frames }
+                    : { ok: true, views: changed.frames },
+                200,
+                changed.later,
             );
             return;
         } catch (error) {
@@ -250,12 +316,13 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
             let views: ViewFrame[] = [];
             if (tab && mayHaveChanged.length > 0) {
                 try {
-                    views = await spread(tab.user, mayHaveChanged, tab);
+                    // Only what can be read at once: a failed action's answer isn't held open.
+                    views = (await spread(tab.user, mayHaveChanged, tab)).frames;
                 } catch (again) {
                     console.error(`[ui] after ${type} failed, its views couldn't be read:`, again);
                 }
             }
-            answer({ ok: false, error: 'internal', views }, 500);
+            if (!response.headersSent) await answer({ ok: false, error: 'internal', views }, 500);
             return;
         } finally {
             // An action that keeps the upload moves it; whatever is left is the parser's temporary file.
@@ -285,7 +352,10 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
             const tab = tabOf(user, session);
             if (tab.chat?.tree === chat?.tree) return [];
             tab.chat = chat;
-            return framesOf(tab, followChat);
+            // The old route's answer carries what's read at once; later parts come by push.
+            const read = await framesOf(tab, followChat);
+            push(tab, { frames: [], later: read.later });
+            return read.frames;
         },
         async chatMoved(user, session) {
             if (tabs.get(session)?.chat) await pushTo(user, session, followChat);
