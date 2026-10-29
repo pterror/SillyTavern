@@ -94,6 +94,11 @@ export type Ui = {
     chatMoved(user: User, session: string): Promise<void>;
     /** Something outside the areas changed these views (a write through old code). */
     changed(user: User, keys: string[]): Promise<void>;
+    /**
+     * Something changed these views for one tab only (what it reads depends on the tab: its chat, or what it looks
+     * at): they're pushed to it, if it shows them.
+     */
+    changedFor(user: User, session: string, keys: string[]): Promise<void>;
 };
 
 export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
@@ -158,6 +163,13 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
         }
         if (actor && !tabs.has(actor.session)) answer = await framesOf(actor, keys);
         return answer;
+    };
+
+    const pushTo = async (user: User, session: string, keys: Iterable<string>) => {
+        const tab = tabs.get(session);
+        if (!tab || tab.user.directories.root !== user.directories.root) return;
+        const frames = await framesOf(tab, keys);
+        if (frames.length > 0) for (const push of tab.streams) push({ type: 'views', views: frames });
     };
 
     const act = async (request: Request, response: Response) => {
@@ -276,13 +288,11 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
             return framesOf(tab, followChat);
         },
         async chatMoved(user, session) {
-            const tab = tabs.get(session);
-            if (!tab || tab.user.directories.root !== user.directories.root || !tab.chat) return;
-            const frames = await framesOf(tab, followChat);
-            if (frames.length > 0) for (const push of tab.streams) push({ type: 'views', views: frames });
+            if (tabs.get(session)?.chat) await pushTo(user, session, followChat);
         },
         async changed(user, keys) {
             await spread(user, keys, null);
         },
+        changedFor: (user, session, keys) => pushTo(user, session, keys),
     };
 }
