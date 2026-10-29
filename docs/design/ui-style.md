@@ -18,7 +18,7 @@ projects, read 10-29: `~/git/lee-app` (`docs/redesign.md` "Patterns used everywh
 
 | Kind | Used for | Never for | From |
 |---|---|---|---|
-| side panel | a record (character, group, lorebook, a settings place) opened beside the chat, which stays in view; side by side while the window is wide enough, over the chat from its edge when it isn't | a quick choice | lee-app "Side panels for records" |
+| side panel | a record (character, group, lorebook, a settings place) opened in the left or right slot beside the chat, which stays in view (over the chat from its edge in a narrow window). A slot is a stack: a panel opened in an occupied slot goes in front; Back or Escape returns to the one under it, scroll and state kept | a quick choice | lee-app "Side panels for records" |
 | dialog (centred; a bottom sheet on a phone) | a focused task with an end: choose an alternative, import, create, a confirmation that states exactly what will happen | browsing or editing a record | lee-app "dialogs only for focused tasks", `ui/panel.tsx` |
 | menu | the commands on a thing: context menu, marking menu (touch), palette | settings, content | pteraworld `surfaces.ts` |
 | popover | a glimpse (a link's target, a mention's card, a tooltip) and autocomplete | anything that needs input beyond a pick | cyoa "A glimpse", pteraworld `tooltips.ts` |
