@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import express from 'express';
 import { afterAll, beforeAll, expect, test } from 'vite-plus/test';
-import { BUNDLE, buildUi, ensureUi, packUi, serveUi, uiReleaseKey, uiSourceHash } from './index.ts';
+import { BUNDLE, buildUi, ensureUi, filesOf, packUi, serveUi, sources, uiReleaseKey, uiSourceHash } from './index.ts';
 
 // The build is taken from where it is, else from the release for its source (a stand-in here), else built; the
 // server serves only a build of the source it runs with.
@@ -120,4 +120,22 @@ test("the libraries are built beside the page, each alone, with upstream's expor
 
 test('the release a source is published as is named by its hash', async () => {
     expect(uiReleaseKey(await uiSourceHash())).toMatch(/^[0-9a-f]{16}$/);
+});
+
+test('the source hash covers every file that shapes the build, and nothing installed, built or tested', async () => {
+    const files = (await Promise.all((await sources()).map(filesOf)))
+        .flat()
+        .map((file) => path.relative(path.resolve(import.meta.dirname, '..'), file));
+    // The compile settings: a change to them is a new build.
+    expect(files).toEqual(
+        expect.arrayContaining([
+            'tsconfig.base.json',
+            'ui/tsconfig.json',
+            'page/tsconfig.json',
+            'protocol/package.json',
+        ]),
+    );
+    expect(files.filter((file) => /(^|\/)(node_modules|dist|test)\//.test(file) || /\.test\.tsx?$/.test(file))).toEqual(
+        [],
+    );
 });
