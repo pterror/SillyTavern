@@ -31,20 +31,24 @@ const AREAS = path.resolve(UI_ROOT, '../areas');
  * Everything the built page is made from: its entry, the page's core, the protocol and the areas it bundles, and the
  * dependencies' versions. An area is taken whole, its server half too, so nothing its page half bundles is left out.
  */
-async function sources(): Promise<string[]> {
+export async function sources(): Promise<string[]> {
     const areas = (await fs.readdir(AREAS)).sort().map((name) => path.join(AREAS, name));
+    // Whole package directories (their tsconfig and package.json shape the build as much as their src), not a list
+    // of the parts that happened to matter: a change anywhere in them is a new source.
     return [
         ...Object.values(LIBRARIES),
-        path.join(UI_ROOT, 'src'),
-        CONFIG_FILE,
-        path.join(UI_ROOT, 'package.json'),
-        path.resolve(UI_ROOT, '../page/src'),
-        path.resolve(UI_ROOT, '../page/package.json'),
-        path.resolve(UI_ROOT, '../protocol/src'),
+        UI_ROOT,
+        path.resolve(UI_ROOT, '../page'),
+        path.resolve(UI_ROOT, '../protocol'),
+        path.resolve(UI_ROOT, '../tsconfig.base.json'),
         ...areas,
         path.resolve(UI_ROOT, '../../package-lock.json'),
     ];
 }
+
+/** What in a package directory isn't its source: installed dependencies, build output, tests. */
+const notSource = (name: string) =>
+    name === 'node_modules' || name === 'dist' || name === 'test' || /\.test\.tsx?$/.test(name);
 
 /** The stable URL old page code imports the new page from. */
 export const ENTRY = '/ui/entry.js';
@@ -55,10 +59,10 @@ export const RELEASE_BASE = 'https://github.com/pterror/SillyTavern/releases/dow
 export const BUNDLE = 'ui.json';
 type Bundle = { files: Record<string, string> };
 
-async function filesOf(entry: string): Promise<string[]> {
+export async function filesOf(entry: string): Promise<string[]> {
     const stat = await fs.stat(entry);
     if (!stat.isDirectory()) return [entry];
-    const names = (await fs.readdir(entry)).filter((name) => name !== 'node_modules').sort();
+    const names = (await fs.readdir(entry)).filter((name) => !notSource(name)).sort();
     return (await Promise.all(names.map((name) => filesOf(path.join(entry, name))))).flat();
 }
 
