@@ -621,8 +621,6 @@
     "Show Message Token Count": "메시지 토큰 개수 표시",
     "Single-row message input area. Mobile only, no effect on PC": "한 줄짜리 메시지 입력 영역. 모바일 전용, PC에는 영향 없음",
     "Compact Input Area (Mobile)": "조그마한 입력 영역 (모바일)",
-    "Swipe # for All Messages": "모든 스와이프 메시지에 대해 번호 매기기",
-    "Display swipe numbers for all messages, not just the last.": "마지막 메시지만이 아니라 모든 메시지에 대한 스와이프 번호를 표시합니다.",
     "In the Character Management panel, show quick selection buttons for favorited characters": "캐릭터 관리 패널에서 즐겨찾는 캐릭터에 대한 빠른 선택 버튼을 표시합니다",
     "Characters Hotswap": "캐릭터 핫스왑",
     "Enable magnification for zoomed avatar display.": "마우스 포인터를 아바타 위에 올려두면 아바타가 확대 됩니다.",
