@@ -50,6 +50,7 @@ function stand(view: SettingsView, answer: { ok: true } | { ok: false; error: st
         receive: () => {},
         reconnected: async () => {},
         reread: async () => {},
+        version: () => 0,
     };
     return { client, sent, setCurrent };
 }

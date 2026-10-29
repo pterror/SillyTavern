@@ -13,7 +13,11 @@ how new code is shaped.
 - **Showing something is an action too** (`view.open`): its answer is the view. A view changed by something else
   (another tab, another action of this tab, a write made through old code) is pushed to the tabs showing it.
 - **Every view has a version.** The page keeps a view only when it's newer than the one it has, so an answer and a
-  push can arrive in any order and the page still ends at the latest.
+  push can arrive in any order and the page still ends at the latest. A long view can be read in parts (its reader
+  an async iterable: what's needed first, then the rest): the answer streams them (NDJSON, a line each), each part
+  newer than the one before it and older than any read that starts after it.
+- **A copy kept across reloads is a view last seen**, by its version: shown until the server's answer is here, never
+  instead of it (the alternatives list keeps lists seen in IndexedDB).
 - **Correctness never waits.** No timers, debounces or polls decide what the page shows.
 - **What a tab shows is server state** (its session, its current chat), so a view can depend on it and the server
   can push it when it changes.
