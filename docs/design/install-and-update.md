@@ -76,51 +76,12 @@ native modules, prebuilt and tested on that platform.
 - **Rolling back**: from the tray or `st use`, any version still installed, with the data snapshot taken before
   that version's migrations (below).
 
-## Data migrations, run by the server
+## Changes to our own data formats
 
-Replaces the one-offs and the "stop the server and run" guards.
-
-- Each migration is code in the version (`src/store-migrations/`), registered with an id and a description, and
-  recorded in the user's store when done (a meta value `migration.<id>`). Migrations are per user store; there is
-  no global migration state (nothing outside the users' stores needs one yet; when something does, it gets a file
-  in the data root with the same shape).
-- A store made by this version has nothing to migrate: it's made with every registered migration recorded done.
-- A store that ran a one-off by hand counts it done: `name-every-chat` by its old mark (`chat_names`).
-
-### Data flow at start
-
-| Step | Who | What |
-|---|---|---|
-| boot, before listening | server | every user is "checking"; `userStore()` for a user waits until that user's migrations are done (so nothing in the background reads or writes a store before them), and fails for a user whose migration failed |
-| boot, before listening | server | starts each user's migrations (not awaited): the server listens meanwhile |
-| a request from a user who isn't done | page, server | `/api/migrations/status` answers the user's state; any other `/api/` answers 503 with it; a page load answers the progress page, which polls the status and reloads when done; static files are served as usual |
-| per user | migrations | opens the store (past the gate), reads which registered migrations aren't recorded; none: done |
-| per user, some pending | migrations | unless a run was cut short (its marker, below, is there): closes the store, snapshots it, writes the marker naming the snapshot and the pending ids, opens it again |
-| per user, each pending in order | migrations | runs it; it reports progress for the page and may save how far it got (meta `migration.<id>.state`), so a crash resumes it from there; then records it done |
-| per user, all done | migrations | removes the marker, keeps the two newest snapshots; the user is done and `userStore()` opens for everyone |
-| per user, one fails | migrations | the user is "failed: <migration>: <why>", logged and shown on the progress page; the store, the snapshot and the marker stay; other users go on; the next start tries again from where it stopped |
-
-### Snapshots
-
-The engine's files are a log (`log-*.blk`, appended to, the newest only) and runs (`runs/*.run`, written once,
-renamed into place, only ever removed). A snapshot is taken with the store closed, under
-`<user>/store-snapshots/<time>-before-<first id>/`: every run and every log file but the newest hard-linked (no
-copy; a file the engine removes later stays in the snapshot), the newest log file copied (the engine goes on
-appending to it), and `snapshot.json` (the pending ids, when). Where hard links aren't possible (another filesystem)
-files are copied. A snapshot costs the newest log file's size until the engine merges and cleans past it; then it
-holds the files it still names.
-
-Restoring (the launcher's rollback; by hand until it exists): with the server stopped, rename `store/` aside, copy
-the snapshot's `store/` to `store/` (`restoreStoreSnapshot()`), and start. The migrations recorded after the
-snapshot run again.
-
-### The one-offs
-
-- `name-every-chat` is the first registered migration. Its 503 guard and "stop the server and run" message are gone:
-  the server doesn't serve a store before its migrations ran.
-- `convert-settings-to-model` is deleted: the settings document converts a user's settings files the first time it
-  opens them (`src/settings-document.js`), so nothing is left for it to do.
-- `src/migrations/` (with `one-off.js`, the stopped-server probe) is gone.
+While there are no users, our own formats change by hard cutover: a throwaway one-off run once on the existing data
+with the server stopped, then deleted; the server only ever knows the current format and holds no migration. Only
+importing from upstream is a supported path (permanent, in the import). A server-run migration registry was built and
+removed again (10-29) for this reason; what replaces it for users is decided when there are users, not before.
 
 ## Also
 
