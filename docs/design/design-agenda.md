@@ -153,7 +153,6 @@ Model: the page shell (MOD "core: the page shell") owns every surface:
 - Escape closes the innermost thing, and editing is innermost.
 - Space is reserved for anything that can appear.
 - Panels sit side by side when there's room, decided by width, not by a device mode (UV on Stacked Drawers and Force Mobile View).
-- Clipping stays optional (user 10-29: "clipping should still be optional right?"): Stacked Drawers carried it beside side by side, and only the side-by-side part is cut. It becomes a theme choice, "panels in front hide what's behind them" or show through, since it only matters with translucent panels; the shell applies it to every surface uniformly (drawers, dialogs, popovers, extension overlays, the chat).
 - The shell keeps scroll and position per surface.
 - Which surface kind serves which job is part of H (DECISION D1).
 
