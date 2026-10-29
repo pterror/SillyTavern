@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, openInfoTab } from './frontent-test-utils.js';
-import { greetingRow, greetingsList, listDelete, listEdit, listToggleDefault, openGreetingsList } from './alternatives-list.js';
+import { answerOf, greetingRow, greetingsList, listDelete, listEdit, listToggleDefault, openGreetingsList } from './alternatives-list.js';
 import { cardToGreetingsModel } from '../../src/greeting-list.js';
 import { hashGreetingText } from '../../src/greeting-ops.js';
 
@@ -164,7 +164,7 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         const { g, avatar } = await afterRemoteDelete(page, 'ServerListMove', true);
         const answer = page.waitForResponse(r => r.request().postDataJSON()?.type === 'alternatives.greeting');
         await greetingRow(page, g[2]).locator('.alternative-drag').press('Home');
-        expect((await (await answer).json()).ok).toBe(true);
+        expect((await answerOf(await answer)).ok).toBe(true);
         expect(await storedModel(page, avatar)).toEqual({ greetings: [g[2], g[0], g[1]], defaultIndex: 1 });
         await expectPageHoldsServerList(page, avatar);
         await expect(greetingsList(page).locator('li.alternative')).toHaveCount(3, { timeout: 10000 });
@@ -724,7 +724,7 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expect(greetingRow(page, 0).locator('textarea')).toHaveValue(typed);
         const answer = page.waitForResponse(r => r.request().postDataJSON()?.type === 'alternatives.greeting');
         await greetingRow(page, 0).getByRole('button', { name: 'Save' }).click();
-        expect((await (await answer).json()).ok).toBe(true);
+        expect((await answerOf(await answer)).ok).toBe(true);
         expect((await storedModel(page, avatar)).greetings).toEqual([typed, g[2]]);
         await expectPageHoldsServerList(page, avatar);
     });

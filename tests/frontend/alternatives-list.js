@@ -30,6 +30,14 @@ export async function openGreetingsList(page, count) {
 }
 
 /**
+ * An action's answer: JSON, or NDJSON (views read in parts) whose first line is the answer.
+ * @param {import('@playwright/test').Response} response
+ */
+export async function answerOf(response) {
+    return JSON.parse((await response.text()).split('\n')[0]);
+}
+
+/**
  * The answer to the list's next greeting operation.
  * @param {import('@playwright/test').Page} page
  */
@@ -47,7 +55,7 @@ export function greetingAnswer(page) {
 async function operate(page, act, { refused = false } = {}) {
     const answer = greetingAnswer(page);
     await act();
-    expect((await (await answer).json()).ok).toBe(!refused);
+    expect((await answerOf(await answer)).ok).toBe(!refused);
 }
 
 /**
@@ -80,7 +88,7 @@ export async function listAdd(page, text) {
  * @param {{ refused?: boolean }} [options]
  */
 export async function listDelete(page, index, options) {
-    await greetingRow(page, index).locator('.alternative-delete').click();
+    await greetingRow(page, index).locator('.alternative-delete-greeting').click();
     await operate(page, () => page.locator('dialog.popup:not(.alternatives) .popup-button-ok').click(), options);
 }
 
