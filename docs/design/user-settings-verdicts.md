@@ -52,11 +52,11 @@ Verdicts:
 ## The message
 | Control | Verdict |
 |---|---|
-| Expand Message Actions | cut: on a pointer, the message's bar shows on hover, as Discord does; on touch, the message's marking menu (touch and flick: left / right previous / next alternative, up bookmark, down edit, the diagonals the next most used; the menu draws only on a pause). Every message command is in its context menu and the palette. No long press ("incredibly slow", 10-29), no tap-then-action |
+| Expand Message Actions | cut: the message's bar shows on hover (desktop) or tap (touch), as Discord does; long-press or a swipe opens the message's menu (every message command) |
 | Message Timer, Chat Timestamps, Model Icons, Message IDs, Message Token Count, Swipe # for All Messages | at the message: one "show on messages" list (a message's details, each shown or not), set from the message's menu |
 | Show <tags> in responses | at the message: how HTML in messages renders is one choice (render it / show it as text) |
 | Pin greeting message styles | behaviour: a greeting's styles stay applied (the lazy unload is a bug to fix, not a choice) |
-| Media volume, autoplay | very prominent (AU1, "to avoid earblasting"): the default volume and autoplay (off by default) are asked where embedded audio is first met (the first message or card with audio, before it can play), and stay on every player (its volume and autoplay change the default); also in Behaviour |
+| Media volume, autoplay | at the media: a volume and autoplay on the player, remembered (AU1) |
 | Forbid External Media | at the character (it already has a per-character override), with the user's default |
 | Smooth Streaming, its speed, Exclude 'Thinking...', Stream Fade-In, Streaming FPS | behaviour: streamed text shows as it arrives, redrawn per frame; the four knobs exist because the old redraw was slow. One choice stays only if it's still needed after measuring |
 | # Msg. to Load | behaviour: the chat loads as you scroll (no count to pick) |
@@ -76,7 +76,7 @@ Verdicts:
 | Markdown Hotkeys | bindings in the registry |
 | Show hotkeys while holding Ctrl | cut (added by this fork, 26bb3ca7b): the registry's cheatsheet, opened by a binding |
 | Auto-select Input Text | behaviour: per field, decided by the field (a rename field selects its text; others don't) |
-| Gestures | behaviour on touch: the message's marking menu (above); an edge swipe opens the left or right panel. Bindings in the registry, rebindable; no long press |
+| Gestures | behaviour on touch: swipe on a message changes its swipe, long-press opens its menu |
 | Swipes | behaviour: swipes are always there (a single reply shows no arrows until there's a second) |
 | Autocomplete visibility, auto-hide, show in all macro fields, matching, keyboard | at the input: one autocomplete with defaults; the palette and slash commands share it (Q7). Matching is fuzzy; keys are bindings |
 | STRICT_ESCAPING | cut: a parser flag a script can set for itself |
