@@ -17,8 +17,12 @@ Targets:
   greetings no stored opening already is (the engine's `openingAlternatives()`, the order message 0's swipes have).
   A stored opening whose text a card greeting has is marked with that greeting's card position.
 - `{ greetings: <avatar> }`: a character's card greetings, in card order (the greetings button in character info).
-  The card's operations (add, edit, reorder, default, delete) are this list's; when the tab's open chat is this
-  character's, each greeting also says where it is among the chat's openings, so it can be shown in the chat.
+  When the tab's open chat is this character's, each greeting also says where it is among the chat's openings, so it
+  can be shown in the chat.
+
+One component, the same controls on the same rows wherever it's opened: the card's operations (add, edit, reorder,
+default, delete from the card) on every card greeting, in either list; delete from the chat on every stored
+alternative.
 
 An item's id is its node id; a card greeting not stored in the chat is known by its text's hash (the same text twice
 by which it is), so it keeps its row, and an editor open on it, while other greetings move.
@@ -32,9 +36,9 @@ read) and answers three views: `alternatives.list` (the items), `alternatives.co
 | Step | The page sends | The server does | It answers / pushes | Who holds what |
 |---|---|---|---|---|
 | open | `alternatives.open { target, tokenizer }` (`tokenizer`: the on-screen connection state the count routes already take) | keeps the tab's look; reads the target's alternatives | the three views: the list (items: id, place, text, name, role, date, node id, card position and hash; the current one; the card's list), the counts the count store has, no matches. A long list streams: the answer is NDJSON, its first line the list's rows around the current one (`complete: false`), the next the whole list (a view read in parts: each part newer than the one before, older than any read started after it) | server: the list, counts, the tab's look; page: the latest views, and the last whole list of each target this browser showed (IndexedDB, by target and the version the server gave it, the newest 16; shown at once when that target opens again, also after a reload, until the server's whole list is here) |
-| counts | nothing | counts the texts the store didn't have, once each, nearest the current one first, in batches, through the token count store (stored for every later read) | the counts view pushed to the tab after each batch | the count store |
+| counts | nothing | counts the texts the store didn't have, once each, nearest the current one first, a few at a time, yielding between texts, through the token count store (stored for every later read) | the counts view: what the store has first, then each count as soon as it's done (a patch with only what's new), on the same answer or push | the count store |
 | changes elsewhere | — | a commit that adds, removes, edits or picks a message, or writes a card, pushes the tab's views (`changedFor`), read again | the views | the tree, the card |
-| search | `alternatives.search { query }` | parses it with the library and chat search's parser (`searchClauses`), matches every item's text with the engine's tokenizer (`textMatches`: the chat search's tokens and folding) | the view with `matches`: each matching item's index and the source tokens matched | server: the tab's query; page: nothing but the view |
+| search | `alternatives.search { query }` | parses it with the library and chat search's parser (`searchClauses`), matches every item's text with the engine's tokenizer (`textMatches`: the chat search's tokens and folding) | the matches view, a step of 200 alternatives at a time: what each step found (the source ranges matched, by item id) and how many are checked, of how many (a patch each); a newer search stops the old one | server: the tab's query; page: the search box's text ("Searching… n of N checked" until done) |
 | select | (page) a number typed, or a click on a row: that row is selected and scrolled to | — | — | page: which row is selected |
 | go | (old page) the swipe the old chat code makes: `swipe(…, { forceSwipeId })` with the item's index (a greeting: message 0, at its place among the openings); from a row's Go, the selected one's Go (or Enter), and `/swipe-go [message=<id>] <n>` | the chat's select action (node-addressed) | the chat redraws as for any swipe | the tree |
 | delete (chat alternative) | (old page) `deleteSwipe(index, mesId, { ask })` | the node-addressed delete | the view pushed again (the old page tells the client to read it) | the tree |
@@ -81,10 +85,12 @@ the rendered text. (Exact positions in the rendered text need the one markdown p
   Messages" setting goes); user messages are included.
 - The greetings button in character info.
 
-## Not on the server
+## Adding an alternative
 
-The list is what the server has. Alternatives only the page holds (swipes added to a chat's first message before
-anything in that chat is saved: the opening is still provisional) aren't in it until they're stored.
+The page never holds alternatives the server doesn't have. A swipe added to a message is stored when it's added:
+beside the stored message; at a first message shown from the card (no row of its own), as an opening of the chat
+beside the card's greetings (the greeting stays the card's: a stored copy of it would be a duplicate once the card's
+greeting is edited). A temporary chat (no character or group) keeps its swipes on the page.
 
 ## Creating a character
 
