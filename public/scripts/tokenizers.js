@@ -468,7 +468,7 @@ function getTextgenTokenizerState(type) {
  * @param {string} [api] Main API. Defaults to the current one.
  * @returns {object|null} null for an API with no tokenizer state.
  */
-function getTokenizerState(api = main_api) {
+export function getTokenizerState(api = main_api) {
     switch (api) {
         case 'textgenerationwebui':
             return getTextgenTokenizerState(textgen_settings.type);

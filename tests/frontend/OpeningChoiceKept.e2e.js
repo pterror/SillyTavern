@@ -100,9 +100,13 @@ async function openings(page, avatar) {
     }, avatar);
 }
 
-/** @param {import('@playwright/test').Page} page */
-function greetingsPopup(page) {
-    return page.locator('.popup', { has: page.locator('.alternate_greetings_list') }).last();
+/**
+ * The character's greetings list (the alternatives list), its row at `index`.
+ * @param {import('@playwright/test').Page} page
+ * @param {number} index
+ */
+function greetingRow(page, index) {
+    return page.locator('dialog.alternatives li.alternative').nth(index);
 }
 
 const stamp = () => `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
@@ -185,12 +189,13 @@ test.describe('the opening a chat was switched to is kept', () => {
 
         await openInfoTab(page, 'greeting');
         await page.locator('.open_alternate_greetings').click();
-        const row = greetingsPopup(page).locator('.alternate_greetings_list .alternate_greeting[data-index="2"]');
-        await expect(row).toHaveCount(1, { timeout: 10000 });
+        const row = greetingRow(page, 2);
+        await expect(row).toContainText(g[2], { timeout: 10000 });
         const edited = `Two edited ${s}`;
-        const saved = page.waitForResponse(r => new URL(r.url()).pathname === '/api/characters/greetings/edit', { timeout: 15000 });
-        await row.locator('.alternate_greeting_text').fill(edited);
-        expect((await saved).ok()).toBe(true);
+        await row.locator('.alternative-edit').click();
+        await row.locator('textarea').fill(edited);
+        await row.getByRole('button', { name: 'Save' }).click();
+        await expect(row.locator('.alternative-text')).toContainText(edited);
         await expect.poll(() => shownText(page), { timeout: 10000 }).toBe(edited);
         await page.keyboard.press('Escape');
 

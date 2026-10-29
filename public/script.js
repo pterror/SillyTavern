@@ -335,8 +335,7 @@ export { saveChat, saveChatConditional, saveChatDebounced, cancelDebouncedChatSa
 import { MacroEngine } from './scripts/macros/engine/MacroEngine.js';
 import { addChatBackupsBrowser } from './scripts/chat-backups.js';
 import { compressRequest, setRequestCompressionConfig } from './scripts/request-compression.js';
-import { canJumpToSwipeForMessage, canOpenSwipePickerForMessage, initSwipePicker } from './scripts/swipe-picker.js';
-import { PickAndPlace } from './scripts/pick-and-place.js';
+import { alternativesOldPage, canJumpToSwipeForMessage, canOpenSwipePickerForMessage, initSwipePicker } from './scripts/alternatives.js';
 
 // API OBJECT FOR EXTERNAL WIRING
 globalThis.SillyTavern = {
@@ -1517,6 +1516,7 @@ async function firstLoadInit() {
             const avatar = getCurrentCharacter()?.avatar;
             return typeof avatar === 'string' && avatar !== '' && chat.length > 0 ? { avatar } : null;
         },
+        alternatives: alternativesOldPage,
     });
     bindChatCompletionSettings(newUi().settings);
     bindTextGenSettings(newUi().settings);
@@ -9013,7 +9013,7 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
 
     const avatarUrl = character.avatar != 'none' ? getThumbnailUrl('avatar', character.avatar) : default_avatar;
     $('#avatar_load_preview').attr('src', avatarUrl);
-    $('.open_alternate_greetings').data('avatar', character?.avatar ?? null);
+    setGreetingsButton(character?.avatar ?? null);
     $('#set_character_world').data('avatar', character?.avatar ?? null);
     setWorldInfoButtonClass(avatar);
     checkEmbeddedWorld(avatar);
@@ -9103,7 +9103,7 @@ function select_rm_create({ switchMenu = true } = {}) {
     $('#avatar_load_preview').attr('src', default_avatar);
     $('#name_div').removeClass('displayNone');
     $('#name_div').addClass('displayBlock');
-    $('.open_alternate_greetings').data('avatar', null);
+    setGreetingsButton(null);
     $('#set_character_world').data('avatar', null);
     updateCharacterWorldButton();
     updateFavButtonState(false);
@@ -9390,6 +9390,8 @@ export async function updateSwipeCounter(mesId, { message = undefined, messageEl
     const canJumpToSwipe = canJumpToSwipeForMessage(mesId);
 
     swipeCounter.text(formatSwipeCounter(currentNum, totalNum));
+    // A message with one alternative shows no counter, unless it's the last (style.css).
+    swipeCounter.attr('data-alternatives', totalNum);
 
     swipeCounter
         .prop('hidden', false)
@@ -9781,11 +9783,6 @@ export function cancelTtsPlay() {
     }
 }
 
-function updateAlternateGreetingsHintVisibility(root) {
-    const numberOfGreetings = root.find('.alternate_greetings_list .alternate_greeting').length;
-    $(root).find('.alternate_grettings_hint').toggle(numberOfGreetings == 0);
-}
-
 async function openCharacterWorldPopup() {
     const avatar = $('#set_character_world').data('avatar');
     if (menu_type != 'create' && avatar === undefined) {
@@ -9935,21 +9932,6 @@ function reindexDefaultAfterRemoval(defaultIndex, removedIndex) {
     if (defaultIndex === null) return null;
     if (removedIndex === defaultIndex) return null;
     return removedIndex < defaultIndex ? defaultIndex - 1 : defaultIndex;
-}
-
-/**
- * `finalTargetIndex` is already adjusted for the removal - the exact position passed to the reinserting splice.
- * @param {number|null} defaultIndex
- * @param {number} sourceIndex
- * @param {number} finalTargetIndex
- */
-function reindexDefaultAfterMove(defaultIndex, sourceIndex, finalTargetIndex) {
-    if (defaultIndex === null) return null;
-    if (defaultIndex === sourceIndex) return finalTargetIndex;
-    let result = defaultIndex;
-    if (sourceIndex < result) result -= 1;
-    if (finalTargetIndex <= result) result += 1;
-    return result;
 }
 
 /**
@@ -10124,7 +10106,7 @@ function queueGreetingSave(avatar, save) {
 
 // In-memory state for the sidebar greeting pager; `hashes` is the post-op per-position precondition hash list.
 // `committed[i] === false` marks a just-added, still-blank slot from the New Greeting button - not yet a real
-// array entry server-side, mirroring the Alternate Greetings drawer's pending-row behavior (see addAlternateGreeting()).
+// array entry server-side, a new greeting is only stored once it has text.
 const greetingPagerState = {
     greetings: [''],
     defaultIndex: 0,
@@ -10199,170 +10181,6 @@ function dropUncommittedPagerSlot(position) {
 }
 
 /**
- * @typedef {object} GreetingsPopupSession
- * @property {Set<HTMLElement>} editing Rows being edited: focused, open in the maximize editor, or with a save scheduled or in flight.
- * @property {() => void} editEnded Called when a row stops being edited.
- * @property {(avatar: string) => Promise<boolean>} [showCurrentAfterConflict] Shows the server's current greetings after a refused op.
- * @property {(row: HTMLElement) => void} removeRow Marks the row this popup is removing, so the next list shown takes it out
- * even when another row has the same text.
- * @property {(row: HTMLElement, insertIndex: number) => void} moveRow Marks the row this popup is moving, and where it lands.
- * @property {(defaultIndex: number|null) => void} showLocal Create mode only: shows `model.greetings` with this default.
- */
-
-/**
- * What the popup can do with one of its rows without rebuilding it.
- * @typedef {object} GreetingRow
- * @property {(index: number) => boolean} setIndex Moves the row to this position; returns whether it changed.
- * @property {() => void} refreshDefault Shows whether the row is the default.
- * @property {() => boolean} isCommitted False for a new row that has no text yet.
- * @property {() => boolean} isEditing Focused, open in the maximize editor, or with a save scheduled or in flight.
- */
-
-/**
- * An edit the server refused because the greeting changed elsewhere, kept until the user applies or discards it.
- * @typedef {object} GreetingConflictDraft
- * @property {number} position The greeting the edit was for.
- * @property {string} text What the user had typed.
- */
-
-/**
- * @param {string} avatar
- * @returns {string}
- */
-function greetingConflictDraftsKey(avatar) {
-    return `GreetingConflictDrafts:${avatar}`;
-}
-
-/**
- * @param {string} avatar
- * @returns {GreetingConflictDraft[]}
- */
-function readGreetingConflictDrafts(avatar) {
-    try {
-        const drafts = JSON.parse(accountStorage.getItem(greetingConflictDraftsKey(avatar)) ?? '[]');
-        return Array.isArray(drafts) ? drafts.filter(draft => Number.isInteger(draft?.position) && typeof draft?.text === 'string') : [];
-    } catch {
-        return [];
-    }
-}
-
-/**
- * @param {string} avatar
- * @param {GreetingConflictDraft[]} drafts
- */
-function writeGreetingConflictDrafts(avatar, drafts) {
-    if (drafts.length > 0) {
-        accountStorage.setItem(greetingConflictDraftsKey(avatar), JSON.stringify(drafts));
-    } else {
-        accountStorage.removeItem(greetingConflictDraftsKey(avatar));
-    }
-}
-
-/**
- * Keeps a refused edit. A newer refused edit to the same greeting replaces the older one.
- * @param {string} avatar
- * @param {GreetingConflictDraft} draft
- */
-function addGreetingConflictDraft(avatar, draft) {
-    const drafts = readGreetingConflictDrafts(avatar).filter(existing => existing.position !== draft.position);
-    drafts.push(draft);
-    writeGreetingConflictDrafts(avatar, drafts);
-}
-
-/**
- * @param {string} avatar
- * @param {GreetingConflictDraft} draft
- */
-function removeGreetingConflictDraft(avatar, draft) {
-    writeGreetingConflictDrafts(avatar, readGreetingConflictDrafts(avatar).filter(existing => existing.position !== draft.position || existing.text !== draft.text));
-}
-
-/**
- * Shows the character's refused edits above the list, each with Apply (save it over the greeting's current text,
- * or as a new greeting if that greeting is gone) and Discard.
- * @param {JQuery<HTMLElement>} template
- * @param {string} avatar
- * @param {GreetingsModel} model
- * @param {(avatar: string) => Promise<boolean>} showCurrentAfterConflict
- */
-function renderGreetingConflictDrafts(template, avatar, model, showCurrentAfterConflict) {
-    const container = template.find('.greeting-conflict-drafts');
-    const drafts = readGreetingConflictDrafts(avatar);
-    const keyOf = (/** @type {GreetingConflictDraft} */ draft) => `${draft.position}\u0000${draft.text}`;
-    const wanted = new Set(drafts.map(keyOf));
-    container.children('.greeting-conflict-draft').each(function () {
-        if (!wanted.has(this.dataset.draftKey)) $(this).remove();
-    });
-    for (const draft of drafts) {
-        const key = keyOf(draft);
-        const existing = container.children('.greeting-conflict-draft').filter(function () { return this.dataset.draftKey === key; });
-        if (existing.length) {
-            labelGreetingConflictDraft(existing, draft, model);
-            continue;
-        }
-        const block = $('<div class="greeting-conflict-draft flexFlowColumn flex-container wide100p"></div>');
-        block[0].dataset.draftKey = key;
-        block.append($('<small class="greeting-conflict-draft-note"></small>'));
-        block.append($('<textarea class="text_pole textarea_compact greeting-conflict-draft-text" readonly></textarea>').val(draft.text));
-        const buttons = $('<div class="flex-container"></div>');
-        const apply = $('<div class="menu_button greeting-conflict-draft-apply"></div>');
-        const discard = $('<div class="menu_button greeting-conflict-draft-discard"></div>').text(t`Discard`);
-        buttons.append(apply, discard);
-        block.append(buttons);
-        container.append(block);
-        labelGreetingConflictDraft(block, draft, model);
-
-        discard.on('click', () => {
-            removeGreetingConflictDraft(avatar, draft);
-            block.remove();
-        });
-        apply.on('click', async () => {
-            if (apply.hasClass('disabled')) return;
-            const character = charactersStore.get(avatar);
-            if (!character) return;
-            apply.addClass('disabled');
-            const exists = draft.position < model.greetings.length;
-            await queueGreetingSave(avatar, async () => {
-                const row = /** @type {any} */ (template.find(`.alternate_greetings_list .alternate_greeting[data-index="${draft.position}"]`)[0]);
-                const result = exists && Number.isFinite(row?.greetingHash)
-                    ? await postGreetingOp('edit', { avatar_url: avatar, position: draft.position, expected_hash: row.greetingHash, text: draft.text })
-                    : await postGreetingOp('add', { avatar_url: avatar, append: true, text: draft.text });
-                if (result.ok) {
-                    applyGreetingOpSuccess(character, result);
-                    removeGreetingConflictDraft(avatar, draft);
-                    await showCurrentAfterConflict(avatar);
-                    return;
-                }
-                console.error('Applying a kept greeting edit failed', { avatar, position: draft.position, status: result.status, reason: result.reason });
-                if (result.status === 409 && await showCurrentAfterConflict(avatar)) {
-                    toastr.warning(t`Someone else changed this greeting again, so your edit wasn't applied. Showing the current version; your edit is still kept.`, t`Greeting not saved`);
-                    return;
-                }
-                apply.removeClass('disabled');
-                toastr.error(t`Failed to apply your kept edit. It's still kept.`, t`Greeting not saved`);
-            });
-        });
-    }
-}
-
-/**
- * Words a kept edit's note and Apply button for whether its greeting still exists.
- * @param {JQuery<HTMLElement>} block
- * @param {GreetingConflictDraft} draft
- * @param {GreetingsModel} model
- */
-function labelGreetingConflictDraft(block, draft, model) {
-    const exists = draft.position < model.greetings.length;
-    block.find('.greeting-conflict-draft-note').text(exists
-        ? t`Your edit to greeting #${draft.position + 1} wasn't saved because someone else changed it. It's kept here until you apply or discard it.`
-        : t`Your edit to greeting #${draft.position + 1} wasn't saved, and that greeting no longer exists. It's kept here until you apply or discard it.`);
-    block.find('.greeting-conflict-draft-apply').text(exists ? t`Replace greeting #${draft.position + 1} with this` : t`Add as a new greeting`);
-}
-
-/** @type {((greetings: string[], defaultIndex: number|null) => void)|null} The open greetings popup's re-render, told whenever the pager's greetings are replaced. */
-let greetingsPopupListener = null;
-
-/**
  * Replaces the pager's greetings, default pointer, and precondition hashes, and clamps the current index in case the list shrank.
  * Every position here is confirmed by the server (or is the pre-load placeholder), so all are marked committed.
  * While `greeting_field` is being edited nothing is replaced: the state is kept and applied when the edit ends, so
@@ -10384,7 +10202,6 @@ function setGreetingPagerGreetings(greetings, defaultIndex, hashes) {
     greetingPagerState.index = Math.max(0, Math.min(greetingPagerState.index, greetingPagerState.greetings.length - 1));
     renderGreetingPager();
     $('#firstmessage_textarea').val(greetings.length > 0 && defaultIndex !== null ? greetings[defaultIndex] ?? '' : '');
-    greetingsPopupListener?.(greetings.slice(), greetings.length > 0 ? defaultIndex : null);
 }
 
 /** Redraws the pager controls and the visible greeting field from the current pager state. */
@@ -10681,708 +10498,52 @@ function stripEmptyAlternateGreetings(alternateGreetings, context) {
     return filtered;
 }
 
-function openAlternateGreetings() {
+/**
+ * The greetings button in character info is for the character shown; a character still being created has its
+ * greetings in the form's pager until it's saved.
+ * @param {string|null} avatar
+ */
+function setGreetingsButton(avatar) {
+    $('.open_alternate_greetings')
+        .data('avatar', avatar)
+        .toggleClass('disabled', !avatar)
+        .attr('aria-disabled', String(!avatar));
+}
+
+/** Opens the list of the shown character's greetings (the alternatives of its chats' first message). */
+function openGreetingsList() {
     if (blockWhileFieldEditing()) {
         return;
     }
     const avatar = $('.open_alternate_greetings').data('avatar');
-    // Every use below reads/mutates this character's own fields directly - no index required.
-    const greetingsCharacter = charactersStore.get(avatar);
-
-    if (menu_type != 'create' && avatar === undefined) {
-        toastr.error('Does not have an Id for this character in editor menu.');
+    if (!avatar) {
+        toastr.info(t`The character isn't saved yet: its greetings are edited here, with the greeting field, until it is.`);
         return;
-    } else {
-        // If the character does not have alternate greetings, create an empty array
-        if (greetingsCharacter && !Array.isArray(greetingsCharacter.data.alternate_greetings)) {
-            greetingsCharacter.data.alternate_greetings = [];
-        }
     }
-
-    const initialModel = menu_type == 'create'
-        ? cardToGreetingsModel({ first_mes: create_save.first_message ?? '', data: { alternate_greetings: create_save.alternate_greetings, extensions: create_save.extensions } })
-        : cardToGreetingsModel(greetingsCharacter);
-
-    // Live working copy for this popup instance; only mutated after a row handler's server op is confirmed, except in create mode (no server side to confirm against).
-    const model = { greetings: initialModel.greetings.slice(), defaultIndex: initialModel.defaultIndex };
-
-    const getArray = () => model.greetings;
-
-    const template = $('#alternate_greetings_template .alternate_grettings').clone();
-
-    // Create-mode-only: real characters land each op's result via applyGreetingOpSuccess() as it happens, so there's nothing to flush at close.
-    function syncCreateModeFromUnified() {
-        const fields = greetingsModelToCardFields(model);
-        const newAltGreetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'alt greetings popup (create mode)');
-        create_save.first_message = fields.firstMes;
-        create_save.alternate_greetings = newAltGreetings;
-        if (!create_save.extensions) create_save.extensions = {};
-        create_save.extensions[GREETING_DEFAULT_POSITION_KEY] = fields.greetingDefaultPosition;
-        setGreetingPagerGreetings(model.greetings, model.defaultIndex, model.greetings.map(hashGreetingText));
-    }
-
-    /** @type {{greetings: string[], defaultIndex: number|null}|null} A list shown while a row being edited had to stay; shown again when no row is being edited. */
-    let pendingRender = null;
-    /** @type {{row: HTMLElement, insertIndex?: number}|null} The row this popup's own op removed or moved, for the next list shown. */
-    let rowHint = null;
-    /** @type {GreetingsPopupSession} */
-    const session = {
-        editing: new Set(),
-        // Checked a task later: focus moving from one row to another blurs the first before it focuses the second.
-        editEnded: () => setTimeout(() => {
-            if (session.editing.size > 0 || !pendingRender) return;
-            const { greetings, defaultIndex } = pendingRender;
-            pendingRender = null;
-            showRows(greetings, defaultIndex);
-        }),
-        removeRow: (row) => { rowHint = { row }; },
-        moveRow: (row, insertIndex) => { rowHint = { row, insertIndex }; },
-        showLocal: (defaultIndex) => showRows(model.greetings, defaultIndex, { positional: true }),
-    };
-
-    /**
-     * @param {string[]} greetings
-     * @param {number|null} defaultIndex
-     */
-    const onGreetingsReplaced = (greetings, defaultIndex) => showRows(greetings, defaultIndex);
-
-    const popup = new Popup(template, POPUP_TYPE.TEXT, '', {
-        wide: true,
-        large: true,
-        allowVerticalScrolling: true,
-        onClose: async () => {
-            if (greetingsPopupListener === onGreetingsReplaced) {
-                greetingsPopupListener = null;
-            }
-            if (menu_type === 'create') {
-                syncCreateModeFromUnified();
-            }
-        },
-    });
-
-    // Set when a reload after a refused move failed: this popup's copy is stale until a retry reloads it.
-    let movesBlocked = false;
-
-    async function reloadGreetingsFromServer(avatar) {
-        let ok = false;
-        try {
-            ok = await getOneCharacter(avatar);
-        } catch (error) {
-            console.error('Greeting list reload failed', error);
-        }
-        if (!ok) return false;
-        const fresh = cardToGreetingsModel(charactersStore.get(avatar));
-        setGreetingPagerGreetings(fresh.greetings, fresh.defaultIndex, fresh.greetings.map(hashGreetingText));
-        movesBlocked = false;
-        template.find('.greeting-refresh-failed').hide();
-        template.find('.pick_up_greeting').removeClass('disabled');
-        renderGreetingConflictDrafts(template, avatar, model, showCurrentAfterConflict);
-        return true;
-    }
-
-    function blockMoves() {
-        movesBlocked = true;
-        picker.cancel();
-        template.find('.pick_up_greeting').addClass('disabled');
-        template.find('.greeting-refresh-failed').show();
-    }
-
-    /**
-     * After an op was refused because the greetings changed elsewhere: shows the server's current list in place.
-     * If that reload fails, the list is marked stale and moves are blocked until a retry reloads it.
-     * @param {string} avatar
-     * @returns {Promise<boolean>} Whether the current list is now shown.
-     */
-    async function showCurrentAfterConflict(avatar) {
-        if (await reloadGreetingsFromServer(avatar)) return true;
-        blockMoves();
-        return false;
-    }
-    session.showCurrentAfterConflict = showCurrentAfterConflict;
-
-    if (menu_type !== 'create' && avatar !== undefined) {
-        renderGreetingConflictDrafts(template, avatar, model, showCurrentAfterConflict);
-    }
-
-    const picker = new PickAndPlace({
-        container: template[0],
-        // Draft rows aren't in the array yet, so they can be neither picked nor used as an anchor.
-        getItems: () => template.find('.alternate_greetings_list .alternate_greeting:not(.greeting-draft):not(.greeting-stale)').toArray().map(row => ({
-            key: Number(row.getAttribute('data-index')),
-            element: row,
-            // The filter's .toggle() is the only thing that hides rows.
-            visible: row.style.display !== 'none',
-        })),
-        onPickChange: (key) => {
-            template.find('.pick_up_greeting i').removeClass('fa-xmark').addClass('fa-arrows-up-down');
-            template.find('.pick_up_greeting').attr('title', 'Pick up to move');
-            if (key !== null) {
-                const button = template.find(`.alternate_greeting[data-index="${key}"] .pick_up_greeting`);
-                button.find('i').removeClass('fa-arrows-up-down').addClass('fa-xmark');
-                button.attr('title', 'Cancel move');
-            }
-        },
-        onPlace: async ({ key: sourceIndex, side, anchorKey: targetIndex }) => {
-            if (movesBlocked) return;
-            const array = getArray();
-            // The landing index, computed the way the server's opMove computes it.
-            const anchor = targetIndex > sourceIndex ? targetIndex - 1 : targetIndex;
-            const insertIndex = side === 'before' ? anchor : anchor + 1;
-            const sourceRow = rowAt(sourceIndex);
-
-            if (menu_type === 'create') {
-                const [moved] = array.splice(sourceIndex, 1);
-                array.splice(insertIndex, 0, moved);
-                session.moveRow(sourceRow, insertIndex);
-                session.showLocal(reindexDefaultAfterMove(model.defaultIndex, sourceIndex, insertIndex));
-                return;
-            }
-
-            const avatar = $('.open_alternate_greetings').data('avatar');
-            const character = avatar ? charactersStore.get(avatar) : null;
-            if (!character) return;
-            const rowHash = (key) => /** @type {any} */ (template.find(`.alternate_greetings_list .alternate_greeting[data-index="${key}"]`)[0])?.greetingHash;
-            await queueGreetingSave(avatar, async () => {
-                const expectedHash = rowHash(sourceIndex);
-                const targetExpectedHash = rowHash(targetIndex);
-                if (!Number.isFinite(expectedHash) || !Number.isFinite(targetExpectedHash)) return;
-                const result = await postGreetingOp('move', { avatar_url: avatar, source_position: sourceIndex, expected_hash: expectedHash, side, target_position: targetIndex, target_expected_hash: targetExpectedHash });
-                if (!result.ok) {
-                    console.error('Greeting move failed', { avatar, sourceIndex, side, targetIndex, status: result.status, reason: result.reason });
-                    picker.cancel();
-                    if (result.status === 409) {
-                        if (await reloadGreetingsFromServer(avatar)) {
-                            toastr.warning(t`The greetings were changed in another session, so this move was not made. The list has been reloaded.`, t`Greeting not moved`);
-                        } else {
-                            blockMoves();
-                            toastr.error(t`The greetings were changed in another session, so this move was not made, and the list couldn't be refreshed.`, t`Greeting not moved`);
-                        }
-                        return;
-                    }
-                    toastr.error(t`Failed to move the greeting.`, t`Greeting not moved`);
-                    return;
-                }
-                session.moveRow(sourceRow, insertIndex);
-                applyGreetingOpSuccess(character, result);
-            });
-        },
-    });
-
-    /**
-     * @param {number} index
-     * @returns {HTMLElement|undefined}
-     */
-    function rowAt(index) {
-        return template.find(`.alternate_greetings_list .alternate_greeting:not(.greeting-draft):not(.greeting-stale)[data-index="${index}"]`)[0];
-    }
-
-    /**
-     * @param {HTMLElement} row
-     * @returns {GreetingRow}
-     */
-    const rowApi = (row) => /** @type {any} */ (row).greetingRow;
-
-    /**
-     * Shows this list by updating the rows already there: a row whose saved text is still in the list stays, with its
-     * typing, focus and scroll, and only moves; a row whose text is gone is removed; a new greeting gets a new row.
-     * A row being edited is never removed: it stays, marked stale, until its edit ends, and then the list is shown again.
-     * @param {string[]} greetings
-     * @param {number|null} defaultIndex
-     * @param {{positional?: boolean}} [options] `positional`: create mode, where rows have no saved text; the rows
-     * in their order are the list.
-     */
-    function showRows(greetings, defaultIndex, { positional = false } = {}) {
-        const list = template.find('.alternate_greetings_list')[0];
-        let rows = Array.from(list.querySelectorAll(':scope > .alternate_greeting'));
-        const hint = rowHint;
-        rowHint = null;
-        if (hint && rows.includes(hint.row)) {
-            rows.splice(rows.indexOf(hint.row), 1);
-            if (hint.insertIndex === undefined) {
-                hint.row.remove();
-                session.editing.delete(hint.row);
-            } else {
-                const listed = rows.filter(row => rowApi(row).isCommitted() && !row.classList.contains('greeting-stale'));
-                const anchor = listed[hint.insertIndex];
-                const lastListed = listed.at(-1);
-                rows.splice(anchor ? rows.indexOf(anchor) : (lastListed ? rows.indexOf(lastListed) + 1 : 0), 0, hint.row);
-            }
-        }
-        model.greetings = greetings.slice();
-        model.defaultIndex = defaultIndex;
-
-        const candidates = rows.filter(row => rowApi(row).isCommitted());
-        const drafts = rows.filter(row => !rowApi(row).isCommitted());
-        /** @type {HTMLElement[]} */
-        const listed = [];
-        const used = new Set();
-        for (let index = 0; index < greetings.length; index++) {
-            const hash = hashGreetingText(greetings[index]);
-            const row = positional
-                ? candidates[index]
-                : candidates.find(candidate => !used.has(candidate) && /** @type {any} */ (candidate).greetingHash === hash);
-            if (row) {
-                used.add(row);
-                listed.push(row);
-            } else {
-                const created = addAlternateGreeting(template, greetings[index], index, getArray, popup, model, index + 1, false, picker, session);
-                if (movesBlocked) $(created).find('.pick_up_greeting').addClass('disabled');
-                listed.push(created);
-            }
-        }
-
-        let keptStale = false;
-        const desired = listed.slice();
-        for (const row of candidates) {
-            if (used.has(row)) continue;
-            if (!rowApi(row).isEditing()) {
-                row.remove();
-                continue;
-            }
-            keptStale = true;
-            row.classList.add('greeting-stale');
-            row.removeAttribute('data-index');
-            const before = candidates.slice(0, candidates.indexOf(row)).reverse().find(candidate => desired.includes(candidate));
-            desired.splice(before ? desired.indexOf(before) + 1 : 0, 0, row);
-        }
-        desired.push(...drafts);
-
-        let moved = false;
-        listed.forEach((row, index) => {
-            row.classList.remove('greeting-stale');
-            moved = rowApi(row).setIndex(index) || moved;
-        });
-        drafts.forEach((row, offset) => rowApi(row).setIndex(greetings.length + offset));
-        for (const row of desired) rowApi(row).refreshDefault();
-        placeRowsInOrder(list, desired);
-        if (moved && picker.pickedKey !== null) picker.cancel();
-        pendingRender = keptStale ? { greetings: greetings.slice(), defaultIndex } : null;
-
-        template.find('.greeting-filter-input').trigger('input');
-        updateAlternateGreetingsHintVisibility(template);
-    }
-
-    for (let index = 0; index < model.greetings.length; index++) {
-        addAlternateGreeting(template, model.greetings[index], index, getArray, popup, model, index + 1, false, picker, session);
-    }
-    if (menu_type !== 'create') {
-        greetingsPopupListener = onGreetingsReplaced;
-    }
-
-    // Filter input handler
-    template.find('.greeting-filter-input').on('input', function () {
-        const filterText = $(this).val().toLowerCase();
-        template.find('.alternate_greetings_list .alternate_greeting').each(function () {
-            const content = $(this).find('.alternate_greeting_text').val().toLowerCase();
-            $(this).toggle(!filterText || content.includes(filterText));
-        });
-        picker.refresh();
-    });
-
-    template.find('.add_alternate_greeting').on('click', function () {
-        const array = getArray();
-        // The new row is UI-only until it has text - not pushed into the array here (see addAlternateGreeting()'s `pending` handling).
-        const index = array.length;
-        addAlternateGreeting(template, '', index, getArray, popup, model, index + 1, true, picker, session);
-        if (movesBlocked) {
-            template.find('.alternate_greetings_list .alternate_greeting').last().find('.pick_up_greeting').addClass('disabled');
-        }
-        updateAlternateGreetingsHintVisibility(template);
-        const list = template.find('.alternate_greetings_list');
-        list.scrollTop(list.prop('scrollHeight'));
-    });
-
-    template.find('.greeting_refresh_retry').on('click', async function () {
-        const retryButton = $(this);
-        if (retryButton.hasClass('disabled')) return;
-        retryButton.addClass('disabled');
-        const avatar = $('.open_alternate_greetings').data('avatar');
-        const refreshed = await reloadGreetingsFromServer(avatar);
-        retryButton.removeClass('disabled');
-        if (!refreshed) toastr.error(t`Couldn't refresh the greeting list.`, t`Greeting list not refreshed`);
-    });
-
-    popup.show();
-    updateAlternateGreetingsHintVisibility(template);
+    newUi().alternatives.openGreetings(avatar, charactersStore.get(avatar)?.name ?? '');
 }
 
 /**
- * Puts the list's children in this order, moving as few as it can. A row holding focus is never moved, since moving
- * an element blurs it and resets its scroll.
- * @param {HTMLElement} list
- * @param {HTMLElement[]} desired Every child the list should hold, in order.
+ * The card's greetings as the server holds them after an operation the alternatives list sent: the character and
+ * the greeting pager take them, and the save's CHARACTER_EDITED fires, as for the pager's own saves.
+ * @param {string} avatar
+ * @param {{ greetings: string[], hashes: number[], defaultPosition: number|null }} card
+ * @param {{ hash: number, text: string } | null} edit A text edit: the greeting's hash before it, and its new text.
+ * @returns {Promise<void>}
  */
-function placeRowsInOrder(list, desired) {
-    const current = Array.from(list.children);
-    const position = desired.map(element => current.indexOf(element));
-    const active = document.activeElement;
-    const weight = desired.map(element => (active && element.contains(active)) ? desired.length + 1 : 1);
-    // The heaviest run of rows already in order stays put; the focused row outweighs all others together.
-    const best = desired.map(() => 0);
-    const previous = desired.map(() => -1);
-    let end = -1;
-    for (let i = 0; i < desired.length; i++) {
-        if (position[i] < 0) continue;
-        best[i] = weight[i];
-        for (let j = 0; j < i; j++) {
-            if (position[j] >= 0 && position[j] < position[i] && best[j] + weight[i] > best[i]) {
-                best[i] = best[j] + weight[i];
-                previous[i] = j;
-            }
-        }
-        if (end < 0 || best[i] > best[end]) end = i;
-    }
-    const stay = new Set();
-    for (let i = end; i >= 0; i = previous[i]) stay.add(desired[i]);
-    let next = null;
-    for (let i = desired.length - 1; i >= 0; i--) {
-        if (!stay.has(desired[i])) list.insertBefore(desired[i], next);
-        next = desired[i];
-    }
-}
-
-/**
- * @param {JQuery<HTMLElement>} template
- * @param {string} greeting
- * @param {number} index Position in the stable-order greetings array; for a `pending` row, only a prediction until it has text.
- * @param {() => any[]} getArray
- * @param {Popup} popup
- * @param {GreetingsModel} model Live working model; `model.defaultIndex` is reassigned by the set/demote handlers below.
- * @param {number} [displayPosition] 1-based slot number to show the user; defaults to index + 1.
- * @param {boolean} [pending] True for a just-added, still-blank row - not yet a real array entry, so a write while blank never sees it.
- * @param {PickAndPlace} [picker] The popup's pick-and-place, which this row's pick-up button drives.
- * @param {GreetingsPopupSession} [session] The popup's record of which rows are being edited.
- * @returns {HTMLElement} The row, appended to the list.
- */
-function addAlternateGreeting(template, greeting, index, getArray, popup, model, displayPosition = index + 1, pending = false, picker, session) {
-    const greetingBlock = $('#alternate_greeting_form_template .alternate_greeting').clone();
-    const row = /** @type {HTMLElement & {greetingHash?: number}} */ (greetingBlock[0]);
-    let committed = !pending;
-    // The hash of the text this row shows as saved: every op on the row targets the greeting with it.
-    row.greetingHash = pending ? undefined : hashGreetingText(greeting);
-    greetingBlock.attr('data-index', index);
-    if (pending) {
-        greetingBlock.addClass('greeting-draft');
-    }
-
-    let focused = false;
-    let maximized = false;
-    let saveScheduled = false;
-    let savesInFlight = 0;
-    const updateEditing = () => {
-        if (!session) return;
-        if (focused || maximized || saveScheduled || savesInFlight > 0) {
-            session.editing.add(row);
-        } else if (session.editing.delete(row)) {
-            session.editEnded();
-        }
-    };
-
-    // Per-row debounce, so typing in a different row doesn't reset this one's pending save. Never fires in create mode.
-    const debouncedRowEdit = debounce(async (rowIndex, text) => {
-        saveScheduled = false;
-        savesInFlight++;
-        try {
-            const avatar = $('.open_alternate_greetings').data('avatar');
-            const character = avatar ? charactersStore.get(avatar) : null;
-            if (!character) return;
-            await queueGreetingSave(avatar, async () => {
-                const expectedHash = row.greetingHash;
-                if (!Number.isFinite(expectedHash)) return;
-                // An emptied row has nothing to save (a greeting is never stored empty): the stored text stays until
-                // the row has text again; removing it is the row's delete.
-                if (text === '') return;
-
-                const result = await postGreetingOp('edit', { avatar_url: avatar, position: rowIndex, expected_hash: expectedHash, text });
-                if (result.ok) {
-                    row.greetingHash = Number.isInteger(result.position) ? result.hashes[result.position] : hashGreetingText(text);
-                    applyGreetingOpSuccess(character, result, { expectedHash, text });
-                    return;
-                }
-                console.error('Greeting edit failed', { avatar, position: rowIndex, status: result.status, reason: result.reason });
-                if (result.status === 409) {
-                    // What the row shows now, which may be newer than the text this save sent.
-                    const typed = String(greetingBlock.find('.alternate_greeting_text').val());
-                    addGreetingConflictDraft(avatar, { position: rowIndex, text: typed });
-                    if (await session?.showCurrentAfterConflict(avatar)) {
-                        toastr.warning(t`Someone else changed this greeting, so your edit wasn't saved. Showing the current version; your edit is kept at the top of the list.`, t`Greeting not saved`);
-                    } else {
-                        toastr.error(t`Someone else changed this greeting, so your edit wasn't saved, and the list couldn't be refreshed. Your edit is kept and will be shown when the list is refreshed.`, t`Greeting not saved`);
-                    }
-                    return;
-                }
-                toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
-            });
-        } finally {
-            savesInFlight--;
-            updateEditing();
-        }
-    }, DEFAULT_SAVE_EDIT_TIMEOUT);
-
-    greetingBlock.find('.alternate_greeting_text')
-        .attr('id', `alternate_greeting_${index}`)
-        .on('focus', () => {
-            focused = true;
-            updateEditing();
-        })
-        .on('blur', () => {
-            focused = false;
-            updateEditing();
-        })
-        .on('input', async function () {
-            const value = String($(this).val());
-            const array = getArray();
-            if (!committed) {
-                if (value === '') {
-                    // Still nothing authored - stays UI-only.
-                    return;
-                }
-                array.push(value);
-                committed = true;
-                greetingBlock.removeClass('greeting-draft');
-                setIndex(array.length - 1);
-                refreshDefault();
-                greetingBlock.find('.pick_up_greeting').show();
-
-                if (menu_type === 'create') return; // synced at popup close, same as every other create-mode field
-
-                const addedIndex = index;
-                const avatar = $('.open_alternate_greetings').data('avatar');
-                const character = avatar ? charactersStore.get(avatar) : null;
-                if (!character) return;
-                savesInFlight++;
-                updateEditing();
-                let result;
-                try {
-                    result = await queueGreetingSave(avatar, async () => {
-                        const added = await postGreetingOp('add', { avatar_url: avatar, append: true, text: value });
-                        if (added.ok) {
-                            row.greetingHash = Number.isInteger(added.position) ? added.hashes[added.position] : hashGreetingText(value);
-                            applyGreetingOpSuccess(character, added);
-                        }
-                        return added;
-                    });
-                } finally {
-                    savesInFlight--;
-                    updateEditing();
-                }
-                if (result.ok) {
-                    return;
-                }
-                console.error('Greeting add failed', { avatar, position: addedIndex, status: result.status, reason: result.reason });
-                toastr.error(t`Failed to save the new greeting. It's still shown here - keep typing in it to retry.`, t`Greeting not saved`);
-                // Wasn't actually saved - revert to an uncommitted draft so the next keystroke retries.
-                array.splice(addedIndex, 1);
-                committed = false;
-                return;
-            }
-            array[index] = value;
-            if (menu_type !== 'create') {
-                saveScheduled = true;
-                updateEditing();
-                debouncedRowEdit(index, value);
-            }
-        }).val(greeting);
-    greetingBlock.find('.editor_maximize').attr('data-for', `alternate_greeting_${index}`);
-    greetingBlock.find('.greeting_index').text(displayPosition);
-
-    /**
-     * Moves the row to another position in the list: what its ops target, its id and its shown number.
-     * @param {number} newIndex
-     * @returns {boolean} Whether the position changed.
-     */
-    const setIndex = (newIndex) => {
-        const changed = newIndex !== index;
-        index = newIndex;
-        greetingBlock.attr('data-index', newIndex);
-        greetingBlock.find('.alternate_greeting_text').attr('id', `alternate_greeting_${newIndex}`);
-        greetingBlock.find('.editor_maximize').attr('data-for', `alternate_greeting_${newIndex}`);
-        greetingBlock.find('.greeting_index').text(newIndex + 1);
-        return changed;
-    };
-    /** Shows the default badge and the set/clear buttons for whether this row is now the default. */
-    const refreshDefault = () => {
-        const isDefault = committed && index === model.defaultIndex;
-        greetingBlock.find('.greeting_default_badge').toggle(isDefault);
-        greetingBlock.find('.demote_default_greeting').toggle(isDefault);
-        greetingBlock.find('.set_default_greeting').toggle(committed && !isDefault);
-    };
-    /** @type {GreetingRow} */
-    (/** @type {any} */ (row)).greetingRow = {
-        setIndex,
-        refreshDefault,
-        isCommitted: () => committed,
-        isEditing: () => focused || maximized || saveScheduled || savesInFlight > 0,
-    };
-
-    // The maximize editor (opened by a document-level handler after this one) edits this row until its popup closes.
-    greetingBlock.find('.editor_maximize').on('click', function () {
-        const textareaId = String($(this).attr('data-for'));
-        maximized = true;
-        updateEditing();
-        setTimeout(() => {
-            const dialog = Array.from(document.querySelectorAll('textarea.maximized_textarea'))
-                .find(editor => /** @type {HTMLElement} */ (editor).dataset.for === textareaId)?.closest('dialog');
-            if (!dialog) {
-                maximized = false;
-                updateEditing();
-                return;
-            }
-            dialog.addEventListener('close', () => {
-                maximized = false;
-                updateEditing();
-            }, { once: true });
-        });
+export function applyServerGreetings(avatar, card, edit) {
+    const character = charactersStore.get(avatar);
+    if (!character) return Promise.resolve();
+    return queueGreetingSave(avatar, async () => {
+        const position = edit ? card.greetings.indexOf(edit.text) : -1;
+        applyGreetingOpSuccess(character, {
+            ok: true,
+            greetings: card.greetings,
+            hashes: card.hashes,
+            defaultPosition: card.defaultPosition,
+            ...(position >= 0 ? { position } : {}),
+        }, edit ? { expectedHash: edit.hash, text: edit.text } : undefined);
     });
-
-    refreshDefault();
-    if (pending) {
-        greetingBlock.find('.pick_up_greeting').hide();
-    }
-
-    greetingBlock.find('.delete_alternate_greeting').on('click', async function (event) {
-        event.preventDefault();
-        event.stopPropagation();
-
-        if (!committed) {
-            // Nothing's been written to the array yet - just drop the empty draft row.
-            greetingBlock.remove();
-            updateAlternateGreetingsHintVisibility(template);
-            return;
-        }
-
-        const array = getArray();
-        const label = index === model.defaultIndex ? 'the default greeting' : 'this greeting';
-        const confirm = await callGenericPopup(t`Are you sure you want to delete ${label}?`, POPUP_TYPE.CONFIRM);
-        if (!confirm) {
-            return;
-        }
-
-        if (menu_type === 'create') {
-            array.splice(index, 1);
-            session.removeRow(row);
-            session.showLocal(reindexDefaultAfterRemoval(model.defaultIndex, index));
-            return;
-        }
-
-        const avatar = $('.open_alternate_greetings').data('avatar');
-        const character = avatar ? charactersStore.get(avatar) : null;
-        if (!character) return;
-        await queueGreetingSave(avatar, async () => {
-            const expectedHash = row.greetingHash;
-            if (!Number.isFinite(expectedHash)) return;
-            const result = await postGreetingOp('delete', { avatar_url: avatar, position: index, expected_hash: expectedHash });
-            if (!result.ok) {
-                console.error('Greeting delete failed', { avatar, position: index, status: result.status, reason: result.reason });
-                if (result.status === 409) {
-                    if (await session?.showCurrentAfterConflict(avatar)) {
-                        toastr.warning(t`Someone else changed these greetings, so nothing was deleted. Showing the current version.`, t`Greeting not deleted`);
-                    } else {
-                        toastr.error(t`Someone else changed these greetings, so nothing was deleted, and the list couldn't be refreshed.`, t`Greeting not deleted`);
-                    }
-                    return;
-                }
-                toastr.error(t`Failed to delete the greeting.`, t`Greeting not deleted`);
-                return;
-            }
-            session.removeRow(row);
-            applyGreetingOpSuccess(character, result);
-        });
-    });
-
-    // Pick up to move (pick-and-place reordering)
-    greetingBlock.find('.pick_up_greeting').on('click', function (event) {
-        event.preventDefault();
-        event.stopPropagation();
-
-        // Disabled while the popup's list is stale (a reload after a refused move failed).
-        if ($(this).hasClass('disabled')) {
-            return;
-        }
-
-        if (!committed) {
-            // Draft row isn't in the array - nothing to move.
-            return;
-        }
-
-        picker.pickedKey === index ? picker.cancel() : picker.pick(index);
-    });
-
-    // Set as default greeting - pointer move only, the stable order never changes.
-    greetingBlock.find('.set_default_greeting').on('click', async function (event) {
-        event.preventDefault();
-        event.stopPropagation();
-
-        if (!committed) {
-            // Draft row isn't in the array - nothing to promote.
-            return;
-        }
-
-        if (menu_type === 'create') {
-            session.showLocal(index);
-            return;
-        }
-
-        const avatar = $('.open_alternate_greetings').data('avatar');
-        const character = avatar ? charactersStore.get(avatar) : null;
-        if (!character) return;
-        await queueGreetingSave(avatar, async () => {
-            const expectedHash = row.greetingHash;
-            if (!Number.isFinite(expectedHash)) return;
-            const result = await postGreetingOp('default/set', { avatar_url: avatar, position: index, expected_hash: expectedHash });
-            if (!result.ok) {
-                console.error('Set default greeting failed', { avatar, position: index, status: result.status, reason: result.reason });
-                if (result.status === 409) {
-                    if (await session?.showCurrentAfterConflict(avatar)) {
-                        toastr.warning(t`Someone else changed these greetings, so the default wasn't changed. Showing the current version.`, t`Default not changed`);
-                    } else {
-                        toastr.error(t`Someone else changed these greetings, so the default wasn't changed, and the list couldn't be refreshed.`, t`Default not changed`);
-                    }
-                    return;
-                }
-                toastr.error(t`Failed to set the default greeting.`, t`Default not changed`);
-                return;
-            }
-            applyGreetingOpSuccess(character, result);
-        });
-    });
-
-    // Clears the default entirely - a card can have no default at all.
-    greetingBlock.find('.demote_default_greeting').on('click', async function (event) {
-        event.preventDefault();
-        event.stopPropagation();
-
-        if (menu_type === 'create') {
-            session.showLocal(null);
-            return;
-        }
-
-        const avatar = $('.open_alternate_greetings').data('avatar');
-        const character = avatar ? charactersStore.get(avatar) : null;
-        if (!character) return;
-        await queueGreetingSave(avatar, async () => {
-            const expectedDefaultHash = row.greetingHash;
-            if (!Number.isFinite(expectedDefaultHash)) return;
-            const result = await postGreetingOp('default/unset', { avatar_url: avatar, expected_default_hash: expectedDefaultHash });
-            if (!result.ok) {
-                console.error('Unset default greeting failed', { avatar, status: result.status, reason: result.reason });
-                if (result.status === 409) {
-                    if (await session?.showCurrentAfterConflict(avatar)) {
-                        toastr.warning(t`Someone else changed these greetings, so the default wasn't cleared. Showing the current version.`, t`Default not changed`);
-                    } else {
-                        toastr.error(t`Someone else changed these greetings, so the default wasn't cleared, and the list couldn't be refreshed.`, t`Default not changed`);
-                    }
-                    return;
-                }
-                toastr.error(t`Failed to clear the default greeting.`, t`Default not changed`);
-                return;
-            }
-            applyGreetingOpSuccess(character, result);
-        });
-    });
-
-    template.find('.alternate_greetings_list').append(greetingBlock);
-    return row;
 }
 
 /**
@@ -11503,7 +10664,7 @@ export async function createCharacterFromCreateSave({ jsonData } = {}) {
             { id: '#tags_textarea', callback: value => create_save.tags = value },
             { id: '#creator_textarea', callback: value => create_save.creator = value },
             { id: '#personality_textarea', callback: value => create_save.personality = value },
-            { id: '#alternate_greetings_template', callback: value => create_save.alternate_greetings = value, defaultValue: [] },
+            { id: '#_alternate_greetings_fake', callback: value => create_save.alternate_greetings = value, defaultValue: [] },
             { id: '#talkativeness_slider', callback: value => create_save.talkativeness = value, defaultValue: talkativeness_default },
             { id: '#scenario_pole', callback: value => create_save.scenario = value },
             { id: '#depth_prompt_prompt', callback: value => create_save.depth_prompt_prompt = value },
@@ -14903,7 +14064,7 @@ jQuery(async function () {
         }
     });
 
-    $(document).on('click', '.open_alternate_greetings', openAlternateGreetings);
+    $(document).on('click', '.open_alternate_greetings', openGreetingsList);
     /* $('#set_character_world').on('click', openCharacterWorldPopup); */
 
     $(document).on('focus', 'input.auto-select, textarea.auto-select', function () {

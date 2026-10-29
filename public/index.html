@@ -4103,10 +4103,6 @@
                                     <input id="compact_input_area" type="checkbox" />
                                     <small data-i18n="Compact Input Area (Mobile)">Compact Input Area</small><i class="fa-solid fa-mobile-screen-button"></i>
                                 </label>
-                                <label for="show_swipe_num_all_messages" class="checkbox_label" title="Display swipe numbers for all messages, not just the last." data-i18n="[title]Display swipe numbers for all messages, not just the last.">
-                                    <input id="show_swipe_num_all_messages" type="checkbox" />
-                                    <small data-i18n="Swipe # for All Messages">Swipe # for All Messages</small>
-                                </label>
                                 <label for="hotswapEnabled" class="checkbox_label" title="In the Character Management panel, show quick selection buttons for favorited characters." data-i18n="[title]In the Character Management panel, show quick selection buttons for favorited characters">
                                     <input id="hotswapEnabled" type="checkbox" />
                                     <small data-i18n="Characters Hotswap">Characters Hotswap</small>
@@ -6497,66 +6493,6 @@
         <div id="inline_avatar_template" class="template_element">
             <div class="avatar inline_avatar flex alignitemscenter textAlignCenter">
                 <img src="">
-            </div>
-        </div>
-        <div id="alternate_greetings_template" class="template_element">
-            <div class="alternate_grettings flexFlowColumn flex-container">
-                <div class="title_restorable">
-                    <h3><span data-i18n="Greetings" class="mdhotkey_location">Greetings</span></h3>
-                    <div class="menu_button menu_button_icon add_alternate_greeting">
-                        <i class="fa-solid fa-plus"></i>
-                        <span data-i18n="Add">Add</span>
-                    </div>
-                </div>
-                <small class="justifyLeft" data-i18n="Greetings_desc">
-                    The first greeting is the default. Others are displayed as swipes when starting a new chat.
-                    Group members can select one of them to initiate the conversation.
-                </small>
-                <input type="text" class="text_pole greeting-filter-input" placeholder="Filter greetings..." />
-                <div class="greeting-refresh-failed flex-container alignItemsCenter" style="display:none;">
-                    <span data-i18n="greeting_refresh_failed">Couldn't refresh the greeting list. Moves are blocked until it's refreshed.</span>
-                    <div class="menu_button menu_button_icon greeting_refresh_retry">
-                        <i class="fa-solid fa-rotate"></i>
-                        <span data-i18n="Retry">Retry</span>
-                    </div>
-                </div>
-                <div class="greeting-conflict-drafts flexFlowColumn flex-container wide100p"></div>
-                <hr>
-                <div class="alternate_greetings_list flexFlowColumn flex-container wide100p">
-                    <strong class="alternate_grettings_hint margin-bot-10px">
-                        <span data-i18n="alternate_greetings_hint_1">Click the</span> <i class="fa-solid fa-plus"></i> <span data-i18n="alternate_greetings_hint_2">button to get started!</span>
-                    </strong>
-                </div>
-            </div>
-        </div>
-        <div id="alternate_greeting_form_template" class="template_element">
-            <div class="alternate_greeting">
-                <details open>
-                    <summary>
-                        <div class="title_restorable gap5px">
-                            <div class="flex-container alignItemsCenter">
-                                <span class="greeting_default_badge" style="display:none;" title="Default greeting"><i class="fa-solid fa-star" style="color: var(--SmartThemeQuoteColor, #e69500);"></i></span>
-                                <strong><span data-i18n="Greeting #">Greeting #</span><span class="greeting_index"></span></strong>
-                                <i class="editor_maximize fa-solid fa-maximize right_menu_button" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
-                            </div>
-                            <span class="expander"></span>
-                            <div class="menu_button menu_button_icon pick_up_greeting" title="Pick up to move">
-                                <i class="fa-solid fa-arrows-up-down"></i>
-                            </div>
-                            <div class="menu_button menu_button_icon set_default_greeting" title="Set as default greeting" style="display:none;">
-                                <i class="fa-solid fa-star"></i>
-                            </div>
-                            <div class="menu_button menu_button_icon demote_default_greeting" title="Demote from default" style="display:none;">
-                                <i class="fa-solid fa-arrow-down"></i>
-                            </div>
-                            <div class="menu_button menu_button_icon delete_alternate_greeting">
-                                <i class="fa-solid fa-trash-alt"></i>
-                                <span data-i18n="Delete">Delete</span>
-                            </div>
-                        </div>
-                    </summary>
-                    <textarea data-macros name="alternate_greetings" data-i18n="[placeholder](This will be the greeting from the character that starts every chat)" placeholder="(This will be the greeting from the character that starts every chat)" class="text_pole textarea_compact alternate_greeting_text mdHotkeys" value="" autocomplete="off" rows="12"></textarea>
-                </details>
             </div>
         </div>
 

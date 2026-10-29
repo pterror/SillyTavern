@@ -351,7 +351,6 @@ export const power_user = {
     restore_user_input: true,
     reduced_motion: false,
     compact_input_area: true,
-    show_swipe_num_all_messages: false,
     auto_connect: false,
     auto_load_chat: false,
     forbid_external_media: true,
@@ -698,11 +697,6 @@ function switchReducedMotion() {
 function switchCompactInputArea() {
     $('#send_form').toggleClass('compact', power_user.compact_input_area);
     $('#compact_input_area').prop('checked', power_user.compact_input_area);
-}
-
-function switchSwipeNumAllMessages() {
-    $('#show_swipe_num_all_messages').prop('checked', power_user.show_swipe_num_all_messages);
-    $('body').toggleClass('swipeAllMessages', !!power_user.show_swipe_num_all_messages);
 }
 
 var originalSliderValues = [];
@@ -1638,13 +1632,6 @@ function applyTheme(name) {
             },
         },
         {
-            key: 'show_swipe_num_all_messages',
-            action: () => {
-                $('#show_swipe_num_all_messages').prop('checked', power_user.show_swipe_num_all_messages);
-                switchSwipeNumAllMessages();
-            },
-        },
-        {
             key: 'click_to_edit',
             action: () => {
                 $('#click_to_edit').prop('checked', power_user.click_to_edit);
@@ -1715,7 +1702,6 @@ export function applyPowerUserSettings() {
     switchHideChatAvatars();
     switchTokenCount();
     switchMessageActions();
-    switchSwipeNumAllMessages();
     switchAdvancedMode();
 }
 
@@ -4179,12 +4165,6 @@ jQuery(() => {
         power_user.compact_input_area = !!$(this).prop('checked');
         switchCompactInputArea();
         saveSettingsDebounced('power_user.compact_input_area');
-    });
-
-    $('#show_swipe_num_all_messages').on('input', function () {
-        power_user.show_swipe_num_all_messages = !!$(this).prop('checked');
-        switchSwipeNumAllMessages();
-        saveSettingsDebounced('power_user.show_swipe_num_all_messages');
     });
 
     $('#auto-connect-checkbox').on('input', function () {

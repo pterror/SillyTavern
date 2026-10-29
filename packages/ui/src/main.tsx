@@ -21,6 +21,8 @@ import {
     settingsCompat,
 } from '@st/settings/page';
 import type { Support } from '@st/settings/page';
+import { Alternatives, alternativesCompat } from '@st/alternatives/page';
+import type { Look, OldPage } from '@st/alternatives/page';
 import { render } from 'solid-js/web';
 import type { JSX } from 'solid-js';
 
@@ -34,6 +36,8 @@ export type StartOptions = {
     quietPrompt: (prompt: string) => Promise<string>;
     /** The chat the old page shows now (null: none), told to the server when the tab's stream reconnects. */
     currentChat: () => ChatOwner | null;
+    /** What the alternatives list asks of the old page (rendering as the chat does, swiping, deleting a swipe). */
+    alternatives: OldPage;
     containers: {
         /** The backgrounds drawer's content (`#Backgrounds`). */
         backgrounds: HTMLElement;
@@ -90,6 +94,14 @@ export function start(options: StartOptions) {
     mount(tgSamplers, () => <TgSamplers />);
     mount(tgCfg, () => <TgCfg />);
 
+    // The alternatives of a message: a modal list, over everything.
+    const [look, setLook] = createSignal<Look | null>(null);
+    const alternativesHost = document.createElement('div');
+    document.body.append(alternativesHost);
+    mount(alternativesHost, () => (
+        <Alternatives look={look()} old={options.alternatives} onClose={() => setLook(null)} />
+    ));
+
     return {
         /** Views the server pushed on the tab's stream. */
         receive: (push: ViewPush) => {
@@ -100,6 +112,7 @@ export function start(options: StartOptions) {
         /** The old page closed its chat (no chat shows now). */
         closeChat: () => client.send('chat.close', {}),
         backgrounds: backgroundsCompat(client, tab, options.quietPrompt, options.t),
+        alternatives: alternativesCompat(setLook),
         settings: {
             ...settingsCompat(client),
             /** What the current model supports, as the old page knows it (its toggles show it). */

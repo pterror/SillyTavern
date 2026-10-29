@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, openInfoTab } from './frontent-test-utils.js';
+import { greetingRow, greetingsList, listDelete, listEdit, listToggleDefault, openGreetingsList } from './alternatives-list.js';
 import { cardToGreetingsModel } from '../../src/greeting-list.js';
 import { hashGreetingText } from '../../src/greeting-ops.js';
 
@@ -94,39 +95,6 @@ async function otherSessionOp(page, op, body) {
     expect(status).toBe(200);
 }
 
-/**
- * @param {import('@playwright/test').Page} page
- */
-function greetingsPopup(page) {
-    return page.locator('.popup', { has: page.locator('.alternate_greetings_list') }).last();
-}
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {number} index
- */
-function popupRow(page, index) {
-    return greetingsPopup(page).locator(`.alternate_greetings_list .alternate_greeting[data-index="${index}"]`);
-}
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {number} count Number of greetings the popup should list.
- */
-async function openGreetingsPopup(page, count) {
-    await openInfoTab(page, 'greeting');
-    await page.locator('.open_alternate_greetings').click();
-    await expect(greetingsPopup(page).locator('.alternate_greetings_list .alternate_greeting')).toHaveCount(count, { timeout: 10000 });
-}
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {string} op e.g. 'delete', 'default/set'
- */
-function greetingOpResponse(page, op) {
-    return page.waitForResponse(response => new URL(response.url()).pathname === `/api/characters/greetings/${op}`, { timeout: 15000 });
-}
-
 const stamp = () => `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
 test.describe('after a greeting save the page holds the server\'s greeting list', () => {
@@ -144,7 +112,7 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];
         const avatar = await createCharacter(page, `${name}-${s}`, g);
         await openCharacter(page, avatar);
-        if (popup) await openGreetingsPopup(page, 4);
+        if (popup) await openGreetingsList(page, 4);
         await otherSessionOp(page, 'delete', { avatar_url: avatar, position: 3, expected_hash: hashGreetingText(g[3]) });
         return { s, g, avatar };
     }
@@ -170,54 +138,44 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expectPageHoldsServerList(page, avatar);
     });
 
-    test('popup row edit: another session\'s delete shows up', async ({ page }) => {
+    test('list row edit: another session\'s delete shows up', async ({ page }) => {
         const { s, g, avatar } = await afterRemoteDelete(page, 'ServerListRowEdit', true);
-        const response = greetingOpResponse(page, 'edit');
-        await popupRow(page, 1).locator('.alternate_greeting_text').fill(`One edited ${s}`);
-        expect((await response).ok()).toBe(true);
+        await listEdit(page, g[1], `One edited ${s}`);
         expect(await storedModel(page, avatar)).toEqual({ greetings: [g[0], `One edited ${s}`, g[2]], defaultIndex: 0 });
         await expectPageHoldsServerList(page, avatar);
     });
 
-    test('popup set default: another session\'s delete shows up', async ({ page }) => {
+    test('list set default: another session\'s delete shows up', async ({ page }) => {
         const { g, avatar } = await afterRemoteDelete(page, 'ServerListSetDefault', true);
-        const response = greetingOpResponse(page, 'default/set');
-        await popupRow(page, 1).locator('.set_default_greeting').click();
-        expect((await response).ok()).toBe(true);
+        await listToggleDefault(page, g[1]);
         expect(await storedModel(page, avatar)).toEqual({ greetings: [g[0], g[1], g[2]], defaultIndex: 1 });
         await expectPageHoldsServerList(page, avatar);
-        await expect(greetingsPopup(page).locator('.alternate_greetings_list .alternate_greeting')).toHaveCount(3, { timeout: 10000 });
+        await expect(greetingsList(page).locator('li.alternative')).toHaveCount(3, { timeout: 10000 });
     });
 
-    test('popup demote: another session\'s delete shows up', async ({ page }) => {
+    test('list demote: another session\'s delete shows up', async ({ page }) => {
         const { g, avatar } = await afterRemoteDelete(page, 'ServerListDemote', true);
-        const response = greetingOpResponse(page, 'default/unset');
-        await popupRow(page, 0).locator('.demote_default_greeting').click();
-        expect((await response).ok()).toBe(true);
+        await listToggleDefault(page, g[0]);
         expect(await storedModel(page, avatar)).toEqual({ greetings: [g[0], g[1], g[2]], defaultIndex: null });
         await expectPageHoldsServerList(page, avatar);
     });
 
-    test('popup move: another session\'s delete shows up', async ({ page }) => {
+    test('list move: another session\'s delete shows up', async ({ page }) => {
         const { g, avatar } = await afterRemoteDelete(page, 'ServerListMove', true);
-        await popupRow(page, 2).locator('.pick_up_greeting').click();
-        const response = greetingOpResponse(page, 'move');
-        await greetingsPopup(page).locator('.pick-place-slot').first().click();
-        expect((await response).ok()).toBe(true);
+        const answer = page.waitForResponse(r => r.request().postDataJSON()?.type === 'alternatives.greeting');
+        await greetingRow(page, g[2]).locator('.alternative-drag').press('Home');
+        expect((await (await answer).json()).ok).toBe(true);
         expect(await storedModel(page, avatar)).toEqual({ greetings: [g[2], g[0], g[1]], defaultIndex: 1 });
         await expectPageHoldsServerList(page, avatar);
-        await expect(greetingsPopup(page).locator('.alternate_greetings_list .alternate_greeting')).toHaveCount(3, { timeout: 10000 });
+        await expect(greetingsList(page).locator('li.alternative')).toHaveCount(3, { timeout: 10000 });
     });
 
-    test('popup delete: another session\'s delete shows up', async ({ page }) => {
+    test('list delete: another session\'s delete shows up', async ({ page }) => {
         const { g, avatar } = await afterRemoteDelete(page, 'ServerListDelete', true);
-        await popupRow(page, 1).locator('.delete_alternate_greeting').click();
-        const response = greetingOpResponse(page, 'delete');
-        await page.locator('.popup', { hasText: 'Are you sure you want to delete' }).locator('.popup-button-ok').click();
-        expect((await response).ok()).toBe(true);
+        await listDelete(page, g[1]);
         expect(await storedModel(page, avatar)).toEqual({ greetings: [g[0], g[2]], defaultIndex: 0 });
         await expectPageHoldsServerList(page, avatar);
-        await expect(greetingsPopup(page).locator('.alternate_greetings_list .alternate_greeting')).toHaveCount(2, { timeout: 10000 });
+        await expect(greetingsList(page).locator('li.alternative')).toHaveCount(2, { timeout: 10000 });
     });
 
     test('#character_json_data save: another session\'s delete shows up', async ({ page }) => {
@@ -365,14 +323,12 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         }, greetings);
     }
 
-    test('popup demote: another session deleting an earlier greeting doesn\'t stop the default being cleared', async ({ page }) => {
+    test('list demote: another session deleting an earlier greeting doesn\'t stop the default being cleared', async ({ page }) => {
         const { g, avatar } = await withDefaultAtOne(page, 'DemoteShifted');
-        await openGreetingsPopup(page, 3);
+        await openGreetingsList(page, 3);
         await otherSessionOp(page, 'delete', { avatar_url: avatar, position: 0, expected_hash: hashGreetingText(g[0]) });
 
-        const response = greetingOpResponse(page, 'default/unset');
-        await popupRow(page, 1).locator('.demote_default_greeting').click();
-        expect((await response).status()).toBe(200);
+        await listToggleDefault(page, g[1]);
         expect(await storedModel(page, avatar)).toEqual({ greetings: [g[1], g[2]], defaultIndex: null });
         await expectPageHoldsServerList(page, avatar);
     });
@@ -401,14 +357,14 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expect(page.locator('.toast-warning', { hasText: 'Default greeting cleared' })).toBeVisible({ timeout: 10000 });
     });
 
-    test('popup demote after another session already cleared the default succeeds', async ({ page }) => {
+    test('list demote after another session already cleared the default: the list shows none is, and setting it again works', async ({ page }) => {
         const { g, avatar } = await withDefaultAtOne(page, 'DemoteAlreadyCleared');
-        await openGreetingsPopup(page, 3);
+        await openGreetingsList(page, 3);
         await otherSessionOp(page, 'default/unset', { avatar_url: avatar, expected_default_position: 1 });
-
-        const response = greetingOpResponse(page, 'default/unset');
-        await popupRow(page, 1).locator('.demote_default_greeting').click();
-        expect((await response).status()).toBe(200);
+        // The list follows the card: no default now, so the star sets it.
+        await expect(greetingRow(page, g[1]).locator('.alternative-default')).toHaveAttribute('aria-pressed', 'false', { timeout: 10000 });
+        await listToggleDefault(page, g[1]);
+        await listToggleDefault(page, g[1]);
         expect(await storedModel(page, avatar)).toEqual({ greetings: g, defaultIndex: null });
         await expectPageHoldsServerList(page, avatar);
         await expect(page.locator('.toast-error')).toHaveCount(0);
@@ -486,7 +442,7 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expect(warning).not.toContainText(e0);
     });
 
-    test('popup set default: another session\'s edit of the shown greeting isn\'t announced as this page\'s edit, and the chat stays on its slot with the new text', async ({ page }) => {
+    test('list set default: another session\'s edit of the shown greeting isn\'t announced as this page\'s edit, and the chat stays on its slot with the new text', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
         const avatar = await createCharacter(page, `OwnEditsOnly-${s}`, g);
@@ -497,7 +453,7 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
             await swipe(null, SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.SWIPE_PICKER, forceMesId: 0, forceSwipeId: 1 });
         });
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(g[1], { timeout: 10000 });
-        await openGreetingsPopup(page, 3);
+        await openGreetingsList(page, 3);
         const elsewhere = `One changed elsewhere ${s}`;
         await otherSessionOp(page, 'edit', { avatar_url: avatar, position: 1, expected_hash: hashGreetingText(g[1]), text: elsewhere });
         await page.evaluate(() => {
@@ -511,9 +467,7 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
             });
         });
 
-        const response = greetingOpResponse(page, 'default/set');
-        await popupRow(page, 2).locator('.set_default_greeting').click();
-        expect((await response).ok()).toBe(true);
+        await listToggleDefault(page, g[2]);
         expect(await storedModel(page, avatar)).toEqual({ greetings: [g[0], elsewhere, g[2]], defaultIndex: 2 });
         await expectPageHoldsServerList(page, avatar);
 
@@ -539,14 +493,12 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
             await swipe(null, SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.SWIPE_PICKER, forceMesId: 0, forceSwipeId: 2 });
         });
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(g[2], { timeout: 10000 });
-        await openGreetingsPopup(page, 4);
+        await openGreetingsList(page, 4);
         const elsewhere = `Two changed elsewhere ${s}`;
         await otherSessionOp(page, 'edit', { avatar_url: avatar, position: 2, expected_hash: hashGreetingText(g[2]), text: elsewhere });
         await otherSessionOp(page, 'delete', { avatar_url: avatar, position: 1, expected_hash: hashGreetingText(g[1]) });
 
-        const response = greetingOpResponse(page, 'default/set');
-        await popupRow(page, 3).locator('.set_default_greeting').click();
-        expect((await response).ok()).toBe(true);
+        await listToggleDefault(page, g[3]);
         expect(await storedModel(page, avatar)).toEqual({ greetings: [g[0], elsewhere, g[3]], defaultIndex: 2 });
 
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(g[3], { timeout: 10000 });
@@ -559,8 +511,8 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
     });
 
     /**
-     * Opens a character with greetings `g`, shows greeting `shown` in the chat and opens the popup, runs `otherSession`
-     * (another session's changes), then sets the greeting in popup row `defaultRow` as the default from this page.
+     * Opens a character with greetings `g`, shows greeting `shown` in the chat and opens the list, runs `otherSession`
+     * (another session's changes), then sets greeting `defaultRow` (of `g`) as the default from this page.
      * Resolves to the chat's opening afterwards.
      * @param {import('@playwright/test').Page} page
      * @param {object} args
@@ -580,12 +532,10 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
             await swipe(null, SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.SWIPE_PICKER, forceMesId: 0, forceSwipeId: shown });
         }, shown);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(g[shown], { timeout: 10000 });
-        await openGreetingsPopup(page, g.length);
+        await openGreetingsList(page, g.length);
         await otherSession(avatar);
 
-        const response = greetingOpResponse(page, 'default/set');
-        await popupRow(page, defaultRow).locator('.set_default_greeting').click();
-        expect((await response).ok()).toBe(true);
+        await listToggleDefault(page, g[defaultRow]);
         await expectPageHoldsServerList(page, avatar);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(expected, { timeout: 10000 });
         return page.evaluate(() => {
@@ -685,12 +635,10 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
             await swipe(null, SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.SWIPE_PICKER, forceMesId: 0, forceSwipeId: 13 });
         });
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(g[13], { timeout: 10000 });
-        await openGreetingsPopup(page, 14);
+        await openGreetingsList(page, 14);
         await otherSessionOp(page, 'delete', { avatar_url: avatar, position: 13, expected_hash: hashGreetingText(g[13]) });
 
-        const response = greetingOpResponse(page, 'default/set');
-        await popupRow(page, 5).locator('.set_default_greeting').click();
-        expect((await response).ok()).toBe(true);
+        await listToggleDefault(page, g[5]);
 
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(g[12], { timeout: 10000 });
         const opening = await page.evaluate(() => {
@@ -729,127 +677,55 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         expect((await refetched).ok()).toBe(true);
     }
 
-    /**
-     * The popup row whose text box shows `text`.
-     * @param {import('@playwright/test').Page} page
-     * @param {string} text
-     */
-    async function popupRowShowing(page, text) {
-        const rows = greetingsPopup(page).locator('.alternate_greetings_list .alternate_greeting');
-        const count = await rows.count();
-        for (let i = 0; i < count; i++) {
-            if (await rows.nth(i).locator('.alternate_greeting_text').inputValue() === text) return rows.nth(i);
-        }
-        throw new Error(`no popup row shows ${text}`);
-    }
-
-    /**
-     * @param {import('@playwright/test').Page} page
-     */
-    async function popupTexts(page) {
-        return greetingsPopup(page).locator('.alternate_greetings_list .alternate_greeting .alternate_greeting_text').evaluateAll(els => els.map(el => /** @type {HTMLTextAreaElement} */ (el).value));
-    }
-
-    test('popup row edit after /char-update brought in another session\'s delete lands on that row\'s own greeting', async ({ page }) => {
+    test('list row edit after /char-update brought in another session\'s delete lands on that row\'s own greeting', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
         const avatar = await createCharacter(page, `RowOwnHashEdit-${s}`, g);
         await openCharacter(page, avatar);
-        await openGreetingsPopup(page, 3);
+        await openGreetingsList(page, 3);
         await otherSessionOp(page, 'delete', { avatar_url: avatar, position: 0, expected_hash: hashGreetingText(g[0]) });
         await charUpdate(page, `Personality ${s}`);
 
         const edited = `One edited ${s}`;
-        const response = greetingOpResponse(page, 'edit');
-        await (await popupRowShowing(page, g[1])).locator('.alternate_greeting_text').fill(edited);
-        expect((await response).ok()).toBe(true);
+        await listEdit(page, g[1], edited);
 
         expect((await storedModel(page, avatar)).greetings).toEqual([edited, g[2]]);
         await expectPageHoldsServerList(page, avatar);
     });
 
-    test('popup row delete after /char-update brought in another session\'s delete removes that row\'s own greeting', async ({ page }) => {
+    test('list row delete after /char-update brought in another session\'s delete removes that row\'s own greeting', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
         const avatar = await createCharacter(page, `RowOwnHashDelete-${s}`, g);
         await openCharacter(page, avatar);
-        await openGreetingsPopup(page, 3);
+        await openGreetingsList(page, 3);
         await otherSessionOp(page, 'delete', { avatar_url: avatar, position: 0, expected_hash: hashGreetingText(g[0]) });
         await charUpdate(page, `Personality ${s}`);
 
-        const response = greetingOpResponse(page, 'delete');
-        await (await popupRowShowing(page, g[2])).locator('.delete_alternate_greeting').click();
-        await page.locator('.popup', { hasText: 'Are you sure you want to delete' }).locator('.popup-button-ok').click();
-        expect((await response).ok()).toBe(true);
+        await listDelete(page, g[2]);
 
         expect((await storedModel(page, avatar)).greetings).toEqual([g[1]]);
         await expectPageHoldsServerList(page, avatar);
     });
 
-    test('a popup row being edited keeps its text through /char-update while the other rows update, and its edit lands on its own greeting', async ({ page }) => {
+    test('a greeting being edited keeps what is typed while another session\'s change moves the list, and its edit lands on its own greeting', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
         const avatar = await createCharacter(page, `RowOwnHashFocused-${s}`, g);
         await openCharacter(page, avatar);
-        await openGreetingsPopup(page, 3);
-        const textarea = popupRow(page, 1).locator('.alternate_greeting_text');
-        await textarea.focus();
+        await openGreetingsList(page, 3);
+        const row = greetingRow(page, g[1]);
+        await row.locator('.alternative-edit').click();
+        const typed = `${g[1]} and more`;
+        await row.locator('textarea').fill(typed);
         await otherSessionOp(page, 'delete', { avatar_url: avatar, position: 0, expected_hash: hashGreetingText(g[0]) });
-        await charUpdate(page, `Personality ${s}`);
-
-        await expect.poll(() => popupTexts(page), { timeout: 10000 }).toEqual([g[1], g[2]]);
-        // One is now the first row, and the same element: still focused.
-        const moved = popupRow(page, 0).locator('.alternate_greeting_text');
-        await expect(moved).toBeFocused();
-
-        const more = ' and more';
-        const response = greetingOpResponse(page, 'edit');
-        await moved.press('End');
-        await moved.pressSequentially(more);
-        expect((await response).ok()).toBe(true);
-        expect((await storedModel(page, avatar)).greetings).toEqual([g[1] + more, g[2]]);
-        await expect(moved).toHaveValue(g[1] + more);
-        expect(await popupTexts(page)).toEqual([g[1] + more, g[2]]);
-
-        await greetingsPopup(page).locator('.greeting-filter-input').focus();
-        expect(await popupTexts(page)).toEqual([g[1] + more, g[2]]);
-        await expectPageHoldsServerList(page, avatar);
-    });
-
-    test('a popup row open in the maximize editor keeps what is typed through /char-update while the other rows update, and its edit lands on its own greeting', async ({ page }) => {
-        const s = stamp();
-        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
-        const avatar = await createCharacter(page, `RowMaximized-${s}`, g);
-        await openCharacter(page, avatar);
-        await openGreetingsPopup(page, 3);
-        await popupRow(page, 1).locator('.editor_maximize').click();
-        const editor = page.locator('textarea.maximized_textarea');
-        await expect(editor).toBeVisible();
-        await expect(editor).toHaveValue(g[1]);
-
-        const typed = `${g[1]} typed`;
-        let response = greetingOpResponse(page, 'edit');
-        await editor.press('End');
-        await editor.pressSequentially(' typed');
-        expect((await response).ok()).toBe(true);
-        expect((await storedModel(page, avatar)).greetings).toEqual([g[0], typed, g[2]]);
-
-        await otherSessionOp(page, 'delete', { avatar_url: avatar, position: 0, expected_hash: hashGreetingText(g[0]) });
-        await charUpdate(page, `Personality ${s}`);
-        await expect.poll(() => popupTexts(page), { timeout: 10000 }).toEqual([typed, g[2]]);
-        await expect(editor).toHaveValue(typed);
-
-        const more = `${typed} and more`;
-        response = greetingOpResponse(page, 'edit');
-        await editor.pressSequentially(' and more');
-        await expect(editor).toHaveValue(more);
-        await expect(popupRow(page, 0).locator('.alternate_greeting_text')).toHaveValue(more);
-        expect((await response).ok()).toBe(true);
-        expect((await storedModel(page, avatar)).greetings).toEqual([more, g[2]]);
-
-        await page.keyboard.press('Escape');
-        await expect(editor).toHaveCount(0);
-        await expect.poll(() => popupTexts(page), { timeout: 10000 }).toEqual([more, g[2]]);
+        // One is the first row now, still being edited, with what was typed.
+        await expect(greetingsList(page).locator('li.alternative')).toHaveCount(2, { timeout: 10000 });
+        await expect(greetingRow(page, 0).locator('textarea')).toHaveValue(typed);
+        const answer = page.waitForResponse(r => r.request().postDataJSON()?.type === 'alternatives.greeting');
+        await greetingRow(page, 0).getByRole('button', { name: 'Save' }).click();
+        expect((await (await answer).json()).ok).toBe(true);
+        expect((await storedModel(page, avatar)).greetings).toEqual([typed, g[2]]);
         await expectPageHoldsServerList(page, avatar);
     });
 
@@ -889,12 +765,10 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         const avatar = await createCharacter(page, `DedupCardThenChat-${s}`, g);
         await openCharacter(page, avatar);
         const x = `Shared ${s}`;
-        await openGreetingsPopup(page, 3);
-        const response = greetingOpResponse(page, 'edit');
-        await popupRow(page, 2).locator('.alternate_greeting_text').fill(x);
-        expect((await response).ok()).toBe(true);
+        await openGreetingsList(page, 3);
+        await listEdit(page, g[2], x);
         await page.keyboard.press('Escape');
-        await expect(greetingsPopup(page)).toHaveCount(0);
+        await expect(greetingsList(page)).toHaveCount(0);
 
         await editOpeningInChat(page, x);
 
@@ -917,10 +791,8 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         // Clicking into the chat closes the character's editor.
         await openCharacter(page, avatar);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(y, { timeout: 10000 });
-        await openGreetingsPopup(page, 3);
-        const response = greetingOpResponse(page, 'edit');
-        await popupRow(page, 2).locator('.alternate_greeting_text').fill(y);
-        expect((await response).ok()).toBe(true);
+        await openGreetingsList(page, 3);
+        await listEdit(page, g[2], y);
 
         await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([y, g[0], g[1]]);
         const opening = await openingSwipes(page);
@@ -945,10 +817,8 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).not.toContainText('{{user}}');
 
         await openCharacter(page, avatar);
-        await openGreetingsPopup(page, 3);
-        const response = greetingOpResponse(page, 'edit');
-        await popupRow(page, 2).locator('.alternate_greeting_text').fill(y);
-        expect((await response).ok()).toBe(true);
+        await openGreetingsList(page, 3);
+        await listEdit(page, g[2], y);
 
         await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([y, g[0], g[1]]);
         expect(isStoredId((await openingSwipes(page)).nodeIds[0])).toBe(true);
@@ -965,10 +835,8 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await editOpeningInChat(page, y);
 
         await openCharacter(page, avatar);
-        await openGreetingsPopup(page, 3);
-        const response = greetingOpResponse(page, 'edit');
-        await popupRow(page, 1).locator('.alternate_greeting_text').fill(y);
-        expect((await response).ok()).toBe(true);
+        await openGreetingsList(page, 3);
+        await listEdit(page, g[1], y);
 
         // The server's list as a fresh load lays it out: the stored opening, then the card's other greetings.
         await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([y, g[0], g[2]]);
@@ -987,35 +855,30 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await editOpeningInChat(page, y);
 
         await openCharacter(page, avatar);
-        await openGreetingsPopup(page, 3);
-        const response = greetingOpResponse(page, 'edit');
-        await popupRow(page, 2).locator('.alternate_greeting_text').fill(`${y}\n`);
-        expect((await response).ok()).toBe(true);
+        await openGreetingsList(page, 3);
+        await listEdit(page, g[2], `${y}\n`);
 
         await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([y, g[0], g[1]]);
     });
 
-    test('popup delete on a list another session reordered deletes that greeting and drops no other', async ({ page }) => {
+    test('list delete on a list another session reordered deletes that greeting and drops no other', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];
         const avatar = await createCharacter(page, `ServerListReordered-${s}`, g);
         await openCharacter(page, avatar);
-        await openGreetingsPopup(page, 4);
+        await openGreetingsList(page, 4);
         await otherSessionOp(page, 'move', {
             avatar_url: avatar, source_position: 3, expected_hash: hashGreetingText(g[3]), side: 'before', target_position: 0, target_expected_hash: hashGreetingText(g[0]),
         });
 
-        await popupRow(page, 1).locator('.delete_alternate_greeting').click();
-        const response = greetingOpResponse(page, 'delete');
-        await page.locator('.popup', { hasText: 'Are you sure you want to delete' }).locator('.popup-button-ok').click();
-        expect((await response).ok()).toBe(true);
+        // The list shows the new order before anything is picked from it.
+        await expect(greetingRow(page, 0).locator('.alternative-text')).toHaveText(g[3], { timeout: 10000 });
+        await listDelete(page, g[1]);
 
         expect((await storedModel(page, avatar)).greetings).toEqual([g[3], g[0], g[2]]);
         await expectPageHoldsServerList(page, avatar);
-        const rows = greetingsPopup(page).locator('.alternate_greetings_list .alternate_greeting .alternate_greeting_text');
+        const rows = greetingsList(page).locator('li.alternative .alternative-text');
         await expect(rows).toHaveCount(3, { timeout: 10000 });
-        await expect(rows.nth(0)).toHaveValue(g[3]);
-        await expect(rows.nth(1)).toHaveValue(g[0]);
-        await expect(rows.nth(2)).toHaveValue(g[2]);
+        await expect(rows).toHaveText([g[3], g[0], g[2]]);
     });
 });

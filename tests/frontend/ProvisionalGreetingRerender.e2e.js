@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js';
+import { greetingRow, greetingsList, listAdd, listDelete, listEdit, listMoveToEnd, listToggleDefault, openGreetingsList } from './alternatives-list.js';
 import { testSetup, openCharacterManagementDrawer, openInfoTab } from './frontent-test-utils.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
@@ -177,97 +178,21 @@ function greetingOpResponse(page, op) {
     return page.waitForResponse(response => new URL(response.url()).pathname === `/api/characters/greetings/${op}`, { timeout: 15000 });
 }
 
-/**
- * @param {import('@playwright/test').Page} page
- */
-function greetingsPopup(page) {
-    return page.locator('.popup', { has: page.locator('.alternate_greetings_list') }).last();
-}
+const openGreetingsPopup = openGreetingsList;
+const popupEdit = listEdit;
+const popupAdd = listAdd;
+const popupMove = listMoveToEnd;
+const popupSetDefault = listToggleDefault;
+const popupUnsetDefault = listToggleDefault;
 
 /**
  * @param {import('@playwright/test').Page} page
  * @param {number} index
- */
-function popupRow(page, index) {
-    return greetingsPopup(page).locator(`.alternate_greetings_list .alternate_greeting[data-index="${index}"]`);
-}
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {number} count Number of greetings the popup should list.
- */
-async function openGreetingsPopup(page, count) {
-    await openInfoTab(page, 'greeting');
-    await page.locator('.open_alternate_greetings').click();
-    await expect(greetingsPopup(page).locator('.alternate_greetings_list .alternate_greeting')).toHaveCount(count, { timeout: 10000 });
-}
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {number} index
- * @param {string} text
- */
-async function popupEdit(page, index, text) {
-    const response = greetingOpResponse(page, 'edit');
-    await popupRow(page, index).locator('.alternate_greeting_text').fill(text);
-    expect((await response).ok()).toBe(true);
-}
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {string} text
- */
-async function popupAdd(page, text) {
-    const popup = greetingsPopup(page);
-    await popup.locator('.add_alternate_greeting').click();
-    const response = greetingOpResponse(page, 'add');
-    await popup.locator('.alternate_greetings_list .alternate_greeting').last().locator('.alternate_greeting_text').fill(text);
-    expect((await response).ok()).toBe(true);
-}
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {number} index
- * @param {number} remaining Number of greetings the reopened popup should list.
+ * @param {number} remaining Number of greetings the list should show after.
  */
 async function popupDelete(page, index, remaining) {
-    await popupRow(page, index).locator('.delete_alternate_greeting').click();
-    const response = greetingOpResponse(page, 'delete');
-    await page.locator('.popup', { hasText: 'Are you sure you want to delete' }).locator('.popup-button-ok').click();
-    expect((await response).ok()).toBe(true);
-    await expect(greetingsPopup(page).locator('.alternate_greetings_list .alternate_greeting')).toHaveCount(remaining, { timeout: 10000 });
-}
-
-/**
- * Moves the greeting at `source` to the end of the list.
- * @param {import('@playwright/test').Page} page
- * @param {number} source
- */
-async function popupMove(page, source) {
-    await popupRow(page, source).locator('.pick_up_greeting').click();
-    const response = greetingOpResponse(page, 'move');
-    await greetingsPopup(page).locator('.pick-place-slot').last().click();
-    expect((await response).ok()).toBe(true);
-}
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {number} index
- */
-async function popupSetDefault(page, index) {
-    const response = greetingOpResponse(page, 'default/set');
-    await popupRow(page, index).locator('.set_default_greeting').click();
-    expect((await response).ok()).toBe(true);
-}
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {number} index The current default's row.
- */
-async function popupUnsetDefault(page, index) {
-    const response = greetingOpResponse(page, 'default/unset');
-    await popupRow(page, index).locator('.demote_default_greeting').click();
-    expect((await response).ok()).toBe(true);
+    await listDelete(page, index);
+    await expect(greetingsList(page).locator('li.alternative')).toHaveCount(remaining, { timeout: 10000 });
 }
 
 /**
@@ -393,13 +318,13 @@ test.describe('provisional greeting follows greeting saves', () => {
         await popupMove(page, 1);
         await expectShowing([g0, g2e, g3, g1], 3);
 
-        await expect(greetingsPopup(page).locator('.alternate_greetings_list .alternate_greeting')).toHaveCount(4, { timeout: 10000 });
+        await expect(greetingsList(page).locator('li.alternative')).toHaveCount(4, { timeout: 10000 });
         await popupSetDefault(page, 1);
-        await expect(popupRow(page, 1).locator('.demote_default_greeting')).toBeVisible({ timeout: 10000 });
+        await expect(greetingRow(page, 1).locator('.alternative-default')).toHaveAttribute('aria-pressed', 'true');
         await expectShowing([g0, g2e, g3, g1], 3);
 
         await popupUnsetDefault(page, 1);
-        await expect(popupRow(page, 1).locator('.set_default_greeting')).toBeVisible({ timeout: 10000 });
+        await expect(greetingRow(page, 1).locator('.alternative-default')).toHaveAttribute('aria-pressed', 'false');
         await expectShowing([g0, g2e, g3, g1], 3);
 
         expect(requests.writes).toEqual([]);
