@@ -25,10 +25,13 @@ test.describe('the character panel while creating a character', () => {
         await page.locator('#rm_button_create').click();
         await expect(page.locator('#form_create')).toHaveAttribute('actiontype', 'createcharacter');
         expect(await enabledOptions(page)).toEqual(['set_character_world']);
+        // The global-styles preference is a saved character's too (it changed the last-opened character's).
+        await expect(page.locator('#creators_note_styles_button')).toBeHidden();
 
         await page.locator('#rm_button_selected_ch').click();
         await expect(page.locator('#form_create')).toHaveAttribute('actiontype', 'editcharacter');
         expect(await enabledOptions(page)).toEqual(expect.arrayContaining(['replace_update', 'import_tags', 'convert_to_persona', 'set_as_assistant']));
+        await expect(page.locator('#creators_note_styles_button')).toBeVisible();
     });
 
     test('a lorebook linked before the character exists is saved with it, with no chat open', async ({ page }) => {
