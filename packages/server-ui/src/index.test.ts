@@ -280,3 +280,20 @@ test("one view's later parts don't wait for another's", async () => {
         text += decoder.decode(next.value, { stream: true });
     expect(text).toContain('"slow":2');
 });
+
+test('a tab whose last stream closed is gone: its areas are told', async () => {
+    const gone: string[] = [];
+    const told = createUi(
+        [defineArea({ schemas: {}, views: {}, actions: {}, gone: (session) => void gone.push(session) })],
+        {
+            userOf: () => alice,
+            chatOf: async () => null,
+        },
+    );
+    const first = told.attach(alice, sessions.a1, () => {});
+    const second = told.attach(alice, sessions.a1, () => {});
+    first();
+    expect(gone).toEqual([]);
+    second();
+    expect(gone).toEqual([sessions.a1]);
+});

@@ -41,6 +41,8 @@ export type Area = {
     actions: Record<string, (context: ActionContext, payload: unknown) => Promise<ActionResult>>;
     /** Views that depend on the tab's chat: read again when it changes. */
     followChat: string[];
+    /** A tab went away (its last stream closed): what the area keeps for it can go. */
+    gone: (session: string) => void;
 };
 
 /** An area, with every action its schemas declare handled and each payload typed by its schema. */
@@ -49,12 +51,14 @@ export function defineArea<S extends ActionSchemas>(area: {
     views: Area['views'];
     actions: Handlers<S>;
     followChat?: string[];
+    gone?: (session: string) => void;
 }): Area {
     return {
         schemas: area.schemas,
         views: area.views,
         actions: area.actions as Area['actions'],
         followChat: area.followChat ?? [],
+        gone: area.gone ?? (() => {}),
     };
 }
 
@@ -374,7 +378,10 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
             tab.streams.add(push);
             return () => {
                 tab.streams.delete(push);
-                if (tab.streams.size === 0 && tabs.get(session) === tab) tabs.delete(session);
+                if (tab.streams.size === 0 && tabs.get(session) === tab) {
+                    tabs.delete(session);
+                    for (const area of areas) area.gone(session);
+                }
             };
         },
         async showChat(user, session, chat) {
