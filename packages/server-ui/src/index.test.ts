@@ -12,6 +12,8 @@ const bob: User = { handle: 'bob', directories: { root: '/users/bob' } };
 // A counter per user, and a view of it that also says which chat the tab shows.
 const counts = new Map<string, number>();
 let release = () => {};
+let slowRelease = () => {};
+let slowHeld = Promise.resolve();
 let held = Promise.resolve();
 function hold() {
     held = new Promise((resolve) => {
@@ -24,6 +26,7 @@ const area = defineArea({
         'count.refuse': v.object({}),
         'count.fail': v.object({}),
         'parts.touch': v.object({}),
+        'both.touch': v.object({}),
     },
     views: {
         count: async ({ user, chat }) => ({ count: counts.get(user.handle) ?? 0, chat: chat?.tree ?? null }),
@@ -35,6 +38,12 @@ const area = defineArea({
             // A part that's only what changed.
             yield patch({ more: 3 });
         },
+        // A view whose second part waits for `slowRelease`.
+        slow: async function* () {
+            yield { slow: 1 };
+            await slowHeld;
+            yield { slow: 2 };
+        },
     },
     actions: {
         'count.add': async ({ user }, { by }) => {
@@ -43,6 +52,7 @@ const area = defineArea({
         },
         'count.refuse': async () => ({ refused: 'not now' }),
         'parts.touch': async () => ({ changed: ['parts'] }),
+        'both.touch': async () => ({ changed: ['slow', 'parts'] }),
         'count.fail': async ({ user }) => {
             counts.set(user.handle, (counts.get(user.handle) ?? 0) + 100);
             throw new Error('failed after writing');
@@ -245,4 +255,28 @@ test('a view read in parts: its first part is answered at once, the rest follow 
         { value: { part: 2 } },
         { patch: { more: 3 } },
     ]);
+});
+
+test("one view's later parts don't wait for another's", async () => {
+    await send(sessions.a1, 'view.open', { key: 'slow' });
+    slowHeld = new Promise<void>((resolve) => {
+        slowRelease = resolve;
+    });
+    const response = await fetch(`${origin()}/api/ui/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-ST-Session': sessions.a1, 'X-User': 'alice' },
+        body: JSON.stringify({ type: 'both.touch', payload: {} }),
+    });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    // The parts view's later parts come while the slow one's second part is still held.
+    while (!text.includes('"more":3')) {
+        text += decoder.decode((await reader.read()).value, { stream: true });
+    }
+    expect(text).not.toContain('"slow":2');
+    slowRelease();
+    for (let next = await reader.read(); !next.done; next = await reader.read())
+        text += decoder.decode(next.value, { stream: true });
+    expect(text).toContain('"slow":2');
 });

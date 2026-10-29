@@ -89,6 +89,9 @@ class Patch {
 /** A part that patches the view's value rather than replacing it. */
 export const patch = (value: unknown): unknown => new Patch(value);
 
+/** What a part patches, when it's a patch (for an area's tests, which read their views' parts). */
+export const patchOf = (part: unknown): { value: unknown } | null => (part instanceof Patch ? part : null);
+
 const isParts = (value: unknown): value is AsyncIterable<unknown> =>
     typeof value === 'object' && value !== null && Symbol.asyncIterator in value;
 const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -205,8 +208,11 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
         if (frames.length > 0) for (const stream of tab.streams) stream({ type: 'views', views: frames });
         for (const parts of later) {
             void (async () => {
-                for await (const part of parts)
+                for await (const part of parts) {
+                    // The tab went away: the rest isn't read.
+                    if (tab.streams.size === 0) break;
                     for (const stream of tab.streams) stream({ type: 'views', views: [part] });
+                }
             })().catch((error: unknown) => console.error("[ui] a view's later part not read:", error));
         }
     };
@@ -242,13 +248,21 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
             }
             response.status(status).type('application/x-ndjson');
             response.write(`${JSON.stringify(result)}\n`);
-            try {
-                for (const parts of later) {
-                    for await (const part of parts) response.write(`${JSON.stringify({ views: [part] })}\n`);
-                }
-            } catch (error) {
-                console.error("[ui] a view's later part not read:", error);
-            }
+            // Each view's parts go out as they're read, whichever view they're of (one still counting doesn't hold back
+            // another's).
+            await Promise.all(
+                later.map(async (parts) => {
+                    try {
+                        for await (const part of parts) {
+                            // The page went away: the rest isn't read.
+                            if (response.destroyed) break;
+                            response.write(`${JSON.stringify({ views: [part] })}\n`);
+                        }
+                    } catch (error) {
+                        console.error("[ui] a view's later part not read:", error);
+                    }
+                }),
+            );
             response.end();
         };
         const file = (request as Request & { file?: MulterFile }).file;
