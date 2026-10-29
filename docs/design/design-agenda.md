@@ -23,12 +23,12 @@ order.
 
 | # | Design problem | Symptoms | Already settled by an agreed doc? |
 |---|---|---:|---|
-| A | Each action has many affordances: no single place defines an action | 19 | partly (MOD command point; UV pending its model); the registry itself has no doc |
+| A | Each action has many affordances: no single place defines an action | 19 | partly (MOD command point, UV); the registry itself has no doc |
 | B | The page owns shared, mutable state instead of rendering server views | 18 | partly (ALT for one surface) |
 | C | Surfaces have no single model for layering, clipping and layout | 18 | no |
 | D | No rule for when and where to tell the user something | 17 | no (the rule exists only in Inv-T's header) |
-| E | Mechanisms, modes and duplicate concepts are presented as settings | 16 | partly (SR, PM; UV pending its model) |
-| F | Settings have no places: one idea lives in several, grouped by code | 16 | partly (SR, PM, SS; UV pending its model) |
+| E | Mechanisms, modes and duplicate concepts are presented as settings | 16 | yes (SR, UV, PM) |
+| F | Settings have no places: one idea lives in several, grouped by code | 16 | yes (SR, UV, PM, SS) |
 | G | The page fetches and computes on its own schedule, and nothing cached is shown first | 15 | partly (ALT for one surface) |
 | H | No shared visual and interaction vocabulary (UI1) | 15 | no |
 | I | The conversation tree has no settled UI model (chats, bookmarks, branches, alternatives) | 14 | partly (ALT, CN) |
@@ -84,7 +84,7 @@ Model: one **command registry** (Q7, P:497):
 
 Replaces: the More… select, the "…" expander and Expand Message Actions, Quick Continue/Impersonate, the hotkey overlay, quick-reply sets as a separate system (decided 10-27, P:506), and every per-feature duplicate.
 
-Agreed doc: MOD (command extension point) covers part of this; UV's commands and pins are pending its model. The registry has no design doc. Recommendation: write one before Q7.
+Agreed doc: MOD (command extension point) and UV (commands, pins) cover parts of this. The registry has no design doc. Recommendation: write one before Q7.
 
 ### B. The page owns shared, mutable state instead of rendering server views (18)
 Symptoms:
@@ -152,7 +152,7 @@ Model: the page shell (MOD "core: the page shell") owns every surface:
 - Drawers, dialogs, popovers, overlays and extension UI all open through it and get their layer, clip, focus and Escape handling from it. An overlay outside it can't exist (DR11's requirement).
 - Escape closes the innermost thing, and editing is innermost.
 - Space is reserved for anything that can appear.
-- The layout is three panes: left panel | chat | right panel (user 10-29: "we already have three panes where is there space for more"). Each side is one slot, and a slot is a stack: opening a panel in an occupied slot (character info over character management) puts it in front; Back or Escape returns to the one under it, with its scroll and state kept (CL1). No mode, no Stacked Drawers setting. Narrow windows follow the window's width, not a device mode *(pending its model: rests on UV, which is an inventory only)*.
+- The layout is three panes: left panel | chat | right panel (user 10-29: "we already have three panes where is there space for more"). Each side is one slot, and a slot is a stack: opening a panel in an occupied slot (character info over character management) puts it in front; Back or Escape returns to the one under it, with its scroll and state kept (CL1). No mode, no Stacked Drawers setting. Narrow windows follow the window's width, not a device mode (UV on Force Mobile View).
 - Clipping stays optional (user 10-29: "clipping should still be optional right?"), as the theme's choice: the panel in front hides the one behind, or a translucent theme lets it show through. The layer model applies it to every surface uniformly (drawers, dialogs, popovers, extension overlays, the chat).
 - The shell keeps scroll and position per surface.
 - Which surface kind serves which job is part of H (DECISION D1).
@@ -224,9 +224,9 @@ How it got in:
 - SR's analysis groups the drawers "by code history" (P:484).
 - Advanced Mode was added by the fork in 8513f5f50 (2026-09-12). The same day the user wrote "yes fucking gate it but make its fucking visibility conditional on text completion AND advanced mode" (R 09-12). What "it" referred to isn't in the quote.
 
-Model: SR's five places. Each control's fate (cut, one behaviour, derived, theme, at the thing, command, elsewhere) is derived from the models of steps 2-4, each naming its rule; UV's per-control verdicts are an inventory only *(pending its model: rests on UV, which is an inventory only)*. Nothing sits behind a mode. PM: an entry has one condition, which replaces about 20 activation fields (WI4 is settled there). Notes are entries; a "default note" is inherited, not copied (ST4).
+Model: SR's five places and UV's verdict per control: cut, one behaviour, derived, theme, at the thing, command, or elsewhere. Nothing sits behind a mode. PM: an entry has one condition, which replaces about 20 activation fields (WI4 is settled there). Notes are entries; a "default note" is inherited, not copied (ST4).
 
-Agreed doc: SR and PM; the per-control verdicts are pending their models (UV is an inventory only). Also open:
+Agreed doc: **settled** by SR, UV and PM, except two items:
 - TS1 (exported vs local tags) is in no doc.
 - Guided Generations hasn't been read. Recommendation: read what it does first, then decide what core lacks.
 
@@ -257,7 +257,7 @@ Model:
 - Levels cascade (SS; ST1 steps P:428-459).
 - Settings search is the palette over all five places.
 
-Agreed doc: SR, PM and SS; per-control verdicts pending their models (UV is an inventory only). Backgrounds-in-theme (U29) needs a line in SR.
+Agreed doc: **settled** by SR, UV, PM and SS. Backgrounds-in-theme (U29) needs a line added to SR/UV.
 
 ### G. The page fetches and computes on its own schedule, and nothing cached is shown first (15)
 Symptoms:
@@ -349,7 +349,7 @@ Model:
 - Q10b (specified 10-29): origin and place, lineage.
 - CH11 (planned): the chat-as-bookmark shim.
 - CH13: a move on a new branch, or in place with a preview of what's affected (P:526).
-- Recommendation for CH14: delete at once, with undo from engine history *(pending its model: rests on UV, which is an inventory only)*.
+- Recommendation for CH14: delete at once, with undo from engine history (UV "Confirm message deletion").
 - Recommendation for CH16: group greetings are the alternatives of message 0 (ALT targets).
 
 Agreed doc: partly (ALT, CN). The content of CH11's open questions is unknown here. Re-derive them before asking.
@@ -376,10 +376,10 @@ Model (direction settled 10-29, P:565):
 - Gestures replace controls; they never add to them (P:563).
 - No modifier variants: a secondary action is a command in the context menu and palette (P:562).
 - Every command is reachable by keyboard through the registry (A).
-- Layout follows window width, not a device mode *(pending its model: rests on UV, which is an inventory only)*.
+- Layout follows window width, not a device mode (UV).
 
 UV's "Expand Message Actions" and "Gestures" rows said long-press opens the message's menu; corrected 10-29 to the
-marking menu (UV itself is now an inventory only).
+marking menu.
 
 **D2 (decided 10-29)**: the message marking menu's directions: left / right = previous / next alternative, up =
 bookmark, down = edit, the diagonals for the next most used commands (from the registry, rebindable like any
@@ -684,8 +684,8 @@ Symptoms whose design problem the sources don't show:
 - Thinking blocks lose their block form after a re-render (U12, CH5, fixed 3c420da62).
 
 Feature requests on record. These aren't symptoms, and the problems above don't absorb them:
-- AU1 (volume and autoplay). The user asked for "very prominent… to avoid earblasting" (U23); where the default
-  volume and autoplay go is pending its model (step 2-4); UV's row is an inventory only.
+- AU1 (volume and autoplay). The user asked for "very prominent… to avoid earblasting" (U23); UV now puts the
+  default volume and autoplay where embedded audio is first met, as well as at the player.
 - AU2.
 - WI1, WI2, WI6, WI8.
 - CL17, CL18, CL32.
@@ -699,5 +699,5 @@ Feature requests on record. These aren't symptoms, and the problems above don't 
 - **D3**: the filter row sits under the search, shown only when there are filters (K).
 - **D4**: Discord-style: markup visible, dimmed; HTML comments and images always visible (M).
 
-Everything else above was a recommendation and is now the agreed model, except what rests on UV's verdicts: those
-are marked pending their model, since UV is an inventory only (user 10-29).
+Everything else above was a recommendation and is now the agreed model. Also corrected with this: AU1 goes where the
+user first meets embedded audio (UV), not only at the player.
