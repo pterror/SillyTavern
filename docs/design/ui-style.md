@@ -95,15 +95,14 @@ is the theme's choice (it matters only for translucent panels), applied to every
 - Things that appear rise in (≈160 ms, a slight overshoot) and sink out faster (≈120 ms) (cyoa "Things that appear
   and go"). A pressed button scales to 0.94 (cyoa). Hover states only where there's a pointer to hover with (cyoa
   `@media (hover: hover)`).
-- `prefers-reduced-motion` turns it off. Whether there is also an app setting is pending its model (UV is an
-  inventory only).
+- `prefers-reduced-motion` turns it off; no app setting for it (UV).
 
 ## Layout
 
 - Space is reserved for whatever can appear in place, so nothing moves what's around it (pteraworld `.w-status`:
   "reserves two lines, so a message appearing or wrapping never moves what sits above or beside it"; R 10-25 on layout
   shift).
-- Layout is decided by the window's width, never by a device mode (pending its model: UV is an inventory only).
+- Layout is decided by the window's width, never by a device mode (UV on Force Mobile View).
 - Placement of panels and widgets is data the user can change (pteraworld `layout.ts` slots: above, beside, below, a
   sidebar tab, over, hidden), replacing movingUI (DR22).
 
