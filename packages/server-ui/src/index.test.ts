@@ -143,6 +143,20 @@ test('a chat moved under a tab is pushed to that tab only', async () => {
     expect(pushes.a2).toEqual([]);
 });
 
+test('views changed for one tab are pushed to that tab only, if it shows them', async () => {
+    await send(sessions.a1, 'view.open', { key: 'count' });
+    await send(sessions.a2, 'view.open', { key: 'count' });
+    pushes.a1.length = 0;
+    pushes.a2.length = 0;
+    await ui.changedFor(alice, sessions.a2, ['count']);
+    expect(pushes.a1).toEqual([]);
+    expect(pushes.a2).toMatchObject([{ views: [{ key: 'count' }] }]);
+    await send(sessions.a2, 'view.close', { key: 'count' });
+    pushes.a2.length = 0;
+    await ui.changedFor(alice, sessions.a2, ['count']);
+    expect(pushes.a2).toEqual([]);
+});
+
 test('a tab says which chat it shows (after its stream reconnects), and is answered its views for it', async () => {
     await send(sessions.a1, 'view.open', { key: 'count' });
     const shown = await send(sessions.a1, 'chat.show', { avatar: 'cara.png' });
