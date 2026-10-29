@@ -195,7 +195,7 @@ function Dialog(props: {
         const step = (deadline: { timeRemaining(): number }) => {
             let left = false;
             for (const row of rows.values()) {
-                if (isPainted(row) || row.li.hidden === true) continue;
+                if (isPainted(row) || hidden(row.item)) continue;
                 if (deadline.timeRemaining() < 1) {
                     left = true;
                     break;
@@ -261,14 +261,23 @@ function Dialog(props: {
 
     // Opens on the current alternative (or the one asked for), once the list is there.
     let placed = false;
-    // A long list is put on the page in two steps, as the server sends it: the rows around the one it opens on, then
-    // all of them (all are then there, as one list).
-    const [everything, setEverything] = createSignal(false);
+    // A long list goes on the page as the server sends it: the rows around the one it opens on first, then more and
+    // more around them, a step a frame, until all are there (as one list). A list shown at once (seen before) too.
+    const [reach, setReach] = createSignal(FIRST_ROWS / 2);
     const mounted = createMemo(() => {
-        if (everything()) return items();
         const at = untrack(() => props.look.at ?? current() ?? 0);
-        return items().filter((item) => Math.abs(item.index - at) <= FIRST_ROWS / 2);
+        const within = reach();
+        return within >= total() ? items() : items().filter((item) => Math.abs(item.index - at) <= within);
     });
+    const widen = () => {
+        // Once all are there, so are any that come later.
+        if (reach() >= total()) {
+            setReach(Number.POSITIVE_INFINITY);
+            return;
+        }
+        setReach(reach() * 4);
+        requestAnimationFrame(widen);
+    };
     createEffect(() => {
         if (placed || items().length === 0) return;
         placed = true;
@@ -281,7 +290,7 @@ function Dialog(props: {
         scrollTo(at, false);
         paintRest();
         // The rest of the rows once the first are on screen.
-        requestAnimationFrame(() => requestAnimationFrame(() => setEverything(true)));
+        requestAnimationFrame(() => requestAnimationFrame(widen));
     });
 
     // Markers beside the list: matches and the current one, where they are in it.
@@ -297,7 +306,7 @@ function Dialog(props: {
             const marks = new Map<number, boolean>();
             const at = (id: string, isCurrent: boolean) => {
                 const row = rows.get(id);
-                if (!row || row.li.hidden === true) return;
+                if (!row || hidden(row.item)) return;
                 // One marker per pixel row of the track at most.
                 const top = Math.round((row.li.offsetTop / height) * 1000) / 10;
                 marks.set(top, (marks.get(top) ?? false) || isCurrent);
@@ -503,14 +512,14 @@ function Dialog(props: {
     return (
         <dialog
             ref={(el: HTMLDialogElement) => (dialog = el)}
-            class="popup wide_dialogue_popup large_dialogue_popup alternatives"
+            class="alternatives"
             aria-label={title()}
             onCancel={(event) => {
                 event.preventDefault();
                 props.onClose();
             }}
         >
-            <div class="popup-body alternatives-body">
+            <div class="alternatives-body">
                 <header class="alternatives-header">
                     <h3 class="alternatives-title">{title()}</h3>
                     <span class="alternatives-place" aria-live="polite">
@@ -621,14 +630,19 @@ function Dialog(props: {
                     </p>
                 </Show>
                 <div class="alternatives-frame">
-                    <ol class="alternatives-list" ref={(el: HTMLOListElement) => (scroller = el)}>
+                    {/* A search hides what doesn't match by one class on the list (rows only say they match), so it
+                        changes as many rows as it finds, not every row. */}
+                    <ol
+                        class="alternatives-list"
+                        classList={{ filtering: matches() !== null }}
+                        ref={(el: HTMLOListElement) => (scroller = el)}
+                    >
                         <For each={mounted()}>
                             {(item) => (
                                 <li
                                     class="alternative"
                                     data-id={item.id}
                                     tabindex="-1"
-                                    hidden={hidden(item)}
                                     onClick={(event) => {
                                         if (
                                             !(event.target as HTMLElement).closest('button, textarea, a, [role=button]')
@@ -636,6 +650,7 @@ function Dialog(props: {
                                             setPicked(item.index);
                                     }}
                                     classList={{
+                                        matched: matches()?.[item.id] !== undefined,
                                         current: item.index === current(),
                                         selected: item.index === selected(),
                                         'drop-before': drop()?.id === item.id && drop()?.side === 'before',
@@ -689,7 +704,7 @@ function Dialog(props: {
                                         <span class="alternative-actions">
                                             <button
                                                 type="button"
-                                                class="menu_button alternative-go"
+                                                class="alternative-button alternative-go"
                                                 aria-disabled={whyNotGo(item, item.index) !== null}
                                                 title={whyNotGo(item, item.index) ?? undefined}
                                                 onClick={() => void go(item, item.index)}
@@ -698,7 +713,7 @@ function Dialog(props: {
                                             </button>
                                             <button
                                                 type="button"
-                                                class="menu_button alternative-copy fa-solid fa-copy"
+                                                class="alternative-button alternative-copy fa-solid fa-copy"
                                                 title={t('Copy')}
                                                 aria-label={t('Copy')}
                                                 onClick={() => void props.old.copy(item.text)}
@@ -706,7 +721,7 @@ function Dialog(props: {
                                             <Show when={isCardRow(item)}>
                                                 <button
                                                     type="button"
-                                                    class="menu_button alternative-default fa-star"
+                                                    class="alternative-button alternative-default fa-star"
                                                     classList={{
                                                         'fa-solid':
                                                             list()?.card?.defaultPosition === item.card?.position,
@@ -720,14 +735,14 @@ function Dialog(props: {
                                                 />
                                                 <button
                                                     type="button"
-                                                    class="menu_button alternative-edit fa-solid fa-pencil"
+                                                    class="alternative-button alternative-edit fa-solid fa-pencil"
                                                     title={t('Edit')}
                                                     aria-label={t('Edit')}
                                                     onClick={() => setEditing(item.id)}
                                                 />
                                                 <button
                                                     type="button"
-                                                    class="menu_button alternative-delete-greeting fa-solid fa-trash-can"
+                                                    class="alternative-button alternative-delete-greeting fa-solid fa-trash-can"
                                                     title={t('Delete from the card')}
                                                     aria-label={t('Delete from the card')}
                                                     onClick={() => void removeGreeting(item)}
@@ -736,7 +751,7 @@ function Dialog(props: {
                                             <Show when={canRemove(item)}>
                                                 <button
                                                     type="button"
-                                                    class="menu_button alternative-delete fa-solid fa-comment-slash"
+                                                    class="alternative-button alternative-delete fa-solid fa-comment-slash"
                                                     title={t('Delete from the chat')}
                                                     aria-label={t('Delete from the chat')}
                                                     onClick={() => void remove(item.index)}

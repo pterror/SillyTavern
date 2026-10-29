@@ -37,13 +37,13 @@ export type Ports = {
         stored(user: User, tokenizer: TokenizerState, texts: string[]): Promise<(number | null)[]>;
         /**
          * Counts the texts, storing what it counted; `each` is told each count as it's done (null: the text couldn't be
-         * counted).
+         * counted), and answers whether to go on.
          */
         count(
             user: User,
             tokenizer: TokenizerState,
             texts: string[],
-            each: (index: number, count: number | null) => void,
+            each: (index: number, count: number | null) => boolean,
         ): Promise<void>;
     };
     /** The chat search's matcher: each text's matched source ranges (flat [start, end) pairs), null where it doesn't match. */
@@ -107,6 +107,10 @@ export const FIRST_PART = 40;
 const GROWTH = 4;
 /** How many texts a search checks before it sends what it found. */
 export const SEARCH_STEP = 200;
+/** The least time between two parts of counts. */
+const COUNTS_PART_MS = 50;
+/** How long a search goes on checking before it sends what it found. */
+const SEARCH_PART_MS = 30;
 
 /** Lets what's waiting run (an answer's lines go out) before the next step. */
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -206,13 +210,15 @@ export function alternativesArea(ports: Ports) {
     }
 
     /** Counts the misses, nearest the current one first, telling the look each count as it's done. */
-    const countMisses = async (user: User, look: Look, texts: string[]) => {
+    const countMisses = async (user: User, session: string, look: Look, texts: string[]) => {
         const tokenizer = look.tokenizer;
         if (!tokenizer) return;
         await ports.counts.count(user, tokenizer, texts, (index, count) => {
             const text = texts[index];
             if (text !== undefined && typeof count === 'number') look.counted.set(text, count);
             look.tell();
+            // Closed, or looking at something else: the rest isn't counted.
+            return looks.get(session) === look;
         });
     };
 
@@ -254,7 +260,7 @@ export function alternativesArea(ports: Ports) {
                 misses.sort((a, b) => (place.get(a) ?? 0) - (place.get(b) ?? 0));
                 const before = look.counting ?? Promise.resolve();
                 const counting = before
-                    .then(() => countMisses(context.user, look, misses))
+                    .then(() => countMisses(context.user, context.session, look, misses))
                     .catch((error: unknown) => console.error('[alternatives] counting failed:', error))
                     .finally(() => {
                         if (look.counting === counting) look.counting = null;
@@ -265,10 +271,15 @@ export function alternativesArea(ports: Ports) {
         }
         const sent = new Set<string>();
         yield { counts: countsOf(look, sent) };
+        let last = performance.now();
         while (look.counting && lookOf(context) === look) {
             await look.counted1;
+            // Counts done close together go in one part: a page gets a few a second, not one line per text.
+            const wait = last + COUNTS_PART_MS - performance.now();
+            if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
             const fresh = countsOf(look, sent);
             if (Object.keys(fresh).length > 0) yield patch({ counts: fresh });
+            last = performance.now();
         }
         const rest = countsOf(look, sent);
         if (Object.keys(rest).length > 0) yield patch({ counts: rest });
@@ -296,11 +307,21 @@ export function alternativesArea(ports: Ports) {
             return { matches, checked: Math.min(items.length, from + SEARCH_STEP) };
         };
         yield { query, total: items.length, ...step(0) };
-        for (let from = SEARCH_STEP; from < items.length; from += SEARCH_STEP) {
+        for (let from = SEARCH_STEP; from < items.length;) {
             await turn();
             // Another search took its place: this one stops.
             if (lookOf(context) !== look || look.query !== query) return;
-            yield patch(step(from));
+            // As many steps as fit in a short while go in one part (each turn may wait behind other work).
+            const found: Record<string, number[]> = {};
+            let checked = from;
+            const until = performance.now() + SEARCH_PART_MS;
+            do {
+                const next = step(from);
+                Object.assign(found, next.matches);
+                checked = next.checked;
+                from += SEARCH_STEP;
+            } while (from < items.length && performance.now() < until);
+            yield patch({ matches: found, checked });
         }
     }
 
@@ -309,6 +330,8 @@ export function alternativesArea(ports: Ports) {
     return defineArea({
         schemas: actions,
         views: { [LIST_VIEW]: readList, [COUNTS_VIEW]: readCounts, [MATCHES_VIEW]: readMatches },
+        // A tab gone: its look goes, and its counting stops.
+        gone: (session) => void looks.delete(session),
         actions: {
             'alternatives.open': async (context, { target, tokenizer }) => {
                 const before = looks.get(context.session);
