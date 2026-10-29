@@ -13,12 +13,15 @@ const SWIPES_PER_PAGE = 50;
 
 /**
  * @param {string} query What was typed in the picker's search
- * @returns {(text: string) => boolean} Whether a swipe's text has every word of it, in any case.
+ * @returns {(lowered: string) => boolean} Whether a swipe's text, lowercased, has every word of it.
  */
 function swipeMatcher(query) {
     const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-    return text => words.every(word => text.toLowerCase().includes(word));
+    return lowered => words.every(word => lowered.includes(word));
 }
+
+/** How long typing pauses before the search runs. */
+const SEARCH_DEBOUNCE_MS = 150;
 
 /**
  * Returns whether a swipe picker can be opened for the message.
@@ -70,9 +73,8 @@ async function openSwipePicker(messageId) {
         return;
     }
 
-    // The picker lists every alternative, so hydrate all of them rather than rendering blanks.
-    await hydrateSwipes(messageId, { all: true });
-    message = chat[messageId];
+    // Only the page shown is fetched (a message can have thousands of alternatives); a search fetches the rest once.
+    let allHydrated = false;
 
     const canJumpToSwipe = canJumpToSwipeForMessage(messageId);
     let selectedSwipeId = clamp(Number(message.swipe_id ?? 0), 0, message.swipes.length - 1);
@@ -119,10 +121,39 @@ async function openSwipePicker(messageId) {
     let query = '';
     let page = 0;
 
+    /** Each alternative's text lowercased, once per text (searching lowercased every one at every keystroke). */
+    const lowered = new Map();
+    /** @param {number} index */
+    function loweredText(index) {
+        const text = String(message.swipes[index] ?? '');
+        const hit = lowered.get(index);
+        if (hit?.text === text) return hit.lowered;
+        const value = text.toLowerCase();
+        lowered.set(index, { text, lowered: value });
+        return value;
+    }
+
+    /** @type {{ query: string, message: object, ids: number[] } | null} */
+    let shownMemo = null;
     /** @returns {number[]} The swipes the search leaves, in order. */
     function shownSwipeIds() {
-        const matches = swipeMatcher(query);
-        return message.swipes.map((swipe, index) => index).filter(index => matches(String(message.swipes[index] ?? '')));
+        if (shownMemo && shownMemo.query === query && shownMemo.message === message) return shownMemo.ids;
+        const all = message.swipes.map((swipe, index) => index);
+        const ids = query.trim() ? all.filter(index => swipeMatcher(query)(loweredText(index))) : all;
+        shownMemo = { query, message, ids };
+        return ids;
+    }
+
+    /** Fetches what the next render shows: the page's alternatives, or all of them for a search (once). */
+    async function hydrateShown() {
+        if (allHydrated) return;
+        if (query.trim()) {
+            await hydrateSwipes(messageId, { all: true });
+            allHydrated = true;
+        } else {
+            await hydrateSwipes(messageId, { index: Math.min(message.swipes.length - 1, page * SWIPES_PER_PAGE + Math.floor(SWIPES_PER_PAGE / 2)) });
+        }
+        message = chat[messageId];
     }
 
     /** @param {number} swipeId @returns {number} The page a swipe is on, among those the search leaves; -1 if left out. */
@@ -182,6 +213,7 @@ async function openSwipePicker(messageId) {
     async function renderSwipeList() {
         // Deleting a swipe replaces the message too, and this re-runs afterwards.
         message = chat[messageId];
+        await hydrateShown();
         const shown = shownSwipeIds();
         const pages = Math.max(1, Math.ceil(shown.length / SWIPES_PER_PAGE));
         page = clamp(page, 0, pages - 1);
@@ -353,11 +385,16 @@ async function openSwipePicker(messageId) {
         scrollToSelectedSwipe();
     }
 
-    searchInput.addEventListener('input', async () => {
-        query = searchInput.value;
-        page = 0;
-        await renderSwipeList();
-        listContainer.scrollTop = 0;
+    /** @type {ReturnType<typeof setTimeout> | undefined} */
+    let searchTimer;
+    searchInput.addEventListener('input', () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(async () => {
+            query = searchInput.value;
+            page = 0;
+            await renderSwipeList();
+            listContainer.scrollTop = 0;
+        }, SEARCH_DEBOUNCE_MS);
     });
     previousPage.addEventListener('click', async () => {
         if (page === 0) return;
