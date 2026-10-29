@@ -12,11 +12,41 @@ mark.match {
     border-radius: 2px;
 }
 
-.popup.alternatives {
+/* The dialog looks like the old page's popups without their class: `.popup` comes with a `:has()` rule, and a
+ * `:has()` on an ancestor recomputes the style of everything under it on each change, thousands of rows here. */
+dialog.alternatives {
+    color: var(--SmartThemeBodyColor);
     text-align: left;
+    box-shadow: 0 0 14px var(--black70a);
+    border: 1px solid var(--SmartThemeBorderColor);
+    padding: 4px 14px;
+    background-color: var(--SmartThemeBlurTintColor);
+    border-radius: 10px;
+    width: max(var(--sheldWidth), 60dvw);
+    height: 90dvh;
+    max-width: 90dvw;
+    max-height: calc(100dvh - 2em);
+    overflow: hidden;
+}
+
+dialog.alternatives[open] {
+    display: flex;
+    flex-direction: column;
+}
+
+dialog.alternatives::backdrop {
+    backdrop-filter: blur(calc(var(--SmartThemeBlurStrength) * 2));
+    -webkit-backdrop-filter: blur(calc(var(--SmartThemeBlurStrength) * 2));
+    background-color: var(--black30a);
+}
+
+body.no-blur dialog.alternatives::backdrop {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
 }
 
 .alternatives-body {
+    flex: 1;
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -106,6 +136,20 @@ mark.match {
     contain-intrinsic-size: auto 12em;
 }
 
+/* A search: what doesn't match is hidden (the list says it's searching; a row, that it matches). Folded away rather
+ * than taken out of the layout (display: none): its rendering is kept, so hiding and showing thousands is cheap. */
+.alternatives-list.filtering > .alternative:not(.matched, .alternatives-new) {
+    content-visibility: hidden;
+    contain-intrinsic-size: none;
+    height: 0;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    border-width: 0;
+    overflow: hidden;
+    visibility: hidden;
+}
+
 .alternative.current {
     border-color: var(--SmartThemeQuoteColor);
 }
@@ -157,7 +201,31 @@ mark.match {
     gap: 4px;
 }
 
-.alternative-actions .menu_button,
+/* A row's buttons look like the old page's menu buttons, without its class: that class makes keyboard.js take
+ * every one of thousands of rows' buttons in hand (they're buttons: the keyboard has them already). */
+.alternative-button {
+    color: var(--SmartThemeBodyColor);
+    filter: grayscale(0.5);
+    background-color: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 5px;
+    padding: 3px 5px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font: inherit;
+}
+
+.alternative-button:hover {
+    background-color: var(--white30a);
+}
+
+.alternative-button[aria-disabled="true"] {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 .alternatives-tools .menu_button,
 .alternatives-close {
     margin: 0;
@@ -221,6 +289,7 @@ mark.match {
 /* Fingers: every control big enough to hit. */
 @media (pointer: coarse) {
     .alternatives .menu_button,
+    .alternative-button,
     .alternative-drag {
         min-width: 44px;
         min-height: 44px;

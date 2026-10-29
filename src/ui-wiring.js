@@ -277,7 +277,7 @@ const settingsPorts = {
 export const ALTERNATIVES_VIEWS = ['alternatives.list', 'alternatives.counts', 'alternatives.matches'];
 
 /** How many texts are counted at once. */
-const COUNTING_AT_ONCE = 8;
+const COUNTING_AT_ONCE = 2;
 
 /** Every alternative there is: an opening list is read whole. */
 const WHOLE = { offset: 0, limit: Number.MAX_SAFE_INTEGER };
@@ -388,10 +388,11 @@ const alternativesPorts = {
             const counter = await opened.storedCounter();
             // A few at a time (a remote tokenizer is a request each), each told as soon as it's counted.
             let next = 0;
+            let stopped = false;
             const worker = async () => {
-                for (let i = next++; i < texts.length; i = next++) {
+                for (let i = next++; i < texts.length && !stopped; i = next++) {
                     const text = texts[i];
-                    each(i, text === '' ? 0 : await counter.countText(text).catch(() => null));
+                    if (!each(i, text === '' ? 0 : await counter.countText(text).catch(() => null))) stopped = true;
                     // A local tokenizer counts on this thread: what else is waiting (a search's next step) runs between.
                     await new Promise(resolve => setImmediate(resolve));
                 }

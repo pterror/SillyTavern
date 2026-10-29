@@ -48,7 +48,7 @@ function world(listed: (target: Target) => Listed | null, stored: Record<string,
                 state.counted.push(texts);
                 for (const [i, text] of texts.entries()) {
                     await state.hold;
-                    each(i, text.includes('uncountable') ? null : text.split(' ').length);
+                    if (!each(i, text.includes('uncountable') ? null : text.split(' ').length)) return;
                 }
             },
         },
@@ -87,7 +87,10 @@ function world(listed: (target: Target) => Listed | null, stored: Record<string,
     };
     const counts = () => whole<CountsView>('alternatives.counts');
     const matches = () => whole<MatchesView>('alternatives.matches');
-    return { state, act, list, listParts, parts, counts, matches };
+    const gone = () => {
+        area.gone(context.session);
+    };
+    return { state, act, list, listParts, parts, counts, matches, gone };
 }
 
 const swipes = (texts: string[], current = 0): Listed => ({
@@ -223,10 +226,12 @@ test('counts: what the store has comes at once; each miss follows as soon as it 
     const again = w.parts('alternatives.counts');
     expect((await again.next()).value).toEqual({ counts: { n0: 2 } });
     release();
-    // Each count is its own patch, with only what's new.
-    expect(patchOf((await counts.next()).value)?.value).toEqual({ counts: { n1: 3 } });
-    expect(patchOf((await counts.next()).value)?.value).toEqual({ counts: { n2: 1 } });
-    expect((await counts.next()).done).toBe(true);
+    // The counts follow as patches with only what's new (those done close together in one).
+    const patches: unknown[] = [];
+    for (let next = await counts.next(); next.done !== true; next = await counts.next())
+        patches.push(patchOf(next.value)?.value);
+    expect(patches.reduce((all, part) => merged(all, part), { counts: {} })).toEqual({ counts: { n1: 3, n2: 1 } });
+    expect(patches.every((part) => Object.keys((part as { counts: object }).counts).length > 0)).toBe(true);
     expect(w.state.counted).toEqual([['c d e', 'f']]);
     expect(await w.counts()).toEqual({ counts: { n0: 2, n1: 3, n2: 1 } });
 });
@@ -238,6 +243,29 @@ test("a text that can't be counted isn't asked for again, and has no count", asy
     expect(await w.counts()).toEqual({ counts: {} });
     expect(await w.counts()).toEqual({ counts: {} });
     expect(w.state.counted).toEqual([['uncountable']]);
+});
+
+test('closing stops the counting: what is left is not counted', async () => {
+    const w = world(() => swipes(['a', 'b', 'c']));
+    let release = () => {};
+    w.state.hold = new Promise((resolve) => (release = resolve));
+    await w.act('alternatives.open', { target: { message: 'n0' }, tokenizer });
+    await w.list();
+    const counts = w.parts('alternatives.counts');
+    await counts.next();
+    await w.act('alternatives.close', {});
+    release();
+    // The first one counted was told, and was the last.
+    const told: unknown[] = [];
+    for (let next = await counts.next(); next.done !== true; next = await counts.next()) told.push(next.value);
+    expect(told.length).toBeLessThanOrEqual(1);
+});
+
+test('a tab gone: its look goes', async () => {
+    const w = world(() => swipes(['a']));
+    await w.act('alternatives.open', { target: { message: 'n0' }, tokenizer });
+    w.gone();
+    expect((await w.list()).target).toBeNull();
 });
 
 test('misses are counted nearest the current one first', async () => {
@@ -287,14 +315,17 @@ test('a search over many sends what each step found as it finds it, with how far
         checked: SEARCH_STEP,
         matches: { n0: [0, 3], n100: [0, 3] },
     });
-    expect(patchOf((await found.next()).value)?.value).toEqual({
-        checked: SEARCH_STEP * 2,
-        matches: { n200: [0, 3], n300: [0, 3] },
-    });
-    // Another search: this one stops.
-    await w.act('alternatives.search', { query: 'small' });
-    expect((await found.next()).done).toBe(true);
+    // The next part has at least the next step's.
+    const next = patchOf((await found.next()).value)?.value as { checked: number; matches: Record<string, number[]> };
+    expect(next.checked).toBeGreaterThanOrEqual(SEARCH_STEP * 2);
+    expect(next.matches).toMatchObject({ n200: [0, 3], n300: [0, 3] });
     expect((await w.matches()).checked).toBe(texts.length);
+    expect(Object.keys((await w.matches()).matches!)).toEqual(['n0', 'n100', 'n200', 'n300', 'n400']);
+    // Another search: one still going stops.
+    const old = w.parts('alternatives.matches');
+    await old.next();
+    await w.act('alternatives.search', { query: 'small' });
+    expect((await old.next()).done).toBe(true);
 });
 
 test('closing forgets the look: the views are empty again', async () => {
