@@ -3,7 +3,7 @@ import express from 'express';
 import * as v from 'valibot';
 import type { ActionAnswer, ViewPush } from '@st/protocol';
 import { afterAll, expect, test } from 'vite-plus/test';
-import { createUi, defineArea } from './index.ts';
+import { createUi, defineArea, patch } from './index.ts';
 import type { User } from './index.ts';
 
 const alice: User = { handle: 'alice', directories: { root: '/users/alice' } };
@@ -32,6 +32,8 @@ const area = defineArea({
             yield { part: 1 };
             await held;
             yield { part: 2 };
+            // A part that's only what changed.
+            yield patch({ more: 3 });
         },
     },
     actions: {
@@ -225,8 +227,10 @@ test('a view read in parts: its first part is answered at once, the rest follow 
         .trim()
         .split('\n')
         .map((line) => JSON.parse(line) as { views: { version: number; value: unknown }[] });
-    expect(lines).toHaveLength(2);
+    expect(lines).toHaveLength(3);
     expect(lines[1]!.views[0]!.value).toEqual({ part: 2 });
+    expect(lines[2]!.views[0]).toMatchObject({ patch: { more: 3 } });
+    expect(lines[2]!.views[0]!.version).toBeGreaterThan(lines[1]!.views[0]!.version);
     expect(lines[1]!.views[0]!.version).toBeGreaterThan(first.views[0]!.version);
 
     hold();
@@ -236,5 +240,9 @@ test('a view read in parts: its first part is answered at once, the rest follow 
     release();
     await touched;
     await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(pushes.a2.map((p) => p.views[0]!.value)).toEqual([{ part: 1 }, { part: 2 }]);
+    expect(pushes.a2.map((p) => p.views[0])).toMatchObject([
+        { value: { part: 1 } },
+        { value: { part: 2 } },
+        { patch: { more: 3 } },
+    ]);
 });

@@ -67,3 +67,37 @@ test("a refusal's views are still taken", async () => {
     expect(await client.send('x', {})).toEqual({ ok: false, error: 'no' });
     expect(view()).toBe('as it is');
 });
+
+test('an answer in parts (NDJSON): the first part is the answer, each later one is applied as it comes; a patch merges into what is held', async () => {
+    /** Releases the answer's later lines. */
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    globalThis.fetch = (async () => {
+        const encoder = new TextEncoder();
+        const body = new ReadableStream<Uint8Array>({
+            async start(controller) {
+                const line = (value: unknown) => {
+                    controller.enqueue(encoder.encode(`${JSON.stringify(value)}\n`));
+                };
+                line({ ok: true, views: [frame(10, { counts: { a: 1 }, done: false })] });
+                await held;
+                line({ views: [{ key: 'k', version: 11, patch: { counts: { b: 2 } } }] });
+                // An older part is ignored, as any older view is.
+                line({ views: [{ key: 'k', version: 9, patch: { counts: { c: 3 } } }] });
+                line({ views: [{ key: 'k', version: 12, patch: { done: true } }] });
+                controller.close();
+            },
+        });
+        return new Response(body, { headers: { 'Content-Type': 'application/x-ndjson' } });
+    }) as typeof fetch;
+    const client = createClient({ headers: () => ({}) });
+    const view = createRoot(() => client.view<{ counts: Record<string, number>; done: boolean }>('k'));
+    expect(await client.send('x', {})).toEqual({ ok: true });
+    expect(view()).toEqual({ counts: { a: 1 }, done: false });
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(view()).toEqual({ counts: { a: 1, b: 2 }, done: true });
+    expect(client.version('k')).toBe(12);
+});

@@ -4,8 +4,14 @@ import * as v from 'valibot';
 // its views as types; the server validates every action against its schema before running it, and both sides take
 // their types from the same declaration.
 
-/** A view as sent: which view, how new, and its value. The page keeps a view only when `version` is newer. */
-export type ViewFrame = { key: string; version: number; value: unknown };
+/**
+ * A view as sent: which view, how new, and its value, or a patch to the value held (a later part of a view read in
+ * parts: what changed since its last part, objects merged key by key, anything else replaced). The page keeps a
+ * view, or applies a patch, only when `version` is newer.
+ */
+export type ViewFrame =
+    | { key: string; version: number; value: unknown }
+    | { key: string; version: number; patch: unknown };
 
 /** What `POST /api/ui/action` answers: every view the action changed that the tab shows. */
 export type ActionAnswer = { ok: true; views: ViewFrame[] } | { ok: false; error: string; views: ViewFrame[] };
