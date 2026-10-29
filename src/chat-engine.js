@@ -361,10 +361,6 @@ function alternativeEntry(nodeId, o, itemized) {
  * @typedef {{ ok: true, preview?: true, drops?: Drops, copied?: Record<string, string> } | { ok: false, reason: string, drops?: Drops }} EditAnswer
  */
 
-/** The store meta key saying every chat of the store is named: the mark the hand-run `name-every-chat` one-off left,
- * which counts as that migration done (`src/store-migrations/`). */
-export const CHAT_NAMES_META = 'chat_names';
-
 export class ChatEngine {
     /**
      * @param {any} store The engine's `Store`.
@@ -508,8 +504,7 @@ export class ChatEngine {
 
     /**
      * The chat id upstream's routes give each of these bookmarks, by the bookmark's id as a string: its label, as
-     * upstream names a chat by its file name (unique in its scope, `nameTaken()`). Every bookmark has one (one made
-     * before labels were required got one from the `name-every-chat` migration, run before the store is served).
+     * upstream names a chat by its file name (unique in its scope, `nameTaken()`). Every bookmark has one.
      * @param {bigint} _tree
      * @param {(bigint | number | string)[]} bookmarks
      * @returns {Promise<Map<string, string>>}

@@ -42,17 +42,13 @@ changes the name not yet stored.
 The engine keeps, per (session, tree), the stored name, and per name the trees holding it (bookmarks and
 conversations both), which is how a name alone finds its tree.
 
-## The migration
+## The cutover
 
-`src/store-migrations/name-every-chat.js`, a migration the server runs before serving a store that hasn't had it
-(docs/design/install-and-update.md; a store that ran it as a hand-run one-off is marked `chat_names`, which counts),
-reading everything back and checking it:
-- gives every unlabelled bookmark a label: as a new chat is named, from the bookmark's time;
-- makes repeated labels in a scope unique: the later ones (by bookmark id) get the next free name (`freeName()`: a name
-  ending in a chat's time a millisecond later, else " (2)", " (3)" …);
-- writes each bookmark's label again, so the name index (new) holds it;
-- moves old-form chat ids (`s<UUID>.<tree>`, `b<id>`) found in the settings store's extension settings, as keys or
-  values, to the names they now have, storing a session conversation's name so it stays.
+The existing store was converted once by a throwaway one-off (run with the server stopped, then deleted, as every
+change to our own formats is while there are no users): every unlabelled bookmark labelled, repeated labels in a
+scope made unique (the later ones by bookmark id get the next free name: a name ending in a chat's time a millisecond
+later, else " (2)", " (3)" …), every label written again so the name index holds it, old-form chat ids in extension
+settings moved to their names. The server only knows the current format.
 
 ## Names a chat is given
 
