@@ -2,9 +2,8 @@ import { SWIPE_DIRECTION, SWIPE_SOURCE } from './constants.js';
 import { t } from './i18n.js';
 import { callGenericPopup, Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { power_user } from './power-user.js';
-import { isMobile } from './RossAscends-mods.js';
 import { getTokenCountAsync } from './tokenizers.js';
-import { addLongPressEvent, clamp, copyText, timestampToMoment } from './utils.js';
+import { clamp, copyText, timestampToMoment } from './utils.js';
 import { deleteSwipe, ensureSwipes, hydrateSwipes, isMessageSwipeable, isSwipingAllowed, swipe, syncMesToSwipe } from '/script.js';
 import { chat } from '/scripts/chat-state.js';
 
@@ -560,11 +559,8 @@ export function initSwipePicker() {
         await openSwipePicker(mesId);
     }
 
-    if (isMobile()) {
-        addLongPressEvent('.swipes-counter.swipe-picker-enabled', onSwipeCounterClick);
-    } else {
-        $(document).on('click', '.swipes-counter.swipe-picker-enabled', onSwipeCounterClick);
-    }
+    // A tap opens it on every device, as a click does: a long press is the context menu's, never a control's only way.
+    $(document).on('click', '.swipes-counter.swipe-picker-enabled', onSwipeCounterClick);
     $(document).on('keydown', '.swipes-counter.swipe-picker-enabled', async function (e) {
         if (e.key !== ' ') {
             return;
