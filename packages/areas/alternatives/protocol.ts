@@ -72,8 +72,14 @@ export type CountsView = { counts: Record<string, number> };
 
 export type MatchesView = {
     query: string;
-    /** By item id, each matching item's matched source ranges (UTF-16 [start, end) pairs, flat); null: no search. */
+    /**
+     * By item id, each matching item's matched source ranges (UTF-16 [start, end) pairs, flat), those found so far;
+     * null: no search.
+     */
     matches: Record<string, number[]> | null;
+    /** How many items the search has checked, of how many: while fewer, it's still searching. */
+    checked: number;
+    total: number;
 };
 
 const position = v.pipe(v.number(), v.integer(), v.minValue(0));
