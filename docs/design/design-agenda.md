@@ -152,8 +152,8 @@ Model: the page shell (MOD "core: the page shell") owns every surface:
 - Drawers, dialogs, popovers, overlays and extension UI all open through it and get their layer, clip, focus and Escape handling from it. An overlay outside it can't exist (DR11's requirement).
 - Escape closes the innermost thing, and editing is innermost.
 - Space is reserved for anything that can appear.
-- The layout is three panes: left panel | chat | right panel (user 10-29: "we already have three panes where is there space for more"). Each side is one slot, and a slot is a stack: opening a panel in an occupied slot (character info over character management) puts it in front; Back or Escape returns to the one under it, with its scroll and state kept (CL1). No mode, no Stacked Drawers setting. Narrow windows follow the window's width, not a device mode (UV on Force Mobile View).
-- Clipping stays optional (user 10-29: "clipping should still be optional right?"), as the theme's choice: the panel in front hides the one behind, or a translucent theme lets it show through. The layer model applies it to every surface uniformly (drawers, dialogs, popovers, extension overlays, the chat).
+- Panels sit side by side when there's room, decided by width, not by a device mode (UV on Stacked Drawers and Force Mobile View).
+- Clipping stays optional (user 10-29: "clipping should still be optional right?"): Stacked Drawers carried it beside side by side, and only the side-by-side part is cut. It becomes a theme choice, "panels in front hide what's behind them" or show through, since it only matters with translucent panels; the shell applies it to every surface uniformly (drawers, dialogs, popovers, extension overlays, the chat).
 - The shell keeps scroll and position per surface.
 - Which surface kind serves which job is part of H (DECISION D1).
 
@@ -651,7 +651,7 @@ Dependencies first. Each step starts by writing its model into docs/design toget
 |---|---|---|---|
 | 0 | all | This sit-down. Agree the models and answer D1-D4. Correct UV's long-press rows. (Done 10-29.) | — |
 | 1 | B, G, L | Views and cache: server-owned versioned views; the client cache shown first; one streamed request for boot, switch and dialogs; `getContext()` bound per chat, listeners not awaited; store first, then show; actions as commands, never synthetic events. Lint bans: page-side token counting, `.trigger`/`.click()` dispatch, `.data()` as state. Remove the 10-29 bandaids. | **Q10** (alternatives is the first instance, in progress); **Q8** (Guess: the stop path's page state; P:469 says "page-side bug… or the test's held response") |
-| 2 | C, H | Page shell: the layer, clip, focus and Escape model; slots as stacks; reserved space; the component vocabulary (D1). | — (UI1, DR11, DR22, DR16) |
+| 2 | C, H | Page shell: the layer, clip, focus and Escape model; reserved space; width-driven layout; the component vocabulary (D1). | — (UI1, DR11, DR22, DR16) |
 | 3 | A, J, D | Command registry: palette, context menus, bindings on the server, marking menus (D2), keyboard parity. The notify module and toast rule, applied with Inv-T's verdicts per area. | **Q7** |
 | 4 | E, F | Prompt and settings on their places: Q1, then Q3 and Q4, then Q2, then Q5 (with ST1 step 11, which needs L's "writes are actions"), then Q6 (needs H's preview tile). | **Q1, Q2, Q3, Q4, Q5, Q6**; **Q9** (each old-code bug goes with its area: themes with Q6/Appearance, context template and Bind Model with Q2) |
 | 5 | K, I | Search: the condition tree, the field schema, one tag system (D3). Tree: lineage and place; the chat-as-bookmark shim; tree edits; delete with undo. | **Q11**, **Q10b** |
