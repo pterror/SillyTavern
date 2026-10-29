@@ -9027,6 +9027,7 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
 
     const externalMediaState = isExternalMediaAllowed();
     $('#character_open_media_overrides').toggle(!selected_group);
+    $('#creators_note_styles_button').show();
     $('#character_media_allowed_icon').toggle(externalMediaState);
     $('#character_media_forbidden_icon').toggle(!externalMediaState);
 
@@ -9112,6 +9113,8 @@ function select_rm_create({ switchMenu = true } = {}) {
     _loadedCharacterFieldHashesAvatar = null;
     $('.form_create_bottom_buttons_block .chat_lorebook_button').hide();
     $('#character_open_media_overrides').hide();
+    // A preference about a saved character's styles: off while creating (it changed the last-opened character's).
+    $('#creators_note_styles_button').hide();
     // The character being created isn't saved yet: every action on a saved character (extensions' included) is off,
     // so none of them acts on the character whose chat is open. Linking lorebooks is staged for the new one.
     $('#char-management-dropdown option').not('[value="default"], #set_character_world').prop('disabled', true);
@@ -9282,12 +9285,14 @@ export async function setCharacterSettingsOverrides() {
         pendingChanges.system_prompt = '';
     });
 
-    // Wait for popup close/confirm.
-    await callGenericPopup($template, POPUP_TYPE.TEXT, '', {
+    // OK keeps the edits; closing any other way (Escape, the close button) discards them.
+    const result = await callGenericPopup($template, POPUP_TYPE.TEXT, '', {
         wide: true,
         large: true,
         allowVerticalScrolling: true,
     });
+    if (result !== POPUP_RESULT.AFFIRMATIVE) return;
+    if (pendingChanges.scenario === scenarioOverrideValue && pendingChanges.examples === exampleMessagesValue && pendingChanges.system_prompt === systemPromptValue) return;
 
     chat_metadata.scenario = pendingChanges.scenario;
     chat_metadata.mes_example = pendingChanges.examples;
