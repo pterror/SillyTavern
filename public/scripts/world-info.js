@@ -4339,6 +4339,7 @@ export async function getWorldEntry(name, data, entry) {
         // Content
         const counter = editTemplate.find('.world_entry_form_token_counter');
         const countTokensDebounced = debounce(async function (counter, value) {
+            // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
             const { count: numberOfTokens, answer } = await getTokenCountWithAnswer(value);
             $(counter).text(numberOfTokens);
             renderCountBasis(counter, answer);
@@ -6495,6 +6496,7 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
 
 
         let newContent = '';
+        // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
         const textToScanTokens = await getTokenCountAsync(allActivatedText);
 
         filterByInclusionGroups(newEntries, allActivatedEntries, buffer, scanState, timedEffects);
@@ -6546,6 +6548,7 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
             entry.content = substituteParams(entry.content);
             newContent += `${entry.content}\n`;
 
+            // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
             if (!entry.ignoreBudget && (textToScanTokens + (await getTokenCountAsync(newContent))) >= budget) {
                 if (!token_budget_overflowed) {
                     if (isWorldInfoTracingEnabled()) console.debug('[WI] --- BUDGET OVERFLOW CHECK ---');

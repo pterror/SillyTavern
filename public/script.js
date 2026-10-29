@@ -4748,6 +4748,7 @@ export function shouldAutoContinue(messageChunk, isImpersonate) {
 
     if (messageChunk.trim().length > USABLE_LENGTH && chat.length) {
         const lastMessage = chat[chat.length - 1];
+        // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
         const messageLength = getTokenCount(lastMessage.mes);
         const shouldAutoContinue = messageLength < power_user.auto_continue.target_length;
 

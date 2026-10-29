@@ -825,6 +825,7 @@ export async function convertCharactersToPersonas(avatarBatches, onProgress) {
  */
 const countPersonaDescriptionTokens = debounce(async () => {
     const description = String($('#persona_description').val());
+    // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
     const { count, answer } = await getTokenCountWithAnswer(description);
     $('#persona_description_token_count').text(String(count));
     renderCountBasis($('#persona_description_token_count'), answer);
