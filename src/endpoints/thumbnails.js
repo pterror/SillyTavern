@@ -11,6 +11,7 @@ import { getConfigValue, invalidateFirefoxCache } from '../util.js';
 import { DEFAULT_AVATAR_PATH } from '../constants.js';
 import { userStore } from '../user-stores.js';
 import { avatarPathOf } from '../character-avatars.js';
+import { sendPngWithoutText } from '../png-text-strip.js';
 import { getThumbnailResolution, isAnimatedWebP, isAnimatedApng, thumbnailDimensions as dimensions } from './image-metadata.js';
 import { ResizeStrategy } from '@jimp/plugin-resize';
 
@@ -301,6 +302,8 @@ publicRouter.get('/', async function (request, response) {
             const pathToOriginalFile = path.resolve(original);
             if (!fs.existsSync(pathToOriginalFile)) return response.sendStatus(404);
             invalidateFirefoxCache(pathToOriginalFile, request, response);
+            // A character's image may hold its card as imported: never sent (character-avatars.js).
+            if (type === 'avatar' && path.extname(pathToOriginalFile).toLowerCase() === '.png') return sendPngWithoutText(request, response, pathToOriginalFile);
             return response.sendFile(pathToOriginalFile);
         };
 

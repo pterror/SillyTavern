@@ -65,6 +65,9 @@ beforeAll(async () => {
         next();
     });
     app.use('/api/characters', router);
+    // A character's image as the image route sends it (users.js): its stored file without its text chunks.
+    const { sendPngWithoutText } = await import('../src/png-text-strip.js');
+    app.get('/avatar/:avatar', async (req, res) => sendPngWithoutText(req, res, /** @type {string} */ (await avatars.avatarPathOf(user.store.lib, directories, req.params.avatar))));
     server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
     baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -271,7 +274,7 @@ describe('POST /api/characters/import - PNG import no longer re-encodes the avat
         ({ write: writeCard } = await import('../src/character-card-parser.js'));
     });
 
-    test('importing a PNG with no crop preserves the source image bytes exactly (chunks other than chara/ccv3 untouched)', async () => {
+    test('importing a PNG with no crop keeps the uploaded file exactly; it is sent without its text chunks', async () => {
         const { default: extract } = await import('png-chunks-extract');
         const sourceCard = writeCard(BLANK_PNG, JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', name: 'Ghost', data: { name: 'Ghost' } }));
 
@@ -284,16 +287,22 @@ describe('POST /api/characters/import - PNG import no longer re-encodes the avat
 
         const stored = fs.readFileSync(/** @type {string} */ (await avatars.avatarPathOf(user.store.lib, directories, `${data.file_name}.png`)));
 
-        // Compare every non-tEXt chunk (IHDR/IDAT/IEND/...) byte-for-byte - the Jimp decode/cover/re-encode
-        // round trip this used to always go through would produce a DIFFERENT IDAT (different compressor),
-        // even for a crop-less, format-preserving import. Only the chara tEXt chunk (and its length-prefix
-        // framing) is expected to change.
-        const sourceChunks = extract(new Uint8Array(sourceCard)).filter(c => c.name !== 'tEXt');
-        const storedChunks = extract(new Uint8Array(stored)).filter(c => c.name !== 'tEXt');
-        expect(storedChunks.map(c => c.name)).toEqual(sourceChunks.map(c => c.name));
-        for (let i = 0; i < sourceChunks.length; i++) {
-            expect(Buffer.from(storedChunks[i].data)).toEqual(Buffer.from(sourceChunks[i].data));
-        }
+        // The uploaded file itself, reflinked (copied where the filesystem can't): no Jimp round trip, no re-encode,
+        // its card chunk left in place (the store is the card; nothing reads it, character-avatars.js).
+        expect(stored.equals(sourceCard)).toBe(true);
+
+        // Sent without its text chunks.
+        const answer = await fetch(`${baseUrl}/avatar/${data.file_name}.png`);
+        expect(answer.headers.get('content-type')).toBe('image/png');
+        const sent = Buffer.from(await answer.arrayBuffer());
+        const sentChunks = extract(new Uint8Array(sent));
+        expect(sentChunks.map(c => c.name)).not.toContain('tEXt');
+        const imageChunks = extract(new Uint8Array(sourceCard)).filter(c => c.name !== 'tEXt');
+        expect(sentChunks.map(c => c.name)).toEqual(imageChunks.map(c => c.name));
+        // A page holding the current copy is answered 304. (Cache-Control as a browser revalidating sends it: fetch()
+        // would otherwise add `no-cache` to a conditional request, which asks for the whole answer.)
+        const again = await fetch(`${baseUrl}/avatar/${data.file_name}.png`, { headers: { 'If-None-Match': String(answer.headers.get('etag')), 'Cache-Control': 'max-age=0' } });
+        expect(again.status).toBe(304);
     });
 });
 

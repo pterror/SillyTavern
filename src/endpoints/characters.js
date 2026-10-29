@@ -19,7 +19,7 @@ import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction, 
 import { deepMerge, humanizedDateTime, tryParse, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7, writeBackpressured } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { importFailure, NO_CARD_DATA } from '../character-import-error.js';
-import { parse, write } from '../character-card-parser.js';
+import { computeAvatarIdentityHashFromChunks, parse, write } from '../character-card-parser.js';
 import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, unsetPrivateFields, omitInstallLocalFields, omitFavField, omitChatField, V1_V2_FIELD_MAPPINGS } from '../character-card-normalize.js';
 import { calculateDataSize, toShallow, shallowCharactersIncludeCreatorNotes } from '../character-shallow.js';
 import { touchBrowserPresence, PRESENCE_PING_INTERVAL_MS } from '../browser-presence.js';
@@ -37,7 +37,7 @@ import { withSearchTiming } from '../search-timing.js';
 import { requestStore, userStore } from '../user-stores.js';
 import { FIELD, HASH, TYPE } from '../library-engine.js';
 import { convertedFileKey } from '../library-codes.js';
-import { avatarFile, avatarImage, avatarPathOf, inAvatarLane, writeWithAvatar } from '../character-avatars.js';
+import { avatarFile, avatarImage, avatarPathOf, inAvatarLane, linkWithAvatar, writeWithAvatar } from '../character-avatars.js';
 import { chatNamesOf, compatChatIdOf, compatChatIds, droppedOf, moveToChatNamed } from '../chat-request.js';
 import { requestSession } from '../request-session.js';
 import { ui, uiUser } from '../ui-wiring.js';
@@ -287,8 +287,9 @@ async function keepStoredGreetings(directories, avatar, data, freshFieldPaths) {
 }
 
 /**
- * Stores a character's card and, with `image`, its image (card chunk stripped, as `characters/<avatar>`); a new avatar
- * is a new character.
+ * Stores a character's card and, with `image`, its image as `characters/<avatar>`: a PNG file taken as it is, reflinked
+ * (its text chunks never read, character-avatars.js); otherwise the image made (cropped, converted), its card chunk
+ * stripped. A new avatar is a new character.
  * @param {import('express').Request} request
  * @param {string} avatar Avatar filename, e.g. `Alice.png`
  * @param {string} data The card's JSON.
@@ -313,12 +314,20 @@ async function writeCharacter(request, avatar, data, { image, crop, contentHash 
         return;
     }
     let bytes;
+    /** @type {Array<{ name: string, data: Uint8Array }>} */
+    let chunks;
     try {
         bytes = Buffer.isBuffer(image) ? await parseImageBuffer(image, crop) : await tryReadImage(image, crop);
         // A file that only starts like a PNG fails here, before anything is written.
-        extractPngChunks(new Uint8Array(bytes));
+        chunks = extractPngChunks(new Uint8Array(bytes));
     } catch (error) {
         throw new ImageReadError(imageDisplayName(image, request), error);
+    }
+    // A PNG file taken as it is (no crop) is the image itself, reflinked: no image write (character-avatars.js).
+    if (typeof image === 'string' && crop === undefined && await isPngFile(image)) {
+        const avatarIdentityHash = computeAvatarIdentityHashFromChunks(chunks);
+        await linkWithAvatar(lib, directories, avatar, image, () => lib.writeCard(directories, avatar, card, { ...options, avatarIdentityHash }));
+        return;
     }
     const stored = avatarImage(bytes);
     await writeWithAvatar(lib, directories, avatar, stored, () => lib.writeCard(directories, avatar, card, {
@@ -382,6 +391,21 @@ async function parseImageBuffer(buffer, crop) {
     }
     const image = await Jimp.fromBuffer(buffer);
     return await applyAvatarCropResize(image, crop);
+}
+
+/**
+ * @param {string} file
+ * @returns {Promise<boolean>} Whether the file itself is a PNG (not an image read into one).
+ */
+async function isPngFile(file) {
+    const handle = await fs.promises.open(file, 'r');
+    try {
+        const head = Buffer.alloc(PNG_SIGNATURE.length);
+        const { bytesRead } = await handle.read(head, 0, head.length, 0);
+        return bytesRead === head.length && head.equals(PNG_SIGNATURE);
+    } finally {
+        await handle.close();
+    }
 }
 
 /**
