@@ -40,7 +40,7 @@ Verdicts:
 | No Blur Effect | cut: Blur Strength 0 |
 | No Text Shadows | cut: Shadow Width 0 |
 | Reduced Motion | derived: the OS's reduced-motion setting (already read); no app copy |
-| Stacked Drawers | cut as a setting and a mode: each side (left panel | chat | right panel) is one slot, and a slot is a stack: opening a panel in an occupied slot (character info over character management) puts it in front; Back or Escape returns to the one under it with its scroll and state kept (CL1). Stacking is how a slot works. The clipping it carried (`public/index.html` "Stacked Drawers" title) stays optional as a theme choice: the panel in front hides the one behind, or a translucent theme lets it show through; the layer model applies it to every surface alike (drawers, dialogs, popovers, extension overlays, the chat) |
+| Stacked Drawers | split in two (it carried two choices, `public/index.html` "Stacked Drawers" title): side by side is cut, panels sit side by side when there's room, by width (DR22); clipping stays optional as a theme choice, "panels in front hide what's behind them" or show through (it only matters when a theme's panels are translucent), applied by the page shell to every surface alike: drawers, dialogs, popovers, extension overlays, the chat |
 | Force Mobile View | cut (added by this fork, 413560a71): the layout follows the window's width, not a device mode |
 | Visual Novel Mode | theme (a chat style beside flat / bubbles / document) |
 | Hide Chat Avatars | theme (part of the chat style) |
