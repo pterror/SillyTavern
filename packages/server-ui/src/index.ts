@@ -76,7 +76,18 @@ type MulterFile = { path: string; originalname: string; mimetype: string; size: 
 
 const SESSION_HEADER = 'X-ST-Session';
 /** Versions a read in parts keeps for its later parts. */
-const PARTS = 1000;
+const PARTS = 1_000_000;
+
+/** A later part of a view read in parts that is only what changed (see ViewFrame). */
+class Patch {
+    readonly value: unknown;
+    constructor(value: unknown) {
+        this.value = value;
+    }
+}
+
+/** A part that patches the view's value rather than replacing it. */
+export const patch = (value: unknown): unknown => new Patch(value);
 
 const isParts = (value: unknown): value is AsyncIterable<unknown> =>
     typeof value === 'object' && value !== null && Symbol.asyncIterator in value;
@@ -167,7 +178,11 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
             for (let part = 1; ; part++) {
                 const next = await parts.next();
                 if (next.done === true) return;
-                yield { key, version: version + Math.min(part, PARTS), value: next.value as unknown };
+                if (part >= PARTS) throw new Error(`The view ${key} read too many parts`);
+                const value = next.value as unknown;
+                yield value instanceof Patch
+                    ? { key, version: version + part, patch: value.value }
+                    : { key, version: version + part, value };
             }
         })();
         return { frames: [{ key, version, value: first.value as unknown }], later: [later] };

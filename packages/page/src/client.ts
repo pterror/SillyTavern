@@ -1,5 +1,5 @@
 import type { Accessor } from 'solid-js';
-import { createStore, reconcile } from 'solid-js/store';
+import { createStore, produce, reconcile } from 'solid-js/store';
 import type { ActionAnswer, ChatOwner, ViewFrame, ViewPush } from '@st/protocol';
 
 // The one place the page talks to the server (packages/README.md): it sends actions and keeps, for each view this
@@ -34,6 +34,16 @@ export type ClientOptions = {
 
 const ENDPOINT = '/api/ui/action';
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** A patch applied: objects merged key by key (in place, so what didn't change keeps its place), anything else replaced. */
+function merged(held: unknown, change: unknown): unknown {
+    if (!isRecord(held) || !isRecord(change)) return change;
+    for (const [key, value] of Object.entries(change)) held[key] = merged(held[key], value);
+    return held;
+}
+
 /** A body's lines, as they arrive. */
 async function* readLines(body: ReadableStream<Uint8Array>): AsyncGenerator<string, void, undefined> {
     const reader = body.getReader();
@@ -55,7 +65,10 @@ async function* readLines(body: ReadableStream<Uint8Array>): AsyncGenerator<stri
 }
 
 export function createClient({ headers }: ClientOptions): Client {
-    const views = new Map<string, { version: number; set: (value: unknown) => void; get: Accessor<unknown> }>();
+    const views = new Map<
+        string,
+        { version: number; set: (value: unknown) => void; patch: (change: unknown) => void; get: Accessor<unknown> }
+    >();
 
     const entry = (key: string) => {
         let found = views.get(key);
@@ -65,6 +78,12 @@ export function createClient({ headers }: ClientOptions): Client {
                 version: 0,
                 get: () => store.value,
                 set: (value) => setStore('value', reconcile(value, { key: 'id', merge: true })),
+                patch: (change) =>
+                    setStore(
+                        produce((held) => {
+                            held.value = merged(held.value, change);
+                        }),
+                    ),
             };
             views.set(key, found);
         }
@@ -77,7 +96,8 @@ export function createClient({ headers }: ClientOptions): Client {
             // An answer and a push can cross: the newer wins whichever arrives last.
             if (frame.version <= target.version) continue;
             target.version = frame.version;
-            target.set(frame.value);
+            if ('patch' in frame) target.patch(frame.patch);
+            else target.set(frame.value);
         }
     };
 
