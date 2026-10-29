@@ -6,6 +6,8 @@ import { ask } from '@st/page/dialog';
 import { COUNTS_VIEW, LIST_VIEW, MATCHES_VIEW } from '../protocol.ts';
 import type { CountsView, GreetingOp, Item, ListView, MatchesView, Target } from '../protocol.ts';
 import { markWords, matchedWords } from './marks.ts';
+import { createSeen } from './seen.ts';
+import type { Seen } from './seen.ts';
 
 // The alternatives of a message (docs/design/alternatives.md): one list, every alternative rendered as the chat
 // renders it. The server sends the list, the counts and the search's matches; the page draws them, and keeps only
@@ -34,9 +36,8 @@ export type OldPage = {
 export type Look = { target: Target; mesId: number | null; title: string; at?: number };
 
 const keyOf = (target: Target) => JSON.stringify(target);
-
-/** A list last seen, shown at once when it's opened again (the server's then corrects it). */
-type Seen = { list: ListView; counts: CountsView };
+/** How many rows around the current one go on the page first. */
+const FIRST_ROWS = 40;
 
 export function Alternatives(props: { look: Look | null; old: OldPage; onClose: () => void }) {
     const { client } = useUi();
@@ -45,7 +46,7 @@ export function Alternatives(props: { look: Look | null; old: OldPage; onClose: 
         counts: client.view<CountsView>(COUNTS_VIEW),
         matches: client.view<MatchesView>(MATCHES_VIEW),
     };
-    const seen = new Map<string, Seen>();
+    const seen = createSeen();
     return (
         <Show when={props.look} keyed>
             {(look) => <Dialog look={look} old={props.old} onClose={props.onClose} views={views} seen={seen} />}
@@ -85,7 +86,7 @@ function Dialog(props: {
         counts: Accessor<CountsView | undefined>;
         matches: Accessor<MatchesView | undefined>;
     };
-    seen: Map<string, Seen>;
+    seen: ReturnType<typeof createSeen>;
 }) {
     const { client, t } = useUi();
     const key = keyOf(props.look.target);
@@ -93,13 +94,20 @@ function Dialog(props: {
     const mesId = props.look.mesId;
 
     const isOurs = (list: ListView | undefined) => !!list?.target && keyOf(list.target) === key;
+    // What this browser last saw of the list, until the server's whole list is here.
+    const [seen, setSeen] = createSignal<Seen | null>(null);
+    void props.seen.find(key).then(setSeen);
     const list = createMemo(() => {
         const live = props.views.list();
-        return isOurs(live) ? live! : (props.seen.get(key)?.list ?? null);
+        if (isOurs(live) && (live!.complete || !seen())) return live!;
+        return seen()?.list ?? null;
     });
     const items = () => list()?.items ?? [];
-    const counts = () =>
-        (isOurs(props.views.list()) ? props.views.counts()?.counts : props.seen.get(key)?.counts.counts) ?? {};
+    /** All of them, or (while the list is still coming) how many there will be. */
+    const total = () => list()?.total ?? 0;
+    const byIndex = createMemo(() => new Map(items().map((item) => [item.index, item])));
+    const itemAt = (index: number) => byIndex().get(index);
+    const counts = () => (isOurs(props.views.list()) ? props.views.counts()?.counts : seen()?.counts.counts) ?? {};
     const current = () => list()?.current ?? null;
     const matches = () => props.views.matches()?.matches ?? null;
     // What the matches are, read through: the store merges a new answer into the one before, in place.
@@ -127,10 +135,13 @@ function Dialog(props: {
     });
     onCleanup(() => {
         const live = props.views.list();
-        if (isOurs(live)) {
-            props.seen.set(key, {
+        if (isOurs(live) && live!.complete) {
+            void props.seen.keep({
+                key,
+                version: client.version(LIST_VIEW),
                 list: structuredClone(unwrap(live!)),
                 counts: structuredClone(unwrap(props.views.counts() ?? { counts: {} })),
+                used: Date.now(),
             });
         }
         void client.send('alternatives.close', {});
@@ -232,7 +243,7 @@ function Dialog(props: {
     );
 
     const rowOf = (index: number) => {
-        const item = items()[index];
+        const item = itemAt(index);
         return item ? rows.get(item.id) : undefined;
     };
     const scrollTo = (index: number, focus: boolean) => {
@@ -245,6 +256,14 @@ function Dialog(props: {
 
     // Opens on the current alternative (or the one asked for), once the list is there.
     let placed = false;
+    // A long list is put on the page in two steps, as the server sends it: the rows around the one it opens on, then
+    // all of them (all are then there, as one list).
+    const [everything, setEverything] = createSignal(false);
+    const mounted = createMemo(() => {
+        if (everything()) return items();
+        const at = untrack(() => props.look.at ?? current() ?? 0);
+        return items().filter((item) => Math.abs(item.index - at) <= FIRST_ROWS / 2);
+    });
     createEffect(() => {
         if (placed || items().length === 0) return;
         placed = true;
@@ -256,6 +275,8 @@ function Dialog(props: {
         }
         scrollTo(at, false);
         paintRest();
+        // The rest of the rows once the first are on screen.
+        requestAnimationFrame(() => requestAnimationFrame(() => setEverything(true)));
     });
 
     // Markers beside the list: matches and the current one, where they are in it.
@@ -278,7 +299,7 @@ function Dialog(props: {
             };
             if (found) for (const id of Object.keys(found)) at(id, false);
             const now = current();
-            const currentItem = now === null ? undefined : items()[now];
+            const currentItem = now === null ? undefined : itemAt(now);
             if (currentItem) at(currentItem.id, true);
             setTicks([...marks].map(([top, isCurrent]) => ({ top, current: isCurrent })));
         });
@@ -298,7 +319,7 @@ function Dialog(props: {
     };
     const shownCount = () => {
         const found = matches();
-        return found === null ? items().length : Object.keys(found).length;
+        return found === null ? total() : Object.keys(found).length;
     };
 
     // The one selected in the list: the current one until another is picked (by its number, or a click on it). Go
@@ -307,24 +328,24 @@ function Dialog(props: {
     const selected = () => picked() ?? current();
     const select = (text: string) => {
         const n = Number.parseInt(text, 10);
-        if (!Number.isInteger(n) || n < 1 || n > items().length) {
-            if (text.trim() !== '')
-                setNotice(t('Enter a number from 1 to ${0}.').replace('${0}', String(items().length)));
+        if (!Number.isInteger(n) || n < 1 || n > total()) {
+            if (text.trim() !== '') setNotice(t('Enter a number from 1 to ${0}.').replace('${0}', String(total())));
             return;
         }
         setNotice(null);
         setPicked(n - 1);
-        if (hidden(items()[n - 1]!)) search('');
+        const wanted = itemAt(n - 1);
+        if (wanted && hidden(wanted)) search('');
         queueMicrotask(() => scrollTo(n - 1, false));
     };
     const selectedWhy = () => {
         const index = selected();
-        const item = index === null ? undefined : items()[index];
+        const item = index === null ? undefined : itemAt(index);
         return item ? whyNotGo(item, index!) : t('Select one first.');
     };
     const goSelected = () => {
         const index = selected();
-        const item = index === null ? undefined : items()[index];
+        const item = index === null ? undefined : itemAt(index);
         if (item) void go(item, index!);
     };
 
@@ -349,7 +370,7 @@ function Dialog(props: {
         if (greetingsList) await props.old.go(0, item.opening!);
         else await props.old.go(mesId!, index);
     };
-    const canRemove = (item: Item) => (greetingsList ? true : item.nodeId !== null && items().length > 1);
+    const canRemove = (item: Item) => (greetingsList ? true : item.nodeId !== null && total() > 1);
     const remove = async (item: Item, index: number) => {
         if (!greetingsList) {
             await props.old.remove(mesId!, index);
@@ -378,7 +399,7 @@ function Dialog(props: {
             }
             if (await greeting({ op: 'add', text }, null)) {
                 setAdding(false);
-                queueMicrotask(() => scrollTo(items().length - 1, false));
+                queueMicrotask(() => scrollTo(total() - 1, false));
             }
             return;
         }
@@ -458,10 +479,10 @@ function Dialog(props: {
             ArrowUp: [index - 1, 'before'],
             ArrowDown: [index + 1, 'after'],
             Home: [0, 'before'],
-            End: [items().length - 1, 'after'],
+            End: [total() - 1, 'after'],
         };
         const [at, side] = to[event.key] ?? [-1, 'after'];
-        const target = items()[at];
+        const target = itemAt(at);
         if (!target) return;
         event.preventDefault();
         move(item, target, side);
@@ -487,11 +508,11 @@ function Dialog(props: {
                         <Show when={list()} fallback={t('Loading…')}>
                             <Show
                                 when={current() !== null}
-                                fallback={t('${0} in all').replace('${0}', String(items().length))}
+                                fallback={t('${0} in all').replace('${0}', String(total()))}
                             >
                                 {t('#${0} of ${1}')
                                     .replace('${0}', String((current() ?? 0) + 1))
-                                    .replace('${1}', String(items().length))}
+                                    .replace('${1}', String(total()))}
                             </Show>
                         </Show>
                     </span>
@@ -527,7 +548,7 @@ function Dialog(props: {
                                 type="number"
                                 inputmode="numeric"
                                 min="1"
-                                max={items().length}
+                                max={total()}
                                 class="text_pole alternatives-select-n"
                                 aria-label={t('Select by number')}
                                 value={selected() === null ? '' : selected()! + 1}
@@ -582,8 +603,8 @@ function Dialog(props: {
                 </Show>
                 <div class="alternatives-frame">
                     <ol class="alternatives-list" ref={(el: HTMLOListElement) => (scroller = el)}>
-                        <For each={items()}>
-                            {(item, index) => (
+                        <For each={mounted()}>
+                            {(item) => (
                                 <li
                                     class="alternative"
                                     data-id={item.id}
@@ -593,11 +614,11 @@ function Dialog(props: {
                                         if (
                                             !(event.target as HTMLElement).closest('button, textarea, a, [role=button]')
                                         )
-                                            setPicked(index());
+                                            setPicked(item.index);
                                     }}
                                     classList={{
-                                        current: index() === current(),
-                                        selected: index() === selected(),
+                                        current: item.index === current(),
+                                        selected: item.index === selected(),
                                         'drop-before': drop()?.id === item.id && drop()?.side === 'before',
                                         'drop-after': drop()?.id === item.id && drop()?.side === 'after',
                                     }}
@@ -615,11 +636,11 @@ function Dialog(props: {
                                                 title={t('Drag to reorder (or use the arrow keys, Home and End)')}
                                                 aria-label={t('Reorder')}
                                                 onPointerDown={(event) => dragFrom(item, event)}
-                                                onKeyDown={(event) => keyMove(item, index(), event)}
+                                                onKeyDown={(event) => keyMove(item, item.index, event)}
                                             />
                                         </Show>
-                                        <span class="alternative-number">#{index() + 1}</span>
-                                        <Show when={index() === current()}>
+                                        <span class="alternative-number">#{item.index + 1}</span>
+                                        <Show when={item.index === current()}>
                                             <span class="alternative-badge">
                                                 {greetingsList ? t('Default') : t('Current')}
                                             </span>
@@ -650,9 +671,9 @@ function Dialog(props: {
                                             <button
                                                 type="button"
                                                 class="menu_button alternative-go"
-                                                aria-disabled={whyNotGo(item, index()) !== null}
-                                                title={whyNotGo(item, index()) ?? undefined}
-                                                onClick={() => void go(item, index())}
+                                                aria-disabled={whyNotGo(item, item.index) !== null}
+                                                title={whyNotGo(item, item.index) ?? undefined}
+                                                onClick={() => void go(item, item.index)}
                                             >
                                                 {greetingsList ? t('Show in chat') : t('Go')}
                                             </button>
@@ -692,7 +713,7 @@ function Dialog(props: {
                                                     class="menu_button alternative-delete fa-solid fa-trash-can"
                                                     title={t('Delete')}
                                                     aria-label={t('Delete')}
-                                                    onClick={() => void remove(item, index())}
+                                                    onClick={() => void remove(item, item.index)}
                                                 />
                                             </Show>
                                         </span>

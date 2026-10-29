@@ -30,8 +30,10 @@ const tokenizer = v.looseObject({ api: v.pipe(v.string(), v.minLength(1)) });
 export type TokenizerState = v.InferOutput<typeof tokenizer>;
 
 export type Item = {
-    /** Which it is, kept while it stays (a node id, or its card position's greeting). */
+    /** Which it is, kept while it stays (a node id, or a card greeting's text). */
     id: string;
+    /** Its place among the message's alternatives (`#index + 1`). */
+    index: number;
     text: string;
     name: string;
     role: 'user' | 'assistant' | 'system';
@@ -51,7 +53,13 @@ export type Item = {
 export type ListView = {
     /** null: nothing is open (or what was asked for is gone). */
     target: Target | null;
+    /**
+     * The alternatives, in order; while `complete` is false, only those around the current one (the rest are being
+     * sent).
+     */
     items: Item[];
+    total: number;
+    complete: boolean;
     /** The one the message shows (a greetings list: the default); null when none. */
     current: number | null;
     /** The character whose card the greetings are (its avatar) and the card's list; null when there's no card. */

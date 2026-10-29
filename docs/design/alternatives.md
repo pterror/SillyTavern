@@ -31,7 +31,7 @@ read) and answers three views: `alternatives.list` (the items), `alternatives.co
 
 | Step | The page sends | The server does | It answers / pushes | Who holds what |
 |---|---|---|---|---|
-| open | `alternatives.open { target, tokenizer }` (`tokenizer`: the on-screen connection state the count routes already take) | keeps the tab's look; reads the target's alternatives | the three views: the list (items: id, text, name, role, date, node id, card position and hash; the current one; the card's list), the counts the count store has, no matches | server: the list, counts, the tab's look; page: the latest views, and the last list of each target it showed (shown at once when that target opens again, then the server's) |
+| open | `alternatives.open { target, tokenizer }` (`tokenizer`: the on-screen connection state the count routes already take) | keeps the tab's look; reads the target's alternatives | the three views: the list (items: id, place, text, name, role, date, node id, card position and hash; the current one; the card's list), the counts the count store has, no matches. A long list streams: the answer is NDJSON, its first line the list's rows around the current one (`complete: false`), the next the whole list (a view read in parts: each part newer than the one before, older than any read started after it) | server: the list, counts, the tab's look; page: the latest views, and the last whole list of each target this browser showed (IndexedDB, by target and the version the server gave it, the newest 16; shown at once when that target opens again, also after a reload, until the server's whole list is here) |
 | counts | nothing | counts the texts the store didn't have, once each, nearest the current one first, in batches, through the token count store (stored for every later read) | the counts view pushed to the tab after each batch | the count store |
 | changes elsewhere | — | a commit that adds, removes, edits or picks a message, or writes a card, pushes the tab's views (`changedFor`), read again | the views | the tree, the card |
 | search | `alternatives.search { query }` | parses it with the library and chat search's parser (`searchClauses`), matches every item's text with the engine's tokenizer (`textMatches`: the chat search's tokens and folding) | the view with `matches`: each matching item's index and the source tokens matched | server: the tab's query; page: nothing but the view |
@@ -52,6 +52,9 @@ Rules checked:
 - Old chat code keeps what it owns (the chat's swipes and selecting one); this area doesn't reimplement it.
 
 ## Rendering
+
+The rows around the current one go on the page first, then the rest (in the next frames): the current one is drawn
+before the whole list is there, both when it streams in and when a list seen before is shown.
 
 Every row is rendered with the old page's message formatting (`messageFormatting`, handed to the new page), the
 pipeline chat uses. Rows are formatted visible-first, then the rest in idle time, so the list draws at once with plain
