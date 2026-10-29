@@ -34,6 +34,25 @@ Pasting a link, dropping a file and "Import" are one lookup: whoever handles tha
 Still to specify per point: what it receives and returns, which part runs on the server (state) and which on the page
 (an editor), and load order. Today's page extension API keeps working as compat on top.
 
+Points and core parts still missing, so that Noodle- and Talemate-like features are modules and not special cases
+(the research and the full list are in `design-agenda.md` §R):
+
+| Point / core part | Does |
+|---|---|
+| entity kind | a module's own stored kinds and indexes in the engine, under a capability scoped to its kinds; no host tables |
+| pipeline step | a step at a named stage of a turn (build context, before / after generate, finalize) declaring reads, writes, order, deadline; its writes are PRODUCED changes, discarded with a swipe; picking the next speaker is a step |
+| stage hook | an event at a stage whose listener returns a patch to the payload; failures and timeouts skipped and shown |
+| job | a turn or generation the server starts (schedule, idle, state change), same pipeline, the tab closed; admission behind the user's own requests |
+| interface | a named, versioned service one module provides (image generation, retrieval, TTS) and another declares as a dependency |
+| surface | a module's page, panel or widget, loaded from its package, drawn under its capabilities |
+| audience (core) | the prompt builder takes who the prompt is for; a message carries what each character sees |
+| proposals (core) | a module write recorded as a proposal the user accepts or rejects, by policy per module and kind |
+
+And capabilities to hand out: **model** (a completion, embedding, image or classification under a role the user binds
+to a connection; never credentials; structured output, counts returned); **read another context** (granted by that
+context's owner); **state** (typed paths with declared schemas, enforced on every write). The contract of each point is
+versioned, and a package's manifest names the points and versions it needs, its capabilities, hosts and hashes.
+
 ## Capabilities
 
 A module gets only the abilities it's handed (object capabilities), never ambient access:
