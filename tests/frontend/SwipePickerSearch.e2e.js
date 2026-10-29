@@ -88,8 +88,17 @@ test('opening the swipe picker fetches the shown page only; a search fetches the
     page.on('request', request => {
         if (new URL(request.url()).pathname === '/api/chats/openings') limits.push(Number(request.postDataJSON()?.limit ?? 0));
     });
+    // The dialog opens before the page's texts arrive (they're held back here), its rows saying they're loading.
+    /** @type {(() => void) | null} */
+    let release = null;
+    const held = new Promise(resolve => { release = () => resolve(undefined); });
+    await page.route('**/api/chats/openings', async route => { await held; await route.continue(); });
     await page.locator('#chat .mes[mesid="0"] .swipes-counter').click();
     const popup = page.locator('.swipe_picker_popup');
+    await expect(popup).toBeVisible();
+    await expect(popup.locator('.swipe_picker_block').nth(49)).toContainText('Loading…');
+    // @ts-ignore
+    release();
     await expect(popup.locator('.swipe_picker_block')).toHaveCount(50);
     await expect(popup.locator('.swipe_picker_block').nth(49)).toContainText('Greeting 49.');
     expect(Math.max(0, ...limits)).toBeLessThanOrEqual(51);

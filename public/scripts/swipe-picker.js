@@ -210,10 +210,31 @@ async function openSwipePicker(messageId) {
         return canJumpToSwipe || swipeId !== currentSwipeId;
     }
 
+    /** Draws at once with the texts there are (a row not fetched yet shows it's loading), then again once fetched. */
+    /** Each render's number: only the latest draws, so one still waiting on texts never draws over a newer one. */
+    let renderGeneration = 0;
     async function renderSwipeList() {
+        const generation = ++renderGeneration;
         // Deleting a swipe replaces the message too, and this re-runs afterwards.
         message = chat[messageId];
-        await hydrateShown();
+        // A search over texts not fetched yet would say nothing matches: it waits for them instead.
+        if (query.trim() && !allHydrated) {
+            await hydrateShown();
+            await drawSwipeList(generation);
+            return;
+        }
+        await drawSwipeList(generation);
+        const hole = (/** @type {number} */ index) => typeof message.swipes[index] !== 'string';
+        if (generation === renderGeneration && shownSwipeIds().slice(page * SWIPES_PER_PAGE, (page + 1) * SWIPES_PER_PAGE).some(hole)) {
+            await hydrateShown();
+            await drawSwipeList(generation);
+        }
+    }
+
+    /** @param {number} generation The render drawing: nothing is drawn once a newer one has started. */
+    async function drawSwipeList(generation) {
+        if (generation !== renderGeneration) return;
+        message = chat[messageId];
         const shown = shownSwipeIds();
         const pages = Math.max(1, Math.ceil(shown.length / SWIPES_PER_PAGE));
         page = clamp(page, 0, pages - 1);
@@ -344,7 +365,8 @@ async function openSwipePicker(messageId) {
             template.find('.chat_messages_date').text(sendDate);
             template.find('.chat_file_size').text(swipeDetails.length ? `(${swipeDetails[0]}${swipeDetails.length > 1 ? ',' : ')'}` : '');
             template.find('.chat_messages_num').text(swipeDetails.length > 1 ? `${swipeDetails.slice(1).join(', ')})` : '');
-            template.find('.select_chat_block_mes').text(previewText ? swipeText : t`(empty swipe)`);
+            const fetched = typeof message.swipes[index] === 'string';
+            template.find('.select_chat_block_mes').text(!fetched ? t`Loading…` : previewText ? swipeText : t`(empty swipe)`);
 
             block.on('click', () => setSelectedSwipe(index));
             block.on('dblclick', async () => {
@@ -359,6 +381,7 @@ async function openSwipePicker(messageId) {
             return template[0];
         }));
 
+        if (generation !== renderGeneration) return;
         listContainer.replaceChildren(...swipeBlocks);
         setSelectedSwipe(selectedSwipeId);
 
@@ -495,10 +518,13 @@ async function openSwipePicker(messageId) {
         });
     }
 
+    // Shown at once; the list fills in as its texts arrive.
     page = pageOf(selectedSwipeId);
+    const shown = popup.show();
     await renderSwipeList();
+    scrollToSelectedSwipe();
 
-    const popupResult = await popup.show();
+    const popupResult = await shown;
 
     if (popupResult !== POPUP_RESULT.AFFIRMATIVE) {
         return;
