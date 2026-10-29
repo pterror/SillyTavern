@@ -1,6 +1,6 @@
 import type { CountsView, GreetingOp, ListView, MatchesView, Target } from './protocol.ts';
 import { expect, test } from 'vite-plus/test';
-import { alternativesArea, itemsOf } from './server.ts';
+import { FIRST_PART, alternativesArea, itemsOf } from './server.ts';
 import type { Alternative, Listed, Ports } from './server.ts';
 import type { ActionContext, ActionResult, User } from '@st/server-ui';
 
@@ -55,10 +55,17 @@ function world(listed: (target: Target) => Listed | null, stored: Record<string,
     const area = alternativesArea(ports);
     const context: ActionContext = { user, session: 's', chat: { tree: '1' }, upload: null };
     const act = (type: string, payload: unknown): Promise<ActionResult> => area.actions[type]!(context, payload);
-    const list = () => area.views['alternatives.list']!(context) as Promise<ListView>;
+    /** The list as read, part by part. */
+    const listParts = async () => {
+        const parts: ListView[] = [];
+        for await (const part of area.views['alternatives.list']!(context) as AsyncIterable<ListView>) parts.push(part);
+        return parts;
+    };
+    /** The list as it ends up. */
+    const list = async () => (await listParts()).at(-1)!;
     const counts = () => area.views['alternatives.counts']!(context) as Promise<CountsView>;
     const matches = () => area.views['alternatives.matches']!(context) as Promise<MatchesView>;
-    return { state, act, list, counts, matches };
+    return { state, act, list, listParts, counts, matches };
 }
 
 const swipes = (texts: string[], current = 0): Listed => ({
@@ -81,9 +88,38 @@ test("a message's alternatives are its swipes in order, each by its node, the cu
     expect(view.current).toBe(1);
 });
 
+test('a long list comes in two parts: the rows around the current one, then all of them', async () => {
+    const texts = Array.from({ length: 200 }, (_, i) => `t${i}`);
+    const w = world(() => swipes(texts, 150));
+    await w.act('alternatives.open', { target: { message: 'n150' }, tokenizer });
+    const [first, all, ...more] = await w.listParts();
+    expect(more).toEqual([]);
+    expect(first!.complete).toBe(false);
+    expect(first!.total).toBe(200);
+    expect(first!.items.map((i) => i.index)).toEqual(Array.from({ length: FIRST_PART }, (_, i) => 130 + i));
+    expect(all!.complete).toBe(true);
+    expect(all!.items.map((i) => i.index)).toEqual(texts.map((_, i) => i));
+    // Near the end, the part is the last rows.
+    const end = world(() => swipes(texts, 199));
+    await end.act('alternatives.open', { target: { message: 'n199' }, tokenizer });
+    expect((await end.listParts())[0]!.items.at(-1)!.index).toBe(199);
+    // A short list is one part.
+    const short = world(() => swipes(['a', 'b']));
+    await short.act('alternatives.open', { target: { message: 'n0' }, tokenizer });
+    expect(await short.listParts()).toHaveLength(1);
+});
+
 test('nothing open: every view is empty, and a search is refused', async () => {
     const w = world(() => swipes(['one']));
-    expect(await w.list()).toEqual({ target: null, items: [], current: null, card: null, chatOpen: false });
+    expect(await w.list()).toEqual({
+        target: null,
+        items: [],
+        total: 0,
+        complete: true,
+        current: null,
+        card: null,
+        chatOpen: false,
+    });
     expect(await w.counts()).toEqual({ counts: {} });
     expect((await w.matches()).matches).toBeNull();
     expect(await w.act('alternatives.search', { query: 'x' })).toMatchObject({ refused: expect.any(String) });

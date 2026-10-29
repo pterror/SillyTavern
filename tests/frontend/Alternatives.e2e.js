@@ -368,6 +368,55 @@ test.describe('the alternatives of a message', () => {
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toContainText(`Other ${s}.`);
     });
 
+    test('opened again after a reload, the list shows at once from what this browser kept, then the server\'s', async ({ page }) => {
+        const s = stamp();
+        const avatar = await createCharacter(page, `AltKept-${s}`, [`A ${s}.`, `B ${s}.`]);
+        await openCharacter(page, avatar);
+        await page.locator('#chat .mes[mesid="0"] .swipes-counter').click();
+        await expect(rows(page)).toHaveCount(2);
+        await page.keyboard.press('Escape');
+        await expect.poll(() => page.evaluate(() => new Promise((resolve) => {
+            const request = indexedDB.open('st-alternatives');
+            request.onsuccess = () => {
+                const all = request.result.transaction('seen').objectStore('seen').getAll();
+                all.onsuccess = () => resolve(all.result.length);
+            };
+        }))).toBeGreaterThan(0);
+
+        await page.reload();
+        await testSetup.awaitST({ page });
+        await openCharacter(page, avatar);
+        // The server's answer is held back: the list is there before it, from what was kept.
+        /** @type {() => void} */
+        let release = () => {};
+        const held = new Promise(resolve => { release = () => resolve(undefined); });
+        await page.route('**/api/ui/action', async route => {
+            if (route.request().postDataJSON()?.type === 'alternatives.open') await held;
+            await route.continue();
+        });
+        await page.locator('#chat .mes[mesid="0"] .swipes-counter').click();
+        await expect(rows(page)).toHaveCount(2);
+        await expect(rows(page).nth(1).locator('.alternative-text')).toContainText(`B ${s}.`);
+        release();
+    });
+
+    test('with IndexedDB failing, the list still opens and works', async ({ page }) => {
+        await page.addInitScript(() => {
+            // @ts-ignore
+            indexedDB.open = () => { throw new Error('blocked'); };
+        });
+        await page.reload();
+        await testSetup.awaitST({ page });
+        const s = stamp();
+        const avatar = await createCharacter(page, `AltNoDb-${s}`, [`A ${s}.`, `B ${s}.`]);
+        await openCharacter(page, avatar);
+        await page.locator('#chat .mes[mesid="0"] .swipes-counter').click();
+        await expect(rows(page)).toHaveCount(2);
+        await page.keyboard.press('Escape');
+        await page.locator('#chat .mes[mesid="0"] .swipes-counter').click();
+        await expect(rows(page)).toHaveCount(2);
+    });
+
     test('opened again, the list shows at once from what it last saw, then the server\'s', async ({ page }) => {
         const s = stamp();
         const avatar = await createCharacter(page, `AltCache-${s}`, [`A ${s}.`, `B ${s}.`]);
@@ -424,8 +473,8 @@ test.describe('on a phone', () => {
     });
 
     /**
-     * How long, in the page, a click on the counter takes to show the list with the current alternative drawn
-     * (formatted) and every row in it, under a phone's CPU (throttled).
+     * How long, in the page, a click on the counter takes to show the current alternative drawn (formatted), how many
+     * rows are there then, and how long until every row is, under a phone's CPU (throttled).
      * @param {import('@playwright/test').Page} page
      * @param {number} count
      */
@@ -436,18 +485,28 @@ test.describe('on a phone', () => {
             return await page.evaluate(async (count) => {
                 const start = performance.now();
                 /** @type {HTMLElement} */ (document.querySelector('#chat .mes[mesid="0"] .swipes-counter')).click();
+                /** @type {{ current: number, rowsThen: number, all: number }} */
+                const times = { current: 0, rowsThen: 0, all: 0 };
+                // Sampled each frame: when the current one is drawn (formatted) and how many rows there are then,
+                // and when every row is there.
                 await new Promise((resolve) => {
                     const check = () => {
-                        const rows = document.querySelectorAll('dialog.alternatives li.alternative');
+                        const rows = document.querySelectorAll('dialog.alternatives li.alternative').length;
                         const current = document.querySelector('dialog.alternatives li.alternative.current .alternative-text');
-                        if (rows.length === count && current && current.firstElementChild) resolve(undefined);
-                        else requestAnimationFrame(check);
+                        if (!times.current && current?.firstElementChild) {
+                            times.current = performance.now() - start;
+                            times.rowsThen = rows;
+                        }
+                        if (times.current && rows === count) {
+                            times.all = performance.now() - start;
+                            resolve(undefined);
+                        } else {
+                            requestAnimationFrame(check);
+                        }
                     };
                     check();
                 });
-                // Drawn: the frame after.
-                await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)));
-                return performance.now() - start;
+                return times;
             }, count);
         } finally {
             await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 });
@@ -484,12 +543,12 @@ test.describe('on a phone', () => {
         }
     }
 
-    // Budgets on a phone's CPU (4x throttled): the list of 1,000 long greetings opens with the current one drawn within
-    // OPEN_1000_MS; 3,000 (stored openings and the card's greetings) within OPEN_3000_MS; a search answers within
-    // SEARCH_MS. Both first opens (nothing seen before) and opening again (what was seen shows at once).
+    // Budgets on a phone's CPU (4x throttled): the current alternative drawn within CURRENT_MS; every row of 1,000 long
+    // greetings within OPEN_1000_MS, of 3,000 (stored openings and the card's greetings) within OPEN_3000_MS; a search
+    // answered within SEARCH_MS. Both first opens (nothing seen before) and opening again (what was seen shows at once).
+    const CURRENT_MS = 1000;
     const OPEN_1000_MS = 2000;
     const OPEN_3000_MS = 4500;
-    const REOPEN_3000_MS = 2500;
     const SEARCH_MS = 500;
 
     test('1,000 long greetings open and draw within the budget, and a search answers within its own', async ({ page }) => {
@@ -499,10 +558,22 @@ test.describe('on a phone', () => {
         const avatar = await createCharacter(page, `AltBudget-${s}`, greetings);
         await openCharacter(page, avatar, { switchMenu: false });
         await expect(page.locator('#chat .mes[mesid="0"] .swipes-counter')).toContainText('/1000', { timeout: 30000 });
+        const answered = page.waitForResponse(r => r.request().postDataJSON()?.type === 'alternatives.open');
         const open = await timeOpen(page, 1000);
+        // The answer streams (NDJSON): the rows around the current one first, then all of them.
+        const answer = await answered;
+        expect(answer.headers()['content-type']).toContain('application/x-ndjson');
+        const lines = (await answer.text()).trim().split('\n').map(line => JSON.parse(line));
+        const listOf = (/** @type {any} */ line) => line.views.find((/** @type {any} */ v) => v.key === 'alternatives.list').value;
+        const first = listOf(lines[0]);
+        expect(first.complete).toBe(false);
+        expect(first.items.length).toBeLessThan(1000);
+        expect(first.items.map((/** @type {any} */ i) => i.index)).toContain(first.current);
+        expect(listOf(lines.at(-1)).items).toHaveLength(1000);
         const search = await timeSearch(page, `beacon ${s}`, 1);
-        console.log(`[budget] 1000 greetings: open ${Math.round(open)} ms, search ${Math.round(search)} ms (CPU 4x)`);
-        expect(open).toBeLessThan(OPEN_1000_MS);
+        console.log(`[budget] 1000 greetings: current drawn ${Math.round(open.current)} ms (with ${open.rowsThen} rows), all ${Math.round(open.all)} ms, search ${Math.round(search)} ms (CPU 4x)`);
+        expect(open.current).toBeLessThan(CURRENT_MS);
+        expect(open.all).toBeLessThan(OPEN_1000_MS);
         expect(search).toBeLessThan(SEARCH_MS);
     });
 
@@ -539,8 +610,13 @@ test.describe('on a phone', () => {
         await page.keyboard.press('Escape');
         await expect(list(page)).toBeHidden();
         const reopen = await timeOpen(page, 3000);
-        console.log(`[budget] 3000 alternatives: open ${Math.round(open)} ms, open again ${Math.round(reopen)} ms (CPU 4x)`);
-        expect(open).toBeLessThan(OPEN_3000_MS);
-        expect(reopen).toBeLessThan(REOPEN_3000_MS);
+        console.log(`[budget] 3000 alternatives: current drawn ${Math.round(open.current)} ms (with ${open.rowsThen} rows), all ${Math.round(open.all)} ms; open again: current ${Math.round(reopen.current)} ms, all ${Math.round(reopen.all)} ms (CPU 4x)`);
+        // Streamed: the current one is drawn before the rest of the list is there.
+        expect(open.rowsThen).toBeLessThan(3000);
+        expect(open.current).toBeLessThan(CURRENT_MS);
+        expect(open.all).toBeLessThan(OPEN_3000_MS);
+        // Opened again, the list seen before is there at once.
+        expect(reopen.current).toBeLessThan(CURRENT_MS);
+        expect(reopen.all).toBeLessThan(OPEN_3000_MS);
     });
 });

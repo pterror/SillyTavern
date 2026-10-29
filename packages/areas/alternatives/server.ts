@@ -63,6 +63,8 @@ type Look = {
 
 /** Tabs that went away without closing their look leave it; the oldest go past this many. */
 const LOOKS_KEPT = 32;
+/** How many rows around the current one a long list's first part has. */
+export const FIRST_PART = 40;
 /** Counted misses are pushed this many at a time, so the counts fill in as they come. */
 const COUNT_BATCH = 64;
 
@@ -94,6 +96,7 @@ export function itemsOf(listed: Listed, target: Target, hash: (text: string) => 
         const at = openings?.indexOf(shown(a.text)) ?? -1;
         return {
             id: a.nodeId ?? idOf(a.text),
+            index,
             text: a.text,
             name: a.name,
             role: a.isSystem ? 'system' : a.isUser ? 'user' : 'assistant',
@@ -109,17 +112,30 @@ export function alternativesArea(ports: Ports) {
     const looks = new Map<string, Look>();
     const lookOf = (context: ViewContext) => looks.get(context.session) ?? null;
 
-    const empty: ListView = { target: null, items: [], current: null, card: null, chatOpen: false };
+    const empty: ListView = {
+        target: null,
+        items: [],
+        total: 0,
+        complete: true,
+        current: null,
+        card: null,
+        chatOpen: false,
+    };
 
-    const readList = async (context: ViewContext): Promise<ListView> => {
+    // A long list comes in two parts: the rows around the current one, at once, then all of them.
+    async function* readList(context: ViewContext): AsyncGenerator<ListView, void, undefined> {
         const look = lookOf(context);
-        if (!look) return empty;
+        if (!look) {
+            yield empty;
+            return;
+        }
         const listed = await ports.list(context, look.target);
         if (!listed) {
             look.items = [];
             look.current = null;
             look.card = null;
-            return { ...empty, target: look.target };
+            yield { ...empty, target: look.target };
+            return;
         }
         const items = itemsOf(listed, look.target, (text) => ports.hash(text));
         look.items = items;
@@ -127,16 +143,23 @@ export function alternativesArea(ports: Ports) {
         look.card = listed.card
             ? { avatar: listed.card.avatar, greetings: listed.card.greetings.filter((text) => text !== '').length }
             : null;
-        return {
+        const view: ListView = {
             target: look.target,
             items,
+            total: items.length,
+            complete: true,
             current: listed.current,
             card: listed.card
                 ? { ...listed.card, hashes: listed.card.greetings.map((text) => ports.hash(text)) }
                 : null,
             chatOpen: listed.openings !== null,
         };
-    };
+        if (items.length > FIRST_PART) {
+            const from = Math.max(0, Math.min(items.length - FIRST_PART, (listed.current ?? 0) - FIRST_PART / 2));
+            yield { ...view, items: items.slice(from, from + FIRST_PART), complete: false };
+        }
+        yield view;
+    }
 
     /** Counts the misses, nearest the current one first, pushing each batch's counts as it's done. */
     const countMisses = async (user: User, session: string, look: Look, texts: string[]) => {
