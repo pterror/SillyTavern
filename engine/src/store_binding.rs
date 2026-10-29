@@ -2958,3 +2958,30 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
     };
     Ok(read)
 }
+
+/// A search clause for `textMatches` (the page's query as `searchClauses` reads it, one clause each).
+#[napi(object)]
+pub struct TextMatchClause {
+    pub text: String,
+    /// Its last word is a prefix (the query's last word, not in closed quotes).
+    pub prefix: bool,
+    pub negate: bool,
+}
+
+/// Matches each text against the clauses with the search's tokens and folding (`search::text::match_spans`): per
+/// text, null when it doesn't match, else the matched words' places as flat `[start, end, start, end, …]` in
+/// UTF-16 units.
+#[napi]
+pub fn text_matches(clauses: Vec<TextMatchClause>, texts: Vec<String>) -> Vec<Option<Vec<u32>>> {
+    let clauses: Vec<crate::search::text::MatchClause> = clauses
+        .into_iter()
+        .map(|c| crate::search::text::MatchClause { text: c.text, prefix: c.prefix, negate: c.negate })
+        .collect();
+    texts
+        .iter()
+        .map(|text| {
+            crate::search::text::match_spans(text, &clauses)
+                .map(|spans| spans.into_iter().flat_map(|(start, end)| [start, end]).collect())
+        })
+        .collect()
+}

@@ -162,8 +162,130 @@ pub fn char_len(s: &str) -> usize {
     s.chars().count()
 }
 
+/// A token of a text, folded, with where it is in the text in UTF-16 units (JavaScript's string positions).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Spanned {
+    pub token: String,
+    pub start: u32,
+    pub end: u32,
+}
+
+/// The folded tokens of `text` with their places, by the same boundaries and folding as `for_each_token`.
+pub fn spanned_tokens(text: &str) -> Vec<Spanned> {
+    let mut out = Vec::new();
+    let mut raw = String::new();
+    let mut start = 0u32;
+    let mut at = 0u32;
+    let flush = |raw: &mut String, start: u32, end: u32, out: &mut Vec<Spanned>| {
+        if !raw.is_empty() {
+            let token = fold(raw);
+            if !token.is_empty() {
+                out.push(Spanned { token, start, end });
+            }
+            raw.clear();
+        }
+    };
+    for c in text.chars() {
+        let width = c.len_utf16() as u32;
+        if c.is_alphanumeric() {
+            if raw.is_empty() {
+                start = at;
+            }
+            raw.push(c);
+        } else {
+            flush(&mut raw, start, at, &mut out);
+        }
+        at += width;
+    }
+    flush(&mut raw, start, at, &mut out);
+    out
+}
+
+/// One clause of a search, as the chat search reads it: its words (folded here), whether the last one is a prefix
+/// (the query's last word, not in closed quotes), and whether the text must not have it.
+#[derive(Debug, Clone)]
+pub struct MatchClause {
+    pub text: String,
+    pub prefix: bool,
+    pub negate: bool,
+}
+
+/// Whether `text` matches every clause (each positive one's words occur together and in order; no negated one's
+/// do), and if so the places of the words the positive clauses matched, as `[start, end)` in UTF-16 units, in
+/// order. A clause with no words matches anything. None: it doesn't match.
+pub fn match_spans(text: &str, clauses: &[MatchClause]) -> Option<Vec<(u32, u32)>> {
+    let spanned = spanned_tokens(text);
+    let mut spans: Vec<(u32, u32)> = Vec::new();
+    for clause in clauses {
+        let words = tokens(clause.text.as_bytes());
+        if words.is_empty() {
+            continue;
+        }
+        let n = words.len();
+        // A one-character last word would match nearly everything as a prefix: it's matched whole, as the chat
+        // search's prefix terms start at `GRAM_MIN` characters.
+        let prefix = clause.prefix && char_len(&words[n - 1]) >= GRAM_MIN;
+        let mut found = false;
+        if spanned.len() >= n {
+            for i in 0..=spanned.len() - n {
+                let hit = (0..n).all(|k| {
+                    let t = &spanned[i + k].token;
+                    if k == n - 1 && prefix {
+                        t.starts_with(words[k].as_str())
+                    } else {
+                        *t == words[k]
+                    }
+                });
+                if hit {
+                    found = true;
+                    if clause.negate {
+                        break;
+                    }
+                    spans.extend((0..n).map(|k| (spanned[i + k].start, spanned[i + k].end)));
+                }
+            }
+        }
+        if found == clause.negate {
+            return None;
+        }
+    }
+    spans.sort_unstable();
+    spans.dedup();
+    Some(spans)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn spans_are_in_utf16_units_and_tokens_folded() {
+        let got = spanned_tokens("Héllo, 😀 Wörld");
+        let t: Vec<_> = got.iter().map(|s| (s.token.as_str(), s.start, s.end)).collect();
+        assert_eq!(t, [("hello", 0, 5), ("world", 10, 15)]);
+    }
+
+    #[test]
+    fn a_text_matches_every_clause_and_answers_the_matched_words() {
+        let c = |text: &str, prefix: bool, negate: bool| MatchClause { text: text.into(), prefix, negate };
+        let text = "The big Sister went home. A big dog.";
+        assert_eq!(match_spans(text, &[c("big sister", false, false)]), Some(vec![(4, 7), (8, 14)]));
+        assert_eq!(match_spans(text, &[c("big", false, false)]), Some(vec![(4, 7), (28, 31)]));
+        // The last word a prefix only when the clause says so.
+        assert_eq!(match_spans(text, &[c("sis", false, false)]), None);
+        assert_eq!(match_spans(text, &[c("sis", true, false)]), Some(vec![(8, 14)]));
+        // A one-character prefix is a whole word.
+        assert_eq!(match_spans(text, &[c("a", true, false)]), Some(vec![(26, 27)]));
+        // Every clause, and none of the negated.
+        assert_eq!(match_spans(text, &[c("big", false, false), c("cat", false, false)]), None);
+        assert_eq!(match_spans(text, &[c("home", false, false), c("dog", false, true)]), None);
+        assert_eq!(match_spans(text, &[c("home", false, false), c("cat", false, true)]), Some(vec![(20, 24)]));
+        // Words in order and together.
+        assert_eq!(match_spans(text, &[c("sister big", false, false)]), None);
+        // Accents and case fold as the search's do.
+        assert_eq!(match_spans("Café crème", &[c("CAFE creme", false, false)]), Some(vec![(0, 4), (5, 10)]));
+        // No words: anything matches.
+        assert_eq!(match_spans(text, &[c("...", false, false)]), Some(vec![]));
+    }
+
     use super::*;
     use crate::log::format::wtf8_from_utf16;
 
