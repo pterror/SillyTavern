@@ -22,6 +22,24 @@ const noAppChatSave = [
     },
 ];
 
+// Token counts are the server's: it counts what it stores and builds, and sends counts with what they belong to; text
+// only the page has (being typed) is counted in one batched request (getTokenCountsAsyncBatch). These per-text counters
+// are upstream's API, kept for third-party extensions (getContext()); first-party page code doesn't call them. Listed in
+// every no-restricted-syntax block covering page code; only the module that defines them and st-context.js (which
+// exports them) are exempt (the last override below). The call sites left from before the ban are each marked with a
+// disable comment naming this (the thin-client audit's step 10, plan "28 page-side token-counting call sites").
+const pageTokenCounters = 'getTokenCountAsync|getPromptTokenCountAsync|getTokenCount|getTokenCountWithAnswer|countTokensOpenAI|countTokensOpenAIAsync|getTextTokens';
+const noPageTokenCounting = [
+    {
+        selector: `CallExpression[callee.name=/^(${pageTokenCounters})$/]`,
+        message: 'The page does not count tokens: the server sends counts with what they belong to (messages, alternatives, prompts); text only the page has goes in one batched request (getTokenCountsAsyncBatch). These per-text counters are upstream-compat API for third-party extensions only.',
+    },
+    {
+        selector: `CallExpression[callee.property.name=/^(${pageTokenCounters})$/]`,
+        message: 'The page does not count tokens: the server sends counts with what they belong to (messages, alternatives, prompts); text only the page has goes in one batched request (getTokenCountsAsyncBatch). getContext().getTokenCountAsync() and its siblings are upstream-compat API for third-party extensions only.',
+    },
+];
+
 module.exports = {
     root: true,
     extends: [
@@ -105,6 +123,7 @@ module.exports = {
                     },
                     noWholeFormCharacterSave,
                     ...noAppChatSave,
+                    ...noPageTokenCounting,
                 ],
             },
         },
@@ -123,6 +142,7 @@ module.exports = {
                     },
                     noWholeFormCharacterSave,
                     ...noAppChatSave,
+                    ...noPageTokenCounting,
                 ],
             },
         },
@@ -130,7 +150,7 @@ module.exports = {
             // script.js: the whole-chat saves, as for all app code (see noAppChatSave above).
             files: ['public/script.js'],
             rules: {
-                'no-restricted-syntax': ['error', ...noAppChatSave],
+                'no-restricted-syntax': ['error', ...noAppChatSave, ...noPageTokenCounting],
             },
         },
         {
@@ -138,7 +158,7 @@ module.exports = {
             // from lint entirely (see ignorePatterns below).
             files: ['public/scripts/extensions/**/*.js'],
             rules: {
-                'no-restricted-syntax': ['error', noWholeFormCharacterSave, ...noAppChatSave],
+                'no-restricted-syntax': ['error', noWholeFormCharacterSave, ...noAppChatSave, ...noPageTokenCounting],
             },
         },
         {
@@ -147,6 +167,21 @@ module.exports = {
             files: ['src/**/*.js'],
             rules: {
                 'no-restricted-syntax': ['error', ...noAppChatSave],
+            },
+        },
+        {
+            // The modules that define the per-text token counters and export them to extensions (see
+            // noPageTokenCounting above).
+            files: ['public/scripts/tokenizers.js', 'public/scripts/st-context.js'],
+            rules: {
+                'no-restricted-syntax': ['error',
+                    {
+                        selector: "ImportSpecifier[imported.name='this_chid']",
+                        message: 'this_chid is a back-compat shim for third-party extensions/upstream parity only - use this_avatar/getCurrentCharacter()/charactersStore instead.',
+                    },
+                    noWholeFormCharacterSave,
+                    ...noAppChatSave,
+                ],
             },
         },
         {

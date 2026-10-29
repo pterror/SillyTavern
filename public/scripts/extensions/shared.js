@@ -369,6 +369,7 @@ export async function countWebLlmTokens(text) {
         return response;
     } catch (error) {
         // Fallback to using current model's tokenizer
+        // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
         return await getTokenCountAsync(text);
     }
 }

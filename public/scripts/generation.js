@@ -1863,6 +1863,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             const negativePrompt = getCfgPrompt(cfgGuidanceScale, true, true).value || '';
             const positivePrompt = getCfgPrompt(cfgGuidanceScale, false, true).value || '';
             if (negativePrompt || positivePrompt) {
+                // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
                 const [negativePromptTokenCount, positivePromptTokenCount] = await Promise.all([getTokenCountAsync(negativePrompt), getTokenCountAsync(positivePrompt)]);
                 const decrement = Math.max(negativePromptTokenCount, positivePromptTokenCount);
                 this_max_context -= decrement;
@@ -2136,6 +2137,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             // Cross-file note: getTokenCountAsync() (tokenizers.js) declares no JSDoc @param for its
             // `padding` argument, so TS infers the parameter's type from its `= undefined` default
             // alone (plain `undefined`) rather than the `number` it actually accepts and uses at runtime.
+            // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
             return getPromptTokenCountAsync(encodeString, /** @type {undefined} */ (/** @type {unknown} */ (power_user.token_padding)));
         }
 
@@ -2171,6 +2173,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 continue;
             }
 
+            // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
             tokenCount += await getTokenCountAsync(item.replace(/\r/gm, ''));
             if (tokenCount < this_max_context) {
                 chatString = chatString + item;
@@ -2198,6 +2201,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 continue;
             }
 
+            // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
             tokenCount += await getTokenCountAsync(item.replace(/\r/gm, ''));
             if (tokenCount < this_max_context) {
                 chatString = chatString + item;
@@ -2211,6 +2215,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         // Add user alignment message if last message is not a user message
         const stoppedAtUser = userMessageIndices.includes(lastAddedIndex);
         if (addUserAlignment && !stoppedAtUser) {
+            // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
             tokenCount += await getTokenCountAsync(userAlignmentMessage.replace(/\r/gm, ''));
             chatString = userAlignmentMessage + chatString;
             arrMes.push(userAlignmentMessage);
@@ -2243,6 +2248,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         count_exm_add = 0;
         if (!power_user.pin_examples) {
             for (let example of mesExamplesArray) {
+                // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
                 tokenCount += await getTokenCountAsync(example.replace(/\r/gm, ''));
                 examplesString += example;
                 if (tokenCount < this_max_context) {
@@ -2391,6 +2397,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             ].join('').replace(/\r/gm, '');
             // Cross-file note: see getMessagesTokenCount()'s own identical cast above - getTokenCountAsync()
             // (tokenizers.js) infers its `padding` param as bare `undefined` from its default value alone.
+            // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
             let thisPromptContextSize = await getPromptTokenCountAsync(prompt, /** @type {undefined} */ (/** @type {unknown} */ (power_user.token_padding)));
 
             if (thisPromptContextSize > this_max_context) {        //if the prepared prompt is larger than the max context size...

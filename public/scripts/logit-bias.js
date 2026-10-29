@@ -196,5 +196,6 @@ export function getLogitBiasListResult(biasPreset, tokenizerType, getBiasObject)
         showDroppedEntries(tokenizer, dropped);
         return result;
     }
+    // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
     return buildLogitBiasListResult(biasPreset, text => getTextTokens(tokenizerType, text), getBiasObject);
 }

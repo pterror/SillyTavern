@@ -133,6 +133,7 @@ function updateSettings() {
  * @param {string} value
  */
 async function setTokenCounter(selector, value) {
+    // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
     const { count, answer } = await getTokenCountWithAnswer(value);
     $(selector).text(count);
     renderCountBasis($(selector), answer);
@@ -439,6 +440,7 @@ async function onChatChanged() {
     // Disable the chara note if in a group
     $('#extension_floating_chara').prop('disabled', !!context.groupId);
 
+    // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
     const { count: tokenCounter1, answer: answer1 } = chat_metadata[metadata_keys.prompt] ? await getTokenCountWithAnswer(chat_metadata[metadata_keys.prompt]) : { count: 0, answer: getRememberedTokenizerAnswer() };
     $('#extension_floating_prompt_token_counter').text(tokenCounter1);
     renderCountBasis($('#extension_floating_prompt_token_counter'), answer1);
@@ -450,6 +452,7 @@ async function onChatChanged() {
         const charaNote = extension_settings.note.chara.find((e) => e.name === getCharaFilename());
 
         if (charaNote) {
+            // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
             ({ count: tokenCounter2, answer: answer2 } = await getTokenCountWithAnswer(charaNote.prompt));
             counted2 = true;
         }
@@ -458,6 +461,7 @@ async function onChatChanged() {
     $('#extension_floating_chara_token_counter').text(tokenCounter2 || 0);
     renderCountBasis($('#extension_floating_chara_token_counter'), counted2 ? answer2 : getRememberedTokenizerAnswer());
 
+    // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
     const { count: tokenCounter3, answer: answer3 } = extension_settings.note.default ? await getTokenCountWithAnswer(extension_settings.note.default) : { count: 0, answer: getRememberedTokenizerAnswer() };
     $('#extension_floating_default_token_counter').text(tokenCounter3);
     renderCountBasis($('#extension_floating_default_token_counter'), answer3);

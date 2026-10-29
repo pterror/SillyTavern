@@ -21,6 +21,7 @@ async function doTokenCounter() {
         // The answer the ids came from.
         let idsAnswer;
         if (main_api == 'openai') {
+            // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
             ids = getTextTokens(tokenizers.OPENAI, text);
             idsAnswer = getRememberedTokenizerAnswer();
         } else {
@@ -44,6 +45,7 @@ async function doTokenCounter() {
                 drawChunks(Object.getOwnPropertyDescriptor(ids, 'chunks').value, ids);
             }
         } else {
+            // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
             const { count, answer } = await getTokenCountWithAnswer(text);
             $('#token_counter_ids').text('—');
             $('#token_counter_result').text(count);
@@ -100,6 +102,7 @@ async function doCount() {
 
     const allMessages = messages.join(' ');
 
+    // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
     const count = await getTokenCountAsync(allMessages);
     toastr.success(`Token count: ${count}`);
     return count;

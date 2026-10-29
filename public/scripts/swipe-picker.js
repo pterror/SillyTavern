@@ -255,6 +255,7 @@ async function openSwipePicker(messageId) {
             const swipeInfo = Array.isArray(message.swipe_info) ? message.swipe_info[index] : null;
             const sendDate = swipeInfo?.send_date ? timestampToMoment(swipeInfo.send_date).format('lll') : '';
             const previewText = swipeText.replace(/\s+/g, ' ').trim();
+            // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
             const tokenCount = swipeInfo?.extra?.token_count ?? await getTokenCountAsync(swipeText, 0);
             const canDeleteSwipe = canDeleteSwipeFromPicker(index);
             const swipeDetails = [];

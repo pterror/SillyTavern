@@ -49,10 +49,12 @@ async function countSourceTokens(text, padding = 0) {
     }
 
     if (extension_settings.memory.source === summary_sources.extras) {
+        // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
         const count = getTextTokens(tokenizers.GPT2, text).length;
         return count + padding;
     }
 
+    // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
     return await getTokenCountAsync(text, padding);
 }
 
