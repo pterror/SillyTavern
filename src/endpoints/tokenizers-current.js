@@ -67,6 +67,53 @@ async function trimToTokenLimit(resolved, text, limit, direction, options) {
 }
 
 /**
+ * The tokenizer for a connection state (resolved as the page's counters are), and a counter through the user's
+ * token tables made on first use (`storedCounter()`); `writeCounted()` stores what it counted.
+ * @param {import('../tokenizer-resolve.js').TokenizerState & { explicitTokenizer?: any }} state
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {{ recount?: boolean }} [options] `recount`: counts are taken again and written over the stored ones.
+ */
+export async function openTokenizer(state, directories, { recount = false } = {}) {
+    // A recent /props answer is reused, so typing in a field doesn't ask llama.cpp on every keystroke.
+    const llamaCppProps = createLlamaCppPropsCheck({ reuse: true });
+    const resolved = await resolveTokenizer(state, { directories, llamaCppProps });
+    const outcome = createTokenizerOutcome();
+    /** @type {import('../tokenizer-resolve.js').EncodeWithTokenizerTypeOptions} */
+    const options = {
+        // setAdditionalHeaders() picks the backend's API key by the body's api_type.
+        request: /** @type {any} */ ({ body: { api_type: state.type }, user: { directories } }),
+        textgenBaseUrl: state.url,
+        textgenModel: state.model,
+        textgenApiType: state.type,
+        koboldBaseUrl: state.url,
+        directories,
+        outcome,
+    };
+    const identityFacts = { textgenApiType: state.type, llamaCppProps: llamaCppProps.props };
+    /** @type {Promise<string|null> | null} */
+    let identity = null;
+    /** @type {import('../token-count-store.js').StoredCounter | null} */
+    let counter = null;
+    return {
+        resolved,
+        options,
+        outcome,
+        /** The tokenizer's identity in the token tables (null: its counts aren't stored). */
+        identity: () => (identity ??= tokenizerIdentity(resolved, identityFacts)),
+        storedCounter: async () => {
+            if (!counter) {
+                identity ??= tokenizerIdentity(resolved, identityFacts);
+                counter = createStoredCounter({ resolved, identity: await identity, directories, encodeOptions: options, identityFacts, recount });
+            }
+            return counter;
+        },
+        writeCounted: async () => {
+            if (counter) await writeBack(directories, counter.pending);
+        },
+    };
+}
+
+/**
  * A `/current/*` route: resolves the tokenizer for the request's `state` and answers with what
  * `handle` gives, the tokenizer that answered, and any warnings about it. An optional
  * `explicitTokenizer` (a `tokenizers` value the caller named, as `getTextTokens(id, …)` does)
@@ -90,33 +137,8 @@ function currentTokenizerRoute(parse, handle) {
             return response.sendStatus(400);
         }
         try {
-            // A recent /props answer is reused, so typing in a field doesn't ask llama.cpp on every keystroke.
-            const llamaCppProps = createLlamaCppPropsCheck({ reuse: true });
-            const resolved = await resolveTokenizer({ ...state, explicitTokenizer }, { directories: request.user?.directories, llamaCppProps });
-            const outcome = createTokenizerOutcome();
-            const options = {
-                // setAdditionalHeaders() picks the backend's API key by the body's api_type.
-                request: /** @type {any} */ ({ body: { api_type: state.type }, user: request.user }),
-                textgenBaseUrl: state.url,
-                textgenModel: state.model,
-                textgenApiType: state.type,
-                koboldBaseUrl: state.url,
-                directories: request.user?.directories,
-                outcome,
-            };
-            /** @type {import('../token-count-store.js').StoredCounter | null} */
-            let counter = null;
-            const storedCounter = async () => {
-                if (!counter) {
-                    const identityFacts = { textgenApiType: state.type, llamaCppProps: llamaCppProps.props };
-                    const identity = await tokenizerIdentity(resolved, identityFacts);
-                    counter = createStoredCounter({
-                        resolved, identity, directories: options.directories, encodeOptions: options, identityFacts,
-                        recount: request.body?.recount === true,
-                    });
-                }
-                return counter;
-            };
+            const { resolved, options, outcome, storedCounter, writeCounted } = await openTokenizer(
+                { ...state, explicitTokenizer }, request.user?.directories, { recount: request.body?.recount === true });
             const result = await handle(input, resolved, options, storedCounter);
             const warnings = tokenizerResponseWarnings(state, resolved, outcome);
             response.send({
@@ -124,10 +146,7 @@ function currentTokenizerRoute(parse, handle) {
                 tokenizer: tokenizerAnswer(state, resolved, outcome),
                 ...(warnings.length > 0 ? { warnings } : {}),
             });
-            if (counter) {
-                writeBack(options.directories, counter.pending)
-                    .catch(error => console.error('Failed to store token counts:', error));
-            }
+            writeCounted().catch(error => console.error('Failed to store token counts:', error));
             return;
         } catch (error) {
             console.error(error);

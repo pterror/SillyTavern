@@ -40,7 +40,7 @@ import { convertedFileKey } from '../library-codes.js';
 import { avatarFile, avatarImage, avatarPathOf, inAvatarLane, linkWithAvatar, writeWithAvatar } from '../character-avatars.js';
 import { chatNamesOf, compatChatIdOf, compatChatIds, droppedOf, moveToChatNamed } from '../chat-request.js';
 import { requestSession } from '../request-session.js';
-import { ui, uiUser } from '../ui-wiring.js';
+import { ALTERNATIVES_VIEWS, ui, uiUser } from '../ui-wiring.js';
 
 import { groupDigests, groupObjects } from './groups.js';
 // Use shallow character data for the character list
@@ -1367,13 +1367,36 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
 /**
  * Reads a character card fresh from disk, applies a single greeting-list operation, and writes it back,
  * unless the operation left the greetings and default unchanged, in which case nothing is written.
- * @param {import('express').Request} request
+ * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} avatar avatar filename (e.g. "char.png")
  * @param {(model: import('../greeting-list.js').GreetingsModel) => {ok: boolean, reason?: string, model?: import('../greeting-list.js').GreetingsModel, position?: number, sourcePosition?: number, targetPosition?: number}} op
  * @returns {Promise<{ok: boolean, reason?: string, status?: number, greetings?: string[], hashes?: number[], defaultPosition?: number|null, position?: number, sourcePosition?: number, targetPosition?: number}>}
  */
-async function applyGreetingOperation(request, avatar, op) {
-    const pngStringData = await readCardContent(request.user.directories, avatar);
+export function applyGreetingOperation(directories, avatar, op) {
+    // One card's operations run one at a time: each reads the card the one before it wrote (two read at once and the
+    // later write drops the earlier's change).
+    const key = `${directories.root}\u0000${avatar}`;
+    const run = (greetingOperationQueues.get(key) ?? Promise.resolve()).then(() => runGreetingOperation(directories, avatar, op));
+    const tail = run.then(() => {}, () => {});
+    greetingOperationQueues.set(key, tail);
+    void tail.then(() => {
+        if (greetingOperationQueues.get(key) === tail) greetingOperationQueues.delete(key);
+    });
+    return run;
+}
+
+/** @type {Map<string, Promise<void>>} Per user and card, the last greeting operation queued; held while one is. */
+const greetingOperationQueues = new Map();
+
+/**
+ * {@link applyGreetingOperation}, once the card's earlier operations are done.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} avatar
+ * @param {Parameters<typeof applyGreetingOperation>[2]} op
+ * @returns {ReturnType<typeof applyGreetingOperation>}
+ */
+async function runGreetingOperation(directories, avatar, op) {
+    const pngStringData = await readCardContent(directories, avatar);
     if (!pngStringData) {
         return { ok: false, reason: 'character not found', status: 404 };
     }
@@ -1407,7 +1430,8 @@ async function applyGreetingOperation(request, avatar, op) {
         return { ok: false, reason: validator.lastValidationError ?? 'validation failed', status: 500 };
     }
 
-    await writeCharacter(request, avatar, JSON.stringify(character), { freshFieldPaths: new Set(['data.alternate_greetings']) });
+    // A card without an image to read takes only the user's directories.
+    await writeCharacter(/** @type {any} */ ({ user: { directories } }), avatar, JSON.stringify(character), { freshFieldPaths: new Set(['data.alternate_greetings']) });
 
     return {
         ok: true,
@@ -1455,7 +1479,7 @@ router.post('/greetings/add', validateAvatarUrlMiddleware, async function (reque
             if (request.body.position !== undefined || request.body.expected_length !== undefined) {
                 return response.status(400).send({ ok: false, reason: 'append takes no position or expected_length' });
             }
-            const appended = await applyGreetingOperation(request, avatar, model => opAppend(model, text));
+            const appended = await applyGreetingOperation(request.user.directories, avatar, model => opAppend(model, text));
             return sendGreetingOpResult(response, appended);
         }
         const position = Number(request.body.position);
@@ -1463,7 +1487,7 @@ router.post('/greetings/add', validateAvatarUrlMiddleware, async function (reque
         if (!Number.isInteger(position)) return response.status(400).send({ ok: false, reason: 'position must be an integer' });
         if (!Number.isInteger(expectedLength)) return response.status(400).send({ ok: false, reason: 'expected_length is required' });
 
-        const result = await applyGreetingOperation(request, avatar, model => opAdd(model, position, expectedLength, text));
+        const result = await applyGreetingOperation(request.user.directories, avatar, model => opAdd(model, position, expectedLength, text));
         return sendGreetingOpResult(response, result);
     } catch (error) {
         console.error('Error adding greeting:', error);
@@ -1490,7 +1514,7 @@ router.post('/greetings/edit', validateAvatarUrlMiddleware, async function (requ
         if (!Number.isInteger(position)) return response.status(400).send({ ok: false, reason: 'position must be an integer' });
         if (!Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'expected_hash is required' });
 
-        const result = await applyGreetingOperation(request, avatar, model => opEdit(model, position, expectedHash, text));
+        const result = await applyGreetingOperation(request.user.directories, avatar, model => opEdit(model, position, expectedHash, text));
         return sendGreetingOpResult(response, result);
     } catch (error) {
         console.error('Error editing greeting:', error);
@@ -1513,7 +1537,7 @@ router.post('/greetings/delete', validateAvatarUrlMiddleware, async function (re
         if (!Number.isInteger(position)) return response.status(400).send({ ok: false, reason: 'position must be an integer' });
         if (!Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'expected_hash is required' });
 
-        const result = await applyGreetingOperation(request, avatar, model => opDelete(model, position, expectedHash));
+        const result = await applyGreetingOperation(request.user.directories, avatar, model => opDelete(model, position, expectedHash));
         return sendGreetingOpResult(response, result);
     } catch (error) {
         console.error('Error deleting greeting:', error);
@@ -1545,7 +1569,7 @@ router.post('/greetings/move', validateAvatarUrlMiddleware, async function (requ
         if (side !== 'before' && side !== 'after') return response.status(400).send({ ok: false, reason: 'side must be "before" or "after"' });
         if (targetPosition === sourcePosition) return response.status(400).send({ ok: false, reason: 'target_position must differ from source_position' });
 
-        const result = await applyGreetingOperation(request, avatar, model => opMove(model, sourcePosition, expectedHash, side, targetPosition, targetExpectedHash));
+        const result = await applyGreetingOperation(request.user.directories, avatar, model => opMove(model, sourcePosition, expectedHash, side, targetPosition, targetExpectedHash));
         return sendGreetingOpResult(response, result);
     } catch (error) {
         console.error('Error moving greeting:', error);
@@ -1567,7 +1591,7 @@ router.post('/greetings/default/set', validateAvatarUrlMiddleware, async functio
         if (!Number.isInteger(position)) return response.status(400).send({ ok: false, reason: 'position must be an integer' });
         if (!Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'expected_hash is required' });
 
-        const result = await applyGreetingOperation(request, avatar, model => opSetDefault(model, position, expectedHash));
+        const result = await applyGreetingOperation(request.user.directories, avatar, model => opSetDefault(model, position, expectedHash));
         return sendGreetingOpResult(response, result);
     } catch (error) {
         console.error('Error setting default greeting:', error);
@@ -1593,7 +1617,7 @@ router.post('/greetings/default/unset', validateAvatarUrlMiddleware, async funct
             if (!Number.isFinite(expectedDefaultHash)) {
                 return response.status(400).send({ ok: false, reason: 'expected_default_hash must be a number' });
             }
-            const byHash = await applyGreetingOperation(request, avatar, model => opUnsetDefaultByHash(model, expectedDefaultHash));
+            const byHash = await applyGreetingOperation(request.user.directories, avatar, model => opUnsetDefaultByHash(model, expectedDefaultHash));
             return sendGreetingOpResult(response, byHash);
         }
         const rawExpectedDefault = request.body.expected_default_position;
@@ -1603,7 +1627,7 @@ router.post('/greetings/default/unset', validateAvatarUrlMiddleware, async funct
             return response.status(400).send({ ok: false, reason: 'expected_default_position is required (an integer, or null)' });
         }
 
-        const result = await applyGreetingOperation(request, avatar, model => opUnsetDefault(model, expectedDefaultPosition));
+        const result = await applyGreetingOperation(request.user.directories, avatar, model => opUnsetDefault(model, expectedDefaultPosition));
         return sendGreetingOpResult(response, result);
     } catch (error) {
         console.error('Error unsetting default greeting:', error);
@@ -2623,6 +2647,10 @@ router.get('/changes/stream', async function (request, response) {
             if (tab && records.some(r => CHAT_MOVES.has(/** @type {any} */ (r).kind))) {
                 ui.chatMoved(uiUser(request), tab.session).catch(error => console.error('[ui] chat views not pushed:', error));
             }
+            // The alternatives the tab looks at, when a message or a card changed (each tab reads its own once).
+            if (tab && records.some(r => ALTERNATIVE_CHANGES.has(/** @type {any} */ (r).kind))) {
+                ui.changedFor(uiUser(request), tab.session, ALTERNATIVES_VIEWS).catch(error => console.error('[ui] alternatives not pushed:', error));
+            }
         } catch (err) {
             console.error('[characters/changes/stream] A change could not be told:', err);
         }
@@ -2660,6 +2688,8 @@ router.get('/changes/stream', async function (request, response) {
 const SESSION_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TAB_TOKEN = /^[0-9A-Za-z_-]{8,64}$/;
 /** Records after which a chat's state may read otherwise where a tab is: its state changed, or a session moved. */
+/** Records that change a message's alternatives (added, removed, edited, chosen) or a card's greetings. */
+const ALTERNATIVE_CHANGES = new Set(['messageAppend', 'messageParent', 'subtreeDelete', 'textEdit', 'textValue', 'jsonValue', 'valueDelete', 'openingChoice', 'pointerMove', 'pointerRoot', 'historyStep', 'currentChat']);
 const CHAT_MOVES = new Set(['stateChange', 'stateRevert', 'pointerMove', 'pointerRoot', 'historyStep', 'currentChat']);
 /** Records that move a session, or switch its current chat. */
 const SESSION_KINDS = new Set(['pointerMove', 'pointerRoot', 'historyStep', 'sessionFork', 'messageAppend', 'currentChat']);

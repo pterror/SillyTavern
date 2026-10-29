@@ -5,6 +5,7 @@ import sanitize from 'sanitize-filename';
 import { createUi } from '@st/server-ui';
 import { backgroundsArea } from '@st/backgrounds/server';
 import { settingsArea } from '@st/settings/server';
+import { alternativesArea } from '@st/alternatives/server';
 
 import { userStore } from './user-stores.js';
 import { TYPE } from './library-engine.js';
@@ -18,6 +19,14 @@ import { settingsDocumentOf } from './settings-documents.js';
 import { modelListOf, rememberModelList } from './model-lists.js';
 import { default_settings as chatCompletionDefaults } from '../public/scripts/chat-completion-defaults.js';
 import { writeNamedSettings, readAllSettings } from './settings-store.js';
+import { readCardGreetings } from './endpoints/chats.js';
+import { applyGreetingOperation } from './endpoints/characters.js';
+import { openTokenizer } from './endpoints/tokenizers-current.js';
+import { readTokenizerState } from './connection-state-header.js';
+import { TOKEN_KEY_KINDS, readCount, tokenKeyHash } from './token-count-store.js';
+import { searchClauses } from './search-clauses.js';
+import { getEngine } from '../engine/load.js';
+import { hashGreetingText, opAppend, opDelete, opEdit, opMove, opSetDefault, opUnsetDefaultByHash } from './greeting-ops.js';
 
 /**
  * The new code's server side (packages/server-ui) over the old server: each port an area declares is implemented
@@ -264,7 +273,136 @@ const settingsPorts = {
     defaults: () => ({ oai_settings: chatCompletionDefaults }),
 };
 
-export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts)], {
+/** The alternatives' views (packages/areas/alternatives/protocol.ts). */
+export const ALTERNATIVES_VIEWS = ['alternatives.list', 'alternatives.counts', 'alternatives.matches'];
+
+/** Every alternative there is: an opening list is read whole. */
+const WHOLE = { offset: 0, limit: Number.MAX_SAFE_INTEGER };
+
+/**
+ * A tab's open chat's tree, owner and session.
+ * @param {ViewContext} context
+ */
+async function chatOfTab(context) {
+    if (!context.chat) return null;
+    const store = await userStore(directoriesOf(context.user), context.user.handle);
+    const tree = BigInt(context.chat.tree);
+    const [key] = await store.lib.store.libraryKeys([tree]);
+    const avatar = key && key.type !== TYPE.group ? key.key : null;
+    return { store, tree, avatar, actor: { user: context.user.handle, session: context.session } };
+}
+
+/**
+ * An alternative's fields as the area takes them.
+ * @param {Record<string, any>} entry alternativeEntry()'s.
+ * @returns {import('@st/alternatives/server').Alternative}
+ */
+const alternativeOf = entry => ({
+    nodeId: entry.node_id ?? null,
+    text: typeof entry.mes === 'string' ? entry.mes : '',
+    name: typeof entry.name === 'string' ? entry.name : '',
+    isUser: !!entry.is_user,
+    isSystem: !!entry.is_system,
+    date: typeof entry.send_date === 'string' || typeof entry.send_date === 'number' ? entry.send_date : null,
+});
+
+/**
+ * The connection's tokenizer and its identity in the token tables (null: its counts aren't stored).
+ * @param {User} user
+ * @param {import('@st/alternatives/protocol').TokenizerState} tokenizer
+ */
+async function tokenizerOf(user, tokenizer) {
+    const state = readTokenizerState(tokenizer);
+    return state ? openTokenizer(state, directoriesOf(user)) : null;
+}
+
+/**
+ * A card greeting operation, as the greeting routes run it.
+ * @param {import('@st/alternatives/protocol').GreetingOp} op
+ * @returns {(model: import('./greeting-list.js').GreetingsModel) => any}
+ */
+function greetingOperation(op) {
+    switch (op.op) {
+        case 'add': return model => opAppend(model, op.text);
+        case 'edit': return model => opEdit(model, op.position, op.hash, op.text);
+        case 'delete': return model => opDelete(model, op.position, op.hash);
+        case 'move': return model => opMove(model, op.position, op.hash, op.side, op.target, op.targetHash);
+        case 'default': return model => opSetDefault(model, op.position, op.hash);
+        case 'undefault': return model => opUnsetDefaultByHash(model, op.hash);
+    }
+}
+
+/** @type {import('@st/alternatives/server').Ports} */
+const alternativesPorts = {
+    async list(context, target) {
+        if ('message' in target) {
+            const store = await userStore(directoriesOf(context.user), context.user.handle);
+            const found = await store.chats.alternatives({ node_id: target.message });
+            if (!found) return null;
+            return { alternatives: found.alternatives.map(alternativeOf), current: found.selected, card: null, openings: null };
+        }
+        const chat = await chatOfTab(context);
+        if ('opening' in target) {
+            if (!chat) return null;
+            const card = chat.avatar ? await readCardGreetings(chat.store, chat.avatar) : null;
+            const openings = await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE, cardGreetings: card?.greetings ?? [] });
+            return {
+                alternatives: openings.alternatives.map(alternativeOf),
+                current: openings.total > 0 ? openings.default_index : null,
+                card: card && chat.avatar ? { avatar: chat.avatar, greetings: card.texts, defaultPosition: card.defaultIndex } : null,
+                openings: null,
+            };
+        }
+        const store = chat?.store ?? await userStore(directoriesOf(context.user), context.user.handle);
+        const card = await readCardGreetings(store, target.greetings);
+        if (!card) return null;
+        const inChat = chat && chat.avatar === target.greetings
+            ? await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE, cardGreetings: card.greetings })
+            : null;
+        return {
+            alternatives: card.texts.map(text => ({ nodeId: null, text, name: card.name, isUser: false, isSystem: false, date: null })),
+            current: card.defaultIndex,
+            card: { avatar: target.greetings, greetings: card.texts, defaultPosition: card.defaultIndex },
+            openings: inChat ? inChat.alternatives.map(entry => (typeof entry.mes === 'string' ? entry.mes : '')) : null,
+        };
+    },
+    hash: text => hashGreetingText(text),
+    counts: {
+        async stored(user, tokenizer, texts) {
+            const opened = await tokenizerOf(user, tokenizer);
+            const identity = opened ? await opened.identity() : null;
+            if (identity === null) return texts.map(() => null);
+            return Promise.all(texts.map(text => text === ''
+                ? 0
+                : readCount(directoriesOf(user), identity, tokenKeyHash(TOKEN_KEY_KINDS.TEXT, text)).catch(() => null)));
+        },
+        async count(user, tokenizer, texts) {
+            const opened = await tokenizerOf(user, tokenizer);
+            if (!opened) return texts.map(() => null);
+            const counter = await opened.storedCounter();
+            const counts = await Promise.all(texts.map(text => (text === '' ? 0 : counter.countText(text).catch(() => null))));
+            await opened.writeCounted();
+            return counts;
+        },
+    },
+    match(query, texts) {
+        const clauses = searchClauses(query);
+        // The chat search's rule: the last word of the last clause, unquoted, is a prefix of a word.
+        const matched = getEngine().textMatches(clauses.map((clause, i) => ({
+            text: clause.text,
+            prefix: i === clauses.length - 1 && !clause.quoted,
+            negate: clause.negate,
+        })), texts);
+        return matched.map(spans => spans ?? null);
+    },
+    async greeting(user, avatar, op) {
+        const result = await applyGreetingOperation(directoriesOf(user), avatar, greetingOperation(op));
+        return result.ok ? { ok: true } : { ok: false, reason: result.reason ?? 'The greetings changed.' };
+    },
+    changed: (user, session, keys) => ui.changedFor(user, session, keys),
+};
+
+export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts), alternativesArea(alternativesPorts)], {
     userOf: request => (request.user ? uiUser(request) : null),
     async chatOf(user, owner) {
         const store = await userStore(directoriesOf(user), user.handle);
