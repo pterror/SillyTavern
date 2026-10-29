@@ -1468,25 +1468,28 @@ router.post('/openings/choose', validateAvatarUrlMiddleware, async function (req
 
 /**
  * Adds alternatives beside a message, shown to no one: each another reply of its parent (another opening, for an
- * opening). One with a stored reply's speaker and text is that reply. Answers `{ ok, node_ids }`.
+ * opening). One with a stored reply's speaker and text is that reply. With `opening: true` instead of a sibling,
+ * they're openings of the chat (beside its card's greetings, which stay the card's: a first message shown from the
+ * card has no row to be beside). Answers `{ ok, node_ids }`.
  */
 router.post('/message/alternative', validateAvatarUrlMiddleware, async function (request, response) {
     try {
+        const opening = request.body.opening === true;
         const sibling = String(request.body.sibling_node_id || '');
-        if (!sibling) return response.status(400).send({ error: 'sibling_node_id is required' });
+        if (!sibling && !opening) return response.status(400).send({ error: 'sibling_node_id or opening is required' });
         const given = request.body.contents ?? request.body.content;
         if (!given) return response.status(400).send({ error: 'content or contents is required' });
         const contents = (Array.isArray(given) ? given : [given]).map(storedForm);
         const chat = await chatOf(request);
-        const s = chat ? await chat.store.chats.messageOf(chat.tree, sibling) : null;
-        if (!chat || !s) return response.status(409).send({ ok: false, reason: 'unknown node' });
+        const s = chat && !opening ? await chat.store.chats.messageOf(chat.tree, sibling) : null;
+        if (!chat || (!opening && !s)) return response.status(409).send({ ok: false, reason: 'unknown node' });
         const { chats } = chat.store;
         const actor = { user: chat.session.actor().user };
-        if (s.parent === null) {
+        if (opening || s?.parent === null) {
             const added = await chats.addOpenings({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, contents, actor });
             return response.send(added);
         }
-        const [parent] = await chats.externalIds([s.parent]);
+        const [parent] = await chats.externalIds([(s?.parent)]);
         const nodeIds = [];
         for (const content of contents) {
             const added = await chats.appendMessages({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, after: parent, contents: [content], actor });

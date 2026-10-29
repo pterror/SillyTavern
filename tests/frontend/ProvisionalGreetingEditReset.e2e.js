@@ -254,6 +254,8 @@ test.describe('editing the showing provisional greeting keeps it shown', () => {
             // page's next openings read reaches the server, so that read no longer holds `typed`.
             let armed = false;
             let otherEdited = false;
+            /** The other session's edit is stored (its answer came back). */
+            let otherStored = false;
             await page.route('**/api/ui/action', async (route) => {
                 const response = await route.fetch();
                 if (route.request().postDataJSON()?.type === 'alternatives.greeting') armed = true;
@@ -273,6 +275,7 @@ test.describe('editing the showing provisional greeting keeps it shown', () => {
                         return response.status;
                     }, { avatar, expectedHash: hashGreetingText(typed), text: otherText });
                     expect(status).toBe(200);
+                    otherStored = true;
                 }
                 await route.continue();
             });
@@ -280,7 +283,7 @@ test.describe('editing the showing provisional greeting keeps it shown', () => {
             await openGreetingsList(page, 3);
             await listEdit(page, 1, typed);
 
-            await expect.poll(() => otherEdited, { timeout: 10000 }).toBe(true);
+            await expect.poll(() => otherStored, { timeout: 10000 }).toBe(true);
             expect(await storedGreetings(other, avatar)).toEqual([g0, otherText, g2]);
         });
 

@@ -1333,13 +1333,21 @@ export async function chatOpBookmarkNode(nodeId, label) {
 
 // May return an existing row — asserting the same alternative twice is the same statement twice.
 /**
+ * Stores a new alternative of a message. A first message shown from the card (no row of its own) gets it as an
+ * opening of the chat, beside the card's greetings, which stay the card's; a temporary chat (no character or group)
+ * keeps it on the page only.
  * @param {number} mesId
  * @param {string} text
  * @returns {Promise<string|null>}
  */
 export async function chatOpAddAlternative(mesId, text) {
     const msg = _chatAt(mesId);
-    if (!isStoredNodeId(msg?.node_id) || typeof text !== 'string' || !text.length) return null;
+    if (typeof text !== 'string' || !text.length) return null;
+    if (mesId === 0 && msg && !isStoredNodeId(msg.node_id) && _currentOwner()) {
+        const created = await _chatOpPost('/api/chats/message/alternative', { opening: true, contents: [_messageContent(msg, text)] });
+        return created?.node_ids?.[0] ?? null;
+    }
+    if (!isStoredNodeId(msg?.node_id)) return null;
 
     const created = await _chatOpPost('/api/chats/message/alternative', {
         sibling_node_id: msg.node_id,
