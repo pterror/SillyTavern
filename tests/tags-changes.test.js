@@ -2,9 +2,6 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } fr
 import path from 'node:path';
 import { storedTagDefinitions } from './tag-store-reads.js';
 
-// The tag definition change log: every write that changes what a reader gets as a tag's definition logs the tag, and
-// /api/tags/changes answers a cursor with what each changed tag is now.
-
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
 /** @type {typeof import('./converted-user.fixture.js')} */
@@ -58,14 +55,17 @@ async function post(urlPath, body = {}) {
     return { status: response.status, body: parsed };
 }
 
-/** @param {string} id @param {Record<string, unknown>} [fields] */
+/**
+ * @param {string} id
+ * @param {Record<string, unknown>} [fields]
+ */
 async function create(id, fields = {}) {
     const { status, body } = await post('/api/tags/create', { tag: { id, name: id, ...fields } });
     expect(status).toBe(200);
     expect(body.refused).toEqual([]);
 }
 
-/** @returns {Promise<number>} The cursor a client that has just read the tags asks from. */
+/** @returns {Promise<number>} */
 async function cursor() {
     const { body } = await post('/api/tags/manifest');
     expect(typeof body.changesSeq).toBe('number');
@@ -139,7 +139,6 @@ describe('what each write logs', () => {
         await post('/api/tags/edit', { id: 'a', patch: { name: 'two' } });
         const page = await changes(seq);
         expect(page.tags).toEqual([expect.objectContaining({ id: 'a', name: 'two' })]);
-        // A position in the feed: its end, read through.
         expect(page.seq).toBe(await cursor());
     });
 
@@ -239,7 +238,6 @@ describe('a reorder pass', () => {
         const seq = await cursor();
         while (await user.store.lib.tags.passStep());
         const page = await changes(seq);
-        // The feed holds one entry per tag, so a pass needs no reset.
         expect(page.reset).toBe(false);
         const ids = page.tags.map(tag => tag.id);
         expect(new Set(ids).size).toBe(ids.length);

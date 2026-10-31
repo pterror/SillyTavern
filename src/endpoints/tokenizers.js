@@ -161,11 +161,6 @@ export async function getPathToTokenizer(model) {
     }
 }
 
-/**
- * The tokenizer identity (src/tokenizer-resolve.js tokenizerIdentity()) of a tokenizer file read by
- * `reader`, hashed once per wrapper: `file:<reader>:<sha256 of the file>`. A failure is not kept, so
- * the next call tries again.
- */
 class FileIdentity {
     /** @type {string} */
     #model;
@@ -175,8 +170,8 @@ class FileIdentity {
     #identity = null;
 
     /**
-     * @param {string} model Path or URL of the tokenizer file, as getPathToTokenizer() takes it
-     * @param {string} reader What reads the file
+     * @param {string} model
+     * @param {string} reader
      */
     constructor(model, reader) {
         this.#model = model;
@@ -184,7 +179,7 @@ class FileIdentity {
     }
 
     /**
-     * @returns {Promise<string>} Throws when the file can't be had.
+     * @returns {Promise<string>}
      */
     get() {
         this.#identity ??= this.#hash().catch(error => {
@@ -276,8 +271,7 @@ class WebTokenizer {
     }
 
     /**
-     * Loads the Web tokenizer instance.
-     * @returns {Promise<Tokenizer|null>} Web tokenizer instance
+     * @returns {Promise<Tokenizer|null>}
      */
     async #load() {
         try {
@@ -295,18 +289,12 @@ class WebTokenizer {
     }
 }
 
-/**
- * A tokenizer.json read by npm `tokenizers`, with the same `get()` as WebTokenizer. Its instance's
- * encode and decode return promises.
- */
 class ExactJsonTokenizer {
-    /**
-     * @type {string} Path to the tokenizer file
-     */
+    /** @type {string} */
     #model;
 
     /**
-     * @param {string} model Path to the tokenizer file
+     * @param {string} model
      */
     constructor(model) {
         this.#model = model;
@@ -326,10 +314,6 @@ class ExactJsonTokenizer {
     }
 }
 
-/**
- * A registry entry's tokenizer (src/tokenizer-sources.js), with the same `get()` as WebTokenizer.
- * Its instance's encode and decode return promises.
- */
 class RegistryTokenizer {
     /** @type {string} */
     #source;
@@ -337,7 +321,7 @@ class RegistryTokenizer {
     #options;
 
     /**
-     * @param {string} source Registry entry id
+     * @param {string} source
      * @param {LocalTokenizerOptions} options
      */
     constructor(source, options) {
@@ -359,10 +343,9 @@ class RegistryTokenizer {
 }
 
 /**
- * What loading a registry entry's tokenizer needs from the request.
  * @typedef {object} LocalTokenizerOptions
- * @property {import('../users.js').UserDirectoryList} [directories] For the user's saved Hugging Face token
- * @property {import('../tokenizer-resolve.js').TokenizerOutcome} [outcome] Records a download of the entry's file
+ * @property {import('../users.js').UserDirectoryList} [directories]
+ * @property {import('../tokenizer-resolve.js').TokenizerOutcome} [outcome]
  */
 
 const spp_llama = new SentencePieceTokenizer('src/tokenizers/llama.model');
@@ -374,8 +357,6 @@ const spp_gemma = new SentencePieceTokenizer('src/tokenizers/gemma.model');
 const spp_jamba = new SentencePieceTokenizer('src/tokenizers/jamba.model');
 const claude_tokenizer = new WebTokenizer('src/tokenizers/claude.json');
 const llama3_tokenizer = new WebTokenizer('src/tokenizers/llama3.json');
-// @agnai/web-tokenizers ignores llama3.json's `ignore_merges`. llama3_tokenizer stays for the upstream
-// exports that hand out its instance or encode with it synchronously (getWebTokenizer, countWebTokenizerTokens).
 const llama3ExactTokenizer = new ExactJsonTokenizer('src/tokenizers/llama3.json');
 const commandRTokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-r.json.gz');
 const commandATokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-a.json.gz');
@@ -548,8 +529,6 @@ async function getWebTokenizersChunks(tokenizer, ids) {
 }
 
 /**
- * The token chunks for llama.cpp's `/tokenize` pieces (a string, or the piece's bytes when they aren't
- * valid UTF-8), merged as getWebTokenizersChunks() merges ids: until they decode to more than `�`.
  * @param {Array<string|number[]>} pieces
  * @returns {string[]}
  */
@@ -671,10 +650,8 @@ export function getTokenizerModel(requestModel) {
 let tiktokenVersion = null;
 
 /**
- * The tokenizer identity (src/tokenizer-resolve.js tokenizerIdentity()) of getTiktokenTokenizer(model):
- * `tiktoken:<encoding name>@<tiktoken package version>`. The package carries the encodings' ranks.
  * @param {string} model
- * @returns {string} Throws for a model tiktoken doesn't know, as getTiktokenTokenizer() does.
+ * @returns {string}
  */
 export function getTiktokenIdentity(model) {
     const encoding = tiktoken.get_encoding_name_for_model(/** @type {import('tiktoken').TiktokenModel} */ (model));
@@ -694,15 +671,11 @@ export function getTiktokenTokenizer(model) {
 }
 
 /**
- * Gets tokenids for a given logit bias preset entry. Mirrors the getEntryTokens() helper that used
- * to live inline in the /api/backends/chat-completions/bias route handler.
- * @param {string} text Entry text
- * @param {((text: string) => ArrayLike<number>|null|Promise<ArrayLike<number>|null>)|null} encode Function to encode text to
- * token ids; null when there is no tokenizer.
- * @returns {Promise<ArrayLike<number>|null>} Array of token ids; null when the entry needs a tokenizer and there is none.
+ * @param {string} text
+ * @param {((text: string) => ArrayLike<number>|null|Promise<ArrayLike<number>|null>)|null} encode
+ * @returns {Promise<ArrayLike<number>|null>}
  */
 async function getEntryTokens(text, encode) {
-    // Get raw token ids from JSON array
     if (text.trim().startsWith('[') && text.trim().endsWith(']')) {
         try {
             const json = JSON.parse(text);
@@ -714,12 +687,10 @@ async function getEntryTokens(text, encode) {
         }
     }
 
-    // Otherwise, get token ids from tokenizer
     return encode ? await encode(text) : null;
 }
 
 /**
- * An encoder for a local resolveTokenizer() answer, or null when its tokenizer fails to load.
  * @param {import('../tokenizer-resolve.js').ResolvedTokenizer} resolved
  * @returns {Promise<((text: string) => Uint32Array|Promise<Uint32Array>)|null>}
  */
@@ -740,23 +711,12 @@ async function getLocalEncoder(resolved) {
 }
 
 /**
- * Computes a token-id-keyed logit bias map from bias-preset entries for a server-built
- * chat-completion send, with the model's chat-completion tokenizer resolution (the model map).
- * Claude models get {} (no bias support). With no tokenizer for the model, or one that fails to load
- * (tried again on every call), raw-id entries are kept and every other entry is left out and listed
- * in `dropped`.
- * Entries without `text` are skipped, and an encode failure is warned about, not thrown.
- *
- * @param {{text?: string, value?: number}[]} biasPresetEntries Raw bias-preset entries, e.g.
- * oai_settings.bias_presets[oai_settings.bias_preset_selected] client-side - {id, text, value}[]
- * shaped, though only `text`/`value` are used here.
- * @param {string} requestModel The chat-completion model name.
- * @param {string[]} [dropped] Receives the text of each entry left out because there are no token ids for it.
- * @param {string} [source] The chat-completion source, which decides the file for a model with several official files.
- * @param {import('../tokenizer-map-resolution.js').ChatCompletionConnection} [connection] The custom source's
- * URL and what its requests carry, for a custom URL that is llama.cpp. With `storedEncoder`, entries are
- * encoded through it, so ids already stored for the tokenizer are read, not encoded.
- * @returns {Promise<{[tokenId: number]: number}>} Token-id-keyed bias map
+ * @param {{text?: string, value?: number}[]} biasPresetEntries
+ * @param {string} requestModel
+ * @param {string[]} [dropped]
+ * @param {string} [source]
+ * @param {import('../tokenizer-map-resolution.js').ChatCompletionConnection} [connection]
+ * @returns {Promise<{[tokenId: number]: number}>}
  */
 export async function computeLogitBias(biasPresetEntries, requestModel, dropped = undefined, source = undefined, connection = {}) {
     const result = {};
@@ -767,7 +727,6 @@ export async function computeLogitBias(biasPresetEntries, requestModel, dropped 
 
     const modelName = String(requestModel || '');
 
-    // no bias for claude
     if (modelName.toLowerCase().includes('claude')) {
         return result;
     }
@@ -775,7 +734,7 @@ export async function computeLogitBias(biasPresetEntries, requestModel, dropped 
     const resolved = await resolveChatCompletionTokenizer(modelName, source, connection);
     /** @type {((text: string) => Uint32Array|Promise<Uint32Array|null>)|null} */
     let encodeFunction = null;
-    /** @type {((text: string, answeredOut: import('../token-count-store.js').AnsweredOut) => Promise<Uint32Array|null>)|null} Sets `answeredOut.tokenizer` to the tokenizer that answered. */
+    /** @type {((text: string, answeredOut: import('../token-count-store.js').AnsweredOut) => Promise<Uint32Array|null>)|null} */
     let reportingEncoder = null;
     if (resolved.llamaCpp) {
         const { llamaCpp, localCopy } = resolved;
@@ -831,18 +790,13 @@ export async function computeLogitBias(biasPresetEntries, requestModel, dropped 
         }
     }
 
-    // not needed for cached tokenizers
-    //tokenizer.free();
     return result;
 }
 
 /**
- * The `/api/backends/chat-completions/bias` route's encoding for a request without an
- * `X-ST-Connection-State` header, as upstream calls it: the tokenizer upstream picks from the model
- * name with getTokenizerModel(), and the same result for the same input.
  * @param {{text?: string, value?: number}[]} biasPresetEntries
- * @param {string} requestModel The route's `?model=`.
- * @returns {Promise<{[tokenId: number]: number}>} Token-id-keyed bias map
+ * @param {string} requestModel
+ * @returns {Promise<{[tokenId: number]: number}>}
  */
 export async function computeUpstreamLogitBias(biasPresetEntries, requestModel) {
     const result = {};
@@ -853,7 +807,6 @@ export async function computeUpstreamLogitBias(biasPresetEntries, requestModel) 
 
     const model = getTokenizerModel(String(requestModel || ''));
 
-    // no bias for claude
     if (model == 'claude') {
         return result;
     }
@@ -897,18 +850,12 @@ export async function computeUpstreamLogitBias(biasPresetEntries, requestModel) 
         }
     }
 
-    // not needed for cached tokenizers
-    //tokenizer.free();
     return result;
 }
 
 /**
- * Encodes one string against a Kobold-compatible backend's own tokenize endpoint. Extracted from
- * the `/api/tokenizers/remote/kobold/count` route handler below (same rationale as
- * `encodeViaTextgenAPI` and this session's `computeLogitBias` extraction) so in-process callers can
- * reuse the real remote-tokenization logic without an HTTP round trip to this server.
- * @param {string} baseUrl KoboldAI-compatible backend base URL
- * @param {string} text Text to encode
+ * @param {string} baseUrl
+ * @param {string} text
  * @returns {Promise<{count: number, ids: number[]}|{error: true}>}
  */
 export async function encodeViaKoboldAPI(baseUrl, text) {
@@ -941,20 +888,10 @@ export async function encodeViaKoboldAPI(baseUrl, text) {
 }
 
 /**
- * Server-side port of public/scripts/textgen-settings.js's `calculateLogitBias()` - computes a
- * token-id-keyed logit bias map from a textgen `logit_bias` preset array, encoding each entry with
- * `tokenizerOptions.encode`: the send's resolveTokenizer() answer bound to its backend
- * (encodeWithTokenizer() in src/tokenizer-resolve.js), which gives null when it has no ids for the
- * text (an estimate resolution, or a failed tokenizer with no local copy).
- *
- * @param {{id?: string, text?: string, value?: number}[]} logitBiasPreset Raw
- * `textgenerationwebui_settings.logit_bias`-shaped array.
- * @param {{encode?: (text: string) => Promise<number[]|null>}} [tokenizerOptions] `encode` is
- * required for a non-empty preset; without one this throws, since any default would silently pick
- * a tokenizer.
- * @param {string[]} [dropped] Receives the text of each entry left out because `encode` gave null.
- * @returns {Promise<{[tokenId: string]: number}>} Token-id-keyed bias map. `{}` for an
- * absent/empty preset, matching `calculateLogitBias()`'s own early return.
+ * @param {{id?: string, text?: string, value?: number}[]} logitBiasPreset
+ * @param {{encode?: (text: string) => Promise<number[]|null>}} [tokenizerOptions]
+ * @param {string[]} [dropped]
+ * @returns {Promise<{[tokenId: string]: number}>}
  */
 export async function computeTextgenLogitBias(logitBiasPreset, tokenizerOptions = {}, dropped = undefined) {
     const result = {};
@@ -980,10 +917,8 @@ export async function computeTextgenLogitBias(logitBiasPreset, tokenizerOptions 
 
         let tokens;
         if (text.startsWith('{') && text.endsWith('}')) {
-            // Verbatim text
             tokens = await encode(text.slice(1, -1));
         } else if (text.startsWith('[') && text.endsWith(']')) {
-            // Raw token ids, JSON serialized
             try {
                 const parsed = JSON.parse(text);
                 if (Array.isArray(parsed) && parsed.every(t => Number.isInteger(t))) {
@@ -997,7 +932,6 @@ export async function computeTextgenLogitBias(logitBiasPreset, tokenizerOptions 
                 continue;
             }
         } else {
-            // Text with a leading space
             tokens = await encode(` ${text}`);
         }
 
@@ -1220,13 +1154,7 @@ function createWebTokenizerDecodingHandler(tokenizer) {
     };
 }
 
-/**
- * Maps a local tokenizer type string (matching the route paths registered below, e.g.
- * '/llama/encode' -> 'llama') to the already-instantiated tokenizer instance backing it. Reuses
- * the same module-private instances the Express routes use below - never instantiate new
- * tokenizer objects here, that would double-load the underlying model files.
- * @type {{[key: string]: SentencePieceTokenizer | Tokenizer}}
- */
+/** @type {{[key: string]: SentencePieceTokenizer | Tokenizer}} */
 const LOCAL_TOKENIZER_INSTANCES = {
     llama: spp_llama,
     nerdstash: spp_nerd,
@@ -1248,10 +1176,7 @@ const SENTENCEPIECE_TOKENIZER_TYPES = new Set(['llama', 'nerdstash', 'nerdstash_
 const WEB_TOKENIZER_TYPES = new Set(['claude', 'llama3', 'qwen2', 'command-r', 'command-a', 'nemo', 'deepseek']);
 
 /**
- * The tokenizer that encodes and decodes for a local tokenizer type on every path that awaits it. It
- * is LOCAL_TOKENIZER_INSTANCES' except for llama3, which gets the exact reader. A web tokenizer
- * instance's encode and decode may return promises.
- * @param {string} key A LOCAL_TOKENIZER_INSTANCES key
+ * @param {string} key
  * @returns {SentencePieceTokenizer|WebTokenizer|ExactJsonTokenizer|undefined}
  */
 function getEncodingTokenizer(key) {
@@ -1259,11 +1184,8 @@ function getEncodingTokenizer(key) {
 }
 
 /**
- * The tokenizer identity (src/tokenizer-resolve.js tokenizerIdentity()) of a bundled or downloaded
- * local tokenizer type: the file getEncodingTokenizer() encodes with, and its reader. The reader is
- * part of it because @agnai/web-tokenizers doesn't read every tokenizer.json as npm `tokenizers` does.
- * @param {string} key A TOKENIZER_TYPE_KEYS value
- * @returns {Promise<string|null>} null when the key has no such tokenizer. Throws when its file can't be had.
+ * @param {string} key
+ * @returns {Promise<string|null>}
  */
 export async function getLocalTokenizerFileIdentity(key) {
     const tokenizer = Object.hasOwn(LOCAL_TOKENIZER_INSTANCES, key) ? getEncodingTokenizer(key) : undefined;
@@ -1271,8 +1193,6 @@ export async function getLocalTokenizerFileIdentity(key) {
 }
 
 /**
- * The tokenizer that encodes and decodes for a local resolution: its registry entry's when it has
- * a `source`, else getEncodingTokenizer()'s.
  * @param {{id: number, source?: string}} tokenizer
  * @param {LocalTokenizerOptions} [options]
  * @returns {SentencePieceTokenizer|WebTokenizer|ExactJsonTokenizer|RegistryTokenizer|undefined}
@@ -1285,15 +1205,9 @@ function getLocalTokenizer(tokenizer, options = {}) {
 }
 
 /**
- * Encodes text to token ids using an already-instantiated local tokenizer, keyed by the same
- * type string used for the '/api/tokenizers/<type>/encode' routes below. Factors out the
- * per-type encode step that createSentencepieceEncodingHandler/createWebTokenizerEncodingHandler/
- * createTiktokenEncodingHandler wire up per-route, so callers that need raw token ids (not an
- * Express response) don't have to duplicate the dispatch-by-type logic.
- * @param {string} tokenizerType One of: llama, nerdstash, nerdstash_v2, mistral, yi, gemma, jamba,
- * claude, llama3, qwen2, command-r, command-a, nemo, deepseek, gpt2.
- * @param {string} text Text to encode.
- * @returns {Promise<number[]>} Array of token ids. Throws for an unrecognized tokenizer type.
+ * @param {string} tokenizerType
+ * @param {string} text
+ * @returns {Promise<number[]>}
  */
 export async function encodeTextByLocalTokenizerType(tokenizerType, text) {
     if (tokenizerType === 'gpt2') {
@@ -1350,8 +1264,7 @@ router.post('/nemo/decode', createWebTokenizerDecodingHandler(nemoTokenizer));
 router.post('/deepseek/decode', createWebTokenizerDecodingHandler(deepseekTokenizer));
 
 /**
- * Counts tiktoken tokens in chat messages the way OpenAI documents it.
- * @param {string} model A tiktoken model name
+ * @param {string} model
  * @param {object[]} messages
  * @returns {number}
  */
@@ -1379,8 +1292,6 @@ function countTiktokenMessages(model, messages) {
     }
     numTokens += tokensPadding;
 
-    // NB: Since 2023-10-14, the GPT-3.5 Turbo 0301 model shoves in 7-9 extra tokens to every message.
-    // More details: https://community.openai.com/t/gpt-3-5-turbo-0301-showing-different-behavior-suddenly/431326/14
     if (isTurbo0301) {
         numTokens += 9;
     }
@@ -1389,15 +1300,11 @@ function countTiktokenMessages(model, messages) {
 }
 
 /**
- * Counts chat-completion messages with a chat-completion resolveTokenizer() answer; the estimate
- * when there is no tokenizer or counting fails.
  * @param {import('../tokenizer-resolve.js').ResolvedTokenizer} resolved
  * @param {object[]} messages
- * @param {import('../tokenizer-resolve.js').TokenizerOutcome} [outcome] Records a failed count and
- * a downloaded tokenizer file, for a send's or a response's warnings.
- * @param {import('../users.js').UserDirectoryList} [directories] For the user's saved Hugging Face token
+ * @param {import('../tokenizer-resolve.js').TokenizerOutcome} [outcome]
+ * @param {import('../users.js').UserDirectoryList} [directories]
  * @param {import('../tokenizer-resolve.js').EncodeWithTokenizerTypeOptions['answeredOut']} [answeredOut]
- * Receives the tokenizer that gave the count: `resolved`, its local copy, or null for the estimate.
  * @returns {Promise<number>}
  */
 export async function countChatCompletionMessages(resolved, messages, outcome = undefined, directories = undefined, answeredOut = undefined) {
@@ -1431,7 +1338,6 @@ export async function countChatCompletionMessages(resolved, messages, outcome = 
 }
 
 /**
- * Counts chat-completion messages with one tokenizer. Throws when it fails.
  * @param {{id: number, source?: string, name: string, model?: string, kind?: string, llamaCpp?: import('../tokenizer-resolve.js').ResolvedTokenizer['llamaCpp']}} tokenizer
  * @param {object[]} messages
  * @param {import('../tokenizer-resolve.js').TokenizerOutcome} [outcome]
@@ -1458,11 +1364,10 @@ async function countMessagesWith(tokenizer, messages, outcome, directories) {
 }
 
 /**
- * Encodes with a chat-completion custom URL's llama.cpp `/tokenize`, as a single field: no BOS.
  * @param {NonNullable<import('../tokenizer-resolve.js').ResolvedTokenizer['llamaCpp']>} llamaCpp
  * @param {string} text
  * @param {boolean} [withPieces]
- * @returns {Promise<{ ids: number[], pieces?: Array<string|number[]> }|null>} null when it fails
+ * @returns {Promise<{ ids: number[], pieces?: Array<string|number[]> }|null>}
  */
 async function encodeViaCustomLlamaCpp(llamaCpp, text, withPieces = false) {
     const result = await encodeViaTextgenAPI(null, text, llamaCpp.url, llamaCpp.model, TEXTGEN_TYPES.LLAMACPP, { headers: llamaCpp.headers, withPieces });
@@ -1473,10 +1378,9 @@ async function encodeViaCustomLlamaCpp(llamaCpp, text, withPieces = false) {
 }
 
 /**
- * The encode or decode handler for a local chat-completion resolveTokenizer() answer.
  * @param {import('../tokenizer-resolve.js').ResolvedTokenizer} resolved
  * @param {'encode'|'decode'} direction
- * @param {import('../users.js').UserDirectoryList} [directories] For the user's saved Hugging Face token
+ * @param {import('../users.js').UserDirectoryList} [directories]
  * @returns {TokenizationHandler}
  */
 function chatCompletionTokenizerHandler(resolved, direction, directories = undefined) {
@@ -1492,21 +1396,14 @@ function chatCompletionTokenizerHandler(resolved, direction, directories = undef
     return encode ? createWebTokenizerEncodingHandler(instance) : createWebTokenizerDecodingHandler(instance);
 }
 
-/**
- * The tokenizers upstream's `/openai/*` routes accept by name (their `TOKENIZER_TYPE_KEYS` key) in
- * `?model=`. Naming one is an explicit pick of that tokenizer, whether or not the model map knows the name.
- */
 const OPENAI_ROUTE_NAMED_TOKENIZERS = [
     tokenizers.CLAUDE, tokenizers.LLAMA3, tokenizers.LLAMA, tokenizers.MISTRAL, tokenizers.YI, tokenizers.GEMMA,
     tokenizers.JAMBA, tokenizers.QWEN2, tokenizers.COMMAND_R, tokenizers.COMMAND_A, tokenizers.NEMO, tokenizers.DEEPSEEK,
 ];
 
 /**
- * The tokenizer for an `/openai/*` request: from the `X-ST-Connection-State` header's state when
- * there is one, else from `?model=`, the named tokenizer or the model map.
  * @param {import('express').Request} req
- * @returns {Promise<import('../tokenizer-resolve.js').ResolvedTokenizer|null>} null when the header holds no
- * chat-completion state.
+ * @returns {Promise<import('../tokenizer-resolve.js').ResolvedTokenizer|null>}
  */
 async function resolveOpenAIRouteRequest(req) {
     const state = readConnectionStateHeader(req);
@@ -1556,7 +1453,6 @@ router.post('/openai/decode', async function (req, res) {
 
         const resolved = await resolveOpenAIRouteRequest(req);
         if (!resolved) return res.sendStatus(400);
-        // llama.cpp's ids decode with its exact local copy, as `/current/decode` does.
         const decoding = resolved.llamaCpp ? (resolved.localCopy && localResolution(resolved.localCopy, null)) : resolved;
         if (!decoding || decoding.kind === 'estimate') {
             return res.send({ text: '' });
@@ -1589,18 +1485,16 @@ router.post('/remote/kobold/count', async function (request, response) {
 });
 
 /**
- * Encodes one string against a textgen backend's own tokenize endpoint.
- * @param {import('express').Request} request Original request, for header forwarding via setAdditionalHeaders
- * @param {string} text Text to encode
- * @param {string} baseUrl Backend base URL
- * @param {string} model Model name (only some backends need this)
- * @param {string} apiType One of TEXTGEN_TYPES
- * @param {object} [llamaCpp] llama.cpp `/tokenize` only (llama.cpp server README, "POST `/tokenize`").
- * @param {boolean} [llamaCpp.addSpecial] Sends `add_special: true`: BOS goes in as it does for a generation's prompt.
- * @param {boolean} [llamaCpp.withPieces] Sends `with_pieces: true` and answers each token's `piece` in `pieces`.
- * @param {Record<string, string>} [llamaCpp.headers] Sent in place of the textgen type's own headers.
- * @returns {Promise<{count: number, ids: number[], pieces?: Array<string|number[]>}|{error: true, unreachable?: true}>} `unreachable`:
- * the backend couldn't be reached, which is already logged.
+ * @param {import('express').Request} request
+ * @param {string} text
+ * @param {string} baseUrl
+ * @param {string} model
+ * @param {string} apiType
+ * @param {object} [llamaCpp]
+ * @param {boolean} [llamaCpp.addSpecial]
+ * @param {boolean} [llamaCpp.withPieces]
+ * @param {Record<string, string>} [llamaCpp.headers]
+ * @returns {Promise<{count: number, ids: number[], pieces?: Array<string|number[]>}|{error: true, unreachable?: true}>}
  */
 export async function encodeViaTextgenAPI(request, text, baseUrl, model, apiType, llamaCpp = {}) {
     try {
@@ -1684,7 +1578,6 @@ export async function encodeViaTextgenAPI(request, text, baseUrl, model, apiType
     }
 }
 
-/** The api_types `encodeViaTextgenAPI` has a remote tokenize endpoint for. */
 const TEXTGEN_ENCODE_TYPES = [
     TEXTGEN_TYPES.TABBY,
     TEXTGEN_TYPES.KOBOLDCPP,
@@ -1711,13 +1604,6 @@ router.post('/remote/textgenerationwebui/encode', async function (request, respo
     return response.send(result);
 });
 
-/**
- * Batch counterpart to /remote/textgenerationwebui/encode: encodes multiple texts in one round
- * trip. The client<->server hop is the one that can be on a slow link (VPN, mobile); the
- * server<->backend hop this fans out over is normally localhost/LAN, so batching here (not at
- * the backend protocol level, which varies per api_type and mostly doesn't support batch input
- * anyway) is what actually collapses N client round trips into 1.
- */
 router.post('/remote/textgenerationwebui/encode-batch', async function (request, response) {
     if (!request.body || !Array.isArray(request.body.texts)) {
         return response.sendStatus(400);
@@ -1732,7 +1618,7 @@ router.post('/remote/textgenerationwebui/encode-batch', async function (request,
 });
 
 /**
- * @param {{id: number, model?: string}} tokenizer An OPENAI or GPT2 tokenizer.
+ * @param {{id: number, model?: string}} tokenizer
  * @returns {import('tiktoken').Tiktoken}
  */
 function getTiktokenFor(tokenizer) {
@@ -1740,8 +1626,6 @@ function getTiktokenFor(tokenizer) {
 }
 
 /**
- * The loaded instance of a local sentencepiece, web or registry tokenizer, and whether it is one of
- * the bundled sentencepiece files. Throws when it fails to load.
  * @param {{id: number, source?: string, name: string}} tokenizer
  * @param {LocalTokenizerOptions} options
  * @returns {Promise<{isSentencepiece: boolean, instance: any}>}
@@ -1755,7 +1639,6 @@ async function getLocalInstance(tokenizer, options) {
 }
 
 /**
- * The token chunks for `ids` a local tokenizer gave for `text`, as its encode route shows them.
  * @param {{id: number, source?: string, name: string, model?: string}} tokenizer
  * @param {string} text
  * @param {number[]} ids
@@ -1771,7 +1654,6 @@ export async function getLocalEncodeChunks(tokenizer, text, ids, options = {}) {
 }
 
 /**
- * Decodes ids with a local tokenizer, as its decode route does. Throws when it fails to load.
  * @param {{id: number, source?: string, name: string, model?: string}} tokenizer
  * @param {number[]} ids
  * @param {LocalTokenizerOptions} [options]

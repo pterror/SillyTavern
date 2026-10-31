@@ -5,12 +5,6 @@ import os from 'node:os';
 
 import { oldStoreOracle } from './util/old-store-oracle.js';
 
-/**
- * Tags on the engine (src/library-engine.js, src/library-engine-tags.js) against the old store's answers for the
- * same writes. The old store is gone; its answers are recorded (tests/fixtures/old-store/library-engine-tags/,
- * see tests/util/old-store-oracle.js).
- */
-
 /** @type {any} */
 let metadataDb;
 /** @type {Awaited<ReturnType<typeof oldStoreOracle>>} */
@@ -56,7 +50,6 @@ afterEach(async () => {
     fs.rmSync(directories.root, { recursive: true, force: true });
 });
 
-/** The ids of a whole tagPage read, through pages of `limit`. */
 async function pageIds(query, limit = 3) {
     const ids = [];
     let after;
@@ -79,7 +72,6 @@ describe('the tag writer', () => {
         ];
         for (const tag of tags) await library.writeTag(tag);
         const keys = async (/** @type {bigint[]} */ ids) => (await library.store.tagKeys(ids)).map((/** @type {any} */ k) => k.key);
-        // Manual: by order (null is 0), then the unordered by name.
         expect(await keys(await pageIds({ sort: 2 }))).toEqual(['c', 'b', 'a', 'd', 'e']);
         const before = library.store.stats().logBytes;
         for (const tag of tags) await library.writeTag(tag);
@@ -104,7 +96,6 @@ describe('the tag writer', () => {
     });
 });
 
-/** A deterministic stream of numbers in [0, 1). */
 function rng(seed) {
     let s = seed >>> 0;
     return () => {
@@ -115,12 +106,10 @@ function rng(seed) {
     };
 }
 
-// Case, accents and ties; no lone surrogates (the old store's SQLite text turns them into U+FFFD).
 const TAG_NAMES = ['Alpha', 'alpha', 'Álpha', 'beta', 'Beta', 'Ölaf', 'olaf', 'zed', '', 'a b', '😀 smile', 'Σίσυφος', 'ab', 'a'];
 const FOLDER_TYPES = [undefined, 'NONE', 'OPEN', 'CLOSED', { odd: 1 }];
 const ORDERS = [undefined, 1, 2, 2, null, '3', 'x', -5, 1.5];
 
-/** The old store's /by-ids answer, as the route builds it. */
 async function oldByIds(ids) {
     const merged = /** @type {Record<string, string>} */ (await metadataDb.getMergedTagTargets(directories, ids));
     const asked = new Set(ids.map(String));
@@ -130,7 +119,6 @@ async function oldByIds(ids) {
     return { tags, gone: goneOrMerged.filter(id => !Object.hasOwn(merged, id)), merged };
 }
 
-/** Both stores' answers to the same calls. */
 const both = {
     create: async (/** @type {any} */ tag, /** @type {any} */ options) => [await metadataDb.createTagDefinition(directories, structuredClone(tag), options), await library.tags.create(structuredClone(tag), options)],
     edit: async (/** @type {string} */ id, /** @type {any} */ patch) => [await metadataDb.editTagDefinition(directories, id, patch), await library.tags.edit(id, patch)],
@@ -141,7 +129,6 @@ const both = {
     move: async (/** @type {string} */ from, /** @type {string} */ to) => [await metadataDb.moveEntityTags(directories, from, to), await library.tags.move(from, to)],
 };
 
-/** Waits until no merged tag's carriers are still moving on the engine. */
 async function settle() {
     const ids = [];
     let after;
@@ -159,7 +146,6 @@ async function settle() {
     throw new Error('a merge never finished');
 }
 
-/** Characters and groups in both stores, with no tags. */
 async function setUpEntities(r, characters = 16, groups = 5) {
     const keys = [];
     for (let i = 0; i < characters; i++) {
@@ -180,7 +166,6 @@ async function setUpEntities(r, characters = 16, groups = 5) {
     return keys;
 }
 
-/** A varied tag. */
 function makeTag(r, i) {
     const pick = (/** @type {any[]} */ list) => list[Math.floor(r() * list.length)];
     /** @type {Record<string, unknown>} */
@@ -194,7 +179,6 @@ function makeTag(r, i) {
     return tag;
 }
 
-/** Every page of a query through cursors of `pageSize`, both stores. */
 async function bothQueryPages(params, pageSize = 3) {
     const read = async (/** @type {(p: any) => Promise<any>} */ query) => {
         const ids = [];
@@ -233,7 +217,6 @@ const FILTERS = [
     { used: true, search: 'b' },
 ];
 
-/** Compares every read the tag manager makes, both stores; the whole list holds more than `minimum` tags. */
 async function compareReads(keys, tagIds, minimum = 20) {
     for (const sort of ['manual', 'alphabetical', 'by_entries']) {
         for (const filter of FILTERS) {
@@ -289,7 +272,6 @@ describe('tags on the engine against the old store', () => {
                 expect(e).toEqual(o);
             }
         }
-        // A key no definition has is assigned all the same, and listed nowhere until one is written.
         expect(await both.assign(keys[0], 'nodef-1')).toEqual([{ result: 'ok', assigned: 'nodef-1', reason: null, defined: false }, { result: 'ok', assigned: 'nodef-1', reason: null, defined: false }]);
         await both.assign(keys[1], 'nodef-2');
         expect((await both.assign('nobody.png', tagIds[0]))[1]).toEqual({ result: 'not_found', assigned: null, reason: null, defined: false });
@@ -306,7 +288,6 @@ describe('tags on the engine against the old store', () => {
         const [movedOld, movedEng] = await both.move(keys[5], keys[6]);
         expect({ ...movedEng, moved: [...movedEng.moved].sort() }).toEqual({ ...movedOld, moved: [...movedOld.moved].sort() });
 
-        // Merges, one into a tag merged in turn, and a delete with no merge.
         const [x, y, z, w] = tagIds.slice(10, 14);
         const deletes = [[x, y], [y, z], [w, null], [x, z], [z, z], [tagIds[15], w]];
         for (const [id, into] of deletes) {
@@ -315,7 +296,6 @@ describe('tags on the engine against the old store', () => {
         }
         expect((await both.assign(keys[7], x))[1]).toEqual({ result: 'ok', assigned: z, reason: 'merged', defined: true });
         expect((await both.assign(keys[7], w))[1]).toEqual({ result: 'ok', assigned: null, reason: 'deleted', defined: false });
-        // The old store forgets a merge once it finishes it; the engine keeps it, so this is read first.
         const asked = [x, y, w, z, tagIds[0], 'nodef-1', 'nobody'];
         const [ob, eb] = [await oldByIds(asked), await library.tags.byIds(asked)];
         const sortTags = (/** @type {any} */ a) => ({ ...a, tags: [...a.tags].sort((p, q) => (p.id < q.id ? -1 : 1)), gone: [...a.gone].sort() });
@@ -324,18 +304,15 @@ describe('tags on the engine against the old store', () => {
         await settle();
         await compareReads(keys, tagIds);
 
-        // The definition of a key only assignments named.
         await both.create({ id: 'nodef-1', name: 'Defined later' });
         await compareReads(keys, [...tagIds, 'nodef-1']);
 
-        // Prunes, every unused tag.
         const unused = await library.tags.countUnused();
         const [prunedOld, prunedEng] = [await metadataDb.pruneUnusedTags(directories, 500), await library.tags.prune(500)];
         expect([...prunedEng].sort()).toEqual([.../** @type {string[]} */ (prunedOld)].sort());
         expect(prunedEng.length).toBe(unused);
         await compareReads(keys, tagIds);
 
-        // Change feeds, as sets of ids.
         const feedIds = async (/** @type {(since: number) => Promise<any>} */ read) => {
             const ids = new Set();
             let since = 0;
@@ -366,7 +343,6 @@ describe('tags on the engine against the old store', () => {
     });
 });
 
-/** Every manual page, through cursors of `pageSize`, as ids. */
 async function manualPages(query, filter = {}, pageSize = 3) {
     const ids = [];
     let cursor = null;
@@ -383,7 +359,6 @@ async function manualPages(query, filter = {}, pageSize = 3) {
 const oldManual = (/** @type {any} */ filter, /** @type {number} */ pageSize) => manualPages(p => metadataDb.queryTags(directories, { ...p, after: p.cursor ? metadataDb.decodeTagQueryCursor(p.cursor, 'manual') : null }), filter, pageSize);
 const engManual = (/** @type {any} */ filter, /** @type {number} */ pageSize) => manualPages(p => library.tags.query(p), filter, pageSize);
 
-/** Both stores' manual order, every way it is read. */
 async function compareManual() {
     for (const filter of [{}, { used: true }, { search: 'a' }, { folders: true }]) {
         for (const pageSize of [2, 50]) {
@@ -397,7 +372,6 @@ async function compareManual() {
     expect(eng).toEqual(old);
 }
 
-/** Every tag's stored sort_order, both stores. */
 async function compareOrders(ids) {
     const sorted = (/** @type {any[]} */ tags) => Object.fromEntries(tags.map(t => [t.id, t.sort_order]));
     const old = sorted(/** @type {any[]} */ (await metadataDb.getTagDefinitionsByIds(directories, ids)));
@@ -405,7 +379,6 @@ async function compareOrders(ids) {
     expect(eng).toEqual(old);
 }
 
-/** Tags with orders, ties, none and a few odd values, a few carried, in both stores. */
 async function setUpOrderedTags(r, n = 24) {
     const keys = await setUpEntities(r, 6, 0);
     const orders = [1, 2, 3, 3, 3, 4, 5, undefined, undefined, 'x', 7.5, 7.5, null, 10, 11, undefined, 12, 13, 13, 14, undefined, 20, 21, 22];
@@ -434,7 +407,6 @@ describe('moves and reorders against the old store', () => {
             const anchor = r() < 0.05 ? id : r() < 0.05 ? 'nobody' : ids[Math.floor(r() * ids.length)];
             placements.push([id, r() < 0.5 ? { before: anchor } : { after: anchor }]);
         }
-        // Moves to one place again and again run out of room between neighbours, so windows are spread.
         for (let k = 0; k < 60; k++) placements.push([ids[k % 3], { after: ids[3] }], [ids[4 + (k % 3)], { before: ids[7] }]);
         for (const [id, placement] of placements) {
             const old = /** @type {any} */ (await metadataDb.moveTagDefinition(directories, id, placement));
@@ -458,13 +430,9 @@ describe('moves and reorders against the old store', () => {
             if (eng.written.length > 1) spread++;
             return eng;
         };
-        // Next to a tie: no room between the neighbours, so a window is spread.
         expect((await move('h', { after: 'a' })).written.length).toBeGreaterThan(1);
-        // Already in place among the tags with no order.
         expect((await move('d', { before: 'e' })).written).toEqual([]);
-        // An anchor with no order: the tags with none before it are numbered first.
         expect((await move('f', { before: 'e' })).written.length).toBeGreaterThan(2);
-        // Two tags taking turns right after one anchor halve the gap until it is spent.
         for (let k = 0; k < 70; k++) await move(k % 2 ? 'b' : 'c', { after: 'i' });
         expect(spread).toBeGreaterThan(2);
         await move('g', { before: 'a' });
@@ -505,7 +473,6 @@ describe('moves and reorders against the old store', () => {
 });
 
 describe('the reorder pass on the engine', () => {
-    /** The stored manual order: the tags with an order by it, then the rest by name. */
     const storedManual = async () => {
         const ids = [];
         let after;
@@ -533,7 +500,6 @@ describe('the reorder pass on the engine', () => {
         const cursorBefore = /** @type {any} */ (await library.tags.query({ sort: 'manual', pageSize: 2 })).cursor;
         await library.tags.startPass();
         expect(await storedManual()).toEqual(shown);
-        // A cursor made while it drained names the stored order, so it still reads on.
         expect(await library.tags.query({ sort: 'manual', pageSize: 2, cursor: cursorBefore })).not.toBe('invalid-cursor');
     });
 
@@ -559,7 +525,6 @@ describe('the reorder pass on the engine', () => {
         await library.tags.reorderDefinitions(ids[0], { after: ids[1] }, 'by_entries');
         await library.tags.lane(() => library.tags.passStep());
         await library.tags.lane(() => library.tags.passStep());
-        // Tags the walk hasn't reached yet move ahead of it: it passes them by.
         const unwalked = (await library.store.tagPage({ sort: 1, unstamped: (await library.store.tagPass()).pass, limit: 100 })).ids;
         const behind = (await library.tags.tagKeys(unwalked.slice(-3))).map(String);
         for (const key of ['c0.png', 'c1.png', 'c2.png', 'c3.png', 'c4.png', 'c5.png']) for (const tag of behind) await library.tags.assign(key, tag);
@@ -571,7 +536,6 @@ describe('the reorder pass on the engine', () => {
         const order = await storedManual();
         const live = (await library.store.tagPass()).live;
         expect(order.length).toBe(live);
-        // Every tag got an order from the pass: none is left with an older one, and none shares one.
         const defs = (await library.tags.byIds(/** @type {string[]} */ (order))).tags;
         const values = defs.map(t => t.sort_order);
         expect(new Set(values).size).toBe(values.length);
@@ -633,7 +597,6 @@ describe('restore and the settings import against the old store', () => {
     beforeAll(async () => {
         cryptoModule = (await import('node:crypto')).default;
     });
-    /** Runs `old` then `eng`, each with uuids handed out from the same start. */
     async function sameUuids(/** @type {() => Promise<any>} */ old, /** @type {() => Promise<any>} */ eng) {
         const spy = jest.spyOn(cryptoModule, 'randomUUID');
         try {
@@ -648,17 +611,12 @@ describe('restore and the settings import against the old store', () => {
         }
     }
 
-    /**
-     * Tags, assignments and a merged and a deleted tag, in both stores. The old store forgets a deletion once it
-     * finishes it, so it finishes after what is compared.
-     */
     async function setUp() {
         const keys = await setUpEntities(rng(21), 6, 2);
         for (const tag of [
             { id: 'keep', name: 'Keep', color: 'red', sort_order: 3 },
             { id: 'named', name: 'Same Name', sort_order: 4 },
             { id: 'other', name: 'Other', sort_order: 5 },
-            // Below the live tags' orders: the old store counts a deleted tag's order until it finishes it.
             { id: 'merged', name: 'Merged', sort_order: 0.5 },
             { id: 'dropped', name: 'Dropped', sort_order: 0.75 },
             { id: 'odd', name: 'Odd', sort_order: 'x' },
@@ -762,7 +720,6 @@ describe('restore and the settings import against the old store', () => {
         await compareReads(keys, ids, 6);
         await compareManual();
         await compareOrders(ids);
-        // The legacy file stays, so neither is marked done; the seed was decided once, with a `tags` key: none.
         expect(await library.store.meta(['settings_tags_migrated', 'tags_seed_pending'])).toEqual([null, null]);
     });
 

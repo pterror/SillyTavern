@@ -1,9 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import path from 'node:path';
 
-// /api/characters/fav with `toggle: true`: the server flips what it has stored, so the page needs no copy of the
-// character (bulk fav on characters the page doesn't hold).
-
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
 /** @type {import('node:http').Server} */
@@ -57,7 +54,10 @@ async function fav(body) {
     return { status: response.status, body: parsed };
 }
 
-/** @param {string} avatar @param {boolean} isFav */
+/**
+ * @param {string} avatar
+ * @param {boolean} isFav
+ */
 async function seedCharacter(avatar, isFav) {
     const name = avatar.replace(/\.png$/, '');
     const cardJson = JSON.stringify({

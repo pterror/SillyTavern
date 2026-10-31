@@ -1,15 +1,3 @@
-//! Which stored values feed search (build path 5d), and their entries kept at commit through `search::index`.
-//!
-//! An entity's searched fields depend on its type, since field codes are shared across types (code 1 is a
-//! character's, a group's and a tag's name): characters and groups are the library's documents, tags the tag
-//! names', and an entry of a world book or of a character's own book (`character_book`) its book's. A book's
-//! `originalData` is searched by no editor and has no postings. A session's name is the session names'.
-//!
-//! Values written before their entity's create (the writers commit the create last) are indexed by the create;
-//! a deleted entity's fields are removed once, whole, before its values go. A list field's items are each their
-//! own text value, so a change to one reads the list's other items: the field's counts and length are the
-//! list's.
-
 use super::StoreError;
 use super::books::{BOOK, ENTRY, OWNED, parse_entry_key};
 use super::derive::{Out, View};
@@ -18,16 +6,11 @@ use super::library::{self, CHARACTER, GROUP, ITEM_BASE, LISTS, TAG, entity_info}
 use crate::log::format::FieldRef;
 use crate::search::{self, Scope};
 
-/// Where a searched field's values come from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
-    /// A text value.
     Text(u64),
-    /// A list's items (each a text value).
     List(u64),
-    /// The entity's key (a group's id).
     Key,
-    /// An entry's `uid`: its stored JSON, else (a world book's entry without the no-`uid` marker) its key.
     Uid,
 }
 
@@ -41,8 +24,6 @@ const fn def(field: u32, source: Source) -> Def {
     Def { field, source }
 }
 
-/// The codes the writers store these by (`src/library-codes.js`, `src/library-engine.js`,
-/// `src/world-info-engine.js`).
 const NAME: u64 = 1;
 const CREATOR: u64 = 2;
 const DESCRIPTION: u64 = 10;
@@ -59,21 +40,15 @@ const ENTRY_COMMENT: u64 = 103;
 const ENTRY_CONTENT: u64 = 104;
 const ENTRY_GROUP: u64 = 127;
 const ENTRY_AUTOMATION_ID: u64 = 134;
-/// A character book entry's `id`, which upstream's `convertCharacterBook` makes the entry's `uid`.
 const ENTRY_ID: u64 = 153;
-/// A character book entry's `extensions.group` and `extensions.automation_id`, which upstream's
-/// `convertCharacterBook` makes the entry's `group` and `automationId` (`EXTENSION_KEYS` in
-/// `src/world-info-engine.js`).
 const EXT_GROUP: u64 = 170;
 const EXT_AUTOMATION_ID: u64 = 177;
-/// A world book's entry stored without `uid` (otherwise its `uid` is its key as a number).
 const ENTRY_NO_UID: u64 = 97;
 const ENTRY_KEY: u64 = 0;
 const ENTRY_KEYSECONDARY: u64 = 1;
 const ENTRY_KEYS: u64 = 3;
 const ENTRY_SECONDARY_KEYS: u64 = 4;
 
-/// In `search::LIBRARY_FIELDS` order.
 static CHARACTER_DEFS: &[Def] = &[
     def(0, Source::Text(NAME)),
     def(1, Source::Text(DESCRIPTION)),
@@ -95,7 +70,6 @@ static GROUP_DEFS: &[Def] = &[
 
 static TAG_DEFS: &[Def] = &[def(0, Source::Text(NAME))];
 
-/// In `search::BOOK_FIELDS` order.
 static WORLD_ENTRY_DEFS: &[Def] = &[
     def(0, Source::List(ENTRY_KEY)),
     def(1, Source::Text(ENTRY_GROUP)),
@@ -106,8 +80,6 @@ static WORLD_ENTRY_DEFS: &[Def] = &[
     def(6, Source::Text(ENTRY_AUTOMATION_ID)),
 ];
 
-/// A character book's entry as upstream's `convertCharacterBook` reads it: `keys`, `secondary_keys`, `id`, and
-/// its `extensions`' `group` and `automation_id`.
 static OWNED_ENTRY_DEFS: &[Def] = &[
     def(0, Source::List(ENTRY_KEYS)),
     def(1, Source::Text(EXT_GROUP)),
@@ -118,7 +90,6 @@ static OWNED_ENTRY_DEFS: &[Def] = &[
     def(6, Source::Text(EXT_AUTOMATION_ID)),
 ];
 
-/// What an entity is to search: its scope, its fields, and (an entry) whether its book is a world book.
 #[derive(Clone, Copy)]
 pub struct Searched {
     pub scope: Scope,
@@ -126,7 +97,6 @@ pub struct Searched {
     world: bool,
 }
 
-/// The entity's type and key, and what it is to search (None: nothing of it is searched).
 fn of(view: &View, e: u64) -> Result<Option<(Vec<u8>, Searched)>, StoreError> {
     let Some((kind, k, _)) = entity_info(view, e)? else {
         return Ok(None);
@@ -135,15 +105,12 @@ fn of(view: &View, e: u64) -> Result<Option<(Vec<u8>, Searched)>, StoreError> {
     Ok(searched(view, kind, &k, m)?.map(|s| (k, s)))
 }
 
-/// Whether entity `e` of type `kind` is a tag with its definition marker in `view`, not merged away.
 pub fn marked(view: &View, kind: u64, e: u64) -> Result<bool, StoreError> {
     Ok(kind == TAG
         && super::tags::has_marker(view, e)?
         && view.get(&key::id(key::MERGE, e))?.is_none())
 }
 
-/// What an entity of type `kind` and key `k` is to search; `marked`: it is a tag with its definition marker
-/// (a tag's name is searched only while it has one).
 pub fn searched(
     view: &View,
     kind: u64,
@@ -170,7 +137,6 @@ pub fn searched(
     Ok(Some(Searched { scope, defs, world }))
 }
 
-/// The list and item a list item's field is.
 fn item_of(f: &FieldRef) -> Option<(u64, u64)> {
     match f {
         FieldRef::Code(c) if *c >= ITEM_BASE => {
@@ -180,7 +146,6 @@ fn item_of(f: &FieldRef) -> Option<(u64, u64)> {
     }
 }
 
-/// The text values of entity `e`'s list `list`, but item `but`.
 fn list_items(
     view: &View,
     e: u64,
@@ -203,12 +168,10 @@ fn list_items(
     Ok(out)
 }
 
-/// A JSON value's text.
 fn json_value(view: &View, e: u64, code: u64) -> Result<Option<Vec<u8>>, StoreError> {
     super::history::json_value(view, e, &FieldRef::Code(code))
 }
 
-/// An entry's `uid` as searched, given its stored `uid` JSON and whether it has the no-`uid` marker.
 fn uid_from(stored: Option<Vec<u8>>, no_uid: bool, k: &[u8], world: bool) -> Vec<Vec<u8>> {
     match stored {
         Some(j) => vec![j],
@@ -233,7 +196,6 @@ fn uid_now(view: &View, e: u64, k: &[u8], world: bool) -> Result<Vec<Vec<u8>>, S
     ))
 }
 
-/// A field's values as they are in `view`.
 fn current(
     view: &View,
     e: u64,
@@ -267,7 +229,6 @@ fn update(
     search::index::update(view, out, scope, doc, field, &refs(old), &refs(new))
 }
 
-/// Every field of `doc` comes (`on`) or goes, with these values.
 fn whole(
     view: &View,
     out: &mut Out,
@@ -286,7 +247,6 @@ fn whole(
     search::index::whole(view, out, scope, doc, &fields, on)
 }
 
-/// Text value `f` of entity `e` changes from `old` to `new` (None: none).
 pub fn text_written(
     view: &View,
     out: &mut Out,
@@ -334,7 +294,6 @@ pub fn text_written(
     Ok(())
 }
 
-/// Whether text value `f` of entity `e` is searched (a write to it needs its old text).
 pub fn wants(view: &View, e: u64, f: &FieldRef) -> Result<bool, StoreError> {
     let Some((_, s)) = of(view, e)? else {
         #[cfg(any(test, feature = "measure"))]
@@ -349,7 +308,6 @@ pub fn wants(view: &View, e: u64, f: &FieldRef) -> Result<bool, StoreError> {
     }))
 }
 
-/// JSON value `code` of entity `e` changes to `new` (None: removed): an entry's `uid` or its no-`uid` marker.
 pub fn json_written(
     view: &View,
     out: &mut Out,
@@ -391,8 +349,6 @@ pub fn json_written(
     Ok(())
 }
 
-/// Entity `e` (type `kind`, key `k`) is created with the values in `view`, or (`marked`) a tag gets its
-/// definition marker.
 pub fn created(
     view: &View,
     out: &mut Out,
@@ -411,8 +367,6 @@ pub fn created(
     whole(view, out, s.scope, e, &now, true)
 }
 
-/// Entity `e` (type `kind`, key `k`) goes, or a tag loses its definition marker: every field it is searched by,
-/// before its values (and the marker) go.
 pub fn gone(view: &View, out: &mut Out, e: u64, kind: u64, k: &[u8]) -> Result<(), StoreError> {
     let Some(s) = searched(view, kind, k, marked(view, kind, e)?)? else {
         return Ok(());
@@ -424,7 +378,6 @@ pub fn gone(view: &View, out: &mut Out, e: u64, kind: u64, k: &[u8]) -> Result<(
     whole(view, out, s.scope, e, &was, false)
 }
 
-/// Entity `e` (type `kind`) is keyed `new` instead of `old`.
 pub fn rekeyed(
     view: &View,
     out: &mut Out,
@@ -450,7 +403,6 @@ pub fn rekeyed(
     Ok(())
 }
 
-/// A session's name changes from `old` to `new`.
 pub fn session_named(
     view: &View,
     out: &mut Out,
@@ -462,7 +414,6 @@ pub fn session_named(
     update(view, out, Scope::SESSIONS, session, 0, &one(old), &one(new))
 }
 
-/// A position's name, as its `positionName` record holds it.
 pub fn position_name(view: &View, p: u64) -> Result<Option<Vec<u8>>, StoreError> {
     let Some(b) = view.get(&key::id(key::POSITION_NAME, p))? else {
         return Ok(None);
@@ -471,7 +422,6 @@ pub fn position_name(view: &View, p: u64) -> Result<Option<Vec<u8>>, StoreError>
     Ok(Some(bytes(&rec, 1).to_vec()))
 }
 
-/// A searched field's values now, for checking a phrase on them (empty when the document has none).
 pub fn texts(view: &View, scope: Scope, doc: u64, field: u32) -> Result<Vec<Vec<u8>>, StoreError> {
     if scope.kind == search::SESSIONS {
         return Ok(position_name(view, doc)?.into_iter().collect());

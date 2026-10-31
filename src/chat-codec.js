@@ -1,17 +1,5 @@
 import { parseTimestamp } from './timestamps.js';
 
-/**
- * A message as the engine stores it (build path 5b), and back: exactly what upstream's message object holds, so it
- * comes back byte for byte, each value its own record, at the fewest bytes.
- *
- * The append (`messageAppend`) holds the message's fixed values: its text (`mes`), the speaker by id with a name
- * only where it differs from the speaker's, the server's receive time, and `flags`, the shape of the fixed values
- * (engine/src/store/chat.rs). Every other top-level value and every `extra` key is a value of its own: a known key by
- * code, any other by its key. `send_date` and the generation times are deltas from the receive time where they are
- * ISO strings or numbers. The key order is one of three usual orders, else an order value of its own.
- */
-
-/** Top-level keys' field codes; the engine reads `mes` to `gen_finished` and the time codes (chat.rs). */
 export const TOP = Object.freeze({
     mes: 1,
     is_user: 2,
@@ -28,10 +16,6 @@ export const TOP = Object.freeze({
     persona: 15,
 });
 
-/**
- * Codes of values the writer keeps about a message: its order and `extra`'s; after a change, its shape, its speaker,
- * and that its name is the speaker's again (the append's own name aside); the times it read and number times.
- */
 export const META = Object.freeze({
     order: 10,
     extraOrder: 11,
@@ -46,7 +30,6 @@ export const META = Object.freeze({
     genFinishedNum: 25,
 });
 
-/** `extra`'s known keys' field codes. */
 export const EXTRA = Object.freeze({
     api: 64,
     model: 65,
@@ -77,26 +60,22 @@ export const EXTRA = Object.freeze({
 const TOP_BY_CODE = new Map(Object.entries(TOP).map(([k, c]) => [c, k]));
 const EXTRA_BY_CODE = new Map(Object.entries(EXTRA).map(([k, c]) => [c, k]));
 
-/** Flag shifts (chat.rs `FLAG_*`). */
 const F = Object.freeze({ isUser: 0, sendDate: 2, order: 4, isSystem: 6, mes: 8, extra: 10, name: 12, isName: 14, originalAvatar: 16, forceAvatar: 17 });
 
-/** The usual key orders: a message the page sends, a reply the server stores, a reply upstream's page made. */
 const ORDERS = Object.freeze([
     ['name', 'is_user', 'is_system', 'send_date', 'mes', 'extra', 'force_avatar', 'original_avatar'],
     ['name', 'is_user', 'mes', 'extra', 'send_date', 'gen_started', 'gen_finished', 'force_avatar', 'original_avatar'],
     ['extra', 'name', 'is_user', 'send_date', 'mes', 'title', 'gen_started', 'gen_finished', 'force_avatar', 'original_avatar'],
 ]);
 
-/** `extra`'s usual key order: its known keys in code order, then the rest by name. */
 const EXTRA_ORDER = Object.keys(EXTRA);
 
-/** A key not known at the top level is stored with this first character; one in `extra` that starts with it or ESC, after ESC. */
 const TOP_MARK = '\u0001';
 const ESC = '\u0002';
 
 /**
  * @param {string} key
- * @returns {number | string} The field a top-level key is stored under.
+ * @returns {number | string}
  */
 export function topField(key) {
     return Object.hasOwn(TOP, key) ? TOP[/** @type {keyof typeof TOP} */ (key)] : TOP_MARK + key;
@@ -104,7 +83,7 @@ export function topField(key) {
 
 /**
  * @param {string} key
- * @returns {number | string} The field an `extra` key is stored under.
+ * @returns {number | string}
  */
 export function extraField(key) {
     if (Object.hasOwn(EXTRA, key)) return EXTRA[/** @type {keyof typeof EXTRA} */ (key)];
@@ -112,7 +91,6 @@ export function extraField(key) {
 }
 
 /**
- * What a stored field is: a top-level key, an `extra` key, or one of the writer's own (`META`).
  * @param {number | string} field
  * @returns {{ top: string } | { extra: string } | { meta: number }}
  */
@@ -128,7 +106,6 @@ export function fieldKey(field) {
 }
 
 /**
- * Whether `s` is exactly the ISO string of the time it names.
  * @param {unknown} s
  * @returns {s is string}
  */
@@ -139,8 +116,6 @@ function isCanonicalIso(s) {
 }
 
 /**
- * The order string of `keys` against the usual order `base` (each key present there in that order, then the rest by
- * name): one character per key, its place in that list plus one. Empty when `keys` already are in that order.
  * @param {string[]} keys
  * @param {readonly string[]} base
  */
@@ -151,7 +126,6 @@ function orderOf(keys, base) {
 }
 
 /**
- * `keys` in the order an order string (or the usual order, for '') gives.
  * @param {string[]} keys
  * @param {readonly string[]} base
  * @param {string} order
@@ -164,14 +138,13 @@ function applyOrder(keys, base, order) {
 
 /**
  * @typedef {object} Speaker
- * @property {bigint} id The character's entity id.
- * @property {string} name Its name now.
- * @property {{ until: number, name: string }[]} [renames] Names it had before, oldest first: a message sent before `until` (ms) shows the first such entry's `name`.
- * @property {string} avatar Its avatar (the entity's key).
+ * @property {bigint} id
+ * @property {string} name
+ * @property {{ until: number, name: string }[]} [renames]
+ * @property {string} avatar
  */
 
 /**
- * The name a speaker's message sent at `time` shows: what it was called then.
  * @param {Speaker} speaker
  * @param {number} time
  */
@@ -180,20 +153,19 @@ export function speakerNameAt(speaker, time) {
 }
 
 /**
- * @typedef {object} Encoded A message as the engine's values.
+ * @typedef {object} Encoded
  * @property {number} flags
- * @property {string} text The append's text ('' when `mes` isn't a string).
- * @property {string | null} name The append's name: null when it is the speaker's (or not a string).
+ * @property {string} text
+ * @property {string | null} name
  * @property {bigint | null} speaker
- * @property {Map<number | string, string>} values Field → JSON.
- * @property {Map<number | string, number>} times Field → delta from the append's time.
+ * @property {Map<number | string, string>} values
+ * @property {Map<number | string, number>} times
  */
 
 /**
- * The engine's values of a message, as stored today (upstream's message object after `sanitizeForStorage()`).
- * @param {Record<string, any>} message A plain JSON object (parsed from its stored JSON).
- * @param {number} time The append's time (ms).
- * @param {Speaker | null} speaker Who said it, by id, when known.
+ * @param {Record<string, any>} message
+ * @param {number} time
+ * @param {Speaker | null} speaker
  * @returns {Encoded}
  */
 export function encodeMessage(message, time, speaker) {
@@ -208,7 +180,7 @@ export function encodeMessage(message, time, speaker) {
     /**
      * @param {string} key
      * @param {number} shift
-     * @param {[number, number, number]} states The flag states of false, true and absent.
+     * @param {[number, number, number]} states
      */
     const bool = (key, shift, [no, yes, absent]) => {
         if (!has(key)) flags |= absent << shift;
@@ -229,7 +201,6 @@ export function encodeMessage(message, time, speaker) {
         json(TOP.is_name, message.is_name);
     }
 
-    // send_date: the receive time as a number or ISO string, a delta, or a JSON value with the time it reads as.
     if (!has('send_date')) flags |= 3 << F.sendDate;
     else if (message.send_date === time) flags |= 1 << F.sendDate;
     else if (isCanonicalIso(message.send_date) && Date.parse(message.send_date) === time) flags |= 2 << F.sendDate;
@@ -241,9 +212,9 @@ export function encodeMessage(message, time, speaker) {
 
     /**
      * @param {string} key
-     * @param {number} code The field of its ISO delta or JSON value.
-     * @param {number} num The field of its number delta.
-     * @param {number} at The field of the time a JSON value reads as.
+     * @param {number} code
+     * @param {number} num
+     * @param {number} at
      */
     function timeValue(key, code, num, at) {
         const v = message[key];
@@ -305,7 +276,7 @@ export function encodeMessage(message, time, speaker) {
 }
 
 /**
- * @typedef {object} Stored A message as `chatRead('messages')` answers it.
+ * @typedef {object} Stored
  * @property {bigint} id
  * @property {number} time
  * @property {number} flags
@@ -317,9 +288,8 @@ export function encodeMessage(message, time, speaker) {
  */
 
 /**
- * A stored message's upstream JSON, exactly as it was written.
  * @param {Stored} stored
- * @param {(id: bigint) => Speaker | null} speakerOf The speaker's name and avatar now.
+ * @param {(id: bigint) => Speaker | null} speakerOf
  * @returns {string}
  */
 export function decodeMessage(stored, speakerOf) {
@@ -333,7 +303,7 @@ export function decodeMessage(stored, speakerOf) {
     const speaker = speakerId === null || speakerId === undefined ? null : speakerOf(BigInt(speakerId));
     const state = (/** @type {number} */ shift) => (flags >>> shift) & 3;
     const bit = (/** @type {number} */ shift) => (flags >>> shift) & 1;
-    /** @type {Map<string, string>} Top-level key → JSON. */
+    /** @type {Map<string, string>} */
     const top = new Map();
     /** @type {Map<string, string>} */
     const extra = new Map();
@@ -400,7 +370,6 @@ export function decodeMessage(stored, speakerOf) {
 }
 
 /**
- * The records storing a new message: its append, then its values and times.
  * @param {bigint} id
  * @param {Encoded} enc
  * @param {{ parent: bigint | null, owner: bigint, time: number, session?: bigint | null, user: bigint, sendKey?: Uint8Array | null }} at

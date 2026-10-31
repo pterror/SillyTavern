@@ -6,11 +6,7 @@ import { character_world_link } from '../public/scripts/character-world-link.js'
 export { computeContentIdentityHash, stripInstallLocalFields } from './card-identity-hash.js';
 
 /**
- * Normalizes an arbitrary parsed character JSON object (V1 or V2) into Spec V2 shape.
- *
- * Kept in its own module (not characters.js) so the library and import code can use it without an import cycle
- * with characters.js.
- * @param {boolean} hoistDate Will set the create_date field to the current date if it's missing
+ * @param {boolean} hoistDate
  */
 export function getCharaCardV2(jsonObject, directories, hoistDate = true) {
     if (jsonObject.spec === undefined) {
@@ -26,13 +22,11 @@ export function getCharaCardV2(jsonObject, directories, hoistDate = true) {
 }
 
 /**
- * Convert a character object to Spec V2 format.
- * @param {object} char Character object
- * @param {import('./users.js').UserDirectoryList} directories User directories
- * @returns {object} Character object in Spec V2 format
+ * @param {object} char
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {object}
  */
 export function convertToV2(char, directories) {
-    // Simulate incoming data from frontend form
     const result = charaFormatData({
         json_data: JSON.stringify(char),
         ch_name: char.name,
@@ -61,46 +55,27 @@ export function convertToV2(char, directories) {
     return result;
 }
 
-/**
- * Removes fields that are not meant to be shared, in place.
- */
 export function unsetPrivateFields(char) {
     _.set(char, 'fav', false);
     _.set(char, 'data.extensions.fav', false);
     _.unset(char, 'chat');
 }
 
-/**
- * Deletes fav/data.extensions.fav/chat outright (unlike unsetPrivateFields(), which resets them rather than
- * removing the keys). Used on import only: the store is the authoritative record of per-install
- * fav/chat state, so the card itself doesn't need to carry placeholder values for it.
- */
 export function omitInstallLocalFields(char) {
     _.unset(char, 'fav');
     _.unset(char, 'data.extensions.fav');
     _.unset(char, 'chat');
 }
 
-/**
- * Just the `fav`/`data.extensions.fav` half of omitInstallLocalFields() — leaves `chat` alone.
- */
 export function omitFavField(char) {
     _.unset(char, 'fav');
     _.unset(char, 'data.extensions.fav');
 }
 
-/**
- * Just the `chat` half of omitInstallLocalFields(). Unlike `fav`, `chat` has no `data.extensions.chat` twin.
- */
 export function omitChatField(char) {
     _.unset(char, 'chat');
 }
 
-/**
- * Top-level Spec-V1 field name -> its `data.*` Spec-V2 path. The one place this mapping is defined -
- * readFromV2() and characters.js's readCardContent() both read it rather than each keeping
- * their own copy.
- */
 export const V1_V2_FIELD_MAPPINGS = {
     name: 'name',
     description: 'description',
@@ -114,8 +89,8 @@ export const V1_V2_FIELD_MAPPINGS = {
 };
 
 /**
- * @param {object} char Character object, expected to already carry a `data` (Spec V2) object
- * @returns {object} The same object, with V1 top-level fields hoisted back from `data.*`
+ * @param {object} char
+ * @returns {object}
  */
 export function readFromV2(char) {
     if (_.isUndefined(char.data)) {
@@ -123,16 +98,13 @@ export function readFromV2(char) {
         return char;
     }
 
-    // If 'json_data' was already saved, don't let it propagate
     _.unset(char, 'json_data');
 
     _.forEach(V1_V2_FIELD_MAPPINGS, (v2Path, charField) => {
-        //console.info(`Migrating field: ${charField} from ${v2Path}`);
         const v2Value = _.get(char.data, v2Path);
         if (_.isUndefined(v2Value)) {
             let defaultValue = undefined;
 
-            // Backfill default values for missing ST extension fields
             if (v2Path === 'extensions.talkativeness') {
                 defaultValue = 0.5;
             }
@@ -142,7 +114,6 @@ export function readFromV2(char) {
             }
 
             if (!_.isUndefined(defaultValue)) {
-                //console.warn(`Spec v2 extension data missing for field: ${charField}, using default value: ${defaultValue}`);
                 char[charField] = defaultValue;
             } else {
                 console.warn(`Char ${char.name} has Spec v2 data missing for unknown field: ${charField}`);
@@ -159,16 +130,13 @@ export function readFromV2(char) {
 }
 
 /**
- * Format character data to Spec V2 format.
- * @param {object} data Character data
- * @param {import('./users.js').UserDirectoryList} directories User directories
- * @returns {object} Character object in Spec V2 format
+ * @param {object} data
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {object}
  */
 export function charaFormatData(data, directories) {
-    // This is supposed to save all the foreign keys that ST doesn't care about
     const char = tryParse(data.json_data) || {};
 
-    // Prevent erroneous 'json_data' recursive saving
     _.unset(char, 'json_data');
 
     const getAlternateGreetings = data => {
@@ -177,7 +145,6 @@ export function charaFormatData(data, directories) {
         return [];
     };
 
-    // Spec V1 fields
     _.set(char, 'name', data.ch_name);
     _.set(char, 'description', data.description || '');
     _.set(char, 'personality', data.personality || '');
@@ -185,14 +152,12 @@ export function charaFormatData(data, directories) {
     _.set(char, 'first_mes', data.first_mes || '');
     _.set(char, 'mes_example', data.mes_example || '');
 
-    // Old ST extension fields (for backward compatibility, will be deprecated)
     _.set(char, 'creatorcomment', data.creator_notes || '');
     _.set(char, 'avatar', 'none');
     _.set(char, 'talkativeness', data.talkativeness || 0.5);
     _.set(char, 'fav', data.fav == 'true');
     _.set(char, 'tags', typeof data.tags == 'string' ? (data.tags.split(',').map(x => x.trim()).filter(x => x)) : data.tags || []);
 
-    // Spec V2 fields
     _.set(char, 'spec', 'chara_card_v2');
     _.set(char, 'spec_version', '2.0');
     _.set(char, 'data.name', data.ch_name);
@@ -202,7 +167,6 @@ export function charaFormatData(data, directories) {
     _.set(char, 'data.first_mes', data.first_mes || '');
     _.set(char, 'data.mes_example', data.mes_example || '');
 
-    // New V2 fields
     _.set(char, 'data.creator_notes', data.creator_notes || '');
     _.set(char, 'data.system_prompt', data.system_prompt || '');
     _.set(char, 'data.post_history_instructions', data.post_history_instructions || '');
@@ -211,12 +175,10 @@ export function charaFormatData(data, directories) {
     _.set(char, 'data.character_version', data.character_version || '');
     _.set(char, 'data.alternate_greetings', getAlternateGreetings(data));
 
-    // ST extension fields to V2 object
     _.set(char, 'data.extensions.talkativeness', data.talkativeness || 0.5);
     _.set(char, 'data.extensions.fav', data.fav == 'true');
     _.set(char, 'data.extensions.world', data.world || '');
 
-    // Spec extension: depth prompt
     const depth_default = 4;
     const role_default = 'system';
     const depth_value = !isNaN(Number(data.depth_prompt_depth)) ? Number(data.depth_prompt_depth) : depth_default;
@@ -225,18 +187,14 @@ export function charaFormatData(data, directories) {
     _.set(char, 'data.extensions.depth_prompt.depth', depth_value);
     _.set(char, 'data.extensions.depth_prompt.role', role_value);
 
-    // A name with no World file, on a card that embeds its own lorebook (json_data's character_book), links
-    // that embedded book: there's no file to read, and the card's book is kept as sent.
     if (data.world && getCharacterWorldLink(directories, char) !== character_world_link.EMBEDDED) {
         try {
             const file = readWorldInfoFile(directories, data.world, false);
 
-            // File was imported - save it to the character book
             if (file && file.originalData) {
                 _.set(char, 'data.character_book', file.originalData);
             }
 
-            // File was not imported - convert the world info to the character book
             if (file && file.entries) {
                 _.set(char, 'data.character_book', convertWorldInfoToCharacterBook(data.world, file.entries));
             }
@@ -248,7 +206,6 @@ export function charaFormatData(data, directories) {
     if (data.extensions) {
         try {
             const extensions = JSON.parse(data.extensions);
-            // Deep merge the extensions object
             _.set(char, 'data.extensions', deepMerge(char.data.extensions, extensions));
         } catch {
             console.warn(`Failed to parse extensions JSON: ${data.extensions}`);
@@ -259,8 +216,8 @@ export function charaFormatData(data, directories) {
 }
 
 /**
- * @param {string} name Name of World Info file
- * @param {object} entries Entries object
+ * @param {string} name
+ * @param {object} entries
  * @returns {{ entries: object[], name: string }}
  */
 export function convertWorldInfoToCharacterBook(name, entries) {
@@ -281,7 +238,7 @@ export function convertWorldInfoToCharacterBook(name, entries) {
             insertion_order: entry.order,
             enabled: !entry.disable,
             position: entry.position == 0 ? 'before_char' : 'after_char',
-            use_regex: true, // ST keys are always regex
+            use_regex: true,
             extensions: {
                 ...entry.extensions,
                 position: entry.position,

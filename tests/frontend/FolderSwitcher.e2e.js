@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// With "Tags as Folders" on, closed folders are cases of a switcher above the character list ("No folder" first),
-// and open folders are views in the view picker's Folders section.
-
 /** @param {import('@playwright/test').Page} page */
 async function loadApp(page) {
     await testSetup.awaitST({ page });
@@ -29,7 +26,11 @@ async function api(page, path, body = {}) {
     }, { path, body });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<string>} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
@@ -42,7 +43,6 @@ async function createCharacter(page, name) {
 }
 
 /**
- * A folder tag ahead of every tag made before, so it is on the first page of folders whatever earlier tests left.
  * @param {import('@playwright/test').Page} page
  * @param {string} id
  * @param {string} name
@@ -54,7 +54,10 @@ async function createFolder(page, id, name, folderType) {
     });
 }
 
-/** @param {import('@playwright/test').Page} page @param {boolean} on */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {boolean} on
+ */
 async function setFolders(page, on) {
     const saved = page.waitForResponse(response => response.url().endsWith('/api/settings/save-partial')
         && response.request().postData()?.includes('bogus_folders'));
@@ -62,7 +65,10 @@ async function setFolders(page, on) {
     await saved;
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} term */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} term
+ */
 async function setSearchTerm(page, term) {
     if (!(await page.locator('#character_search_bar').isVisible())) {
         await page.locator('#rm_button_search').click();
@@ -70,9 +76,15 @@ async function setSearchTerm(page, term) {
     await page.locator('#character_search_bar').fill(term);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
 const row = (page, avatar) => page.locator(`#rm_print_characters_block .character_select[data-avatar="${avatar}"]`);
-/** @param {import('@playwright/test').Page} page @param {string} id */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} id
+ */
 const caseChip = (page, id) => page.locator(`#character_folder_switcher .folder_case[data-folder-case="${id}"]`);
 
 test.describe('folders', () => {
@@ -90,7 +102,6 @@ test.describe('folders', () => {
         await page.unrouteAll({ behavior: 'ignoreErrors' });
         await setSearchTerm(page, '').catch(() => {});
         for (const id of made) await api(page, '/api/tags/delete', { id });
-        // The setting is stored in this worker's data, which later tests share.
         if (await page.evaluate(() => $('#bogus_folders').prop('checked'))) await setFolders(page, false);
     });
 
@@ -123,7 +134,6 @@ test.describe('folders', () => {
         await expect(caseChip(page, folderId)).toBeVisible();
         await expect(row(page, outside)).toBeVisible();
         await expect(row(page, inside)).toHaveCount(0);
-        // The switcher is its own row, not mixed into the list.
         await expect(page.locator('#rm_print_characters_block .bogus_folder_select')).toHaveCount(0);
 
         await caseChip(page, folderId).click();
@@ -131,7 +141,6 @@ test.describe('folders', () => {
         await expect(row(page, outside)).toHaveCount(0);
         await expect(caseChip(page, folderId)).toHaveClass(/current/);
 
-        // The case is kept across a reload.
         await page.reload();
         await loadApp(page);
         await openCharacterManagementDrawer(page);
@@ -191,7 +200,6 @@ test.describe('folders', () => {
         made.push(...ids);
         for (const [i, id] of ids.entries()) await createFolder(page, id, `Shelf ${stamp} ${String(i).padStart(2, '0')}`, 'CLOSED');
         const inside = await createCharacter(page, `Folded${stamp}`);
-        // The first folder made sorts last of these: past the first page of 50.
         await api(page, '/api/tags/assign', { id: inside, tagId: ids[0] });
         await setSearchTerm(page, `Folded${stamp}`);
         await setFolders(page, true);
@@ -206,7 +214,6 @@ test.describe('folders', () => {
         await expect(row(page, inside)).toBeVisible();
         await expect(button.locator('.folder_case_label')).toHaveText(`Shelf ${stamp} 00`);
 
-        // Escape closes the list and leaves the drawer open.
         await button.click();
         await page.keyboard.press('Escape');
         await expect(popover).toHaveCount(0);
@@ -222,7 +229,6 @@ test.describe('folders', () => {
         const outside = await createCharacter(page, `OpenView${stamp} Out`);
         await api(page, '/api/tags/assign', { id: inside, tagId: folderId });
         await setFolders(page, true);
-        // The picker sits in the search form.
         await setSearchTerm(page, '');
 
         await page.locator('#character_view_picker').click();
@@ -234,7 +240,6 @@ test.describe('folders', () => {
         await expect(row(page, inside)).toBeVisible();
         await expect(row(page, outside)).toHaveCount(0);
 
-        // Its picker offers Save as new, not Save: the folder's tag stays as it is.
         await page.locator('#character_view_picker').click();
         await expect(page.locator('.view_picker_unsaved [data-action="save"]')).toHaveCount(0);
         await expect(page.locator('.view_picker_unsaved [data-action="save-as"]')).toBeVisible();

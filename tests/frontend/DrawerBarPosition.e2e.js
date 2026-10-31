@@ -22,7 +22,6 @@ function rect(page, selector) {
     });
 }
 
-/** Waits until the drawer has finished opening (its height stops changing) and returns its rect. */
 async function openedRect(page, selector) {
     let last = null;
     await expect.poll(async () => {
@@ -34,7 +33,6 @@ async function openedRect(page, selector) {
     return last;
 }
 
-/** The thickness of the bar, --topBarBlockSize, in px. */
 function barSize(page) {
     return page.evaluate(() => {
         const probe = document.createElement('div');
@@ -53,7 +51,6 @@ async function setForceMobileView(page, on) {
     await page.waitForFunction(expected => document.body.classList.contains('forceMobileView') === expected, on);
 }
 
-/** The bar at the top: bar and holder from the top edge, the chat below the bar. */
 async function expectBarAtTop(page) {
     const size = await barSize(page);
     const holder = await rect(page, '#top-settings-holder');
@@ -73,7 +70,6 @@ test.describe('Drawer bar position', () => {
         await awaitAppReady(page);
     });
 
-    // The data root is shared by the worker's later tests, which expect the defaults.
     test.afterEach(async ({ page }) => {
         await setForceMobileView(page, false);
         await setDrawerBarPosition(page, 'top');
@@ -161,10 +157,9 @@ test.describe('Drawer bar position', () => {
 });
 
 /**
- * Sets a User Settings input through its own input handler, as typing into it does, and waits until it is saved.
  * @param {import('@playwright/test').Page} page
  * @param {string} selector
- * @param {string} key The power_user key the input saves.
+ * @param {string} key
  * @param {number} value
  */
 async function setSettingInput(page, selector, key, value) {
@@ -180,7 +175,6 @@ async function setSettingInput(page, selector, key, value) {
 }
 
 /**
- * Sets whether character info is fullscreen through its own toggle, and waits until it is saved.
  * @param {import('@playwright/test').Page} page
  * @param {boolean} on
  */
@@ -195,7 +189,6 @@ async function setCharInfoFullscreen(page, on) {
 }
 
 /**
- * The width in px of `n` ch in #sheld's font, which is what Chat Width Max caps #sheld at.
  * @param {import('@playwright/test').Page} page
  * @param {number} n
  */
@@ -211,9 +204,8 @@ function chWidthInSheld(page, n) {
 }
 
 /**
- * The part of the screen beside a bar at `side`, in px.
  * @param {'left'|'right'} side
- * @param {number} size The bar's thickness.
+ * @param {number} size
  */
 function spaceBeside(side, size) {
     return side === 'left'
@@ -222,7 +214,6 @@ function spaceBeside(side, size) {
 }
 
 /**
- * Opens a top-bar drawer by its icon, waits until it has finished opening, and returns its rect.
  * @param {import('@playwright/test').Page} page
  * @param {string} iconSelector
  * @param {string} drawerSelector
@@ -234,7 +225,6 @@ async function openByIcon(page, iconSelector, drawerSelector) {
 }
 
 /**
- * Closes a top-bar drawer by its icon.
  * @param {import('@playwright/test').Page} page
  * @param {string} iconSelector
  * @param {string} drawerSelector
@@ -256,7 +246,6 @@ for (const side of /** @type {const} */ (['left', 'right'])) {
             await setDrawerBarPosition(page, side);
         });
 
-        // The data root is shared by the worker's later tests, which expect the defaults.
         test.afterEach(async ({ page }) => {
             await setForceMobileView(page, false);
             await setCharInfoFullscreen(page, false);
@@ -283,9 +272,7 @@ for (const side of /** @type {const} */ (['left', 'right'])) {
                 expect(bar.height).toBeCloseTo(VIEWPORT.height, 1);
             }
 
-            // The window is taller than the chat is wide, so the icons spread over exactly the chat's width.
             expect(sheld.width).toBeLessThan(VIEWPORT.height);
-            // The shown icons only: the chat's icon is there with stacked drawers on alone.
             const group = await page.locator('#top-settings-holder > .drawer').evaluateAll(all => {
                 const drawers = all.filter(d => d.getBoundingClientRect().height > 0);
                 return {
@@ -296,7 +283,6 @@ for (const side of /** @type {const} */ (['left', 'right'])) {
             expect(group.bottom - group.top).toBeCloseTo(sheld.width, 0);
             expect((group.top + group.bottom) / 2).toBeCloseTo(VIEWPORT.height / 2, 0);
 
-            // Nothing in the bar sticks out past the screen edge, which would let the page scroll sideways.
             expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(VIEWPORT.width);
         });
 
@@ -315,11 +301,9 @@ for (const side of /** @type {const} */ (['left', 'right'])) {
 
             await expectCentered(Math.min(space.width * chatWidth / 100, await chWidthInSheld(page, chatWidthMax)));
 
-            // Chat Width Max raised past the space: the chat is exactly Chat Width % of the space beside the bar.
             await setSettingInput(page, '#chat_width_max', 'chat_width_max', 500);
             await expectCentered(space.width * chatWidth / 100);
 
-            // Lowered below it: the cap.
             await setSettingInput(page, '#chat_width_max', 'chat_width_max', 40);
             await expectCentered(await chWidthInSheld(page, 40));
         });
@@ -337,7 +321,6 @@ for (const side of /** @type {const} */ (['left', 'right'])) {
 
             expect(left.left).toBeCloseTo(space.left, 1);
             expect(right.left + right.width).toBeCloseTo(space.right, 1);
-            // The sidebar on the bar's side starts at the bar's inner edge.
             if (side === 'left') {
                 expect(left.left).toBeCloseTo(bar.left + bar.width, 1);
             } else {
@@ -386,8 +369,6 @@ for (const side of /** @type {const} */ (['left', 'right'])) {
             await expect(page.locator('#left-nav-panel')).toBeHidden();
             await expect(page.locator('#left-nav-panel')).toHaveClass(/openDrawer/);
 
-            // Capped well below the chat's Chat Width %: the panel is centered beside the bar, off the sidebars, and the
-            // pinned sidebar shows again.
             await setSettingInput(page, '#chat_width_max', 'chat_width_max', 40);
             await expect(page.locator('#left-nav-panel')).toBeVisible();
             panel = await rect(page, '#char-info-panel');
@@ -416,7 +397,6 @@ for (const side of /** @type {const} */ (['left', 'right'])) {
 const MOBILE_VIEWPORT = { width: 412, height: 915 };
 
 /**
- * An element's corner radii in px: top left, top right, bottom right, bottom left.
  * @param {import('@playwright/test').Page} page
  * @param {string} selector
  */
@@ -428,7 +408,6 @@ function cornerRadii(page, selector) {
     });
 }
 
-/** The mobile bar at the bottom edge, the full window width, and the chat from the top edge to the bar. */
 async function expectMobileBarAtBottom(page, viewport) {
     const size = await barSize(page);
     const holder = await rect(page, '#top-settings-holder');
@@ -445,10 +424,6 @@ async function expectMobileBarAtBottom(page, viewport) {
     expect(sheld.width).toBeCloseTo(viewport.width, 1);
 }
 
-/**
- * With the mobile bar at the bottom: User Settings and the character management and AI Response Configuration panels
- * open from the top edge, end at or above the bar, the panels rounded at the top, and their icons open and close them.
- */
 async function expectMobileBottomDrawers(page) {
     const holder = await rect(page, '#top-settings-holder');
 
@@ -475,7 +450,6 @@ test.describe('Drawer bar position, mobile', () => {
         await awaitAppReady(page);
     });
 
-    // The data root is shared by the worker's later tests, which expect the defaults.
     test.afterEach(async ({ page }) => {
         await setDrawerBarMobilePosition(page, 'top');
         await setDrawerBarPosition(page, 'top');
@@ -552,7 +526,6 @@ test.describe('Drawer bar position, mobile setting on a wide window', () => {
         await awaitAppReady(page);
     });
 
-    // The data root is shared by the worker's later tests, which expect the defaults.
     test.afterEach(async ({ page }) => {
         await setForceMobileView(page, false);
         await setDrawerBarMobilePosition(page, 'top');
@@ -600,7 +573,6 @@ test.describe('Drawer bar position, mobile setting on a wide window', () => {
 });
 
 /**
- * Sets Visual Novel Mode through its own checkbox, and waits until it is saved.
  * @param {import('@playwright/test').Page} page
  * @param {boolean} on
  */
@@ -616,11 +588,9 @@ async function setVisualNovelMode(page, on) {
 }
 
 /**
- * Shows an expression sprite the way the expressions extension does: a character's in #expression-wrapper, or with
- * `group` a group member's, a copy of #expression-holder in #visual-novel-wrapper (Visual Novel Mode in a group chat).
  * @param {import('@playwright/test').Page} page
  * @param {boolean} group
- * @returns {Promise<string>} The sprite's selector.
+ * @returns {Promise<string>}
  */
 async function showSprite(page, group) {
     await page.evaluate(inGroup => {
@@ -645,7 +615,6 @@ async function showSprite(page, group) {
     return group ? '#visual-novel-wrapper .expression-holder' : '#expression-holder';
 }
 
-/** Hides the sprites {@link showSprite} showed. */
 function hideSprites(page) {
     return page.evaluate(() => {
         document.getElementById('visual-novel-wrapper').replaceChildren();
@@ -655,14 +624,12 @@ function hideSprites(page) {
     });
 }
 
-// `before`: the sprite's rect with the bar at the top, measured with the CSS before the sprite followed the bar.
 const SPRITE_CASES = /** @type {const} */ ([
     { name: 'a character\'s sprite', vnMode: false, group: false, before: { top: 800, bottom: 900, left: 0, width: 350, height: 100 } },
     { name: 'a character\'s sprite in Visual Novel Mode', vnMode: true, group: false, before: { top: 90, bottom: 900, left: 650, width: 100, height: 810 } },
     { name: 'a group member\'s sprite in Visual Novel Mode', vnMode: true, group: true, before: { top: 90, bottom: 900, left: 0, width: 100, height: 810 } },
 ]);
 
-/** Expects `actual` to be `expected` in every edge and size, to 0.05px. */
 function expectSameRect(actual, expected) {
     for (const key of /** @type {const} */ (['top', 'bottom', 'left', 'width', 'height'])) {
         expect(actual[key], key).toBeCloseTo(expected[key], 1);
@@ -678,7 +645,6 @@ test.describe('Drawer bar position, expression sprite', () => {
         await awaitAppReady(page);
     });
 
-    // The data root is shared by the worker's later tests, which expect the defaults.
     test.afterEach(async ({ page }) => {
         await hideSprites(page);
         await setVisualNovelMode(page, false);
@@ -714,7 +680,6 @@ test.describe('Drawer bar position, mobile, expression sprite', () => {
         await awaitAppReady(page);
     });
 
-    // The data root is shared by the worker's later tests, which expect the defaults.
     test.afterEach(async ({ page }) => {
         await hideSprites(page);
         await setVisualNovelMode(page, false);
@@ -724,7 +689,6 @@ test.describe('Drawer bar position, mobile, expression sprite', () => {
     test('mobile top: in Visual Novel Mode the sprite sits where it did before, at the bottom edge', async ({ page }) => {
         await setVisualNovelMode(page, true);
         const sprite = await rect(page, await showSprite(page, false));
-        // Measured with the CSS before the sprite followed the bar.
         expectSameRect(sprite, { top: 91.5, bottom: 915, left: 156, width: 100, height: 823.5 });
         expect(sprite.bottom).toBeCloseTo(MOBILE_VIEWPORT.height, 1);
     });
@@ -748,7 +712,6 @@ test.describe('Drawer bar position, mobile, expression sprite', () => {
     }
 });
 
-/** The rects of the bar, the holder and the chat, and the chat's padding-bottom. */
 async function barLayout(page) {
     return {
         bar: await rect(page, '#top-bar'),
@@ -758,13 +721,10 @@ async function barLayout(page) {
     };
 }
 
-/** Sets body.PWA, as script.js does when the page runs as a home-screen app. */
 function setPwa(page, on) {
     return page.evaluate(value => document.body.classList.toggle('PWA', value), on);
 }
 
-// The home-indicator safe area moves from #sheld to a bottom bar only in the iOS-only CSS, which Chromium doesn't
-// apply: here a home-screen app lays out exactly as the page does in a browser tab.
 for (const [layout, viewport, setPosition] of /** @type {const} */ ([
     ['desktop', VIEWPORT, setDrawerBarPosition],
     ['mobile', MOBILE_VIEWPORT, setDrawerBarMobilePosition],
@@ -778,7 +738,6 @@ for (const [layout, viewport, setPosition] of /** @type {const} */ ([
             await awaitAppReady(page);
         });
 
-        // The data root is shared by the worker's later tests, which expect the defaults.
         test.afterEach(async ({ page }) => {
             await setPwa(page, false);
             await setPosition(page, 'top');
@@ -799,24 +758,19 @@ for (const [layout, viewport, setPosition] of /** @type {const} */ ([
     });
 }
 
-// The file is asked for with its content hash (`?stv=`), which a glob ending in the name doesn't match.
 const MOBILE_STYLES = /\/css\/mobile-styles\.css(\?|$)/;
 
 /**
- * Serves mobile-styles.css with its iOS-only block applying, as on iOS: Chromium doesn't match its condition,
- * `@supports (-webkit-touch-callout: none)`. Takes effect from the next page load.
  * @param {import('@playwright/test').Page} page
  */
 function forceIosCss(page) {
     return page.route(MOBILE_STYLES, async route => {
         const response = await route.fetch();
         const css = (await response.text()).replace('@supports (-webkit-touch-callout: none)', '@supports (display: block)');
-        // Not kept: a hashed url is cached for good, and the page loaded after unrouting must get the real file.
         await route.fulfill({ response, body: css, headers: { ...response.headers(), 'cache-control': 'no-store' } });
     });
 }
 
-/** Whether the iOS-only CSS applies (it alone sets --pwaSafeAreaBottom). */
 function iosCssApplies(page) {
     return page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--pwaSafeAreaBottom') !== '');
 }
@@ -827,7 +781,6 @@ async function reloadST(page) {
     await awaitAppReady(page);
 }
 
-/** The drawers {@link iosLayout} opens, by their icons. */
 const IOS_DRAWERS = /** @type {const} */ ([
     ['#user-settings-button .drawer-icon', '#user-settings-block'],
     ['#leftNavDrawerIcon', '#left-nav-panel'],
@@ -836,11 +789,8 @@ const IOS_DRAWERS = /** @type {const} */ ([
 ]);
 
 /**
- * The rects of the bar, the holder, the chat, and of User Settings, both sidebars and character management, each
- * opened and closed again by its icon.
  * @param {import('@playwright/test').Page} page
- * @param {boolean} pointer Whether to click the icons with the pointer, which also checks that nothing covers them,
- * or by script.
+ * @param {boolean} pointer
  */
 async function iosLayout(page, pointer) {
     const layout = {};
@@ -862,7 +812,6 @@ async function iosLayout(page, pointer) {
     return layout;
 }
 
-/** Expects each rect in `actual` to be the same one in `expected`. */
 function expectSameLayout(actual, expected) {
     expect(Object.keys(actual)).toEqual(Object.keys(expected));
     for (const [selector, r] of Object.entries(expected)) {
@@ -874,8 +823,6 @@ function expectSameLayout(actual, expected) {
 
 const IPAD_VIEWPORT = { width: 1180, height: 820 };
 
-// Measured with the iOS-only CSS before it followed the Drawer Bar setting. On desktop with the bar at the top, only
-// the bar, the holder and the chat are: the drawers there are placed as outside iOS.
 const IOS_BEFORE = {
     desktopTop: {
         '#top-bar': { top: 0, bottom: 34.5, left: 0, width: 1180, height: 34.5 },
@@ -912,9 +859,6 @@ const IOS_BEFORE = {
 };
 
 /**
- * Expects each of the chat and the drawers in `layout` to be on screen, from the top edge unless the bar is there,
- * and clear of a bar at `position`. At the top or bottom, a sidebar beside the bar (the bar is the chat's width) may
- * reach that edge.
  * @param {Record<string, { top: number, bottom: number, left: number, width: number, height: number }>} layout
  * @param {'top'|'bottom'|'left'|'right'} position
  */
@@ -952,7 +896,6 @@ test.describe('Drawer bar position, iOS, desktop layout', () => {
         expect(await iosCssApplies(page)).toBe(true);
     });
 
-    // The data root is shared by the worker's later tests, which expect the defaults.
     test.afterEach(async ({ page }) => {
         await setPwa(page, false);
         await setForceMobileView(page, false);
@@ -1004,7 +947,6 @@ test.describe('Drawer bar position, iOS, desktop layout', () => {
         const inTab = await barLayout(page);
         await setPwa(page, true);
         const { bar, holder, sheld, sheldPaddingBottom } = await barLayout(page);
-        // --pwaSafeAreaBottom is 15px where there is no safe area.
         expect(bar.bottom).toBeCloseTo(IPAD_VIEWPORT.height, 1);
         expect(bar.height).toBeCloseTo(inTab.bar.height + 15, 1);
         expect(holder.bottom).toBeCloseTo(IPAD_VIEWPORT.height - 15, 1);
@@ -1044,7 +986,6 @@ test.describe('Drawer bar position, iOS, mobile layout', () => {
         expect(await iosCssApplies(page)).toBe(true);
     });
 
-    // The data root is shared by the worker's later tests, which expect the defaults.
     test.afterEach(async ({ page }) => {
         await setDrawerBarMobilePosition(page, 'top');
         await setDrawerBarPosition(page, 'top');

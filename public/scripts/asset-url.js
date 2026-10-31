@@ -1,6 +1,3 @@
-// The server writes the page's content hashes into it: an import map for modules, and a json map for what code
-// fetches or links at runtime. A url carrying its file's current hash is cached by the browser for good.
-
 const VERSION_PARAM = 'stv';
 
 /** @type {{modules: Record<string, string>, runtime: Record<string, string>}|null} */
@@ -25,9 +22,7 @@ function readMaps() {
 }
 
 /**
- * The url to load one of our frontend files with: the same file, pinned to the content hash this page was built
- * with. A url that isn't one of ours, or already has a query, comes back unchanged.
- * @param {string} url Relative to the page, or root-relative
+ * @param {string} url
  * @returns {string}
  */
 export function assetUrl(url) {
@@ -52,8 +47,6 @@ export function assetUrl(url) {
 }
 
 /**
- * Fetches one of our frontend files at the version this page was built with. If the server no longer has that
- * version, the user is told to reload.
  * @param {string} url
  * @param {RequestInit} [init]
  * @returns {Promise<Response>}
@@ -71,8 +64,6 @@ let lastBuildCheck = 0;
 let reloadNoticeShown = false;
 
 /**
- * A file of ours failed to load. If the server's files changed since this page was built, says so; otherwise it
- * was some other failure, and the caller's own error handling stands.
  * @returns {Promise<void>}
  */
 export async function reportAssetLoadFailure() {
@@ -98,10 +89,6 @@ export async function reportAssetLoadFailure() {
     }
 }
 
-/**
- * Tells the user this page is older than the server's files, without blocking anything. For a response that
- * carried the server's stale-file marker.
- */
 export function showReloadNotice() {
     if (reloadNoticeShown) {
         return;
@@ -128,8 +115,6 @@ function watchForStaleFiles() {
         }
     });
 
-    // A failed dynamic import that its caller catches reaches neither the rejection nor the error listener; its
-    // resource timing entry still records the server's 409, where the browser reports the status.
     if (typeof PerformanceObserver === 'function' && PerformanceObserver.supportedEntryTypes?.includes('resource')) {
         new PerformanceObserver(list => {
             for (const entry of /** @type {PerformanceResourceTiming[]} */ (list.getEntries())) {
@@ -148,7 +133,6 @@ function watchForStaleFiles() {
     }, true);
 }
 
-// Also loaded outside a page (unit tests import modules that import this one).
 if (typeof window !== 'undefined') {
     watchForStaleFiles();
 }

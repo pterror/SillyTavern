@@ -17,14 +17,8 @@ import { copyText, escapeHtml } from './utils.js';
 let PromptArrayItemForRawPromptDisplay;
 let priorPromptArrayItemForRawPromptDisplay;
 
-/**
- * The itemizations the page holds, each with its message's position in the chat as `mesId`: the one whose "Prompt"
- * view is open, or what upstream's `loadItemizedPrompts()` was last asked for. The server keeps one per reply
- * (src/chat-engine.js, recordItemization()) and records it when it stores the reply; nothing else in the page keeps them.
- */
 export let itemizedPrompts = [];
 
-/** `extra` key the server sets on a loaded message whose node has an itemization (src/chat-engine.js). */
 export const ITEMIZED_PROMPT_FLAG = 'has_itemized_prompt';
 
 /**
@@ -36,7 +30,7 @@ function post(route, body) {
     return fetch(`/api/itemized-prompts/${route}`, { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(body) });
 }
 
-/** @returns {{ group_id: string } | { avatar_url: string } | null} The open chat's owner, as the routes name one. */
+/** @returns {{ group_id: string } | { avatar_url: string } | null} */
 function currentOwner() {
     const selection = getSelectionState();
     if (selection.type === 'group') return { group_id: selection.groupId };
@@ -45,9 +39,8 @@ function currentOwner() {
 }
 
 /**
- * One message's itemization.
  * @param {string} nodeId
- * @returns {Promise<{ entry: Record<string, any>, previous_node_id: string|null } | null>} null when it has none.
+ * @returns {Promise<{ entry: Record<string, any>, previous_node_id: string|null } | null>}
  */
 async function fetchItemization(nodeId) {
     const response = await post('message', { node_id: nodeId });
@@ -57,7 +50,6 @@ async function fetchItemization(nodeId) {
 }
 
 /**
- * The itemizations of a chat of the open character or group, each as `{ index, node_id, entry }`.
  * @param {string} chatId
  * @returns {Promise<{ index: number, node_id: string, entry: Record<string, any> }[]>}
  */
@@ -71,7 +63,6 @@ async function fetchChatItemizations(chatId) {
 }
 
 /**
- * Upstream's export: holds the itemizations of a chat of the open character or group in `itemizedPrompts`.
  * @param {string} chatId
  */
 export async function loadItemizedPrompts(chatId) {
@@ -167,7 +158,6 @@ export async function deleteItemizedPrompts(chatId) {
     }
 }
 
-/** Upstream's export: removes every itemization. */
 export async function clearItemizedPrompts() {
     try {
         const response = await post('clear', {});
@@ -181,7 +171,6 @@ export async function clearItemizedPrompts() {
 }
 
 /**
- * Opens a message's "Prompt" view: fetches its itemization, and the one it is diffed against only when asked.
  * @param {number} mesId
  */
 async function showMessageItemization(mesId) {
@@ -214,10 +203,6 @@ export async function itemizedParams(itemizedPrompts, thisPromptSet, incomingMes
     const set = itemizedPrompts[thisPromptSet];
     const isOpenAi = set.main_api === 'openai';
 
-    // Every field that needs a real token count, gathered up front so they can all go out in one
-    // batched request instead of one request per field - the non-OpenAI-only fields are included
-    // here too (rather than a second batch later) whenever this prompt set needs them, since we
-    // already know this_main_api at this point.
     /** @type {[string, string][]} */
     const tokenFields = [
         ['charDescriptionTokens', set.charDescription],
@@ -231,7 +216,7 @@ export async function itemizedParams(itemizedPrompts, thisPromptSet, incomingMes
         ['smartContextStringTokens', set.smartContextString],
         ['beforeScenarioAnchorTokens', set.beforeScenarioAnchor],
         ['afterScenarioAnchorTokens', set.afterScenarioAnchor],
-        ['zeroDepthAnchorTokens', set.zeroDepthAnchor], // TODO: unused
+        ['zeroDepthAnchorTokens', set.zeroDepthAnchor],
         ['chatInjects', set.chatInjects],
         ['chatVectorsStringTokens', set.chatVectorsString],
         ['dataBankVectorsStringTokens', set.dataBankVectorsString],
@@ -331,9 +316,6 @@ export async function itemizedParams(itemizedPrompts, thisPromptSet, incomingMes
     } else {
         //for non-OAI APIs
         //console.log('-- Counting non-OAI Tokens');
-        // finalPromptTokens/storyStringTokens/examplesStringTokens/mesSendStringTokens/instructionTokens/
-        // promptBiasTokens already came back with the batch above (tokenFields includes them when !isOpenAi) -
-        // storyStringTokens just needs the same worldInfoStringTokens subtraction it always did.
         params.storyStringTokens -= params.worldInfoStringTokens;
         params.ActualChatHistoryTokens = params.mesSendStringTokens - (params.allAnchorsTokens - (params.beforeScenarioAnchorTokens + params.afterScenarioAnchorTokens)) + power_user.token_padding;
 
@@ -378,12 +360,9 @@ export function findItemizedPromptSet(itemizedPrompts, incomingMesId) {
 }
 
 /**
- * Shows the "Prompt" view of a message's entry in `itemizedPrompts`.
  * @param {Record<string, any>[]} itemizedPrompts
  * @param {number|string} requestedMesId
- * @param {{ loadPrevious?: () => Promise<Record<string, any>|null> }} [options] `loadPrevious`: the entry to diff
- * against, fetched when the diff is asked for; without it, the nearest earlier entry in `itemizedPrompts` that holds
- * a raw prompt, as upstream finds it.
+ * @param {{ loadPrevious?: () => Promise<Record<string, any>|null> }} [options]
  */
 export async function promptItemize(itemizedPrompts, requestedMesId, { loadPrevious } = {}) {
     var incomingMesId = Number(requestedMesId);
@@ -526,19 +505,11 @@ export function deleteItemizedPromptForMessage(messageId) {
     }
 }
 
-/** Upstream's per-chat store of itemized prompts in this browser (upstream's `promptStorage`). */
 const UPSTREAM_STORE = 'SillyTavern_Prompts';
-/** The chats one `/import-upstream` request carries, and about the most bytes. */
 const UPSTREAM_BATCH_CHATS = 200;
 const UPSTREAM_BATCH_BYTES = 4 * 1024 * 1024;
-/** localStorage key: the last warning about upstream entries left out, so the same one isn't shown on every load. */
 const UPSTREAM_WARNED_KEY = 'itemized_prompts_upstream_left_out';
 
-/**
- * Moves the itemized prompts upstream kept in this browser onto the server's messages (src/upstream-itemizations.js),
- * once per load, after startup: each chat's copy here goes once the server has stored its entries; a chat with
- * entries left out keeps just those. What is left out is shown in a warning naming each chat and message.
- */
 export async function importUpstreamItemizedPrompts() {
     const storage = localforage.createInstance({ name: UPSTREAM_STORE });
     /** @type {{ chat_id: string, entries: object[] }[]} */

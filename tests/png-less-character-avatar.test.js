@@ -14,7 +14,6 @@ let directories;
 
 const originalCwd = process.cwd();
 
-// DEFAULT_AVATAR_PATH is repo-root-relative.
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(originalCwd, '..', 'default', 'config.yaml'));
@@ -51,7 +50,6 @@ beforeEach(async () => {
 
 afterEach(() => user.close());
 
-/** Seeds a row with no PNG on disk. */
 async function seedPngLessCharacter(avatar) {
     const name = avatar.replace(/\.png$/, '');
     const card = { name, spec: 'chara_card_v2', spec_version: '2.0', data: { name, extensions: {} } };

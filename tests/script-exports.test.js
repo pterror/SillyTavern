@@ -1,8 +1,3 @@
-// Drives scripts/script-exports.mjs and the .githooks that call it through real git commands, in
-// throwaway repos under the OS temp dir. Each repo gets copies of this checkout's hooks, checker,
-// package.json and pre-commit configs, a symlink to its node_modules, and a synthetic
-// public/script.js. upstream/staging is set with update-ref; nothing is fetched from a real remote.
-
 import { describe, test, expect, beforeAll, afterEach } from '@jest/globals';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -14,8 +9,6 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const COPIED = ['.githooks', 'scripts/script-exports.mjs', 'scripts/script-signatures.mjs', 'package.json', 'tsconfig.precommit.json', '.oxlintrc.json', '.eslintrc.cjs'];
 const TIMEOUT = 120_000;
 
-// A clean git environment: no inherited hook state (GIT_DIR, GIT_INDEX_FILE, ...) and no user or
-// system config, so only what each repo sets applies.
 const ENV = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
 Object.assign(ENV, {
     GIT_CONFIG_NOSYSTEM: '1',
@@ -50,12 +43,10 @@ function run(cwd, command, args) {
     return { status: result.status, stdout: result.stdout, stderr: result.stderr, output: result.stdout + result.stderr };
 }
 
-/** Runs git with the repo's hooks, returning status and output. */
 function hooked(repo, ...args) {
     return run(repo, 'git', ['-c', `core.hooksPath=${path.join(repo, '.githooks')}`, ...args]);
 }
 
-/** Runs git without hooks, for building fixtures; throws on failure. */
 function git(repo, ...args) {
     const result = run(repo, 'git', ['-c', 'core.hooksPath=/dev/null', ...args]);
     if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed:\n${result.output}`);
@@ -96,7 +87,6 @@ function setUpstream(repo, commit) {
     git(repo, 'update-ref', 'refs/remotes/upstream/staging', commit);
 }
 
-/** Copies this checkout's tooling into `dir` and makes `dir` a git repo on branch `ours`. */
 function initRepo(dir) {
     git(dir, 'init', '-q', '-b', 'ours');
     installTooling(dir);
@@ -112,10 +102,6 @@ function installTooling(dir) {
     fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(dir, 'node_modules'));
 }
 
-/**
- * U0 exports a and b. `ours` branches from U0 with the list refreshed at U0 and an extra export.
- * U1 (adds c) and U2 (adds e) follow U0 on upstream. upstream/staging starts at U1.
- */
 function linearRepo() {
     const repo = tempDir('linear');
     initRepo(repo);
@@ -124,7 +110,6 @@ function linearRepo() {
     setUpstream(repo, u0);
     const refreshed = checker(repo, 'refresh');
     if (refreshed.status !== 0) throw new Error(refreshed.output);
-    // Distinct lines from upstream's additions, so the merges below are clean.
     writeScript(repo, ['extra', 'a', 'b']);
     commitAll(repo, 'ours');
     git(repo, 'checkout', '-q', '-b', 'up', u0);
@@ -224,10 +209,6 @@ describe('script-exports: clean merge, then a commit', () => {
 });
 
 describe('script-exports: several merge-bases', () => {
-    /**
-     * Criss-cross: A1 (upstream, adds p) and B1 (ours, adds q) both branch from U0, then each side
-     * merges the other, so upstream/staging and ours have two independent merge-bases.
-     */
     function crissCrossRepo() {
         const repo = tempDir('criss-cross');
         initRepo(repo);
@@ -409,7 +390,6 @@ export { promised, reexported };
         'withJsdoc fn a c?',
     ];
 
-    /** A repo whose upstream U0 has UPSTREAM_SCRIPT, with both records refreshed at U0. */
     function signatureRepo() {
         const repo = tempDir('signatures');
         initRepo(repo);
@@ -560,7 +540,6 @@ describe('script-exports: public/scripts modules', () => {
         'public/scripts/sub/c.js fe fn _unused',
     ];
 
-    /** A repo whose upstream U0 has UPSTREAM_MODULES and a one-export script.js, with the records refreshed at U0. */
     function moduleRepo() {
         const repo = tempDir('modules');
         initRepo(repo);

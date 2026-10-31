@@ -13,7 +13,6 @@ test.describe('live editor library bundle', () => {
             const { history } = lib.commands;
             const parent = document.createElement('div');
             document.body.append(parent);
-            // Extensions built by other packages are accepted only if they come from the same @codemirror/state.
             const view = new EditorView({
                 state: EditorState.create({ doc: '# hi *there*', extensions: [markdown(), history()] }),
                 parent,

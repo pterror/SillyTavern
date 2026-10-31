@@ -1,15 +1,9 @@
 import type { CountsView, ListView } from '../protocol.ts';
 
-// The lists this browser last saw, by target: shown at once when one is opened again (also after a reload), then
-// replaced by the server's answer. Kept in IndexedDB, newest first, a few at most; a browser where IndexedDB can't
-// be used (private windows, blocked storage) keeps them in memory only, and a failing read or write is only no list.
-
-/** A list as last seen: its target's key, the version the server gave it, the list and its counts. */
 export type Seen = { key: string; version: number; list: ListView; counts: CountsView; used: number };
 
 const DB = 'st-alternatives';
 const STORE = 'seen';
-/** How many lists are kept, and the most characters of text one may hold (a bigger one isn't kept). */
 const KEPT = 16;
 const MOST_TEXT = 8_000_000;
 
@@ -33,7 +27,6 @@ function openDatabase(): Promise<IDBDatabase | null> {
     });
 }
 
-/** A request's result, or null when it failed. */
 function done<T>(request: IDBRequest<T>): Promise<T | null> {
     return new Promise((resolve) => {
         request.onsuccess = () => {
@@ -45,7 +38,6 @@ function done<T>(request: IDBRequest<T>): Promise<T | null> {
     });
 }
 
-/** The page's lists seen: one for the page, made when it starts. */
 export function createSeen() {
     const memory = new Map<string, Seen>();
     let opening: Promise<IDBDatabase | null> | null = null;
@@ -66,7 +58,6 @@ export function createSeen() {
         }
     }
 
-    /** Keeps a list, unless one kept for its target is newer; the oldest go past the most kept. */
     async function keep(seen: Seen): Promise<void> {
         const before = memory.get(seen.key);
         if (before && before.version > seen.version) return;

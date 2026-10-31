@@ -6,10 +6,9 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 }
 
 /**
- * Creates a character through the API.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @returns {Promise<string>} The new character's avatar filename.
+ * @returns {Promise<string>}
  */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
@@ -23,7 +22,6 @@ async function createCharacter(page, name) {
 }
 
 /**
- * Selects the character, which also loads it into the character panel.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -36,8 +34,6 @@ async function selectCharacter(page, avatar) {
 }
 
 /**
- * Records every CHARACTER_EDITED from here on as the avatar it carries, the id it carries, and the avatar of
- * the character that id indexes in `getContext().characters` at the time it fires.
  * @param {import('@playwright/test').Page} page
  */
 async function recordCharacterEdited(page) {
@@ -119,7 +115,6 @@ test.describe('CHARACTER_EDITED never carries an id that names a different chara
             await openCharacterManagementDrawer(page);
             await selectCharacter(page, avatarA);
 
-            // Hold A's field save at the server until B has been selected.
             const marker = `saved while A was selected ${stamp}`;
             let heldCount = 0;
             let release;

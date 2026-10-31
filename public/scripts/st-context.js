@@ -112,22 +112,18 @@ import { IGNORE_SYMBOL } from './constants.js';
 import { macros } from './macros/macro-system.js';
 import { MessageFormatter } from './message-formatter.js';
 
-/** O(1) by-id lookup via groupsStore's Map index; exposes only the read, not the store's mutation methods. */
 function getGroupById(id) {
     return groupsStore.get(id);
 }
 
-/** O(1) by-avatar lookup via charactersStore's Map index; exposes only the read, not the store's mutation methods. */
 function getCharacterByAvatar(avatar) {
     return charactersStore.get(avatar);
 }
 
-/** O(1) by-id lookup via tagsStore's Map index; exposes only the read, not the store's mutation methods. */
 function getTagById(id) {
     return tagsStore.get(id);
 }
 
-/** O(1) by-avatar lookup via personaStore's Map index; exposes only the read, not the store's mutation methods. */
 function getPersonaById(avatar) {
     return personaStore.get(avatar);
 }
@@ -136,15 +132,12 @@ export function getContext() {
     return {
         accountStorage,
         chat,
-        // Upstream's array, holding only the current character or the open group's members.
         characters: exposedCharacters,
         getCharacterByAvatar,
-        // Upstream's array, holding only the open group.
         groups: exposedGroups,
         getGroupById,
         name1,
         name2,
-        // Lazy getter so it stays fresh instead of going stale like a snapshot would.
         get characterId() {
             const avatar = getCurrentCharacter()?.avatar;
             const index = avatar !== undefined ? exposedCharacters.findIndex(x => x.avatar === avatar) : -1;
@@ -182,8 +175,6 @@ export function getContext() {
         extensionPrompts: extension_prompts,
         setExtensionPrompt,
         updateChatMetadata,
-        // Upstream's whole-chat save: what an extension changed in `chat[]` directly goes to the server as actions
-        // addressed by node id (chat-compat-save.js).
         saveChat: saveChatConditional,
         editMessage: chatOpEdit,
         editMessages: chatOpEditMany,

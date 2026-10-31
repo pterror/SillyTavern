@@ -1,16 +1,5 @@
 import { randomUUID } from 'node:crypto';
 
-/**
- * An explicit stop for a generation the server keeps running after the page disconnects.
- *
- * A raw-action generation is resumable: the page dropping its connection (reload, network loss) must
- * not stop it, so the routes ignore a disconnect. A stop is a separate action, `POST
- * /generate/stop/:id`, naming the generation by the id the page sent as `X-Generation-Id` (or got
- * back in that header). It aborts the upstream request, the stream stops taking in upstream text, and
- * what is stored is exactly the text written to the page's stream up to the stop. The stop answers
- * with that stored text and its node id, so the page can show what the server has.
- */
-
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ENTRY_TTL_MS = 10 * 60 * 1000;
 const ENTRY_MAX = 200;
@@ -19,18 +8,16 @@ const STOP_WAIT_MS = 15000;
 /**
  * @typedef {object} StopEntry
  * @property {string} id
- * @property {string|undefined} owner The user handle that started the generation.
+ * @property {string|undefined} owner
  * @property {boolean} stopped
- * @property {Array<() => void>} flushHooks Run first on a stop, to write out content held back for coalescing.
- * @property {Array<() => void|Promise<void>>} aborts Abort the upstream request.
- * @property {{mes: string, node_id: string, extra?: object}|null} persisted What the reply was stored as, if it was (its
- *   text and the reasoning fields of its `extra`).
- * @property {{pending: object, text: string, reason: string, warning: object}|null} [unsaved] A reply whose store
- *   failed, kept so `POST /api/generation/store/:id` can try again.
+ * @property {Array<() => void>} flushHooks
+ * @property {Array<() => void|Promise<void>>} aborts
+ * @property {{mes: string, node_id: string, extra?: object}|null} persisted
+ * @property {{pending: object, text: string, reason: string, warning: object}|null} [unsaved]
  * @property {boolean} done
- * @property {number} startedAt When the request arrived: the stored reply's `gen_started`.
+ * @property {number} startedAt
  * @property {number} doneAt
- * @property {Promise<void>} settled Resolves once the route has finished with this generation.
+ * @property {Promise<void>} settled
  * @property {() => void} settle
  */
 
@@ -49,8 +36,6 @@ function evict() {
 }
 
 /**
- * Registers the generation this request starts, under the page's `X-Generation-Id` when it sent a
- * valid unused one, else a new id. Sets the response header and `response.locals.generationStop`.
  * @param {import('express').Request} request
  * @param {import('express').Response} response
  * @returns {StopEntry}
@@ -74,7 +59,6 @@ export function openGenerationStop(request, response) {
 }
 
 /**
- * Marks the generation finished: a stop waiting on it answers now. Idempotent.
  * @param {StopEntry|undefined} entry
  */
 export function closeGenerationStop(entry) {
@@ -85,7 +69,6 @@ export function closeGenerationStop(entry) {
 }
 
 /**
- * Wraps a generate route so every request gets a stop entry that is closed when the handler is done.
  * @param {(request: import('express').Request, response: import('express').Response) => Promise<any>} handler
  */
 export function withGenerationStop(handler) {
@@ -105,7 +88,6 @@ function entryOf(response) {
 }
 
 /**
- * The id to use for this response's generation buffer and `X-Generation-Id` header.
  * @param {import('express').Response} response
  */
 export function generationIdFor(response) {
@@ -118,7 +100,6 @@ export function isGenerationStopped(response) {
 }
 
 /**
- * An AbortController whose `abort()` also runs when this response's generation is stopped.
  * @param {import('express').Response} response
  */
 export function stoppableController(response) {
@@ -128,7 +109,6 @@ export function stoppableController(response) {
 }
 
 /**
- * Runs `fn` when this response's generation is stopped (at once if it already was).
  * @param {import('express').Response} response
  * @param {() => void|Promise<void>} fn
  */
@@ -143,9 +123,6 @@ export function onGenerationStop(response, fn) {
 }
 
 /**
- * Runs `fn` first when this response's generation is stopped, before the upstream request is aborted:
- * for writing out content a stream holds back to coalesce writes, so that what is stored is what was
- * sent.
  * @param {import('express').Response} response
  * @param {() => void} fn
  */
@@ -156,7 +133,6 @@ export function onGenerationStopFlush(response, fn) {
 }
 
 /**
- * Records what the reply was stored as, for a stop to answer with.
  * @param {StopEntry|undefined} entry
  * @param {{mes: string, node_id: string, extra?: object}|null} persisted
  */
@@ -165,9 +141,8 @@ export function recordGenerationPersisted(entry, persisted) {
 }
 
 /**
- * Stops a generation: flushes held-back content, aborts upstream, and waits for the route to finish.
  * @param {string} id
- * @param {string|undefined} handle The requesting user's handle; only the owner may stop it.
+ * @param {string|undefined} handle
  * @returns {Promise<{state: 'unknown'} | {state: 'stopped'|'finished'|'stopping', mes: string|null, node_id: string|null, extra: object|null}>}
  */
 export async function stopGenerationById(id, handle) {
@@ -203,7 +178,6 @@ export async function stopGenerationById(id, handle) {
 }
 
 /**
- * Express handler for `POST /generate/stop/:id`.
  * @param {import('express').Request} request
  * @param {import('express').Response} response
  */
@@ -216,7 +190,6 @@ export async function handleGenerationStop(request, response) {
 }
 
 /**
- * A generation's entry, if the given user started it.
  * @param {string} id
  * @param {string|undefined} handle
  * @returns {StopEntry|undefined}

@@ -3,7 +3,10 @@ import { debounce_timeout } from './constants.js';
 export class DragAndDropHandler {
     /** @private @type {JQuery.Selector} */ selector;
     /** @private @type {(files: File[], event:JQuery.DropEvent<HTMLElement, undefined, any, any>) => void} */ onDropCallback;
-    /** @private @type {NodeJS.Timeout} not actually a NodeJS.Timeout, but close enough */ dragLeaveTimeout;
+    /**
+     * @private
+     * @type {NodeJS.Timeout}
+     */ dragLeaveTimeout;
 
     /** @private @type {boolean} */ noAnimation;
 
@@ -61,7 +64,6 @@ export class DragAndDropHandler {
         event.preventDefault();
         event.stopPropagation();
 
-        // Debounced so the class removal doesn't flicker while still dragging over
         clearTimeout(this.dragLeaveTimeout);
         this.dragLeaveTimeout = setTimeout(() => {
             $(this.selector).removeClass('dragover');

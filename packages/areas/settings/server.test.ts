@@ -9,7 +9,6 @@ import type { ModelRecord } from './model-limits.ts';
 
 const user: User = { handle: 'u', directories: { root: '/u' } };
 
-/** A cascade in memory: each level's values by path; a range shows the closest level's, and says which. */
 function world() {
     const levels: Record<Level, Record<string, unknown>> = {
         default: {
@@ -25,7 +24,6 @@ function world() {
     };
     const models: Record<string, ModelRecord[]> = {};
     const writes: { owner: ChatOwner | null; range: LevelRange; path: string; value: unknown }[] = [];
-    /** How many entries each write had. */
     const batches: number[] = [];
     const nest = (flat: Record<string, unknown>) => {
         const out: Record<string, unknown> = {};
@@ -103,7 +101,6 @@ test("a set goes to the range's top level, for the tab's chat; the range is the 
         path: 'oai_settings.temp_openai',
         value: 0.7,
     });
-    // Another tab's range is its own.
     expect((await w.view('s2')).range).toEqual({ from: 'default', to: 'user' });
     expect((await w.view('s1')).sources['oai_settings.temp_openai']).toBe('character');
 });
@@ -166,7 +163,6 @@ test("the chat completion source and model decide the context size's, temperatur
     });
     w.levels.user['oai_settings.chat_completion_source'] = 'cohere';
     expect((await w.view()).ranges['pres_pen_openai']).toMatchObject({ min: 0, max: 1 });
-    // A model list the source answered: its numbers win.
     w.levels.user['oai_settings.chat_completion_source'] = 'openrouter';
     w.levels.user['oai_settings.openrouter_model'] = 'x/y';
     w.models['openrouter'] = [{ id: 'x/y', context_length: 32_000 }];
@@ -235,10 +231,8 @@ test("the sampler select is the user's, by backend; the view shows the backend's
     expect(samplerSelectOf(await w.view())).toEqual({ manual: false, shown: [] });
     await w.act('settings.samplers', { manual: true, shown: ['temp', 'top_p'] });
     expect(samplerSelectOf(await w.view())).toEqual({ manual: true, shown: ['temp', 'top_p'] });
-    // Another backend has its own.
     w.levels.user['textgenerationwebui_settings.type'] = 'tabby';
     expect(samplerSelectOf(await w.view())).toEqual({ manual: false, shown: [] });
-    // The browser's old copy is taken only where there's none.
     await w.act('settings.samplers.import', {
         ooba: { manual: false, shown: ['min_p'] },
         tabby: { manual: true, shown: ['min_p', 'no_such_sampler'] },

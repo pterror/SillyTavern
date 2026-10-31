@@ -20,7 +20,6 @@ async function mountEmpty(page) {
 }
 
 /**
- * Pastes into the editor as the browser would, with the given clipboard contents.
  * @param {import('@playwright/test').Page} page
  * @param {Record<string, string>} data
  */
@@ -36,7 +35,6 @@ async function paste(page, data) {
 const value = (/** @type {import('@playwright/test').Page} */ page) => page.locator('#liveEditorTestTextarea').inputValue();
 
 /**
- * Switches the paste just made to another way it can go in, with the paste picker.
  * @param {import('@playwright/test').Page} page
  * @param {'markdown'|'html'|'plain'} mode
  */

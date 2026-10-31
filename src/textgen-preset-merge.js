@@ -3,11 +3,9 @@ import { setting_names as TEXTGEN_SETTING_NAMES } from '../public/scripts/textge
 export { TEXTGEN_SETTING_NAMES };
 
 /**
- * Mirrors TextCompletionService.presetToGeneratePayload()'s preset-merge step (public/scripts/custom-request.js):
- * clone the base settings, then overlay only the fields a preset is allowed to carry.
- * @param {object} baseSettings The server's own stored textgenerationwebui_settings
- * @param {object} preset A named preset's raw fields (as read from disk)
- * @returns {object} baseSettings with the preset's TextCompletionSettings fields applied
+ * @param {object} baseSettings
+ * @param {object} preset
+ * @returns {object}
  */
 export function mergeTextGenPreset(baseSettings, preset) {
     const settings = structuredClone(baseSettings);

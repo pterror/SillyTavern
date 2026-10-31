@@ -10,7 +10,6 @@ class SBVits2TtsProvider {
     audioElement = document.createElement('audio');
 
     processText(text) {
-        // encode newlines so auto_split doesn't collapse them; decoded back in fetchTtsGeneration
         text = text.replace(/\n+/g, '<br>');
         return text;
     }

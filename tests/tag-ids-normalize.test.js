@@ -3,12 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-// tag_ids is sent sorted (JS string order), and [] when there are none, by the server, and stored that way by the
-// client caches - so records holding the same tags hold equal tag_ids.
-
 const USER_HANDLE = 'tag-ids-normalize-test-user';
 
-/** @type {Map<string, Map<string, any>>} localforage instance name -> key -> record */
+/** @type {Map<string, Map<string, any>>} */
 const localforageStores = new Map();
 
 jest.unstable_mockModule('../public/lib.js', () => ({
@@ -32,8 +29,6 @@ jest.unstable_mockModule('../public/scripts/user.js', () => ({
     getCurrentUserHandle: () => USER_HANDLE,
 }));
 
-// SQLite's ORDER BY compares UTF-8 bytes and JS sort UTF-16 code units; these two ids order differently under
-// each (SQLite: HIGH_BMP first, JS: ASTRAL first), so they tell a JS-sorted list from a SQL-ordered one.
 const HIGH_BMP = 'tag\uE000';
 const ASTRAL = 'tag\u{10000}';
 const JS_SORTED = [ASTRAL, HIGH_BMP];
@@ -60,7 +55,6 @@ beforeAll(async () => {
     characterCache = await import('../public/scripts/character-cache.js');
     const { router: charactersRouter } = await import('../src/endpoints/characters.js');
 
-    // /create reads the default avatar relative to the repo root.
     process.chdir(path.resolve(originalCwd, '..'));
 
     const express = (await import('express')).default;
@@ -87,7 +81,6 @@ beforeEach(async () => {
     user = await fixture.emptyUser('st-tag-ids-normalize-test-');
     directories = user.directories;
     globalThis.DATA_ROOT = user.dataRoot;
-    // character-cache.js keeps its store instances, so each one's records are emptied rather than dropped.
     for (const records of localforageStores.values()) records.clear();
 });
 
@@ -108,13 +101,16 @@ function card(name) {
     return JSON.stringify({ name, data: { name, tags: [], creator: '', character_version: '', creator_notes: '', extensions: { world: '' } } });
 }
 
-/** The character's list row, as the store reads it. @param {string} id */
+/** @param {string} id */
 async function readListRow(id) {
     const page = await user.store.lib.query({ ids: [id], wantRows: true, limit: 1 });
     return /** @type {any} */ (page.rows)[0].item;
 }
 
-/** @param {string} id @param {string[]} tagIds */
+/**
+ * @param {string} id
+ * @param {string[]} tagIds
+ */
 async function assignTags(id, tagIds) {
     for (const tagId of tagIds) expect((await user.store.lib.tags.assign(id, tagId)).result).toBe('ok');
 }

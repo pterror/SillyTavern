@@ -2,37 +2,21 @@ import { TYPE } from '../library-codes.js';
 import { draft, without } from './entity-draft.js';
 
 /**
- * Personas (§1.5, step 3d): a catalog entity each (`TYPE.persona`, key its avatar file name) with its `name`,
- * `description`, `title`, `position`, `depth`, `role` and `lorebook` (a book, by name), made from upstream's
- * settings and given back as them.
- *
- * The persona is a slot of the cascade:
- * - the user-level statement is upstream's `default_persona` (null: none), what opening an unlocked chat selects;
- * - upstream's `user_avatar`, the persona selected now, is a statement of its own (`currentPersona`): the two differ
- *   while a persona other than the default is selected, and `{{user}}` is the current one's;
- * - a character's or group's connected personas are a character-level statement each, a list of persona keys, so a
- *   persona's `connections` is derived from them (an index, persona → characters), stored once;
- * - the chat lock (`chat_metadata.persona`) is the chat's, not here.
- * `username` is derived from the resolved persona; it's kept as an override only when no persona has the avatar (Q6).
- */
-
-/**
  * @typedef {import('./entity-draft.js').EntityDraft} EntityDraft
  * @typedef {{ type: 'character' | 'group', id: string }} PersonaConnection
  * @typedef {object} UpstreamPersonaSettings
- * @property {Record<string, string>} [personas] Avatar → name.
- * @property {Record<string, Record<string, any>>} [persona_descriptions] Avatar → record.
- * @property {Record<string, Record<string, any>>} [persona_data] This fork's avatar → merged record.
+ * @property {Record<string, string>} [personas]
+ * @property {Record<string, Record<string, any>>} [persona_descriptions]
+ * @property {Record<string, Record<string, any>>} [persona_data]
  * @property {string | null} [default_persona]
  * @property {string} [user_avatar]
  * @property {string} [username]
  * @typedef {object} PersonasFromUpstream
  * @property {EntityDraft[]} personas
- * @property {string | null | undefined} userPersona The user-level statement (the default).
- * @property {string | undefined} currentPersona The persona selected now.
- * @property {{ holder: PersonaConnection, personas: string[] }[]} connected Character-level statements, in the order
- *   upstream's lists first name each holder.
- * @property {string | undefined} username An override, kept only when no persona has the user's avatar.
+ * @property {string | null | undefined} userPersona
+ * @property {string | undefined} currentPersona
+ * @property {{ holder: PersonaConnection, personas: string[] }[]} connected
+ * @property {string | undefined} username
  * @property {string[]} warnings
  */
 
@@ -50,7 +34,6 @@ export function personasFromUpstream(settings) {
     /** @type {Map<string, { holder: PersonaConnection, personas: string[] }>} */
     const connected = new Map();
     const personas = avatars.map((avatar) => {
-        // This fork's merged record wins; else upstream's two dictionaries, as the page merges them.
         const record = data[avatar] ?? { ...descriptions[avatar], name: names[avatar] ?? descriptions[avatar]?.name ?? '' };
         for (const connection of Array.isArray(record.connections) ? record.connections : []) {
             if (!connection || (connection.type !== 'character' && connection.type !== 'group') || typeof connection.id !== 'string') {
@@ -76,7 +59,6 @@ export function personasFromUpstream(settings) {
 }
 
 /**
- * Upstream's persona settings from the personas and the statements.
  * @param {EntityDraft[]} personas
  * @param {{ userPersona?: string | null, currentPersona?: string, connected?: { holder: PersonaConnection, personas: string[] }[], username?: string }} statements
  * @returns {{ persona_data: Record<string, Record<string, unknown>>, personas: Record<string, unknown>, persona_descriptions: Record<string, Record<string, unknown>>, default_persona: string | null, user_avatar: string | undefined, username: string | undefined }}
@@ -100,7 +82,6 @@ export function personasToUpstream(personas, statements) {
     return {
         persona_data,
         personas: Object.fromEntries(Object.entries(persona_data).map(([avatar, record]) => [avatar, record.name])),
-        // This fork's persona_descriptions is a view of the records, name and all (power-user.js).
         persona_descriptions: structuredClone(persona_data),
         default_persona: statements.userPersona ?? null,
         user_avatar: current,

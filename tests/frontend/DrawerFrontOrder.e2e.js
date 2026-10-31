@@ -9,8 +9,6 @@ async function awaitAppReady(page) {
 }
 
 /**
- * Clicks a control (through its own handler; it may be styled out of view) and waits until the server holds the
- * page's value of the given power_user key.
  * @param {import('@playwright/test').Page} page
  * @param {string} key
  * @param {() => Promise<void>} change
@@ -21,9 +19,6 @@ async function changeAndAwaitSave(page, key, change) {
 }
 
 /**
- * Puts back the power_user defaults these tests change. The data root is shared by the worker's later tests, which
- * expect the defaults: fullscreen character info left saved, for one, covers the chat whenever a character is opened.
- * Pins live in this browser's storage, which each test starts fresh, so they need nothing.
  * @param {import('@playwright/test').Page} page
  */
 async function restoreDrawerDefaults(page) {
@@ -46,7 +41,6 @@ async function restoreDrawerDefaults(page) {
 
 test.afterEach(async ({ page }) => restoreDrawerDefaults(page));
 
-// Pins are toggled through the checkbox's own click handler; the checkbox itself is styled out of view.
 async function setPin(page, pinId, pinned) {
     const pin = page.locator(pinId);
     if (await pin.isChecked() !== pinned) {
@@ -55,10 +49,8 @@ async function setPin(page, pinId, pinned) {
 }
 
 /**
- * Leaves the page on a fresh character's chat holding one message from that character (so it has a
- * clickable .mes .avatar), with every drawer closed.
  * @param {import('@playwright/test').Page} page
- * @returns {Promise<string>} The character's name.
+ * @returns {Promise<string>}
  */
 async function openChatWithCharacterMessage(page) {
     const name = `DrawerFrontOrder-${Date.now()}`;
@@ -66,10 +58,7 @@ async function openChatWithCharacterMessage(page) {
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button').evaluate(el => el.click());
-    // Creating a character opens it.
     await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
-    // Fullscreen character management still covers the chat behind character info: close it. Its icon brings it
-    // forward first while character info covers part of it, and closes it on the next click.
     await expect(async () => {
         if (await page.locator('#right-nav-panel').evaluate(el => el.classList.contains('openDrawer'))) {
             await page.locator('#rightNavDrawerIcon').click();
@@ -77,14 +66,12 @@ async function openChatWithCharacterMessage(page) {
         await expect(page.locator('#right-nav-panel')).toHaveClass(/closedDrawer/, { timeout: 1000 });
     }).toPass();
     await chatBox(page).fill(`/sendas name="${name}" hello`);
-    // Enter can go unhandled while the freshly selected chat loads; the text stays in the box until it is sent.
     await expect(async () => {
         if (await page.locator('#send_textarea').inputValue()) {
             await chatBox(page).press('Enter');
         }
         await expect(page.locator('#chat .mes .avatar').first()).toBeVisible({ timeout: 2000 });
     }).toPass();
-    // A click on the chat closes every unpinned drawer.
     await page.locator('#chat').click({ position: { x: 10, y: 10 } });
     await expect(page.locator('#right-nav-panel')).toBeHidden();
     await expect(page.locator('#char-info-panel')).toBeHidden();
@@ -101,10 +88,8 @@ test.describe('Drawer front order', () => {
     });
 
     test('a zoomed avatar opened with character info in front of character management is on top', async ({ page }) => {
-        // In the sidebar: fullscreen character management would cover the chat, avatar included.
         await setFullscreen(page, { id: 'right-nav-panel', fullscreen: false });
         await openChatWithCharacterMessage(page);
-        // Both pinned, so the avatar click below doesn't just close them; character management in front.
         await page.locator('#charInfoDrawerIcon').click();
         await setPin(page, '#charInfo_button_panel_pin', true);
         await page.locator('#rightNavDrawerIcon').click();
@@ -114,12 +99,10 @@ test.describe('Drawer front order', () => {
 
         await page.locator('#charInfoDrawerIcon').click();
         await expect(page.locator('#char-info-panel')).toBeVisible();
-        // Fullscreen character management behind it shows only where character info doesn't cover it.
         await expectStackCut(page, 'after bringing character info forward', 'char-info-panel');
 
         await page.locator('#chat .mes .avatar').first().click();
         await expect(page.locator('.zoomed_avatar[forChar] .zoomed_avatar_img')).toBeVisible();
-        // The zoomed avatar came last, so it is on top: what it covers of the drawers is cut away.
         await expect.poll(() => page.locator('.zoomed_avatar[forChar] .zoomed_avatar_img').evaluate(el => {
             const r = el.getBoundingClientRect();
             return document.elementsFromPoint(r.left + r.width / 2, r.top + r.height / 2)
@@ -159,9 +142,7 @@ test.describe('Drawer front order', () => {
         await page.locator('#API-status-top').click();
         const apiBlock = page.locator('#rm_api_block');
         await expect(apiBlock).toBeVisible();
-        // Fullscreen character management shows only around it.
         await expectStackCut(page, 'after opening API Connections', 'rm_api_block');
-        // Visible alone doesn't mean on top: the element under the drawer's center must be the drawer's own.
         await expect.poll(() => apiBlock.evaluate(el => {
             const rect = el.getBoundingClientRect();
             return el.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2));
@@ -198,12 +179,10 @@ test.describe('Drawer front order', () => {
     });
 
     test('a reload keeps the chat and pinned character management in the order they were in', async ({ page }) => {
-        // Fullscreen, it covers the chat whole.
         await setFullscreen(page, { id: 'right-nav-panel', fullscreen: true });
         await page.locator('#rightNavDrawerIcon').click();
         await setPin(page, '#rm_button_panel_pin', true);
         await expect(page.locator('#right-nav-panel')).toBeVisible();
-        // Which of the two is hit in the middle of where they overlap.
         const frontOfOverlap = () => page.evaluate(() => {
             const a = document.getElementById('sheld').getBoundingClientRect();
             const b = document.getElementById('right-nav-panel').getBoundingClientRect();
@@ -243,8 +222,6 @@ test.describe('Drawer front order', () => {
     });
 });
 
-// Every drawer in #top-settings-holder, by its .drawer-content id. The four with a pin are the pinnable panels;
-// the two with a fullscreen toggle can each be drawn in the sidebar or fullscreen.
 const TOP_DRAWERS = {
     'left-nav-panel': { name: 'AI Response Configuration', pin: '#lm_button_panel_pin' },
     'rm_api_block': { name: 'API Connections' },
@@ -260,10 +237,7 @@ const TOP_DRAWERS = {
 const PINNABLE_IDS = Object.keys(TOP_DRAWERS).filter(id => TOP_DRAWERS[id].pin);
 const FILL_RIGHT_IDS = ['right-nav-panel', 'char-info-panel'];
 
-/**
- * One way a drawer can be shown: which drawer, and for the two fullscreen-capable ones whether fullscreen is on.
- * @typedef {{ id: string, fullscreen?: boolean }} DrawerVariant
- */
+/** @typedef {{ id: string, fullscreen?: boolean }} DrawerVariant */
 
 /** @param {DrawerVariant} variant */
 function variantLabel(variant) {
@@ -272,22 +246,23 @@ function variantLabel(variant) {
     return `${variant.fullscreen ? 'fullscreen' : 'sidebar'} ${name}`;
 }
 
-/** @param {string} id @returns {DrawerVariant[]} */
+/**
+ * @param {string} id
+ * @returns {DrawerVariant[]}
+ */
 function variantsOf(id) {
     return TOP_DRAWERS[id].fullscreenToggle ? [{ id, fullscreen: false }, { id, fullscreen: true }] : [{ id }];
 }
 
 /**
- * The icon that opens, fronts or closes a top-bar drawer.
  * @param {import('@playwright/test').Page} page
- * @param {string} id The .drawer-content id.
+ * @param {string} id
  */
 function drawerIcon(page, id) {
     return page.locator('#top-settings-holder > .drawer').filter({ has: page.locator(`#${id}`) }).locator('> .drawer-toggle .drawer-icon');
 }
 
 /**
- * Which top-bar drawers are open and actually visible, and every pair of visible ones whose boxes overlap.
  * @param {import('@playwright/test').Page} page
  * @returns {Promise<{ open: string[], visible: string[], overlaps: string[], stack: string[] }>}
  */
@@ -308,23 +283,17 @@ function drawerOverlapState(page) {
                 if (width > 1 && height > 1) overlaps.push(`${visible[i].id} + ${visible[j].id}`);
             }
         }
-        // Which drawer is in front and which are cut changes when an icon brings a partly covered drawer forward.
         const stack = open.map(el => `${el.id}:${el.style.getPropertyValue('--drawerOrder')}:${el.dataset.stackCut ?? ''}`);
         return { open: open.map(el => el.id), visible: visible.map(el => el.id), overlaps, stack };
     });
 }
 
 /**
- * What the user sees of the stacked layers (stacked drawers on): every layer on screen (the chat, the shown top-bar
- * drawers, floating windows, open lists), bottom first, and every sample point where a layer can be hit
- * (`elementsFromPoint` follows clip paths and visibility) although a layer above covers that point, or can't be hit
- * although nothing above covers it.
  * @param {import('@playwright/test').Page} page
  * @returns {Promise<{ layers: string[], cutWrong: string[], frontmost: string | null }>}
  */
 function stackState(page) {
     return page.evaluate(() => {
-        // A layer hidden whole (entirely covered, or a fullscreen drawer split apart) shows nowhere and covers nothing.
         const shown = el => el.isConnected && el.checkVisibility({ visibilityProperty: true })
             && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
         const order = el => Number(el.style.getPropertyValue('--drawerOrder')) || 0;
@@ -333,7 +302,6 @@ function stackState(page) {
             .sort((a, b) => order(a) - order(b)
                 || Number(b.id === 'sheld') - Number(a.id === 'sheld')
                 || (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
-        // Above every ordered layer: the dropdown lists, and toasts (their container paints nothing, the toasts do).
         const lists = [...document.querySelectorAll('.ui-menu, .select2-container--open > .select2-dropdown, #toast-container > .toast')].filter(shown);
         const layers = [...ordered, ...lists];
         const name = el => el.id || String(el.className).split(' ')[0] || el.tagName;
@@ -341,7 +309,6 @@ function stackState(page) {
         layers.forEach((layer, i) => {
             const box = layer.getBoundingClientRect();
             const above = layers.slice(i + 1).filter(a => !layer.contains(a)).map(a => a.getBoundingClientRect());
-            // Rounded corners aren't hit, so samples stay clear of them.
             const inset = Math.max(3, ...['borderTopLeftRadius', 'borderTopRightRadius', 'borderBottomLeftRadius', 'borderBottomRightRadius']
                 .map(k => parseFloat(getComputedStyle(layer)[k]) || 0)) + 2;
             if (box.width <= 2 * inset || box.height <= 2 * inset) return;
@@ -350,7 +317,6 @@ function stackState(page) {
                     const x = box.left + inset + (box.width - 2 * inset) * gx / 6;
                     const y = box.top + inset + (box.height - 2 * inset) * gy / 6;
                     if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) continue;
-                    // Too close to an edge above to judge: sub-pixel rounding.
                     if (above.some(a => Math.min(Math.abs(x - a.left), Math.abs(x - a.right), Math.abs(y - a.top), Math.abs(y - a.bottom)) < 2)) continue;
                     const covered = above.some(a => x > a.left && x < a.right && y > a.top && y < a.bottom);
                     const hit = document.elementsFromPoint(x, y).some(el => layer.contains(el));
@@ -364,16 +330,12 @@ function stackState(page) {
 }
 
 /**
- * Soft-asserts what the user sees after an action: `frontId` is the top drawer and nothing covers any of it, each
- * layer is cut exactly where a layer above covers it and visible everywhere else, and records what was seen.
  * @param {import('@playwright/test').Page} page
- * @param {string} step What the check is after, for the record.
- * @param {string} frontId The drawer the last action put in front.
- * @param {string[]} [alsoVisible] Drawers that must stay at least partly visible beside it.
+ * @param {string} step
+ * @param {string} frontId
+ * @param {string[]} [alsoVisible]
  */
 async function expectStackCut(page, step, frontId, alsoVisible = []) {
-    // Drawers settle over several frames after an action; judging a passing moment mid-way could miss a wrong cut that
-    // shows up once they have settled.
     let previous;
     await expect.poll(async () => {
         const current = JSON.stringify(await stackState(page)) + JSON.stringify(await drawerOverlapState(page));
@@ -384,7 +346,6 @@ async function expectStackCut(page, step, frontId, alsoVisible = []) {
     const summarize = async () => {
         const stack = await stackState(page);
         const { visible } = await drawerOverlapState(page);
-        // Cut by a layer, not by an overlay over it (a toast): whether each cut is where something covers it is cutWrong's.
         const frontCut = await page.locator(`#${frontId}`).evaluate(el => {
             if (!el.checkVisibility({ visibilityProperty: true })) return true;
             const box = el.getBoundingClientRect();
@@ -406,7 +367,6 @@ async function expectStackCut(page, step, frontId, alsoVisible = []) {
 }
 
 /**
- * Waits until the open/visible drawer set changes after an action.
  * @param {import('@playwright/test').Page} page
  * @param {() => Promise<void>} action
  */
@@ -417,7 +377,6 @@ async function actAndSettle(page, action) {
 }
 
 /**
- * Unpins the four pinnable panels and closes every top-bar drawer.
  * @param {import('@playwright/test').Page} page
  */
 async function resetDrawers(page) {
@@ -427,14 +386,12 @@ async function resetDrawers(page) {
     for (let i = 0; i < 30; i++) {
         const { open } = await drawerOverlapState(page);
         if (!open.length) return;
-        // An open drawer hidden behind another one comes forward on the first click and closes on the next.
         await actAndSettle(page, () => drawerIcon(page, open[0]).click());
     }
     throw new Error('Could not close every drawer');
 }
 
 /**
- * Sets whether a fullscreen-capable panel is fullscreen, through its own toggle. Leaves every drawer closed.
  * @param {import('@playwright/test').Page} page
  * @param {DrawerVariant} variant
  */
@@ -451,7 +408,6 @@ async function setFullscreen(page, variant) {
 }
 
 /**
- * Opens a top-bar drawer by its icon and waits for it to be open.
  * @param {import('@playwright/test').Page} page
  * @param {string} id
  */
@@ -461,8 +417,6 @@ async function openDrawer(page, id) {
 }
 
 /**
- * Starts a scenario: every drawer closed, both fullscreen-capable panels in the given (or current) mode, the
- * given drawers pinned and every other one unpinned.
  * @param {import('@playwright/test').Page} page
  * @param {{ variants: DrawerVariant[], pinned: string[] }} setup
  */
@@ -477,13 +431,11 @@ async function startScenario(page, { variants, pinned }) {
 }
 
 /**
- * Makes a character through the create form and returns its avatar key. Leaves every drawer closed.
  * @param {import('@playwright/test').Page} page
  * @returns {Promise<string>}
  */
 async function createCharacter(page) {
     const name = `DrawerOverlap-${Date.now()}`;
-    // With no character selected, character info opens on the create form.
     await openDrawer(page, 'char-info-panel');
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button').evaluate(el => el.click());
@@ -495,7 +447,6 @@ async function createCharacter(page) {
 }
 
 /**
- * Every pairing of pinned panel A with another drawer B: B's variant and, if B is pinnable, whether it is pinned.
  * @param {DrawerVariant} a
  * @returns {{ b: DrawerVariant, bPinned: boolean }[]}
  */
@@ -512,17 +463,18 @@ function partnersOf(a) {
     return partners;
 }
 
-/** @param {DrawerVariant} b @param {boolean} bPinned */
+/**
+ * @param {DrawerVariant} b
+ * @param {boolean} bPinned
+ */
 function partnerLabel(b, bPinned) {
     return TOP_DRAWERS[b.id].pin ? `${bPinned ? 'pinned' : 'unpinned'} ${variantLabel(b)}` : variantLabel(b);
 }
 
 /**
- * Registers the drawer pair tests for one layout.
  * @param {string} layout
  */
 function drawerPairTests(layout) {
-    // Pinned A open, then B opened (the sweep path), then A's icon clicked while A is hidden behind B.
     for (const id of PINNABLE_IDS) {
         for (const a of variantsOf(id)) {
             for (const { b, bPinned } of partnersOf(a)) {
@@ -545,7 +497,6 @@ function drawerPairTests(layout) {
         }
     }
 
-    // Pinned sidebar A open, B opened, then A's fullscreen toggle clicked.
     for (const id of FILL_RIGHT_IDS) {
         const a = { id, fullscreen: false };
         for (const { b, bPinned } of partnersOf(a)) {
@@ -556,7 +507,6 @@ function drawerPairTests(layout) {
                 await openDrawer(page, b.id);
                 await expectStackCut(page, `after opening ${b.id}`, b.id);
 
-                // Clicked as a user would: only if nothing covers the toggle.
                 const toggleReachable = await page.locator(TOP_DRAWERS[id].fullscreenToggle).evaluate(el => {
                     const r = el.getBoundingClientRect();
                     return r.width > 0 && el.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
@@ -572,7 +522,6 @@ function drawerPairTests(layout) {
         }
     }
 
-    // Pinned character info open, B opened, then a character selected through the extension API.
     for (const a of variantsOf('char-info-panel')) {
         for (const { b, bPinned } of partnersOf(a)) {
             test(`${layout}: pinned ${variantLabel(a)}, then ${partnerLabel(b, bPinned)} opened, then a character selected`, async ({ page }) => {
@@ -656,7 +605,6 @@ test.describe('Drawer overlap, desktop', () => {
             const found = [];
             icon.click();
             const sample = () => {
-                // After every frame callback has run, before the next frame: the boxes of this frame.
                 setTimeout(() => {
                     const animating = us.getAnimations().length > 0;
                     const u = us.getBoundingClientRect();
@@ -673,7 +621,6 @@ test.describe('Drawer overlap, desktop', () => {
             const start = performance.now();
             requestAnimationFrame(sample);
         }));
-        // Mid-way, World Info is hidden just above User Settings' moving bottom edge and shows just below it.
         expect(samples.length).toBeGreaterThan(1);
         expect(samples.filter(s => s.coveredHit || !s.uncoveredHit)).toEqual([]);
         await expectStackCut(page, 'after User Settings finished opening', 'user-settings-block');
@@ -689,7 +636,6 @@ test.describe('Drawer overlap, desktop', () => {
         await expect(page.locator('#char-info-panel')).toHaveAttribute('data-active-menu', 'rm_group_chats_block');
         await expectStackCut(page, 'after opening group creation', 'char-info-panel');
         await openDrawer(page, 'WorldInfo');
-        // Hidden or not, character info's box is laid out, so this checks it is drawn beside World Info.
         const boxesOverlap = await page.evaluate(() => {
             const a = document.getElementById('char-info-panel').getBoundingClientRect();
             const b = document.getElementById('WorldInfo').getBoundingClientRect();
@@ -703,7 +649,6 @@ test.describe('Drawer overlap, desktop', () => {
 });
 
 /**
- * Sets a User Settings number through its own input handler, as typing into it does.
  * @param {import('@playwright/test').Page} page
  * @param {string} selector
  * @param {number} value
@@ -716,7 +661,6 @@ async function setSettingInput(page, selector, value) {
 }
 
 /**
- * Moves the Chat Width slider as a drag does: the width is applied when the pointer is released, not on input.
  * @param {import('@playwright/test').Page} page
  * @param {number} value
  */
@@ -729,7 +673,6 @@ async function dragChatWidthSlider(page, value) {
 }
 
 /**
- * The width in px of `n` ch, in character info's own font. Character info must be open.
  * @param {import('@playwright/test').Page} page
  * @param {number} n
  */
@@ -759,10 +702,8 @@ test.describe('Character info fullscreen width', () => {
     });
 
     /**
-     * Pinned AI Response Configuration open, then fullscreen character info opened in front of it, with Chat Width
-     * Max set so the cap is 40% of a 1400px viewport: below the chat column's 50%, so both are exactly the cap wide.
      * @param {import('@playwright/test').Page} page
-     * @returns {Promise<number>} The Chat Width Max set.
+     * @returns {Promise<number>}
      */
     async function openCappedBesidePinnedLeftPanel(page) {
         await startScenario(page, { variants: [{ id: 'char-info-panel', fullscreen: true }], pinned: ['left-nav-panel'] });
@@ -779,7 +720,6 @@ test.describe('Character info fullscreen width', () => {
         await startScenario(page, { variants: [{ id: 'char-info-panel', fullscreen: true }], pinned: ['left-nav-panel'] });
         await openDrawer(page, 'left-nav-panel');
         await openDrawer(page, 'char-info-panel');
-        // 1200px: wider than the 700px chat column, narrower than the 1400px viewport.
         const chatWidthMax = Math.floor(1200 / await chWidthInCharInfo(page, 1));
         await setSettingInput(page, '#chat_width_max', chatWidthMax);
         await expect.poll(async () => Math.abs(await charInfoWidth(page) - await chWidthInCharInfo(page, chatWidthMax))).toBeLessThan(1);
@@ -816,7 +756,6 @@ test.describe('Character info fullscreen width', () => {
 
     test('changing Chat Width changes whether fullscreen character info hides pinned AI Response Configuration', async ({ page }) => {
         await openCappedBesidePinnedLeftPanel(page);
-        // 30% of 1400px is narrower than the 560px cap, so the chat column shrinks and character info doesn't.
         await dragChatWidthSlider(page, 30);
         await expectStackCut(page, 'after narrowing Chat Width', 'char-info-panel');
         await expect(page.locator('#left-nav-panel')).toHaveAttribute('data-stack-cut', 'true');
@@ -826,7 +765,6 @@ test.describe('Character info fullscreen width', () => {
 
     test('resizing the window changes whether fullscreen character info hides pinned AI Response Configuration', async ({ page }) => {
         await openCappedBesidePinnedLeftPanel(page);
-        // 50% of 1050px is narrower than the 560px cap, so the chat column shrinks and character info doesn't.
         await page.setViewportSize({ width: 1050, height: 900 });
         await expectStackCut(page, 'after narrowing the window', 'char-info-panel');
         await expect(page.locator('#left-nav-panel')).toHaveAttribute('data-stack-cut', 'true');
@@ -848,7 +786,10 @@ test.describe('Drawer overlap, mobile', () => {
     drawerPairTests('mobile');
 });
 
-/** @param {import('@playwright/test').Page} page @param {string} selector */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} selector
+ */
 function isShown(page, selector) {
     return page.locator(selector).evaluate(el => el.checkVisibility({ visibilityProperty: true, opacityProperty: true }));
 }
@@ -907,7 +848,6 @@ test.describe('Stacked drawers off', () => {
     });
 
     test('the zoomed avatar stays visible beside pinned AI Response Configuration', async ({ page }) => {
-        // Fullscreen character info would cover the chat the helper clicks to close it.
         await startScenario(page, { variants: [{ id: 'char-info-panel', fullscreen: false }], pinned: [] });
         await openChatWithCharacterMessage(page);
         await startScenario(page, { variants: [], pinned: ['left-nav-panel'] });
@@ -983,8 +923,6 @@ test.describe('Stacked drawers off, mobile', () => {
 });
 
 /**
- * Adds a window the way an extension does: a `.drawer-content` in #movingDivs, left of and over the chat's left edge,
- * holding a button that counts its clicks in `window.extWindowClicks`.
  * @param {import('@playwright/test').Page} page
  */
 async function addExtensionWindow(page) {
@@ -993,7 +931,6 @@ async function addExtensionWindow(page) {
         win.id = 'extWindow';
         win.className = 'drawer-content';
         const sheld = document.getElementById('sheld').getBoundingClientRect();
-        // .drawer-content centers itself; an extension's window sits where it puts it.
         Object.assign(win.style, { position: 'fixed', left: `${sheld.left - 60}px`, right: 'auto', margin: '0', top: '120px', width: '260px', height: '220px', display: 'block' });
         const button = document.createElement('button');
         button.id = 'extWindowButton';
@@ -1008,7 +945,7 @@ async function addExtensionWindow(page) {
 
 /**
  * @param {import('@playwright/test').Page} page
- * @returns {Promise<{ x: number, y: number }>} A point inside both the extension window and the chat.
+ * @returns {Promise<{ x: number, y: number }>}
  */
 function overlapPoint(page) {
     return page.evaluate(() => {
@@ -1021,7 +958,7 @@ function overlapPoint(page) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {{ x: number, y: number }} point
- * @returns {Promise<string>} Which of the two layers is hit there.
+ * @returns {Promise<string>}
  */
 function hitAt(page, point) {
     return page.evaluate(({ x, y }) => {
@@ -1032,8 +969,7 @@ function hitAt(page, point) {
 
 /**
  * @param {import('@playwright/test').Page} page
- * @returns {Promise<{ x: number, y: number }>} A point where the chat shows and nothing there takes a click of its own
- * (the welcome screen's buttons and recent chats are left alone), clear of the extension window.
+ * @returns {Promise<{ x: number, y: number }>}
  */
 function chatBackgroundPoint(page) {
     return page.evaluate(() => {
@@ -1071,7 +1007,6 @@ test.describe('Layers found by what they are', () => {
         await expect.poll(() => hitAt(page, point)).toBe('sheld');
         await expect.poll(async () => (await stackState(page)).layers.at(-1)).toBe('sheld');
         await expect.poll(async () => (await stackState(page)).cutWrong).toEqual([]);
-        // The window still shows where the chat doesn't cover it.
         await expect(page.locator('#extWindow')).not.toHaveClass(/stackCovered/);
     });
 
@@ -1092,7 +1027,6 @@ test.describe('Layers found by what they are', () => {
         await addExtensionWindow(page);
         const point = await overlapPoint(page);
         await expect.poll(() => hitAt(page, point)).toBe('extWindow');
-        // Focus moved by the page itself doesn't bring a layer forward; typing does.
         await chatBox(page).evaluate(el => el.focus());
         expect(await hitAt(page, point)).toBe('extWindow');
         await page.keyboard.type('a');

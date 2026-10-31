@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// A character list page seen before is kept in browser storage: after a reload it is drawn at once from what was
-// kept, the server is asked with the kept token whether it changed, and a changed page is drawn again.
-
 /** @param {import('@playwright/test').Page} page */
 async function loadApp(page) {
     await testSetup.awaitST({ page });
@@ -15,7 +12,11 @@ async function loadApp(page) {
     await page.waitForFunction(() => window['__appReady'], null, { timeout: 60000 });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<string>} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
@@ -27,7 +28,10 @@ async function createCharacter(page, name) {
     }, name);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} term */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} term
+ */
 async function setSearchTerm(page, term) {
     if (!(await page.locator('#character_search_bar').isVisible())) {
         await page.locator('#rm_button_search').click();
@@ -35,11 +39,13 @@ async function setSearchTerm(page, term) {
     await page.locator('#character_search_bar').fill(term);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
 const rowName = (page, avatar) => page.locator(`#rm_print_characters_block .character_select[data-avatar="${avatar}"] .ch_name`);
 
 /**
- * Holds the list's page queries until `release` is called, recording whether each carried a token.
  * @param {import('@playwright/test').Page} page
  */
 async function holdPageQueries(page) {
@@ -58,7 +64,6 @@ async function holdPageQueries(page) {
 }
 
 /**
- * Waits until a page for `term` is kept in browser storage.
  * @param {import('@playwright/test').Page} page
  * @param {string} term
  */
@@ -88,12 +93,10 @@ test.describe('kept character list pages', () => {
         const avatar = await createCharacter(page, `Kept${stamp}`);
         await setSearchTerm(page, `Kept${stamp}`);
         await expect(rowName(page, avatar)).toHaveText(`Kept${stamp}`);
-        // The search box and its term come back after the reload, so the same page is asked for.
         await waitForKeptPage(page, `Kept${stamp}`);
 
         const held = await holdPageQueries(page);
         await page.reload();
-        // Only the app's start is waited for: APP_READY waits for the characters, whose query is held.
         await testSetup.awaitST({ page });
         await openCharacterManagementDrawer(page);
         await expect(rowName(page, avatar)).toHaveText(`Kept${stamp}`);
@@ -110,7 +113,6 @@ test.describe('kept character list pages', () => {
         await expect(rowName(page, first)).toHaveText(`Swap${stamp} First`);
         await waitForKeptPage(page, `Swap${stamp}`);
 
-        // Made while no page is open, so nothing updates the kept page before the next visit.
         const headers = await page.evaluate(() => window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true }));
         const origin = new URL(page.url()).origin;
         await page.goto('about:blank');
@@ -119,7 +121,6 @@ test.describe('kept character list pages', () => {
         const later = await created.text();
 
         const held = await holdPageQueries(page);
-        // Only the app's start is waited for: APP_READY waits for the characters, whose query is held.
         await testSetup.awaitST({ page });
         await openCharacterManagementDrawer(page);
         await expect(rowName(page, first)).toHaveText(`Swap${stamp} First`);

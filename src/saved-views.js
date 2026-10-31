@@ -7,30 +7,14 @@ import { FIELD, TYPE } from './library-codes.js';
 import { userStore } from './user-stores.js';
 import { placeEntries } from './world-info-engine.js';
 
-/**
- * A user's saved views of the character list, in the user's store: a name and the view object the page lists by
- * (public/scripts/character-view.js), in the user's own order.
- *
- * The views are the items of the view list's (`TYPE.viewList`, key '') list 0, in place order; a view is keyed by its
- * UUID. Each of a view's known leaves is its own value, the tag lists are lists, each condition is an entity in the
- * view's list 0 and each range one in its list 1; the view's unknown top-level keys are one JSON value. null, '', {}
- * and [] are the same as a missing key: nothing is stored for them, and they read back missing. A tag a view names
- * that was merged into another reads as that one (deduplicated within its list); the stored key stays.
- */
-
-/** Emits `changed` (the user's root) when a user's saved views changed. */
 export const savedViewsEvents = new EventEmitter();
 savedViewsEvents.setMaxListeners(0);
 
-/** Longest view name and view object a saved view keeps. */
 export const SAVED_VIEW_NAME_MAX = 200;
 export const SAVED_VIEW_JSON_MAX = 64 * 1024;
-/** Most views one list read answers. */
 export const SAVED_VIEWS_PAGE_MAX = 200;
-/** Views read per step while a `contains` list read looks for matching names. */
 const NAME_SCAN_PAGE = 200;
 
-/** Field codes of the saved view types, one space for all of them. */
 const F = Object.freeze({
     text: 42,
     tagMode: 43,
@@ -52,12 +36,9 @@ const F = Object.freeze({
     rangeMax: 59,
 });
 
-/** A view's lists: its conditions, its ranges (items: their entities), its tag keys (items: texts). */
 const LIST = Object.freeze({ conditions: 0, ranges: 1, include: 2, exclude: 3 });
-/** The view list's list of views. */
 const VIEWS = 0;
 
-/** A view's leaves of a fixed shape, by path: [field, kind]. */
 const SORT_LEAVES = /** @type {const} */ ([['field', 'string'], ['order', 'string'], ['seed', 'number']]);
 const SORT_CODES = /** @type {const} */ ([F.sortField, F.sortOrder, F.sortSeed]);
 const TIE_CODES = /** @type {const} */ ([F.tieField, F.tieOrder, F.tieSeed]);
@@ -69,7 +50,6 @@ const TIE_CODES = /** @type {const} */ ([F.tieField, F.tieOrder, F.tieSeed]);
 
 const isPlainObject = (/** @type {unknown} */ v) => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/** Whether a value means the same as a missing key. */
 const isEmpty = (/** @type {unknown} */ v) => v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0) || (isPlainObject(v) && Object.keys(/** @type {object} */ (v)).length === 0);
 
 /**
@@ -82,8 +62,6 @@ function setOwn(o, key, value) {
 }
 
 /**
- * A view as it is stored and read back: what means the same as missing left out. What doesn't fit the view's shape
- * is left out too and named in `problems`, one line each.
  * @param {unknown} view
  * @returns {{ view: Record<string, unknown>, problems: string[] }}
  */
@@ -95,7 +73,6 @@ export function canonicalView(view) {
     if (!isPlainObject(view)) return { view: out, problems: ['view: not an object'] };
     const v = /** @type {Record<string, unknown>} */ (view);
     /**
-     * A leaf of `kind` at `path`, or undefined when it is empty or doesn't fit.
      * @param {unknown} x
      * @param {'string' | 'number' | 'boolean'} kind
      * @param {string} path
@@ -109,7 +86,6 @@ export function canonicalView(view) {
         return x;
     };
     /**
-     * The keys of an object at `path` but `known`, each a problem.
      * @param {Record<string, unknown>} o
      * @param {readonly string[]} known
      * @param {string} path
@@ -118,7 +94,6 @@ export function canonicalView(view) {
         for (const k of Object.keys(o)) if (!known.includes(k)) problems.push(`${path}.${k}: not a key a view has`);
     };
     /**
-     * A sort object at `path` (`sort` or `sort.tie`).
      * @param {unknown} x
      * @param {string} path
      * @param {boolean} withTie
@@ -250,7 +225,6 @@ export function canonicalView(view) {
 }
 
 /**
- * Why a condition doesn't fit, or null when it does.
  * @param {unknown} c
  * @returns {string | null}
  */
@@ -266,7 +240,6 @@ function conditionProblem(c) {
 }
 
 /**
- * The names of a view's top-level keys that aren't a view's, in the canonical view.
  * @param {Record<string, unknown>} view
  */
 const otherKeys = view => Object.keys(view).filter(k => !['text', 'folderCase', 'fav', 'group', 'tags', 'sort', 'ranges', 'conditions'].includes(k));
@@ -274,7 +247,6 @@ const otherKeys = view => Object.keys(view).filter(k => !['text', 'folderCase', 
 const put = (/** @type {unknown} */ v) => (typeof v === 'string' ? { text: v } : { json: JSON.stringify(v) });
 
 /**
- * A canonical view's own values and tag lists (its conditions and ranges are entities).
  * @param {string} name
  * @param {Record<string, unknown>} view
  */
@@ -309,7 +281,6 @@ function ownValues(name, view) {
 }
 
 /**
- * A condition's values.
  * @param {Record<string, unknown>} c
  */
 function conditionValues(c) {
@@ -322,7 +293,6 @@ function conditionValues(c) {
 }
 
 /**
- * A range's values.
  * @param {string} field
  * @param {Record<string, unknown>} r
  */
@@ -336,16 +306,15 @@ function rangeValues(field, r) {
 }
 
 /**
- * @typedef {object} StoredView A view as stored, for writing over it.
+ * @typedef {object} StoredView
  * @property {bigint} id
- * @property {string} key Its UUID.
- * @property {import('./entity-values.js').StoredEntity} entity Its own values and tag lists.
- * @property {{ entity: import('./entity-values.js').StoredEntity, position: number }[]} conditions In place order.
- * @property {Map<string, { entity: import('./entity-values.js').StoredEntity, position: number }>} ranges By card field.
+ * @property {string} key
+ * @property {import('./entity-values.js').StoredEntity} entity
+ * @property {{ entity: import('./entity-values.js').StoredEntity, position: number }[]} conditions
+ * @property {Map<string, { entity: import('./entity-values.js').StoredEntity, position: number }>} ranges
  */
 
 /**
- * Reads views as stored.
  * @param {import('./library-engine.js').LibraryEngine} lib
  * @param {bigint[]} ids
  * @returns {Promise<(StoredView | null)[]>}
@@ -378,7 +347,6 @@ export async function storedViews(lib, ids) {
 }
 
 /**
- * The values of an entity by field.
  * @param {import('./entity-values.js').StoredEntity} e
  */
 function valuesOf(e) {
@@ -392,7 +360,6 @@ function valuesOf(e) {
 }
 
 /**
- * A stored view's name and view object, its tag keys as stored.
  * @param {StoredView} s
  * @returns {{ name: string, view: Record<string, unknown> }}
  */
@@ -457,8 +424,6 @@ export function assembleView(s) {
 }
 
 /**
- * Stored views as the user reads them: each tag key merged into another reads as that one, then each tag list
- * keeps a key's first occurrence.
  * @param {import('./library-engine.js').LibraryEngine} lib
  * @param {StoredView[]} stored
  * @returns {Promise<SavedView[]>}
@@ -491,10 +456,9 @@ async function readAs(lib, stored) {
 }
 
 /**
- * The records turning a stored view (none for a new one) into `name` and the canonical `view`.
  * @param {import('./library-engine.js').LibraryEngine} lib
  * @param {bigint} id
- * @param {string} key The view's UUID.
+ * @param {string} key
  * @param {StoredView | null} s
  * @param {string} name
  * @param {Record<string, unknown>} view
@@ -508,8 +472,6 @@ function viewRecords(lib, id, key, s, name, view) {
 }
 
 /**
- * The records making a view's conditions `incoming`: conditions equal at both ends stay, those between are edited
- * in place, the rest added or deleted.
  * @param {import('./library-engine.js').LibraryEngine} lib
  * @param {bigint} view
  * @param {string} key
@@ -554,7 +516,6 @@ function assembleCondition(e) {
 }
 
 /**
- * The records making a view's ranges `incoming`, each kept by its card field.
  * @param {import('./library-engine.js').LibraryEngine} lib
  * @param {bigint} view
  * @param {string} key
@@ -582,7 +543,6 @@ function rangeRecords(lib, view, key, before, incoming) {
 }
 
 /**
- * The user's view list, or null before their first view.
  * @param {import('./library-engine.js').LibraryEngine} lib
  * @returns {Promise<bigint | null>}
  */
@@ -592,7 +552,6 @@ export async function viewHolder(lib) {
 }
 
 /**
- * The records creating a view at `position` of the view list (`holder`: null to create the list too).
  * @param {import('./library-engine.js').LibraryEngine} lib
  * @param {{ holder: bigint | null, key: string, name: string, view: Record<string, unknown>, position: number }} v
  * @returns {{ records: object[], holder: bigint }}
@@ -609,7 +568,6 @@ export function createRecords(lib, { holder, key, name, view, position }) {
 }
 
 /**
- * Places in the view list, up to `limit`, after the place `after` or before the place `before` (nearest first).
  * @param {import('./library-engine.js').LibraryEngine} lib
  * @param {bigint} holder
  * @param {{ after?: number | null, before?: number, limit: number }} at
@@ -628,12 +586,9 @@ async function libOf(directories) {
 const pageSize = limit => Math.max(1, Math.min(Math.trunc(limit) || SAVED_VIEWS_PAGE_MAX, SAVED_VIEWS_PAGE_MAX));
 
 /**
- * One page of the user's saved views in their order, those whose names hold `contains` when it is given.
  * @param {{ root: string }} directories
- * @param {{ contains?: string, after?: number | null, limit?: number }} [options] `after`: the place of the last
- * view of the page before.
- * @returns {Promise<{ views: SavedView[], more: boolean, last: number | null }>} `last`: the place of the page's
- * last view.
+ * @param {{ contains?: string, after?: number | null, limit?: number }} [options]
+ * @returns {Promise<{ views: SavedView[], more: boolean, last: number | null }>}
  */
 export async function listSavedViews(directories, { contains = '', after = null, limit = SAVED_VIEWS_PAGE_MAX } = {}) {
     const lib = await libOf(directories);
@@ -671,7 +626,6 @@ export async function listSavedViews(directories, { contains = '', after = null,
 }
 
 /**
- * One saved view, or null when no view has the id.
  * @param {{ root: string }} directories
  * @param {string} id
  * @returns {Promise<SavedView | null>}
@@ -685,7 +639,6 @@ export async function getSavedView(directories, id) {
 }
 
 /**
- * Runs `write` after every earlier write to the user's saved views has settled.
  * @template T
  * @param {import('./library-engine.js').LibraryEngine} lib
  * @param {() => Promise<T>} write
@@ -693,9 +646,8 @@ export async function getSavedView(directories, id) {
 const lane = (lib, write) => lib.serialized(TYPE.viewList, '', write);
 
 /**
- * Saves a new view after the user's others.
  * @param {{ root: string }} directories
- * @param {{ name: string, view: object }} params `view` canonical (`canonicalView()`).
+ * @param {{ name: string, view: object }} params
  * @returns {Promise<SavedView>}
  */
 export async function createSavedView(directories, { name, view }) {
@@ -713,11 +665,10 @@ export async function createSavedView(directories, { name, view }) {
 }
 
 /**
- * Changes one view's name or view object. Writes only what differs.
  * @param {{ root: string }} directories
  * @param {string} id
- * @param {{ name?: string, view?: object }} change `view` canonical (`canonicalView()`).
- * @returns {Promise<SavedView | null>} null when no view has the id.
+ * @param {{ name?: string, view?: object }} change
+ * @returns {Promise<SavedView | null>}
  */
 export async function changeSavedView(directories, id, { name, view }) {
     const lib = await libOf(directories);
@@ -738,10 +689,9 @@ export async function changeSavedView(directories, id, { name, view }) {
 }
 
 /**
- * Deletes one view.
  * @param {{ root: string }} directories
  * @param {string} id
- * @returns {Promise<boolean>} false when no view had the id.
+ * @returns {Promise<boolean>}
  */
 export async function deleteSavedView(directories, id) {
     const lib = await libOf(directories);
@@ -767,12 +717,10 @@ export async function deleteSavedView(directories, id) {
 }
 
 /**
- * Moves one view to just before or just after another: halfway between its new neighbours, or, when no place is
- * free there, every view placed again in the new order above the highest place.
  * @param {{ root: string }} directories
  * @param {string} id
  * @param {{ anchor: string, side: 'before' | 'after' }} where
- * @returns {Promise<'moved' | 'unchanged' | 'missing'>} 'missing' when either view doesn't exist.
+ * @returns {Promise<'moved' | 'unchanged' | 'missing'>}
  */
 export async function moveSavedView(directories, id, { anchor, side }) {
     const lib = await libOf(directories);
@@ -784,7 +732,6 @@ export async function moveSavedView(directories, id, { anchor, side }) {
         if (vid === aid) return 'unchanged';
         const [at, from] = await lib.store.worldRead('itemPlaces', { entity: holder, list: VIEWS, items: [aid, vid] });
         if (at === null || from === null) return 'missing';
-        // The anchor's nearest two on that side: the first that isn't the moving view is the new neighbour.
         const near = (await viewPlaces(lib, holder, side === 'after' ? { after: at, limit: 2 } : { before: at, limit: 2 })).entries;
         if (near[0]?.id === vid) return 'unchanged';
         const neighbour = near.find(e => e.id !== vid);
@@ -801,7 +748,6 @@ export async function moveSavedView(directories, id, { anchor, side }) {
             await lib.store.commit([{ kind: 'itemPlace', entity: holder, list: VIEWS, item: vid, position }]);
             return 'moved';
         }
-        // No place free: every view again, in the new order, above the highest place.
         /** @type {{ id: bigint, position: number }[]} */
         const all = [];
         let after = null;

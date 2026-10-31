@@ -71,7 +71,6 @@ var SelectedCharacterTab = document.getElementById('rm_button_selected_ch');
 var connection_made = false;
 var retry_delay = 500;
 let counterNonce = Date.now();
-// Set when an internal count trigger fired while the character editor wasn't showing; the count runs when it shows.
 let editorCountPending = false;
 
 const observerConfig = { childList: true, subtree: true };
@@ -103,7 +102,6 @@ const observer = new MutationObserver(function (mutations) {
 
 observer.observe(document.documentElement, observerConfig);
 
-// Crossing the mobile breakpoint can uncover the editor with no drawer change.
 window.matchMedia('screen and (max-width: 1000px)').addEventListener('change', onCharacterEditorMaybeShown);
 
 
@@ -136,7 +134,6 @@ export function humanizeGenTime(total_gen_time) {
     return result;
 }
 
-// Keep as `var` - do not change to const/let
 var parsedUA = null;
 
 export function getParsedUA() {
@@ -172,7 +169,6 @@ export function shouldSendOnEnter() {
     }
 }
 
-// Format: YYYY-MM-DD@HHhMMmSSsMSms
 export { humanizedDateTime } from './humanized-date.js';
 
 export function getMessageTimeStamp(timestamp = Date.now()) {
@@ -188,8 +184,6 @@ $('#rm_button_create').on('click', function () {                 //when "+New Ch
 //when any input is made to the create/edit character form textareas
 $('#rm_ch_create_block').on('input', function () { countTokensDebounced(); });
 /**
- * Whether the character editor is on screen: #char-info-panel open, not covered by another drawer
- * (covered drawers are hidden by visibility), and showing the editor rather than the group panel.
  * @returns {boolean}
  */
 export function isCharacterEditorShowing() {
@@ -207,23 +201,14 @@ function countCharTokensIfShown() {
     RA_CountCharTokens();
 }
 
-/**
- * Counts the character editor's tokens after the usual 1000 ms debounce, or, if the editor isn't showing
- * then, when it next shows. For internal triggers; RA_CountCharTokens() counts right away.
- */
 export function countCharTokensWhenShown() {
     countTokensWhenShownDebounced();
 }
 
-/** Same as countCharTokensWhenShown(), with a 200 ms debounce. */
 export function countCharTokensWhenShownSoon() {
     countTokensWhenShownSoonDebounced();
 }
 
-/**
- * Runs a count held back while the character editor was hidden, if it is showing now.
- * Called from every place that can make the editor visible.
- */
 export function onCharacterEditorMaybeShown() {
     if (editorCountPending && isCharacterEditorShowing()) {
         RA_CountCharTokens();
@@ -236,15 +221,10 @@ export async function RA_CountCharTokens() {
     const counterNonceLocal = counterNonce;
     let total_tokens = 0;
     let permanent_tokens = 0;
-    // The answer the total is rendered with: the batch's, when there is one.
     let totalAnswer = getRememberedTokenizerAnswer();
 
     const tokenCounters = document.querySelectorAll('[data-token-counter]');
 
-    // First pass: resolve everything already cached (or empty) synchronously, and collect
-    // the distinct uncached values that actually need a token count. Every network-bound
-    // field is queued here and sent as ONE batched request below, instead of one request
-    // per counter.
     const pending = [];
     for (const tokenCounter of tokenCounters) {
         const counter = $(tokenCounter);
@@ -277,7 +257,6 @@ export async function RA_CountCharTokens() {
     }
 
     if (pending.length > 0) {
-        // Counted as sent: the macros filled in (a character being created has none to fill them in with yet).
         const values = new MacroValues(() => ({ ...openChatMacroScope(), avatar_url: String($('#avatar_url_pole').val() ?? '') }));
         if (menu_type !== 'create') await values.wantMacros(pending.flatMap(p => macrosIn(p.value)));
         if (counterNonceLocal !== counterNonce) {
@@ -311,14 +290,10 @@ export async function RA_CountCharTokens() {
     $('#result_info_text').toggleClass('neutral_warning', showWarning);
     $('#chartokenwarning').toggle(showWarning);
 }
-// Auto-loads the last active character or group, if any.
 async function RA_autoloadchat() {
     if (active_character !== null && active_character !== undefined) {
-        // active_character is the character's avatar filename
         let activeCharacterEntity = charactersStore.get(active_character);
 
-        // Not resident yet (background library load may still be in progress) - fetch this one
-        // character directly instead of waiting for the full list.
         if (!activeCharacterEntity) {
             try {
                 const fetchStamp = tagFetchStamp();
@@ -371,13 +346,7 @@ async function RA_autoloadchat() {
     }
 }
 
-/**
- * Fills the favorites hotswap strip with the top FAVS_LIMIT favorited characters and groups, in the list's sort (or
- * its fallback, see queryWithSortFallback()).
- */
 export async function favsToHotswap() {
-    // The refresh is decorative and most callers don't await/catch it, so an uncaught throw here becomes
-    // an unhandled rejection instead of being anyone's problem - swallow and just log it.
     try {
         return await favsToHotswapImpl();
     } catch (error) {
@@ -388,14 +357,10 @@ export async function favsToHotswap() {
 async function favsToHotswapImpl() {
     const container = $('#right-nav-panel .hotswap');
 
-    // All hotswap images load regardless of whether they fit the screen, so a cap keeps unseen favorites
-    // from loading; 25 roughly fits an ultrawide monitor with the default theme.
     const FAVS_LIMIT = 25;
 
     const isRandom = power_user.sort_order === 'random';
     const sortField = isRandom ? 'random' : power_user.sort_field;
-    // Dynamic import (not static): this module sits on an import cycle through power-user.js/script.js, and a
-    // static import of filters.js here would reorder that cycle and reproduce a FILTER_TYPES TDZ crash.
     const { FILTER_TYPES } = await import('./filters.js');
     const searchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) || '';
 
@@ -587,10 +552,6 @@ export function dragElement($elmnt) {
     });
 }
 
-/**
- * Upstream's MovingUI (dragging the main panels), removed here; kept as an export because extensions import it. Does
- * nothing.
- */
 export async function initMovingUI() {}
 
 /**@type {HTMLTextAreaElement} */
@@ -598,7 +559,6 @@ const sendTextArea = document.querySelector('#send_textarea');
 const chatBlock = document.getElementById('chat');
 const isFirefox = navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
 
-// Max height is capped by CSS at 50% of window height.
 function autoFitSendTextArea() {
     const originalScrollBottom = chatBlock.scrollHeight - (chatBlock.scrollTop + chatBlock.offsetHeight);
 
@@ -614,7 +574,6 @@ export const autoFitSendTextAreaDebounced = debounce(autoFitSendTextArea, deboun
 
 // ---------------------------------------------------
 
-// The pin of #right-nav-panel (#rm_button_panel_pin) and of #char-info-panel (#charInfo_button_panel_pin).
 function applyRightNavPin() {
     accountStorage.setItem('NavLockOn', $(RPanelPin).prop('checked'));
     if ($(RPanelPin).prop('checked') == true) {
@@ -624,7 +583,6 @@ function applyRightNavPin() {
         $(RightNavPanel).removeClass('pinnedOpen');
         $(RightNavDrawerIcon).removeClass('drawerPinnedOpen');
 
-        // #char-info-panel can stay open independent of this pin, so it's excluded below.
         if ($(RightNavPanel).hasClass('openDrawer') && $('.openDrawer').not(CharInfoPanel).length > 1) {
             const toggle = $('#unimportantYes');
             doNavbarIconClick.call(toggle);
@@ -641,7 +599,6 @@ function applyCharInfoPin() {
         $(CharInfoPanel).removeClass('pinnedOpen');
         $(CharInfoDrawerIcon).removeClass('drawerPinnedOpen');
 
-        // #right-nav-panel can stay open independent of this pin, so it's excluded below.
         if ($(CharInfoPanel).hasClass('openDrawer') && $('.openDrawer').not(RightNavPanel).length > 1) {
             const toggle = $('#charInfoHolder>.drawer-toggle');
             doNavbarIconClick.call(toggle);
@@ -649,9 +606,7 @@ function applyCharInfoPin() {
     }
 }
 
-/** Applies power_user.stacked_drawers to the right-side panels and their pins. */
 export function onStackedDrawersChanged() {
-    // With stacked drawers off, the two right-side pins act as one; if they differ, pinned wins.
     if (!power_user.stacked_drawers && $(RPanelPin).prop('checked') !== $(CharInfoPanelPin).prop('checked')) {
         $(RPanelPin).prop('checked', true);
         $(CharInfoPanelPin).prop('checked', true);
@@ -734,14 +689,12 @@ export function initRossMods() {
 
     const wasOpen = readSavedPanelOpenStates();
     if (!isMobile()) {
-        // A reload restores each pinned panel as it was left; unpinned panels start closed.
         const pinnable = [
             { panel: RightNavPanel, icon: RightNavDrawerIcon, pin: RPanelPin, lockKey: 'NavLockOn' },
             { panel: CharInfoPanel, icon: CharInfoDrawerIcon, pin: CharInfoPanelPin, lockKey: 'CharInfoNavLockOn' },
             { panel: LeftNavPanel, icon: LeftNavDrawerIcon, pin: LPanelPin, lockKey: 'LNavLockOn' },
             { panel: WorldInfo, icon: WIDrawerIcon, pin: WIPanelPin, lockKey: 'WINavLockOn' },
         ];
-        // With stacked drawers off, the two right-side pins act as one; if they differ, pinned wins.
         const rightPanelPinned = ['NavLockOn', 'CharInfoNavLockOn'].some(key => accountStorage.getItem(key) === 'true');
         for (const { panel, icon, pin, lockKey } of pinnable) {
             const linked = !power_user.stacked_drawers && panel.classList.contains('fillRight');
@@ -772,7 +725,6 @@ export function initRossMods() {
     $(SelectedCharacterTab).on('click', function () { accountStorage.setItem('SelectedNavTab', 'rm_button_selected_ch'); });
 
     $(document).on('click', '.character_select', function () {
-        // Resolve by avatar (the stable id), the only identifier a character row carries.
         const characterId = $(this).attr('data-avatar');
         setActiveCharacter(characterId);
         setActiveGroup(null);
@@ -841,11 +793,8 @@ export function initRossMods() {
             return;
         }
         if ($('#curEditTextarea').length) {
-            // Don't swipe while in text edit mode - iOS selection gestures get picked up as swipes
             return;
         }
-        // Resolve against the message the gesture happened on, not always the last one - swipeAllMessages
-        // lets earlier messages be swiped too.
         var swipeTargetMes = $(e.target).closest('.mes');
         if (swipeTargetMes.length) {
             var SwipeButR = swipeTargetMes.find('.swipe_right');
@@ -865,10 +814,8 @@ export function initRossMods() {
             return;
         }
         if ($('#curEditTextarea').length) {
-            // Don't swipe while in text edit mode - iOS selection gestures get picked up as swipes
             return;
         }
-        // See the swiped-left handler above for why this targets the gesture's message.
         var swipeTargetMes = $(e.target).closest('.mes');
         if (swipeTargetMes.length) {
             var SwipeButL = swipeTargetMes.find('.swipe_left');
@@ -959,9 +906,6 @@ export function initRossMods() {
             }
         }
 
-        // Ctrl+Enter regenerates the last response, or accepts an in-progress edit instead.
-        // Deliberately unscoped: only one message can be in edit mode at a time, so this always
-        // matches the message actually being edited, not necessarily the last one.
         if (event.ctrlKey && event.key == 'Enter') {
             if (handleFieldEditKey('confirm')) {
                 event.preventDefault();
@@ -971,7 +915,6 @@ export function initRossMods() {
             const reasoningMesDone = $('.mes_reasoning_edit_done:visible');
             if (editMesDone.length > 0) {
                 console.debug('Accepting edits with Ctrl+Enter');
-                // The key accepts the edit; it doesn't also add a line to the text being accepted.
                 event.preventDefault();
                 $('#send_textarea').trigger('focus');
                 editMesDone.trigger('click');
@@ -1071,7 +1014,6 @@ export function initRossMods() {
             ) {
                 const isUserMesList = document.querySelectorAll('div[is_user="true"]');
                 const lastIsUserMes = isUserMesList[isUserMesList.length - 1];
-                // A chat with no user message has nothing to edit.
                 const editMes = lastIsUserMes?.querySelector('.mes_block .mes_edit') ?? null;
                 if (editMes !== null) {
                     $(editMes).trigger('click');
@@ -1097,7 +1039,7 @@ export function initRossMods() {
             }
         }
 
-        if (event.key == 'Escape' && !event.defaultPrevented) { //closes various panels
+        if (event.key == 'Escape' && !event.defaultPrevented) {
             //dont override Escape hotkey functions from script.js
             //"close edit box" and "cancel stream generation".
             if ($('#curEditTextarea').is(':visible') || $('#mes_stop').is(':visible')) {

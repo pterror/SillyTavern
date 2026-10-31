@@ -1,7 +1,5 @@
 import { substituteParams } from './macro-substitution.js';
 
-// Mirrors public/scripts/instruct-mode.js's names_behavior_types / force_output_sequence / and
-// public/script.js's extension_prompt_types (only the two values formatInstructModeStoryString uses).
 export const names_behavior_types = { NONE: 'none', FORCE: 'force', ALWAYS: 'always' };
 export const force_output_sequence = { FIRST: 1, LAST: 2 };
 const extension_prompt_types = { IN_PROMPT: 0, IN_CHAT: 1 };
@@ -29,20 +27,17 @@ const extension_prompt_types = { IN_PROMPT: 0, IN_CHAT: 1 };
  */
 
 /**
- * Port of public/scripts/instruct-mode.js's formatInstructModeChat(). `name1`/`name2` are only
- * used for macro substitution (not for deciding whose line this is - `isUser`/`isNarrator` do
- * that), same as the client.
- * @param {string} name Display name attached to this line when names are included
- * @param {string} mes Message content
+ * @param {string} name
+ * @param {string} mes
  * @param {boolean} isUser
  * @param {boolean} isNarrator
- * @param {boolean} isGroup Whether this is a group chat (affects FORCE names_behavior)
- * @param {string|undefined} forceAvatar Truthy if this specific message carries a forced/overridden avatar (e.g. a group message's force_avatar)
+ * @param {boolean} isGroup
+ * @param {string|undefined} forceAvatar
  * @param {string} name1
  * @param {string} name2
- * @param {number|undefined} forceOutputSequence One of force_output_sequence, or undefined
+ * @param {number|undefined} forceOutputSequence
  * @param {InstructSettings} instructPreset
- * @param {import('./macro-substitution.js').SubstituteParamsContext} [macroContext] What the macros read besides the names.
+ * @param {import('./macro-substitution.js').SubstituteParamsContext} [macroContext]
  * @returns {string}
  */
 export function formatInstructModeChat(name, mes, isUser, isNarrator, isGroup, forceAvatar, name1, name2, forceOutputSequence, instructPreset, macroContext = {}) {
@@ -91,7 +86,6 @@ export function formatInstructModeChat(name, mes, isUser, isNarrator, isGroup, f
 }
 
 /**
- * Port of public/scripts/instruct-mode.js's formatInstructModePrompt().
  * @param {string} name
  * @param {boolean} isImpersonate
  * @param {string} promptBias
@@ -101,7 +95,7 @@ export function formatInstructModeChat(name, mes, isUser, isNarrator, isGroup, f
  * @param {boolean} isQuietToLoud
  * @param {boolean} isGroup
  * @param {InstructSettings} instructPreset
- * @param {import('./macro-substitution.js').SubstituteParamsContext} [macroContext] What the macros read besides the names.
+ * @param {import('./macro-substitution.js').SubstituteParamsContext} [macroContext]
  * @returns {string}
  */
 export function formatInstructModePrompt(name, isImpersonate, promptBias, name1, name2, isQuiet, isQuietToLoud, isGroup, instructPreset, macroContext = {}) {
@@ -118,7 +112,6 @@ export function formatInstructModePrompt(name, isImpersonate, promptBias, name1,
     let sequence = getSequence() || '';
     let nameFiller = '';
 
-    // A hack for Mistral's formatting that has a normal output sequence ending with a space
     if (
         includeNames &&
         instruct.last_output_sequence &&
@@ -150,13 +143,6 @@ export function formatInstructModePrompt(name, isImpersonate, promptBias, name1,
 }
 
 /**
- * Port of public/scripts/instruct-mode.js's formatInstructModeStoryString(). `contextSettings`
- * only needs the one field the client reads: story_string_position.
- *
- * Deliberate deviation from the client: the client calls substituteParams() here with no
- * name1/name2 override, relying on its own ambient global name1/name2 for any {{char}}/{{user}}
- * in the prefix/suffix - there's no server-side global to mirror that, so this port takes them
- * explicitly instead. Pass the same name1/name2 you'd use elsewhere for this generation.
  * @param {string} storyString
  * @param {InstructSettings} instructPreset
  * @param {{story_string_position?: number, name1?: string, name2?: string, macroContext?: import('./macro-substitution.js').SubstituteParamsContext}} [contextSettings]
@@ -187,7 +173,6 @@ export function formatInstructModeStoryString(storyString, instructPreset, conte
 const onlyUnique = (value, index, array) => array.indexOf(value) === index;
 
 /**
- * Port of public/scripts/instruct-mode.js's getInstructStoppingSequences().
  * @param {InstructSettings} instructPreset
  * @param {{use_stop_strings?: boolean, chat_start?: string, example_separator?: string}} contextSettings
  * @param {{name1?: string, name2?: string, macroContext?: import('./macro-substitution.js').SubstituteParamsContext}} [names]
@@ -235,13 +220,9 @@ export function getInstructStoppingSequences(instructPreset, contextSettings, { 
 }
 
 /**
- * Port of TextCompletionService.constructPrompt() (public/scripts/custom-request.js): converts a
- * chat-completion-style messages array into a raw instruct-formatted prompt string.
  * @param {{role: string, content: string, name?: string, ignoreInstruct?: boolean}[]} prompt
  * @param {InstructSettings} instructPreset
- * @param {{name1?: string, name2?: string, isGroup?: boolean}} [options] `isGroup` mirrors the
- * client's ambient `selected_group` check (affects FORCE names_behavior), since this port has no
- * such global - pass true when this generation is for a group chat.
+ * @param {{name1?: string, name2?: string, isGroup?: boolean}} [options]
  * @returns {string}
  */
 export function constructPrompt(prompt, instructPreset, { name1 = '', name2 = '', isGroup = false } = {}) {

@@ -31,11 +31,6 @@ test.describe('embedded lorebook activates with no linked World', () => {
             }
         });
 
-        // #create_button itself is `display: none` (styled via its <label for="create_button">).
-        // The list panel this row would otherwise be clicked from is paginated/lazily loaded and
-        // isn't guaranteed to hold the new row yet right after creation - selectCharacterByAvatar()
-        // below is the same avatar-addressed selection path the app itself uses, and doesn't
-        // depend on the row having rendered into that list.
         await page.locator('#create_button_label').click();
         await expect.poll(() => avatar, { timeout: 10000 }).not.toBeNull();
 
@@ -46,9 +41,6 @@ test.describe('embedded lorebook activates with no linked World', () => {
 
                 await selectCharacterByAvatar(avatar);
 
-                // No World file is linked - #character_world stays untouched (empty) - so
-                // getCharacterLore()'s embedded-book fallback is the only thing that can
-                // surface these entries.
                 const characterBook = {
                     extensions: {},
                     entries: [
@@ -62,8 +54,6 @@ test.describe('embedded lorebook activates with no linked World', () => {
                 const character = getCurrentCharacter();
                 const savedBookEntryCount = character?.data?.character_book?.entries?.length ?? 0;
 
-                // getSortedEntries() itself doesn't expose the per-source breakdown it emits over
-                // WORLDINFO_ENTRIES_LOADED, so listen for that instead of re-deriving it.
                 const captured = new Promise((resolve) => {
                     eventSource.once(event_types.WORLDINFO_ENTRIES_LOADED, (data) => resolve(data));
                 });
@@ -77,19 +67,11 @@ test.describe('embedded lorebook activates with no linked World', () => {
                 };
             }, avatar);
 
-            // Sanity check: the card actually saved the embedded book (rules out a save-path
-            // failure masquerading as an activation failure).
             expect(result.savedBookEntryCount).toBe(1);
 
-            // Regression guard: getCharacterLore() used to `return []` before ever reaching the
-            // embedded character_book fallback whenever the character had no linked World file
-            // and no extra char-lore entry - the exact case here.
             expect(result.characterLoreCount).toBeGreaterThan(0);
             expect(result.hasEmbeddedEntry).toBe(true);
         } finally {
-            // getRequestHeaders() (not a plain Content-Type header) is required here - the server
-            // rejects a mutating request with no X-CSRF-Token, so a plain header would silently
-            // fail to delete the test character while still resolving without throwing.
             await page.evaluate(async (avatar) => {
                 const { getRequestHeaders } = await import('./script.js');
                 await fetch('/api/characters/delete', {

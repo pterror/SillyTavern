@@ -265,7 +265,7 @@ class XTTSTtsProvider {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Cache-Control': 'no-cache', // disable caching so newly generated audio is always played
+                    'Cache-Control': 'no-cache',
                 },
                 body: JSON.stringify({
                     'text': inputText,
@@ -281,7 +281,6 @@ class XTTSTtsProvider {
         return response;
     }
 
-    // XTTS has no history endpoint
     async fetchTtsFromHistory(history_item_id) {
         return Promise.resolve(history_item_id);
     }

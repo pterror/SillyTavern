@@ -1,27 +1,14 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-/** A page's write of a whole book: the changes it made (or a new book). */
 const BOOK_WRITE = /\/api\/worldinfo\/(entries\/apply|create)$/;
 
 /**
- * Whether a whole-book write's body leaves the book with entries in it: a change storing an entry, or a new book
- * with entries.
  * @param {any} body
  */
 const writesEntries = body => Array.isArray(body?.entries)
     ? body.entries.some(change => change.data != null)
     : Object.keys(body?.data?.entries ?? {}).length > 0;
-
-// A create or import that overwrites a book under exactly its name writes over the book's own file without deleting
-// it first, so a write that fails leaves the old book as it was. The book's cached copy follows the file: the new book
-// after a write, the old one after a failed write. Every link to the name stays either way. As for an overwrite that
-// deletes, a save of the book pending when the overwrite starts is written before the new book (so a failed write
-// keeps it), and one made while that save is in flight is dropped with a warning, so no older save lands after it.
-// An import request that fails outright may or may not have replaced the book, so a save of the old book made while
-// it was sent is dropped with the same warning, never silently. So is one made while an import that goes through was
-// sent, which would otherwise write the old book back over the imported one.
-// (An overwrite under a name differing in case deletes first: WorldInfoOverwriteSequence.e2e.js.)
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -31,7 +18,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
  * @param {import('@playwright/test').Page} page
  * @param {string} name
  * @param {string} world
- * @returns {Promise<string>} The avatar filename.
+ * @returns {Promise<string>}
  */
 async function createCharacter(page, name, world) {
     return page.evaluate(async ({ name, world }) => {
@@ -62,7 +49,7 @@ async function deleteCharacter(page, avatar) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
- * @returns {Promise<string>} The stored card's primary lorebook, once the open character's pending field saves land.
+ * @returns {Promise<string>}
  */
 async function storedWorld(page, avatar) {
     return page.evaluate(async (avatar) => {
@@ -77,8 +64,6 @@ async function storedWorld(page, avatar) {
 }
 
 /**
- * Creates a book with one entry, so the overwrite (which writes an empty book) can be told apart from it, and loads
- * it into the page's cache.
  * @param {import('@playwright/test').Page} page
  * @param {string} worldName
  */
@@ -111,7 +96,7 @@ async function deleteWorld(page, worldName) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} worldName
- * @returns {Promise<string[]|null>} The entries' contents as the server has them, or null if it has no book by that name.
+ * @returns {Promise<string[]|null>}
  */
 async function serverEntries(page, worldName) {
     return page.evaluate(async (worldName) => {
@@ -128,7 +113,7 @@ async function serverEntries(page, worldName) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} worldName
- * @returns {Promise<string[]>} The entries' contents as loadWorldInfo() hands them out.
+ * @returns {Promise<string[]>}
  */
 async function loadedEntries(page, worldName) {
     return page.evaluate(async (worldName) => {
@@ -139,11 +124,10 @@ async function loadedEntries(page, worldName) {
 }
 
 /**
- * Overwrites an existing book through createNewWorldInfo() or importWorldInfo(), confirming the overwrite prompt.
  * @param {import('@playwright/test').Page} page
  * @param {'create'|'import'} how
  * @param {string} worldName
- * @returns {Promise<unknown>} What the create or import returned.
+ * @returns {Promise<unknown>}
  */
 async function overwriteWorld(page, how, worldName) {
     return page.evaluate(async ({ how, worldName }) => {
@@ -164,7 +148,6 @@ async function overwriteWorld(page, how, worldName) {
 }
 
 /**
- * Opens the character in the editor and adds `worldName` to the global lorebook selection.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  * @param {string} worldName
@@ -197,11 +180,9 @@ async function globallySelected(page, worldName) {
     }, worldName);
 }
 
-/** How long the tests wait after the overwrite: longer than debounce_timeout.relaxed, so a stray save would fire. */
 const AFTER_DEBOUNCE_MS = 2000;
 
 /**
- * Schedules a debounced whole-book save of the old book with an edited entry.
  * @param {import('@playwright/test').Page} page
  * @param {string} worldName
  */
@@ -214,7 +195,6 @@ async function saveOldBookDebounced(page, worldName) {
 }
 
 /**
- * Records, in order, the book's saves, any deletion and the new book's write.
  * @param {import('@playwright/test').Page} page
  * @param {'create'|'import'} how
  * @param {string} worldName
@@ -242,7 +222,6 @@ function recordRequests(page, how, worldName) {
 const droppedToast = (page, worldName) => page.locator('#toast-container .toast-warning .toast-message', { hasText: `Changes to lorebook ${worldName} made while it was being overwritten were not saved.` });
 
 /**
- * Asserts every link to the name is still there and no link-removed warning showed.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  * @param {string} worldName
@@ -276,7 +255,6 @@ test.describe('overwriting a lorebook under exactly its name', () => {
                 expect(await overwriteWorld(page, how, worldName)).toBeTruthy();
                 expect(deletes).toBe(0);
 
-                // The new, empty book is what the server has and what the page hands out.
                 expect(await serverEntries(page, worldName)).toEqual([]);
                 expect(await loadedEntries(page, worldName)).toEqual([]);
 
@@ -300,7 +278,6 @@ test.describe('overwriting a lorebook under exactly its name', () => {
                 page.on('request', (request) => {
                     if (new URL(request.url()).pathname === '/api/worldinfo/delete') deletes++;
                 });
-                // A save pending when the overwrite starts is written first, so the failed write doesn't cost it.
                 await saveOldBookDebounced(page, worldName);
                 await page.route(WRITE_PATH[how], route => {
                     const body = how === 'create' ? JSON.parse(route.request().postData() ?? '{}') : null;
@@ -314,8 +291,6 @@ test.describe('overwriting a lorebook under exactly its name', () => {
                 }
                 expect(deletes).toBe(0);
 
-                // The old book, with its pending edit, is what the server has and what the page hands out, not the new
-                // book that wasn't written.
                 expect(await serverEntries(page, worldName)).toEqual(['old book, edited']);
                 expect(await loadedEntries(page, worldName)).toEqual(['old book, edited']);
                 await expect(droppedToast(page, worldName)).toHaveCount(0);
@@ -355,7 +330,6 @@ test.describe('overwriting a lorebook under exactly its name', () => {
             await createWorldWithEntry(page, worldName);
             try {
                 const events = recordRequests(page, how, worldName);
-                // The pending save's write is held back until the book has been saved again meanwhile.
                 let releaseSave = () => {};
                 const saveReleased = new Promise(resolve => { releaseSave = () => resolve(undefined); });
                 let saveSeen = () => {};
@@ -385,7 +359,6 @@ test.describe('overwriting a lorebook under exactly its name', () => {
                 expect(events).toEqual(['old save sent', 'new book sent']);
                 expect(await serverEntries(page, worldName)).toEqual([]);
                 await expect(droppedToast(page, worldName)).toHaveCount(1);
-                // The dropped save's data isn't handed out as the book's.
                 expect(await loadedEntries(page, worldName)).toEqual([]);
             } finally {
                 await deleteWorld(page, worldName);
@@ -404,7 +377,6 @@ test.describe('overwriting a lorebook under exactly its name', () => {
                 if (new URL(request.url()).pathname !== '/api/worldinfo/entry/edit') return;
                 if (JSON.parse(request.postData() ?? '{}').name === worldName) entrySaves++;
             });
-            // The import request is held until the book's entry has been edited meanwhile, then fails outright.
             let releaseImport = () => {};
             const importReleased = new Promise(resolve => { releaseImport = () => resolve(undefined); });
             let importSeen = () => {};
@@ -447,7 +419,6 @@ test.describe('overwriting a lorebook under exactly its name', () => {
 
             await createWorldWithEntry(page, worldName);
             try {
-                // Saves of the book sent once the import request has been sent.
                 let importSent = false;
                 let savesAfterImport = 0;
                 page.on('request', (request) => {
@@ -459,7 +430,6 @@ test.describe('overwriting a lorebook under exactly its name', () => {
                     if (!BOOK_WRITE.test(pathname) && pathname !== '/api/worldinfo/entry/edit') return;
                     if (importSent && JSON.parse(request.postData() ?? '{}').name === worldName) savesAfterImport++;
                 });
-                // The import request is held until the book has been saved meanwhile, then goes through.
                 let releaseImport = () => {};
                 const importReleased = new Promise(resolve => { releaseImport = () => resolve(undefined); });
                 let importSeen = () => {};
@@ -492,7 +462,6 @@ test.describe('overwriting a lorebook under exactly its name', () => {
 
                 expect(savesAfterImport).toBe(0);
                 await expect(droppedToast(page, worldName)).toHaveCount(1);
-                // The imported, empty book is what the server has and what the page hands out.
                 expect(await serverEntries(page, worldName)).toEqual([]);
                 expect(await loadedEntries(page, worldName)).toEqual([]);
             } finally {

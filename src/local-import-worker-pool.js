@@ -6,15 +6,14 @@ import { getConfigFilePath, getConfigValue } from './util.js';
 
 const WORKER_MODULE_PATH = fileURLToPath(new URL('./local-import-worker.js', import.meta.url));
 
-/** Hard cap on the auto-detected default pool size, regardless of core count. */
 const DEFAULT_POOL_SIZE_CAP = 16;
 
 /**
  * @typedef {object} WorkerPoolTask
  * @property {number} id
- * @property {(result: any) => void} onParsed Resolves with a `needsWrite: true` result; not called for tasks that only send 'done'.
- * @property {(result: any) => void} onDone Reassigned by _finish() so the same task object routes both phases.
- * @property {(err: Error) => void} reject Reassigned by _finish() alongside onDone.
+ * @property {(result: any) => void} onParsed
+ * @property {(result: any) => void} onDone
+ * @property {(err: Error) => void} reject
  */
 
 /**
@@ -23,11 +22,6 @@ const DEFAULT_POOL_SIZE_CAP = 16;
  * @property {WorkerPoolTask | null} currentTask
  */
 
-/**
- * Persistent pool of local-import-worker.js worker_threads, sized once and reused for the pool's lifetime
- * (worker_threads startup cost is not worth paying per file). A crashed worker's slot is replaced in place
- * without failing other in-flight or queued tasks.
- */
 export class LocalImportWorkerPool {
     constructor(size) {
         /** @type {PoolWorkerSlot[]} */
@@ -44,8 +38,6 @@ export class LocalImportWorkerPool {
     }
 
     _spawnSlot() {
-        // The worker's output is relayed by write, not piped: Node pipes each worker's stdout/stderr into the main
-        // process's, one `error` listener on them per worker, which a pool of workers runs past the listener limit.
         const worker = new Worker(WORKER_MODULE_PATH, { workerData: { configFilePath: getConfigFilePath() }, stdout: true, stderr: true });
         worker.stdout.on('data', chunk => process.stdout.write(chunk));
         worker.stderr.on('data', chunk => process.stderr.write(chunk));
@@ -53,10 +45,9 @@ export class LocalImportWorkerPool {
 
         worker.on('message', (result) => {
             const task = slot.currentTask;
-            if (!task) return; // Stray message after dispose/replacement - nothing to resolve.
+            if (!task) return;
 
             if (result.phase === 'parsed') {
-                // Slot stays busy until the follow-up 'continue' message arrives.
                 task.onParsed(result);
                 return;
             }
@@ -86,8 +77,6 @@ export class LocalImportWorkerPool {
             }
         });
 
-        // Deliberately not worker.unref()'d: with nothing else anchoring the event loop, Node can exit while
-        // a dispatched task is still in flight, permanently orphaning its promise (reproduced directly).
         return slot;
     }
 
@@ -101,17 +90,11 @@ export class LocalImportWorkerPool {
     }
 
     /**
-     * For a `needsWrite: true` result, `finish()` must be called exactly once (with `{ type: 'no-write' }` if
-     * nothing should be written) - otherwise that worker's slot stays stuck "busy" for the pool's lifetime.
      * @param {string} sourcePath
      * @param {string} format
      * @param {import('./users.js').UserDirectoryList} directories
      * @param {boolean} allowIdentityFallback
-     * @returns {Promise<
-     *   { contentHash: string, jsonClassification: string | null, identityHash: string | null, avatarIdentityHash: string | null, needsWrite: false } |
-     *   { contentHash: string, jsonClassification: null, identityHash: string | null, avatarIdentityHash: string | null, needsWrite: true, rawText: string,
-     *     finish: (outcome: { type: 'no-write' } | { type: 'write' }) => Promise<{ outcome: string, image?: { image: Buffer, avatarHash: string, avatarIdentityHash: string } }> }
-     * >}
+     * @returns {Promise< { contentHash: string, jsonClassification: string | null, identityHash: string | null, avatarIdentityHash: string | null, needsWrite: false } | { contentHash: string, jsonClassification: null, identityHash: string | null, avatarIdentityHash: string | null, needsWrite: true, rawText: string, finish: (outcome: { type: 'no-write' } | { type: 'write' }) => Promise<{ outcome: string, image?: { image: Buffer, avatarHash: string, avatarIdentityHash: string } }> } >}
      */
     runPipeline(sourcePath, format, directories, allowIdentityFallback) {
         const id = this.nextId++;
@@ -154,8 +137,7 @@ export class LocalImportWorkerPool {
 
     /**
      * @param {number} id
-     * @param {{ type: 'no-write' } | { type: 'write' }} outcome `write`: the worker answers the card's image (the
-     *   PNG's own, else the default avatar), its card data stripped, with its hashes.
+     * @param {{ type: 'no-write' } | { type: 'write' }} outcome
      * @returns {Promise<{ outcome: string, image?: { image: Buffer, avatarHash: string, avatarIdentityHash: string } }>}
      */
     _finish(id, outcome) {
@@ -194,9 +176,6 @@ export class LocalImportWorkerPool {
 }
 
 /**
- * `performance.localImportWorkerPoolSize` from config.yaml if set to a positive integer, otherwise
- * `os.cpus().length` capped at DEFAULT_POOL_SIZE_CAP - scaling past 16 workers is unmeasured, so the
- * auto-detected default doesn't extrapolate there; an explicit config value has no such cap.
  * @returns {number}
  */
 export function resolveWorkerPoolSize() {

@@ -55,7 +55,6 @@ test('a connection profile states its bundles by key and names its connection; i
     const profiles = [
         { id: 'p1', mode: 'tc', name: 'Local', api: 'llamacpp', preset: 'Universal-Light', instruct: 'ChatML', context: 'ChatML', 'instruct-state': 'true', 'api-url': 'http://127.0.0.1:8080', exclude: ['tokenizer'] },
         { id: 'p2', mode: 'cc', name: 'Claude', api: 'claude', preset: 'Default', model: 'claude-x', 'reasoning-template': 'Blank', proxy: 'None', exclude: [] },
-        // An alias /api accepts, an API with no connection, a repeated id.
         { id: 'p3', mode: 'tc', name: 'Alias', api: 'kcpp' },
         { id: 'p4', mode: 'cc', name: 'None yet', api: 'deepseek' },
         { id: 'p1', mode: 'cc', name: 'Copy' },

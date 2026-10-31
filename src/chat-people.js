@@ -1,12 +1,9 @@
 import { FIELD, NAME_HISTORY, TYPE, renamesOf } from './library-codes.js';
 import { storedValues } from './entity-values.js';
 
-/** The values a speaker is made from. */
 const ONLY = { fields: [FIELD.name], lists: [NAME_HISTORY] };
 
 /**
- * Who speaks in chats, from the library on the engine: characters by entity id and by avatar, each with its name
- * now (`ChatEngine`'s `People`); and the tree a character or group's messages are in, which is its entity id.
  * @param {import('./library-engine.js').LibraryEngine} lib
  */
 export function libraryPeople(lib) {
@@ -45,8 +42,6 @@ export function libraryPeople(lib) {
             return out;
         },
         /**
-         * Each tree's owner as chats there are named after it: a group or a character, its name, and when it was made
-         * (a card's create date, else when it was added). A tree that is neither is left out.
          * @param {bigint[]} ids
          */
         async owners(ids) {
@@ -55,7 +50,6 @@ export function libraryPeople(lib) {
             const out = new Map();
             found.forEach((e, i) => {
                 if (!e || (e.type !== TYPE.character && e.type !== TYPE.group)) return;
-                // A character's and a group's name are both field 1 (`FIELD.name`, `GROUP_FIELD.name`).
                 const v = e.values.find(x => x.field === FIELD.name);
                 const name = v === undefined ? '' : v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json));
                 out.set(ids[i], { group: e.type === TYPE.group, name: typeof name === 'string' ? name : '', created: e.type === TYPE.group ? e.added : (e.createMs ?? e.added) });
@@ -70,7 +64,6 @@ export function libraryPeople(lib) {
             resolved: ids => lib.store.worldRead('resolved', { ids }),
         },
         /**
-         * The tree of each character (by avatar) or group (by id), or null when there is none.
          * @param {{ avatar?: string, group?: string }[]} owners
          * @returns {Promise<(bigint | null)[]>}
          */

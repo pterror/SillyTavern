@@ -1,12 +1,5 @@
 import { describe, test, expect, jest, beforeEach, beforeAll } from '@jest/globals';
 
-// utils.js (public/scripts/) pulls in script.js and a wide chunk of the client UI stack, none of which is
-// safely importable in a plain node test env (jQuery/DOM assumptions throughout) - same problem
-// character-repository.test.js and group-chats-residency.test.js solve by mocking at the module boundary.
-// Only `findChar()`'s own dependencies (characters/charactersStore, getCurrentCharacter, groupsStore/
-// selected_group, getTagsList) carry real-ish behavior below; everything else utils.js imports is an inert
-// stand-in.
-
 global.toastr = { warning: jest.fn(), error: jest.fn() };
 
 const getCurrentCharacterMock = jest.fn(() => undefined);
@@ -17,9 +10,6 @@ const characters = [];
 /** @type {Map<string, {avatar: string, name: string}>} */
 const charactersById = new Map();
 
-// Same live-binding constraint tests/group-chats-residency.test.js documents: `characters` has to stay a single
-// array reference, mutated in place per test, since jest's ESM module mocking doesn't expose a true live
-// getter for a plain reassigned export.
 const charactersStoreMock = {
     get: (id) => charactersById.get(id),
     has: (id) => charactersById.has(id),
@@ -80,11 +70,6 @@ jest.unstable_mockModule('../public/scripts/tags.js', () => ({
     getTagsList: getTagsListMock,
 }));
 
-// `selected_group` stays null throughout - the group-member branch of findChar() wasn't reshaped by the phase 5
-// residency pass (still an O(1) charactersStore lookup per member, same as before) and exercising it here would
-// need the same live-binding workaround tests/group-chats-residency.test.js calls out for `characters`. What
-// changed - tag-conjunction laziness, avatar-exact precedence, ambiguity warnings - lives entirely in the
-// non-group path exercised below.
 jest.unstable_mockModule('../public/scripts/group-chats.js', () => ({
     groupsStore: { get: jest.fn(), has: jest.fn(), onChange: jest.fn(() => () => {}) },
     selected_group: null,
@@ -119,7 +104,6 @@ beforeAll(async () => {
     ({ findChar, findCharAsync } = await import('../public/scripts/utils.js'));
 });
 
-/** Replaces the resident character set + tag lookup for a test. */
 function setCharacters(list, tagsByAvatar = {}) {
     characters.length = 0;
     characters.push(...list);
@@ -153,8 +137,6 @@ describe('findChar() name/avatar resolution', () => {
         const alice = { avatar: 'bob.png', name: 'bob.png' };
         setCharacters([alice]);
 
-        // name === 'bob.png' would resolve by avatar if allowed; with allowAvatar off it still resolves by
-        // (case-insensitive) name match, since the character's display name happens to equal the string too.
         expect(findChar({ name: 'bob.png', allowAvatar: false, preferCurrentChar: false })).toBe(alice);
     });
 
@@ -218,8 +200,6 @@ describe('findChar() tag conjunction (filteredByTags)', () => {
         const target = { avatar: 'target.png', name: 'Target' };
         setCharacters([target], { 'target.png': ['blue'] });
 
-        // Exact avatar match exists, but it doesn't carry the required tag - must not be returned, and there's
-        // no other candidate to fall back to.
         expect(findChar({ name: 'target.png', filteredByTags: ['red'], preferCurrentChar: false })).toBeNull();
     });
 
@@ -248,9 +228,6 @@ describe('findChar() tag conjunction (filteredByTags)', () => {
         setCharacters([target, decoy], { 'target.png': ['red'], 'decoy.png': ['red'] });
 
         findChar({ name: 'target.png', filteredByTags: ['red'], preferCurrentChar: false });
-        // Only the resolved candidate's tags get checked - the decoy is never consulted, because the avatar
-        // match resolves the call before the name-scan fallback (which is what used to eagerly filter the
-        // whole array) is ever reached.
         expect(getTagsListMock).toHaveBeenCalledTimes(1);
         expect(getTagsListMock).toHaveBeenCalledWith('target.png', false);
     });
@@ -281,13 +258,15 @@ describe('findChar() preferCurrentChar', () => {
         const other = { avatar: 'other.png', name: 'Shared' };
         setCharacters([current, other], { 'current.png': ['blue'], 'other.png': ['red'] });
 
-        // Current char doesn't carry the required tag, so it must not win by preference - the tagged match wins.
         expect(findChar({ name: 'Shared', filteredByTags: ['red'] })).toBe(other);
     });
 });
 
 describe('findCharAsync()', () => {
-    /** @param {number} status @param {any} body */
+    /**
+     * @param {number} status
+     * @param {any} body
+     */
     function serverAnswers(status, body) {
         global.fetch = jest.fn(async () => ({ ok: status >= 200 && status < 300, status, json: async () => body }));
     }

@@ -2,12 +2,10 @@ const DEFAULT_WEIGHT = 100;
 const sortByOrderDesc = (a, b) => b.order - a.order;
 
 /**
- * Mirrors filterGroupsByTimedEffects() in public/scripts/world-info.js: removes cooldown/delay
- * entries from each group, and if a group has any sticky entries, keeps only those.
  * @param {Record<string, object[]>} groups
  * @param {import('./timed-effects.js').WorldInfoTimedEffects} timedEffects
  * @param {(entry: object) => void} removeEntry
- * @returns {Map<string, boolean>} Whether each group had any sticky entries
+ * @returns {Map<string, boolean>}
  */
 function filterGroupsByTimedEffects(groups, timedEffects, removeEntry) {
     const hasStickyMap = new Map();
@@ -31,14 +29,12 @@ function filterGroupsByTimedEffects(groups, timedEffects, removeEntry) {
 }
 
 /**
- * Mirrors filterGroupsByScoring(): within each group, keeps only the entries tied for the highest
- * key-match score (only for entries that opted into scoring, globally or per-entry).
  * @param {Record<string, object[]>} groups
  * @param {import('./key-matching.js').WorldInfoBuffer} buffer
  * @param {(entry: object) => void} removeEntry
  * @param {number} scanState
  * @param {Map<string, boolean>} hasStickyMap
- * @param {boolean} useGroupScoringDefault world_info_use_group_scoring setting
+ * @param {boolean} useGroupScoringDefault
  */
 function filterGroupsByScoring(groups, buffer, removeEntry, scanState, hasStickyMap, useGroupScoringDefault) {
     for (const [key, group] of Object.entries(groups)) {
@@ -62,13 +58,8 @@ function filterGroupsByScoring(groups, buffer, removeEntry, scanState, hasSticky
 }
 
 /**
- * Server-side port of public/scripts/world-info.js's filterByInclusionGroups(). Entries sharing a
- * `group` tag (comma-separated for multi-group membership) are mutually exclusive within that
- * group - only one activates, chosen by priority override, then weighted random, with sticky and
- * scoring taking precedence over the random pick. Mutates `activatedNow` in place (removes losers),
- * mirroring the client's splice-based removal.
- * @param {object[]} activatedNow Entries activated on the current pass
- * @param {Map<string, object>} allActivatedEntries Map of every entry activated so far, across all passes (key: `${world}.${uid}`)
+ * @param {object[]} activatedNow
+ * @param {Map<string, object>} allActivatedEntries
  * @param {import('./key-matching.js').WorldInfoBuffer} buffer
  * @param {number} scanState
  * @param {import('./timed-effects.js').WorldInfoTimedEffects} timedEffects
@@ -103,7 +94,6 @@ export function filterByInclusionGroups(activatedNow, allActivatedEntries, buffe
         if (hasStickyMap.get(key)) continue;
 
         if (Array.from(allActivatedEntries.values()).some(x => x.group === key)) {
-            // Group already has a winner from a previous pass - forcefully deactivate the rest.
             removeAllBut(group, null);
             continue;
         }

@@ -8,25 +8,13 @@ import { mock } from 'node:test';
 import express from 'express';
 
 import { write as writeCard } from '../character-card-parser.js';
-// horde.js -> backends/kobold.js -> text-completion-generation-input.js pulls in
-// src/endpoints/characters.js (via readCardContent), which (via character-shallow.js) reads
-// process-wide config at import time - the config path must be set before that import chain runs,
-// same as kobold.test.js/novelai.test.js/text-completions.test.js.
 import { setConfigFilePath } from '../util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
-// Route-level Express-integration test for horde.js's own /generate-text route, now that it shims a
-// real submit-then-poll Horde job onto the same compact-v1 wire protocol every other backend streams
-// over (see this task's own report / streamHordeGeneration()'s doc comment for the full design).
-//
-// Uses this repo's own established `mock.module()` node-fetch reroute technique (same as
-// novelai.test.js) to redirect ONLY `https://aihorde.net` traffic to a local fake coordinator that
-// implements both the real submit endpoint (POST /api/v2/generate/text/async) and the real status
-// endpoint (GET /api/v2/generate/text/status/:id) it now polls internally.
 const canMockHordeBackend = typeof mock.module === 'function';
-/** @type {string|null} Set per-test below; read by the node-fetch reroute mock. */
+/** @type {string|null} */
 let hordeFakeBackendUrl = null;
 if (canMockHordeBackend) {
     const realNodeFetch = (await import(path.join(__dirname, '..', '..', 'node_modules', 'node-fetch', 'src', 'index.js'))).default;
@@ -49,9 +37,6 @@ const { buildRawActionKoboldRequest } = await import('./backends/kobold.js');
 const { writeAllSettings } = await import('../settings-store.js');
 const { CompactStreamDecoder } = await import('../../public/scripts/llamacpp-compact-stream.js');
 
-// Real polling/keepalive timing sped way up for the test - see streamHordeGeneration()'s own
-// `_setHordePollingConfigForTests()` doc comment. Small enough that a real "still processing" reply
-// or two, plus at least one real keepalive frame, land well within a normal test timeout.
 _setHordePollingConfigForTests({ pollIntervalMs: 30, maxRetries: 50, keepaliveIntervalMs: 25 });
 
 const { SESSION_HEADER } = await import('../request-session.js');
@@ -64,7 +49,6 @@ globalThis.DATA_ROOT = user.dataRoot;
 const { newSessionKey } = await import('../chat-engine.js');
 
 /**
- * The chat context a request naming `nodeId` acts in: the session of the branch holding it, else a new one.
  * @param {string} avatar
  * @param {unknown} nodeId
  */
@@ -109,7 +93,6 @@ async function writeCharacter(avatar, overrides = {}) {
     return avatar;
 }
 
-/** Real settings.json fixture - only the keys resolveTokenizer()/resolveTextCompletionGenerationInput()/createKoboldGenerationData() actually read, matching kobold.test.js's own fixture (this route reuses buildRawActionKoboldRequest() verbatim). `kai_settings.api_server` is left blank/unused - Horde never forwards it (this route strips it - see buildRawActionHordePayload()'s own comment). */
 function buildSettingsFixture() {
     return {
         username: 'Tester',
@@ -149,12 +132,6 @@ function buildSettingsFixture() {
     };
 }
 
-/**
- * Fake AI Horde coordinator: accepts one submit call, returns `jobId`; responds "still processing"
- * to the first `pendingReplies` status polls, then a real completed generation carrying `finalText`.
- * `onDelete` is invoked for a real DELETE .../status/:id (cancellation) call. Every call is logged so
- * tests can assert on how many status polls actually happened (e.g. "no further calls after cancel").
- */
 function startFakeHordeCoordinator({ jobId, pendingReplies, finalText, onDelete }) {
     const calls = { submit: 0, status: 0, delete: 0 };
     let statusCallCount = 0;
@@ -226,8 +203,6 @@ async function run() {
         data: { name: 'Rex', description: 'Rex is a {{char}}.', first_mes: 'Hi, I am Rex.' },
     });
 
-    // NOT `avatar` verbatim: the real client (public/script.js's own `rawActionGenerateData`
-    // construction) always strips the `.png` extension before sending `owner_id`.
     const ownerId = avatar.replace(/\.png$/, '');
     const branchName = 'main-chat';
     await saveBranch(user.store, { avatar }, branchName, [
@@ -237,13 +212,10 @@ async function run() {
         { name: 'Rex', is_user: false, mes: 'Likewise!', send_date: 3, extra: {} },
     ]);
 
-    // --- tokenizer: the Horde send resolves its tokenizer from the saved Horde model selection ---
     {
         const { leaf_id: leafId } = (await loadBranch(user.store, { avatar }, branchName)).branch;
 
         /**
-         * Builds the Horde send with the given saved model selection, recording which local
-         * tokenizer key each encode used.
          * @param {string[]|undefined} hordeModels
          */
         async function buildHordeSend(hordeModels) {
@@ -271,13 +243,10 @@ async function run() {
             return keys;
         }
 
-        // Two selected models that both map to LLAMA3 -> the send counts with llama3.
         const llama3Keys = await buildHordeSend(['koboldcpp/Meta-Llama-3-8B-Instruct', 'aphrodite/NousResearch/Hermes-2-Pro-Llama-3-8B']);
         assert.ok(llama3Keys.length > 0, 'two LLAMA3 models: the send counts with a local tokenizer');
         assert.deepEqual([...new Set(llama3Keys)], ['llama3'], 'two LLAMA3 models: the send counts with llama3, nothing else');
 
-        // Models mapping to different tokenizers, or none selected -> the estimate: no local
-        // tokenizer is loaded at all.
         for (const [label, hordeModels] of [
             ['mixed models', ['koboldcpp/Meta-Llama-3-8B-Instruct', 'koboldcpp/gemma-2-9b-it']],
             ['no model selected', []],
@@ -294,9 +263,6 @@ async function run() {
         return;
     }
 
-    // (a) real end-to-end raw-action generation: submit -> a few "still processing" polls (with real
-    // keepalive frames received meanwhile) -> a completed generation -> real content frame(s) ->
-    // real server-side persistence -> assistant_node_id frame, last.
     {
         const fakeCoordinator = await startFakeHordeCoordinator({
             jobId: 'task-abc-123', pendingReplies: 3, finalText: 'Rex says hello back.',
@@ -369,9 +335,6 @@ async function run() {
         }
     }
 
-    // (b) validation error: unknown character - buildRawActionKoboldRequest() throws for real, the
-    // route surfaces it as a plain 400 JSON error (never switches into stream mode), and never
-    // attempts to reach the real Horde coordinator at all.
     {
         hordeFakeBackendUrl = null;
         const app = buildTestApp();
@@ -398,8 +361,6 @@ async function run() {
         }
     }
 
-    // (c) legacy, non-raw-action (quiet/impersonate-preview) requests also go through the shimmed
-    // streaming path now, with no persistence and no assistant_node_id frame.
     {
         const fakeCoordinator = await startFakeHordeCoordinator({
             jobId: 'legacy-task-456', pendingReplies: 1, finalText: 'Legacy generated text.',
@@ -453,9 +414,6 @@ async function run() {
         }
     }
 
-    // (d) cancellation via /cancel-task actually stops the in-flight server-side poll loop: no
-    // further status polls happen after cancellation, and the streaming response ends cleanly
-    // without a content or assistant_node_id frame.
     {
         const fakeCoordinator = await startFakeHordeCoordinator({
             jobId: 'cancel-task-789', pendingReplies: 1000, finalText: 'Should never be seen.',
@@ -477,7 +435,6 @@ async function run() {
             assert.equal(generationId, 'cancel-task-789');
 
             const reader = res.body.getReader();
-            // Let at least one real status poll happen before cancelling.
             await waitFor(() => fakeCoordinator.calls.status >= 1);
 
             const cancelRes = await fetch(`http://127.0.0.1:${port}/api/horde/cancel-task`, {
@@ -514,9 +471,6 @@ async function run() {
         }
     }
 
-    // (e) client disconnect mid-poll does NOT kill the server-side poll loop - matching every other
-    // backend's "persisted generations survive a client disconnect" behavior - and a subsequent
-    // resume call gets the eventual result.
     {
         const fakeCoordinator = await startFakeHordeCoordinator({
             jobId: 'disconnect-task-321', pendingReplies: 3, finalText: 'Still here after you left.',
@@ -581,8 +535,6 @@ async function run() {
         }
     }
 
-    // `stored`: the node the user message was stored at, under the `user_message_ref` the page sent, in
-    // the stream's first control frame.
     {
         const chatName = 'horde-stored-ref';
         const fakeCoordinator = await startFakeHordeCoordinator({ jobId: 'task-stored-ref', pendingReplies: 0, finalText: 'Stored reply.' });
@@ -621,8 +573,6 @@ async function run() {
         }
     }
 
-    // An error answer after the user message was stored still reports it: a failed Horde submit's
-    // `{ error }` answer carries `stored` and the X-ST-Stored header.
     {
         const chatName = 'horde-stored-error';
         const failingCoordinator = http.createServer((req, res) => {

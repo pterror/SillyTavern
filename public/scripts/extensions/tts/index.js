@@ -189,7 +189,6 @@ async function onNarrateText(args, text) {
         ? voiceMap[DEFAULT_VOICE_MARKER]
         : voiceMap[name];
 
-    // Any character without a voice set speaks with the default voice, listed in the map or not.
     if (voiceMapEntry === undefined && await findCharAsync({ name, allowAvatar: false, insensitive: false, preferCurrentChar: false, quiet: true })) {
         voiceMapEntry = voiceMap[DEFAULT_VOICE_MARKER];
     }
@@ -1294,15 +1293,12 @@ export function getCharacters(unrestricted) {
     const context = getContext();
 
     if (unrestricted) {
-        // Every name with a voice set, beside the current chat's: a name with none set answers the default voice
-        // whether listed or not, so the whole library isn't needed to answer any name.
         const names = [DEFAULT_VOICE_MARKER, ...getCurrentChatNames(context), ...Object.keys(getSavedVoiceMap())];
         return names.filter(onlyUnique);
     }
 
     let characters = getCurrentChatNames(context);
 
-    // If multi-voice is enabled, expand characters to include segment types
     if (extension_settings.tts.multi_voice_enabled) {
         const expandedCharacters = [];
         for (const char of characters) {
@@ -1321,8 +1317,6 @@ export function getCharacters(unrestricted) {
 }
 
 /**
- * The default voice marker and the names speaking in the current chat: the user, and the character or the group's
- * members.
  * @param {ReturnType<typeof getContext>} context
  * @returns {string[]}
  */
@@ -1349,7 +1343,6 @@ function getCurrentChatNames(context) {
 }
 
 /**
- * The voice map saved in the current provider's settings, in either of its stored representations.
  * @returns {Record<string, string>}
  */
 function getSavedVoiceMap() {
@@ -1406,7 +1399,6 @@ function updateVoiceMap() {
     if (!extension_settings.tts[ttsProviderName].voiceMap) {
         extension_settings.tts[ttsProviderName].voiceMap = {};
     }
-    // Loading the page / switching chats can recompute the same voice map from already-stored values; don't persist a no-op.
     const previousVoiceMap = JSON.stringify(extension_settings.tts[ttsProviderName].voiceMap);
     Object.assign(extension_settings.tts[ttsProviderName].voiceMap, voiceMap);
     const voiceMapChanged = JSON.stringify(extension_settings.tts[ttsProviderName].voiceMap) !== previousVoiceMap;

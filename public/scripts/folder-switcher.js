@@ -1,22 +1,12 @@
-/**
- * The character list's closed-folder switcher: "No folder" (everything no closed folder holds) and one case per
- * closed folder, shown above the list while "Tags as Folders" is on and some tag is a closed folder. The cases sit in
- * a strip while they fit on one row; past that the strip folds into one button opening a searchable, paged list.
- */
-
-/** Translates a tagged template; the caller passes i18n's `t`, so this module stays a leaf. */
 let t = (/** @type {TemplateStringsArray} */ strings, /** @type {any[]} */ ...values) => String.raw({ raw: strings }, ...values);
 
 /**
  * @typedef {{ id: string, name: string }} ClosedFolder
  * @typedef {object} FolderSwitcherDeps
- * @property {() => string | null} getCase The case shown: 'none', a closed folder's tag id, or null while "Tags as
- *   Folders" is off.
- * @property {(folderCase: string) => void} setCase Shows a case, as a change the user made.
+ * @property {() => string | null} getCase
+ * @property {(folderCase: string) => void} setCase
  * @property {(term: string, cursor: string | null) => Promise<{ rows: ClosedFolder[], cursor: string | null } | null>} list
- *   A page of closed folders whose names hold `term`, in the tag sort order; null when the read failed.
- * @property {(id: string) => Promise<ClosedFolder | null | undefined>} get A closed folder by id: null when no closed
- *   folder has it, undefined when the read failed.
+ * @property {(id: string) => Promise<ClosedFolder | null | undefined>} get
  */
 
 /** @type {FolderSwitcherDeps | null} */
@@ -25,20 +15,18 @@ let deps = null;
 let strip = null;
 /** @type {HTMLElement | null} */
 let popover = null;
-/** The first page of closed folders, as last read; null before the first read. @type {ClosedFolder[] | null} */
+/** @type {ClosedFolder[] | null} */
 let firstPage = null;
 let firstPageHasMore = false;
-/** The shown case's folder when it isn't on the first page. @type {ClosedFolder | null} */
+/** @type {ClosedFolder | null} */
 let shownOutsideFirstPage = null;
-/** Bumped by each refresh; an answer for an older one is dropped. */
 let refreshRun = 0;
 
 /**
- * Puts the switcher after `after` (hidden until a refresh finds closed folders).
  * @param {object} options
  * @param {HTMLElement} options.after
  * @param {FolderSwitcherDeps} options.deps
- * @param {typeof t} options.translate i18n's `t`.
+ * @param {typeof t} options.translate
  */
 export function initFolderSwitcher({ after, deps: given, translate }) {
     document.addEventListener('pointerdown', event => {
@@ -55,10 +43,6 @@ export function initFolderSwitcher({ after, deps: given, translate }) {
     new ResizeObserver(() => draw()).observe(strip.parentElement ?? strip);
 }
 
-/**
- * Reads the closed folders again and redraws. A shown case whose folder is gone or no longer closed goes back to
- * "No folder".
- */
 export async function refreshFolderSwitcher() {
     if (!deps || !strip) return;
     const run = ++refreshRun;
@@ -72,7 +56,6 @@ export async function refreshFolderSwitcher() {
     const page = await deps.list('', null);
     if (run !== refreshRun) return;
     if (page === null) {
-        // The strip keeps what it showed; a failed read hides nothing that was there.
         return;
     }
     firstPage = page.rows;
@@ -90,7 +73,6 @@ export async function refreshFolderSwitcher() {
     draw();
 }
 
-/** The shown case's label. */
 function shownLabel() {
     const shown = deps?.getCase() ?? 'none';
     if (shown === 'none') return t`No folder`;
@@ -108,7 +90,6 @@ function draw() {
     strip.hidden = false;
     strip.classList.remove('folded');
     strip.replaceChildren(caseChip('none', t`No folder`, shown === 'none'), ...firstPage.map(folder => caseChip(folder.id, folder.name, shown === folder.id)));
-    // One row only: past it, or with more folders than one page, the strip folds into a button.
     const overflows = strip.scrollWidth > strip.clientWidth + 1 || firstPageHasMore
         || (shown !== 'none' && !firstPage.some(folder => folder.id === shown));
     if (!overflows) return;
@@ -138,7 +119,6 @@ function draw() {
 }
 
 /**
- * One case in the strip.
  * @param {string} id
  * @param {string} name
  * @param {boolean} current

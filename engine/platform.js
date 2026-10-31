@@ -6,21 +6,21 @@ import { ENGINE_DIR } from './source-hash.js';
 
 /**
  * @typedef {object} NativeTarget
- * @property {string} platform Key this file is released under
- * @property {string} rust Rust target triple
- * @property {string} runner GitHub Actions runner it builds on
- * @property {'cargo'|'zigbuild'|'android'} build How it builds (engine/build.js)
- * @property {string} [zigTarget] cargo-zigbuild's target, with the glibc version for gnu
- * @property {string} [ndkClang] The NDK clang it links with
+ * @property {string} platform
+ * @property {string} rust
+ * @property {string} runner
+ * @property {'cargo'|'zigbuild'|'android'} build
+ * @property {string} [zigTarget]
+ * @property {string} [ndkClang]
  * @property {string} [rustflags]
- * @property {boolean} [optional] Shipped only where it builds; a failed build doesn't hold back the release
+ * @property {boolean} [optional]
  */
 
 /** @type {{ native: NativeTarget[], wasm: { rust: string, runner: string } }} */
 export const TARGETS = JSON.parse(fs.readFileSync(path.join(ENGINE_DIR, 'targets.json'), 'utf8'));
 
 /**
- * @returns {string|null} This process's key in targets.json's native list, or null when it has none
+ * @returns {string|null}
  */
 export function currentPlatform() {
     const { platform, arch } = process;
@@ -40,17 +40,17 @@ export function currentPlatform() {
 }
 
 /**
- * @param {string} key Release key (16 hex)
- * @param {string} platform targets.json native platform
- * @returns {string} File name of that native build, in engine/dist/ and in the release
+ * @param {string} key
+ * @param {string} platform
+ * @returns {string}
  */
 export function nativeFileName(key, platform) {
     return `st-engine-${key}-${platform}.node`;
 }
 
 /**
- * @param {string} key Release key (16 hex)
- * @returns {string} File name of the wasm build, in engine/dist/ and in the release
+ * @param {string} key
+ * @returns {string}
  */
 export function wasmFileName(key) {
     return `st-engine-${key}-${TARGETS.wasm.rust}.wasm`;

@@ -2,8 +2,6 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jes
 import path from 'node:path';
 import { Buffer } from 'node:buffer';
 
-// Moving tags from one key to another: the server adds what the old key has to what the new key has, then takes
-// them off the old key.
 
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
@@ -18,7 +16,6 @@ let baseUrl;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
-// A minimal valid 1x1 transparent PNG, enough for a card to be written into and read back from.
 const BLANK_PNG = Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
     'base64',
@@ -79,7 +76,7 @@ function cardJson(avatar) {
     });
 }
 
-/** @param {string} avatar Written as a card file and a row, as a created character is. */
+/** @param {string} avatar */
 async function seedCharacter(avatar) {
     await fixture.writeCardWithImage(user, avatar, cardJson(avatar), writeCard(BLANK_PNG, cardJson(avatar)));
 }
@@ -89,7 +86,10 @@ async function seedGroup(id) {
     await user.store.lib.writeGroup({ id, name: `Group ${id}`, members: [], fav: false });
 }
 
-/** @param {string} id @param {string[]} tagIds */
+/**
+ * @param {string} id
+ * @param {string[]} tagIds
+ */
 async function assign(id, tagIds) {
     for (const tagId of tagIds) expect((await user.store.lib.tags.assign(id, tagId)).result).toBe('ok');
 }

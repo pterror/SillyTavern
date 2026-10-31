@@ -1,7 +1,6 @@
 import { describe, test, expect, beforeAll } from '@jest/globals';
 
 beforeAll(() => {
-    // emit() reads localStorage for event tracing; the node test environment has none.
     globalThis.localStorage ??= { getItem: () => null, setItem: () => {}, removeItem: () => {} };
 });
 

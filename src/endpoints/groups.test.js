@@ -8,17 +8,8 @@ import { after, test } from 'node:test';
 import { setConfigFilePath } from '../util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// Modules imported transitively by groups.js read process-wide config at import
-// time via getConfigValue() - the config path must be set before that import chain runs, same as
-// every other route-level test file in this directory (see e.g. horde.test.js's own comment).
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
-// Route-level Express-integration test for src/endpoints/groups.js's `/save-partial` field-level save
-// route, added as part of migrating every group-chats.js call site off the whole-object `/edit` route
-// (see this task's own report). Mirrors this directory's established convention (horde.test.js/
-// novelai.test.js/backends/*.test.js): a real express app mounting the real router, real on-disk group
-// JSON fixtures, and direct filesystem assertions of the post-write state - no mocking of groups.js
-// itself, since it has no external network dependency to stub out.
 const { router: groupsRouter } = await import('./groups.js');
 
 const { convertedUser } = await import('../../tests/converted-user.fixture.js');
@@ -57,11 +48,8 @@ async function postJson(app, urlPath, body) {
 }
 
 /**
- * Writes a fresh baseline group fixture straight to disk (bypassing the route), matching the full
- * `Group` shape (public/global.d.ts) so every field save-partial now has to handle (per the
- * group-chats.js migration) has a real starting value to check for accidental corruption.
  * @param {string} id
- * @returns {object} The fixture object written (same reference is NOT re-read from disk by the caller).
+ * @returns {object}
  */
 async function writeGroupFixture(id) {
     const fixture = {
@@ -83,11 +71,9 @@ async function writeGroupFixture(id) {
         date_last_chat: 1000,
     };
     await user.store.lib.writeGroup(fixture);
-    // The group as stored: its chat values (`chat_id`, `chats`) are read from the chats, not kept.
     return await readGroupFromDisk(id);
 }
 
-/** The group as stored. */
 async function readGroupFromDisk(id) {
     const [group] = await user.store.lib.groups([id]);
     return group;
@@ -174,8 +160,6 @@ test('(g) members add/remove - the highest-risk site per this task\'s own instru
     assert.deepEqual(onDisk.members, newMembers, 'member was added');
     assert.deepEqual({ ...onDisk, members: fixture.members }, fixture, 'disabled_members/chats/chat_id/name/etc. are all untouched by a members-only save');
 
-    // Removal, bundled with a disabled_members update the same way onGroupActionClick's
-    // enable/disable handler already saves (an established two-field bundle at one call site).
     const prunedMembers = ['alice.png', 'carol.png'];
     const prunedDisabled = [];
     const { status: s2 } = await postJson(app, '/api/groups/save-partial', { id, props: { members: prunedMembers, disabled_members: prunedDisabled } });
@@ -244,7 +228,6 @@ test('/members: one member changed against the group as stored, whatever the pag
     const step = async (op, avatar, extra = {}) => (await postJson(app, '/api/groups/members', { id, op, avatar, ...extra })).data;
 
     assert.deepEqual(await step('add', 'carol.png'), { members: ['carol.png', 'alice.png', 'bob.png'], disabled_members: ['bob.png'] });
-    // Another tab adds dave meanwhile; removing alice here keeps dave.
     await step('add', 'dave.png');
     assert.deepEqual((await step('remove', 'alice.png')).members, ['dave.png', 'carol.png', 'bob.png']);
     assert.deepEqual((await step('down', 'dave.png')).members, ['carol.png', 'dave.png', 'bob.png']);

@@ -1,7 +1,3 @@
-// The editor's markdown grammar: @lezer/markdown configured to read text the way chat's `marked` setup does
-// (marked-processor.js: gfm and breaks, plus its extensions) and messageFormatting's dialogue quotes, with a node for
-// each macro. The parity test (tests/live-editor-grammar.test.js) holds the two together.
-
 import { lezerMarkdown, lezerHighlight } from '../../live-editor-lib.js';
 
 const { parser: commonmarkParser, Table, TaskList } = lezerMarkdown;
@@ -9,13 +5,11 @@ const { tags } = lezerHighlight;
 
 /**
  * @typedef {object} GrammarOptions
- * @property {Record<string, string>} [emojis] The `:name:` shortcodes chat shows as emoji (showdown's set).
- * @property {boolean} [dialogueQuotes] Mark quoted dialogue, as messageFormatting wraps it in `<q>`.
- * @property {boolean} [encodeTags] HTML is shown as text, not parsed (messageFormatting with `encode_tags`).
- * @property {string[]} [escapeLines] Lines kept as plain text (`markdown_escape_strings`, already substituted).
+ * @property {Record<string, string>} [emojis]
+ * @property {boolean} [dialogueQuotes]
+ * @property {boolean} [encodeTags]
+ * @property {string[]} [escapeLines]
  */
-
-// ---- Autolinks, as marked's `url` rule with marked-processor.js's trailing-`_` change. ----
 
 const urlStartRegex = /(?:(?:ftp|https?):\/\/|www\.)(?:[a-zA-Z0-9-]+\.?)+[^\s<]*/y;
 const emailRegex = /[A-Za-z0-9._+-]+@[a-zA-Z0-9-_]+(?:\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+(?![-_])/y;
@@ -26,7 +20,6 @@ const MarkedAutolink = {
     parseInline: [{
         name: 'Autolink',
         parse(cx, next, absPos) {
-            // Only where a URL or an address can start: a letter, digit or one of the address characters.
             if (!/[A-Za-z0-9._+-]/.test(String.fromCharCode(next))) return -1;
             const pos = absPos - cx.offset;
             urlStartRegex.lastIndex = pos;
@@ -51,8 +44,6 @@ const MarkedAutolink = {
     }],
 };
 
-// ---- Strikethrough, as marked's `del`: `~text~` and `~~text~~`. ----
-
 const STRIKE_PUNCTUATION = /(?!~)[\p{P}\p{S}]/u;
 const StrikeOne = { resolve: 'Strikethrough', mark: 'StrikethroughMark' };
 const StrikeTwo = { resolve: 'Strikethrough', mark: 'StrikethroughMark' };
@@ -71,8 +62,6 @@ const MarkedStrikethrough = {
             while (cx.char(end) === 126) end++;
             const length = end - pos;
             if (length > 2) return -1;
-            // Flanking as marked's delLDelim/delRDelim: whitespace or punctuation (where `~` doesn't count) on one side
-            // only lets a run open or close from the other; `Hey~" she said. "Hi~` has no strikethrough.
             const before = cx.slice(pos - 1, pos);
             const after = cx.slice(end, end + 1);
             const spaceBefore = before === '' || /\s/u.test(before);
@@ -87,8 +76,6 @@ const MarkedStrikethrough = {
     }],
 };
 
-// ---- HTML blocks kept whole, as marked-processor.js's `htmlBlockExt`. ----
-
 const HTML_BLOCK_TAGS = [
     'pre', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'table', 'dl', 'ol', 'ul', 'script', 'noscript',
     'form', 'fieldset', 'iframe', 'math', 'style', 'section', 'header', 'footer', 'nav', 'article', 'aside', 'address',
@@ -99,9 +86,8 @@ const htmlBlockOpenRegex = new RegExp(`^ {0,3}<(${HTML_BLOCK_TAG_NAMES})[^>]*>`,
 const htmlAttributeRegex = /\s+([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
 
 /**
- * @param {string} src Text from the start of a line.
- * @returns {{ length: number, openLength: number, closeFrom: number } | null} The block's length (its last line's
- * newline not included), its opening tag's length and where its closing tag starts.
+ * @param {string} src
+ * @returns {{ length: number, openLength: number, closeFrom: number } | null}
  */
 function matchHtmlBlock(src) {
     const open = htmlBlockOpenRegex.exec(src);
@@ -114,9 +100,6 @@ function matchHtmlBlock(src) {
         depth += tag[1] ? -1 : 1;
         if (depth === 0) {
             const end = tagRegex.lastIndex;
-            // marked goes on right after the closing tag: another block starting there (`<div>a</div><div>b</div>`)
-            // is one of its own, and so is text. A block here can't end in the middle of a line, so it takes the rest
-            // of its line, and the whole of a block starting there.
             const lineRest = /^[^\n]*/.exec(src.slice(end))[0];
             const indent = lineRest.length - lineRest.trimStart().length;
             const next = lineRest.trim() ? matchHtmlBlock(src.slice(end + indent)) : null;
@@ -127,7 +110,10 @@ function matchHtmlBlock(src) {
     return null;
 }
 
-/** @param {string} openTag @returns {boolean} */
+/**
+ * @param {string} openTag
+ * @returns {boolean}
+ */
 function hasMarkdownAttribute(openTag) {
     const attributes = openTag.trimStart().replace(/^<[^\s/>]+/, '').replace(/\/?>$/, '');
     for (const [, name, doubleQuoted, singleQuoted, unquoted] of attributes.matchAll(htmlAttributeRegex)) {
@@ -137,7 +123,6 @@ function hasMarkdownAttribute(openTag) {
 }
 
 /**
- * The rest of the document from the current line's content.
  * @param {import('@lezer/markdown').BlockContext} cx
  * @param {import('@lezer/markdown').Line} line
  */
@@ -146,7 +131,7 @@ function restFromLine(cx, line) {
     return cx.input.read(cx.lineStart + line.pos, cx.input.length);
 }
 
-/** @type {WeakMap<object, Set<number>>} Per parse, where the closing tag of a `markdown="1"` block starts. */
+/** @type {WeakMap<object, Set<number>>} */
 const pendingCloses = new WeakMap();
 
 /** @type {import('@lezer/markdown').MarkdownConfig} */
@@ -171,7 +156,6 @@ const KeptHtmlBlocks = {
             const openLineLength = line.text.length - line.pos;
             const closeOnOwnLine = /\n[ \t]*$/.test(src.slice(0, block.closeFrom)) || block.closeFrom === 0;
             if (hasMarkdownAttribute(openTag) && block.openLength === openLineLength && closeOnOwnLine) {
-                // The inside is markdown: the opening and closing lines are HTML, what's between parses as usual.
                 // @ts-ignore
                 const set = pendingCloses.get(cx.input) ?? new Set();
                 set.add(from + block.closeFrom);
@@ -187,17 +171,12 @@ const KeptHtmlBlocks = {
             cx.nextLine();
             return true;
         },
-        // marked starts one wherever a line opens it, even in the middle of a paragraph.
         endLeaf(cx, line) {
             return line.next === 60 && matchHtmlBlock(restFromLine(cx, line)) !== null;
         },
         before: 'HTMLBlock',
     }],
 };
-
-// ---- A line holding only a self-closing tag (`<img src="a.png" />`) starts an HTML block, as in marked: CommonMark's
-// seventh kind of HTML block allows `/>`, and @lezer/markdown's rule for it leaves that out. Like that rule's, the block
-// runs to the next blank line and doesn't interrupt a paragraph. ----
 
 const selfClosingTagLine = /^<(?!(?:script|pre|style)\b)[a-z][\w-]*(?:\s+[a-z:_][\w.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*\s*\/>\s*$/i;
 
@@ -217,15 +196,16 @@ const SelfClosingHtmlBlocks = {
     }],
 };
 
-// ---- Image sizes, as marked-processor.js's `imageSizeExt`: `![alt](url =WxH)` and `[id]: url =WxH`. ----
-
 const IMAGE_SIZE_UNITS = ['px', '%', 'em', 'rem', 'vw', 'vh', 'ch', 'ex', 'pt', 'pc', 'cm', 'mm', 'in'];
 const imageSizeSideRegex = new RegExp(
     `^(?:\\*|(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:${[...IMAGE_SIZE_UNITS].sort((a, b) => b.length - a.length).join('|')})?)`,
     'i',
 );
 
-/** @param {string} size The text after `=`. @returns {boolean} */
+/**
+ * @param {string} size
+ * @returns {boolean}
+ */
 function isImageSize(size) {
     const width = imageSizeSideRegex.exec(size)?.[0] ?? '';
     let rest = size.slice(width.length);
@@ -294,8 +274,6 @@ const ImageSizes = {
     }],
 };
 
-// ---- Emoji shortcodes, as marked-processor.js's `emojiExt`. ----
-
 /**
  * @param {Record<string, string>} emojis
  * @returns {import('@lezer/markdown').MarkdownConfig}
@@ -317,12 +295,10 @@ function emojiShortcodes(emojis) {
     };
 }
 
-// ---- Dialogue quotes, as messageFormatting's `quoteRegex`: each style closes on the same line, shortest first. ----
-
 const QUOTE_PAIRS = { '"': '"', '“': '”', '«': '»', '「': '」', '『': '』', '＂': '＂' };
 const QuoteDelim = { resolve: 'DialogueQuote', mark: 'DialogueQuoteMark' };
 
-/** @type {WeakMap<object, Set<number>>} Per inline section, where a quote that has opened closes. */
+/** @type {WeakMap<object, Set<number>>} */
 const quoteCloses = new WeakMap();
 
 /** @type {import('@lezer/markdown').MarkdownConfig} */
@@ -356,8 +332,6 @@ const DialogueQuotes = {
         before: 'Emphasis',
     }],
 };
-
-// ---- Macros: `{{…}}`, nested macros included, as one node, so the editor knows each macro's range. ----
 
 /** @type {import('@lezer/markdown').MarkdownConfig} */
 const Macros = {
@@ -396,8 +370,6 @@ const Macros = {
     }],
 };
 
-// ---- Lines kept as plain text (`markdown_escape_strings`). ----
-
 /**
  * @param {string[]} lines
  * @returns {import('@lezer/markdown').MarkdownConfig}
@@ -419,7 +391,6 @@ function escapedLines(lines) {
 }
 
 /**
- * The extensions for @lezer/markdown that make it read text as chat's markdown does.
  * @param {GrammarOptions} [options]
  * @returns {import('@lezer/markdown').MarkdownConfig[]}
  */

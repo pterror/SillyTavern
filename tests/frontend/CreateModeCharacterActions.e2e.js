@@ -1,11 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// While a character is being created, the panel's actions are about that character, which isn't saved yet. The More...
-// select's actions on a saved character are off (they used to act on the character whose chat is open: Replace /
-// Update overwrote its card), and lorebooks linked in "Link to World Info" are saved with the new character, chat
-// open or not (with none open, they used to be dropped).
-
 /** @param {import('@playwright/test').Page} page */
 function enabledOptions(page) {
     return page.locator('#char-management-dropdown option').evaluateAll(options => options
@@ -25,7 +20,6 @@ test.describe('the character panel while creating a character', () => {
         await page.locator('#rm_button_create').click();
         await expect(page.locator('#form_create')).toHaveAttribute('actiontype', 'createcharacter');
         expect(await enabledOptions(page)).toEqual(['set_character_world']);
-        // The global-styles preference is a saved character's too (it changed the last-opened character's).
         await expect(page.locator('#creators_note_styles_button')).toBeHidden();
 
         await page.locator('#rm_button_selected_ch').click();
@@ -51,7 +45,6 @@ test.describe('the character panel while creating a character', () => {
         await page.locator('#character_name_pole').fill(`Linked-${s}`);
         await page.locator('#char-management-dropdown').selectOption({ label: 'Link to World Info' }, { force: true });
         const extras = page.locator('.popup .character_extra_world_info_selector');
-        // The popup binds its handlers once it has opened (select2 then dresses the select).
         await expect(page.locator('.popup .select2-container')).toBeVisible();
         await extras.evaluate((select, book) => {
             const option = [...(/** @type {HTMLSelectElement} */ (select)).options].find(o => o.text === book);

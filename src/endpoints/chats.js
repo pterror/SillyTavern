@@ -101,7 +101,7 @@ function getPreviewMessage(lastMessage) {
 
 /**
  * @typedef {object} OobaChatData
- * @property {string[][]} data_visible Each entry is a `[userTurn, characterTurn]` pair of message text.
+ * @property {string[][]} data_visible
  */
 
 /**
@@ -220,10 +220,6 @@ function importCAIChat(userName, characterName, jsonData) {
         return [starter, ...historyData];
     }
 
-    // BEHAVIOR CHANGE (bug fix, flagged per task instructions): this previously read `newChats` from
-    // inside the very `.map()` callback building it, which throws a ReferenceError (TDZ) on `const`
-    // before the assignment completes - CAI Tools import was unconditionally broken. Fixed to build the
-    // array from the map's own return value instead of self-referentially calling Array#push on it.
     const newChats = (jsonData.histories.histories ?? []).map(history => convert(history).map(obj => JSON.stringify(obj)).join('\n'));
     return newChats;
 }
@@ -488,8 +484,6 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
 export const router = express.Router();
 
 /**
- * The chat a route acts in: a group's (`group_id`) when it names one, else a character's (`avatar_url`); null when it
- * names none that exists.
  * @param {import('express').Request} request
  * @param {{ avatar_url?: unknown, group_id?: unknown }} [body]
  */
@@ -498,7 +492,6 @@ function chatOf(request, body = request.body ?? {}) {
 }
 
 /**
- * A chat name as upstream's routes send it: without `.jsonl`.
  * @param {unknown} name
  */
 function chatName(name) {
@@ -506,8 +499,6 @@ function chatName(name) {
 }
 
 /**
- * A chat's list, newest first (`chatList()`), each by its compat chat id (`file_id`: a bookmark's label, a session's
- * conversation's name, `chatIdsOf()`) and its `label` (a bookmark's label, or null).
  * @param {import('../chat-request.js').ChatContext} chat
  * @param {{ withMetadata?: boolean }} [o]
  */
@@ -525,13 +516,7 @@ async function chatListOf(chat, { withMetadata = false } = {}) {
 }
 
 /**
- * The node-addressed changes a whole chat array states (upstream's `/save`): each message's shown alternative by its
- * `node_id`, its whole content as the array has it; each other alternative by its `swipe_info[k].node_id`, its text
- * (`swipes[k]`) and the `send_date`, `gen_started`, `gen_finished` and `extra` its `swipe_info[k]` holds. What names
- * no stored message, or names one ambiguously, is answered in `notSaved` and changes nothing: a message or alternative
- * without an id (the array can't say where it goes), a shown alternative whose `swipe_info` names another message than
- * `node_id`, an id named twice. An alternative not loaded (a `null` in `swipes`) is not part of the array.
- * @param {any[]} messages The array's messages (without its header).
+ * @param {any[]} messages
  * @returns {{ edits: { edit: { node_id: string, content?: Record<string, any>, patch?: Record<string, any> }, where: { index: number, swipe?: number } }[], notSaved: { index: number, swipe?: number, reason: string }[] }}
  */
 export function compatChatEdits(messages) {
@@ -616,8 +601,6 @@ async function saveCompatChat(request, response, chat, name, chatData) {
     if (!isOwn && found === null) {
         const imported = await chats.importChat({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, name, messages, metadata, actor });
         if (!imported.ok) return { status: 400, body: { error: imported.reason } };
-        // Upstream's page saves a chat it just made under that chat's new name: the session goes on there. A branch
-        // (`unique`) is made beside it.
         if (!unique) await chats.goTo({ tree: chat.tree, node_id: imported.node_ids[imported.node_ids.length - 1] ?? null, actor });
         chat.session.answer(response, { moved: !unique });
         return {
@@ -660,8 +643,6 @@ async function saveCompatChat(request, response, chat, name, chatData) {
         const where = new Map(edits.map(e => [e.edit.node_id, e.where]));
         for (const r of result.refused) refusedEdits.push({ ...(where.get(r.node_id) ?? { index: -1 }), reason: r.reason });
     }
-    // A message with no id goes where the array has it: after the stored message before it, appended when nothing
-    // stored follows, grafted before the stored message after it otherwise (as the page's own save places them).
     const placed = await placeNewMessages(chat, messages, actor);
     const notSaved = [...refusedEdits.filter(n => n.swipe !== undefined || n.reason !== 'no id'), ...placed.notSaved];
     const sent = new Set();
@@ -672,7 +653,6 @@ async function saveCompatChat(request, response, chat, name, chatData) {
     const loaded = at === null ? null : await chats.load({ tree: chat.tree, at, session: actor.session });
     const notDeleted = (loaded?.messages ?? []).map(m => String(m.node_id)).filter(id => !sent.has(id));
 
-    // A whole chat's save replaces its metadata, as upstream's does: a key or variable it lacks is removed.
     const there = await chats.stateAt({ tree: chat.tree, at, session: actor.session });
     const current = there && 'state' in there ? there.state : {};
     const unset = Object.keys(current).filter(k => !Object.hasOwn(metadata, k));
@@ -695,11 +675,8 @@ async function saveCompatChat(request, response, chat, name, chatData) {
 }
 
 /**
- * Stores the messages of a whole chat array that have no id, each run of them where the array has it: after the
- * message before the run (which must name a stored message), appended when no message with an id follows the run,
- * grafted one by one before the one that does otherwise. A run with no message before it can't be placed.
  * @param {import('../chat-request.js').ChatContext} chat
- * @param {any[]} messages The array's messages (without its header).
+ * @param {any[]} messages
  * @param {object} actor
  * @returns {Promise<{ moved: boolean, notSaved: { index: number, reason: string }[] }>}
  */
@@ -743,14 +720,10 @@ async function placeNewMessages(chat, messages, actor) {
 }
 
 /**
- * Upstream's save of a whole chat to its file, on the engine: the chat the path names (`chatFileOf()`), saved as
- * `/save` saves it, by `handle` with no tab. Throws when the integrity check fails (unless `skipIntegrityCheck`), the
- * path names no chat this user has, or the save fails. Chats aren't files here, so nothing is written to
- * `backupDirectory`.
- * @param {Array} chatData The chat array to save.
- * @param {string} filePath Target file path for the data.
+ * @param {Array} chatData
+ * @param {string} filePath
  * @param {boolean} skipIntegrityCheck
- * @param {string} handle The user's handle.
+ * @param {string} handle
  * @param {string} [_cardName]
  * @param {string} [_backupDirectory]
  */
@@ -799,9 +772,7 @@ async function chatArray(chat, at) {
 }
 
 /**
- * Where a chat identifier is in a tree, read on this thread: as `chatNamePosition()` (`resolveChatNameSync()`);
- * undefined when it names nothing there.
- * @param {any} store The binding's `Store`.
+ * @param {any} store
  * @param {bigint} tree
  * @param {string} name
  * @returns {string | null | undefined}
@@ -818,15 +789,13 @@ function chatNamePositionSync(store, tree, name) {
         const [b] = store.chatReadSync('bookmarks', { ids: [found.bookmark] });
         return b ? outside(b.at) : undefined;
     }
-    // A session's conversation names that session's position there, else where the tree lands.
     const where = found.session === null ? null : store.chatReadSync('sessionInTree', { session: found.session, tree });
     if (!where && 'derived' in found) return outside(store.chatReadSync('landing', { tree, ...(found.session === null ? {} : { session: found.session }) }));
     return where ? outside(where.at) : undefined;
 }
 
 /**
- * The group tree a group chat id names, read on this thread: as `groupOfChat()`.
- * @param {any} store The binding's `Store`.
+ * @param {any} store
  * @param {string} name
  * @returns {bigint | null}
  */
@@ -858,7 +827,6 @@ export function getChatData(chatFilePath) {
     if (tree === null || tree === undefined) return missing();
     const at = chatNamePositionSync(store, tree, file.name);
     if (at === undefined) return missing();
-    // Upstream reads the chat file: every alternative's text.
     const loaded = loadSync(store, { tree, at, full: true });
     if (!loaded) return missing();
     return [{ chat_metadata: { ...loaded.metadata }, user_name: 'unused', character_name: 'unused' }, ...loaded.messages];
@@ -867,12 +835,10 @@ export function getChatData(chatFilePath) {
 router.post('/get', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const name = chatName(request.body.file_name);
-        // No file_name: an empty chat, as upstream answers it.
         if (!name) return response.send({});
         const chat = await chatOf(request, { avatar_url: request.body.avatar_url });
         const at = chat ? await chatNamePosition(chat, name) : undefined;
         const answer = chat && at !== undefined ? await chatArray(chat, at) : null;
-        // A 404 (rather than {}) lets the client tell a stale name from a new, unsaved chat.
         if (!answer) return response.status(404).send({ error: 'not_found' });
         return response.send(answer);
     } catch (error) {
@@ -882,12 +848,9 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
 });
 
 /**
- * Records which character or group the user last opened (the `active_character` and `active_group` settings),
- * when it changed.
  * @param {import('express').Request} request
  * @param {{ character: string|null, group: string|null }} opened
- * @returns {Promise<{ active_character: string|null, active_group: string|null, settings_hash?: number }>} The stored values;
- * `settings_hash` (the whole settings' hash, as /api/settings answers it) when they were written.
+ * @returns {Promise<{ active_character: string|null, active_group: string|null, settings_hash?: number }>}
  */
 async function recordLastOpened(request, opened) {
     const directories = request.user.directories;
@@ -902,8 +865,6 @@ async function recordLastOpened(request, opened) {
 }
 
 /**
- * A card's greetings in the message shape the openings merge against, its greeting texts by card position, its
- * default greeting's position and its name; null when the character can't be read.
  * @param {import('../user-stores.js').UserStore} store
  * @param {string} avatar
  * @returns {Promise<{ greetings: Record<string, any>[], texts: string[], defaultIndex: number|null, name: string } | null>}
@@ -930,8 +891,6 @@ export async function readCardGreetings(store, avatar) {
 }
 
 /**
- * A card's greetings in the message shape the openings merge against, and its greeting texts by card position;
- * both empty when the character can't be read.
  * @param {import('../user-stores.js').UserStore} store
  * @param {string} avatar
  * @returns {Promise<{ greetings: Record<string, any>[], texts: string[] }>}
@@ -941,8 +900,6 @@ async function cardGreetingsOf(store, avatar) {
 }
 
 /**
- * A card's openings as the page draws them: the first window (`openings`, as /openings answers an empty body) and,
- * when the card has greetings with no row, all of those (`card_openings`).
  * @param {import('../chat-request.js').ChatContext} chat
  * @param {string} avatar
  */
@@ -958,15 +915,6 @@ async function openingsForPage(chat, avatar) {
 }
 
 /**
- * What `/open` answers: the conversation a character or group opens on through the request's session, and
- * everything the screen draws. `chat` (a chat name) opens that chat, and with `make_current` the session moves
- * there; else the session's own place in the tree (where it lands); `fresh` (a character): no conversation, only
- * the card's greetings. Records which character or group was opened last.
- *
- * Answers `{ chat, chat_metadata, messages, openings, card_openings, stored_sends, active_character,
- * active_group, settings_hash? }`: `chat` is upstream's identifier for the open chat (`compatChatIdOf()`), `messages`
- * as /get answers them after the header; `openings`/`card_openings` for a character only (null for a group); for a group also
- * `chats` and `date_last_chat`. 404 when the character or group doesn't exist.
  * @param {import('express').Request} request
  * @param {import('express').Response} response
  * @param {{ avatar_url?: unknown, group_id?: unknown, chat?: unknown, make_current?: unknown, fresh?: unknown, send_keys?: unknown }} body
@@ -987,8 +935,6 @@ async function openChatAnswer(request, response, body) {
     if (at === undefined) at = fresh ? null : await chats.landingOf(chat.tree, chat.session.reader());
     const loaded = at === null ? null : await chats.load({ tree: chat.tree, at, session: chat.session.reader().session });
     const metadata = loaded?.metadata ?? await chats.metadata(chat.tree, null, chat.session.reader().session);
-    // The tab shows this chat now: the new code's views that follow the chat, as they are for it, go with the answer.
-    // The tab's session is the one this request made it, if it made one (the tab takes it from the answer).
     const tab = chat.session.reader().session ?? sessionHeaderOf(request);
     const ui_views = typeof tab === 'string' && tab !== '' ? await ui.showChat(uiUser(request), tab, { tree: String(chat.tree) }) : [];
     const common = {
@@ -1034,13 +980,6 @@ router.post('/open', validateAvatarUrlMiddleware, async function (request, respo
     }
 });
 
-/**
- * Bookmarks a message: a bookmark named `label` at `node_id` (refused when another chat of its scope has that name;
- * with `unique`, the next free one). No `label` suggests one: a branch's (`suggestedLabel()`). A
- * greeting shown without a row (`opening`) is stored first, as /message/select stores it. For a group the answer
- * carries its chat list (`chats`). With `open`, the bookmark is opened as /open opens a chat (`make_current`),
- * answered as `opened`. `also_node_id` is accepted and ignored.
- */
 router.post('/bookmark', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const chat = await chatOf(request);
@@ -1056,7 +995,6 @@ router.post('/bookmark', validateAvatarUrlMiddleware, async function (request, r
         }
         if (!nodeId) return response.status(400).send({ error: 'node_id is required' });
 
-        // `unique`: always a new bookmark, so a label a chat has is a suggestion (the next free one).
         const made = await chat.store.chats.createBookmark({ tree: chat.tree, node_id: nodeId, name: label, suggested: given === '' || request.body.unique === true, actor: chat.session.actor() });
         if (!made.ok) return response.status(409).send({ ok: false, reason: made.reason });
         const chats = request.body.group_id ? (await chatListOf(chat)).map(r => r.file_id) : undefined;
@@ -1064,7 +1002,6 @@ router.post('/bookmark', validateAvatarUrlMiddleware, async function (request, r
             ? (await openChatAnswer(request, response, { avatar_url: request.body.avatar_url, group_id: request.body.group_id, chat: await chat.store.chats.bookmarkChatId(chat.tree, made.bookmark), make_current: true, send_keys: request.body.send_keys })).answer
             : undefined;
         chat.session.answer(response, { moved: !!nodeId });
-        // `id` is the bookmark's compat chat id (what upstream code passes back as the chat's name); `label` its label.
         return response.send({ ok: true, node_id: nodeId, id: await chat.store.chats.bookmarkChatId(chat.tree, made.bookmark), label: made.name, chats, opened, stored: storedMessagesOf(response) ?? undefined });
     } catch (error) {
         console.error('Error bookmarking a message:', error);
@@ -1073,9 +1010,6 @@ router.post('/bookmark', validateAvatarUrlMiddleware, async function (request, r
 });
 
 /**
- * A suggested bookmark label as upstream names branches and bookmarks (`createBranch()`, `getBookmarkName()`): the
- * chat's name (what the user sees it as: its current chat's label, else its conversation's) with any such suffix taken
- * off, then ` - <token><n>`, the lowest n from 1 no chat of the scope is named (`nameTaken()`).
  * @param {import('../chat-request.js').ChatContext} chat
  * @param {'Branch #' | 'Bookmark #'} [token]
  */
@@ -1087,10 +1021,6 @@ async function suggestedLabel(chat, token = 'Branch #') {
     }
 }
 
-/**
- * The name a bookmark of the chat would be suggested (`suggestedLabel()`, upstream's `Bookmark #<n>`), for the dialog
- * that asks for one: the page shows the server's suggestion, never one of its own.
- */
 router.post('/bookmark-name', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const chat = await chatOf(request);
@@ -1103,11 +1033,9 @@ router.post('/bookmark-name', validateAvatarUrlMiddleware, async function (reque
 });
 
 /**
- * The group a chat id names when the request names no group (upstream's group routes send the chat id they were
- * given): the one group with a chat of that name (`treeOfChatId()`), or a session's UUID.
  * @param {import('express').Request} request
  * @param {string} name
- * @returns {Promise<string | null>} The group's id.
+ * @returns {Promise<string | null>}
  */
 async function groupOfChat(request, name) {
     const store = await requestStore(request);
@@ -1118,7 +1046,6 @@ async function groupOfChat(request, name) {
 }
 
 /**
- * The chat a group route names: by `group_id`, else the group that has a chat of that name.
  * @param {import('express').Request} request
  * @param {string} name
  */
@@ -1127,11 +1054,6 @@ async function groupChatOf(request, name) {
     return groupId === null ? null : chatContext(request, { group: groupId });
 }
 
-/**
- * Renames a chat: the bookmark or session's conversation the identifier names (`resolveChatName()`), the new name as
- * given, refused when another chat of its scope has it; a session named by its UUID or label gets that label. Answers
- * `{ ok, sanitizedFileName, label }`: its chat id after (the new name, or a session's UUID), and the name.
- */
 router.post('/rename', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         if (!request.body || !request.body.original_file || !request.body.renamed_file) {
@@ -1150,7 +1072,6 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
                 ? await chats.nameConversation({ tree: chat.tree, name: newName, actor: { ...chat.session.actor(), session: found.session } })
                 : await chats.nameSession({ session: found.session, name: newName, actor: chat.session.actor() });
         if (!renamed.ok) return response.status(400).send({ error: true, reason: renamed.reason });
-        // Upstream code goes on with the name it is answered: the chat's id after the rename (its new name).
         const id = 'derived' in found || 'bookmark' in found ? newName : found.session;
         return response.send({ ok: true, sanitizedFileName: id, label: newName });
     } catch (error) {
@@ -1160,14 +1081,11 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
 });
 
 /**
- * Deletes a chat by name (answer 3 of the cut): a bookmark goes (its messages stay); a session goes, and a tab on it
- * is told and lands through the cascade. Answers `{ ok, opened? }`, `opened` (with `open`) the character's chat as
- * /open opens it after.
  * @param {import('express').Request} request
  * @param {import('express').Response} response
  * @param {import('../chat-request.js').ChatContext} chat
  * @param {string} name
- * @returns {Promise<boolean>} Whether a chat of that name was deleted.
+ * @returns {Promise<boolean>}
  */
 async function deleteChatNamed(request, response, chat, name) {
     const { chats } = chat.store;
@@ -1198,12 +1116,6 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
     }
 });
 
-/**
- * Starts a new chat through the request's session (answer 7 of the cut). A character's: `chat` '' is a new chat on
- * its first greeting, a stored greeting's id moves the session to that opening. A group's: the session goes to its
- * root, the members' greetings shown provisionally; answered with its `chat_id` and `chats` and `opened` (as /open
- * answers). `replace` deletes the bookmark of that name, named in `deleted`.
- */
 router.post('/new', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const chat = await chatOf(request);
@@ -1235,10 +1147,6 @@ router.post('/new', validateAvatarUrlMiddleware, async function (request, respon
     }
 });
 
-/**
- * A bookmark named `branch_name` at `node_id` (the chat's metadata is the state there, nothing is copied), opened as
- * upstream opens the fork: the session goes there and it is the current chat. Answers `chat` too.
- */
 router.post('/fork', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const { node_id, branch_name } = request.body;
@@ -1247,7 +1155,6 @@ router.post('/fork', validateAvatarUrlMiddleware, async function (request, respo
         }
         const chat = await chatOf(request);
         if (!chat) return response.sendStatus(400);
-        // Upstream's page names a branch (`createBranch()`): a suggestion, the next free one when taken.
         const made = await chat.store.chats.createBookmark({ tree: chat.tree, node_id: String(node_id), name: String(branch_name), suggested: true, actor: chat.session.actor() });
         if (made.ok) {
             const id = await chat.store.chats.bookmarkChatId(chat.tree, made.bookmark);
@@ -1262,7 +1169,6 @@ router.post('/fork', validateAvatarUrlMiddleware, async function (request, respo
     }
 });
 
-/** One member of a group renamed (a new avatar and name) in the group's messages. */
 router.post('/tree/rename-group-member', async function (request, response) {
     try {
         const { group_id, old_avatar, new_avatar, new_name } = request.body;
@@ -1280,7 +1186,6 @@ router.post('/tree/rename-group-member', async function (request, response) {
 });
 
 /**
- * The chat a message is in, through the request's session.
  * @param {import('express').Request} request
  * @param {string} nodeId
  */
@@ -1294,7 +1199,6 @@ async function chatOfMessage(request, nodeId) {
     return chatContext(request, key.type === TYPE.group ? { group: key.key } : { avatar: key.key });
 }
 
-/** The alternatives at a message, a window of them (`offset`, `limit`). */
 router.post('/alternatives', async function (request, response) {
     try {
         const nodeId = String(request.body.node_id || '');
@@ -1315,7 +1219,6 @@ router.post('/alternatives', async function (request, response) {
     }
 });
 
-/** The path from the root down to a message. */
 router.post('/ancestry', async function (request, response) {
     try {
         const nodeId = String(request.body.node_id || '');
@@ -1334,10 +1237,6 @@ router.post('/ancestry', async function (request, response) {
     }
 });
 
-/**
- * Edits one message: its whole `content`, or a `patch` of the fields it sets and those it `unset`s (the rest as
- * stored). An edit that changes nothing writes nothing.
- */
 router.post('/message/edit', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const nodeId = String(request.body.node_id || '');
@@ -1353,7 +1252,6 @@ router.post('/message/edit', validateAvatarUrlMiddleware, async function (reques
     }
 });
 
-/** Applies one change that spans many messages as one request; refusals are reported per message. */
 router.post('/message/edit-batch', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const edits = Array.isArray(request.body.edits) ? request.body.edits : null;
@@ -1369,11 +1267,6 @@ router.post('/message/edit-batch', validateAvatarUrlMiddleware, async function (
     }
 });
 
-/**
- * Appends one or more messages after a message, through the request's session (it moves to the last). `send_keys[i]`
- * is the key the page made when the user sent `messages[i]`; a send already stored under its key is answered with
- * its message (in `already_stored` too).
- */
 router.post('/message/append', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const after = String(request.body.after_node_id || '');
@@ -1391,10 +1284,6 @@ router.post('/message/append', validateAvatarUrlMiddleware, async function (requ
     }
 });
 
-/**
- * The openings a character or group can start on: its stored openings, then the card's greetings with no row
- * (`node_id` null), windowed by `offset`, `limit` or `around`.
- */
 router.post('/openings', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const offset = Number.isFinite(Number(request.body.offset)) ? Number(request.body.offset) : undefined;
@@ -1405,7 +1294,6 @@ router.post('/openings', validateAvatarUrlMiddleware, async function (request, r
         const chat = await chatOf(request);
         if (!chat) return response.status(404).send({ error: 'unknown chat' });
         const avatar = request.body.group_id ? '' : String(request.body.avatar_url || '');
-        // A group has no card to read greetings off of.
         const cardGreetings = avatar ? (await cardGreetingsOf(chat.store, avatar)).greetings : [];
         return response.send(await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.session.reader(), range: { offset, limit, around }, cardGreetings }));
     } catch (error) {
@@ -1414,12 +1302,6 @@ router.post('/openings', validateAvatarUrlMiddleware, async function (request, r
     }
 });
 
-/**
- * Where a chat showing one of a character's card greetings should land after the card changed. Body: `shown_text`
- * (the text the chat showed), `index` (the opening index it was on) and `edits` (every greeting whose text the change
- * edited, `{ from, to, index }`: a card has any number of greetings, so the list has no cap but the body's size).
- * Answers `{ index, opening }`, `opening` null when the character has no openings.
- */
 router.post('/openings/land', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');
@@ -1445,10 +1327,6 @@ router.post('/openings/land', validateAvatarUrlMiddleware, async function (reque
     }
 });
 
-/**
- * The request's session chooses one of the character's card greetings that has no row: a new chat on it, its text
- * the card's at that position until a reply stores it. Body: `index` (its card position); `text` accepted.
- */
 router.post('/openings/choose', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');
@@ -1466,12 +1344,6 @@ router.post('/openings/choose', validateAvatarUrlMiddleware, async function (req
     }
 });
 
-/**
- * Adds alternatives beside a message, shown to no one: each another reply of its parent (another opening, for an
- * opening). One with a stored reply's speaker and text is that reply. With `opening: true` instead of a sibling,
- * they're openings of the chat (beside its card's greetings, which stay the card's: a first message shown from the
- * card has no row to be beside). Answers `{ ok, node_ids }`.
- */
 router.post('/message/alternative', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const opening = request.body.opening === true;
@@ -1503,10 +1375,6 @@ router.post('/message/alternative', validateAvatarUrlMiddleware, async function 
     }
 });
 
-/**
- * Inserts a new message between two adjacent messages (a message spliced into the middle of a chain). A `send_key`
- * already stored is answered with its message and `already_stored`.
- */
 router.post('/message/graft', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const after = String(request.body.after_node_id || '');
@@ -1527,12 +1395,6 @@ router.post('/message/graft', validateAvatarUrlMiddleware, async function (reque
     }
 });
 
-/**
- * Cuts `first_node_id` .. `last_node_id` out of the request's session's path (upstream's delete of messages: they
- * leave this chat; other branches keep what they share). `preview` answers what else it would drop (bookmarks,
- * state changes), writing nothing; `confirm` names exactly those, else it is refused with them. Applied, `copied`
- * maps each message the path now shows a copy of (a later message other branches share) to its copy.
- */
 router.post('/message/cut', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const first = String(request.body.first_node_id || '');
@@ -1550,11 +1412,6 @@ router.post('/message/cut', validateAvatarUrlMiddleware, async function (request
     }
 });
 
-/**
- * Cuts the messages `node_ids` names out of the request's session's path (a page's compat save: messages it held and
- * no longer does), each run of them adjacent on the path one cut, applied whatever else it drops (answered in
- * `drops`). Answers `not_on_path` (the ids the path doesn't hold: cut nowhere), `refused`, and `copied` (as /cut).
- */
 router.post('/message/cut-many', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const nodeIds = Array.isArray(request.body.node_ids) ? request.body.node_ids.filter(id => typeof id === 'string' && id !== '') : null;
@@ -1570,10 +1427,6 @@ router.post('/message/cut-many', validateAvatarUrlMiddleware, async function (re
     }
 });
 
-/**
- * Deletes a swipe and everything below it. `preview` answers what else it would drop (bookmarks, state changes),
- * writing nothing; `confirm` names exactly those (as the preview did), else it is refused with them.
- */
 router.post('/message/alternative/delete', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const node = String(request.body.node_id || '');
@@ -1591,16 +1444,8 @@ router.post('/message/alternative/delete', validateAvatarUrlMiddleware, async fu
     }
 });
 
-/**
- * Swipes to a message: it becomes the request's session's choice where it is, and the session goes down that
- * branch along the fork choices to its end. `opening` (the chat's greetings, shown but not stored yet) stores them
- * first and selects the first (applyPageWrites()); `stored` names their rows. Answers the conversation below the
- * message (`messages`, down to where the session now is), and with `with_ancestry` the path down to it too, and
- * `chat_metadata`, the state where the session now is.
- */
 router.post('/message/select', validateAvatarUrlMiddleware, async function (request, response) {
     try {
-        // A message names its tree; the owner fields name it only for the opening, which has no id yet.
         const named = String(request.body.node_id || '');
         const chat = named ? await chatOfMessage(request, named) : await chatOf(request);
         if (!chat) return response.status(409).send({ ok: false, reason: 'unknown chat' });
@@ -1633,11 +1478,6 @@ router.post('/message/select', validateAvatarUrlMiddleware, async function (requ
     }
 });
 
-/**
- * Changes the chat's state where the request's session is (the page's `changedMetadata()`): `{ set, unset,
- * variables? }`, each key or variable written only when its value differs. Answers `{ ok }`; a failure `{ ok: false,
- * reason, state }` with the state there as stored.
- */
 router.post('/metadata', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const chat = await chatOf(request);
@@ -1684,7 +1524,6 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
             }).join('\n');
             return response.status(200).json({ message: `Chat saved to ${exportfilename}`, result: jsonl });
         }
-        // Plain text export
         let buffer = '';
         for (const msg of loaded.messages) {
             if (msg.is_system === true) continue;
@@ -1702,12 +1541,10 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
 });
 
 /**
- * Stores an imported chat (answer 3 of the cut): its messages from the tree's root as a branch of their own, and a
- * bookmark named after it at its last message; no session moves.
  * @param {import('../chat-request.js').ChatContext} chat
- * @param {string} chatText jsonl: a header line, then one message per line.
+ * @param {string} chatText
  * @param {string} name
- * @returns {Promise<string | null>} The bookmark's chat id (its label); null when it couldn't be stored.
+ * @returns {Promise<string | null>}
  */
 async function importChatText(chat, chatText, name) {
     const lines = chatText.split('\n').map(line => tryParse(line)).filter(x => x);
@@ -1751,7 +1588,7 @@ router.post('/import', validateAvatarUrlMiddleware, async function (request, res
     const userName = sanitize(request.body.user_name) || 'User';
     /** @type {string[]} */
     const fileNames = [];
-    /** Chats of the upload that couldn't be stored, by name. @type {string[]} */
+    /** @type {string[]} */
     const notSaved = [];
     const pathToUpload = path.join(request.file.destination, request.file.filename);
 
@@ -1768,7 +1605,6 @@ router.post('/import', validateAvatarUrlMiddleware, async function (request, res
 
         if (format === 'json') {
             const jsonData = JSON.parse(data);
-            // jsonData is parsed from an untrusted upload and format-sniffed below, so each importer takes `any`.
             /** @type {(userName: string, characterName: string, jsonData: any) => string|string[]} */
             let importFunc;
             if (jsonData.savedsettings !== undefined) { // Kobold Lite format
@@ -1794,7 +1630,6 @@ router.post('/import', validateAvatarUrlMiddleware, async function (request, res
                 console.error('Incorrect chat format .jsonl');
                 return response.send({ error: true });
             }
-            // Chub chats are flattened; a failure here keeps the chat as it came.
             let flattenedChat = data;
             try {
                 flattenedChat = flattenChubChat(userName, characterName, lines);
@@ -1825,7 +1660,6 @@ router.post('/group/get', async (request, response) => {
         const chat = await groupChatOf(request, name);
         const at = chat ? await chatNamePosition(chat, name) : undefined;
         const answer = chat && at !== undefined ? await chatArray(chat, at) : null;
-        // An empty array, not a 404: getGroupChat() reads a miss as a new chat and shows the members' greetings.
         return response.send(answer ?? []);
     } catch (error) {
         console.error(error);
@@ -1834,8 +1668,7 @@ router.post('/group/get', async (request, response) => {
 });
 
 /**
- * A chat list row as upstream's chat pickers draw it.
- * @param {Record<string, any>} r A `chatList()` row with its `file_id`.
+ * @param {Record<string, any>} r
  * @param {boolean} withMetadata
  */
 function pickerRow(r, withMetadata) {
@@ -1852,7 +1685,6 @@ function pickerRow(r, withMetadata) {
     };
 }
 
-/** Every chat a group has (its chat list), as the chat pickers draw them. */
 router.post('/group/branches', async (request, response) => {
     try {
         if (!request.body || !request.body.group_id) {
@@ -1884,10 +1716,6 @@ router.post('/group/info', async (request, response) => {
     }
 });
 
-/**
- * Deletes a group's chat by name (answer 3 of the cut). Answers `{ ok, chats, chat_id }`, the group's chat list and
- * the request's compat chat id after it.
- */
 router.post('/group/delete', async (request, response) => {
     try {
         if (!request.body || !request.body.id) {
@@ -1907,10 +1735,7 @@ router.post('/group/delete', async (request, response) => {
 });
 
 /**
- * Fills in `extra.gen_id` for character messages missing one before a group chat is stored: group regeneration and
- * swipe tracking need one on every character message. A message that has one keeps it, and a stored one (it has a
- * `node_id`) is left as it is stored; the value only needs to be unique within this save.
- * @param {any[]} chatData Chat array as posted to /group/save, i.e. [header, ...messages].
+ * @param {any[]} chatData
  */
 function assignMissingGenIds(chatData) {
     const baseId = Date.now();
@@ -1954,17 +1779,8 @@ router.post('/group/save', async function (request, response) {
     }
 });
 
-/** Chats `/search` reads at most per page. */
 const SEARCH_PAGE_MAX = 500;
 
-/**
- * Searches a character's or group's chat list: an item matches by its name, or by the messages on the path down to it
- * holding every word, or the whole query as a lower-cased substring (a capped scan of the messages' texts).
- * Upstream's callers (no `limit`) get every match, a bare array; with `limit` (1 to SEARCH_PAGE_MAX) the answer is a
- * page `{ results, cursor, scan_cursor, exact }`: `cursor` sent back for the next page, and once it is null
- * `scan_cursor` (when not null) sent back as `scan_cursor` for the scan's next results; `exact` is false while the
- * scan was capped.
- */
 router.post('/search', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const { query, avatar_url, group_id } = request.body;
@@ -1975,7 +1791,10 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
         }
         const chat = await chatOf(request);
         if (!chat) return response.send(limit === undefined ? [] : { results: [], cursor: null, exact: true });
-        /** @param {Record<string, any>} r @param {string} id */
+        /**
+         * @param {Record<string, any>} r
+         * @param {string} id
+         */
         const row = (r, id) => {
             return {
                 node_id: r.at,
@@ -2000,7 +1819,6 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
             return response.send({ results: await rowsOf(page.rows), cursor: page.more && page.next !== undefined ? page.next : null, scan_cursor: page.scanCursor ?? null, exact: page.exact });
         }
         const results = [];
-        // An item whose path holds scan matches in two reads comes once.
         const seen = new Set();
         const add = async (/** @type {any[]} */ rows) => {
             for (const r of await rowsOf(rows)) {
@@ -2021,7 +1839,6 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
             if (!page.more || page.next === undefined) break;
             after = page.next;
         }
-        // Upstream's callers get every match: the scan goes on until it has read the owner's messages.
         while (scanCursor !== undefined) {
             const page = await chat.store.chats.searchChatList({ tree: chat.tree, search, session, limit: SEARCH_PAGE_MAX, scanCursor });
             await add(page.rows);
@@ -2034,14 +1851,8 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
     }
 });
 
-/** Messages `/search/messages` answers at most per page. */
 const MESSAGE_SEARCH_PAGE_MAX = 200;
 
-/**
- * Searches a character's or group's messages: `{ avatar_url | group_id, search, limit?, after?, scan_cursor? }` →
- * `{ rows, more, after?, total, totalExact, partial?, scanCursor? }` (`ChatEngine.searchMessages()`). Opening a
- * row moves the session there (`/open` with the chat, or `/message/select`).
- */
 router.post('/search/messages', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const { search, after, scan_cursor: scanCursor } = request.body ?? {};
@@ -2058,7 +1869,6 @@ router.post('/search/messages', validateAvatarUrlMiddleware, async function (req
                 ...(typeof after === 'string' ? { after } : {}),
                 ...(typeof scanCursor === 'string' ? { scanCursor } : {}),
             });
-            // A row's depth is the engine's integer.
             return response.type('json').send(JSON.stringify(found, (_key, value) => (typeof value === 'bigint' ? Number(value) : value)));
         } catch (err) {
             if (/invalid (scan )?cursor/.test(String(/** @type {any} */ (err)?.message))) return response.status(400).send({ error: 'invalid cursor' });
@@ -2070,16 +1880,10 @@ router.post('/search/messages', validateAvatarUrlMiddleware, async function (req
     }
 });
 
-/** Conversations `/recent` lists at most. */
 const RECENT_MAX = 1000;
 
 const FORK_SESSION_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-/**
- * Forks the session a tab found another tab holding (see public/scripts/tab-session.js): `{ from, length, cursor,
- * chats: [{ tree: { avatar } | { group }, bookmark }] }`, the tab's last place in `from`'s history and its current
- * chats. Answers `{ session }`, the fork's UUID; 404 when `from` isn't a stored session.
- */
 router.post('/session/fork', async function (request, response) {
     try {
         const { from, length, cursor, chats: tabChats } = request.body ?? {};
@@ -2105,13 +1909,6 @@ router.post('/session/fork', async function (request, response) {
     }
 });
 
-/**
- * Upstream's recent chats: the conversations (a bookmark, or a session's where it has no current chat) by their last
- * meaningful activity, the most recent first, one row per compat chat id; first the pinned chats (`pinned`:
- * `{ file_name, avatar | group }`, resolved by name in their character's or group's tree). `max` bounds the unpinned
- * ones. With `paged`, the answer is `{ chats, next }`: `next` (null at the end) sent back as `before` gives the page
- * after, which has no pinned chats.
- */
 router.post('/recent', async function (request, response) {
     try {
         const paged = request.body.paged === true;
@@ -2146,7 +1943,6 @@ router.post('/recent', async function (request, response) {
             if (!owner || typeof pin.file_name !== 'string') continue;
             const chat = await chatContext(request, owner);
             if (!chat) continue;
-            // A pin holds a chat id, or an old chat name (a label, resolved in its own tree while one bookmark has it).
             const found = await chat.store.chats.resolveChatName({ tree: chat.tree, name: chatName(pin.file_name) });
             if (!found) continue;
             const id = 'bookmark' in found ? await chat.store.chats.bookmarkChatId(chat.tree, found.bookmark) : await chat.store.chats.conversationName(found.session, found.session, chat.tree);

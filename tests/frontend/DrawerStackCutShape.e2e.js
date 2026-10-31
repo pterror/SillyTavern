@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, setStackedDrawers } from './frontent-test-utils.js';
 
-// A layer's cut is exactly the union of the boxes above it (with several holes, nothing between them is cut too),
-// and once nothing moves, nothing is recomputed or rewritten.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -36,8 +33,6 @@ test.describe('stacked drawers', () => {
             const result = {
                 inFirst: at(75, 225),
                 inSecond: at(275, 75),
-                // Inside the triangle between the corner and the two holes' first points, which a polygon linking
-                // the holes directly would cut.
                 betweenHoles: at(100, 83),
                 belowFirst: at(75, 300),
                 rightOfSecond: at(350, 75),
@@ -74,8 +69,6 @@ test.describe('stacked drawers', () => {
                     if (!top) continue;
                     const hit = document.elementFromPoint(x, y);
                     const owner = layers.find(el => el.contains(hit));
-                    // Something inside the top layer (or above every layer, like the drawer bar) is fine; a lower
-                    // layer showing through is not.
                     if (owner && owner !== top) out.push(`${x},${y}: ${owner.id} instead of ${top.id}`);
                 }
             }

@@ -40,12 +40,11 @@ afterEach(async () => {
     await user.close();
 });
 
-/** Stores tag definitions, creation order. @param {{ id: string, name: string }[]} tags */
+/** @param {{ id: string, name: string }[]} tags */
 async function saveTags(tags) {
     for (const tag of tags) await user.store.lib.tags.create(tag);
 }
 
-/** Ids that don't sort in insertion order, so id order and rowid order differ. */
 function makeTags(count) {
     return Array.from({ length: count }, (_, i) => ({ id: `t${String(count - i).padStart(5, '0')}`, name: `Tag ${i}` }));
 }
@@ -64,7 +63,6 @@ describe('POST /api/tags/backup: the tag definitions', () => {
         expect(response.status).toBe(200);
         expect(response.headers.get('content-type')).toMatch(/^application\/json/);
         const body = await response.json();
-        // The names are ASCII and distinct, so their lower-cased code unit order is the folded names' order.
         const byName = (a, b) => (a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1);
         expect(body.tags.map(tag => ({ id: tag.id, name: tag.name }))).toEqual(tags.filter((_, i) => i !== 1234).sort(byName));
     }, 120000);

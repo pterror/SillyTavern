@@ -153,8 +153,7 @@ function getAllKeys(obj, prefix = '') {
 }
 
 /**
- * Reads and parses the canonical default config, ./default/config.yaml.
- * @returns {object} Parsed default config object
+ * @returns {object}
  */
 export function getDefaultYamlConfig() {
     return yaml.parse(fs.readFileSync(path.join(serverDirectory, './default/config.yaml'), 'utf8'));

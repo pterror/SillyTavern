@@ -1,8 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// A tag whose name is cut short in the character list shows its whole name on hover; one shown whole gets no title.
-
 test('a cut-short tag name shows whole on hover; a short one has no title', async ({ page }) => {
     await testSetup.awaitST({ page });
     const long = `A tag with a very long name that cannot fit in the row ${Date.now()}`;

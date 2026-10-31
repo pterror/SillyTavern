@@ -2,13 +2,6 @@ import { describe, test, expect, jest, beforeAll } from '@jest/globals';
 import { Marked } from 'marked';
 import showdown from 'showdown';
 
-// An HTML block that starts with one of showdown's hashHTMLBlocks tags runs to its matching closing tag
-// (nesting-aware), blank lines and indentation included, and its inside isn't parsed as markdown.
-// With a `markdown` attribute on the opening tag (PHP Markdown Extra's opt-in), the inside is parsed as markdown,
-// unless its value is "0".
-// Checked on both marked processors and through messageFormatting (the chat render path). messageFormatting's
-// DOM-bound and app-wide imports are replaced; DOMPurify needs a window, so sanitize is the identity here.
-
 jest.unstable_mockModule('../public/lib.js', () => ({
     Marked,
     showdown,
@@ -68,7 +61,6 @@ const BLOCK_TAGS = [
     'audio', 'canvas', 'figure', 'hgroup', 'output', 'video', 'p',
 ];
 
-// Creator's-notes shape: nested, indented inner HTML with a blank line inside.
 const NESTED = [
     '<div class="card">',
     '    <div class="inner">',
@@ -79,7 +71,6 @@ const NESTED = [
     '</div>',
 ].join('\n');
 
-// Kept whole: the output is the input, unchanged.
 const wholeCases = [
     ['nested, indented inner HTML with a blank line', NESTED],
     ['markdown inside is not parsed', '<div>\n\n**bold** _em_ # heading\n\n- item\n</div>'],
@@ -182,7 +173,6 @@ describe('renderMarkdownLiteralTags', () => {
         expect(renderMarkdownLiteralTags(input).trim()).toBe(escape(input));
     });
 
-    // ED4: example messages start with `<START>` on its own line.
     test('a line holding only another tag is text: the lines after it are markdown, with their line breaks', () => {
         const input = '<START>\n{{user}}: Hi *there*\n{{char}}: Hello';
         expect(renderMarkdownLiteralTags(input).trim())

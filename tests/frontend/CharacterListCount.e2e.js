@@ -16,13 +16,6 @@ async function awaitAppReady(page) {
 }
 
 /**
- * Replaces characterRepository.query() with one answering from `window.__stub`, so each test sets what the page
- * comes back with.
- * - `pageTotal(filter)`: the list page's `total`, as the server would count it for that filter.
- * - `backend`: the `searchBackend` a query with a non-blank search term comes back with, as the server sends it.
- * - `rejectSort`: a sort field every query fails with invalid-sort-field for.
- * - `calls`: every query, as `{ fav, sort }` (the filter's fav and the sort field).
- * - `pageSizes`: every query's page size.
  * @param {import('@playwright/test').Page} page
  */
 async function stubQuery(page) {
@@ -62,7 +55,6 @@ async function setSearchTerm(page, term) {
     await page.locator('#character_search_bar').fill(term);
 }
 
-/** Re-queries the visible page, as a change to the characters does. */
 async function requeryPage(page) {
     await page.evaluate(async () => {
         const { refreshCharacterListCurrentPage } = await import('/scripts/character-list.js');
@@ -111,7 +103,6 @@ test.describe('character list count', () => {
         });
 
         test('with a tag filter, the count is the tag-filtered page total', async ({ page }) => {
-            // The filter bar lists only tags that exist and are assigned, so the tag is made on the server first.
             await api(page, '/api/tags/create', {
                 tag: {
                     id: TAG_ID, name: 'count-tag', folder_type: 'NONE', filter_state: 'UNDEFINED', sort_order: 1000,
@@ -128,7 +119,6 @@ test.describe('character list count', () => {
             await setSearchTerm(page, 'zq');
             await expect.poll(() => navigatorText(page)).toMatch(/\.\. 40$/);
 
-            // The bar reads the used tags once it shows them.
             const showTags = page.locator('#rm_characters_block .rm_tag_filter .showTagList');
             if (!(await showTags.evaluate(el => el.classList.contains('selected')))) await showTags.click();
             await page.locator(`#rm_characters_block .rm_tag_filter [id="${TAG_ID}"]`).click();
@@ -149,10 +139,8 @@ test.describe('character list count', () => {
             await expect(indicator).toBeVisible();
             await expect(indicator).toHaveClass(/\bwarning\b/);
             await expect(page.locator('.toast-warning').filter({ hasText: 'Search backend changed' })).toHaveCount(1);
-            // The list's page is the only search request: no separate top-500 relevance query.
             expect(await page.evaluate(() => window['__stub'].pageSizes)).not.toContain(500);
 
-            // The same backend again: no second toast.
             const callsBefore = await page.evaluate(() => window['__stub'].calls.length);
             await requeryPage(page);
             await expect.poll(() => page.evaluate(() => window['__stub'].calls.length)).toBeGreaterThan(callsBefore);
@@ -201,7 +189,6 @@ test.describe('character list count', () => {
 
         await expect.poll(() => navigatorText(page)).toBe('1-7 .. 7');
         await expect(page.locator('.toast-warning').filter({ hasText: '"nonsense-count"' })).toHaveCount(1);
-        // The list and the favorites hotswap each fall back to name order.
         await expect.poll(() => page.evaluate(() => window['__stub'].calls)).toEqual([
             { fav: undefined, sort: 'nonsense-count' },
             { fav: undefined, sort: 'name' },

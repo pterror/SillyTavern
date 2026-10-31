@@ -340,7 +340,6 @@ export async function migrateUserData() {
             old: path.join(publicDirectory, 'worlds'),
             new: userDirectories.worlds,
             file: false,
-            // Upstream World Info files come in through the import, which stores them in this server's format.
             importWorlds: true,
         },
         {
@@ -414,7 +413,6 @@ export async function migrateUserData() {
                         fs.cpSync(from, path.join(migration.new, entry.name), { recursive: true, force: true });
                     }
                 }
-                // Move the directory to the backup location
                 fs.cpSync(
                     migration.old,
                     path.join(backupDirectory, path.basename(migration.old)),
@@ -726,7 +724,6 @@ export async function getUserAvatar(handle) {
             return avatar;
         }
 
-        // Else the user's persona: the settings, the settings model's once its document is open.
         const directory = getUserDirectories(handle);
         const { openSettingsDocument } = await import('./settings-document.js');
         await openSettingsDocument(directory, handle);
@@ -1106,8 +1103,6 @@ function createRouteHandler(directoryFn, missingFileFallbackFn) {
 }
 
 /**
- * `/characters/<path>`: a character's image by its avatar (`<avatar>.png` at the top: the image its card names in the
- * store, the default avatar when it names none); any other file (sprites, card assets) from the characters directory.
  * @returns {import('express').RequestHandler}
  */
 function characterFilesHandler() {
@@ -1119,7 +1114,6 @@ function characterFilesHandler() {
                 const { userStore } = await import('./user-stores.js');
                 const { avatarPathOf } = await import('./character-avatars.js');
                 const { lib } = await userStore(req.user.directories, req.user.profile.handle);
-                // A PNG there the store doesn't know yet (dropped, not yet imported) goes out stripped too.
                 const dropped = path.join(req.user.directories.characters, avatar);
                 const file = await avatarPathOf(lib, req.user.directories, avatar) ?? (fs.existsSync(dropped) ? dropped : null);
                 if (file !== null) {

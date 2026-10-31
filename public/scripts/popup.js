@@ -461,7 +461,6 @@ export class Popup {
                 //Text shows OK if not explicitly set to false, and CANCEL only if defined as true or with a caption
                 if (okButton === false) this.okButton.style.display = 'none';
                 if (!cancelButton) this.cancelButton.style.display = 'none';
-                // No cancel button means no real second outcome, so the X should complete like OK (not CANCELLED).
                 if (!cancelButton && okButton !== false) {
                     this.closeButton.style.display = 'block';
                     this.closeButton.dataset.result = this.okButton.dataset.result;
@@ -638,7 +637,6 @@ export class Popup {
                     if (evt.altKey || evt.shiftKey)
                         return;
 
-                    // A mounted editor's textarea stands for the editor holding focus.
                     const active = getFocusedField() ?? document.activeElement;
 
                     // Check if we are the currently active popup

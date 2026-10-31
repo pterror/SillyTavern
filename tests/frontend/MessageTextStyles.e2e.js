@@ -13,7 +13,6 @@ const MESSAGE_TEXT = [
 
 const REASONING_TEXT = '"thought" *em*';
 
-/** Computed styles of chat message text under the default theme. */
 const EXPECTED_CHAT_STYLES = {
     'text q (from "quoted")': {
         color: 'rgb(225, 138, 36)',
@@ -94,7 +93,6 @@ const EXPECTED_CHAT_STYLES = {
 };
 
 /**
- * Renders a chat message from the message template and returns the computed styles of its text elements.
  * @param {import('@playwright/test').Page} page
  */
 async function collectChatTextStyles(page) {

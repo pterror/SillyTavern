@@ -104,11 +104,10 @@ let spriteCache = {};
 let inApiCall = false;
 let lastServerResponseTime = 0;
 
-/** @type {string[]} All existing sprite/expression-pack folder names, for folder=/name= autocomplete. Stale-while-revalidate: enumProviders can't be async, so this is refreshed in the background and read synchronously. */
+/** @type {string[]} */
 let cachedSpriteFolders = [];
 let spriteFoldersFetchInFlight = false;
 
-/** Kicks off a background refresh of cachedSpriteFolders if one isn't already in flight. Fire-and-forget by design - callers read the (possibly stale) cache synchronously. */
 function refreshSpriteFoldersCache() {
     if (spriteFoldersFetchInFlight) {
         return;
@@ -633,10 +632,6 @@ function getSpriteFolderName(characterMessage = null, characterName = null) {
     const context = getContext();
     const message = characterMessage ?? getLastCharacterMessage();
     const avatarFileName = getFolderNameByMessage(message);
-    // Keyed by the character's stable avatar identity, not its display name - two different
-    // cards can share a display name (duplicates, two creators' takes on the same character),
-    // and resolving by name alone would make them silently share one sprite folder. Falls back
-    // to the name only when no character context resolved (avatarFileName came back empty).
     let spriteFolderName = avatarFileName || characterName || context.name2;
     const expressionOverride = extension_settings.expressionOverrides.find(e => e.name == avatarFileName);
 
@@ -1721,7 +1716,6 @@ async function setExpression(spriteFolderName, expression, { force = false, over
  */
 function setDefaultEmojiForImage(img, expression) {
     // Classifiers can return a falsy, literal "null"/"undefined", or otherwise unknown label,
-    // and custom expressions have no default assets; only known labels have an image.
     if (!DEFAULT_EXPRESSIONS.includes(expression)) {
         console.debug(`Can't set default emoji for expression (${expression}). setting to ${DEFAULT_FALLBACK_EXPRESSION} instead.`);
         expression = DEFAULT_FALLBACK_EXPRESSION;
@@ -2129,10 +2123,8 @@ async function onClickExpressionUploadPackButton() {
 }
 
 /**
- * Fetches one thumbnail-worthy sprite for a folder, for the pack manager list - just enough to
- * tell at a glance which character/pack a folder actually is, without opening it.
- * @param {string} folder Folder name, possibly "parent/child"
- * @returns {Promise<string|null>} Image src, or null if the folder has no images
+ * @param {string} folder
+ * @returns {Promise<string|null>}
  */
 async function fetchPackThumbnail(folder) {
     try {
@@ -2174,7 +2166,6 @@ async function renderPackManagerList(container) {
         </div>
     `).join(''));
 
-    // Thumbnails fetched after the list renders, in parallel, so a slow/broken one doesn't block the rest.
     for (const folder of folders) {
         fetchPackThumbnail(folder).then(src => {
             const thumb = container.find(`.expression_pack_manager_row[data-folder="${CSS.escape(folder)}"] .expression_pack_manager_thumb`);
@@ -2456,9 +2447,6 @@ export async function init() {
     addVisualNovelMode();
     migrateSettings();
     await addSettings();
-    // Watchdog timeout guards against a hung fetch (e.g. after a laptop sleep/wake or a dropped
-    // connection during a long-running tab) permanently stalling the mutex and silently disabling
-    // all future expression updates for the rest of the session.
     const wrapper = new ModuleWorkerWrapper(moduleWorker, 120000);
     const updateFunction = wrapper.update.bind(wrapper);
     setInterval(updateFunction, UPDATE_INTERVAL);
@@ -2512,8 +2500,6 @@ export async function init() {
                     x.isCustom ? 'C' : 'D');
             });
         },
-        // Stale-while-revalidate: returns whatever's cached right now and kicks off a background
-        // refresh, since enumProviders must be synchronous.
         spriteFolders: () => {
             refreshSpriteFoldersCache();
             return cachedSpriteFolders.map(folder => new SlashCommandEnumValue(folder, null, enumTypes.enum, 'F'));

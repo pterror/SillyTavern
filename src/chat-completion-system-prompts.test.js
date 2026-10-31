@@ -8,22 +8,15 @@ import {
 import { extension_prompt_types, extension_prompt_roles } from './extension-prompt-table.js';
 import { persona_description_positions } from './story-string-assembly.js';
 
-// --- formatWorldInfo -------------------------------------------------------
-
-// With a format string, applies {0} substitution.
 assert.equal(formatWorldInfo('some lore', { wiFormat: '[Details: {0}]' }), '[Details: some lore]');
 
-// Without a format string (empty/whitespace-only), returns the value unchanged.
 assert.equal(formatWorldInfo('some lore', { wiFormat: '' }), 'some lore');
 assert.equal(formatWorldInfo('some lore', { wiFormat: '   ' }), 'some lore');
 assert.equal(formatWorldInfo('some lore'), 'some lore', 'no wiFormat option at all falls back to null -> unchanged');
 
-// With no value at all, always returns ''.
 assert.equal(formatWorldInfo(''), '');
 assert.equal(formatWorldInfo(null), '');
 assert.equal(formatWorldInfo(undefined, { wiFormat: '[{0}]' }), '');
-
-// --- getPromptPosition ------------------------------------------------------
 
 assert.equal(getPromptPosition(extension_prompt_types.BEFORE_PROMPT), 'start');
 assert.equal(getPromptPosition(extension_prompt_types.IN_PROMPT), 'end');
@@ -31,15 +24,11 @@ assert.equal(getPromptPosition(extension_prompt_types.IN_CHAT), false);
 assert.equal(getPromptPosition(extension_prompt_types.NONE), false);
 assert.equal(getPromptPosition(undefined), false);
 
-// --- getPromptRole -----------------------------------------------------------
-
 assert.equal(getPromptRole(extension_prompt_roles.SYSTEM), 'system');
 assert.equal(getPromptRole(extension_prompt_roles.USER), 'user');
 assert.equal(getPromptRole(extension_prompt_roles.ASSISTANT), 'assistant');
 assert.equal(getPromptRole(undefined), 'system', 'default');
 assert.equal(getPromptRole(999), 'system', 'unknown value defaults to system');
-
-// --- buildChatCompletionSystemPrompts: fixed 9-entry array ------------------
 
 {
     const result = buildChatCompletionSystemPrompts({
@@ -69,10 +58,6 @@ assert.equal(getPromptRole(999), 'system', 'unknown value defaults to system');
     ], 'fixed 9-entry shape/content with no extension prompts and no formats configured');
 }
 
-// --- scenario/personality format quirk --------------------------------------
-// Confirmed client behavior: when a format string IS configured, substituteParams() is called on
-// the FORMAT STRING itself, not on a value-interpolated template - the scenario/charPersonality
-// values are used only as an existence gate. Ported verbatim; asserted explicitly here.
 {
     const result = buildChatCompletionSystemPrompts({
         scenario: 'the actual scenario text',
@@ -85,15 +70,12 @@ assert.equal(getPromptRole(999), 'system', 'unknown value defaults to system');
     const scenarioEntry = result.find(e => e.identifier === 'scenario');
     const personalityEntry = result.find(e => e.identifier === 'charPersonality');
 
-    // The format string is substituted as-is (only real macros within it get expanded) - the raw
-    // scenario/personality VALUES passed in above never appear in the output.
     assert.equal(scenarioEntry.content, 'literal scenario format, unrelated to the scenario value');
     assert.ok(!scenarioEntry.content.includes('the actual scenario text'));
     assert.equal(personalityEntry.content, 'literal personality format Bob');
     assert.ok(!personalityEntry.content.includes('the actual personality text'));
 }
 
-// When no format is configured, falls back to the raw scenario/personality value.
 {
     const result = buildChatCompletionSystemPrompts({
         scenario: 'raw scenario',
@@ -103,7 +85,6 @@ assert.equal(getPromptRole(999), 'system', 'unknown value defaults to system');
     assert.equal(result.find(e => e.identifier === 'charPersonality').content, 'raw personality');
 }
 
-// When scenario/charPersonality itself is falsy, format is never consulted - falls back to ''.
 {
     const result = buildChatCompletionSystemPrompts({
         scenario: '',
@@ -115,8 +96,6 @@ assert.equal(getPromptRole(999), 'system', 'unknown value defaults to system');
     assert.equal(result.find(e => e.identifier === 'charPersonality').content, '');
 }
 
-// --- impersonationPrompt gate -------------------------------------------------
-
 {
     const withPrompt = buildChatCompletionSystemPrompts({ impersonationPrompt: 'do the {{user}} thing', macroContext: { name1: 'Carl' } });
     assert.equal(withPrompt.find(e => e.identifier === 'impersonate').content, 'do the Carl thing');
@@ -125,11 +104,8 @@ assert.equal(getPromptRole(999), 'system', 'unknown value defaults to system');
     assert.equal(withoutPrompt.find(e => e.identifier === 'impersonate').content, '');
 }
 
-// --- extension-prompt-derived pushes: presence/absence + role/position -----
-
 const buildExt = (extensionPrompts) => buildChatCompletionSystemPrompts({ extensionPrompts });
 
-// summary (1_memory) - resolves role via getPromptRole
 {
     const result = buildExt({ '1_memory': { value: 'summary text', role: extension_prompt_roles.USER, position: extension_prompt_types.BEFORE_PROMPT } });
     const entry = result.find(e => e.identifier === 'summary');
@@ -138,11 +114,9 @@ const buildExt = (extensionPrompts) => buildChatCompletionSystemPrompts({ extens
     assert.equal(entry.position, 'start');
     assert.equal(entry.content, 'summary text');
 }
-// summary absent when value falsy or key missing
 assert.equal(buildExt({ '1_memory': { value: '' } }).find(e => e.identifier === 'summary'), undefined);
 assert.equal(buildExt({}).find(e => e.identifier === 'summary'), undefined);
 
-// authorsNote (2_floating_prompt)
 {
     const result = buildExt({ '2_floating_prompt': { value: 'note', role: extension_prompt_roles.ASSISTANT, position: extension_prompt_types.IN_PROMPT } });
     const entry = result.find(e => e.identifier === 'authorsNote');
@@ -152,7 +126,6 @@ assert.equal(buildExt({}).find(e => e.identifier === 'summary'), undefined);
 }
 assert.equal(buildExt({ '2_floating_prompt': { value: null } }).find(e => e.identifier === 'authorsNote'), undefined);
 
-// vectorsMemory (3_vectors) - hardcodes role: 'system' regardless of .role
 {
     const result = buildExt({ '3_vectors': { value: 'vec mem', role: extension_prompt_roles.USER, position: extension_prompt_types.BEFORE_PROMPT } });
     const entry = result.find(e => e.identifier === 'vectorsMemory');
@@ -162,7 +135,6 @@ assert.equal(buildExt({ '2_floating_prompt': { value: null } }).find(e => e.iden
 }
 assert.equal(buildExt({ '3_vectors': { value: '' } }).find(e => e.identifier === 'vectorsMemory'), undefined);
 
-// vectorsDataBank (4_vectors_data_bank) - resolves role via getPromptRole (NOT hardcoded)
 {
     const result = buildExt({ '4_vectors_data_bank': { value: 'data bank', role: extension_prompt_roles.ASSISTANT, position: extension_prompt_types.IN_PROMPT } });
     const entry = result.find(e => e.identifier === 'vectorsDataBank');
@@ -172,7 +144,6 @@ assert.equal(buildExt({ '3_vectors': { value: '' } }).find(e => e.identifier ===
 }
 assert.equal(buildExt({ '4_vectors_data_bank': { value: undefined } }).find(e => e.identifier === 'vectorsDataBank'), undefined);
 
-// smartContext (chromadb) - hardcodes role: 'system' regardless of .role
 {
     const result = buildExt({ chromadb: { value: 'smart ctx', role: extension_prompt_roles.USER, position: extension_prompt_types.IN_PROMPT } });
     const entry = result.find(e => e.identifier === 'smartContext');
@@ -182,10 +153,7 @@ assert.equal(buildExt({ '4_vectors_data_bank': { value: undefined } }).find(e =>
 }
 assert.equal(buildExt({ chromadb: { value: '' } }).find(e => e.identifier === 'smartContext'), undefined);
 
-// --- personaDescription gate: both conditions independently -----------------
-
 {
-    // Both conditions true -> present
     const present = buildChatCompletionSystemPrompts({
         personaDescription: 'a persona',
         personaDescriptionPosition: persona_description_positions.IN_PROMPT,
@@ -195,14 +163,12 @@ assert.equal(buildExt({ chromadb: { value: '' } }).find(e => e.identifier === 's
     assert.equal(entry.role, 'system');
     assert.equal(entry.content, 'a persona');
 
-    // personaDescription falsy -> absent even with correct position
     const noDescription = buildChatCompletionSystemPrompts({
         personaDescription: '',
         personaDescriptionPosition: persona_description_positions.IN_PROMPT,
     });
     assert.equal(noDescription.find(e => e.identifier === 'personaDescription'), undefined);
 
-    // Wrong position -> absent even with a truthy description
     const wrongPosition = buildChatCompletionSystemPrompts({
         personaDescription: 'a persona',
         personaDescriptionPosition: 999,
@@ -210,10 +176,7 @@ assert.equal(buildExt({ chromadb: { value: '' } }).find(e => e.identifier === 's
     assert.equal(wrongPosition.find(e => e.identifier === 'personaDescription'), undefined);
 }
 
-// --- generic "unknown extension prompt" loop --------------------------------
-
 {
-    // Known keys are always skipped, even with a truthy value and valid position.
     const knownSkipped = buildChatCompletionSystemPrompts({
         extensionPrompts: {
             'PERSONA_DESCRIPTION': { value: 'x', position: extension_prompt_types.IN_PROMPT },
@@ -223,19 +186,16 @@ assert.equal(buildExt({ chromadb: { value: '' } }).find(e => e.identifier === 's
     });
     assert.equal(knownSkipped.filter(e => e.extension).length, 0, 'known keys never produce generic extension entries');
 
-    // Falsy value -> skipped.
     const falsyValue = buildChatCompletionSystemPrompts({
         extensionPrompts: { myPlugin: { value: '', position: extension_prompt_types.IN_PROMPT } },
     });
     assert.equal(falsyValue.filter(e => e.extension).length, 0);
 
-    // Wrong position (e.g. IN_CHAT, or NONE) -> skipped.
     const wrongPosition = buildChatCompletionSystemPrompts({
         extensionPrompts: { myPlugin: { value: 'hi', position: extension_prompt_types.IN_CHAT } },
     });
     assert.equal(wrongPosition.filter(e => e.extension).length, 0);
 
-    // Valid unknown key with BEFORE_PROMPT -> included, identifier sanitized via .replace(/\W/g, '_').
     const included = buildChatCompletionSystemPrompts({
         extensionPrompts: {
             'my-plugin.hook!': { value: 'plugin content', position: extension_prompt_types.BEFORE_PROMPT, role: extension_prompt_roles.USER },
@@ -249,17 +209,11 @@ assert.equal(buildExt({ chromadb: { value: '' } }).find(e => e.identifier === 's
     assert.equal(entry.content, 'plugin content');
     assert.equal(entry.extension, true);
 
-    // Valid unknown key with IN_PROMPT -> also included.
     const includedInPrompt = buildChatCompletionSystemPrompts({
         extensionPrompts: { anotherPlugin: { value: 'v', position: extension_prompt_types.IN_PROMPT } },
     });
     assert.equal(includedInPrompt.filter(e => e.extension).length, 1);
 
-    // No live `.filter` predicate mechanism exists server-side (documented gap - see module doc
-    // comment): a `.filter` function on an entry is simply ignored/never invoked. An entry with a
-    // `.filter` that would have returned false on the client is still included here as long as
-    // `.value` is truthy and `.position` is valid - the only way for a caller to exclude an entry is
-    // to not include it (or give it a falsy `.value`) in `extensionPrompts` in the first place.
     let filterWasCalled = false;
     const withFilter = buildChatCompletionSystemPrompts({
         extensionPrompts: {

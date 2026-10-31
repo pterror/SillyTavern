@@ -16,7 +16,6 @@
     opacity: 1;
 }
 
-/* The loading overlay (a transparent popup): the whole screen, as #preloader. */
 .popup.loader_popup {
     inset: 0;
     width: 100vw;

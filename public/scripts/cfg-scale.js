@@ -145,7 +145,6 @@ function onCfgMenuItemClick() {
             $('#cfgConfig').hide();
         }, animation_duration);
     }
-    // Duplicated from script.js's close handler so this listener takes priority
     $('#options').stop().fadeOut(animation_duration);
 }
 
@@ -380,7 +379,6 @@ export const metadataKeys = {
     prompt_separator: 'cfg_prompt_separator',
 };
 
-// A guidance scale of 1 means the CFG prompt(s) won't be used, so skip it
 export function getGuidanceScale() {
     if (!extension_settings.cfg) {
         console.warn('CFG extension is not enabled. Skipping CFG guidance.');

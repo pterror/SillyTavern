@@ -2,19 +2,10 @@ import { localforage } from '../lib.js';
 import { getCurrentUserHandle } from './user.js';
 import { groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeTagIds } from './hash-utils.js';
 
-// Client-side residency cache for character data, keyed off the server's per-item change feed
-// (`getChangesSince()`) rather than a per-character mtime. One IndexedDB database per user handle.
-
-// Bumped when the form records are stored in changes (GROUP_HASH_VERSION likewise); records with a different/missing
-// version read as cache misses.
 const HASH_VERSION = 5;
 
-// Top-level fields Spec V2 cards mirror under `data.*` for V1 back-compat; saveCachedCharacters()
-// strips a byte-identical top-level copy and records it in `dedup`, restored by readers on the way out.
 const DUPLICATE_FIELDS = ['description', 'first_mes', 'mes_example', 'scenario', 'tags', 'personality'];
 
-// Mutates and returns `character` in place - safe since callers only pass a freshly IDB-deserialized
-// object with no other live references.
 function rehydrateDuplicateFields(character, dedup) {
     if (dedup && dedup.length && character?.data) {
         for (const field of dedup) {
@@ -24,14 +15,10 @@ function rehydrateDuplicateFields(character, dedup) {
     return character;
 }
 
-// Bumped only if the dedup transform itself changes, forcing every record to be reconsidered even
-// if it already carries a stamp from an older transform.
 const DEDUP_VERSION = 1;
 
-/** Guards against overlapping migration passes when getAllCachedCharacters() is called multiple times in one boot/sync cycle. */
 let dedupMigrationStarted = false;
 
-/** Never mutates `character`. */
 function computeDedupSplit(character) {
     let toStore = character;
     let dedup;
@@ -46,8 +33,6 @@ function computeDedupSplit(character) {
     return { toStore, dedup };
 }
 
-// Never awaited by its caller - background reclamation. Interruption-safe with no progress cursor:
-// a record is only stamped `dedupV` after its rewrite commits.
 async function migrateDedupCompression(store, unmigrated) {
     console.log(`[character-cache] Compressing ${unmigrated.length} cached record(s) that predate v1/v2 field dedup...`);
     const MIGRATE_BATCH = 500;
@@ -58,7 +43,6 @@ async function migrateDedupCompression(store, unmigrated) {
             return store.setItem(key, { ...record, character: toStore, dedup, dedupV: DEDUP_VERSION }).catch(error =>
                 console.error(`Failed to compress cached character data for ${key}:`, error));
         }));
-        // Yield between batches so a multi-hundred-thousand-record pass doesn't freeze the browser.
         await new Promise(resolve => setTimeout(resolve, 0));
     }
     console.log(`[character-cache] Compression migration complete (${unmigrated.length} record(s)).`);
@@ -67,17 +51,13 @@ async function migrateDedupCompression(store, unmigrated) {
 /** @type {Map<string, LocalForage>} */
 const storesByHandle = new Map();
 
-// Never collides with a real avatar filename, which always ends in `.png`.
 const CURSOR_KEY = '__cursor__';
 
-// Pre-rename name of CURSOR_KEY, still present in caches written before the rename.
 const LEGACY_REV_KEY = '__rev__';
 
-// No longer written or read; removed from caches that still carry it.
 const STALE_DIGEST_KEY = '__last_verified_digest__';
 let staleDigestKeyRemoved = false;
 
-/** The user the browser-storage caches are kept for. */
 export function getCacheUserHandle() {
     return getCurrentUserHandle();
 }
@@ -92,13 +72,11 @@ function getCharacterCacheStore() {
     return store;
 }
 
-/** `0` (never synced) is a legitimate value - `getChangesSince()` treats `sinceRev: 0` as "send everything". */
 export async function getCachedCursor() {
     const store = getCharacterCacheStore();
     try {
         let cursor = await store.getItem(CURSOR_KEY);
         if (cursor === null || cursor === undefined) {
-            // One-time migration from the pre-rename key.
             const legacy = await store.getItem(LEGACY_REV_KEY);
             if (legacy !== null && legacy !== undefined) {
                 await store.setItem(CURSOR_KEY, legacy);
@@ -128,7 +106,6 @@ export async function setCachedCursor(seq) {
 
 const WRITE_FAILURES_KEY = '__write_failures__';
 
-/** Avatar IDs whose IDB write failed on the last sync; fetchCharactersDelta retries these on next boot. */
 export async function getWriteFailures() {
     const store = getCharacterCacheStore();
     try {
@@ -139,7 +116,6 @@ export async function getWriteFailures() {
     }
 }
 
-/** Empty array clears the failure list. */
 export async function setWriteFailures(ids) {
     const store = getCharacterCacheStore();
     try {
@@ -153,7 +129,6 @@ export async function setWriteFailures(ids) {
     }
 }
 
-/** Reads every cached character, keyed by avatar - the client's full view once caught up with the change feed. */
 export async function getAllCachedCharacters() {
     const store = getCharacterCacheStore();
     const result = new Map();
@@ -179,7 +154,6 @@ export async function getAllCachedCharacters() {
     return result;
 }
 
-/** Reads the cached characters for `ids`, keyed by avatar; an id with no cached record is absent from the result. */
 export async function readCachedCharactersByIds(ids) {
     const store = getCharacterCacheStore();
     const result = new Map();
@@ -196,8 +170,6 @@ export async function readCachedCharactersByIds(ids) {
     return result;
 }
 
-// A record whose `hashes.version` and `hashes.tagIds` are the server's for the character can be used as-is with zero
-// refetch.
 export async function getCachedEntriesByIds(ids) {
     const store = getCharacterCacheStore();
     const result = new Map();
@@ -216,23 +188,18 @@ export async function getCachedEntriesByIds(ids) {
 }
 
 /**
- * Callers must pass already fully processed character objects - reads return cache hits as-is, unprocessed.
- * @param {{avatar: string, character: object, version?: number, tagIds?: number}[]} entries `version`: the server's
- *   version of the character the record was read at, when the caller knows it, and `tagIds` its tags' digest then (the
- *   version doesn't move with the tags); a record without them never counts as current.
- * @returns {Promise<string[]>} avatars whose write failed
+ * @param {{avatar: string, character: object, version?: number, tagIds?: number}[]} entries
+ * @returns {Promise<string[]>}
  */
 export async function saveCachedCharacters(entries) {
     const store = getCharacterCacheStore();
     const failed = [];
-    // Batched so a large backfill doesn't fire hundreds of thousands of concurrent setItem calls.
     const SAVE_BATCH = 500;
     for (let i = 0; i < entries.length; i += SAVE_BATCH) {
         const batch = entries.slice(i, i + SAVE_BATCH);
         await Promise.all(batch.map(({ avatar, character: given, version, tagIds }) => {
             const character = { ...given, tag_ids: normalizeTagIds(given.tag_ids) };
             const hashes = { version: typeof version === 'number' ? version : null, tagIds: typeof tagIds === 'number' ? tagIds : null, v: HASH_VERSION };
-            // Never mutates the caller's (possibly still-live) object.
             const { toStore, dedup } = computeDedupSplit(character);
             return store.setItem(avatar, { character: toStore, hashes, dedup, dedupV: DEDUP_VERSION }).catch(error => {
                 console.error(`Failed to cache character data for ${avatar}:`, error);
@@ -250,7 +217,6 @@ export async function removeCachedCharacters(avatars) {
             console.error(`Failed to remove cached character data for ${avatar}:`, error))));
 }
 
-/** Fallback for when the change-feed/batch delta path fails or looks inconsistent - forces a clean `sinceRev: 0` resync. */
 export async function clearCharacterCache() {
     const store = getCharacterCacheStore();
     try {
@@ -260,13 +226,12 @@ export async function clearCharacterCache() {
     }
 }
 
-/** Separate IndexedDB instance, not a namespace in the character store - groups are always resident, never lazily faulted like characters. */
 const GROUP_HASH_VERSION = 3;
 
 /** @type {Map<string, LocalForage>} */
 const groupStoresByHandle = new Map();
 
-/** @returns {LocalForage} The group cache store for the currently logged-in user. */
+/** @returns {LocalForage} */
 function getGroupCacheStore() {
     const handle = getCurrentUserHandle();
     let store = groupStoresByHandle.get(handle);
@@ -277,7 +242,6 @@ function getGroupCacheStore() {
     return store;
 }
 
-/** Group-side counterpart to getCachedEntriesByIds() above. */
 export async function getCachedGroupEntriesByIds(ids) {
     const store = getGroupCacheStore();
     const result = new Map();
@@ -294,7 +258,6 @@ export async function getCachedGroupEntriesByIds(ids) {
     return result;
 }
 
-/** Group-side counterpart to saveCachedCharacters() above. */
 export async function saveCachedGroups(entries) {
     const store = getGroupCacheStore();
     const failed = [];

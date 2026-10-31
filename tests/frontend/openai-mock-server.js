@@ -1,10 +1,6 @@
-// A mock OpenAI-compatible server, for the chat completion tests: the custom source pointed at it. No test runner
-// needed, so the prompt goldens' generator uses it too.
 import http from 'node:http';
 
 /**
- * Answers every chat completion with `reply`, whole or streamed in one piece, and logs every request. The model
- * list is `models`, or `model` alone.
  * @param {{ model?: string, reply?: string, models?: object[] }} [options]
  * @returns {Promise<{ url: string, log: { url: string, body: any }[], close: () => Promise<void> }>}
  */

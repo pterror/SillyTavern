@@ -5,10 +5,10 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// Starting a new chat that replaces the open one is one write: the character moves to the new chat and the old one
-// is deleted in the same request.
-
-/** @param {import('@playwright/test').Page} page @param {string} name */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
@@ -22,7 +22,10 @@ async function createCharacter(page, name) {
     }, name);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
 async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
@@ -41,7 +44,6 @@ test('a new chat replacing the open one is one write', async ({ page }) => {
     const avatar = await createCharacter(page, `NewChat-${stamp}`);
     await openCharacter(page, avatar);
 
-    // A labeled chat the character is at.
     await page.evaluate(async (avatar) => {
         // @ts-ignore
         const context = SillyTavern.getContext();

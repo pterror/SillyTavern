@@ -46,9 +46,7 @@ describe('POST /api/characters/metadata/rescan', () => {
     test('leaves the files the conversion converted (a character deleted since included) and imports dropped and changed ones', async () => {
         const { TYPE } = await import('../src/library-codes.js');
         const lib = user.store.lib;
-        // Bob is deleted after the conversion; his old PNG stays in characters/ as the conversion found it.
         await lib.deleteEntity(TYPE.character, 'Bob.png');
-        // Cara is deleted too, and a different file is then dropped under her name.
         await lib.deleteEntity(TYPE.character, 'Cara.png');
         fs.writeFileSync(path.join(user.directories.characters, 'Cara.png'), await cardPng('New Cara'));
         fs.writeFileSync(path.join(user.directories.characters, 'Dropped.png'), await cardPng('Dropped'));

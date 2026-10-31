@@ -1,12 +1,10 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openInfoTab } from './frontent-test-utils.js';
 
-// The card fields in character info edit in the live editor.
-
 /**
  * @param {import('@playwright/test').Page} page
  * @param {Record<string, string>} values
- * @returns {Promise<string>} The avatar.
+ * @returns {Promise<string>}
  */
 async function createAndOpen(page, values) {
     const avatar = await page.evaluate(async (values) => {
@@ -29,7 +27,10 @@ async function createAndOpen(page, values) {
     return avatar;
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
 async function stored(page, avatar) {
     return page.evaluate(async (avatar) => {
         // @ts-ignore
@@ -64,8 +65,6 @@ test.describe('card fields edit in the live editor', () => {
         const preview = page.locator('.field_preview[data-for="description_textarea"]');
         await expect(preview.locator('li')).toHaveCount(2);
         await expect(preview.locator('li').nth(1)).toBeVisible();
-        // The panel moves while its tags and token count load above the preview: a point in it is measured once it
-        // has stayed put.
         const top = () => preview.evaluate(el => Math.round(el.getBoundingClientRect().top));
         const seen = [];
         await expect.poll(async () => {
@@ -89,7 +88,6 @@ test.describe('card fields edit in the live editor', () => {
             await page.mouse.dblclick(point.x, point.y);
             const editor = page.locator('#charInfoTab_description .cm-editor');
             await expect(editor).toBeVisible();
-            // A double click selects the word; the edit starts with the caret where it was clicked.
             const head = await page.evaluate(async () => {
                 const lib = await import('/live-editor-lib.js');
                 const view = lib.view.EditorView.findFromDOM(/** @type {HTMLElement} */ (document.querySelector('#charInfoTab_description .cm-editor')));

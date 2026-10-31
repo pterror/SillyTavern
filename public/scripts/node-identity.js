@@ -1,8 +1,5 @@
 import { getStringHash } from './utils.js';
 
-// Unused card greetings get no tree row (avoids minting one per greeting just for being looked at), but still
-// need a stable id - so it's derived from speaker+text (mirrors the server's nodeIdentityKey), prefixed to mark
-// it provisional. ensureOpeningRow() (chat-store.js) is the only place that turns one into a real row.
 const PROVISIONAL_NODE_PREFIX = 'card:';
 
 /**
@@ -15,7 +12,6 @@ export function provisionalNodeId(speaker, mes) {
 }
 
 /**
- * True when this id names a row that actually exists in the tree.
  * @param {unknown} nodeId
  * @returns {nodeId is string}
  */
@@ -24,7 +20,6 @@ export function isStoredNodeId(nodeId) {
 }
 
 /**
- * True when this id stands for a greeting the card has and the tree does not.
  * @param {unknown} nodeId
  * @returns {nodeId is string}
  */

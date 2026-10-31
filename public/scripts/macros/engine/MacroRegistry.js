@@ -179,7 +179,7 @@ class MacroRegistry {
     /** @type {Map<string, MacroDefinition>} */
     #macros;
 
-    /** @type {Set<() => void>} Called after a macro is registered or unregistered. */
+    /** @type {Set<() => void>} */
     #changeListeners = new Set();
 
     /**
@@ -191,7 +191,6 @@ class MacroRegistry {
     }
 
     /**
-     * Calls `listener` after each macro registered or unregistered from here on.
      * @param {() => void} listener
      */
     onChange(listener) {
@@ -266,7 +265,6 @@ class MacroRegistry {
                 throw new Error(`Target macro "${targetMacroName}" is not registered.`);
             }
 
-            // Resolve to the primary definition in case target is itself an alias.
             const primaryDefinition = targetDefinition.aliasOf ? this.getMacro(targetDefinition.aliasOf) : targetDefinition;
             if (!primaryDefinition) {
                 throw new Error(`Could not resolve primary definition for target macro "${targetMacroName}".`);

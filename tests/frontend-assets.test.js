@@ -20,7 +20,6 @@ let extensionsEnabled = true;
 function write(file, content) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, content);
-    // A distinct mtime per write, so a rewrite within the same millisecond still reads as changed.
     const time = new Date(Date.now() + Math.floor(Math.random() * 1e6));
     fs.utimesSync(file, time, time);
 }
@@ -216,8 +215,6 @@ describe('frontendAssetMiddleware', () => {
         expect(response.headers.get('etag')).toBe(`"${css.hash}"`);
         expect(await response.text()).toBe(css.body);
 
-        // node's fetch adds `cache-control: no-cache` to a conditional request, which rightly defeats the 304;
-        // a browser revalidating its cache sends only If-None-Match.
         const againStatus = await new Promise((resolve, reject) => {
             http.get(`${baseUrl}/style.css`, { headers: { 'If-None-Match': `"${css.hash}"` } }, response => {
                 response.resume();

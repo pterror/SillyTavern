@@ -2,10 +2,6 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// textgen-generation-data.js now statically imports src/endpoints/tokenizers.js (for real
-// logit_bias computation), which pulls in code that reads process-wide config at MODULE IMPORT
-// time (e.g. src/endpoints/secrets.js) - the config path must be set before that import chain
-// runs, same approach as src/tokenizer-resolve.test.js and src/chat-completion-generation-data.test.js.
 import { setConfigFilePath } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -79,7 +75,6 @@ function baseSettings(overrides = {}) {
     };
 }
 
-// api_type/api_server must never appear - regression guard against the removed client fields creeping back in
 {
     const params = await createTextGenGenerationData(baseSettings(), 'my-model', 'prompt text', 100, false, false, null, 'normal', {});
     assert.equal('api_type' in params, false);
@@ -88,7 +83,6 @@ function baseSettings(overrides = {}) {
     assert.equal(params.prompt, 'prompt text');
 }
 
-// OOBA-specific fields only apply for OOBA
 {
     const oobaParams = await createTextGenGenerationData(baseSettings({ type: 'ooba', min_length: 5, num_beams: 3 }), 'm', 'p', 10, false, false, null, 'normal');
     assert.equal(oobaParams.min_length, 5);
@@ -99,21 +93,18 @@ function baseSettings(overrides = {}) {
     assert.equal(koboldParams.num_beams, undefined);
 }
 
-// Dynatemp midpoint/range math, only for supported types when settings.dynatemp is true
 {
     const settings = baseSettings({ type: 'ooba', dynatemp: true, min_temp: 0.5, max_temp: 1.5 });
     const params = await createTextGenGenerationData(settings, 'm', 'p', 10, false, false, null, 'normal');
-    assert.equal(params.temperature, 1.0); // (0.5+1.5)/2
-    assert.equal(params.dynatemp_range, 0.5); // (1.5-0.5)/2
+    assert.equal(params.temperature, 1.0);
+    assert.equal(params.dynatemp_range, 0.5);
     assert.equal(params.dynamic_temperature, true);
 
-    // Unsupported type (generic isn't in DYNATEMP_SUPPORTED_TYPES) - dynatemp does not apply even if settings.dynatemp is true
     const genericParams = await createTextGenGenerationData(baseSettings({ type: 'generic', dynatemp: true, min_temp: 0.5, max_temp: 1.5 }), 'm', 'p', 10, false, false, null, 'normal');
-    assert.equal(genericParams.temperature, genericParams.temperature); // falls back to settings.temp
+    assert.equal(genericParams.temperature, genericParams.temperature);
     assert.equal(genericParams.dynamic_temperature, undefined);
 }
 
-// MANCER: epsilon_cutoff/eta_cutoff scaled by /1000, dynatemp_mode derived, dynatemp_low/high renamed to min/max
 {
     const settings = baseSettings({ type: 'mancer', epsilon_cutoff: 500, eta_cutoff: 2000, dynatemp: true, min_temp: 0.4, max_temp: 1.2, mancer_model: 'mancer-x' });
     const params = await createTextGenGenerationData(settings, 'mancer-x', 'p', 10, false, false, null, 'normal');
@@ -126,20 +117,18 @@ function baseSettings(overrides = {}) {
     assert.equal('dynatemp_high' in params, false);
 }
 
-// KOBOLDCPP: sampler_order only for koboldcpp, grammar/grammar_retain_state/trim_stop set
 {
     const settings = baseSettings({ type: 'koboldcpp', sampler_order: [6, 0, 1, 3, 4, 2, 5], grammar_string: 'root ::= "a"' });
     const params = await createTextGenGenerationData(settings, 'm', 'p', 10, false, true, null, 'normal');
     assert.deepEqual(params.sampler_order, [6, 0, 1, 3, 4, 2, 5]);
     assert.equal(params.grammar, 'root ::= "a"');
-    assert.equal(params.grammar_retain_state, true); // isContinue=true and grammar_string set
+    assert.equal(params.grammar_retain_state, true);
     assert.equal(params.trim_stop, true);
 
     const oobaParams = await createTextGenGenerationData(baseSettings({ type: 'ooba', sampler_order: [1, 2, 3] }), 'm', 'p', 10, false, false, null, 'normal');
     assert.equal(oobaParams.sampler_order, undefined);
 }
 
-// HUGGINGFACE: top_p clamped to [0, 0.999], stop capped to 4 entries
 {
     const settings = baseSettings({ type: 'huggingface', top_p: 5 });
     const params = await createTextGenGenerationData(settings, 'tgi', 'p', 10, false, false, null, 'normal', { stoppingStrings: ['a', 'b', 'c', 'd', 'e'] });
@@ -147,14 +136,12 @@ function baseSettings(overrides = {}) {
     assert.deepEqual(params.stop, ['a', 'b', 'c', 'd', 'e'].slice(0, 4));
 }
 
-// VLLM/INFERMATICAI route through vllmParams (n honors canMultiSwipe, ignore_eos present)
 {
     const params = await createTextGenGenerationData(baseSettings({ type: 'vllm', ignore_eos_token: true, n: 3 }), 'm', 'p', 10, false, false, null, 'normal');
     assert.equal(params.ignore_eos, true);
-    assert.equal(params.n, 3); // type='normal', not continue/impersonate/quiet -> canMultiSwipe true -> n preserved
+    assert.equal(params.n, 3);
 }
 
-// canMultiSwipe: n only preserved when not continue/impersonate and type isn't 'quiet'
 {
     const multiSwipeAllowed = await createTextGenGenerationData(baseSettings({ type: 'vllm', n: 4 }), 'm', 'p', 10, false, false, null, 'normal');
     assert.equal(multiSwipeAllowed.n, 4);
@@ -166,19 +153,16 @@ function baseSettings(overrides = {}) {
     assert.equal(continueBlocked.n, 1);
 }
 
-// APHRODITE routes through aphroditeParams; sampler_priority only set when non-default order
 {
     const defaultOrderParams = await createTextGenGenerationData(baseSettings({ type: 'aphrodite', samplers_priorities: APHRODITE_DEFAULT_ORDER }), 'm', 'p', 10, false, false, null, 'normal');
     assert.equal(defaultOrderParams.sampler_priority, undefined);
 
     const customOrderParams = await createTextGenGenerationData(baseSettings({ type: 'aphrodite', samplers_priorities: ['temperature', 'dry'] }), 'm', 'p', 10, false, false, null, 'normal');
     assert.deepEqual(customOrderParams.sampler_priority, ['temperature', 'dry']);
-    assert.equal(customOrderParams.repetition_penalty, customOrderParams.repetition_penalty); // aphroditeParams shape applied (has repetition_penalty, not rep_pen key)
+    assert.equal(customOrderParams.repetition_penalty, customOrderParams.repetition_penalty);
     assert.equal('rep_pen' in customOrderParams, false);
 }
 
-// LLAMACPP: logit_bias array conversion + banned token merge, grammar/json_schema mutual exclusion
-// (uses a logitBias override, so no real tokenizer computation happens here)
 {
     const withSchema = await createTextGenGenerationData(
         baseSettings({ type: 'llamacpp', json_schema: { type: 'object' }, grammar_string: 'root ::= "a"', logit_bias: [{ id: 10, value: 1.5 }] }),
@@ -186,7 +170,7 @@ function baseSettings(overrides = {}) {
         { bannedTokens: '5,6', logitBias: { '10': 1.5 } },
     );
     assert.deepEqual(withSchema.logit_bias.sort(), [[5, false], [6, false], [10, 1.5]].sort());
-    assert.equal(withSchema.grammar_string, undefined); // deleted because jsonSchema present
+    assert.equal(withSchema.grammar_string, undefined);
     assert.equal(withSchema.grammar, undefined);
     assert.deepEqual(withSchema.json_schema, { type: 'object' });
 
@@ -195,14 +179,11 @@ function baseSettings(overrides = {}) {
     assert.equal(withoutSchema.grammar, 'root ::= "a"');
 }
 
-// Returned object has no leftover internal helper function
 {
     const params = await createTextGenGenerationData(baseSettings(), 'm', 'p', 10, false, false, null, 'normal');
     assert.equal('parseSequenceBreakers' in params, false);
 }
 
-// logit_bias from settings.logit_bias needs a tokenizer resolution; with none it throws instead of
-// picking a tokenizer.
 {
     const settings = baseSettings({ type: 'generic', logit_bias: [{ text: 'hello', value: -5 }] });
     await assert.rejects(
@@ -210,17 +191,13 @@ function baseSettings(overrides = {}) {
         /tokenizerOptions\.encode is required/,
     );
 
-    // A logitBias override still takes priority over real computation when both are given.
     const overridden = await createTextGenGenerationData(settings, 'm', 'p', 10, false, false, null, 'normal', { logitBias: { 1: 1 } });
     assert.deepEqual(overridden.logit_bias, { 1: 1 });
 
-    // Empty/absent settings.logit_bias -> no bias computed, no `logit_bias` field at all.
     const none = await createTextGenGenerationData(baseSettings({ type: 'generic' }), 'm', 'p', 10, false, false, null, 'normal');
     assert.equal('logit_bias' in none, false);
 }
 
-// logit_bias with a resolveTokenizer() answer: an estimate (no tokenizer known) leaves out the
-// entries that need token ids and lists them, keeping raw ids; an explicit tokenizer encodes with it.
 {
     const logit_bias = [{ text: 'hello', value: -5 }, { text: '{world}', value: 3 }, { text: '[5,6]', value: 2 }];
     const settings = baseSettings({ type: 'ooba', logit_bias });

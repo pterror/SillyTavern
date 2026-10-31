@@ -64,7 +64,6 @@
     <div id="top-bar">
     </div>
     <div id="top-settings-holder">
-        <!-- brings the chat to the front; stacked drawers only -->
         <div id="chat-button" class="drawer">
             <div class="drawer-toggle drawer-header">
                 <div id="chatDrawerIcon" class="drawer-icon chatDrawerIcon fa-solid fa-comments fa-fw" data-stack-front-of="sheld" title="Chat" data-i18n="[title]Chat"></div>
@@ -4161,7 +4160,7 @@
                                 <input id="never_resize_avatars" type="checkbox" />
                                 <small data-i18n="Never resize avatars">Never resize avatars</small>
                             </label>
-                            <div id="background_animation_option" style="display: contents"><!-- the new page's (backgrounds) --></div>
+                            <div id="background_animation_option" style="display: contents"> </div>
                             <label class="checkbox_label" for="show_card_avatar_urls" title="Show actual file names on the disk, in the characters list display only." data-i18n="[title]Show actual file names on the disk, in the characters list display only">
                                 <input id="show_card_avatar_urls" type="checkbox" />
                                 <small data-i18n="Show avatar filenames">Show avatar filenames</small>
@@ -4608,7 +4607,6 @@
                 <div class="drawer-icon fa-solid fa-panorama fa-fw closedIcon"></div>
             </div>
             <div id="Backgrounds" class="drawer-content closedDrawer bg-drawer-layout">
-                <!-- The new page's backgrounds drawer (packages/ui/src/areas/backgrounds) is mounted here. -->
             </div>
         </div>
         <div id="extensions-settings-button" class="drawer">
@@ -4907,7 +4905,6 @@
                                 <div id="rm_button_group_chats" title="Create New Chat Group" data-i18n="[title]Create New Chat Group" class="menu_button fa-solid fa-users-gear"></div>
                                 <div class="tags_view menu_button fa-solid fa-tags" title="View all tags" data-i18n="[title]View all tags"></div>
                                 <div id="rm_buttons_container">
-                                    <!-- Container for additional buttons added by extensions -->
                                 </div>
                                 <select id="character_sort_order" class="flex1 text_pole textarea_compact" title="Characters sorting order" data-i18n="[title]Characters sorting order">
                                     <option data-field="search" data-order="desc" data-i18n="Search" hidden>Search</option>
@@ -4956,7 +4953,6 @@
                 <div id="charInfoDrawerIcon" class="drawer-icon fillRightIcon fa-solid fa-user-pen fa-fw closedIcon" title="Character Info" data-i18n="[title]Character Info"></div>
             </div>
             <div id="char-info-panel" class="drawer-content closedDrawer fillRight">
-                <!-- this div structure must be preserved until group peeking can adjust -->
                 <div id="rm_PinAndTabs">
                     <div id="right-nav-panel-tabs" class="">
                         <div id="charInfo_button_panel_pin_div" class="alignitemsflexstart" title="Locked = Character Info panel will stay open" data-i18n="[title]Locked = Character Info panel will stay open">
@@ -5106,7 +5102,7 @@
                             </div>
                             <div id="talkativeness_div" popover>
                                 <h4><span data-i18n="Talkativeness">Talkativeness</span></h4>
-                                <h5 data-i18n="How often the character speaks in group chats!"><!-- This data-i18n attribute on the left is kept for backward compatibility, use the ones below when translating -->
+                                <h5 data-i18n="How often the character speaks in group chats!">
                                     <span data-i18n="How often the character speaks in">How often the character speaks in</span>&nbsp;<span class="warning" data-i18n="group chats!">group chats!</span>
                                 </h5>
                                 <input id="talkativeness_slider" name="talkativeness" type="range" min="0" max="1" step="0.05" value="0.5" form="form_create">
@@ -5194,7 +5190,6 @@
                                             </span>
                                         </div>
                                         <textarea id="greeting_field" class="field_edit_textarea mdHotkeys autoSetHeight" rows="6" data-macros data-i18n="[placeholder]This will be the greeting from the character that starts every chat." placeholder="This will be the greeting from the character that starts every chat."></textarea>
-                                        <!-- Upstream's first message field, for extensions: holds the default greeting; a write saves it. -->
                                         <textarea id="firstmessage_textarea" class="displayNone" tabindex="-1" aria-hidden="true"></textarea>
                                         <div class="field_preview macro_preview_content mes_text" data-for="greeting_field"></div>
                                     </div>
@@ -5329,7 +5324,6 @@
                                         </div>
                                         <textarea id="mes_example_textarea" class="field_edit_textarea flexGrow mdHotkeys autoSetHeight" name="mes_example" data-macros data-i18n="[placeholder](Examples of chat dialog. Begin each example with START on a new line.)" placeholder="(Examples of chat dialog. Begin each example with &lt;START&gt; on a new line.)" form="form_create" rows="6"></textarea>
                                         <div class="field_preview macro_preview_content mes_text" data-for="mes_example_textarea"></div>
-                                        <!-- TODO: Example chats handhold-editor concept: https://gist.github.com/Cohee1207/50da02a4001ac1adae9b440f9b8e1079 -->
                                     </div>
                                 </div>
                             </div>

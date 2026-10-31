@@ -4,11 +4,6 @@ import path from 'node:path';
 import process from 'node:process';
 import lodash from 'lodash';
 
-// `/query`'s `want: 'hidden'`, which the character list's "N hidden" badge shows. Upstream's printCharacters() counts
-// `(characters.length + groups.length) - displayCount`, displayCount being the characters and groups rendered on the
-// current page (folder tiles don't add to it): every entity less the page's rows. Checked in JSON and in hash mode
-// (through the real client repository).
-
 const originalCwd = process.cwd();
 const noop = () => {};
 
@@ -94,7 +89,7 @@ afterEach(async () => {
 
 /**
  * @param {string} avatar
- * @param {{ name?: string, fav?: boolean, file?: boolean }} [options] file: also write the PNG, which search indexes.
+ * @param {{ name?: string, fav?: boolean, file?: boolean }} [options]
  */
 async function seedCharacter(avatar, { name = avatar.replace(/\.png$/, ''), fav = false, file = false } = {}) {
     const card = JSON.stringify({
@@ -112,7 +107,10 @@ async function seedCharacter(avatar, { name = avatar.replace(/\.png$/, ''), fav 
     await user.store.lib.writeCard(directories, avatar, card);
 }
 
-/** @param {string} id @param {boolean} fav */
+/**
+ * @param {string} id
+ * @param {boolean} fav
+ */
 async function seedGroup(id, fav) {
     const group = { id, name: id, members: [], chats: [], fav };
     await user.store.lib.writeGroup(group);
@@ -129,7 +127,6 @@ async function queryJson(body) {
     return response.json();
 }
 
-/** Five characters (two favs) and two groups (one fav). */
 async function seedLibrary() {
     for (const [avatar, fav] of [['A.png', true], ['B.png', true], ['C.png', false], ['D.png', false], ['E.png', false]]) {
         await seedCharacter(avatar, { fav });
@@ -143,23 +140,18 @@ const NAME_ASC = { field: 'name', order: 'asc' };
 describe('/query want: hidden', () => {
     test('JSON: every entity less the rows on this page', async () => {
         await seedLibrary();
-        // Three matches (A, B, g1) over pages of two: two rows, then one, then none.
         for (const [page, rows, hidden] of [[1, 2, 5], [2, 1, 6], [3, 0, 7]]) {
             const withGroups = await queryJson({ filter: { fav: true, includeGroups: true }, sort: NAME_ASC, page, pageSize: 2, want: ['rows', 'hidden'] });
             expect(withGroups.rows).toHaveLength(rows);
             expect(withGroups).toMatchObject({ hidden });
-            // Only what `want` names is answered.
             expect(withGroups.total).toBeUndefined();
         }
-        // Characters only: five in all, two matches.
         for (const [page, hidden] of [[1, 4], [2, 4]]) {
             const charactersOnly = await queryJson({ filter: { fav: true }, sort: NAME_ASC, page, pageSize: 1, want: ['rows', 'total', 'hidden'] });
             expect(charactersOnly).toMatchObject({ total: 2, hidden });
         }
-        // No filter still leaves out what isn't on this page; the badge shows only while a filter is set, as upstream.
         const unfiltered = await queryJson({ filter: { includeGroups: true }, sort: NAME_ASC, page: 1, pageSize: 2, want: ['rows', 'total', 'hidden'] });
         expect(unfiltered).toMatchObject({ total: 7, hidden: 5 });
-        // No rows wanted, none shown.
         const noRows = await queryJson({ filter: { fav: true, includeGroups: true }, sort: NAME_ASC, page: 1, pageSize: 2, want: ['total', 'hidden'] });
         expect(noRows).toMatchObject({ total: 3, hidden: 7 });
 
@@ -170,14 +162,12 @@ describe('/query want: hidden', () => {
     test('hash mode through the client repository, on every page and from its unchanged cache', async () => {
         await seedLibrary();
         const repository = new repositoryModule.CharacterRepository(/** @type {any} */ ({ get: () => undefined, has: () => false, onChange: () => noop }));
-        // Four matches (C, D, E, g2) over pages of three.
         const filter = { fav: false, includeGroups: true };
         for (const [page, rows, hidden] of [[1, 3, 4], [2, 1, 6]]) {
             const result = await repository.query(filter, NAME_ASC, page, 3, ['rows', 'total', 'hidden']);
             expect(result.rows).toHaveLength(rows);
             expect(result).toMatchObject({ total: 4, hidden });
         }
-        // The repeat is answered `unchanged` and served from the cached response.
         const repeat = await repository.query(filter, NAME_ASC, 1, 3, ['rows', 'total', 'hidden']);
         expect(repeat).toMatchObject({ total: 4, hidden: 4 });
         expect(repeat.rows).toHaveLength(3);
@@ -194,7 +184,6 @@ describe('/query want: hidden', () => {
         await seedCharacter('Human.png', { name: 'Human', file: true });
         const body = { filter: { search: 'vampire', includeGroups: true }, sort: { field: 'search' }, page: 1, pageSize: 2, want: ['rows', 'total', 'hidden'] };
 
-        // Repeats until the search index has caught up.
         let answer;
         const deadline = Date.now() + 10000;
         do {
@@ -203,8 +192,6 @@ describe('/query want: hidden', () => {
             await new Promise(resolve => setTimeout(resolve, 100));
         } while (Date.now() < deadline);
 
-        // The search index counted all twenty matches, so the total is exact even though only 2 + 5 rows were read.
-        // Twenty-one characters less the two rows on the page.
         expect(answer.total).toBe(20);
         expect(answer.rows).toHaveLength(2);
         expect(answer.hidden).toBe(19);

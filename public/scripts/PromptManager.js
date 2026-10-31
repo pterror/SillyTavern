@@ -733,14 +733,12 @@ class PromptManager {
                 const promptId = event.target.dataset.pmPrompt;
                 const prompt = this.getPromptById(promptId);
 
-                // Blur can fire without an edit (e.g. tab/window regaining focus); only persist on an actual change.
                 if (prompt.content === event.target.value) {
                     return;
                 }
 
                 prompt.content = event.target.value;
 
-                // Writing into an edit form that shows another prompt, or holds text the user typed, would destroy that text.
                 // @see https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/offsetParent
                 const popupEditFormPrompt = /** @type {HTMLTextAreaElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_prompt'));
                 const popupEditFormSave = document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_save');
@@ -779,7 +777,6 @@ class PromptManager {
 
         // Re-render when the character changes.
         eventSource.on(event_types.CHAT_LOADED, (event) => {
-            // Fires during boot too; only save if a default prompt order actually had to be seeded.
             const mutated = this.handleCharacterSelected(event);
             if (!mutated) {
                 this.renderDebounced();
@@ -790,15 +787,12 @@ class PromptManager {
 
         // Re-render when the character gets edited.
         eventSource.on(event_types.CHARACTER_EDITED, (event) => {
-            // Fires on every character save; handleCharacterUpdated never mutates persisted state, so no save here.
             this.handleCharacterUpdated(event);
             this.renderDebounced();
         });
 
         // Re-render when the group changes.
         eventSource.on('groupSelected', (event) => {
-            // Same reasoning as CHAT_LOADED above: selecting a group is a read unless it had to seed
-            // a default prompt order.
             const mutated = this.handleGroupSelected(event);
             if (!mutated) {
                 this.renderDebounced();
@@ -813,8 +807,6 @@ class PromptManager {
             this.saveServiceSettings().then(() => this.renderDebounced());
         });
 
-        // The token budget's settings re-render it when they change: chat-completion-settings.js watches them (the
-        // server's settings view).
 
         // Prepare prompt edit form buttons
         document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_save').addEventListener('click', this.handleSavePrompt);
@@ -1136,9 +1128,6 @@ class PromptManager {
     handleCharacterDeleted(event) {
         if ('global' === this.configuration.promptOrder.strategy) return;
         this.removePromptOrderForCharacter(this.activeCharacter);
-        // CHARACTER_DELETED is emitted as `{ id, character }` (no `.detail` wrapper, unlike CHARACTER_EDITED/
-        // CHAT_LOADED) - `event.detail.id` here always threw (silently, since eventSource.emit() catches and
-        // logs per-listener errors), so `this.activeCharacter` was never actually nulled out on delete.
         if (this.activeCharacter.id === event.character.avatar) this.activeCharacter = null;
     }
 
@@ -1151,7 +1140,6 @@ class PromptManager {
         if ('global' === this.configuration.promptOrder.strategy) {
             this.activeCharacter = { id: this.configuration.promptOrder.dummyId };
         } else if ('character' === this.configuration.promptOrder.strategy) {
-            // `id` is the character's avatar (stable identity, same as charactersStore's key).
             this.activeCharacter = { ...event.detail.character, id: event.detail.character.avatar };
             const promptOrder = this.getPromptOrderForCharacter(this.activeCharacter);
 
@@ -1164,7 +1152,6 @@ class PromptManager {
         } else {
             throw new Error('Unsupported prompt order mode.');
         }
-        // Re-pointing activeCharacter is in-memory only; nothing to persist.
         return false;
     }
 
@@ -1203,7 +1190,6 @@ class PromptManager {
         } else {
             throw new Error('Prompt order strategy not supported.');
         }
-        // Re-pointing activeCharacter is in-memory only; nothing to persist.
         return false;
     }
 
@@ -1346,7 +1332,6 @@ class PromptManager {
 
         const textarea = /** @type {HTMLTextAreaElement} */(document.getElementById(textareaIdentifier));
         textarea.addEventListener('blur', () => {
-            // Blur can fire without an edit (e.g. tab/window regaining focus); only save on an actual change.
             if (prompt.content === textarea.value) {
                 return;
             }
@@ -1388,8 +1373,6 @@ class PromptManager {
     }
 
     /**
-     * Writes text into the edit form's prompt field and records it in dataset.pmLoaded, so the
-     * field differing from pmLoaded means the user has typed an unsaved draft since.
      * @param {string} text
      */
     setEditFormContent(text) {
@@ -1813,7 +1796,6 @@ class PromptManager {
 
         promptManagerList.insertAdjacentHTML('beforeend', listItemHtml);
 
-        // A `-` has no count, so it has no basis to mark.
         const tokenizerAnswer = getRememberedTokenizerAnswer();
         promptManagerList.querySelectorAll('.prompt_manager_prompt_tokens[data-pm-tokens]:not([data-pm-tokens="-"])').forEach(el => {
             renderCountBasis(el, tokenizerAnswer);

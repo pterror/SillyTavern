@@ -6,10 +6,6 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// A sent message is stored as the page shows it once sent (macros filled in, its persona, whatever a
-// `MESSAGE_SENT` handler changed), and what an extension put on the chat without saving it (a message, a chat
-// metadata key) reaches the server with the generation, so a reload shows the same chat.
-
 const MODEL = 'sent-message-model';
 const REPLY = 'At dawn.';
 
@@ -43,7 +39,10 @@ function startLlamaCpp() {
     });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
@@ -57,7 +56,10 @@ async function createCharacter(page, name) {
     }, name);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
 async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
@@ -70,7 +72,10 @@ async function openCharacter(page, avatar) {
     await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} url */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} url
+ */
 async function connectLlamaCpp(page, url) {
     if (!(await page.locator('#main_api').isVisible())) {
         await page.locator('#API-status-top').click();
@@ -87,7 +92,6 @@ async function connectLlamaCpp(page, url) {
         // @ts-ignore
         SillyTavern.getContext().textCompletionSettings.streaming = false;
     });
-    // The server reads the backend from the saved settings; let that save land.
     await page.waitForTimeout(2500);
 }
 
@@ -121,11 +125,9 @@ test.describe('a sent message', () => {
             // @ts-ignore
             const context = SillyTavern.getContext();
             const { updateMessage } = await import('/scripts/chat-store.js');
-            // An extension changing the message once it is sent.
             context.eventSource.on(context.eventTypes.MESSAGE_SENT, (id) => {
                 updateMessage(id, { mes: `${context.chat[id].mes} (noted)` });
             });
-            // An extension adding a message and a metadata key without saving either.
             const added = { name: 'Narrator', is_user: false, is_system: false, mes: 'Thunder rolls.', send_date: new Date().toISOString(), extra: {} };
             context.chat.push(added);
             context.addOneMessage(added);

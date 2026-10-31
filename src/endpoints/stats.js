@@ -8,11 +8,8 @@ import { requestStore } from '../user-stores.js';
 import { TYPE } from '../library-engine.js';
 
 const STATS_FILE = 'stats.json';
-/** The stats file as it was before the stats were derived from stored messages, kept and never written again. */
 export const STATS_BACKUP_FILE = 'stats.pre-derived.json';
-/** Upstream's date_first_chat for a character with no chats. */
 const NO_FIRST_CHAT = new Date('9999-12-31T23:59:59.999Z').getTime();
-/** At most this many characters are answered by one /get. */
 const GET_LIMIT = 1000;
 
 /**
@@ -43,7 +40,6 @@ export async function init() {
     }
 }
 
-/** Nothing to save: the stats are counted in the store as messages are written. */
 export async function onExit() { }
 
 /**
@@ -51,7 +47,6 @@ export async function onExit() { }
  * A character's (or every chat's) stats as the store counts them (`chatRead('stats')`).
  */
 
-/** No messages. */
 const NO_STATS = { userMsgs: 0, charMsgs: 0, userWords: 0, charWords: 0, swipes: 0, genMs: 0, genUnknown: 0, chatSize: 0, firstUserAt: null, lastAt: null };
 
 /**
@@ -146,18 +141,11 @@ router.post('/recreate', function (_request, response) {
     return response.sendStatus(200);
 });
 
-/**
- * Accepted for upstream callers and ignored: the stats are counted from the stored messages.
- */
 router.post('/update', function (request, response) {
     if (!request.body) return response.sendStatus(400);
     return response.sendStatus(200);
 });
 
-/**
- * Accepted for upstream callers and ignored: the stats are counted from the stored messages. Answers the
- * character's current stats, as upstream answered the stats after the increment.
- */
 router.post('/increment', async function (request, response) {
     const { avatar, deltas } = request.body ?? {};
     if (typeof avatar !== 'string' || !avatar || typeof deltas !== 'object' || deltas === null) {

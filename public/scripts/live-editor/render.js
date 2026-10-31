@@ -1,7 +1,3 @@
-// Shows the text as written, styled as chat shows it: the markup stays visible, dimmed, so what is on screen is the
-// text itself, and a click lands where the browser puts the caret in it. Images are drawn after their markup, an
-// inline HTML element's look is on the text between its tags, and an HTML block is drawn, as chat draws it, under it.
-
 import { state as cmState, view as cmView, language as cmLanguage, langMarkdown } from '../../live-editor-lib.js';
 import { chatMarkdownExtensions } from './grammar.js';
 import { DOMPurify } from '../../lib.js';
@@ -11,8 +7,6 @@ const { EditorView, Decoration, WidgetType, ViewPlugin } = cmView;
 const { syntaxTree, ensureSyntaxTree } = cmLanguage;
 
 /**
- * The editor's language: CodeMirror's markdown support with the grammar that reads text as chat does. Its keymap,
- * HTML tag completion and URL pasting are left out; the editor's own steps provide those.
  * @param {import('./grammar.js').GrammarOptions} [options]
  */
 export function chatMarkdownLanguage(options = {}) {
@@ -26,21 +20,20 @@ export function chatMarkdownLanguage(options = {}) {
 
 /**
  * @typedef {object} RenderOptions
- * @property {(text: string) => string} render The field's render function: text to the HTML chat or the preview shows.
- * @property {Record<string, string>} [emojis] Shortcodes shown as emoji, as the grammar was given them.
+ * @property {(text: string) => string} render
+ * @property {Record<string, string>} [emojis]
  */
 
-/** The editor's render options; per editor, so two editors open at once can render differently. */
 const renderOptions = Facet.define({
     combine: values => values[0] ?? { render: (/** @type {string} */ text) => text },
 });
 
-/** @type {WeakMap<Function, Map<string, string>>} Renders by text, per render function. */
+/** @type {WeakMap<Function, Map<string, string>>} */
 const renderCaches = new WeakMap();
 
 /**
  * @param {(text: string) => string} render
- * @returns {(text: string) => string} The same render, cached by text.
+ * @returns {(text: string) => string}
  */
 function cachedRenderFor(render) {
     let cache = renderCaches.get(render);
@@ -78,10 +71,6 @@ class TextWidget extends WidgetType {
     }
 }
 
-/**
- * An image drawn after its markup, so the caret is still drawn against the text. It's the field's own render of the
- * image, so the app's rules for images (external media, sanitizing) apply as in chat.
- */
 class ImageWidget extends WidgetType {
     /** @param {string} html */
     constructor(html) {
@@ -97,16 +86,11 @@ class ImageWidget extends WidgetType {
     toDOM() {
         const span = document.createElement('span');
         span.className = 'live-image';
-        // The render wraps a lone image in a paragraph; only the image is drawn here. Sanitized here too: a field's
-        // render may leave that to whoever shows it.
         span.innerHTML = DOMPurify.sanitize(this.html.trim().replace(/^<p>([\s\S]*)<\/p>$/, '$1'));
         return span;
     }
 }
 
-/**
- * An HTML block as the field renders it, under its source; it takes no clicks, so the caret stays in the text.
- */
 class HtmlBlockWidget extends WidgetType {
     /** @param {string} html */
     constructor(html) {
@@ -133,28 +117,22 @@ class HtmlBlockWidget extends WidgetType {
     }
 }
 
-/** Inline nodes styled with the element chat renders for them, so theme CSS applies as in chat. */
 const NODE_TAGS = {
     Emphasis: 'em', StrongEmphasis: 'strong', Strikethrough: 'del', InlineCode: 'code', DialogueQuote: 'q',
 };
-/** Syntax shown only on the line being typed on. */
 const SYNTAX_NODES = new Set(['EmphasisMark', 'StrikethroughMark', 'CodeMark', 'HeaderMark', 'LinkMark', 'QuoteMark', 'ListMark', 'CodeInfo']);
-/** A link's or image's parts after its text, shown only on the line being typed on. */
 const LINK_TAIL_NODES = new Set(['URL', 'LinkTitle', 'ImageSize']);
 
-/** Inline HTML elements whose look is put on the text between their tags. */
 const INLINE_HTML = new Set(['span', 'font', 'b', 'i', 'u', 's', 'strike', 'del', 'ins', 'em', 'strong', 'small', 'big', 'sub', 'sup', 'mark', 'q', 'code', 'kbd', 'abbr', 'cite']);
 
 /**
- * An opening tag's element as the field renders it, sanitized: the attributes kept.
- * @param {string} tag The opening tag as written.
+ * @param {string} tag
  * @param {string} name
  * @param {(text: string) => string} render
- * @returns {Record<string, string> | null} null when the render keeps no such element.
+ * @returns {Record<string, string> | null}
  */
 function renderedAttributes(tag, name, render) {
     const holder = document.createElement('template');
-    // Sanitized here too: a field's render may leave that to whoever shows it.
     holder.innerHTML = DOMPurify.sanitize(render(`${tag}x</${name}>`));
     const element = holder.content.querySelector(name);
     if (!element) return null;
@@ -182,7 +160,6 @@ function cachedAttributes(tag, name, render) {
     return /** @type {Record<string, string> | null} */ (cache.get(tag));
 }
 
-/** Chat's styling on the text: its elements on inline constructs, heading sizes, and the markup dimmed. */
 const textStyle = ViewPlugin.fromClass(class {
     /** @param {import('@codemirror/view').EditorView} view */
     constructor(view) {
@@ -191,8 +168,6 @@ const textStyle = ViewPlugin.fromClass(class {
 
     /** @param {import('@codemirror/view').ViewUpdate} update */
     update(update) {
-        // While an IME composes, the decorations only move with the text: replacing them around the composing text
-        // can break the composition.
         if (update.view.composing) {
             this.decorations = this.decorations.map(update.changes);
         } else if (update.docChanged || update.viewportChanged || syntaxTree(update.state) !== syntaxTree(update.startState)) {
@@ -243,7 +218,6 @@ const textStyle = ViewPlugin.fromClass(class {
                         const match = /^<(\/?)([a-z][a-z0-9]*)\b[^>]*?(\/?)>$/i.exec(tag);
                         const name = match?.[2].toLowerCase();
                         if (match && name === 'img' && !match[1]) {
-                            // Drawn after its tag, as a markdown image is.
                             ranges.push(Decoration.widget({ widget: new ImageWidget(render(tag)), side: 1 }).range(node.to));
                         }
                         if (match && name && INLINE_HTML.has(name) && !match[3]) {
@@ -277,8 +251,6 @@ const textStyle = ViewPlugin.fromClass(class {
 }, { decorations: plugin => plugin.decorations });
 
 /**
- * Each HTML block drawn under its source; a comment's block too, for what follows the comment on its line (a comment
- * alone renders as nothing).
  * @param {import('@codemirror/state').EditorState} state
  * @returns {import('@codemirror/view').DecorationSet}
  */
@@ -296,11 +268,9 @@ function htmlBlockRenders(state) {
     return Decoration.set(ranges, true);
 }
 
-/** Block decorations come from state: CodeMirror takes none from a view plugin. */
 const htmlBlocks = StateField.define({
     create: state => htmlBlockRenders(state),
     update(value, tr) {
-        // While an IME composes, the renders only move with the text, so the composition isn't broken.
         if (tr.docChanged && tr.isUserEvent('input.type.compose')) return value.map(tr.changes);
         if (tr.docChanged || syntaxTree(tr.state) !== syntaxTree(tr.startState)) return htmlBlockRenders(tr.state);
         return value;
@@ -309,7 +279,6 @@ const htmlBlocks = StateField.define({
 });
 
 /**
- * Rendering for a field: chat's styling on its text, and its render function for images and HTML blocks.
  * @param {RenderOptions} options
  * @returns {import('@codemirror/state').Extension}
  */

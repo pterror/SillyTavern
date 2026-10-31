@@ -5,18 +5,10 @@ import { countWithTokenizer, encodeWithTokenizer, encodeWithTokenizerAndChunks, 
 import { countChatCompletionMessages } from './endpoints/tokenizers.js';
 export { LAST_USED_GRANULARITY_MS, PRUNE_BATCH_ROWS, PRUNE_PAUSE_MS, TOKEN_COUNT_ROW_CAP } from './token-cache-engine.js';
 
-/**
- * What a stored result is of. The same text counts differently with and without BOS, or as a
- * chat-completion message, so the kind is part of the key.
- */
 export const TOKEN_KEY_KINDS = Object.freeze({
-    /** A plain count, no BOS. */
     TEXT: 'text',
-    /** A `promptStart` count, with BOS. */
     PROMPT: 'prompt',
-    /** A chat-completion messages count, per-message overhead included; its text is {@link chatMessageKeyText}. */
     CC_MESSAGE: 'cc-message',
-    /** Token ids as `encodeWithTokenizer` returns them, no BOS; stored in `token_ids`. */
     IDS: 'ids',
 });
 
@@ -24,22 +16,16 @@ const KINDS = new Set(Object.values(TOKEN_KEY_KINDS));
 
 
 /**
- * The `text_hash` of a stored count or ids: sha256 of the kind and the exact text. Everything the result depends on
- * besides the tokenizer has to be in `text`.
- * @param {string} kind One of {@link TOKEN_KEY_KINDS}.
+ * @param {string} kind
  * @param {string} text
- * @returns {string} sha256, hex.
+ * @returns {string}
  */
 export function tokenKeyHash(kind, text) {
     if (!KINDS.has(kind)) throw new Error(`Unknown token key kind: ${kind}`);
-    // No kind holds a newline, so the kind ends at the first one.
     return crypto.createHash('sha256').update(`${kind}\n${text}`).digest('hex');
 }
 
 /**
- * The key text of a {@link TOKEN_KEY_KINDS.CC_MESSAGE} count: the exact JSON of the messages
- * `countChatCompletionMessages` receives, and the model of the tokenizer that counts them, because the tiktoken
- * per-message overhead depends on the model and not only on the encoding (gpt-3.5-turbo-0301 vs gpt-4).
  * @param {string | null | undefined} model
  * @param {object[]} messages
  * @returns {string}
@@ -49,7 +35,6 @@ export function chatMessageKeyText(model, messages) {
 }
 
 /**
- * The user's token cache (`TokenCache`).
  * @param {import('./users.js').UserDirectoryList} directories
  */
 async function cacheOf(directories) {
@@ -60,7 +45,7 @@ async function cacheOf(directories) {
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} identity
  * @param {string} hash
- * @returns {Promise<number | null>} null when nothing is stored under the key.
+ * @returns {Promise<number | null>}
  */
 export async function readCount(directories, identity, hash) {
     return (await cacheOf(directories)).readCount(identity, hash);
@@ -70,7 +55,7 @@ export async function readCount(directories, identity, hash) {
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} identity
  * @param {string} hash
- * @returns {Promise<number[] | null>} null when nothing is stored under the key.
+ * @returns {Promise<number[] | null>}
  */
 export async function readIds(directories, identity, hash) {
     return (await readIdsRow(directories, identity, hash))?.ids ?? null;
@@ -80,8 +65,7 @@ export async function readIds(directories, identity, hash) {
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} identity
  * @param {string} hash
- * @returns {Promise<{ ids: number[], chunks: string[] | null } | null>} null when nothing is stored under the key;
- * `chunks` null when it was stored without them.
+ * @returns {Promise<{ ids: number[], chunks: string[] | null } | null>}
  */
 export async function readIdsRow(directories, identity, hash) {
     return (await cacheOf(directories)).readIdsRow(identity, hash);
@@ -89,19 +73,15 @@ export async function readIdsRow(directories, identity, hash) {
 
 /**
  * @typedef {object} PendingTokenRows
- * @property {{ identity: string, hash: string, count: number, replace?: boolean }[]} [counts] `replace`: a count
- * taken again on purpose (a recount), written over the stored one.
- * @property {{ identity: string, hash: string, ids: ArrayLike<number>, chunks?: string[] | null }[]} [ids] `chunks`:
- * llama.cpp's pieces for the ids, when the encode asked for them.
+ * @property {{ identity: string, hash: string, count: number, replace?: boolean }[]} [counts]
+ * @property {{ identity: string, hash: string, ids: ArrayLike<number>, chunks?: string[] | null }[]} [ids]
  */
 
 /**
- * Stores keys new to the cache and marks reused ones used (`TokenCache.writeBack()`).
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {PendingTokenRows} pending
- * @param {number} [now] The `last_used` to write.
- * @returns {Promise<{ prunesScheduled: ('token_counts' | 'token_ids')[] }>} The tables this write pushed past the
- * cap and started an eviction for.
+ * @param {number} [now]
+ * @returns {Promise<{ prunesScheduled: ('token_counts' | 'token_ids')[] }>}
  */
 export async function writeBack(directories, pending, now = Date.now()) {
     if (!pending.counts?.length && !pending.ids?.length) return { prunesScheduled: [] };
@@ -110,8 +90,6 @@ export async function writeBack(directories, pending, now = Date.now()) {
 
 
 /**
- * A read of the token cache, where a failure is logged and answers null, a miss: upstream never reads this
- * cache, so a request mustn't fail because it can't be read.
  * @template T
  * @param {() => Promise<T | null>} read
  * @returns {Promise<T | null>}
@@ -127,44 +105,27 @@ async function readOrMiss(read) {
 
 /**
  * @typedef {object} StoredCounter
- * @property {(text: string) => Promise<number>} countText A plain count, no BOS.
- * @property {(text: string) => Promise<number>} countPromptText A `promptStart` count, with BOS.
- * @property {(messages: object[]) => Promise<number>} countChatMessage A chat-completion messages count.
- * @property {(text: string) => Promise<ArrayLike<number> | null>} encodeText Token ids, no BOS; null when
- * no tokenizer answered.
+ * @property {(text: string) => Promise<number>} countText
+ * @property {(text: string) => Promise<number>} countPromptText
+ * @property {(messages: object[]) => Promise<number>} countChatMessage
+ * @property {(text: string) => Promise<ArrayLike<number> | null>} encodeText
  * @property {(text: string) => Promise<{ ids: ArrayLike<number> | null, chunks?: string[] | null }>} encodeTextWithChunks
- * What encodeWithTokenizerAndChunks() gives: for llama.cpp, the ids and its pieces as chunks (null when it gave none),
- * where a stored row without chunks is a miss; otherwise the ids alone.
- * @property {PendingTokenRows} pending The rows read or counted, for {@link writeBack}.
+ * @property {PendingTokenRows} pending
  */
 
-/**
- * @typedef {{ tokenizer?: import('./tokenizer-resolve.js').ResolvedTokenizer | import('./tokenizer-resolve.js').LocalTokenizer | null }} AnsweredOut
- */
+/** @typedef {{ tokenizer?: import('./tokenizer-resolve.js').ResolvedTokenizer | import('./tokenizer-resolve.js').LocalTokenizer | null }} AnsweredOut */
 
 /**
- * Counts and encodes through the user's token cache, for one request. With a null
- * identity everything is counted or encoded as it is without the cache, and nothing is read or pending.
- * Otherwise a text already stored under `identity` is read, not counted, and its row is pending so write-back
- * marks it used; a text not stored is counted, and its row is pending under the identity of the tokenizer
- * that answered, so a local copy's answer is stored under the copy's identity and an estimate or null ids
- * aren't stored. A read that fails is logged and counts as not stored. Each key is read or counted once per counter.
  * @param {object} args
- * @param {import('./tokenizer-resolve.js').ResolvedTokenizer} args.resolved A resolveTokenizer() answer.
- * @param {string | null} args.identity `tokenizerIdentity(resolved, facts)`, as the caller computed it.
- * @param {import('./users.js').UserDirectoryList} args.directories The user's directories: the token cache, and
- * the Hugging Face token for a messages count.
- * @param {import('./tokenizer-resolve.js').EncodeWithTokenizerTypeOptions} [args.encodeOptions] For
- * countWithTokenizer() and encodeWithTokenizer(); its `outcome` goes to countChatCompletionMessages().
- * @param {import('./tokenizer-resolve.js').TokenizerIdentityFacts} [args.identityFacts] For the identity of a
- * tokenizer that answered and isn't `resolved`.
- * @param {PendingTokenRows} [args.pending] Where rows are pushed; one object may be shared by several counters.
+ * @param {import('./tokenizer-resolve.js').ResolvedTokenizer} args.resolved
+ * @param {string | null} args.identity
+ * @param {import('./users.js').UserDirectoryList} args.directories
+ * @param {import('./tokenizer-resolve.js').EncodeWithTokenizerTypeOptions} [args.encodeOptions]
+ * @param {import('./tokenizer-resolve.js').TokenizerIdentityFacts} [args.identityFacts]
+ * @param {PendingTokenRows} [args.pending]
  * @param {(text: string, answeredOut: AnsweredOut) => Promise<ArrayLike<number> | null>} [args.encode]
- * Replaces encodeWithTokenizer() for `encodeText`, setting `answeredOut.tokenizer` as it does.
- * @param {(messages: object[], answeredOut: AnsweredOut) => Promise<number>} [args.countMessages] Replaces
- * countChatCompletionMessages() for `countChatMessage`, setting `answeredOut.tokenizer` as it does.
- * @param {boolean} [args.recount] Counts are taken again, not read, and written over the stored ones (ids are read as
- * usual).
+ * @param {(messages: object[], answeredOut: AnsweredOut) => Promise<number>} [args.countMessages]
+ * @param {boolean} [args.recount]
  * @returns {StoredCounter}
  */
 export function createStoredCounter({
@@ -201,9 +162,9 @@ export function createStoredCounter({
 
     pending.counts ??= [];
     pending.ids ??= [];
-    /** @type {Map<string, number | number[] | ArrayLike<number>>} Values read or pending in this counter, by identity and hash. */
+    /** @type {Map<string, number | number[] | ArrayLike<number>>} */
     const seen = new Map();
-    /** @type {Map<string, { ids: ArrayLike<number>, chunks: string[] | null }>} The ids of `seen` that have their chunks. */
+    /** @type {Map<string, { ids: ArrayLike<number>, chunks: string[] | null }>} */
     const seenWithChunks = new Map();
 
     /**
@@ -268,8 +229,6 @@ export function createStoredCounter({
     };
 
     /**
-     * Like `stored(TOKEN_KEY_KINDS.IDS, text)`, for llama.cpp with its pieces: ids stored or seen without chunks
-     * are a miss, and the row pushed for them carries the chunks, so write-back adds them to it.
      * @param {string} text
      */
     const storedWithChunks = async (text) => {
@@ -319,21 +278,14 @@ export function createStoredCounter({
     };
 }
 
-/**
- * @typedef {(resolved: import('./tokenizer-resolve.js').ResolvedTokenizer, encode: (text: string, answeredOut: AnsweredOut) => Promise<ArrayLike<number> | null>) => Promise<(text: string) => Promise<ArrayLike<number> | null>>} StoredEncoder
- */
+/** @typedef {(resolved: import('./tokenizer-resolve.js').ResolvedTokenizer, encode: (text: string, answeredOut: AnsweredOut) => Promise<ArrayLike<number> | null>) => Promise<(text: string) => Promise<ArrayLike<number> | null>>} StoredEncoder */
 
 /**
- * Wraps an encoder with a request's stored ids, for a caller that resolves its tokenizer itself
- * (computeLogitBias(), given it as `ChatCompletionConnection.storedEncoder`). The identity is computed
- * when the result is called, from `llamaCppProps.props` as it is then, because the caller's resolution
- * is what asks `/props`.
  * @param {object} args
  * @param {import('./users.js').UserDirectoryList} args.directories
- * @param {PendingTokenRows} args.pending The request's rows, which encodes add to.
- * @param {import('./llamacpp-props.js').LlamaCppPropsCheck} [args.llamaCppProps] The request's `/props` check.
- * @returns {StoredEncoder} Given the resolution and an encoder that sets `answeredOut.tokenizer` to the
- * tokenizer that answered (`resolved`, its local copy, or null), the stored counter's `encodeText`.
+ * @param {PendingTokenRows} args.pending
+ * @param {import('./llamacpp-props.js').LlamaCppPropsCheck} [args.llamaCppProps]
+ * @returns {StoredEncoder}
  */
 export function createStoredEncoder({ directories, pending, llamaCppProps = undefined }) {
     return async (resolved, encode) => {

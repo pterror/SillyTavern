@@ -1,10 +1,3 @@
-//! Sessions, fork choices and depths (`.plans/2026-10-03-storage-build-path.md` 5b, design 4.1): what follows from
-//! the records that move a session's pointer (`pointerMove`, `pointerRoot`, an append made through a session), the records that
-//! choose a reply at a fork (`forkSelection`, the same appends), and the moves and deletes of messages.
-//!
-//! A pointer is a message, or a tree's root (no message: the tree shows its card's greeting, as a new chat does).
-//! In entries it is the message's id plus one, 0 for the root.
-
 use std::collections::BTreeMap;
 
 use super::StoreError;
@@ -15,91 +8,48 @@ use super::library::counter;
 use crate::keyspace::val::{Val, get_bytes, get_u64, put_bytes, put_u64};
 use crate::log::format::Record;
 
-// ---- keys ----
-
-/// Per session: `[tree, pointer]`.
 pub const SESSION_PTR: u64 = 120;
-/// Per (message, session): the session's pointer is at the message.
 pub const SESSIONS_AT: u64 = 121;
-/// Per (session, tree): the session's last position there, `[pointer]` at a message, `[0, time key]` at the root
-/// (the time it got there, as `time_key` keys it).
 pub const SESSION_TREE: u64 = 122;
-/// Per (user, tree): `[session, pointer]`, the user's last move there and the session it was made through.
 pub const USER_TREE: u64 = 123;
-/// Per (message, which, a, b): a remembered position names the message: which 0 is (session a, tree b), 1 is
-/// (user a, tree b).
 pub const REMEMBERED_AT: u64 = 124;
-/// Per (user, tree, position in the log, session): the user's sessions in the tree by their last move there; per
-/// (user, tree, session): that position; per (session, user, tree): the session has an entry there.
 pub const USER_TREE_ORDER: u64 = 125;
 pub const USER_TREE_LAST: u64 = 126;
 pub const SESSION_USERS: u64 = 127;
-/// Per (session, n): the n-th entry of its history, `[target, gone, record position + 1 (0: an append's), record
-/// length]`, the target a message's id times two, or a tree's id times two plus one for its root; per session: how
-/// many (a maximum); per (message, session, n): an entry names the message; per record position: `[session, n]` for
-/// a `pointerMove`'s or `pointerRoot`'s entry.
 pub const HISTORY: u64 = 128;
 pub const HISTORY_N: u64 = 129;
 pub const HISTORY_BY: u64 = 130;
 pub const HISTORY_AT: u64 = 131;
-/// Per (position in the log, session): every session by its last pointer move; per session: that position.
 pub const RECENT: u64 = 132;
 pub const RECENT_AT: u64 = 133;
-/// Per (tree, position in the log, session): the tree's sessions by their last meaningful activity there; per
-/// (session, tree): that position.
 pub const TREE_ACTIVITY: u64 = 134;
 pub const TREE_ACTIVITY_AT: u64 = 135;
-/// Per (position in the log, which, a, b): every conversation by its last meaningful activity, a conversation being
-/// a bookmark (which 0, a the bookmark, b 0) or a session's with no current chat in a tree (which 1, a the session, b
-/// the tree); per (which, a, b): that position.
 pub const CONVO_ORDER: u64 = 198;
 pub const CONVO_AT: u64 = 199;
-/// Fork choices, `[reply, record position + 1 (0: an append's), record length]`: per (session, fork), per (user,
-/// fork), per fork (the last anyone made). Per (reply, choice key): a choice names the reply.
 pub const FORK_SESSION: u64 = 136;
 pub const FORK_USER: u64 = 137;
 pub const FORK_ANY: u64 = 138;
 pub const CHOSEN: u64 = 139;
-/// Per message: its depth (an opening is 1).
 pub const DEPTH: u64 = 140;
-/// Per move (its record's position): `[tree, moved message, next message to recompute + 1 (0: done)]`; per tree:
-/// how many are under way (a counter); per (message, move): the move's next message is that message.
 pub const DEPTH_PENDING: u64 = 141;
 pub const DEPTH_TREE: u64 = 142;
 pub const DEPTH_CURSOR: u64 = 143;
-/// Per (message, bookmark): a bookmark was created at the message.
 pub const BRANCH_FROM: u64 = 144;
-/// Per session: its place in its history, `[n, record position + 1 (0: a move's, not a `historyStep`), record
-/// length]`.
 pub const HISTORY_CUR: u64 = 145;
-/// Per (session, tree): the card greeting chosen there with no message stored, `[index, record position, record
-/// length]`.
 pub const OPENING_CHOICE: u64 = 146;
 
-/// Per (name, session): a named session, by its name's exact bytes.
 pub const SESSION_NAMED: u64 = 147;
 
-/// Per (tree, session): the session's pointer is at a message of the tree. Per (tree, which, a): a remembered
-/// position (`REMEMBERED_AT`'s which and a) is at a message of the tree. What a subtree's delete moves is found
-/// through these, without reading the subtree.
 pub const PTR_IN_TREE: u64 = 149;
 pub const REMEMBERED_IN: u64 = 154;
 
-/// Per (session, tree): the session's current chat there (upstream's open chat file), a bookmark,
-/// `[bookmark, record position, record length]`; none has no entry. Set only by a `currentChat` (an explicit switch).
 pub const CURRENT_CHAT: u64 = 175;
 
-/// Per (session, tree): the name of the session's conversation there (`conversationName`), its record's place
-/// (`loc_bytes`); none until the conversation's first write stores one.
 pub const CONVO_NAME: u64 = 166;
 
-/// Per session made by a `sessionFork`: `[original, length, record position, record length]`; its history's entries
-/// 1 to length are the original's. Per (original, length, fork): the fork reads the original's entries up to length,
-/// so they stay while it does, the original's delete included.
 pub const FORK_BASE: u64 = 176;
 pub const FORK_REFS: u64 = 178;
 
-/// The key of a named session's `SESSION_NAMED` entry.
 pub fn named_key(name: &[u8], s: u64) -> Vec<u8> {
     let mut k = key::of(SESSION_NAMED);
     put_bytes(&mut k, name);
@@ -107,7 +57,6 @@ pub fn named_key(name: &[u8], s: u64) -> Vec<u8> {
     k
 }
 
-/// The sessions named exactly `name` in the store (names are unique there: at most one), in id order.
 pub fn by_name(view: &View, name: &[u8]) -> Result<Vec<u64>, StoreError> {
     let mut p = key::of(SESSION_NAMED);
     put_bytes(&mut p, name);
@@ -119,7 +68,6 @@ pub fn by_name(view: &View, name: &[u8]) -> Result<Vec<u64>, StoreError> {
     Ok(out)
 }
 
-/// Messages a depth slice recomputes.
 pub const DEPTH_SLICE: usize = 256;
 
 fn bad(what: &str) -> StoreError {
@@ -130,7 +78,6 @@ fn ptr(m: Option<u64>) -> u64 {
     m.map_or(0, |m| m + 1)
 }
 
-/// Where a session's pointer goes: a message, or a tree's root, reached at a time (ms).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Spot {
     Message(u64),
@@ -145,13 +92,11 @@ impl Spot {
         }
     }
 
-    /// `m`, else the root reached at `time`.
     pub fn of(m: Option<u64>, time: i64) -> Spot {
         m.map_or(Spot::Root(time), Spot::Message)
     }
 }
 
-/// A time (ms) as the chat list's order keys it: `+ 2^53`, so a time before 1970 still sorts as an unsigned key.
 pub fn time_key(t: i64) -> u64 {
     (t + (1 << 53)) as u64
 }
@@ -180,7 +125,6 @@ fn unptr(p: u64) -> Option<u64> {
     p.checked_sub(1)
 }
 
-/// Where a history entry moved the pointer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
     Message(u64),
@@ -208,7 +152,6 @@ fn get_vals<const N: usize>(view: &View, k: &[u8]) -> Result<Option<[u64; N]>, S
     view.get(k)?.map(|b| parse_varints::<N>(&b)).transpose()
 }
 
-/// A fork: a message's replies, or the messages opening a tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Fork {
     Message(u64),
@@ -236,7 +179,6 @@ impl Fork {
         }
     }
 
-    /// The fork a message is a reply at.
     pub fn of(view: &View, m: u64) -> Result<(Fork, u64), StoreError> {
         let (_, r) = require_message(view, m)?;
         let tree = id(&r, APPEND_OWNER);
@@ -259,27 +201,20 @@ pub fn fork_key(structure: u64, who: Option<u64>, f: Fork) -> Vec<u8> {
     k
 }
 
-/// The tree a message is in.
 pub fn tree_of(view: &View, m: u64) -> Result<u64, StoreError> {
     Ok(id(&require_message(view, m)?.1, APPEND_OWNER))
 }
 
-// ---- reads ----
-
-/// A session's pointer: its tree and the message (None: the tree's root).
 pub fn session_pointer(view: &View, s: u64) -> Result<Option<(u64, Option<u64>)>, StoreError> {
     Ok(get_vals::<2>(view, &key::id(SESSION_PTR, s))?.map(|[t, p]| (t, unptr(p))))
 }
 
-/// The session's last position in the tree (None outside: never there; Some(None): its root).
 pub fn session_in_tree(view: &View, s: u64, tree: u64) -> Result<Option<Option<u64>>, StoreError> {
     Ok(session_tree_entry(view, s, tree)?.map(|(m, _)| m))
 }
 
-/// A session's last position in a tree: the message (None: the root) and, at the root, the time key it got there.
 pub type TreePosition = (Option<u64>, Option<u64>);
 
-/// The session's last position in the tree.
 pub fn session_tree_entry(
     view: &View,
     s: u64,
@@ -290,7 +225,6 @@ pub fn session_tree_entry(
         .transpose()
 }
 
-/// The user's last move in the tree: the session it was made through and where.
 pub fn user_in_tree(
     view: &View,
     u: u64,
@@ -299,18 +233,14 @@ pub fn user_in_tree(
     Ok(get_vals::<2>(view, &key::ids(USER_TREE, u, tree))?.map(|[s, p]| (s, unptr(p))))
 }
 
-/// A message's depth (an opening is 1).
 pub fn depth(view: &View, m: u64) -> Result<Option<u64>, StoreError> {
     Ok(get_vals::<2>(view, &key::id(DEPTH, m))?.map(|[d, _]| d))
 }
 
-/// Whether a depth rewrite is under way in the tree (its depths are estimates meanwhile).
 pub fn depths_pending(view: &View, tree: u64) -> Result<bool, StoreError> {
     Ok(counter(view, &key::id(DEPTH_TREE, tree))? > 0)
 }
 
-/// The message count of a position (its message's depth, 0 at a tree's root), and whether it is an estimate (a
-/// depth rewrite is under way in the tree).
 pub fn message_count(view: &View, tree: u64, at: Option<u64>) -> Result<(u64, bool), StoreError> {
     let n = match at {
         Some(m) => depth(view, m)?.unwrap_or(0),
@@ -319,12 +249,10 @@ pub fn message_count(view: &View, tree: u64, at: Option<u64>) -> Result<(u64, bo
     Ok((n, depths_pending(view, tree)?))
 }
 
-/// Whether `reply` is a reply at `f` now.
 fn is_reply_at(view: &View, reply: u64, f: Fork) -> Result<bool, StoreError> {
     let Some(l) = message_loc(view, reply)? else {
         return Ok(false);
     };
-    // A subtree being deleted is no reply of its parent's any more.
     if super::prune::is_root(view, reply)? {
         return Ok(false);
     }
@@ -336,8 +264,6 @@ fn is_reply_at(view: &View, reply: u64, f: Fork) -> Result<bool, StoreError> {
     })
 }
 
-/// The reply followed at a fork: this session's choice, else this user's from any session, else the last choice
-/// anyone made there, else the newest reply (design 4.1). None when the fork has no reply.
 pub fn followed(
     view: &View,
     s: Option<u64>,
@@ -367,7 +293,6 @@ pub fn followed(
     }
 }
 
-/// The messages below `from` (a message, or the tree's root) along the followed replies, to the end.
 pub fn path_below(
     view: &View,
     s: Option<u64>,
@@ -387,8 +312,6 @@ pub fn path_below(
     Ok(out)
 }
 
-/// Where a session lands entering a tree: its own last position there, else the user's last there, else the end
-/// of the tree's path from its root (design 4.1). None: the tree's root (no message).
 pub fn landing(
     view: &View,
     s: Option<u64>,
@@ -408,13 +331,10 @@ pub fn landing(
     Ok(path_below(view, s, u, tree, None)?.last().copied())
 }
 
-/// The session a fork was made from and how many of its entries the fork reads; None for a session made otherwise.
 pub fn fork_base(view: &View, s: u64) -> Result<Option<(u64, u64)>, StoreError> {
     Ok(get_vals::<4>(view, &key::id(FORK_BASE, s))?.map(|[p, l, _, _]| (p, l)))
 }
 
-/// The sessions whose own entries make up `s`'s history, newest first: `(owner, lo, hi)`, the owner's entries `n`
-/// with `lo < n <= hi` (hi None: no bound).
 fn segments(view: &View, s: u64) -> Result<Vec<(u64, u64, Option<u64>)>, StoreError> {
     let mut out = Vec::new();
     let (mut cur, mut hi) = (s, None::<u64>);
@@ -434,7 +354,6 @@ fn segments(view: &View, s: u64) -> Result<Vec<(u64, u64, Option<u64>)>, StoreEr
     }
 }
 
-/// The key of `s`'s n-th history entry: its own, or the one of the session it reads it through.
 fn entry_key(view: &View, s: u64, n: u64) -> Result<Vec<u8>, StoreError> {
     let mut cur = s;
     while let Some((p, l)) = fork_base(view, cur)? {
@@ -446,7 +365,6 @@ fn entry_key(view: &View, s: u64, n: u64) -> Result<Vec<u8>, StoreError> {
     Ok(key::ids(HISTORY, cur, n))
 }
 
-/// The bounds of `o`'s own entries `from ..= hi` as scan keys.
 fn entry_range(o: u64, from: u64, hi: Option<u64>) -> (Vec<u8>, Vec<u8>) {
     let end = match hi {
         Some(h) => key::ids(HISTORY, o, h + 1),
@@ -455,7 +373,6 @@ fn entry_range(o: u64, from: u64, hi: Option<u64>) -> (Vec<u8>, Vec<u8>) {
     (key::ids(HISTORY, o, from), end)
 }
 
-/// The history entries of a session from the n-th on: `(n, target, gone)`.
 pub fn history(
     view: &View,
     s: u64,
@@ -482,12 +399,10 @@ pub fn history(
     Ok(out)
 }
 
-/// How many entries the session's history has (its own and those it reads through a fork).
 pub fn history_len(view: &View, s: u64) -> Result<u64, StoreError> {
     Ok(get_vals::<1>(view, &key::id(HISTORY_N, s))?.map_or(0, |[n]| n))
 }
 
-/// Sessions by their last pointer move, the newest first, from before `before` (a log position).
 pub fn recent(
     view: &View,
     before: Option<u64>,
@@ -511,7 +426,6 @@ pub fn recent(
         .collect()
 }
 
-/// A conversation: a bookmark, or a session's in a tree where it has no current chat.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Convo {
     Bookmark(u64),
@@ -542,7 +456,6 @@ fn convo_order_key(pos: u64, c: Convo) -> Vec<u8> {
     k
 }
 
-/// The conversation's last meaningful activity is at `pos`.
 pub fn convo_active(view: &View, out: &mut Out, c: Convo, pos: u64) -> Result<(), StoreError> {
     let at = convo_at_key(c);
     if let Some([old]) = get_vals::<1>(view, &at)? {
@@ -553,7 +466,6 @@ pub fn convo_active(view: &View, out: &mut Out, c: Convo, pos: u64) -> Result<()
     Ok(())
 }
 
-/// The conversation has no activity any more (it went, or became a bookmark's).
 pub fn convo_gone(view: &View, out: &mut Out, c: Convo) -> Result<(), StoreError> {
     let at = convo_at_key(c);
     if let Some([old]) = get_vals::<1>(view, &at)? {
@@ -563,8 +475,6 @@ pub fn convo_gone(view: &View, out: &mut Out, c: Convo) -> Result<(), StoreError
     Ok(())
 }
 
-/// A page of the conversations by their last meaningful activity, the newest first, from before `before` (the
-/// position of the last one of the page before): `(position, conversation)`.
 pub fn conversations(
     view: &View,
     before: Option<u64>,
@@ -593,7 +503,6 @@ pub fn conversations(
         .collect()
 }
 
-/// A tree's sessions by their last meaningful activity there, the newest first, from before `before`.
 pub fn in_tree(
     view: &View,
     tree: u64,
@@ -618,7 +527,6 @@ pub fn in_tree(
         .collect()
 }
 
-/// The bookmarks created at a message, in the order they were created (their ids).
 pub fn branches_from(view: &View, m: u64) -> Result<Vec<u64>, StoreError> {
     let p = key::id(BRANCH_FROM, m);
     view.scan(&p, &key::prefix_end(&p), usize::MAX)?
@@ -630,12 +538,8 @@ pub fn branches_from(view: &View, m: u64) -> Result<Vec<u64>, StoreError> {
         .collect()
 }
 
-// ---- writes ----
-
-/// The session a user's remembered position names when no session's move set it (`userPosition`).
 pub const NO_SESSION: u64 = u64::MAX;
 
-/// A remembered (session, tree) position, with its index.
 pub(super) fn set_session_tree(
     view: &View,
     out: &mut Out,
@@ -688,7 +592,6 @@ fn set_remembered_in(out: &mut Out, tree: u64, which: u64, a: u64, at_message: b
     }
 }
 
-/// The sessions whose pointer is at a message of the tree.
 pub fn pointers_in(view: &View, tree: u64) -> Result<Vec<u64>, StoreError> {
     let p = key::id(PTR_IN_TREE, tree);
     view.scan(&p, &key::prefix_end(&p), usize::MAX)?
@@ -700,7 +603,6 @@ pub fn pointers_in(view: &View, tree: u64) -> Result<Vec<u64>, StoreError> {
         .collect()
 }
 
-/// The remembered positions at messages of the tree: `(0, session)` and `(1, user)`.
 pub fn remembered_in(view: &View, tree: u64) -> Result<Vec<(u64, u64)>, StoreError> {
     let p = key::id(REMEMBERED_IN, tree);
     view.scan(&p, &key::prefix_end(&p), usize::MAX)?
@@ -742,15 +644,11 @@ pub(super) fn set_pointer(
     Ok(())
 }
 
-/// The session's last meaningful activity in the tree is at `pos`.
 pub fn activity(view: &View, out: &mut Out, s: u64, tree: u64, pos: u64) -> Result<(), StoreError> {
     let there = session_in_tree(view, s, tree)?.is_some();
     activity_in(view, out, s, tree, pos, there)
 }
 
-/// `activity`, `there` telling whether the session is in the tree (a move being derived puts it there before the
-/// view can show it). It is a conversation's activity: the session's current chat's, else its own. A session that is
-/// nowhere in the tree has no conversation there (an act of the conversion's, or an API's, not of a chat being used).
 fn activity_in(
     view: &View,
     out: &mut Out,
@@ -781,7 +679,6 @@ fn activity_key(tree: u64, pos: u64, s: u64) -> Vec<u8> {
     k
 }
 
-/// A record naming a session and a user is theirs: the session must be one (it has a key) and the user mapped.
 pub fn check_actor(view: &View, s: Option<u64>, u: Option<u64>) -> Result<(), StoreError> {
     if let Some(s) = s
         && !chat::is_session(view, s)?
@@ -796,9 +693,6 @@ pub fn check_actor(view: &View, s: Option<u64>, u: Option<u64>) -> Result<(), St
     Ok(())
 }
 
-/// The session's pointer moves to `target` (in `tree`) by `u`, through the record at `at` (`owned`: a
-/// `pointerMove` or `pointerRoot`, whose history entry points at it). `meaningful`: the move counts as activity in
-/// the tree whether or not it enters it.
 #[allow(clippy::too_many_arguments)]
 pub fn moved(
     view: &View,
@@ -833,7 +727,6 @@ pub fn moved(
     set_cursor_entry(view, out, s, n, None)
 }
 
-/// The session's cursor is at its n-th history entry, through a `historyStep` at `step` (None: a move).
 fn set_cursor_entry(
     view: &View,
     out: &mut Out,
@@ -858,8 +751,6 @@ fn set_cursor_entry(
     Ok(())
 }
 
-/// What the session's pointer moving to `spot` (in `tree`) changes besides its history: the pointer, the orders,
-/// the remembered positions, and activity in the tree unless the move enters it (or always, when `meaningful`).
 #[allow(clippy::too_many_arguments)]
 fn pointer_moved(
     view: &View,
@@ -904,8 +795,6 @@ fn user_tree_order_key(u: u64, tree: u64, pos: u64, s: u64) -> Vec<u8> {
     k
 }
 
-/// The three choices (session, user, anyone) at `f` become `reply`, by the record at `at` (`owned`: a
-/// `forkSelection`, which the choices point at).
 #[allow(clippy::too_many_arguments)]
 pub fn chosen(
     view: &View,
@@ -948,15 +837,10 @@ pub fn chosen(
     Ok(())
 }
 
-// ---- history steps and opening choices ----
-
-/// The session's place in its history (None: it has none).
 pub fn cursor(view: &View, s: u64) -> Result<Option<u64>, StoreError> {
     Ok(get_vals::<3>(view, &key::id(HISTORY_CUR, s))?.map(|[n, _, _]| n))
 }
 
-/// The entry a step back (or forward) from the cursor reaches: the nearest one in that direction whose target is
-/// still there.
 pub fn step_target(view: &View, s: u64, back: bool) -> Result<Option<(u64, Target)>, StoreError> {
     let Some(c) = cursor(view, s)? else {
         return Ok(None);
@@ -968,7 +852,6 @@ pub fn step_target(view: &View, s: u64, back: bool) -> Result<Option<(u64, Targe
     }
 }
 
-/// The last entry of `s`'s history before the `below`-th whose target is still there.
 fn nearest_back(view: &View, s: u64, below: u64) -> Result<Option<(u64, Target)>, StoreError> {
     for (o, lo, hi) in segments(view, s)? {
         let end = hi.map_or(below, |h| (h + 1).min(below));
@@ -997,8 +880,6 @@ fn nearest_forward(view: &View, s: u64, above: u64) -> Result<Option<(u64, Targe
     Ok(None)
 }
 
-/// The first (or, `back`, the last) of `o`'s own entries `from .. end` (end `u64::MAX`: no bound) whose target is
-/// still there.
 fn live_in(
     view: &View,
     o: u64,
@@ -1049,7 +930,6 @@ fn live_in(
     Ok(None)
 }
 
-/// Whether a history entry's target is a message being deleted.
 fn target_doomed(view: &View, t: Target) -> Result<bool, StoreError> {
     match t {
         Target::Message(m) => super::prune::doomed(view, tree_of(view, m)?, m),
@@ -1057,7 +937,6 @@ fn target_doomed(view: &View, t: Target) -> Result<bool, StoreError> {
     }
 }
 
-/// `historyStep`: the session's cursor and pointer go to its n-th history entry's target, at `time`.
 pub fn stepped(
     view: &View,
     out: &mut Out,
@@ -1088,8 +967,6 @@ pub fn stepped(
     set_cursor_entry(view, out, s, n, Some(at))
 }
 
-/// `sessionFork`: `s` reads `from`'s history entries 1 to `len`, its cursor at the `c`-th, or at the nearest earlier
-/// entry whose target is still there, where its pointer goes (none such: no pointer).
 #[allow(clippy::too_many_arguments)]
 pub fn forked(
     view: &View,
@@ -1139,7 +1016,6 @@ fn fork_ref_key(from: u64, len: u64, s: u64) -> Vec<u8> {
     k
 }
 
-/// Whether the `sessionFork` at `pos` still makes its session read another's history.
 pub fn fork_live(view: &View, s: u64, pos: u64) -> Result<bool, StoreError> {
     Ok(get_vals::<4>(view, &key::id(FORK_BASE, s))?.is_some_and(|[_, _, rp, _]| rp == pos))
 }
@@ -1160,7 +1036,6 @@ pub fn fork_repoint(
     Ok(())
 }
 
-/// The most entries of `s`'s any fork other than `except` reads.
 fn referenced(view: &View, s: u64, except: Option<u64>) -> Result<Option<u64>, StoreError> {
     let p = key::id(FORK_REFS, s);
     for (k, _) in view.scan_vals_rev(&p, &key::prefix_end(&p), 2)? {
@@ -1174,7 +1049,6 @@ fn referenced(view: &View, s: u64, except: Option<u64>) -> Result<Option<u64>, S
     Ok(None)
 }
 
-/// `s`'s own history entries after the `keep`-th go, with their records.
 fn drop_entries(view: &View, out: &mut Out, s: u64, keep: u64) -> Result<(), StoreError> {
     let (start, end) = entry_range(s, keep + 1, None);
     let hp = key::id(HISTORY, s);
@@ -1202,8 +1076,6 @@ fn drop_entries(view: &View, out: &mut Out, s: u64, keep: u64) -> Result<(), Sto
     Ok(())
 }
 
-/// `s` (going, with no fork reading its entries any more) stops reading the session it was forked from; that one,
-/// when it went before, keeps only what its other forks read.
 fn release_base(view: &View, out: &mut Out, s: u64) -> Result<(), StoreError> {
     let Some([p, l, rp, rl]) = get_vals::<4>(view, &key::id(FORK_BASE, s))? else {
         return Ok(());
@@ -1222,12 +1094,10 @@ fn release_base(view: &View, out: &mut Out, s: u64) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Whether a `historyStep` at `pos` is the session's cursor.
 pub fn step_live(view: &View, s: u64, pos: u64) -> Result<bool, StoreError> {
     Ok(get_vals::<3>(view, &key::id(HISTORY_CUR, s))?.is_some_and(|[_, rp, _]| rp == pos + 1))
 }
 
-/// Points the session's cursor at its `historyStep`'s copy.
 pub fn step_repoint(
     view: &View,
     out: &mut Out,
@@ -1244,8 +1114,6 @@ pub fn step_repoint(
     Ok(())
 }
 
-/// The session's current chat in the tree: the bookmark it switched to, while that bookmark is in the tree (a deleted
-/// one is none; bookmark ids are never reused).
 pub fn current_chat(view: &View, s: u64, tree: u64) -> Result<Option<u64>, StoreError> {
     match get_vals::<3>(view, &key::ids(CURRENT_CHAT, s, tree))? {
         Some([b, _, _]) if chat::bookmark_tree(view, b)? == Some(tree) => Ok(Some(b)),
@@ -1253,8 +1121,6 @@ pub fn current_chat(view: &View, s: u64, tree: u64) -> Result<Option<u64>, Store
     }
 }
 
-/// A page of the session's current chats, by tree from after `after`: `(tree, bookmark)`, the bookmark None when it
-/// went (the tree has none).
 pub fn current_chats(
     view: &View,
     s: u64,
@@ -1272,7 +1138,6 @@ pub fn current_chats(
     Ok(out)
 }
 
-/// The session's current chat in the tree becomes `b` (None: none), through the record at `at`.
 pub fn current_chat_set(
     view: &View,
     out: &mut Out,
@@ -1287,7 +1152,6 @@ pub fn current_chat_set(
     }
     match b {
         Some(b) => {
-            // The session's conversation there became the bookmark's, its name too.
             convo_gone(view, out, Convo::Session(s, tree))?;
             convo_name_gone(view, out, s, tree)?;
             out.put(k, varints(&[b, at.pos, at.len]));
@@ -1300,12 +1164,10 @@ pub fn current_chat_set(
     Ok(())
 }
 
-/// Whether a `currentChat` at `pos` is still the session's current chat for the tree.
 pub fn current_chat_live(view: &View, s: u64, tree: u64, pos: u64) -> Result<bool, StoreError> {
     Ok(get_vals::<3>(view, &key::ids(CURRENT_CHAT, s, tree))?.is_some_and(|[_, rp, _]| rp == pos))
 }
 
-/// Points the session's current chat at its record's copy.
 pub fn current_chat_repoint(
     view: &View,
     out: &mut Out,
@@ -1327,7 +1189,6 @@ pub fn convo_name_key(s: u64, tree: u64) -> Vec<u8> {
     key::ids(CONVO_NAME, s, tree)
 }
 
-/// The stored name of the session's conversation in the tree.
 pub fn convo_name(view: &View, s: u64, tree: u64) -> Result<Option<Vec<u8>>, StoreError> {
     let Some(v) = view.get(&convo_name_key(s, tree))? else {
         return Ok(None);
@@ -1336,7 +1197,6 @@ pub fn convo_name(view: &View, s: u64, tree: u64) -> Result<Option<Vec<u8>>, Sto
     Ok(Some(bytes(&rec, 3).to_vec()))
 }
 
-/// The session's conversation in the tree is named `name`, by the record at `at`.
 pub fn convo_name_set(
     view: &View,
     out: &mut Out,
@@ -1357,7 +1217,6 @@ pub fn convo_name_set(
     Ok(())
 }
 
-/// The name of the session's conversation in the tree goes.
 fn convo_name_gone(view: &View, out: &mut Out, s: u64, tree: u64) -> Result<(), StoreError> {
     let k = convo_name_key(s, tree);
     if let Some(v) = view.get(&k)? {
@@ -1370,7 +1229,6 @@ fn convo_name_gone(view: &View, out: &mut Out, s: u64, tree: u64) -> Result<(), 
     Ok(())
 }
 
-/// The session's conversation names go with it.
 fn convo_names_gone(view: &View, out: &mut Out, s: u64) -> Result<(), StoreError> {
     let p = key::id(CONVO_NAME, s);
     for (k, v) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
@@ -1385,12 +1243,10 @@ fn convo_names_gone(view: &View, out: &mut Out, s: u64) -> Result<(), StoreError
     Ok(())
 }
 
-/// The card greeting the session chose for the tree with no message stored, by its index in the card's list.
 pub fn opening_choice(view: &View, s: u64, tree: u64) -> Result<Option<u64>, StoreError> {
     Ok(get_vals::<3>(view, &key::ids(OPENING_CHOICE, s, tree))?.map(|[i, _, _]| i))
 }
 
-/// `openingChoice`: the session chooses the card greeting at `index` for the tree, by the record at `at`.
 pub fn opening_chosen(
     view: &View,
     out: &mut Out,
@@ -1416,7 +1272,6 @@ fn clear_opening_choice(view: &View, out: &mut Out, s: u64, tree: u64) -> Result
     Ok(())
 }
 
-/// Whether an `openingChoice` at `pos` is still the session's choice for the tree.
 pub fn opening_choice_live(view: &View, s: u64, tree: u64, pos: u64) -> Result<bool, StoreError> {
     Ok(
         get_vals::<3>(view, &key::ids(OPENING_CHOICE, s, tree))?
@@ -1424,7 +1279,6 @@ pub fn opening_choice_live(view: &View, s: u64, tree: u64, pos: u64) -> Result<b
     )
 }
 
-/// Points the session's opening choice at its record's copy.
 pub fn opening_choice_repoint(
     view: &View,
     out: &mut Out,
@@ -1448,8 +1302,6 @@ fn chosen_key(reply: u64, k: &[u8]) -> Vec<u8> {
     c
 }
 
-/// Whether a `forkSelection` at `l` is still a choice under one of its keys other than `gone` (keys being
-/// replaced or removed now).
 fn still_chosen(view: &View, l: Loc, gone: &[Vec<u8>]) -> Result<bool, StoreError> {
     for k in selection_keys(&view.record(l.pos)?.0, view)? {
         if gone.contains(&k) {
@@ -1462,8 +1314,6 @@ fn still_chosen(view: &View, l: Loc, gone: &[Vec<u8>]) -> Result<bool, StoreErro
     Ok(false)
 }
 
-/// A `forkSelection`'s three choice keys (its reply is still a message: a choice of a message that goes goes
-/// with it).
 fn selection_keys(rec: &Record, view: &View) -> Result<[Vec<u8>; 3], StoreError> {
     let reply = id(rec, 1);
     let f = match rec.values[0] {
@@ -1477,7 +1327,6 @@ fn selection_keys(rec: &Record, view: &View) -> Result<[Vec<u8>; 3], StoreError>
     ])
 }
 
-/// Whether a `forkSelection` at `pos` is a current choice.
 pub fn selection_live(view: &View, rec: &Record, pos: u64) -> Result<bool, StoreError> {
     if message_loc(view, id(rec, 1))?.is_none() {
         return Ok(false);
@@ -1490,7 +1339,6 @@ pub fn selection_live(view: &View, rec: &Record, pos: u64) -> Result<bool, Store
     Ok(false)
 }
 
-/// Points a `forkSelection`'s choices at its copy.
 pub fn selection_repoint(
     view: &View,
     out: &mut Out,
@@ -1511,12 +1359,10 @@ pub fn selection_repoint(
     Ok(())
 }
 
-/// Whether the history entry of a `pointerMove` at `pos` is kept, and its key.
 pub fn history_entry(view: &View, pos: u64) -> Result<Option<Vec<u8>>, StoreError> {
     Ok(get_vals::<2>(view, &key::id(HISTORY_AT, pos))?.map(|[s, n]| key::ids(HISTORY, s, n)))
 }
 
-/// Points a `pointerMove`'s history entry at its copy.
 pub fn history_repoint(view: &View, out: &mut Out, from: u64, to: Loc) -> Result<(), StoreError> {
     let Some([s, n]) = get_vals::<2>(view, &key::id(HISTORY_AT, from))? else {
         return Ok(());
@@ -1530,11 +1376,6 @@ pub fn history_repoint(view: &View, out: &mut Out, from: u64, to: Loc) -> Result
     Ok(())
 }
 
-// ---- a message goes ----
-
-/// What a message's going at `time` changes here: pointers and remembered positions at it move to its parent (an
-/// opening's to the tree's newest other opening, else the tree's root), history entries naming it are marked gone,
-/// choices of it go, and its depth, branches and any depth rewrite's place at it.
 pub fn message_gone(
     view: &View,
     out: &mut Out,
@@ -1584,7 +1425,6 @@ pub fn message_gone(
         }
         out.del(k);
     }
-    // Every choice of `m` goes, so a selection of it is chosen nowhere any more.
     let cp = key::id(CHOSEN, m);
     let mut owned = Vec::new();
     for (k, _) in view.scan(&cp, &key::prefix_end(&cp), usize::MAX)? {
@@ -1615,7 +1455,6 @@ pub fn message_gone(
         out.del(k);
         let pk = key::id(DEPTH_PENDING, mv);
         if let Some([t, root, _]) = get_vals::<3>(view, &pk)? {
-            // `m` replies to nothing, so the walk goes on from the next message after it.
             let next = if m == root {
                 None
             } else {
@@ -1627,11 +1466,6 @@ pub fn message_gone(
     Ok(())
 }
 
-// ---- a session goes ----
-
-/// A session goes: its pointer, its history, its places in the orders, its remembered positions, its own fork
-/// choices (the user's and anyone's stay); its outside key becomes a tombstone (its UUID says it was deleted). A user whose last move
-/// in a tree was through it falls back to their most recent other session there, if any.
 pub fn session_gone(view: &View, out: &mut Out, s: u64) -> Result<(), StoreError> {
     chat::tombstone_key(view, out, chat::KEYED_SESSION, s)?;
     let fp = key::id(FORK_SESSION, s);
@@ -1658,7 +1492,6 @@ pub fn session_gone(view: &View, out: &mut Out, s: u64) -> Result<(), StoreError
         out.del(key::ids(PTR_IN_TREE, t, s));
     }
     out.del(key::id(SESSION_PTR, s));
-    // The entries its forks read stay until they go.
     let keep = referenced(view, s, None)?;
     drop_entries(view, out, s, keep.unwrap_or(0))?;
     if keep.is_none() {
@@ -1758,16 +1591,10 @@ pub fn session_gone(view: &View, out: &mut Out, s: u64) -> Result<(), StoreError
     Ok(())
 }
 
-// ---- depths and jump pointers ----
-
-/// The depth a message at depth `d` jumps to (Myers' skew-binary jump pointers, depth 0 the tree's root): `d` less
-/// the smallest term of its greedy skew-binary sum (terms `2^k - 1`). An ancestor at any depth is reached in
-/// O(log d) jumps and parent steps.
 pub fn jump_depth(d: u64) -> u64 {
     let mut m = d;
     let mut last = 0;
     while m > 0 {
-        // The largest 2^k - 1 at most m.
         let k = 64 - (m + 1).leading_zeros() - 1;
         last = (1u64 << k) - 1;
         m -= last;
@@ -1775,12 +1602,10 @@ pub fn jump_depth(d: u64) -> u64 {
     d - last
 }
 
-/// A message's depth and its jump (the ancestor at `jump_depth(depth)`; None: the tree's root).
 pub fn depth_jump(view: &View, m: u64) -> Result<Option<(u64, Option<u64>)>, StoreError> {
     Ok(get_vals::<2>(view, &key::id(DEPTH, m))?.map(|[d, j]| (d, unptr(j))))
 }
 
-/// A message's depth entry under `parent`: its depth and its jump, from the parent's (and the parent's jump's).
 fn depth_entry(view: &View, parent: Option<u64>) -> Result<Vec<u8>, StoreError> {
     let Some(p) = parent else {
         return Ok(varints(&[1, 0]));
@@ -1793,22 +1618,17 @@ fn depth_entry(view: &View, parent: Option<u64>) -> Result<Vec<u8>, StoreError> 
     } else if jd == dp {
         Some(p)
     } else {
-        // jump_depth(d) is the parent's jump's jump.
         let jp = jp.ok_or_else(|| bad("a jump pointer"))?;
         depth_jump(view, jp)?.and_then(|(_, j)| j)
     };
     Ok(varints(&[d, ptr(jump)]))
 }
 
-/// A new message's depth and jump: from its parent's.
 pub fn appended(view: &View, out: &mut Out, m: u64, parent: Option<u64>) -> Result<(), StoreError> {
     out.put(key::id(DEPTH, m), depth_entry(view, parent)?);
     Ok(())
 }
 
-/// From message `v` (at depth `dv`, jumping to `jv`) up to its ancestor at depth `to` (at most `dv`): that
-/// ancestor and its jump, through jumps that don't pass `to` and parent steps otherwise (O(log(dv - to)) point
-/// reads, each counted in `reads`). None when a message on the way is gone.
 pub fn climb(
     view: &View,
     mut v: u64,
@@ -1842,7 +1662,6 @@ pub fn climb(
     Ok(Some((v, jv)))
 }
 
-/// Whether `m` is `p` or one of its ancestors, through jump pointers (`climb`). None when either is gone.
 pub fn ancestor_or_self(
     view: &View,
     m: u64,
@@ -1873,9 +1692,6 @@ fn set_cursor(out: &mut Out, mv: u64, tree: u64, root: u64, next: Option<u64>) {
     }
 }
 
-/// A message `m` moved by the record at `pos`: its subtree's depths are recomputed in slices from it on. A walk of
-/// another move that would go on at `m` goes on past `m`'s subtree instead (that move's slices no longer reach it;
-/// this one's do).
 pub fn reparented(
     view: &View,
     out: &mut Out,
@@ -1903,8 +1719,6 @@ pub fn reparented(
     Ok(())
 }
 
-/// The message after `m`'s subtree in a walk of `root`'s subtree (replies in order, each before its own replies):
-/// the next reply after `m` at its parent, else after its parent, up to `root`. None: the walk is done.
 fn after_subtree(view: &View, m: u64, root: u64) -> Result<Option<u64>, StoreError> {
     let mut x = m;
     loop {
@@ -1926,7 +1740,6 @@ fn after_subtree(view: &View, m: u64, root: u64) -> Result<Option<u64>, StoreErr
         }
         match p {
             Some(p) => x = p,
-            // Left the root's subtree (a message moved away meanwhile): nothing more of it to walk.
             None => return Ok(None),
         }
     }
@@ -1939,7 +1752,6 @@ fn chat_time(r: &Record) -> i64 {
     }
 }
 
-/// The next message of a walk of `root`'s subtree after `m`: its first reply, else what follows its subtree.
 fn walk_next(view: &View, m: u64, root: u64, tree: u64) -> Result<Option<u64>, StoreError> {
     let p = children_prefix(Some(m), tree);
     if let Some((k, _)) = view.scan(&p, &key::prefix_end(&p), 1)?.into_iter().next() {
@@ -1948,8 +1760,6 @@ fn walk_next(view: &View, m: u64, root: u64, tree: u64) -> Result<Option<u64>, S
     after_subtree(view, m, root)
 }
 
-/// One slice of the oldest depth rewrite under way: up to `DEPTH_SLICE` messages, each its parent's depth plus
-/// one, in walk order so a parent is done before its replies. Returns whether one was found.
 pub fn depth_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
     let pp = key::of(DEPTH_PENDING);
     let Some((pk, v)) = view.scan(&pp, &key::prefix_end(&pp), 1)?.into_iter().next() else {
@@ -1998,13 +1808,11 @@ pub fn depth_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
     Ok(true)
 }
 
-/// Every depth rewrite under way (for a store opening with some left).
 pub fn any_pending(view: &View) -> Result<bool, StoreError> {
     let pp = key::of(DEPTH_PENDING);
     Ok(!view.scan(&pp, &key::prefix_end(&pp), 1)?.is_empty())
 }
 
-/// A bookmark created at `m`.
 pub fn branch_created(out: &mut Out, m: u64, b: u64) {
     out.put(key::ids(BRANCH_FROM, m, b), Vec::new());
     chat::shape_add(out, m, chat::SHAPE_EXTRA);

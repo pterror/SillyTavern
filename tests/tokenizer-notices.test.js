@@ -1,6 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, jest, test } from '@jest/globals';
 
-/** In-memory sessionStorage stand-in. */
 function makeStorage() {
     const map = new Map();
     return {
@@ -10,8 +9,6 @@ function makeStorage() {
         clear: jest.fn(() => map.clear()),
     };
 }
-
-// A minimal DOM and jQuery: just what renderCountBasis uses.
 
 class FakeNode {
     /**
@@ -34,7 +31,7 @@ class FakeNode {
         return this.ownText + this.children.map(child => child.textContent).join('');
     }
 
-    /** @param {string} selector `tag.class` */
+    /** @param {string} selector */
     matches(selector) {
         const [tag, cls] = selector.split('.');
         return (!tag || tag === this.tag) && (!cls || this.className.split(' ').includes(cls));
@@ -111,7 +108,7 @@ class FakeQuery {
 }
 
 /**
- * @param {string|FakeNode|FakeQuery} content `<tag class="...">` markup, a node or a query.
+ * @param {string|FakeNode|FakeQuery} content
  * @returns {FakeQuery}
  */
 function fake$(content) {
@@ -123,7 +120,6 @@ function fake$(content) {
 }
 
 /**
- * A count element inside a parent, as on screen.
  * @param {string} text
  */
 function makeCounter(text) {
@@ -134,8 +130,6 @@ function makeCounter(text) {
     parent.children.push(counter);
     return { parent, counter };
 }
-
-// tokenizers.js's module dependencies, for the count and send notices.
 
 const tokenizerIds = { NONE: 0, OPENAI: 2, LLAMA3: 12, GEMMA: 13, API_TEXTGENERATIONWEBUI: 9, BEST_MATCH: 99 };
 
@@ -191,7 +185,6 @@ const unknownModel = 'No tokenizer is known for this model, so token counts are 
 const trimEstimate = 'The backend\'s tokenizer failed, so the prompt was fitted to the context by an estimated token count.';
 
 /**
- * A `/current/*` tokenizer answer for the on-screen llama.cpp model.
  * @param {string} basis
  */
 function answer(basis) {
@@ -206,7 +199,6 @@ function answer(basis) {
 }
 
 /**
- * The `warnings` a `/current/*` response carries for its tokenizer answer, as the server builds them.
  * @param {ReturnType<typeof answer>} tokenizer
  */
 function warningsFor(tokenizer) {
@@ -220,7 +212,6 @@ function warningsFor(tokenizer) {
 }
 
 /**
- * Answers every `/current/*` route with `basis`, and its warnings.
  * @param {string} basis
  */
 function respondWith(basis) {
@@ -249,7 +240,6 @@ function respondWith(basis) {
 let tokenizersModule;
 
 /**
- * Loads tokenizers.js with `api` as main_api (a mocked module export is fixed when it loads).
  * @param {string} api
  */
 async function useApi(api) {
@@ -309,7 +299,7 @@ describe('showTokenizerWarnings', () => {
 describe('renderCountBasis', () => {
     /**
      * @param {FakeNode} parent
-     * @returns {string[]} The parent's children, as `class:text`.
+     * @returns {string[]}
      */
     const layout = (parent) => parent.children.map(child => `${child.className}:${child.textContent}`);
 

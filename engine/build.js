@@ -1,9 +1,3 @@
-// Builds st-engine into engine/dist/, named for this checkout's source hash.
-//   node engine/build.js                       native, for this machine, with the host's cargo
-//   node engine/build.js --platform <platform> native, for a targets.json platform, the way CI builds it
-//   node engine/build.js --wasm                the wasm build (needs `npm ci` in engine/ first, for emnapi)
-// Prints the path of the file it wrote.
-
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -24,7 +18,7 @@ function run(command, args, env = {}) {
 
 /**
  * @param {string} rustTarget
- * @returns {string} The cdylib's file name cargo gives it on that target
+ * @returns {string}
  */
 function libraryName(rustTarget) {
     if (rustTarget.includes('windows')) return 'st_engine.dll';
@@ -33,12 +27,11 @@ function libraryName(rustTarget) {
 }
 
 /**
- * Builds st-engine into the dist directory, named for this checkout's source hash. Throws if cargo is missing or the build fails.
  * @param {object} [options]
- * @param {string|null} [options.platform] targets.json native platform to build the way CI does; null for this machine
- * @param {boolean} [options.wasm] Build the wasm instead
+ * @param {string|null} [options.platform]
+ * @param {boolean} [options.wasm]
  * @param {string} [options.distDir]
- * @returns {string} Path of the file written
+ * @returns {string}
  */
 export function buildEngine({ platform = null, wasm = false, distDir = DIST_DIR } = {}) {
     const key = sourceKey();

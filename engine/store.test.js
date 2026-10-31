@@ -1,5 +1,3 @@
-// The store through the binding, native and wasm. Needs this checkout's builds in engine/dist/
-// (node engine/build.js; node engine/build.js --wasm).
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -74,13 +72,11 @@ for (const [name, engine] of Object.entries(bindings)) {
         assert.equal(await store.version(1n), favAt);
         const text = 'héllo \ud800 wörld '.repeat(10);
         await store.commit([{ kind: 'textValue', entity: 1n, field: 'ext/key', text }]);
-        // 'héllo' is 6 bytes of WTF-8: replace it.
         const [editAt] = await store.commit([{ kind: 'textEdit', entity: 1n, field: 'ext/key', offset: 0, removed: 6, text: 'bye' }]);
         assert.equal((await store.read(editAt)).kind, 'textEdit');
         const edited = 'bye' + text.slice(5);
         assert.equal(await store.text(1n, 'ext/key'), edited);
         assert.equal(await store.version(1), editAt);
-        // Outside the value, or inside a character: refused, nothing written.
         const end = store.durableEnd();
         await assert.rejects(store.commit([{ kind: 'textEdit', entity: 1n, field: 'ext/key', offset: 1000, removed: 0, text: 'x' }]), /outside/);
         await assert.rejects(store.commit([{ kind: 'fav', entity: 2n, fav: true }, { kind: 'textEdit', entity: 1n, field: 'ext/key', offset: 5, removed: 0, text: 'x' }]), /inside a character/);
@@ -223,7 +219,6 @@ for (const [name, engine] of Object.entries(bindings)) {
         const end = log.durableEnd();
         await log.commit(samples.slice(3, 6));
         await log.close();
-        // As a crash before the first flush leaves it: no runs, the last group's sync cut short.
         fs.rmSync(path.join(dir, 'runs'), { recursive: true });
         const [file] = logFiles(dir);
         fs.truncateSync(path.join(dir, file), fs.statSync(path.join(dir, file)).size - 1);
@@ -297,7 +292,6 @@ for (const [name, engine] of Object.entries(bindings)) {
         assert.equal(entity.dataSize, 20);
         assert.deepEqual(entity.tags, [100n]);
         assert.deepEqual(entity.values.map(v => [v.field, v.text ?? v.json]).sort(), [[1, 'émile'], ['ext:depth_prompt', '{"depth":4}']]);
-        // A new key and date added: found by the new key only, placed by both.
         await store.commit([{ kind: 'entityUpdate', entity: 3n, type: 0, key: 'zz.png', added: 5000 }]);
         await assert.rejects(store.commit([{ kind: 'entityUpdate', entity: 1n, type: 0, key: 'zz.png', added: 1 }]), /has that key already/);
         assert.deepEqual(await store.libraryIds([[0, 'Ana.png'], [0, 'zz.png']]), [null, 3n]);
@@ -344,7 +338,6 @@ for (const [name, engine] of Object.entries(bindings)) {
         assert.deepEqual(m1.sendKey, Buffer.alloc(16, 1));
         assert.deepEqual(await store.chatRead('children', { parent: 0n, tree: 3n, limit: 1 }), { ids: [1n], more: true });
         assert.deepEqual(await store.chatRead('children', { tree: 3n, limit: 5 }), { ids: [0n], more: false });
-        // A position shows the path from the tree's root down to it; session 1 lands at its reply.
         assert.deepEqual(await store.chatRead('path', { tree: 3n, at: 1n }), [0n, 1n]);
         assert.equal(await store.chatRead('landing', { tree: 3n, session: 1n }), 1n);
         assert.deepEqual((await store.chatRead('sessions', { ids: [1n, 5n] }))[1], null);
@@ -387,7 +380,6 @@ for (const [name, engine] of Object.entries(bindings)) {
                 { kind: 'entityCreate', entity: e, type: 0, key: `${n}.png`, added: 1000 + i },
             ]);
         }
-        // Nothing shows until it is installed.
         assert.deepEqual(await store.libraryIds([[0, 'Ana.png']]), [null]);
         const stats = await load.finish();
         assert.equal(stats.records, 12);
@@ -400,12 +392,10 @@ for (const [name, engine] of Object.entries(bindings)) {
         assert.deepEqual([...random.ids].sort(), [1n, 2n, 3n, 4n]);
         const found = await store.librarySearch({ characters: true, clauses: [{ text: 'emile' }], relevance: true, limit: 5 });
         assert.deepEqual(found.ids, [2n]);
-        // A second load of characters into a library that has some is refused, and leaves nothing.
         const again = store.load();
         await again.add([{ kind: 'entityCreate', entity: 9n, type: 0, key: 'late.png', added: 1 }]);
         await assert.rejects(again.finish(), /only into a store with none/);
         assert.deepEqual(await store.libraryIds([[0, 'late.png']]), [null]);
-        // An abandoned load leaves nothing either.
         const dropped = store.load();
         await dropped.add([{ kind: 'messageAppend', id: 1n, owner: 3n, time: 1, text: 'x', flags: 0, user: 1n }]);
         dropped.abandon();
@@ -417,18 +407,16 @@ for (const [name, engine] of Object.entries(bindings)) {
 }
 
 const TREES = [3_000n, 700_000n, 9_000_000n];
-/** @param {number} o @param {number} i */
+/**
+ * @param {number} o
+ * @param {number} i
+ */
 const messageId = (o, i) => 50_000n + BigInt(i) * 4_096n + BigInt(o);
 
-/**
- * A forest of messages over three trees with everything a conversion records about them: values, times, outside
- * keys, itemizations, replaced texts, state changes at messages and at a root.
- */
 function chatRecords() {
     const words = ['dragon', 'knight', 'quiet', 'ember', 'river', 'storm'];
     const records = [];
     let change = 1n;
-    // Owners and messages far apart, so a message's own id and its owner's fall to different load workers.
     for (const [o, owner] of TREES.entries()) {
         const ids = [];
         for (let i = 0; i < 60; i++) {
@@ -448,7 +436,7 @@ function chatRecords() {
     return records;
 }
 
-/** @param {unknown} v A read with every record position taken out. */
+/** @param {unknown} v */
 function withoutPositions(v) {
     if (Array.isArray(v)) return v.map(withoutPositions);
     if (v && typeof v === 'object' && !Buffer.isBuffer(v)) return Object.fromEntries(Object.entries(v).filter(([k]) => k !== 'position').map(([k, x]) => [k, withoutPositions(x)]));

@@ -1,6 +1,3 @@
-// The editor's toolbar and formatting keys. The keys insert the same characters as the app's markdown hotkeys
-// (input-md-formatting.js) do in a plain textarea.
-
 import { state as cmState, view as cmView, language as cmLanguage } from '../../live-editor-lib.js';
 import { t } from '../i18n.js';
 import { power_user } from '../power-user.js';
@@ -13,9 +10,8 @@ const { ensureSyntaxTree, syntaxTree } = cmLanguage;
 
 /**
  * @typedef {object} FormattingOptions
- * @property {() => boolean} [hotkeysEnabled] Whether the markdown keys are on; the user's setting by default.
- * @property {(file: File) => Promise<string>} [uploadImage] Uploads an image and gives its URL; without it there's no
- *   image button.
+ * @property {() => boolean} [hotkeysEnabled]
+ * @property {(file: File) => Promise<string>} [uploadImage]
  */
 
 const formattingOptions = Facet.define({
@@ -23,8 +19,6 @@ const formattingOptions = Facet.define({
 });
 
 /**
- * The innermost `nodeName` (marked with one of `marks`) that holds the whole range, read from the syntax tree, so
- * italics aren't mistaken for half of bold (`**x**` holds `*x*`) and the marks are found wherever the cursor is in it.
  * @param {import('@codemirror/state').EditorState} state
  * @param {number} from
  * @param {number} to
@@ -48,12 +42,9 @@ function formattingAround(state, from, to, nodeName, marks) {
 }
 
 /**
- * Wraps the selection in `chars`, or unwraps the formatting it's in when it's already that formatting; with no
- * selection, the word around the cursor, or an empty pair at the cursor. The app's textarea markdown hotkeys wrap
- * the same way; whether the text already has the formatting is read from the syntax tree.
  * @param {string} chars
- * @param {string} nodeName The syntax node of this formatting.
- * @param {string[]} [marks] The marks that make it (`*` and `_` both make italics); `chars` by default.
+ * @param {string} nodeName
+ * @param {string[]} [marks]
  * @returns {import('@codemirror/view').Command}
  */
 function toggleWrap(chars, nodeName, marks = [chars]) {
@@ -66,7 +57,6 @@ function toggleWrap(chars, nodeName, marks = [chars]) {
             if (existing) {
                 const { open, close } = existing;
                 const openLength = open.to - open.from;
-                // Where a position ends up once both marks are gone.
                 const map = (/** @type {number} */ pos) => {
                     if (pos <= open.from) return pos;
                     if (pos <= open.to) return open.from;
@@ -151,8 +141,6 @@ function link(view) {
 const BLOCK_PREFIX = /^(?: {0,3}(?:#{1,6}[ \t]+|>[ \t]?|[-*+][ \t]+|\d+[.)][ \t]+))/;
 
 /**
- * Sets the block type of the lines the selection touches: a paragraph (no prefix), a heading, a quote or a list item,
- * or wraps them in a code block.
  * @param {'paragraph'|'h1'|'h2'|'h3'|'quote'|'list'|'code'} type
  * @returns {import('@codemirror/view').Command}
  */
@@ -187,8 +175,6 @@ function setBlockType(type) {
 }
 
 /**
- * Picks an image, puts a placeholder where the cursor is, uploads the image and puts its markdown in place of the
- * placeholder. A failed upload takes the placeholder away and says why.
  * @param {import('@codemirror/view').EditorView} view
  */
 function insertImage(view) {
@@ -203,7 +189,6 @@ function insertImage(view) {
         const placeholder = `![${t`Uploading ${file.name}…`}]()`;
         const at = view.state.selection.main.head;
         view.dispatch({ changes: { from: at, insert: placeholder }, userEvent: 'input.format' });
-        /** Where the placeholder is now: the text around it may have changed while uploading. */
         const find = () => {
             const index = view.state.doc.toString().indexOf(placeholder);
             return index === -1 ? null : { from: index, to: index + placeholder.length };
@@ -264,7 +249,6 @@ function toolbarPanel(view) {
         el.className = `live-toolbar-button menu_button fa-solid ${icon}`;
         el.title = label;
         el.setAttribute('aria-label', label);
-        // Keep the editor's selection: the button shouldn't take focus on press.
         el.addEventListener('mousedown', event => event.preventDefault());
         el.addEventListener('click', () => {
             run(view);

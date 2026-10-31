@@ -48,7 +48,10 @@ afterAll(async () => {
     fs.rmSync(dataRoot, { recursive: true, force: true });
 });
 
-/** @param {string} url @param {object} body */
+/**
+ * @param {string} url
+ * @param {object} body
+ */
 const post = async (url, body) => fetch(base + url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
 /** @param {() => Promise<boolean>} done */
@@ -70,7 +73,6 @@ describe('a user created while the server runs', () => {
     test('has dropped PNGs picked up until the user is deleted', async () => {
         const codes = await import('../src/library-codes.js');
         const { getUserDirectories } = await import('../src/users.js');
-        // The public directories (relative paths) are made here, not in the repository.
         process.chdir(dataRoot);
         const created = await post('/api/users/create', { handle: 'newcomer', name: 'New' });
         process.chdir(cwd);

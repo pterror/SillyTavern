@@ -1,21 +1,13 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// NixOS host: the Playwright-managed Chromium download is missing system libs, so fall back
-// to the system-provided Chrome (only when explicitly pointed at it) rather than requiring a
-// FHS-compatible browser install.
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// Server-built sends read saved settings only, so a model pick (or a list default replacing a saved
-// model the backend no longer lists) has to reach the server. A re-fetch of a list that still holds
-// the saved model changes nothing and must not save.
-
 /**
- * Answers the text completion status call in the browser with the given model list, so no backend is needed.
  * @param {import('@playwright/test').Page} page
- * @param {{ models: { id: string }[] }} list Mutated by callers to change later answers.
+ * @param {{ models: { id: string }[] }} list
  */
 async function routeStatus(page, list) {
     await page.route('**/api/backends/text-completions/status', route => route.fulfill({
@@ -25,7 +17,6 @@ async function routeStatus(page, list) {
 }
 
 /**
- * Records every settings save the page sends from now on.
  * @param {import('@playwright/test').Page} page
  * @returns {{ keys?: Record<string, any>, full?: boolean }[]}
  */
@@ -43,9 +34,8 @@ function recordSaves(page) {
 }
 
 /**
- * Switches to Text Completion with the given type and server URL and connects.
  * @param {import('@playwright/test').Page} page
- * @param {string} type The `#textgen_type` value.
+ * @param {string} type
  */
 async function connectTextgen(page, type) {
     if (!(await page.locator('#main_api').isVisible())) {
@@ -58,7 +48,6 @@ async function connectTextgen(page, type) {
     await page.locator('#api_button_textgenerationwebui').click();
 }
 
-// Setup changes and saves settings of its own (API, type, URL); recording starts after those saves.
 const SETTLE_MS = 2500;
 
 test.describe('model pick saves', () => {
@@ -111,7 +100,6 @@ test.describe('model pick saves', () => {
         await expect(page.locator('#ollama_model')).toHaveValue('model-b');
         await page.waitForTimeout(SETTLE_MS);
 
-        // Connect also records the server URL's lastConnection (power_user.servers), which is a real change.
         expect(saves.filter(s => s.full || s.keys?.textgenerationwebui_settings)).toEqual([]);
     });
 });

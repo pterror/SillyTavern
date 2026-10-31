@@ -9,7 +9,6 @@ import type { User } from './index.ts';
 const alice: User = { handle: 'alice', directories: { root: '/users/alice' } };
 const bob: User = { handle: 'bob', directories: { root: '/users/bob' } };
 
-// A counter per user, and a view of it that also says which chat the tab shows.
 const counts = new Map<string, number>();
 let release = () => {};
 let slowRelease = () => {};
@@ -30,15 +29,12 @@ const area = defineArea({
     },
     views: {
         count: async ({ user, chat }) => ({ count: counts.get(user.handle) ?? 0, chat: chat?.tree ?? null }),
-        // A view read in parts, the later one held until `release`.
         parts: async function* () {
             yield { part: 1 };
             await held;
             yield { part: 2 };
-            // A part that's only what changed.
             yield patch({ more: 3 });
         },
-        // A view whose second part waits for `slowRelease`.
         slow: async function* () {
             yield { slow: 1 };
             await slowHeld;
@@ -85,7 +81,6 @@ async function send(session: string, type: string, payload: unknown, user = 'ali
         headers: { 'Content-Type': 'application/json', 'X-ST-Session': session, 'X-User': user },
         body: JSON.stringify({ type, payload }),
     });
-    // An answer in parts (NDJSON) is its first line.
     const [first = ''] = (await response.text()).split('\n');
     return { status: response.status, answer: JSON.parse(first) as ActionAnswer };
 }
@@ -225,7 +220,6 @@ test('a view read in parts: its first part is answered at once, the rest follow 
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
     let text = '';
-    // The first line comes while the second part is still held.
     while (!text.includes('\n')) text += decoder.decode((await reader.read()).value, { stream: true });
     const first = JSON.parse(text.slice(0, text.indexOf('\n'))) as ActionAnswer;
     expect(first).toMatchObject({ ok: true, views: [{ key: 'parts', value: { part: 1 } }] });
@@ -270,7 +264,6 @@ test("one view's later parts don't wait for another's", async () => {
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
     let text = '';
-    // The parts view's later parts come while the slow one's second part is still held.
     while (!text.includes('"more":3')) {
         text += decoder.decode((await reader.read()).value, { stream: true });
     }

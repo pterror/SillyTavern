@@ -1,11 +1,8 @@
-// One scope of variables (a chat's local ones, or the global ones), the same on the page (variables.js) and the server
-// (src/macro-substitution.js): the values are kept in a plain object the caller owns and saves.
-
 /**
- * @param {() => Record<string, any>} store The object holding the scope's values.
+ * @param {() => Record<string, any>} store
  * @param {object} [options]
- * @param {() => void} [options.changed] Called after a value changes, to save it.
- * @param {(value: any, type: string) => any} [options.convert] Turns a value into the type an `as` names.
+ * @param {() => void} [options.changed]
+ * @param {(value: any, type: string) => any} [options.convert]
  * @returns {import('./macros/engine/MacroEnv.types.js').MacroVariableScope}
  */
 export function createVariableScope(store, { changed = () => {}, convert = value => value } = {}) {

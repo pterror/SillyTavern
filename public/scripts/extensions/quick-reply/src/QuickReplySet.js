@@ -41,29 +41,9 @@ export class QuickReplySet {
     /**@type {HTMLElement}*/ dom;
     /**@type {HTMLElement}*/ settingsDom;
 
-    /**
-     * Per-QR-entry debounce timers, used ONLY to coalesce a single CONTINUOUS edit (e.g. typing
-     * into a label/message/title field, one 'input' event per keystroke) into one request once
-     * the edit settles - matching this codebase's messageEditAuto/saveChatDebounced precedent for
-     * textarea auto-save. Every other user action (add, delete, reorder, a set-level property
-     * toggle, or a discrete per-entry change like an icon pick or checkbox click) is a single,
-     * instantaneous gesture and is dispatched to the server immediately, with no accumulation
-     * across separate actions - see performSave's removal and the design note above performSave's
-     * former call sites for the reasoning.
-     * @type {Map<number, ReturnType<typeof setTimeout>>}
-     */
+    /** @type {Map<number, ReturnType<typeof setTimeout>>} */
     _qrUpdateTimers = new Map();
 
-    /**
-     * Low-level immediate dispatch to /save-partial. Every save*() method below builds its own
-     * one-shot payload for exactly the ONE user action it represents, instead of accumulating
-     * multiple distinct actions into one shared, debounced bundle. The server route already
-     * applies each bucket (setProps/qrUpdates/qrAdds/qrDeletes/qrOrder) as a named op against its
-     * own stored state, so nothing stops a caller from populating more than one bucket in a single
-     * call when a single action genuinely has multiple facets (e.g. adding a QR also bumps
-     * idIndex - see saveQrAdd) - the requirement is "one real user action -> one request", not
-     * "one bucket -> one request".
-     */
     async _dispatchSave(partial) {
         const response = await fetch('/api/quick-replies/save-partial', {
             method: 'POST',
@@ -81,20 +61,13 @@ export class QuickReplySet {
         }
     }
 
-    /** Save a changed set-level property (color, disableSend, etc.) - a single discrete action, dispatched immediately. */
     saveSetProp(prop, value) {
         return this._dispatchSave({ setProps: { [prop]: value } });
     }
 
     /**
-     * Save a changed QR entry (full entry, merged by stable id).
-     * @param {QuickReply} qr the changed entry
-     * @param {boolean} [immediate] true (default) for a single discrete action (an icon pick, a
-     *   checkbox click, a context-menu toggle) - dispatched right away. false for a CONTINUOUS,
-     *   in-progress edit (typing into a text field, one call per keystroke) - coalesced via a
-     *   per-entry debounce so a whole burst of keystrokes to the SAME entry becomes one request
-     *   once typing settles, without ever merging with a different entry or a different kind of
-     *   action.
+     * @param {QuickReply} qr
+     * @param {boolean} [immediate]
      */
     saveQrUpdate(qr, immediate = true) {
         if (immediate) {
@@ -109,27 +82,16 @@ export class QuickReplySet {
         }, 300));
     }
 
-    /**
-     * Save a new QR entry addition - a single discrete action. idIndex is bumped as part of the
-     * very same action (not a separate one), so it's sent in the same request.
-     */
     saveQrAdd(qr) {
         return this._dispatchSave({ qrAdds: [qr], setProps: { idIndex: this.idIndex } });
     }
 
-    /** Save a QR entry deletion by stable id - a single discrete action, dispatched immediately. */
     saveQrDelete(id) {
         clearTimeout(this._qrUpdateTimers.get(id));
         this._qrUpdateTimers.delete(id);
         return this._dispatchSave({ qrDeletes: [id] });
     }
 
-    /**
-     * Save a reorder of QR entries - a drag-and-drop (or insert-before) reorder is ONE user action
-     * even though it touches every item's position, so it's legitimately sent as one bulk request
-     * with the whole new order, matching tags.js's saveTagsNow() precedent for its own drag-reorder
-     * case.
-     */
     saveOrder() {
         return this._dispatchSave({ qrOrder: this.qrList.map(qr => qr.id) });
     }
@@ -308,32 +270,9 @@ export class QuickReplySet {
     }
 
     /**
-     * Adds a quick reply with a client-picked id, only ever asserted, never confirmed by the
-     * server. Prefer addQuickReplyRemote() in new code - it blocks on a network round trip but
-     * lets the server mint the id, so it can never collide with an id another tab/client is
-     * concurrently minting for the same set.
-     *
-     * The new-quick-reply-set creation flow (SettingsUi.js's addQrSet()) used to be the one
-     * legitimate synchronous case here ("the whole set, including this id, is about to be saved
-     * atomically right after"), but that flow was changed to performFullSave() the (empty) set
-     * first and then addQuickReplyRemote() the first entry against the now-real, server-confirmed
-     * set - so it no longer needs a client-picked id at all. The two cases that remain genuinely
-     * synchronous:
-     *   1. QuickReplyApi.createQuickReply() - a public, documented, synchronous extension API
-     *      (`@returns {QuickReply}`, not a Promise) that existing third-party callers may depend
-     *      on getting the new entry back immediately. Changing its return type would be a breaking
-     *      API change out of scope here; createQuickReplyRemoteAsync() already exists alongside it
-     *      as the recommended async alternative for new callers.
-     *   2. onInsertBefore below - inserting a QR before another is one user action with two facets
-     *      (mint the entry, place it at a specific position) that must land in a single combined
-     *      request; the id has to be known synchronously to build that request's qrOrder list.
      * @param {object} [data]
      * @param {object} [options]
-     * @param {boolean} [options.dispatch] (true) whether to persist the addition right away. Pass
-     *   false when the caller is about to immediately supersede or combine this with another
-     *   request for the SAME user action (e.g. onInsertBefore's combined add+reposition request) -
-     *   firing an immediate add here as well would either race the follow-up request or double up
-     *   on what is really a single action.
+     * @param {boolean} [options.dispatch]
      */
     addQuickReply(data = {}, { dispatch = true } = {}) {
         const id = Math.max(this.idIndex, this.qrList.reduce((max, qr) => Math.max(max, qr.id), 0)) + 1;
@@ -345,9 +284,6 @@ export class QuickReplySet {
     }
 
     /**
-     * Like addQuickReply(), but waits for the server to mint the id instead of computing one
-     * client-side. Blocks on a network round trip - the correct choice whenever a QR is being
-     * added to an already-persisted set on its own, outside of a brand new set's atomic save.
      * @param {object} [data]
      * @returns {Promise<QuickReply>}
      */
@@ -404,12 +340,6 @@ export class QuickReplySet {
         qr.onDelete = () => this.removeQuickReply(qr);
         qr.onUpdate = (qr, options) => this.saveQrUpdate(qr, options?.immediate ?? true);
         qr.onInsertBefore = async (qrJson) => {
-            // "Insert a QR before this one" is a single user action with two facets - minting the
-            // new entry and placing it at a specific position - that both need to land in the SAME
-            // request: dispatching the add on its own first (as addQuickReplyFromText would do by
-            // default) and the reorder a moment later would race two independent requests against
-            // the same stored file. So the add is created locally without dispatching (dispatch:
-            // false), repositioned, and then both facets are sent together in one call.
             const newQr = await this.addQuickReplyFromText(qrJson, { dispatch: false });
             if (!newQr) return;
             this.qrList.splice(this.qrList.indexOf(newQr), 1);
@@ -528,9 +458,6 @@ export class QuickReplySet {
     }
 
     async performFullSave() {
-        // Cancel any pending per-entry debounced edit (see _qrUpdateTimers) - this full save
-        // supersedes it, and letting a stale debounced qrUpdates request land afterwards would
-        // clobber part of what this full save just wrote.
         for (const timer of this._qrUpdateTimers.values()) clearTimeout(timer);
         this._qrUpdateTimers.clear();
 

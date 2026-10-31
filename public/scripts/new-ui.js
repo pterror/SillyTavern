@@ -8,13 +8,6 @@ import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 
 /**
- * Starts the new page (packages/ui) inside this one: it gets what only the old page has yet (the request headers,
- * the translations, the quiet prompt), and the containers its surfaces replace. Old code reaches the new page
- * through here (and the stubs at upstream's old paths, which use it); nothing new imports old code.
- */
-
-/**
- * Starts it, once the page's DOM and the old modules it calls into are ready (script.js's init).
  * @param {{ quietPrompt: (prompt: string) => Promise<string>, currentChat: () => ({ avatar: string } | { group: string } | null), alternatives: import('/ui/entry.js').StartOptions['alternatives'] }} options
  */
 export function startNewUi({ quietPrompt, currentChat, alternatives }) {
@@ -49,7 +42,6 @@ export function startNewUi({ quietPrompt, currentChat, alternatives }) {
     const page = started;
     attachNewPage({ views: views => page.receive({ type: 'views', views }), connected: () => void page.reconnected() });
     const backgrounds = started.backgrounds;
-    // Image generation's "set as background" (and extensions that emit it).
     eventSource.on(event_types.FORCE_SET_BACKGROUND, (/** @type {{ path: string }} */ background) => void backgrounds.forceSetBackground(background));
     const say = (/** @type {Promise<string | null>} */ refused) => refused.then(reason => {
         if (reason) toastr.warning(reason);
@@ -76,19 +68,15 @@ export function startNewUi({ quietPrompt, currentChat, alternatives }) {
     return started;
 }
 
-/** The started new page (new-ui-page.js's, which old modules import instead of this). */
 export { newUi, newUiStarted };
 
 /**
- * Views the server sent with an old route's answer (before the start there are none: views only follow the new
- * page's own asking).
  * @param {import('/ui/entry.js').ViewFrame[] | undefined} views
  */
 export function takeViews(views) {
     if (newUiStarted() && Array.isArray(views) && views.length) newUi().receive({ type: 'views', views });
 }
 
-/** The chat closed on this page (no chat shows): the new page's views that follow the chat are read for none. */
 export function chatClosed() {
     if (newUiStarted()) void newUi().closeChat();
 }

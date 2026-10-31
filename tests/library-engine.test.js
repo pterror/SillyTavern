@@ -5,12 +5,6 @@ import os from 'node:os';
 
 import { oldStoreOracle } from './util/old-store-oracle.js';
 
-/**
- * The library on the engine (src/library-engine.js) against the old store's answers for the same writes: cards,
- * list rows, and /query pages and totals. The old store is gone; its answers are recorded
- * (tests/fixtures/old-store/library-engine/, see tests/util/old-store-oracle.js).
- */
-
 /** @type {any} */
 let metadataDb;
 /** @type {Awaited<ReturnType<typeof oldStoreOracle>>} */
@@ -65,7 +59,6 @@ afterEach(async () => {
     fs.rmSync(directories.root, { recursive: true, force: true });
 });
 
-/** A deterministic stream of numbers in [0, 1). */
 function rng(seed) {
     let s = seed >>> 0;
     return () => {
@@ -76,12 +69,10 @@ function rng(seed) {
     };
 }
 
-// No lone surrogates: the old store's SQLite text turns them into U+FFFD (the engine keeps them; tested below).
 const NAMES = ['Ana', 'bob', 'Émile', 'zed', 'ana', 'Ölaf', 'carl', 'Σίσυφος', ''];
 const DATES = ['2024-07-12@01h31m37s123ms', 'March 7, 2023', 'not a date', 1_700_000_000_000, '', undefined, '2021-01-01T00:00:00Z'];
 const TAG_IDS = ['t-red', 't-blue', 't-green'];
 
-/** A varied card: V2 or V1, greetings, card tags, extensions, odd dates, unknown keys. */
 function makeCard(r, i) {
     const pick = (/** @type {any[]} */ list) => list[Math.floor(r() * list.length)];
     const name = pick(NAMES);
@@ -119,7 +110,6 @@ function makeCard(r, i) {
     };
 }
 
-/** Writes each card to both stores, with the same date added, fav and tags. */
 async function writeBoth(entries) {
     for (const { avatar, card, fav, tags, added } of entries) {
         const json = JSON.stringify(card);
@@ -136,8 +126,6 @@ async function writeBoth(entries) {
 }
 
 /**
- * Writes `n` varied groups to both stores (the old store's file and row, the engine's group) with the same date
- * added, fav and tags.
  * @param {number} n
  * @param {number} seed
  */
@@ -178,7 +166,6 @@ async function writeGroupsBoth(n, seed) {
 }
 
 /**
- * A group object without the chat ids, which the sessions in its tree answer for.
  * @param {Record<string, any>} group
  */
 function withoutChats(group) {
@@ -195,11 +182,6 @@ async function setUpTags() {
     }
 }
 
-/**
- * 50 varied characters, written in list order. Their avatars sort in that order too: the old store breaks ties by
- * avatar and the engine by creation order, so with the two the same the old store's pages are the reference for the
- * engine's.
- */
 function library50(seed = 1) {
     const r = rng(seed);
     return Array.from({ length: 50 }, (_, i) => ({
@@ -229,7 +211,6 @@ const SORTS = [
     ['chat_size', 'desc'], ['date_last_chat', 'desc'],
 ];
 
-/** Every id of a query, both stores, through pages of 7. */
 async function bothPages(filter, sortField, sortOrder) {
     const read = async (/** @type {(p: any) => Promise<any>} */ query) => {
         const ids = [];
@@ -279,7 +260,6 @@ describe('the library on the engine', () => {
         for (const [i, avatar] of avatars.entries()) {
             expect(rows[i]).toEqual(old[avatar]);
         }
-        // Read with only the values a row is made from, the rows are the same, creator notes or not.
         for (const notes of [false, true]) {
             const narrow = await library.entities(ents.map(e => e?.id ?? null), lib.listRowValues(notes));
             expect(narrow.every(e => e?.hashes.length === 0)).toBe(true);
@@ -294,7 +274,6 @@ describe('the library on the engine', () => {
             for (const [field, order] of SORTS) {
                 const { old, eng } = await bothPages(filter, field, order);
                 expect({ filter, field, order, ids: eng.ids }).toEqual({ filter, field, order, ids: old.ids });
-                // A total either store marks as an estimate isn't compared; an exact one is every match.
                 const exact = !old.approx && !eng.approx;
                 expect(exact ? eng.total : null).toBe(exact ? old.total : null);
                 expect(eng.approx || eng.total === eng.ids.length).toBe(true);
@@ -324,7 +303,6 @@ describe('the library on the engine', () => {
             await metadataDb.upsertCharacterFromWrite(directories, e.avatar, json);
             records += (await library.writeCard(directories, e.avatar, json)).records;
         }
-        // At most a few records per edit: the value, the item, and the sort keys and hash that moved with it.
         expect(records).toBeLessThan(entries.length * 6);
         expect(library.store.stats().logBytes - before).toBeLessThan(entries.length * 200);
         const cards = await library.cards(entries.map(e => e.avatar));
@@ -357,7 +335,6 @@ describe('the library on the engine', () => {
                 expect(exact ? eng.total : null).toBe(exact ? old.total : null);
             }
         }
-        // Rows and hash rows: the old store's hydrated rows, less the chat ids the sessions answer for.
         const params = { groupsOnly: true, sortField: 'name', limit: 100 };
         const oldRows = /** @type {any} */ (await metadataDb.queryEntities(directories, params)).rows;
         const engRows = (await library.query(params)).rows;
@@ -395,7 +372,6 @@ describe('the library on the engine', () => {
         const [entity] = await library.entities([stem]);
         expect([entity?.type, entity?.key]).toEqual([lib.TYPE.character, 'Old Friend.png']);
         expect((await library.query({ sortField: 'name', limit: 10 })).rows.map(r => r.id).sort()).toEqual(['1700000000009', 'Old Friend.png']);
-        // Another new character gets a new id.
         expect((await library.writeCard(directories, 'New.png', JSON.stringify({ name: 'New' }))).id).toBe(200n);
     });
 
@@ -432,8 +408,6 @@ describe('the library on the engine', () => {
         expect(library.store.stats().logBytes).toBe(before);
         await metadataDb.setCharacterDateAdded(directories, c.avatar, 5);
         expect(await library.updateEntity(lib.TYPE.character, c.avatar, { dateAdded: 5 })).toBe(true);
-        // A rename keeps the character: its fav, tags, date added and place among ties (its creation) go with it. The
-        // new avatar sorts where the old one did, so the old store, which ties by avatar, still places it the same.
         const renamed = 'char-000-renamed.png';
         await metadataDb.upsertCharacterFromWrite(directories, renamed, JSON.stringify(a.card));
         await metadataDb.setCharacterAllowGlobalStyles(directories, renamed, true);

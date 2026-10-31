@@ -1,20 +1,15 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// Renaming a lorebook deletes the old file, but the open character is not unlinked from it the way a delete
-// unlinks it: it keeps the old name like every other linked character, and the relink prompt decides for all
-// of them. Before, its delayed unlink landed after the relink and cleared its link.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
 /**
- * Creates characters through the API, each with `world` as its primary lorebook.
  * @param {import('@playwright/test').Page} page
  * @param {string[]} names
  * @param {string} world
- * @returns {Promise<string[]>} The avatar filenames, in the order of `names`.
+ * @returns {Promise<string[]>}
  */
 async function createCharacters(page, names, world) {
     return page.evaluate(async ({ names, world }) => {
@@ -51,7 +46,7 @@ async function deleteCharacters(page, avatars) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
- * @returns {Promise<string>} The stored card's primary lorebook.
+ * @returns {Promise<string>}
  */
 async function storedWorld(page, avatar) {
     return page.evaluate(async (avatar) => {
@@ -80,8 +75,6 @@ async function deleteWorlds(page, worldNames) {
 }
 
 /**
- * Renames `oldName` to `newName` through the editor's rename button, answering the relink prompt with `relink`,
- * and waits for the rename to finish. Then starts any delayed character field save and waits for all of them.
  * @param {import('@playwright/test').Page} page
  * @param {string} oldName
  * @param {string} newName
@@ -106,8 +99,6 @@ async function renameWorld(page, oldName, newName, relink) {
                 confirmAsked = true;
                 return relink ? POPUP_RESULT.AFFIRMATIVE : POPUP_RESULT.NEGATIVE;
             };
-            // The editor switches to the new name as the rename's last step, after the relink. The deletion before
-            // the relink prompt triggers a change too.
             const onChange = () => {
                 if (confirmAsked && String($('#world_editor_select').find(':selected').text()) === newName) {
                     $('#world_editor_select').off('change', onChange);
@@ -129,7 +120,6 @@ async function renameWorld(page, oldName, newName, relink) {
 test.describe('renaming a lorebook the open character links to', () => {
     test.beforeEach(testSetup.awaitST);
 
-    // keptName: which of the two names every linked character is left linked to.
     for (const { relink, answer, keptName } of [
         { relink: true, answer: 'accepted', keptName: 'new' },
         { relink: false, answer: 'declined', keptName: 'old' },
@@ -138,7 +128,6 @@ test.describe('renaming a lorebook the open character links to', () => {
             const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
             const oldName = `WI_RENAME_LINK_OLD_${s}`;
             const newName = `WI_RENAME_LINK_NEW_${s}`;
-            // Index 0 is opened in the editor; 1 is another linked character.
             const names = [`WIRenameLink-${s}-0`, `WIRenameLink-${s}-1`];
 
             await page.evaluate(async (oldName) => {

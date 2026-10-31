@@ -1,6 +1,3 @@
-// Starts the macro engine, the one the page and the server both run (src/macro-substitution.js): the libraries it
-// uses, given by each, and the built-in macros, which read the app only through the env (MacroEnv.state).
-
 import { initMacroLexer } from './engine/MacroLexer.js';
 import { initMacroParser } from './engine/MacroParser.js';
 import { setMacroLibraries } from './engine/MacroLibraries.js';
@@ -22,7 +19,6 @@ import { registerInstructMacros } from './definitions/instruct-macros.js';
  */
 
 /**
- * The lexer and parser, built with the libraries given. Before anything parses a macro.
  * @param {MacroEngineLibraries} libraries
  */
 export function initMacroEngine({ chevrotain, ...libraries }) {
@@ -33,7 +29,6 @@ export function initMacroEngine({ chevrotain, ...libraries }) {
 
 let registered = false;
 
-/** Registers the built-in macros, once. */
 export function registerBuiltinMacros() {
     if (registered) return;
     registered = true;

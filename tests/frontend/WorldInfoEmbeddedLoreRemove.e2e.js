@@ -5,17 +5,14 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-/** The embedded lorebook editor's save debounce (debounce_timeout.relaxed). */
 const SAVE_DEBOUNCE_MS = 1000;
-/** That debounce plus room for the save itself. */
 const PENDING_SAVE_WINDOW_MS = 2500;
 
 /**
- * Creates a character through the API, with an embedded lorebook holding one entry when `comment` is given.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @param {string} [comment] The entry's title/memo.
- * @returns {Promise<string>} The new character's avatar filename.
+ * @param {string} [comment]
+ * @returns {Promise<string>}
  */
 async function createCharacter(page, name, comment) {
     return page.evaluate(async ({ name, comment }) => {
@@ -40,7 +37,7 @@ async function createCharacter(page, name, comment) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
- * @returns {Promise<any>} The stored card's embedded lorebook, or undefined.
+ * @returns {Promise<any>}
  */
 async function storedCharacterBook(page, avatar) {
     return page.evaluate(async (avatarUrl) => {
@@ -52,8 +49,6 @@ async function storedCharacterBook(page, avatar) {
 }
 
 /**
- * Loads the character into the character panel. That closes the World Info drawer if it is open; this waits
- * until it has finished closing.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -79,9 +74,8 @@ async function openEmbeddedLoreEditor(page, avatar) {
 }
 
 /**
- * Clicks the World Info editor's delete button and confirms.
  * @param {import('@playwright/test').Page} page
- * @param {string} characterName The name the confirmation must name.
+ * @param {string} characterName
  */
 async function removeAndConfirm(page, characterName) {
     await page.locator('#world_popup_delete').click();
@@ -91,7 +85,6 @@ async function removeAndConfirm(page, characterName) {
 }
 
 /**
- * Collects the JSON body of every /api/characters/merge-attributes request from here on.
  * @param {import('@playwright/test').Page} page
  * @returns {any[]}
  */
@@ -106,14 +99,10 @@ function recordMergeRequests(page) {
 }
 
 /**
- * Makes an edit, then clicks the delete button and confirms, all inside the page. `{ title }` types into the first
- * entry's title: a draft, which commits when the confirmation takes the focus, before the removal starts.
- * `{ duplicate: true }` duplicates the first entry, whose save is debounced, so it is still waiting when the
- * removal starts.
  * @param {import('@playwright/test').Page} page
  * @param {{title: string} | {duplicate: true}} edit
- * @param {string} characterName The name the confirmation must name.
- * @returns {Promise<number>} Milliseconds from the edit to the confirmation.
+ * @param {string} characterName
+ * @returns {Promise<number>}
  */
 async function editThenRemoveAndConfirm(page, edit, characterName) {
     return page.evaluate(async ({ edit, characterName }) => {
@@ -205,15 +194,11 @@ test.describe('removing an embedded lorebook acts on the card it belongs to', ()
             expect(elapsed).toBeLessThan(SAVE_DEBOUNCE_MS);
 
             await expect.poll(() => storedCharacterBook(page, avatar), { timeout: 10000 }).toBeUndefined();
-            // Nothing observable marks the cancelled debounce; wait out the window it would have fired in.
             // eslint-disable-next-line playwright/no-wait-for-timeout
             await page.waitForTimeout(PENDING_SAVE_WINDOW_MS);
-            // The waiting save would either put the lorebook back or, with its pre-removal baseline, raise a conflict.
             expect(mergeBodies.map(body => body.data?.character_book === '__@@UNSET@@__' ? 'removal' : 'edit')).toEqual(['removal']);
             expect(await storedCharacterBook(page, avatar)).toBeUndefined();
             await expect(page.locator('dialog[open]')).toHaveCount(0);
-            // Nor does it fire later and report edits to a lorebook that's gone as not saved. Counted once, not awaited:
-            // such a toast would be up now, and would only go by waiting for it to fade.
             expect(await page.locator('#toast-container .toast-error').count()).toBe(0);
         } finally {
             await deleteCharacters(page, [avatar]);

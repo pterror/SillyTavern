@@ -1,7 +1,3 @@
-/**
- * A character whose PNG is missing exists because its row does, and is treated as if its image were the
- * default avatar (DEFAULT_AVATAR_PATH). Metadata edits never create the file.
- */
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jest } from '@jest/globals';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -26,7 +22,6 @@ let defaultAvatarPath;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
-// DEFAULT_AVATAR_PATH is repo-root-relative.
 const originalCwd = process.cwd();
 
 beforeAll(async () => {
@@ -77,26 +72,22 @@ const post = (route, body) => fetch(`${baseUrl}/api/characters/${route}`, {
     body: JSON.stringify(body),
 });
 
-/** The character's image file in `characters/`, or null when it has none. */
 async function imageFile(avatar) {
     const file = avatars.avatarFile(directories, avatar);
     return fs.existsSync(file) ? file : null;
 }
 
-/** Whether the character has an image file of its own. */
 async function hasImageFile(avatar) {
     const file = await imageFile(avatar);
     return file !== null && fs.existsSync(file);
 }
 
-/** Removes a character's image file, so only its card is left. */
 async function removeImage(avatar) {
     const file = await imageFile(avatar);
     if (file !== null) fs.rmSync(file, { force: true });
     expect(await hasImageFile(avatar)).toBe(false);
 }
 
-/** Creates Alice, then removes her PNG so only the row is left. */
 async function createPngLessAlice() {
     expect((await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' })).status).toBe(200);
     await removeImage('Alice.png');
@@ -223,7 +214,6 @@ describe('existence follows the row', () => {
     });
 
     describe('mintCharacterId', () => {
-        /** Makes uuidv7() return the same sequence of ids on every replay. */
         function replayableIds() {
             let n = 0;
             jest.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);

@@ -6,7 +6,6 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 }
 
 /**
- * Sets an input's value without firing any event, i.e. text sitting in the form that no save trigger has seen.
  * @param {import('@playwright/test').Page} page
  * @param {string} selector
  * @param {string} value
@@ -18,7 +17,7 @@ async function setUnsavedInput(page, selector, value) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
- * @returns {Promise<any>} The character card as stored on the server.
+ * @returns {Promise<any>}
  */
 async function fetchStoredCharacter(page, avatar) {
     return page.evaluate(async (avatarUrl) => {
@@ -30,7 +29,6 @@ async function fetchStoredCharacter(page, avatar) {
 }
 
 /**
- * Collects the JSON body of every /api/characters/merge-attributes request from here on.
  * @param {import('@playwright/test').Page} page
  * @returns {any[]}
  */
@@ -45,12 +43,9 @@ function recordMergeRequests(page) {
 }
 
 /**
- * Creates a character through the Create form and opens it in the editor.
- * The create form and the editor share the character info drawer, which stays open after Create, so the tag
- * input is already visible before the editor shows the new character: wait for the editor to hold its avatar.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @returns {Promise<string>} The new character's avatar filename.
+ * @returns {Promise<string>}
  */
 async function createAndOpenCharacter(page, name) {
     await openCharacterManagementDrawer(page);
@@ -59,7 +54,6 @@ async function createAndOpenCharacter(page, name) {
     const createResponse = page.waitForResponse(response => response.url().endsWith('/api/characters/create'));
     await page.locator('#create_button_label').click();
     const avatar = await (await createResponse).text();
-    // Creating a character opens it.
     await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
     await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar, { timeout: 10000 });
     await expect(page.locator('#right-nav-panel')).toHaveAttribute('data-menu-type', 'character_edit');
@@ -178,7 +172,6 @@ test.describe('field-scoped character saves', () => {
         await page.locator('#create_button_label').click();
         const avatar = await (await createResponse).text();
 
-        // Creating a character opens it.
         await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
         await page.locator('#tagInput').waitFor({ state: 'visible', timeout: 10000 });
         try {

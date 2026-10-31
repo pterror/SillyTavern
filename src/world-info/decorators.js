@@ -1,14 +1,8 @@
-// Mirrors public/scripts/world-info.js's KNOWN_DECORATORS.
 export const KNOWN_DECORATORS = ['@@activate', '@@dont_activate'];
 
 /**
- * Direct port of public/scripts/world-info.js's parseDecorators() - pure string parsing, no
- * external dependency. Ported verbatim rather than simplified: the `@@@`-prefix fallback handling
- * is subtle (an escape mechanism for writing a literal `@@@decorator`-looking line without
- * triggering it, tracked via the `fallbacked` flag) and not fully explained in the original source
- * either - faithfully replicating it is safer than guessing at the "cleaned up" intent.
- * @param {string} content The entry content to parse
- * @returns {[string[], string]} The decorators found, and the content with the decorator header stripped
+ * @param {string} content
+ * @returns {[string[], string]}
  */
 export function parseDecorators(content) {
     const isKnownDecorator = (data) => {
@@ -53,10 +47,8 @@ export function parseDecorators(content) {
 }
 
 /**
- * Mirrors checkWorldInfo()'s @@activate/@@dont_activate check (public/scripts/world-info.js:4957-4966).
- * @param {string[]} decorators An entry's already-parsed decorators (see parseDecorators)
- * @returns {'activate'|'suppress'|null} 'activate' to force activation immediately (bypassing key
- * matching), 'suppress' to skip the entry outright, or null if neither decorator is present
+ * @param {string[]} decorators
+ * @returns {'activate'|'suppress'|null}
  */
 export function getDecoratorActivation(decorators) {
     if (!Array.isArray(decorators)) return null;

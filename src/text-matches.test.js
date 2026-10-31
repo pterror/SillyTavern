@@ -1,5 +1,3 @@
-// A search matched against texts on the engine (the alternatives list's search): the chat search's clauses, words
-// and folding, answered as the ranges matched.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
@@ -7,7 +5,6 @@ import { loadEngine } from '../engine/load.js';
 import { textMatches } from './text-matches.js';
 
 /**
- * The matched parts of each text, or null.
  * @param {(number[] | null)[]} found
  * @param {string[]} texts
  */

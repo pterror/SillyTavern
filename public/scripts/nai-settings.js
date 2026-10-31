@@ -175,8 +175,6 @@ export async function loadNovelSubscriptionData() {
 }
 
 export function loadNovelPreset(preset) {
-    // The response length and context size are the server's: selecting the preset applies them there (its own files
-    // name them max_length and max_context, presetLengthKeys()).
     nai_settings.temperature = preset.temperature;
     nai_settings.repetition_penalty = preset.repetition_penalty;
     nai_settings.repetition_penalty_range = preset.repetition_penalty_range;
@@ -245,7 +243,6 @@ export function loadNovelSettings(data, settings) {
     nai_settings.phrase_rep_pen = settings.phrase_rep_pen;
     nai_settings.mirostat_lr = settings.mirostat_lr;
     nai_settings.mirostat_tau = settings.mirostat_tau;
-    // The server's once the new page has started (its view); before, what was loaded.
     if (!newUiStarted()) nai_settings.streaming_novel = !!settings.streaming_novel;
     nai_settings.preamble = settings.preamble || default_preamble;
     nai_settings.prefix = settings.prefix;
@@ -425,10 +422,8 @@ const sliders = [
 ];
 
 /**
- * The texts a bad words line encodes: `{verbatim}` without its braces, plain text as its case and
- * leading-space permutations.
- * @param {string} trimmed A trimmed, non-empty line.
- * @returns {string[]|null} null for raw token ids.
+ * @param {string} trimmed
+ * @returns {string[]|null}
  */
 function getBadWordEncodeTexts(trimmed) {
     if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
@@ -441,8 +436,8 @@ function getBadWordEncodeTexts(trimmed) {
 }
 
 /**
- * @param {string} banned_tokens Bad words, one per line.
- * @returns {string[]} The texts they encode.
+ * @param {string} banned_tokens
+ * @returns {string[]}
  */
 function getBadWordTexts(banned_tokens) {
     return String(banned_tokens ?? '').split('\n')
@@ -452,9 +447,9 @@ function getBadWordTexts(banned_tokens) {
 }
 
 /**
- * @param {string} banned_tokens Bad words, one per line.
- * @param {(text: string) => number[]|null} getIds Token ids for a text; null leaves its line out.
- * @param {string[]} dropped Receives each line left out.
+ * @param {string} banned_tokens
+ * @param {(text: string) => number[]|null} getIds
+ * @param {string[]} dropped
  * @returns {number[][]}
  */
 function getBadWordIds(banned_tokens, getIds, dropped) {
@@ -587,8 +582,6 @@ export function getNovelGenerationData(finalPrompt, settings, maxLength, isImper
 
     const adjustedMaxLength = (isKayra || isErato) ? getNovelMaxResponseTokens() : maximum_output_length;
 
-    // A field left empty with no tokenizer, or because its entries were left out, is `undefined`,
-    // as it was when no tokenizer was known.
     return {
         'input': finalPrompt,
         'model': nai_settings.model_novel,
@@ -701,7 +694,6 @@ function calculateLogitBias(getIds, dropped) {
     return result;
 }
 
-/** NAI instruct format requires the prompt wrapped in space-padded curly braces, with no square brackets (used for a different purpose in NAI). */
 export function adjustNovelInstructionPrompt(prompt) {
     const stripedPrompt = prompt.replace(/[[\]]/g, '').trim();
     if (!stripedPrompt.includes('{ ')) {
@@ -742,10 +734,6 @@ export async function generateNovelWithStreaming(generate_data, signal) {
         throw new Error(`Got response status ${response.status}`);
     }
 
-    // Every /api/novelai/generate streaming response is the shared compact binary protocol (see
-    // public/scripts/llamacpp-compact-stream.js) - raw-action or not, src/endpoints/novelai.js's own
-    // forwardAndPersistCompactStream() call is the only thing that ever handles a streaming request
-    // here.
     const reader = response.body.getReader();
     return async function* streamData() {
         const decoder = new CompactStreamDecoder();
@@ -817,20 +805,17 @@ export function parseNovelAILogprobs(data) {
     const befores = data.before.map(([[tokenId], [before, _]]) => [tokenId, before]);
     const afters = data.after.map(([[tokenId], [_, after]]) => [tokenId, after]);
 
-    // Tokens present before but dropped from `after` are treated as 0% probability.
     const notInAfter = befores
         .filter(([id]) => !afters.some(([aid]) => aid === id))
         .map(([id]) => [id, -Infinity]);
     const merged = afters.concat(notInAfter);
 
-    // The chosen token may not have been among the top-N and so may be missing from `merged`.
     // eslint-disable-next-line no-unused-vars
     const [[chosenId], [_, chosenAfter]] = data.chosen[0];
     if (!merged.some(([id]) => id === chosenId)) {
         merged.push([chosenId, chosenAfter]);
     }
 
-    // Kept as raw token IDs (not decoded text) so StreamingProcessor can bulk-decode instead of one API call per tick.
     // @ts-ignore
     return { token: chosenId, topLogprobs: merged };
 }
@@ -896,7 +881,6 @@ export function initNovelAISettings() {
         nai_settings.preset_settings_novel = $('#settings_preset_novel').find(':selected').text();
         const preset = novelai_settings[novelai_setting_names[nai_settings.preset_settings_novel]];
         loadNovelPreset(preset);
-        // Stored now, and the settings view read again, so whoever hears of the change reads the preset's values.
         await saveSettings('nai_settings');
         if (newUiStarted()) await newUi().settings.reread();
         await eventSource.emit(event_types.PRESET_CHANGED, { apiId: 'novel', name: nai_settings.preset_settings_novel });

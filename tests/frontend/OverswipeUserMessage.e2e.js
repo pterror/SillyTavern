@@ -1,12 +1,10 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// Overswiping a user message (or the opening) opens an empty slot to write a new alternative into. The slot is stored
-// nowhere until Done (or Save as a new alternative, the same there): nothing written in it reaches the alternative
-// swiped from, Done stores it as one more alternative and the chat goes on from it, and Cancel drops it and brings
-// back what followed.
-
-/** @param {import('@playwright/test').Page} page @param {string} name */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ */
 function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
@@ -20,7 +18,10 @@ function createCharacter(page, name) {
     }, name);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
 async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
@@ -33,7 +34,6 @@ async function openCharacter(page, avatar) {
 }
 
 /**
- * A chat of the greeting, a question and a reply, stored; answers the question's node.
  * @param {import('@playwright/test').Page} page
  * @returns {Promise<{ avatar: string, question: string }>}
  */
@@ -66,7 +66,6 @@ async function chatWithQuestion(page) {
     return { avatar, question };
 }
 
-/** The texts the server stores beside node `nodeId`, in order. */
 function storedAlternatives(page, nodeId) {
     return page.evaluate(async (nodeId) => {
         // @ts-ignore
@@ -76,7 +75,6 @@ function storedAlternatives(page, nodeId) {
     }, nodeId);
 }
 
-/** What the server opens the chat on: each message's text. */
 function storedPath(page, avatar) {
     return page.evaluate(async (avatar) => {
         // @ts-ignore
@@ -86,7 +84,6 @@ function storedPath(page, avatar) {
     }, avatar);
 }
 
-/** The page's chat: each message's text, and the counter of message `mesId`. */
 function shown(page, mesId) {
     return page.evaluate((mesId) => ({
         // @ts-ignore
@@ -95,14 +92,17 @@ function shown(page, mesId) {
     }), mesId);
 }
 
-/** @param {import('@playwright/test').Page} page @param {number} mesId @param {string} text */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {number} mesId
+ * @param {string} text
+ */
 async function overswipeAndWrite(page, mesId, text) {
     const message = page.locator(`#chat .mes[mesid="${mesId}"]`);
     await message.hover();
     await message.locator('.swipe_right').click({ force: true });
     await expect(message.locator('.edit_textarea')).toBeVisible({ timeout: 10000 });
     await message.locator('.edit_textarea').fill(text);
-    // Longer than the edit autosave's wait.
     await page.waitForTimeout(3000);
     return message;
 }

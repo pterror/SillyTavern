@@ -1,6 +1,3 @@
-// Mirrors public/scripts/chat-completion-settings.js's settingsToUpdate: maps a preset field name
-// to the real oai_settings field it updates. Only the second tuple element (the settings key) is
-// used here - the first element is a DOM selector, irrelevant server-side.
 const SETTINGS_TO_UPDATE = {
     chat_completion_source: 'chat_completion_source',
     temperature: 'temp_openai',
@@ -108,13 +105,9 @@ const SETTINGS_TO_UPDATE = {
 };
 
 /**
- * Mirrors ChatCompletionService.presetToGeneratePayload()'s preset-merge step (public/scripts/custom-request.js):
- * clone the base settings, then overlay only the fields a preset is allowed to carry, translated
- * through SETTINGS_TO_UPDATE. `bias_preset_selected` is cleared to match the client's own
- * "presets might have bias_preset_selected but not bias_presets" normalization.
- * @param {object} baseSettings The server's own stored oai_settings
- * @param {object} preset A named preset's raw fields (as read from disk)
- * @returns {object} baseSettings with the preset's fields applied
+ * @param {object} baseSettings
+ * @param {object} preset
+ * @returns {object}
  */
 export function mergeChatCompletionPreset(baseSettings, preset) {
     const settings = structuredClone(baseSettings);

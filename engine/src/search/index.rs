@@ -1,10 +1,3 @@
-//! Writing the index: a field's entries follow from its text before and after a change. A term whose counts in
-//! the field changed gets its slot in the posting block; the document's own slots in that block (read) say
-//! whether it still holds the term in any field, and so whether the term's document count changes, and what it
-//! scored for the term before and after. A score that rose raises the maxima over the block, at every level up
-//! to its top one; one that fell leaves them loose. A changed length writes the length and the block's shortest length; a field grown shorter raises its
-//! other terms' scores too.
-
 use std::collections::{BTreeSet, HashMap};
 
 use super::text::{grams, tokens};
@@ -20,7 +13,6 @@ use crate::store::StoreError;
 use crate::store::carriers::Term;
 use crate::store::derive::{Out, View};
 
-/// The kind of name term a tag's name holds a term by in a reading (`as_prefix`).
 fn term_kind(as_prefix: bool) -> TermKind {
     if as_prefix {
         TermKind::Gram
@@ -29,8 +21,6 @@ fn term_kind(as_prefix: bool) -> TermKind {
     }
 }
 
-/// The name terms of the tags library document `doc` carries, when its maxima carry a tag part: a library
-/// document's outside a bulk load (whose tags raise their carriers' maxima themselves).
 fn tag_terms(view: &View, scope: Scope, doc: u64) -> Result<Option<BTreeSet<Term>>, StoreError> {
     if super::tag_field(scope).is_none() || view.is_bulk() {
         return Ok(None);
@@ -38,9 +28,6 @@ fn tag_terms(view: &View, scope: Scope, doc: u64) -> Result<Option<BTreeSet<Term
     crate::store::carriers::carried_terms(view, doc).map(Some)
 }
 
-/// Raises the term's maximum over every field in reading `as_prefix` over the blocks of `docs` (in order) to what
-/// each of them holding the term in that reading scores with a tag whose name holds it. Per block, the term's
-/// postings and each such document's lengths are read, and the highest is raised up to the block's top level.
 pub fn raise_tagged(
     view: &View,
     out: &mut Out,
@@ -80,7 +67,6 @@ pub fn raise_tagged(
     Ok(())
 }
 
-/// Document `doc`'s slots in its posting block's pairs `posting` (sorted by slot).
 pub fn doc_postings(posting: &[(u32, u32)], doc: u64) -> &[(u32, u32)] {
     let first = slot(doc, 0);
     let from = posting.partition_point(|p| p.0 < first);
@@ -88,9 +74,6 @@ pub fn doc_postings(posting: &[(u32, u32)], doc: u64) -> &[(u32, u32)] {
     &posting[from..to]
 }
 
-/// What document `doc`, with its slots `held` in a term's posting block (`doc_postings`) and its length block's
-/// pairs `lens_block`, scores for the term in reading `as_prefix` with a tag whose name holds it; None where it
-/// doesn't hold the term in that reading.
 pub fn tagged_score(
     scope: Scope,
     doc: u64,
@@ -116,8 +99,6 @@ pub fn tagged_score(
         .then(|| local_r(scope, &hits, &lens, as_prefix, true))
 }
 
-/// Raises the term's maximum over every field in reading `as_prefix` over posting block `block` to `v`, at every
-/// level up to the block's top one.
 pub fn raise_tag_part(
     out: &mut Out,
     scope: Scope,
@@ -131,8 +112,6 @@ pub fn raise_tag_part(
     }
 }
 
-/// What `raise_tag_part` raises, per level up to the block's top one: the level, the group of its maxima key, the
-/// slot, and the bits it is raised to.
 pub fn tag_part_slots(
     block: u64,
     as_prefix: bool,
@@ -145,7 +124,6 @@ pub fn tag_part_slots(
     })
 }
 
-/// Document `doc`'s length per field, from its length block's pairs.
 fn doc_lens(block: &[(u32, u32)], doc: u64) -> Lens {
     let mut lens: Lens = [0; 1 << FIELD_BITS];
     let doc_slot = slot_in(LENGTH_BITS, doc, 0) >> FIELD_BITS;
@@ -157,13 +135,10 @@ fn doc_lens(block: &[(u32, u32)], doc: u64) -> Lens {
     lens
 }
 
-/// A document's fields holding a term, with its counts there.
 type Slots = Vec<(u32, FieldHit)>;
 
-/// A term's count in a field as a whole token and as a prefix term.
 type Counts = (u64, u64);
 
-/// A field's terms with their counts, and its length in tokens.
 #[derive(Default)]
 struct Terms {
     tf: HashMap<String, Counts>,
@@ -171,10 +146,6 @@ struct Terms {
 }
 
 impl Terms {
-    /// `items` are the field's values (one, or each item of a list). In a prefix field a token also counts
-    /// toward each of its prefix terms; elsewhere a term's prefix count is its whole-token count. With `pairs` (a
-    /// short field's, where a write keeps them), each pair of adjacent tokens within a value is a term too
-    /// (`pairs::term`), counted whole only: it adds nothing to the field's length.
     fn of(items: &[&[u8]], prefix: bool, pairs: bool) -> Terms {
         let mut t = Terms::default();
         for item in items {
@@ -205,7 +176,6 @@ impl Terms {
         t
     }
 
-    /// The pairs alone of `of(items, prefix, true)`, its length the field's.
     fn pairs_of(items: &[&[u8]], prefix: bool) -> Terms {
         let mut t = Terms::of(items, prefix, true);
         t.tf.retain(|term, _| super::pairs::is_pair(term));
@@ -213,13 +183,8 @@ impl Terms {
     }
 }
 
-/// A document's length in tokens per field.
 type Lens = [u64; 1 << FIELD_BITS];
 
-/// Raises the term's maxima over the document's block, at levels 0 to the block's `top_level`, in each reading
-/// and in each field where its score rose from the one its slots and lengths `old` give to the one `new` give.
-/// Over every field it scores `TAG_WEIGHT` more in a reading whose term `tags` (the name terms of the tags it
-/// carries) holds.
 fn raise(
     out: &mut Out,
     scope: Scope,
@@ -230,12 +195,10 @@ fn raise(
     tags: Option<&BTreeSet<Term>>,
 ) {
     let block = doc >> BLOCK_BITS;
-    // (field, None for every field; reading; value)
     let mut raised: Vec<(Option<u32>, bool, u32)> = Vec::new();
     for &r in readings(term) {
         let tagged = tags.is_some_and(|t| t.contains(&(term_kind(r), term.to_string())));
         let after = local_r(scope, new.0, new.1, r, tagged);
-        // A document without the term in this reading has no maximum for it, tag or none.
         let had = if local_text(scope, old.0, old.1, r) > 0.0 {
             local_r(scope, old.0, old.1, r, tagged)
         } else {
@@ -284,8 +247,6 @@ fn pairs(b: Option<Vec<u8>>) -> Result<Vec<(u32, u32)>, StoreError> {
     }
 }
 
-/// The entries for field `field` of document `doc` changing from `old` to `new` (its values; empty when it
-/// has none).
 pub fn update(
     view: &View,
     out: &mut Out,
@@ -298,11 +259,8 @@ pub fn update(
     update_fields(view, out, scope, doc, &[(field, old, new)])
 }
 
-/// A field's change: the field, its values before and after.
 pub type FieldChange<'a> = (u32, &'a [&'a [u8]], &'a [&'a [u8]]);
 
-/// `update` for several fields of one document changing together: each sees the document as the ones before it
-/// left it, which `view` doesn't hold yet.
 pub fn update_fields(
     view: &View,
     out: &mut Out,
@@ -328,16 +286,12 @@ pub fn update_fields(
     Ok(())
 }
 
-/// What earlier changes in the same `update_fields` left of the document: its slots per term, and its length
-/// block; whether the view held no length of the document, so no posting of it either, and whether its published
-/// entries hold one.
 #[derive(Default)]
 struct Seen {
     slots: HashMap<String, Slots>,
     lengths: Option<Vec<(u32, u32)>>,
     fresh: bool,
     published: bool,
-    /// The name terms of its tags (`tag_terms`), once a raise needed them.
     tags: Option<Option<BTreeSet<Term>>>,
 }
 
@@ -445,7 +399,6 @@ fn update_one(
         seen.slots.insert(term.clone(), slots);
     }
     if ln > 0 && length_code(ln) < length_code(lo) {
-        // The field's other terms score higher in it now.
         for term in after.tf.keys() {
             if before.tf.get(term) != after.tf.get(term) {
                 continue;
@@ -487,7 +440,6 @@ fn update_one(
             out.max(max_doc(scope), doc);
         }
         if lo == 0 || ln == 0 {
-            // The document counts once whatever number of its fields have text.
             let others = lengths
                 .iter()
                 .any(|&(s, len)| s >> FIELD_BITS == doc_slot && s != lslot && len > 0);
@@ -508,7 +460,6 @@ fn update_one(
     Ok(())
 }
 
-/// The document's slots in the term's posting block, as the view holds them (none when `fresh`).
 fn own_slots(
     view: &View,
     scope: Scope,
@@ -538,15 +489,6 @@ fn own_slots(
         .collect())
 }
 
-/// The term's maxima over block `block` lowered to what its documents score now (`super::query::Tighten`): each
-/// slot of the block's node higher than the most a document there scores (in that reading, over every field or
-/// in one) takes that, or goes when none scores; then each node above, up to the block's top level, from its
-/// children's map, until a level where nothing falls. Each changed map is put whole. A raise ordered after it
-/// folds over the put; one ordered before is in what it reads, so none is lost.
-///
-/// Over every field, a document scores `TAG_WEIGHT` more when it may carry a tag whose name holds the term in that
-/// reading (`carried`), so a move's carriers not yet counted by the term's map stay covered. A slot below that is
-/// left as it is.
 pub fn tighten(
     view: &View,
     out: &mut Out,
@@ -580,7 +522,6 @@ pub fn tighten(
         } else {
             out.put(k, map_bytes(&m));
         }
-        // The node above holds the most of this map's slots, per sub.
         want.clear();
         for &(sl, v) in &m {
             let w = want.entry(sl & ((1 << NODE_SLOT_BITS) - 1)).or_insert(v);
@@ -590,10 +531,6 @@ pub fn tighten(
     Ok(())
 }
 
-/// The most each slot of block `block`'s node may hold for the term, by sub (`max_slot(0, ..)`,
-/// `field_max_slot(0, ..)`) → `max_bits`: what its documents score now, over every field (with `TAG_WEIGHT` where
-/// a document may carry a tag whose name holds the term, `carried`) and in each field. A sub no document scores in
-/// is absent.
 pub fn block_want(
     view: &View,
     scope: Scope,
@@ -613,9 +550,6 @@ pub fn block_want(
     })
 }
 
-/// `block_want` from what it reads: the term's posting block's pairs `posting`, per reading the documents of the
-/// block that may carry a tag whose name holds the term (`carried`; none outside a scope with a tag field), and
-/// `lens(b)`, length block `b`'s pairs (asked for in ascending order, each once).
 pub fn want_of(
     scope: Scope,
     term: &str,
@@ -625,7 +559,6 @@ pub fn want_of(
     mut lens_of: impl FnMut(u64) -> Result<Vec<(u32, u32)>, StoreError>,
 ) -> Result<HashMap<u32, u32>, StoreError> {
     let defs = scope.fields();
-    // Each document's fields holding the term, in field order.
     let mut docs: Vec<(u64, Slots)> = Vec::new();
     for &(sl, v) in posting {
         if v == 0 {
@@ -638,7 +571,6 @@ pub fn want_of(
             _ => docs.push((d, vec![hit])),
         }
     }
-    // The most each slot of the node may hold: (sub, `max_bits`).
     let mut want: HashMap<u32, u32> = HashMap::new();
     let mut lens_at: Option<(u64, Vec<(u32, u32)>)> = None;
     for (d, hits) in &docs {
@@ -676,9 +608,6 @@ pub fn want_of(
     Ok(want)
 }
 
-/// The documents of block `block` that may carry a tag whose name holds `term` in reading `as_prefix`, in order:
-/// those the term's map counts a tag at, and the carriers of its heavy tags and of its moving ones (by their
-/// mapped, target or indexed names).
 fn carried(view: &View, term: &str, as_prefix: bool, block: u64) -> Result<Vec<u64>, StoreError> {
     use crate::store::kinds::key;
     let kind = if as_prefix {
@@ -732,12 +661,8 @@ fn carried(view: &View, term: &str, as_prefix: bool, block: u64) -> Result<Vec<u
     Ok(out)
 }
 
-/// A field's values, for `whole`.
 pub type FieldValues<'a> = (u32, &'a [&'a [u8]]);
 
-/// The entries for the pairs of document `doc`, whose words are indexed, coming with these values (its short
-/// fields' with text): the pass indexing pairs over a store's existing text (`pairs::step`). As `whole` writes a
-/// term's, with no tag part: a pair is never in a tag's name terms.
 pub fn pairs_whole(
     view: &View,
     out: &mut Out,
@@ -775,10 +700,6 @@ pub fn pairs_whole(
     Ok(())
 }
 
-/// The entries for every field of document `doc` coming (`on`) with these values, or going with them: a create
-/// meets a document with no entries, and a delete meets the entries these values made, so nothing of the document
-/// is read but, on a library create, the tags it carries (`tag_terms`). Each term's posting and block maximum is one write over all its fields; a delete leaves the bounds
-/// that are only ever raised (block maxima, shortest lengths, the highest document) loose, never wrong.
 pub fn whole(
     view: &View,
     out: &mut Out,
@@ -799,7 +720,6 @@ pub fn whole(
         })
         .collect();
     fields.sort_by_key(|x| x.0);
-    // Each term's fields with its counts there, by field.
     let mut slots: HashMap<&str, Slots> = HashMap::new();
     for (f, _, t) in &fields {
         for (term, &(exact, gram)) in &t.tf {

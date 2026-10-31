@@ -190,8 +190,6 @@ router.post('/reset-settings', async (request, response) => {
             return response.status(403).json({ error: 'Incorrect password' });
         }
 
-        // The settings model resets to a new user's settings itself; files are deleted (the sharded settings/ store
-        // too, or ensureMigrated() treats it as already migrated) and the shipped ones copied in again.
         const modeled = Boolean(settingsDocumentOf(request.user.directories));
         await deleteAllSettings(request.user.directories);
         if (!modeled) await checkForNewContent([request.user.directories], [CONTENT_TYPES.SETTINGS]);

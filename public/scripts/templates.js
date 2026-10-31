@@ -16,7 +16,7 @@ const TEMPLATE_CACHE = new Map();
 function getUrlSync(url) {
     console.debug('Loading URL synchronously', url);
     const request = new XMLHttpRequest();
-    request.open('GET', assetUrl(url), false); // `false` makes the request synchronous
+    request.open('GET', assetUrl(url), false);
     request.send();
 
     if (request.status >= 200 && request.status < 300) {

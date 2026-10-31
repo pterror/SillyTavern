@@ -70,7 +70,6 @@ async function getExistingChatNames() {
 
     if (response.ok) {
         const data = await response.json();
-        // A read failure answers { error: true }, not an array.
         if (!Array.isArray(data)) {
             return [];
         }
@@ -81,7 +80,6 @@ async function getExistingChatNames() {
 }
 
 async function getBookmarkName({ isReplace = false, forceName = null } = {}) {
-    // The server suggests the name (one no chat of the scope has); the page never makes one up.
     const suggestion = await fetch('/api/chats/bookmark-name', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(_labelOwner()) });
     if (!suggestion.ok) {
         toastr.error('Could not suggest a bookmark name.', 'Bookmark');
@@ -154,7 +152,6 @@ async function saveBookmarkMenu() {
     return await createNewBookmark(chat.length - 1);
 }
 
-/** The tree owner for /api/chats/label while a group is open: its own id, never getCurrentCharacter() - see chat-store.js's _currentOwner() for why a mid-generation "current character" is the wrong owner for a group. */
 function _labelOwner() {
     return selected_group ? { group_id: selected_group } : { avatar_url: getCurrentCharacter()?.avatar };
 }
@@ -168,17 +165,14 @@ function _labelOwner() {
  */
 
 /**
- * Bookmarks a message in one request (POST /api/chats/bookmark): names it, stores it first when it's a greeting
- * shown without a row, and gives it the open chat's metadata.
- * @param {number} mesId The message.
+ * @param {number} mesId
  * @param {object} options
- * @param {string} [options.label] None: the server suggests one (a branch's: the chat's label base, upstream's suffix).
- * @param {string|null} [options.nodeId] One of the message's alternatives instead of the one shown.
- * @param {boolean} [options.unique] Always a new bookmark, even when a chat has the label.
- * @param {string|null} [options.alsoNodeId] A message to give the same name (the shown one, when forking at an
- * alternative).
- * @param {boolean} [options.open] Open the bookmark too.
- * @returns {Promise<BookmarkAnswer|null>} Null when it wasn't made.
+ * @param {string} [options.label]
+ * @param {string|null} [options.nodeId]
+ * @param {boolean} [options.unique]
+ * @param {string|null} [options.alsoNodeId]
+ * @param {boolean} [options.open]
+ * @returns {Promise<BookmarkAnswer|null>}
  */
 async function requestBookmark(mesId, { label, nodeId = null, unique = false, alsoNodeId = null, open = false }) {
     const owner = _labelOwner();
@@ -219,11 +213,8 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
 }
 
 /**
- * Branches the chat at a message (or one of its alternatives): the server names it after the open chat (its label
- * base) with upstream's branch suffix.
  * @param {number} mesId
- * @param {{ swipeId?: number|null, open?: boolean, alsoLabelShown?: boolean }} [options] `open`: open the branch
- * too; `alsoLabelShown`: when branching at an alternative, give the shown message the same name.
+ * @param {{ swipeId?: number|null, open?: boolean, alsoLabelShown?: boolean }} [options]
  * @returns {Promise<BookmarkAnswer|null|undefined>}
  */
 async function makeBranch(mesId, { swipeId = null, open = false, alsoLabelShown = false } = {}) {
@@ -249,7 +240,6 @@ async function makeBranch(mesId, { swipeId = null, open = false, alsoLabelShown 
         /** @type {string|null} */
         let nodeId = null;
         if (selectedSwipeId !== null) {
-            // The alternative may still be a hole (never fetched into swipe_info).
             await hydrateSwipes(Number(mesId), { index: selectedSwipeId });
             const swipeNodeId = chat[mesId]?.swipe_info?.[selectedSwipeId]?.node_id;
             if (!isStoredNodeId(swipeNodeId)) {
@@ -280,7 +270,6 @@ async function makeBranch(mesId, { swipeId = null, open = false, alsoLabelShown 
         return answer;
     }
 
-    // A message the server hasn't stored yet (a reply still arriving, a send not stored) has no node to branch at.
     toastr.warning('That message isn\'t saved yet. Try again once it is.', 'Branch creation failed');
     return;
 }
@@ -326,7 +315,6 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
             return null;
         }
 
-        // A message's `bookmark_link` is the compat id of the bookmark made at it, as a read gives it.
         const extra = typeof chat[mesId]?.extra === 'object' ? { ...chat[mesId].extra } : {};
         extra.bookmark_link = answer.id;
         updateMessage(mesId, { extra });
@@ -334,7 +322,6 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
         return answer.id;
     }
 
-    // A message the server hasn't stored yet (a reply still arriving, a send not stored) has no node to bookmark.
     toastr.warning('That message isn\'t saved yet. Try again once it is.', 'Bookmark');
     return null;
 }
@@ -374,14 +361,8 @@ export async function convertSoloToGroupChat() {
 
     const character = getCurrentCharacter();
 
-    // Snapshot now, before the getCharacters() reload below runs - that reload can itself react to a
-    // changed character list (e.g. resetChatState()/clearChat() on a resident character disappearing),
-    // and `chat` is the live, mutable array the rest of the app reads/writes - not a copy already in hand.
     const groupChat = [...chat].map(m => structuredClone(m));
 
-    // Populate group required fields. A plain, non-unique default name - same as group-chats.js's
-    // createGroup() - the server's /api/groups/create doesn't key groups by name (it mints its own
-    // Date.now()-based id), so there's nothing to uniquify against.
     const name = `Group: ${character.name}`;
     const avatar = getThumbnailUrl('avatar', character.avatar);
     const members = [character.avatar];
@@ -433,14 +414,6 @@ export async function convertSoloToGroupChat() {
     for (let index = 0; index < groupChat.length; index++) {
         const message = groupChat[index];
 
-        // These node_id/swipe_info[].node_id values name rows in the CHARACTER's own tree (owner_id =
-        // character.avatar) - the new group is a different owner entirely. saveChatToTree()'s node-id
-        // matching only ever reuses a claimed id when its stored parent_id equals the id this write is
-        // currently building against, so in practice a brand-new group's freshly-minted anchor/chain
-        // never collides with the old chain's real parents and fresh rows get created regardless - but
-        // that safety is incidental to id-namespace divergence, not a stated contract. Strip them so this
-        // write is unambiguously "new rows, new owner" the same way _messageContent() (chat-store.js)
-        // strips them from every other write that means the same thing.
         delete message.node_id;
         if (Array.isArray(message.swipe_info)) {
             message.swipe_info = message.swipe_info.map(info =>
@@ -460,9 +433,6 @@ export async function convertSoloToGroupChat() {
         message.name = character.name;
         message.original_avatar = character.avatar;
         message.force_avatar = getThumbnailUrl('avatar', character.avatar);
-        // Allow regens of a single message in group. gen_id isn't set here - /api/chats/group/save mints
-        // one for any message that doesn't already carry a real one from the solo chat, since the whole
-        // array is already going to the server in this one request.
     }
 
     // Save group chat
@@ -502,10 +472,8 @@ export async function branchChat(mesId, { swipeId = null } = {}) {
 }
 
 /**
- * Opens a branch makeBranch() made, from the answer it got when it opened it (or by asking, for a branch made the
- * old way).
  * @param {BookmarkAnswer|null|undefined} made
- * @returns {Promise<string|null>} The branch's compat chat id.
+ * @returns {Promise<string|null>}
  */
 async function openBranch(made) {
     if (!made?.id) {
@@ -520,11 +488,9 @@ async function openBranch(made) {
 }
 
 /**
- * Creates a branch from the message with the given ID and navigates to it, also labeling the fork
- * point with the branch name so it acts as a checkpoint on the source chat.
- * @param {number} mesId Message ID
- * @param {{swipeId?: number|null}} [options={}] Branch options
- * @returns {Promise<string?>} Branch file name
+ * @param {number} mesId
+ * @param {{swipeId?: number|null}} [options={}]
+ * @returns {Promise<string?>}
  */
 export async function forkChat(mesId, { swipeId = null } = {}) {
     if (getSelectionState().type === 'none') {
@@ -532,16 +498,12 @@ export async function forkChat(mesId, { swipeId = null } = {}) {
         return null;
     }
 
-    // The branch's name is the fork point's own label when forking the shown message; forking an alternative names
-    // the shown message too, so it marks the fork on the source chat.
     return openBranch(await makeBranch(mesId, { swipeId, open: true, alsoLabelShown: !selected_group }));
 }
 
 /**
- * Updates the display of the bookmark on a chat message, as upstream's does: the message element's `bookmark_link`
- * and its checkpoint flag's tooltip. Messages here carry no checkpoint flag, so only the attribute changes.
- * @param {JQuery<HTMLElement>} mes - The message element
- * @param {string?} [newBookmarkLink=null] - The new bookmark link (optional)
+ * @param {JQuery<HTMLElement>} mes
+ * @param {string?} [newBookmarkLink=null]
  */
 export function updateBookmarkDisplay(mes, newBookmarkLink = null) {
     newBookmarkLink && mes.attr('bookmark_link', newBookmarkLink);
@@ -769,7 +731,6 @@ export function initBookmarks() {
     });
 
     $(document).on('click', '.select_chat_block', async function () {
-        // A row's `file_name` is its chat's id (a bookmark's label, a conversation's name); `node_id` is where it is.
         const nodeId = $(this).attr('node_id');
         const target = $(this).attr('file_name');
 
@@ -777,8 +738,6 @@ export function initBookmarks() {
             return;
         }
 
-        // switchToNode() reuses whatever ancestry this chat already shares with the target and only
-        // replaces the difference; falls through to a full open when there's nothing to share.
         if (nodeId && await switchToNode(nodeId)) {
             $('#shadow_select_chat_popup').css('display', 'none');
             return;

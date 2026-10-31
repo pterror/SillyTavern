@@ -3,9 +3,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-// The upstream-compatible migration of group files (src/endpoints/groups.js migrateGroupChatsMetadataFormat) works on
-// the old group JSON and chat files only; it never reads or writes the store.
-
 /** @type {typeof import('../src/endpoints/groups.js')} */
 let groups;
 
@@ -45,11 +42,6 @@ function makeMessage(mes, name = 'Alice', isUser = false) {
     return { name, is_user: isUser, mes, send_date: `date-${mes}`, extra: {}, swipes: [mes], swipe_id: 0 };
 }
 
-/**
- * Writes a group in the pre-metadata-migration shape: chat metadata lives on the group JSON
- * (`chat_metadata` for the current chat, `past_metadata` for the others), and each chat file is
- * messages only - no header line.
- */
 function writeOldFormatGroup(directories, { groupId, chatId, messages, chatMetadata }) {
     const group = {
         id: groupId,
@@ -75,7 +67,6 @@ function writeChatFile(directories, name, lines) {
     fs.writeFileSync(path.join(directories.groupChats, `${name}.jsonl`), lines.map(l => (typeof l === 'string' ? l : JSON.stringify(l))).join('\n') + '\n');
 }
 
-/** Every file under a directory with its bytes, to prove a run wrote nothing. */
 function snapshot(dir) {
     const out = {};
     for (const entry of fs.readdirSync(dir, { recursive: true, withFileTypes: true })) {
@@ -112,7 +103,6 @@ describe('metadata migration never strips metadata it did not land', () => {
         const backup = JSON.parse(fs.readFileSync(path.join(directories.backups, '_group_metadata_update', 'gk.json'), 'utf8'));
         expect(backup.past_metadata['chat-here']).toEqual({ note_prompt: 'lands' });
 
-        // Nothing left that can land: a second run writes nothing.
         const before = snapshot(directories.root);
         await groups.migrateGroupChatsMetadataFormat([directories]);
         expect(snapshot(directories.root)).toEqual(before);

@@ -1,10 +1,3 @@
-//! Measures how a commit's cost grows with its size: N chained message appends as one commit, for several N,
-//! each on a fresh store; prints time and keyspace reads per record.
-//!
-//!   cargo run --release --features measure --example commitsize -- <dir> [hist] [N...]
-//!
-//! `hist`: N `histSet`s of one entry's field instead of N chained message appends.
-
 use std::path::Path;
 use std::time::Instant;
 
@@ -36,7 +29,6 @@ fn append(id: u64, parent: Option<u64>, tree: u64) -> Record {
     )
 }
 
-/// Change `c` of entry 10's content (a history field), as one `histSet`.
 fn hist_set(c: u64) -> Record {
     rec(
         "histSet",
@@ -53,7 +45,6 @@ fn hist_set(c: u64) -> Record {
     )
 }
 
-/// A world book (1) with entry 10 in it.
 fn book() -> Vec<Record> {
     vec![
         rec(

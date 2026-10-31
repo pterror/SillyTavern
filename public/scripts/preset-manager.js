@@ -546,7 +546,6 @@ class PresetManager {
             delete preset_names[oldName];
         }
 
-        // context/instruct/sysprompt/reasoning presets derive preset_names from their own .name field.
         if (preset && typeof preset === 'object' && 'name' in preset) {
             preset.name = data.name;
         }
@@ -885,7 +884,6 @@ class PresetManager {
             sorted.push(...list);
         }
 
-        // Guard against MutationObserver re-entry while re-appending options
         this._applyingOrder = true;
         try {
             for (const opt of sorted) {
@@ -948,9 +946,7 @@ class PresetManager {
     }
 
     /**
-     * Maps this manager's API ID to the saveSettings()/saveSettingsDebounced() key path that scopes
-     * a save to just this API's settings.extensions object, mirroring the switch in getPresetList().
-     * @returns {string|undefined} Key path, or undefined if the API ID is unrecognized.
+     * @returns {string|undefined}
      */
     getExtensionsSettingsKey() {
         switch (this.apiId) {
@@ -994,7 +990,6 @@ class PresetManager {
             // Set the value at the specified path
             settings.extensions = ensurePlainObject(settings.extensions || {});
             path ? lodash.set(settings.extensions, path, value) : (settings.extensions = value);
-            // Scope the save to just this API's settings.extensions instead of the whole settings blob.
             const settingsKey = this.getExtensionsSettingsKey();
             settingsKey ? await saveSettings(settingsKey) : await saveSettings();
         }
@@ -1138,7 +1133,6 @@ export async function initPresetManager() {
     $('select[data-preset-manager-for]').each((_, e) => {
         const apiIds = $(e).data('preset-manager-for').split(',');
         const apiId = apiIds[0];
-        // Fall back to the rename button as an anchor if no restore button exists
         const anchorBtn = $(`[data-preset-manager-restore="${apiId}"]`).add(`[data-preset-manager-rename="${apiId}"]`).last();
         if (anchorBtn.length) {
             const isIconStyle = anchorBtn.is('i');

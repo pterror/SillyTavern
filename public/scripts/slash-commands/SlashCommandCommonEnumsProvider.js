@@ -124,19 +124,16 @@ export const enumIcons = {
     },
 };
 
-/** How many characters and groups one autocomplete search asks the server for. */
 const CHARACTER_SEARCH_LIMIT = 50;
 
 /**
- * Searches the whole library on the server for characters and groups matching typed text, as autocomplete options.
- * @param {('all' | 'character' | 'group')} mode - Which type to return
+ * @param {('all' | 'character' | 'group')} mode
  * @returns {(typed: string) => Promise<SlashCommandEnumValue[]>}
  */
 function searchCharacterEnumValues(mode) {
     return async (typed) => {
         const search = String(typed ?? '').trim();
         if (!search) return [];
-        // Imported when used: character-repository.js imports script.js, which imports this module.
         const { characterRepository, normalizeQueryRow } = await import('../character-repository.js');
         const filter = { search };
         if (mode !== 'character') filter.includeGroups = true;
@@ -232,7 +229,6 @@ export const commonEnumProviders = {
             ...['all', 'group'].includes(mode) ? groups.map(group => new SlashCommandEnumValue(group.name, null, enumTypes.qr, enumIcons.group)) : [],
             ...(name2 === neutralCharacterName) ? [new SlashCommandEnumValue(neutralCharacterName, null, enumTypes.name, '🥸')] : [],
         ];
-        // The list above covers only what the page holds; the autocomplete also asks the server with what was typed.
         provider.enumSearchProvider = searchCharacterEnumValues(mode);
         return provider;
     },
@@ -269,7 +265,6 @@ export const commonEnumProviders = {
             const assignedTags = mode === 'assigned' ? getHeldAssignedTagIds() : new Set();
             return tagsStore.getAll().filter(tag => mode === 'all' || (mode === 'assigned' && assignedTags.has(tag.id))).map(toOption);
         };
-        // The list above covers only what the page holds; the autocomplete also asks the server with what was typed.
         provider.enumSearchProvider = mode === 'assigned' ? searchUsedTagOptions(toOption) : searchTagOptions(toOption);
         return provider;
     },
@@ -291,7 +286,6 @@ export const commonEnumProviders = {
             return tagsStore.getAll().filter(it => mode === 'all' || mode === 'existing' && assigned.includes(it) || mode === 'not-existing' && !assigned.includes(it))
                 .map(toOption);
         };
-        // The list above covers only the tags the page holds; for any tag, the autocomplete also asks the server.
         if (mode !== 'existing') provider.enumSearchProvider = searchTagOptions(toOption);
         return provider;
     },

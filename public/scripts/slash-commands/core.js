@@ -24,16 +24,9 @@ import { textgen_types } from '../textgen-settings.js';
 import { accountStorage } from '../util/AccountStorage.js';
 import { canUseNegativeLookbehind, debounce, delay, findCharAsync, isTrueBoolean } from '../utils.js';
 
-/**
- * The shared parser: upstream's `parser` export of slash-commands.js. A live binding, set by {@link getParser} the
- * first time anything needs it, and by initDefaultSlashCommands() at startup, before extensions load, so an
- * extension that imports it gets the instance.
- * @type {SlashCommandParser}
- */
+/** @type {SlashCommandParser} */
 export let parser;
 /**
- * Constructed lazily: a circular import back from SlashCommandParser.js means this module can
- * start evaluating while that class is still in its temporal dead zone, so `new` at module scope throws.
  * @returns {SlashCommandParser}
  */
 export function getParser() {
@@ -43,7 +36,7 @@ export function getParser() {
     return parser;
 }
 /**
- * @deprecated Use SlashCommandParser.addCommandObject() instead
+ * @deprecated
  */
 export function registerSlashCommand(...args) {
     return SlashCommandParser.addCommand(...args);
@@ -68,10 +61,10 @@ export function closureToFilter(closure) {
 
 /**
  * @typedef {object} ConnectAPIMap
- * @property {string} selected - API name (e.g. "textgenerationwebui", "openai")
- * @property {string?} [button] - CSS selector for the API button
- * @property {string?} [type] - API type, mostly used by text completion. (e.g. "openrouter")
- * @property {string?} [source] - API source, mostly used by chat completion. (e.g. "openai")
+ * @property {string} selected
+ * @property {string?} [button]
+ * @property {string?} [type]
+ * @property {string?} [source]
  */
 
 /** @type {Record<string, ConnectAPIMap>} */
@@ -80,7 +73,7 @@ export const CONNECT_API_MAP = {};
 /** @type {string[]} */
 export const UNIQUE_APIS = [];
 
-/** @type {Record<string, string>} CSS selector for the API button, keyed by `selected`. `koboldhorde` has none. */
+/** @type {Record<string, string>} */
 const CONNECT_API_BUTTON_BY_SELECTED = {
     'kobold': '#api_button',
     'novel': '#api_button_novel',
@@ -125,12 +118,11 @@ export async function generateSystemMessage(args, prompt) {
 }
 
 /**
- * Checks if an argument is a string array (or undefined), and if not, throws an error
- * @param {string|SlashCommandClosure|(string|SlashCommandClosure)[]|undefined} arg The named argument to check
- * @param {string} name The name of the argument for the error message
- * @param {object} [options={}] - The optional arguments
- * @param {boolean} [options.allowUndefined=false] - Whether the argument can be undefined
- * @throws {Error} If the argument is not an array
+ * @param {string|SlashCommandClosure|(string|SlashCommandClosure)[]|undefined} arg
+ * @param {string} name
+ * @param {object} [options={}]
+ * @param {boolean} [options.allowUndefined=false]
+ * @throws {Error}
  * @returns {string[]}
  */
 export function validateArrayArgString(arg, name, { allowUndefined = true } = {}) {
@@ -144,12 +136,11 @@ export function validateArrayArgString(arg, name, { allowUndefined = true } = {}
 }
 
 /**
- * Checks if an argument is a string or closure array (or undefined), and if not, throws an error
- * @param {string|SlashCommandClosure|(string|SlashCommandClosure)[]|undefined} arg The named argument to check
- * @param {string} name The name of the argument for the error message
- * @param {object} [options={}] - The optional arguments
- * @param {boolean} [options.allowUndefined=false] - Whether the argument can be undefined
- * @throws {Error} If the argument is not an array of strings or closures
+ * @param {string|SlashCommandClosure|(string|SlashCommandClosure)[]|undefined} arg
+ * @param {string} name
+ * @param {object} [options={}]
+ * @param {boolean} [options.allowUndefined=false]
+ * @throws {Error}
  * @returns {(string|SlashCommandClosure)[]}
  */
 export function validateArrayArg(arg, name, { allowUndefined = true } = {}) {
@@ -163,14 +154,9 @@ export function validateArrayArg(arg, name, { allowUndefined = true } = {}) {
 }
 
 /**
- * Retrieves the name and avatar information for a message
- *
- * The name of the character will always have precendence over the one given as argument. If you want to specify a different name for the message,
- * explicitly implement this in the code using this.
- *
- * @param {object?} character - The character object to get the avatar data for
- * @param {string?} name - The name to get the avatar data for
- * @returns {{name: string, force_avatar: string, original_avatar: string}} An object containing the name for the message, forced avatar URL, and original avatar
+ * @param {object?} character
+ * @param {string?} name
+ * @returns {{name: string, force_avatar: string, original_avatar: string}}
  */
 export function getNameAndAvatarForMessage(character, name = null) {
     const isNeutralCharacter = !character && name2 === neutralCharacterName && name === neutralCharacterName;
@@ -208,10 +194,8 @@ export async function sendMessageAs(args, text) {
 
     let mesText = String(text ?? '').trim();
 
-    // Requires a regex check after the slash command is pushed to output
     mesText = getRegexedString(mesText, regex_placement.SLASH_COMMAND, { characterOverride: name });
 
-    // Messages that do nothing but set bias will be hidden from the context
     const bias = extractMessageBias(mesText);
     const isSystem = bias && !removeMacros(mesText).length;
     const compact = isTrueBoolean(args?.compact);
@@ -261,7 +245,6 @@ export async function sendMessageAs(args, text) {
     let insertAt = Number(args.at);
 
     if (!isNaN(insertAt) && (insertAt < 0 || Object.is(insertAt, -0))) {
-        // Negative depth counts back from chat length (e.g. 8 messages, depth 1 = index 7)
         insertAt = chat.length + insertAt;
     }
 
@@ -269,8 +252,6 @@ export async function sendMessageAs(args, text) {
 
     if (!isNaN(insertAt) && insertAt >= 0 && insertAt <= chat.length) {
         chat.splice(insertAt, 0, message);
-        // Mid-chain insert is a graft, not a diff-engine-visible change — see sendMessageAsUser()'s
-        // own insertAt branch for the same reasoning.
         await storeSentMessage(insertAt, { graft: true });
         await eventSource.emit(event_types.MESSAGE_RECEIVED, insertAt, 'command');
         await reloadCurrentChat();
@@ -290,7 +271,6 @@ export async function sendMessageAs(args, text) {
 export async function sendNarratorMessage(args, text) {
     text = String(text ?? '');
     const name = args.name ?? (chat_metadata[NARRATOR_NAME_KEY] || NARRATOR_NAME_DEFAULT);
-    // Messages that do nothing but set bias will be hidden from the context
     const bias = extractMessageBias(text);
     const isSystem = bias && !removeMacros(text).length;
     const compact = isTrueBoolean(args?.compact);
@@ -315,7 +295,6 @@ export async function sendNarratorMessage(args, text) {
     let insertAt = Number(args.at);
 
     if (!isNaN(insertAt) && (insertAt < 0 || Object.is(insertAt, -0))) {
-        // Negative depth counts back from chat length (e.g. 8 messages, depth 1 = index 7)
         insertAt = chat.length + insertAt;
     }
 
@@ -323,8 +302,6 @@ export async function sendNarratorMessage(args, text) {
 
     if (!isNaN(insertAt) && insertAt >= 0 && insertAt <= chat.length) {
         chat.splice(insertAt, 0, message);
-        // Mid-chain insert is a graft, not a diff-engine-visible change — see sendMessageAsUser()'s
-        // own insertAt branch for the same reasoning.
         await storeSentMessage(insertAt, { graft: true });
         await eventSource.emit(event_types.MESSAGE_SENT, insertAt);
         await reloadCurrentChat();
@@ -342,7 +319,6 @@ export async function sendNarratorMessage(args, text) {
 }
 
 export async function promptQuietForLoudResponse(who, text) {
-    // Captured once by avatar before the generateQuietPrompt() await, so a later selection change can't affect it.
     const character = getCurrentCharacter();
     if (who === 'sys') {
         text = 'System: ' + text;
@@ -352,8 +328,6 @@ export async function promptQuietForLoudResponse(who, text) {
         text = character.name + ': ' + text;
     } else if (who === 'raw') {
     }
-
-    //text = `${text}${power_user.instruct.enabled ? '' : '\n'}${(power_user.always_force_name2 && who != 'raw') ? character.name + ":" : ""}`
 
     let reply = await generateQuietPrompt({ quietPrompt: text, quietToLoud: true });
     text = await getRegexedString(reply, regex_placement.SLASH_COMMAND);
@@ -401,7 +375,6 @@ export function processChatSlashCommands() {
 
     for (const [id, inject] of Object.entries(context.chatMetadata.script_injects)) {
         /**
-         * Rehydrates a filter closure from a string.
          * @returns {SlashCommandClosure | null}
          */
         function reviveFilterClosure() {
@@ -426,8 +399,7 @@ export function processChatSlashCommands() {
 }
 
 /**
- * Clear up command execution progress bar above chat input.
- * @returns Promise<void>
+ * @returns
  */
 async function clearCommandProgress() {
     if (isExecutingCommandsFromChatInput) return;
@@ -454,23 +426,14 @@ export let isExecutingCommandsFromChatInput = false;
 
 export let commandsFromChatInputAbortController;
 
-/**
- * Show command execution pause/stop buttons next to chat input.
- */
 export function activateScriptButtons() {
     document.querySelector('#form_sheld').classList.add('isExecutingCommandsFromChatInput');
 }
 
-/**
- * Hide command execution pause/stop buttons next to chat input.
- */
 export function deactivateScriptButtons() {
     document.querySelector('#form_sheld').classList.remove('isExecutingCommandsFromChatInput');
 }
 
-/**
- * Toggle pause/continue command execution. Only for commands executed via chat input.
- */
 export function pauseScriptExecution() {
     if (commandsFromChatInputAbortController) {
         if (commandsFromChatInputAbortController.signal.paused) {
@@ -483,37 +446,32 @@ export function pauseScriptExecution() {
     }
 }
 
-/**
- * Stop command execution. Only for commands executed via chat input.
- */
 export function stopScriptExecution() {
     commandsFromChatInputAbortController?.abort('Clicked stop button');
 }
 
 /**
  * @typedef ExecuteSlashCommandsOptions
- * @prop {boolean} [handleParserErrors] (true) Whether to handle parser errors (show toast on error) or throw.
- * @prop {SlashCommandScope} [scope] (null) The scope to be used when executing the commands.
- * @prop {boolean} [handleExecutionErrors] (false) Whether to handle execution errors (show toast on error) or throw
- * @prop {import('./SlashCommandParser.js').ParserFlags} [parserFlags] (null) Parser flags to apply
- * @prop {SlashCommandAbortController} [abortController] (null) Controller used to abort or pause command execution
- * @prop {SlashCommandDebugController} [debugController] (null) Controller used to control debug execution
- * @prop {(done:number, total:number)=>void} [onProgress] (null) Callback to handle progress events
- * @prop {string} [source] (null) String indicating where the code come from (e.g., QR name)
+ * @prop {boolean} [handleParserErrors]
+ * @prop {SlashCommandScope} [scope]
+ * @prop {boolean} [handleExecutionErrors]
+ * @prop {import('./SlashCommandParser.js').ParserFlags} [parserFlags]
+ * @prop {SlashCommandAbortController} [abortController]
+ * @prop {SlashCommandDebugController} [debugController]
+ * @prop {(done:number, total:number)=>void} [onProgress]
+ * @prop {string} [source]
  */
 
 /**
  * @typedef ExecuteSlashCommandsOnChatInputOptions
- * @prop {SlashCommandScope} [scope] (null) The scope to be used when executing the commands.
- * @prop {import('./SlashCommandParser.js').ParserFlags} [parserFlags] (null) Parser flags to apply
- * @prop {boolean} [clearChatInput] (false) Whether to clear the chat input textarea
- * @prop {string} [source] (null) String indicating where the code come from (e.g., QR name)
+ * @prop {SlashCommandScope} [scope]
+ * @prop {import('./SlashCommandParser.js').ParserFlags} [parserFlags]
+ * @prop {boolean} [clearChatInput]
+ * @prop {string} [source]
  */
 
 /**
- * Execute slash commands while showing progress indicator and pause/stop buttons on
- * chat input.
- * @param {string} text Slash command text
+ * @param {string} text
  * @param {ExecuteSlashCommandsOnChatInputOptions} options
  */
 export async function executeSlashCommandsOnChatInput(text, options = {}) {
@@ -545,7 +503,7 @@ export async function executeSlashCommandsOnChatInput(text, options = {}) {
     fs.classList.remove('script_error');
     fs.classList.remove('script_aborted');
 
-    /**@type {SlashCommandClosureResult} */
+    /** @type {SlashCommandClosureResult} */
     let result = null;
     let currentProgress = 0;
     try {
@@ -575,7 +533,7 @@ export async function executeSlashCommandsOnChatInput(text, options = {}) {
         result.errorMessage = e.message || t`An unknown error occurred`;
         if (e.cause !== 'abort') {
             if (e instanceof SlashCommandExecutionError) {
-                /**@type {SlashCommandExecutionError}*/
+                /** @type {SlashCommandExecutionError} */
                 const ex = e;
                 const toast = `
                     <div>${ex.message}</div>
@@ -603,9 +561,8 @@ export async function executeSlashCommandsOnChatInput(text, options = {}) {
 }
 
 /**
- *
- * @param {HTMLTextAreaElement} textarea The textarea to receive autocomplete
- * @param {Boolean} isFloating Whether to show the auto complete as a floating window (e.g., large QR editor)
+ * @param {HTMLTextAreaElement} textarea
+ * @param {Boolean} isFloating
  * @returns {Promise<AutoComplete>}
  */
 export async function setSlashCommandAutoComplete(textarea, isFloating = false) {
@@ -637,8 +594,7 @@ export async function initSlashCommandAutoComplete() {
 }
 
 /**
- *
- * @param {string} text Slash command text
+ * @param {string} text
  * @param {ExecuteSlashCommandsOptions} [options]
  * @returns {Promise<SlashCommandClosureResult>}
  */
@@ -666,7 +622,7 @@ export async function executeSlashCommandsWithOptions(text, options = {}) {
         closure.source = options.source;
     } catch (e) {
         if (options.handleParserErrors && e instanceof SlashCommandParserError) {
-            /**@type {SlashCommandParserError}*/
+            /** @type {SlashCommandParserError} */
             const ex = e;
             const toast = `
                 <div>${ex.message}</div>
@@ -696,7 +652,7 @@ export async function executeSlashCommandsWithOptions(text, options = {}) {
     } catch (e) {
         if (options.handleExecutionErrors) {
             if (e instanceof SlashCommandExecutionError) {
-                /**@type {SlashCommandExecutionError}*/
+                /** @type {SlashCommandExecutionError} */
                 const ex = e;
                 const toast = `
                     <div>${ex.message}</div>
@@ -723,15 +679,14 @@ export async function executeSlashCommandsWithOptions(text, options = {}) {
 }
 
 /**
- * Executes slash commands in the provided text
- * @deprecated Use executeSlashCommandWithOptions instead
- * @param {string} text Slash command text
- * @param {boolean} handleParserErrors Whether to handle parser errors (show toast on error) or throw
- * @param {SlashCommandScope} scope The scope to be used when executing the commands.
- * @param {boolean} handleExecutionErrors Whether to handle execution errors (show toast on error) or throw
- * @param {{[id:import('./SlashCommandParser.js').PARSER_FLAG]:boolean}} parserFlags Parser flags to apply
- * @param {SlashCommandAbortController} abortController Controller used to abort or pause command execution
- * @param {(done:number, total:number)=>void} onProgress Callback to handle progress events
+ * @deprecated
+ * @param {string} text
+ * @param {boolean} handleParserErrors
+ * @param {SlashCommandScope} scope
+ * @param {boolean} handleExecutionErrors
+ * @param {{[id:import('./SlashCommandParser.js').PARSER_FLAG]:boolean}} parserFlags
+ * @param {SlashCommandAbortController} abortController
+ * @param {(done:number, total:number)=>void} onProgress
  * @returns {Promise<SlashCommandClosureResult>}
  */
 export async function executeSlashCommands(text, handleParserErrors = true, scope = null, handleExecutionErrors = false, parserFlags = null, abortController = null, onProgress = null) {

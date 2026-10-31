@@ -1,9 +1,7 @@
 import { describe, test, expect } from '@jest/globals';
 import { sourcePosition } from '../public/scripts/live-editor/positions.js';
 
-/** The rendered text and the offset of `marker` in it, with the marker taken out. */
 const at = (/** @type {string} */ shown) => ({ text: shown.replace('|', ''), offset: shown.indexOf('|') });
-/** The source with the expected position marked. */
 const expected = (/** @type {string} */ written) => ({ source: written.replace('|', ''), pos: written.indexOf('|') });
 
 describe('a point in the rendered text, in the source', () => {

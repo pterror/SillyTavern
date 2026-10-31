@@ -1,15 +1,3 @@
-/**
- * Search-path phase timing, reported as a `Server-Timing` header. The phase names are a contract with
- * `scripts/bench-search.mjs`.
- *
- * Debug flag: config key `performance.searchTiming`, or env `SILLYTAVERN_PERFORMANCE_SEARCHTIMING=true`.
- * Not in default/config.yaml, because config-init would then write it into the user's config.yaml.
- * Read on first use rather than at import, because config may not be loaded yet at import time.
- *
- * With the flag on, JSON bodies are stringified here with plain `JSON.stringify` (not Express's `res.json`
- * settings) so that serialization can be timed.
- */
-
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { performance } from 'node:perf_hooks';
 
@@ -31,7 +19,6 @@ function isEnabled() {
 }
 
 /**
- * Repeated names are summed.
  * @param {string} name
  * @param {number} ms
  */
@@ -51,7 +38,6 @@ export function markSinceStart(name) {
 }
 
 /**
- * A returned thenable is timed until it settles.
  * @template T
  * @param {string} name
  * @param {() => T} fn

@@ -169,14 +169,12 @@ class MacroEngine {
         const raw = `{{${call.rawInner}}}`;
         if (!name) return raw;
 
-        // Dynamic macros take priority over any registered macro of the same name; keys are lowercased for case-insensitive lookup.
         /** @type {MacroDefinition|null} */
         let defOverride = null;
         const nameLower = name.toLowerCase();
         if (Object.hasOwn(env.dynamicMacros, nameLower)) {
             const impl = env.dynamicMacros[nameLower];
 
-            // Dynamic macros: a plain string, a handler function (legacy), or a full MacroDefinitionOptions object.
             const looksLikeOptions = impl && typeof impl === 'object' &&
                 'handler' in impl && typeof impl.handler === 'function';
 
@@ -203,7 +201,7 @@ class MacroEngine {
         }
 
         if (!defOverride && !MacroRegistry.hasMacro(name)) {
-            return raw; // Unknown macro: nested macros inside rawInner are already resolved.
+            return raw;
         }
 
         try {
@@ -260,15 +258,11 @@ class MacroEngine {
      * Registers the core pre/post processors that handle legacy syntax and cleanup.
      */
     #registerCorePreProcessors() {
-        // Priority 0-50 is reserved for core pre-processors.
-
-        // {{time_UTC-10}} isn't parsed by the new macro syntax, so rewrite it to {{time::UTC-10}} first.
         this.addPreProcessor(
             text => text.replace(/{{time_(UTC[+-]\d+)}}/gi, (_match, utcOffset) => `{{time::${utcOffset}}}`),
             { priority: 10, source: 'core:legacy-time-syntax' },
         );
 
-        // Legacy non-curly markers (<USER>, <BOT>, <GROUP>, ...) rewritten into their macro equivalents.
         this.addPreProcessor(
             text => text
                 .replace(/<USER>/gi, '{{user}}')
@@ -284,21 +278,16 @@ class MacroEngine {
      * Registers the core post-processors that handle legacy syntax and cleanup.
      */
     #registerCorePostProcessors() {
-        // Priority 0-50 is reserved for core post-processors.
-
-        // \{\{ doesn't match the MacroStart token, so escaped braces pass through unprocessed and are unescaped here.
         this.addPostProcessor(
             text => text.replace(/\\([{}])/g, '$1'),
             { priority: 10, source: 'core:unescape-braces' },
         );
 
-        // {{trim}} reaches outside its own macro boundaries, which the engine can't support, so it's handled via regex instead.
         this.addPostProcessor(
             text => text.replace(TRIM_MACRO, ''),
             { priority: 20, source: 'core:legacy-trim' },
         );
 
-        // Clean up any leftover ELSE_MARKER left behind by processing.
         this.addPostProcessor(
             text => text.replaceAll(ELSE_MARKER, ''),
             { priority: 30, source: 'core:cleanup-else-marker' },

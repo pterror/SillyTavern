@@ -1,24 +1,3 @@
-//! Bulk loads: many records written as one, for imports and one-off conversions. The commit path would derive,
-//! buffer, flush and merge per group; a load instead lays its records out in log files of its own, derives
-//! their entries on worker threads (each partition's records in order on one worker, `Deriver::partition`),
-//! sorts what the workers spill, and merges it once into one run.
-//!
-//! The load is invisible until it is installed, all at once: its log files are staged in `load/` in the store's
-//! directory, numbered right after the log's tail file (commits meanwhile stay in that file), and its run is
-//! written there too. Installing holds commits briefly: it flushes the buffer, moves the staged files into the
-//! log and puts the run in place as the newest one, covering the log to the load's end. A crash before the
-//! files are moved leaves the store as before the load; after, the moved files are part of the log and replay
-//! derives them if their run wasn't in place yet. An `install` marker in `load/` lets opening tell which.
-//!
-//! Records committed meanwhile must not share a partition with the load's (the load derived its partitions'
-//! entries from the state before it): installing checks, and refuses the load if any does.
-//!
-//! The library's numberings (each scope's entities numbered densely for random pages) are shared across
-//! partitions, and can't
-//! be built again later. So characters and groups load only into a store with none, with nothing committed or
-//! derived meanwhile (else the load is refused): every scope is numbered from its name order, read from the
-//! workers' spills, and the numberings join the load's run.
-
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Write};
@@ -37,16 +16,10 @@ use crate::keyspace::val::Val;
 use crate::log::format::{FieldRef, Record, Value};
 use crate::log::{self, Cursor, Layout, TailFile};
 
-/// A load's memory budget where the memory available can't be read (`load_budget`).
 const LOAD_BUFFER_BYTES: usize = 1 << 30;
-/// The least budget share a worker gets, so that what it spills comes in large runs.
 const WORKER_BYTES: usize = 256 << 20;
-/// Sinks the numberings and the tags' carriers fill at once: the numbers and their hosts' ranks, and the
-/// carriers' entries beside their asks or the slots those hold.
 const NUMBERING_SINKS: usize = 4;
 
-/// The memory a load may take: half the memory available when it starts, the other half left to the page cache
-/// and whatever else runs; `LOAD_BUFFER_BYTES` where that can't be read.
 fn load_budget() -> usize {
     #[cfg(not(target_family = "wasm"))]
     {
@@ -60,34 +33,17 @@ fn load_budget() -> usize {
     LOAD_BUFFER_BYTES
 }
 
-/// Workers deriving in parallel: every core but two, left to whatever else runs, and no more than give each
-/// `WORKER_BYTES` of `budget`.
 fn load_workers(budget: usize) -> usize {
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(2));
     cores.min(budget / WORKER_BYTES).max(1)
 }
 
-/// Growth of a sink between two measures of what the allocations hold (`memory::committed`).
 const STEP: usize = 4 << 20;
-/// An encoding's buffer past the sink's bytes: its index blocks and footer.
 const ENCODE_SLACK: usize = 64 << 10;
-/// The least a sink is cut to a run at. Under a cap it can't meet (memory outside the load's sinks and runs), a
-/// sink goes on growing to this rather than writing a tiny run per partition.
 const MIN_CUT: usize = 64 << 20;
 
-/// The resident memory a bulk load's allocations take, at most, per byte they ask the allocator for: its
-/// size-class rounding, partly used pages and the pages it keeps for reuse. A load holds the bytes asked
-/// (`memory::committed`) at its budget divided by this, so that its resident memory stays within the budget.
-///
-/// Measured through the binding (`Store.load`) on conversion-shaped cards (`characterRecords`, 30,000 to 40,000
-/// cards of about 12,000 words), resident memory past the load's start against the bytes asked past it, Node's
-/// own ~370 MB included: a 1 GiB budget, 1,359 MiB resident at the peak against ~0.8 GB asked; 4 GiB, 3,363 MiB
-/// against ~2.3 GB; the default (17.6 GB), 5,804 MiB against 4.9 GB. Without Node, the allocator's part grew from
-/// about 17% to 30% of what was asked as runs were cut.
 const ALLOCATOR_OVERHEAD: f64 = 1.4;
 
-/// What spilling a sink of `bytes` in `len` entries allocates besides the sink: the encoding's buffer, and the
-/// larger of the entries sorted out of the sink (while encoding) and the run's copy at its exact size (after).
 fn spill_memory(bytes: usize, len: usize) -> usize {
     let sorted = len.saturating_mul(std::mem::size_of::<(Vec<u8>, Val)>());
     bytes
@@ -95,42 +51,23 @@ fn spill_memory(bytes: usize, len: usize) -> usize {
         .saturating_add(sorted.max(bytes))
 }
 
-/// A load's memory: what the crate's allocations hold (`memory::committed`), with what spills under way have
-/// reserved, stays under what they held when the load started plus `limit`, the budget over
-/// `ALLOCATOR_OVERHEAD`. Measured every `STEP` a sink grows, with room for every sink's next step; where it is
-/// over, the oldest runs held in memory are written to files until it is under, and where none is left, a sink
-/// of at least `MIN_CUT` is cut and spills to a file. A sink is cut into a run at its share of `limit`, counting
-/// what its spill allocates (`spill_memory`), which is reserved before the spill starts; the run stays in memory
-/// while the allocations stay under the cap. The process's resident memory is read alongside and reported, never
-/// enforced: memory the load can't free (the host's) would only make it cut.
 struct Budget {
-    /// The budget, and the allocations past `base` it allows.
     budget: usize,
     limit: usize,
-    /// What the crate's allocations held when the load started.
     base: usize,
-    /// The process's resident memory, where it can be read, and what it was when the load started.
     resident: Option<(Mutex<crate::memory::Resident>, usize)>,
-    /// Sinks growing at once: the workers', then the numberings'.
     sinks: AtomicUsize,
-    /// Bytes spills under way have reserved (`Budget::reserve`).
     reserved: AtomicUsize,
-    /// Runs made in memory, oldest first; held while a measure and the reservation it allows are made, so two
-    /// threads can't both take the same room.
     held: Mutex<VecDeque<Weak<Run>>>,
-    /// The most the allocations, and the resident memory, have been measured to hold past their start.
     peak: AtomicUsize,
     peak_resident: AtomicUsize,
-    /// Runs made in memory; runs written to files, as they were made or later; their bytes.
     kept: AtomicU64,
     files: AtomicU64,
     file_bytes: AtomicU64,
-    /// Partitions the workers met again after moving past them (`work`), and whether that was told.
     revisits: AtomicU64,
     revisit_told: AtomicBool,
 }
 
-/// Bytes reserved under a budget's cap, given back when dropped.
 struct Reserved<'a> {
     budget: &'a Budget,
     bytes: usize,
@@ -164,7 +101,6 @@ impl Budget {
         }
     }
 
-    /// What the allocations hold; the resident memory, read alongside for the report.
     fn measure(&self) -> usize {
         let c = crate::memory::committed();
         self.peak
@@ -178,9 +114,6 @@ impl Budget {
         c
     }
 
-    /// Reserves `more` bytes under the cap, first writing the oldest runs held in memory to their files until
-    /// what the allocations hold, the reservations under way, `more` and room for every sink's next step fit.
-    /// None where they don't with every run written out.
     fn reserve(&self, more: usize) -> StoreResult<Option<Reserved<'_>>> {
         let cap = self.base.saturating_add(self.limit);
         let mut held = self.held.lock().unwrap();
@@ -210,14 +143,10 @@ impl Budget {
         }
     }
 
-    /// Whether the allocations are, or once runs are written out can be, under the cap (`reserve`).
     fn hold(&self) -> StoreResult<bool> {
         Ok(self.reserve(0)?.is_some())
     }
 
-    /// A sink at `bytes` in `len` entries, measured at `next`: whether it is to be cut, at its `share` with what its
-    /// spill allocates (`spill_memory`), or where the allocations can't otherwise be held under the cap; never
-    /// under `MIN_CUT`.
     fn grown(&self, bytes: usize, len: usize, next: &mut usize, share: usize) -> StoreResult<bool> {
         let mut cut = bytes.saturating_add(spill_memory(bytes, len)) >= share;
         if bytes >= *next {
@@ -227,7 +156,6 @@ impl Budget {
         Ok(cut && bytes >= MIN_CUT)
     }
 
-    /// A worker met a partition again after moving past it: counted, and told once per load.
     fn revisited(&self, partition: u64) {
         self.revisits.fetch_add(1, Ordering::Relaxed);
         if !self.revisit_told.swap(true, Ordering::Relaxed) {
@@ -243,7 +171,6 @@ impl Budget {
 #[test]
 fn a_sink_under_a_cap_it_cant_meet_is_cut_no_smaller_than_min_cut() {
     let budget = Budget::new(64 << 20, 1);
-    // Reservations past the cap, as memory outside the load's sinks and runs would hold it.
     budget.reserved.store(usize::MAX / 2, Ordering::Relaxed);
     for _ in 0..3 {
         let mut next = 0;
@@ -258,52 +185,34 @@ fn a_sink_under_a_cap_it_cant_meet_is_cut_no_smaller_than_min_cut() {
     }
 }
 
-/// Partitions go to workers in units of `1 << UNIT_BITS` consecutive ids: a posting block's (`BLOCK_BITS`), so the
-/// cards a worker holds between spills share their terms' posting maps instead of each adding its own.
 const UNIT_BITS: u32 = crate::search::BLOCK_BITS;
-/// Encoded bytes of staged records a worker keeps in hand (`StagedRecords`).
 const RECORDS_HELD: u64 = 16 << 20;
-/// A sink entry's memory besides its key and value.
 const ENTRY_OVERHEAD: usize = 128;
 
-/// Where a load's time went, and what it wrote.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LoadStats {
     pub records: u64,
     pub log_bytes: u64,
-    /// Laying records out and writing and syncing the staged log files (the caller's thread).
     pub layout_micros: u64,
-    /// Waiting for the workers after the last record.
     pub derive_wait_micros: u64,
-    /// The workers' time deriving, and writing their spills, summed over workers.
     pub derive_micros: u64,
     pub spill_micros: u64,
-    /// The memory it may take (`load_budget`); the most its allocations were measured to hold past the start
-    /// (`memory::committed`, held at the budget over `ALLOCATOR_OVERHEAD`), and the most the process's resident
-    /// memory rose (reported, not enforced; 0 where it can't be read).
     pub budget_bytes: u64,
     pub peak_bytes: u64,
     pub peak_resident_bytes: u64,
-    /// Partitions the workers met again after moving past them: records out of partition order.
     pub revisits: u64,
-    /// Runs of the workers' and the numberings' sinks that went to files, as they were made or later, and
-    /// their bytes; and the runs made in memory.
     pub spills: u64,
     pub spill_bytes: u64,
     pub kept_runs: u64,
-    /// Merging the spills into the load's run.
     pub merge_micros: u64,
     pub run_bytes: u64,
     pub run_entries: u64,
-    /// Numbering the library's scopes for random pages, and the entries.
     pub numbers_micros: u64,
     pub number_entries: u64,
-    /// Holding commits: waiting for them, flushing the buffer, moving files, putting the run in place.
     pub install_micros: u64,
     pub total_micros: u64,
 }
 
-/// A record laid out, with where, and its partition.
 type Laid = (Record, Loc, u64);
 
 struct Worker {
@@ -311,7 +220,6 @@ struct Worker {
     handle: Option<JoinHandle<StoreResult<Spilled>>>,
 }
 
-/// What a worker leaves: its spilled runs (with their spill numbers) and its time.
 #[derive(Default)]
 struct Spilled {
     runs: Vec<(u64, Arc<Run>)>,
@@ -319,8 +227,6 @@ struct Spilled {
     spill_micros: u64,
 }
 
-/// A bulk load in progress (`Store::loader`). Dropped without `finish`, it is abandoned and leaves the store as
-/// it was.
 pub struct Loader {
     inner: Arc<Inner>,
     dir: PathBuf,
@@ -328,32 +234,24 @@ pub struct Loader {
     layout: Layout,
     batch: Vec<Laid>,
     workers: Vec<Worker>,
-    /// Where the log goes on after the last file written.
     end: Option<Cursor>,
     stats: LoadStats,
     started: Instant,
     failed: Option<String>,
     finished: bool,
-    /// Installing failed after the install marker was written: the staging stays for opening to resolve.
     keep_staging: bool,
-    /// The store had no characters or groups when the load started: a load of some numbers them.
     library_empty: bool,
-    /// The memory its sinks and the runs it keeps in memory take.
     budget: Arc<Budget>,
-    /// Each message this load appends, and its owner (`message_partition`).
     owners: HashMap<u64, u64>,
-    /// Tests stop the install as a crash would: 1 after the marker, 2 after the files moved.
     #[cfg(test)]
     fail_at: u8,
 }
 
 impl Store {
-    /// Starts a bulk load. Only one runs at a time; commits go on meanwhile.
     pub fn loader(&self) -> StoreResult<Loader> {
         self.loader_in(None)
     }
 
-    /// `loader`, its memory budget `budget` bytes in place of `load_budget`'s.
     pub fn loader_in(&self, budget: Option<usize>) -> StoreResult<Loader> {
         let inner = &self.inner;
         inner.wait_ready()?;
@@ -367,7 +265,6 @@ impl Store {
                 return Err(StoreError::Refused("a bulk load is already running".into()));
             }
             p.loading = Some(Loading::default());
-            // The open group's file, or the cursor's: commits stay in it while the load runs.
             p.open.layout.as_ref().map_or(p.cursor.file, |l| l.file) + 1
         };
         let start = || -> StoreResult<()> {
@@ -438,7 +335,6 @@ impl Store {
     }
 }
 
-/// Whether no scope counts a character or group, no tag is placed and none was ever assigned.
 fn no_library(ks: &crate::keyspace::Keyspace) -> StoreResult<bool> {
     use super::kinds::key;
     for structure in [key::COUNT, key::TAG_PART_COUNT] {
@@ -449,7 +345,6 @@ fn no_library(ks: &crate::keyspace::Keyspace) -> StoreResult<bool> {
             }
         }
     }
-    // And no assignment: a load numbers and maps its tags as new ones.
     let carried = key::of(key::MEMBER_COUNT);
     Ok(ks.scan(&carried, &key::prefix_end(&carried), 1)?.is_empty())
 }
@@ -464,8 +359,6 @@ impl Loader {
         self.fail_at = point;
     }
 
-    /// Adds records to the load. A refusal (an engine-only kind, or a kind whose commit changes the record)
-    /// fails the whole load.
     pub fn add(&mut self, records: impl IntoIterator<Item = Record>) -> StoreResult<()> {
         if let Some(why) = &self.failed {
             return Err(StoreError::Failed(why.clone()));
@@ -508,9 +401,6 @@ impl Loader {
         Ok(())
     }
 
-    /// The partition of a record about a message this load appends: its owner's, where the append and everything
-    /// else of the message (its values, times, key, itemization, state changes) and of its tree is derived in order.
-    /// A record about a tree's root (a state change there) is the tree's. None: the kind's own partition.
     fn message_partition(&mut self, rec: &Record) -> Option<u64> {
         use crate::log::format::{Space, Ty};
         if rec.kind.name == "messageAppend" {
@@ -536,8 +426,6 @@ impl Loader {
         None
     }
 
-    /// Ends the open file's group, writes and syncs it in the staging directory, and hands its records to the
-    /// workers.
     fn close_file(&mut self) -> StoreResult<()> {
         self.end = Some(self.layout.close());
         let log = &self.inner.log;
@@ -556,8 +444,6 @@ impl Loader {
                 .as_ref()
                 .is_some_and(|tx| tx.send(recs).is_ok());
             if !sent {
-                // A closed receiver means this worker has returned. Preserve its actual
-                // error: callers commonly abandon after add fails instead of calling finish.
                 let worker = &mut self.workers[w];
                 drop(worker.tx.take());
                 return Err(match worker.handle.take().map(|h| h.join()) {
@@ -570,7 +456,6 @@ impl Loader {
         Ok(())
     }
 
-    /// Derives what is left, merges, and installs the load. Returns where its time went.
     pub fn finish(mut self) -> StoreResult<LoadStats> {
         self.finished = true;
         let r = self.finish_inner();
@@ -613,7 +498,6 @@ impl Loader {
         }
         self.stats.derive_wait_micros = t.elapsed().as_micros() as u64;
         let Some(end) = self.end else {
-            // Nothing was loaded.
             self.abandon();
             self.stats.total_micros = self.started.elapsed().as_micros() as u64;
             return Ok(self.stats);
@@ -629,11 +513,6 @@ impl Loader {
             records: Arc::new(StagedRecords::default()),
         };
 
-        // ---- numberings ----
-        // Derivation leaves them out (a numbering is shared across partitions): a load of characters or groups
-        // numbers every scope from its orders, which it can do only over a library that had none. They go into
-        // the load's run, so they are installed with it, all at once: installed alone, they would have replay
-        // derive the load over them and count the tags' parts twice.
         let t = Instant::now();
         let numbers = if staged_holds(&staged, super::kinds::key::COUNT)?
             || staged_holds(&staged, super::kinds::key::TAG_PLACE)?
@@ -654,9 +533,6 @@ impl Loader {
         self.stats.numbers_micros = t.elapsed().as_micros() as u64;
         let numbered = numbers.is_some();
 
-        // ---- one run of everything the workers and the numberings spilled, newest spill first; the
-        // numberings' keys are none of the workers' but the host entries (`library::rank_host`) they write their
-        // numbers into, so the numberings are newer ----
         let t = Instant::now();
         let mut runs: Vec<Arc<Run>> = numbers.into_iter().flatten().collect();
         runs.extend(staged.runs);
@@ -678,7 +554,6 @@ impl Loader {
         self.stats.peak_resident_bytes = b.peak_resident.load(Ordering::Relaxed) as u64;
         self.stats.revisits = b.revisits.load(Ordering::Relaxed);
 
-        // ---- install ----
         let t = Instant::now();
         self.install(&path, numbered, end)?;
         self.stats.install_micros = t.elapsed().as_micros() as u64;
@@ -686,7 +561,6 @@ impl Loader {
         Ok(self.stats)
     }
 
-    /// Nothing was committed or derived since the load started.
     fn alone(&self) -> bool {
         let p = self.inner.pipe.lock().unwrap();
         p.loading
@@ -694,13 +568,6 @@ impl Loader {
             .is_none_or(|l| l.touched.is_empty() && !l.derived)
     }
 
-    /// Numbers each (scope, type, fav) densely from 0, in its name order, into spilled runs (sorted, so any size
-    /// fits the load's memory) that join the load's merge. Returns them, newest first, and the entries spilled.
-    /// Each number also goes into the entry standing for its (scope, entity) (`library::rank_host`), beside the
-    /// record place the workers wrote there: the numbers are spilled by that entry's key first, then joined with
-    /// the workers' entries in key order, and the joined entries are newer than the workers' in the load's merge.
-    /// The library had no characters or groups before the load, and the install refuses it if anything changed
-    /// meanwhile, so the workers' spills hold every count and order: they are read alone, merged in key order.
     fn build_numbers(&self, staged: &Staged) -> StoreResult<(Vec<Arc<Run>>, u64)> {
         use super::kinds::key;
         use super::library::{
@@ -737,8 +604,6 @@ impl Loader {
         let budget = &*self.budget;
         let share = budget.limit / NUMBERING_SINKS;
         budget.sinks.store(NUMBERING_SINKS, Ordering::Relaxed);
-        // The numberings and the tags' carriers by name term write structures of their own, each into its own
-        // spills: they run side by side.
         let numbering = || -> StoreResult<(Spilled, u64)> {
             let mut spilled = Spilled::default();
             let mut spill_staged = spill_into();
@@ -746,13 +611,11 @@ impl Loader {
             let mut sink_bytes = 0;
             let mut sink_next = 0;
             let mut entries = 0u64;
-            // Each number by its host entry's key, spilled apart: read back in key order below, never installed.
             let mut ranked = Spilled::default();
             let mut ranked_staged = spill_into();
             let mut ranks: HashMap<Vec<u8>, Val> = HashMap::new();
             let mut ranks_bytes = 0;
             let mut ranks_next = 0;
-            // The parts are in key order, and so are their name orders: one merge skips ahead to each.
             let mut it = staged_merge(staged, &key::of(key::ORDER))?;
             for (scope, kind, fav, n) in parts {
                 let p = order_prefix(&scope, BY_NAME, kind, fav);
@@ -809,7 +672,6 @@ impl Loader {
                     )));
                 }
             }
-            // The numbers joined with their host entries, both in key order: one pass over each.
             if !ranks.is_empty() {
                 spill(
                     &mut ranks,
@@ -858,12 +720,10 @@ impl Loader {
             }
             drop(ranked);
             drop(ranked_staged);
-            // The tags' orders follow their carriers, counted across partitions: every tag is placed here.
             let places = key::of(key::TAG_PLACE);
             let mut it = staged_merge(staged, &places)?;
             let tag_bad = || StoreError::Entry("a tag place key doesn't decode".into());
             let end = key::prefix_end(&places);
-            // Carrier counts, read alongside: both are in tag order.
             let members = key::of(key::MEMBER_COUNT);
             let members_end = key::prefix_end(&members);
             let mut member_it = staged_merge(staged, &members)?;
@@ -927,7 +787,6 @@ impl Loader {
             }
             Ok((spilled, entries))
         };
-        // ---- the tags' carriers by name term (`carriers`), every tag new ----
         let carriers = || -> StoreResult<(Spilled, u64)> {
             let mut spilled = Spilled::default();
             let mut spill_staged = spill_into();
@@ -970,7 +829,6 @@ impl Loader {
                     key::of(key::RESIDE),
                     Val::Put(r.bytes()),
                 );
-                // A view for the tags' names: their heads' records and any edits' reads, through blocks kept.
                 let named = Staged {
                     runs: staged.runs.clone(),
                     cache: Cache::new(64 << 20),
@@ -989,9 +847,6 @@ impl Loader {
                     log: &inner.log,
                     memo: None,
                 };
-                // A tag's carriers ask, per name term and reading, for their posting blocks: keyed by the
-                // block, one `ask_slot` each. The asks are read back in key order below, joined with the
-                // staged postings and then the lengths, never looked up one by one.
                 use crate::search::{BLOCK_BITS, FIELD_BITS, LENGTH_BITS, posting_block};
                 const LIBRARY: crate::search::Scope = crate::search::Scope::LIBRARY;
                 let carrier = |block: u64, s: u32| (block << key::MEMBER_BITS) | u64::from(s);
@@ -1015,7 +870,6 @@ impl Loader {
                     if c <= 0 {
                         continue;
                     }
-                    // A tag's name is indexed while it has its marker, so while it is placed.
                     place_it.seek(&key::id(key::TAG_PLACE, tag))?;
                     let placed = match place_it.peek() {
                         Some(k) if k == key::id(key::TAG_PLACE, tag).as_slice() => {
@@ -1075,8 +929,6 @@ impl Loader {
                             );
                         }
                     }
-                    // Per member block: a light tag's carriers counted in each term's map, and every tag's
-                    // carriers' block maxima raised for each term.
                     let bp = key::id(key::MEMBER_BLOCK, tag);
                     let bend = key::prefix_end(&bp);
                     block_it.seek(&bp)?;
@@ -1162,8 +1014,6 @@ impl Loader {
                         sink_next = 0;
                     }
                 }
-                // Each asked posting block joined with the staged one, both in key order: the slots each asked
-                // carrier holds there, by its length block's key.
                 if !asked.is_empty() {
                     spill(
                         &mut asked,
@@ -1175,8 +1025,6 @@ impl Loader {
                         asked_bytes,
                     )?;
                 }
-                // Terms are met in order here, so each takes the next id: the held carriers and the raises are
-                // keyed by it, and the terms, written in id order, give the raises their keys at the end.
                 let mut held: HashMap<Vec<u8>, Val> = HashMap::new();
                 let mut held_bytes = 0;
                 let mut held_next = 0;
@@ -1250,7 +1098,6 @@ impl Loader {
                                 continue;
                             }
                             let hk = held_key(doc, a & 1 == 1, id);
-                            // Per slot its field and its count: the document gives the rest.
                             let hv: Vec<u8> = slots
                                 .iter()
                                 .flat_map(|&(s, n)| {
@@ -1292,9 +1139,6 @@ impl Loader {
                 }
                 drop(asks_spilled);
                 drop(asks_staged);
-                // Each held carrier joined with its staged length block, both in key order: its score with the
-                // tag part, the highest per posting block, term and reading, raises the term's maxima over the
-                // block, keyed by the term's id.
                 if !held.is_empty() {
                     spill(
                         &mut held,
@@ -1317,8 +1161,6 @@ impl Loader {
                     let mut held_it = staged_merge(&held_staged, &[])?;
                     let mut len_it = staged_merge(staged, &[])?;
                     let mut lens_at: Option<(Vec<u8>, Vec<(u32, u32)>)> = None;
-                    // The highest score per term and reading over the current posting block's carriers: the held
-                    // carriers come in document order, so a block's are together, and only its highest is raised.
                     let mut best: HashMap<(u32, bool), f64> = HashMap::new();
                     let mut best_block: Option<u64> = None;
                     while let Some((hk, hv)) = held_it.next_entry()? {
@@ -1394,7 +1236,6 @@ impl Loader {
                 }
                 drop(held_spilled);
                 drop(held_staged);
-                // The raises joined with the terms, both in id order: each takes its term's maxima key.
                 if !raised.is_empty() {
                     spill(
                         &mut raised,
@@ -1495,7 +1336,6 @@ impl Loader {
     fn install(&mut self, run: &Path, numbered: bool, end: Cursor) -> StoreResult<()> {
         let inner = self.inner.clone();
         let last_file = end.file;
-        // Hold commits, and let the ones prepared be written and published.
         inner
             .pipe
             .lock()
@@ -1525,16 +1365,13 @@ impl Loader {
                     "the library changed during a bulk load of characters or groups; nothing was loaded".into(),
                 ));
             }
-            // The log's files run on without a gap into the load's.
             let before = inner.dir.join(inner.log.file_name(self.first_file - 1));
             if self.first_file > 0 && !before.exists() {
                 File::create(&before)?.sync_all()?;
             }
-            // The runs cover every commit before the load.
             let durable = inner.log.durable_end();
             inner.ks.freeze_at(durable);
             inner.ks.wait_flushed()?;
-            // The log files, last first: the first one makes them all part of the log.
             let mut marker = File::create(self.dir.join(MARKER))?;
             marker.write_all(format!("{} {last_file}", self.first_file).as_bytes())?;
             marker.sync_all()?;
@@ -1558,8 +1395,6 @@ impl Loader {
             inner
                 .ks
                 .install_run(run, log::position(end.file, end.offset))?;
-            // Only now does the log end past the load: a failure before leaves a flush covering no more than
-            // the runs did, so reopening derives what no run holds.
             {
                 let mut p = inner.pipe.lock().unwrap();
                 p.cursor = end;
@@ -1574,8 +1409,6 @@ impl Loader {
             let mut p = inner.pipe.lock().unwrap();
             match &r {
                 Ok(()) => p.loading = None,
-                // Past the marker the log may hold the load's files or some of them: nothing more is written
-                // until opening resolves it.
                 Err(e) if marked => {
                     p.failed = Some(format!("installing a bulk load failed: {e}"));
                     self.keep_staging = true;
@@ -1591,7 +1424,6 @@ impl Loader {
         r
     }
 
-    /// Refuses the load if a record committed meanwhile shares a partition with it.
     fn check_partitions(&self) -> StoreResult<()> {
         let touched = {
             let p = self.inner.pipe.lock().unwrap();
@@ -1628,7 +1460,6 @@ impl Loader {
         )))
     }
 
-    /// Stops the workers and removes what the load staged; the store is as before it.
     fn abandon(&mut self) {
         for w in &mut self.workers {
             drop(w.tx.take());
@@ -1658,11 +1489,6 @@ impl Drop for Loader {
     }
 }
 
-/// A worker: derives its partitions' records in order. The current partition's entries are kept apart, where
-/// its next record reads them; a finished partition's join the sink, where each key's values from all partitions
-/// are combined (their maps' slots and counters are each partition's own share), sorted and spilled to a run once
-/// `budget` is over and the sink holds its share of it (one of `workers`). A partition met again after others
-/// (input not in partition order) is read through the spilled runs, the sink spilled first.
 fn work(
     inner: &Inner,
     w: usize,
@@ -1674,8 +1500,6 @@ fn work(
     seq: &AtomicU64,
 ) -> StoreResult<Spilled> {
     let mut out = Spilled::default();
-    // The partition's entries: sorted, so a derivation's scans read a range of them, not all; the search index's
-    // many entries (postings, maxima, frequencies; read by key) in a hash map, cheaper to add to.
     let mut cur: BTreeMap<Vec<u8>, Val> = BTreeMap::new();
     let mut cur_search: HashMap<Vec<u8>, Val> = HashMap::new();
     let mut cur_partition: Option<u64> = None;
@@ -1791,7 +1615,6 @@ fn work(
     Ok(out)
 }
 
-/// The search index's structures a load worker keeps in a hash map, apart from `SUMMED_STRUCTURES`.
 const SEARCH_STRUCTURES: &[u64] = {
     use super::kinds::key;
     &[
@@ -1803,27 +1626,21 @@ const SEARCH_STRUCTURES: &[u64] = {
     ]
 };
 
-/// Search structures a bulk derivation only adds to or raises and never reads: a worker adds their entries to
-/// its sink as they come, not through the partition's entries.
 const SUMMED_STRUCTURES: &[u64] = {
     use super::kinds::key;
     &[key::SEARCH_BLOCK_MAX, key::SEARCH_TERM_COUNTS.id()]
 };
 
-/// Whether a key is of a `SUMMED_STRUCTURES` structure.
 fn summed_entry(k: &[u8]) -> bool {
     let mut at = 0;
     crate::keyspace::val::get_u64(k, &mut at).is_some_and(|s| SUMMED_STRUCTURES.contains(&s))
 }
 
-/// Whether a key is a search index entry (`SEARCH_STRUCTURES`).
 fn search_entry(k: &[u8]) -> bool {
     let mut at = 0;
     crate::keyspace::val::get_u64(k, &mut at).is_some_and(|s| SEARCH_STRUCTURES.contains(&s))
 }
 
-/// Merges `runs` (newest first) into one run at `path`: key ranges merged in parallel, each into a part, the
-/// parts' blocks then joined in order. Returns its entries and bytes.
 fn merge_runs(
     runs: &[Arc<Run>],
     dir: &Path,
@@ -1831,7 +1648,6 @@ fn merge_runs(
     block_size: usize,
     threads: usize,
 ) -> StoreResult<(u64, u64)> {
-    // Range bounds from the runs' data blocks' last keys, evenly by blocks.
     let mut keys: Vec<Vec<u8>> = Vec::new();
     for r in runs {
         keys.extend(r.data_blocks()?.into_iter().map(|(k, _)| k));
@@ -1900,11 +1716,6 @@ fn merge_runs(
     Ok((entries, bytes))
 }
 
-/// Adds a finished partition's value to the sink; returns the memory it took (less where it freed some). A
-/// map's slots are appended and sorted when spilled; a maxima map's and an added map's are also combined
-/// (`combine_max`, `combine_added`) whenever they would outgrow their memory, which is then set to twice what
-/// they hold: a key's slots take at most twice its distinct slots and the latest value's, and each slot is
-/// sorted O(log n) times, amortized.
 fn sink_add(sink: &mut HashMap<Vec<u8>, Val>, k: Vec<u8>, v: Val) -> isize {
     use std::collections::hash_map::Entry;
     match sink.entry(k) {
@@ -1943,8 +1754,6 @@ fn sink_add(sink: &mut HashMap<Vec<u8>, Val>, k: Vec<u8>, v: Val) -> isize {
     }
 }
 
-/// Appends `b` to `a`; where that would outgrow `a`'s memory, `a` is combined first and its memory set to twice
-/// what it then holds with `b`. Returns the bytes its memory grew by (negative where it shrank).
 fn absorb<T>(a: &mut Vec<T>, b: Vec<T>, combine: fn(&mut Vec<T>)) -> isize {
     let before = a.capacity();
     if a.len() + b.len() > before {
@@ -1960,7 +1769,6 @@ fn absorb<T>(a: &mut Vec<T>, b: Vec<T>, combine: fn(&mut Vec<T>)) -> isize {
     (a.capacity() as isize - before as isize) * std::mem::size_of::<T>() as isize
 }
 
-/// A maxima map's pairs sorted, each slot once, at its highest.
 fn combine_max(p: &mut Vec<(u32, u32)>) {
     p.sort_unstable();
     p.dedup_by(|later, earlier| {
@@ -1972,7 +1780,6 @@ fn combine_max(p: &mut Vec<(u32, u32)>) {
     });
 }
 
-/// An added map's pairs sorted, each slot once, at its deltas' sum; none at 0.
 fn combine_added(p: &mut Vec<(u32, i64)>) {
     p.sort_by_key(|x| x.0);
     p.dedup_by(|later, earlier| {
@@ -1985,9 +1792,6 @@ fn combine_added(p: &mut Vec<(u32, i64)>) {
     p.retain(|x| x.1 != 0);
 }
 
-/// Raises each term's maximum over posting block `block`, in each reading, to its highest score with a tag part
-/// over the block's carriers (`best`, by term id, emptied), into `raised`: keyed by the term's id, then the level
-/// and group of the term's maxima key (`search::block_maxima`).
 fn raise_highest(
     best: &mut HashMap<(u32, bool), f64>,
     block: u64,
@@ -2009,8 +1813,6 @@ fn raise_highest(
     }
 }
 
-/// A held carrier's key: its length block's key (`search::length_block`), its place in that block, the reading,
-/// and the term's id, so that held carriers come in document order.
 fn held_key(doc: u64, as_prefix: bool, id: u32) -> Vec<u8> {
     use crate::search::LENGTH_BITS;
     let mut k = crate::search::length_block(crate::search::Scope::LIBRARY, doc >> LENGTH_BITS);
@@ -2020,11 +1822,6 @@ fn held_key(doc: u64, as_prefix: bool, id: u32) -> Vec<u8> {
     k
 }
 
-/// Sorts the sink (and each map's slots), makes it a run numbered in spill order across the load's sinks, and
-/// empties it. What making the run in memory allocates (`spill_memory`, from the sink's `bytes`) is reserved
-/// before it starts; where the cap can't take it, the run is written straight to a file, with only the sink's
-/// entries sorted beside it. A run made in memory stays there while the allocations are under the cap
-/// (`Budget::hold`).
 #[allow(clippy::too_many_arguments)]
 fn spill(
     sink: &mut HashMap<Vec<u8>, Val>,
@@ -2041,7 +1838,6 @@ fn spill(
     let reserved = budget.reserve(spill_memory(bytes, sink.len()))?;
     let in_memory = reserved.is_some();
     let mut w = if in_memory {
-        // An encoding past the sink's bytes and the slack only grows the buffer.
         RunWriter::in_memory(16 << 10, bytes + ENCODE_SLACK)
     } else {
         RunWriter::create(&path, 16 << 10)?
@@ -2072,7 +1868,6 @@ fn spill(
         budget.file_bytes.fetch_add(len, Ordering::Relaxed);
         Arc::new(Run::open(&path, n, n)?)
     };
-    // Newest first.
     staged.runs.insert(0, run.clone());
     out.runs.push((n, run));
     out.spill_micros += t.elapsed().as_micros() as u64;
@@ -2087,9 +1882,6 @@ fn sync_dir(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Before opening a store: finishes or undoes a load that a crash interrupted. With the install marker and the
-/// load's first log file in the store's directory, every file was moved: the load is part of the log. Without
-/// it, nothing of the load is: the files moved so far go, with the staging directory.
 pub(super) fn recover(dir: &Path, cfg: &log::Config) -> StoreResult<()> {
     let staging = dir.join(LOAD_DIR);
     if !staging.exists() {
@@ -2117,8 +1909,6 @@ pub(super) fn recover(dir: &Path, cfg: &log::Config) -> StoreResult<()> {
     Ok(())
 }
 
-/// The staged runs' entries from `from` on, each key's values folded as their merge will.
-/// Writes `v` over the sink's value at `k`.
 fn sink_put(sink: &mut HashMap<Vec<u8>, Val>, bytes: &mut usize, k: Vec<u8>, v: Val) {
     *bytes += k.len() + ENTRY_OVERHEAD;
     let v = match sink.remove(&k) {
@@ -2139,7 +1929,6 @@ fn staged_merge<'a>(staged: &'a Staged, from: &[u8]) -> StoreResult<Merge<'a>> {
     Ok(Merge::new(sources))
 }
 
-/// Whether a staged run holds an entry of `structure`.
 fn staged_holds(staged: &Staged, structure: u64) -> StoreResult<bool> {
     use super::kinds::key;
     let start = key::of(structure);
@@ -2153,8 +1942,6 @@ mod sink_tests {
     use super::*;
     use crate::keyspace::val::map_bytes;
 
-    /// A worker's sink takes added maps in any order, a slot several times, and adds them; spilled, each slot is
-    /// once at its sum, none at 0, and an added map over a whole one is the whole sum.
     #[test]
     fn a_sink_adds_added_maps_and_spills_each_slot_once() {
         let dir = std::env::temp_dir().join(format!("st-engine-sink-{}", std::process::id()));
@@ -2204,8 +1991,6 @@ mod sink_tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// A count summed past 2^32 from partitions' deltas, each under 2^32, comes back exact from the sink's run,
-    /// merged with further added maps, settled and stored.
     #[test]
     fn a_sink_keeps_a_count_past_32_bits() {
         use crate::keyspace::val::{count_bytes, map_counts};

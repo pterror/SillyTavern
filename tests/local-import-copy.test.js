@@ -14,10 +14,6 @@ jest.unstable_mockModule('../src/util.js', () => ({
     getConfigValue: getConfigValueMock,
 }));
 
-// The real @reflink/reflink is a NAPI-RS native binding - platform-specific and not something a unit
-// test should depend on being loadable/behaving one particular way on CI. Mocking it here also lets
-// each test drive the reflink stage deterministically (succeed / fail) without touching a real
-// filesystem's actual COW support.
 jest.unstable_mockModule('@reflink/reflink', () => ({
     reflinkFile: reflinkFileMock,
 }));
@@ -41,8 +37,6 @@ describe('copyCharacterFile', () => {
         getConfigValueMock.mockImplementation((_key, defaultValue) => defaultValue);
 
         reflinkFileMock.mockReset();
-        // Default: reflink unavailable/unsupported on this "filesystem", so most tests exercise the
-        // hardlink/copy stages. Tests that care about the reflink-success path override this.
         reflinkFileMock.mockRejectedValue(new Error('reflink not supported on this filesystem'));
     });
 
@@ -73,9 +67,6 @@ describe('copyCharacterFile', () => {
 
         expect(result).toEqual({ method: 'hardlink' });
         expect(fs.readFileSync(targetPath, 'utf8')).toBe('character-bytes');
-        // A hardlink shares the source's inode - editing through one is visible via the other, which is
-        // exactly why every character-data write path has to go through write-file-atomic (temp file +
-        // rename) rather than mutate in place; see this module's write-path audit note.
         expect(fs.statSync(sourcePath).ino).toBe(fs.statSync(targetPath).ino);
     });
 
@@ -88,7 +79,6 @@ describe('copyCharacterFile', () => {
         expect(result).toEqual({ method: 'copy' });
         expect(getConfigValueMock).toHaveBeenCalledWith('localImport.allowCrossDeviceCopyFallback', true, 'boolean');
         expect(fs.readFileSync(targetPath, 'utf8')).toBe('character-bytes');
-        // A plain copy produces an independent inode, unlike a hardlink.
         expect(fs.statSync(sourcePath).ino).not.toBe(fs.statSync(targetPath).ino);
     });
 

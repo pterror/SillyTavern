@@ -9,7 +9,6 @@ async function awaitAppReady(page) {
 }
 
 /**
- * Runs a slash command and returns its result.
  * @param {import('@playwright/test').Page} page
  * @param {string} command
  */
@@ -39,7 +38,6 @@ test.describe('Help panel', () => {
         expect(await page.evaluate(() => window['SillyTavern'].getContext().chat.length)).toBe(chatLength);
         expect(await page.locator('dialog[open]').count()).toBe(0);
 
-        // Nothing is blocked: a drawer outside the panel opens while help is open, and help stays open.
         await page.locator('#leftNavDrawerIcon').click();
         await expect(page.locator('#left-nav-panel')).toHaveClass(/openDrawer/);
         await expect(panel(page)).toBeVisible();
@@ -73,7 +71,6 @@ test.describe('Help panel', () => {
             await runSlash(page, `/help ${name}`);
             await expect(activeTopic(page), `/help ${name}`).toHaveAttribute('data-topic', topic);
         }
-        // Opening help again reuses the one panel.
         await expect(panel(page)).toHaveCount(1);
     });
 
@@ -104,10 +101,8 @@ test.describe('Help panel', () => {
         await search.fill('strikethrough');
         await expect(page.locator('.helpLayer .helpSection[data-topic="hotkeys"]')).toBeVisible();
         await expect(page.locator('.helpLayer .helpTopic[data-topic="hotkeys"] .helpTopicCount')).toHaveText('1');
-        // Topics without a match are left out of the results and the list.
         await expect(page.locator('.helpLayer .helpSection[data-topic="macros"]')).toHaveCount(0);
 
-        // The slash command topic is searched with the slash command browser's own matching.
         await search.fill('"echo"');
         await expect(page.locator('.helpLayer .helpSection[data-topic="slash"]')).toBeVisible();
         await expect(page.locator('.helpLayer .helpSection[data-topic="slash"] .autoComplete > :not(.isFiltered)').first()).toBeVisible();
@@ -115,7 +110,6 @@ test.describe('Help panel', () => {
         await search.fill('zzqqxxnomatchzz');
         await expect(page.locator('.helpLayer .helpNoResults')).toBeVisible();
 
-        // Clearing the search goes back to the topic that was open.
         await search.fill('');
         await expect(activeTopic(page)).toHaveAttribute('data-topic', 'overview');
     });
@@ -198,7 +192,6 @@ test.describe('Hotkeys', () => {
         await chatBox(page).focus();
         await page.keyboard.down('Control');
         await expect(overlay(page)).toBeVisible();
-        // The chat box keeps focus (with the live editor on it, focus is in its editor).
         expect(await page.evaluate(async () => (await import('/scripts/live-editor/registry.js')).getFocusedField()?.id)).toBe('send_textarea');
         await page.keyboard.up('Control');
         await expect(overlay(page)).toHaveCount(0);
@@ -217,21 +210,18 @@ test.describe('Hotkeys', () => {
 
     test('a shortcut, a click or scrolling while Ctrl is down hides it or keeps it from showing', async ({ page }) => {
         await chatBox(page).focus();
-        // A quick shortcut never shows it.
         await page.keyboard.down('Control');
         await page.keyboard.press('a');
         await page.waitForTimeout(400);
         await expect(overlay(page)).toHaveCount(0);
         await page.keyboard.up('Control');
 
-        // A key pressed after it showed hides it.
         await page.keyboard.down('Control');
         await expect(overlay(page)).toBeVisible();
         await page.keyboard.press('a');
         await expect(overlay(page)).toHaveCount(0);
         await page.keyboard.up('Control');
 
-        // So do a click and the wheel.
         await page.keyboard.down('Control');
         await expect(overlay(page)).toBeVisible();
         await page.mouse.down();

@@ -1,6 +1,3 @@
-/* Requires each `label.tab-title` (wrapping an `input.invisible-radio`) to be the
- * immediate preceding sibling of its own `div.tab-contents`. */
-
 .invisible-radio {
     position: absolute;
     width: 1px;

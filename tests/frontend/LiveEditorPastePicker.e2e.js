@@ -1,14 +1,14 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// A paste goes in as text. After a paste that could have gone in more than one way, a small button at the end of the
-// paste shows how it went in and switches it: text only, keep formatting (markdown), keep as HTML.
-
 const HTML = '<p>Hello <b>bold</b> and <i>it</i>.</p>';
 const PLAIN = 'Hello bold and it.';
 const MARKDOWN = 'Hello **bold** and *it*.';
 
-/** @param {import('@playwright/test').Page} page @param {string} [value] */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} [value]
+ */
 async function mount(page, value = '') {
     await page.evaluate(async (value) => {
         const registry = await import('/scripts/live-editor/registry.js');
@@ -29,7 +29,6 @@ async function mount(page, value = '') {
 }
 
 /**
- * Pastes as the browser would, into the focused editor's content.
  * @param {import('@playwright/test').Page} page
  * @param {import('@playwright/test').Locator} editor
  * @param {Record<string, string>} data
@@ -45,8 +44,6 @@ async function paste(page, editor, data) {
 const testEditor = (/** @type {import('@playwright/test').Page} */ page) => page.locator('#liveEditorTestHost .cm-editor');
 
 /**
- * Puts focus back in the test editor, where it was, before keys are pressed: the app can move focus (to the chat box)
- * on its own while it finishes loading.
  * @param {import('@playwright/test').Page} page
  */
 async function refocus(page) {
@@ -76,7 +73,6 @@ test.describe('the paste picker', () => {
         const picker = editor.locator('.live-paste-picker');
         await expect(picker).toBeVisible();
         await expect(picker.locator('.live-paste-picker-toggle')).toContainText('Text only');
-        // It sits below the end of the paste.
         const end = await page.evaluate(() => {
             // @ts-ignore
             const { view } = window.liveEditorTest.editor;
@@ -96,7 +92,6 @@ test.describe('the paste picker', () => {
         const html = await value(page);
         expect(html.startsWith('Before <p>Hello <b>bold</b>')).toBe(true);
         expect(html.endsWith('</p>')).toBe(true);
-        // Focus stayed in the editor through the clicks.
         expect(await page.evaluate(() => document.activeElement?.closest('.cm-editor') !== null)).toBe(true);
     });
 
@@ -137,7 +132,6 @@ test.describe('the paste picker', () => {
         await page.keyboard.press('Escape');
         await expect(editor.locator('.live-paste-picker')).toHaveCount(0);
         expect(await value(page)).toBe(PLAIN);
-        // Undo after putting it away still takes the paste back, not the picker.
         await page.keyboard.press('Control+z');
         expect(await value(page)).toBe('');
     });
@@ -241,7 +235,6 @@ test.describe('the paste picker in the app', () => {
         expect(await read()).toBe('Edit me.' + MARKDOWN);
         await page.keyboard.press('Escape');
         await expect(editor.locator('.live-paste-picker')).toHaveCount(0);
-        // The edit is still open: that Escape was the picker's.
         await expect(editor).toBeVisible();
         await mes.locator('.mes_edit_cancel').click();
     });

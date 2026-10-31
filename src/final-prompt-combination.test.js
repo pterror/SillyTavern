@@ -43,7 +43,6 @@ test('CFG splice at depth 0 appends to last message, trailing whitespace -> no s
 });
 
 test('CFG splice at non-zero depth pushes into extensionPrompts at computed depth', () => {
-    // mesSend.length = 3, cfgPrompt.depth = 1 -> lengthDiff = 3 - 1 = 2 -> cfgDepth = 2
     const mesSend = mkMesSend(['a', 'b', 'c']);
     const { finalMesSend } = combineFinalPrompt({
         ...baseParams,
@@ -53,12 +52,10 @@ test('CFG splice at non-zero depth pushes into extensionPrompts at computed dept
     assert.deepEqual(finalMesSend[0].extensionPrompts, []);
     assert.deepEqual(finalMesSend[1].extensionPrompts, []);
     assert.deepEqual(finalMesSend[2].extensionPrompts, ['CFG_VALUE\n']);
-    // Messages themselves untouched by this branch
     assert.equal(finalMesSend[2].message, 'c');
 });
 
 test('CFG splice at non-zero depth: lengthDiff negative clamps cfgDepth to 0', () => {
-    // mesSend.length = 2, cfgPrompt.depth = 10 -> lengthDiff = 2 - 10 = -8 -> cfgDepth = 0
     const mesSend = mkMesSend(['a', 'b']);
     const { finalMesSend } = combineFinalPrompt({
         ...baseParams,
@@ -70,7 +67,6 @@ test('CFG splice at non-zero depth: lengthDiff negative clamps cfgDepth to 0', (
 });
 
 test('CFG splice at non-zero depth: out-of-range cfgDepth is a no-op, no crash', () => {
-    // mesSend.length = 1, cfgPrompt.depth = -5 -> lengthDiff = 1 - (-5) = 6 -> cfgDepth = 6, out of range
     const mesSend = mkMesSend(['only']);
     const { finalMesSend } = combineFinalPrompt({
         ...baseParams,
@@ -111,7 +107,6 @@ test('Prompt-bias appended when !isInstruct && !isImpersonate and non-empty, no 
         isImpersonate: false,
         promptBias: '  BIAS_VALUE  ',
     });
-    // trimStart() keeps trailing whitespace of the bias itself, only strips leading
     assert.equal(finalMesSend[1].message, 'last BIAS_VALUE  ');
 });
 
@@ -175,9 +170,7 @@ test('combine(): full flatten including addChatsSeparator/addChatsPreamble, \\r 
         mainApi: 'novel',
         naiPreamble: 'NAIPREAMBLE',
     });
-    // addChatsSeparator prepends `${chatStart}\n`; addChatsPreamble prepends `${naiPreamble}\n` (novel api)
     assert.equal(mesSendString, 'NAIPREAMBLE\nCHATSTART\nhello\rworld');
-    // combinedPrompt strips \r globally
     assert.equal(combinedPrompt, 'STORY|EXM|NAIPREAMBLE\nCHATSTART\nhelloworld|CACHE');
 });
 
@@ -202,19 +195,13 @@ test('combine(): collapse_newlines on collapses runs of newlines', () => {
 });
 
 test('.injected flag: inverted-index computation matches hand-verified expectations', () => {
-    // finalMesSend.length = 4 (indices 0..3). item.injected = injectedIndices.includes(length - i - 1)
-    // i=0 -> checks 3 ; i=1 -> checks 2 ; i=2 -> checks 1 ; i=3 -> checks 0
     const mesSend = mkMesSend(['m0', 'm1', 'm2', 'm3']);
-    const injectedIndices = [0, 2]; // original pre-reverse indices considered "injected"
+    const injectedIndices = [0, 2];
     const { finalMesSend } = combineFinalPrompt({
         ...baseParams,
         mesSend,
         injectedIndices,
     });
-    // i=0 -> length-0-1=3 -> not in [0,2] -> false
-    // i=1 -> length-1-1=2 -> in [0,2] -> true
-    // i=2 -> length-2-1=1 -> not in [0,2] -> false
-    // i=3 -> length-3-1=0 -> in [0,2] -> true
     assert.deepEqual(finalMesSend.map((e) => e.injected), [false, true, false, true]);
 });
 
@@ -231,13 +218,11 @@ test('original mesSend parameter is never mutated (deep clone, not shallow)', ()
     });
 
     assert.equal(JSON.stringify(mesSend), snapshotJson);
-    // Also verify nested extensionPrompts arrays are distinct references (structuredClone, not
-    // a shallow copy that would share nested array/object references).
     const mesSend2 = mkMesSend(['a', 'b']);
     const { finalMesSend } = combineFinalPrompt({
         ...baseParams,
         mesSend: mesSend2,
-        cfgPrompt: { value: 'X', depth: 1 }, // pushes into finalMesSend[cfgDepth].extensionPrompts
+        cfgPrompt: { value: 'X', depth: 1 },
     });
     assert.notEqual(finalMesSend[1].extensionPrompts, mesSend2[1].extensionPrompts);
     assert.deepEqual(mesSend2[1].extensionPrompts, []);

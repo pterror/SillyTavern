@@ -1,8 +1,3 @@
-//! Tags' carriers by name term against what the member blocks and the tags' names give afresh, through assigns,
-//! unassigns, merges, renames, definition markers coming and going, deletes, keys named once they have carriers,
-//! the scale growing and shrinking, a bulk load, flushes and merges; and the added maps of a bulk load's sinks
-//! and of a view's slot ranges.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
@@ -147,11 +142,9 @@ const NAMES: &[&str] = &[
 struct T {
     name: String,
     marked: bool,
-    /// Deleted (alone, or merged away).
     gone: bool,
 }
 
-/// The tags and cards as the commits left them.
 struct Model {
     tags: BTreeMap<u64, T>,
     cards: BTreeSet<u64>,
@@ -159,20 +152,15 @@ struct Model {
     next_tag: u64,
     next_card: u64,
     rng: Rng,
-    /// Tags' names are drawn from these; cards are named by these in turn.
     names: &'static [&'static str],
     card_names: &'static [&'static str],
-    /// The id of the `i`th card made.
     ids: fn(u64) -> u64,
 }
 
 fn card_id(i: u64) -> u64 {
-    // Spread over many member blocks, several cards in each.
     1_000_000 + i * 997
 }
 
-/// `card_id`'s spread in runs of 100 cards, each run `1 << 29` ids after the last: the block maxima's nodes over
-/// them are of several level-1 nodes and of level-2 nodes 0 to 2 (`search::node_of`).
 fn spread_card_id(i: u64) -> u64 {
     card_id(i % 100) + (i / 100 << 29)
 }
@@ -211,7 +199,6 @@ impl Model {
             .collect()
     }
 
-    /// The live tag most assignments go to.
     fn big(&self) -> Option<u64> {
         self.live_tags().into_iter().next()
     }
@@ -287,7 +274,6 @@ impl Model {
         }
     }
 
-    /// One change that isn't an assignment; true when it was a merge.
     fn other(&mut self) -> (Vec<Record>, bool) {
         let live = self.live_tags();
         let big = self.big();
@@ -310,7 +296,6 @@ impl Model {
                 (vec![if x.marked { mark(t) } else { unmark(t) }], false)
             }
             3 => {
-                // A key only assignments named gets its definition: name and marker, in either order.
                 let keys: Vec<u64> = live
                     .iter()
                     .copied()
@@ -334,7 +319,6 @@ impl Model {
                 (self.new_tag(defined), false)
             }
             5 | 6 => {
-                // A tag is deleted with a merge, into another tag or none.
                 let Some(t) = self.rng.pick(&small) else {
                     return (Vec::new(), false);
                 };
@@ -379,7 +363,6 @@ impl Model {
     }
 }
 
-/// What the structures hold, read in one state.
 #[derive(Debug, PartialEq, Default)]
 struct Held {
     pairs: i64,
@@ -416,7 +399,6 @@ fn read(s: &Store) -> Held {
             reside: super::carriers::reside(v)?,
             ..Held::default()
         };
-        // Every structure read here has a two-byte id.
         let skip = key::of(key::MEMBER_BLOCK).len();
         assert!(
             [key::TERM_CARRIERS, key::RESIDE]
@@ -480,7 +462,6 @@ fn terms(name: &str) -> BTreeSet<Term> {
     name_terms(name.as_bytes())
 }
 
-/// The structures as the member blocks, the tags' names and their sides and moves (`maps`) give them afresh.
 fn fresh(h: &Held, m: &Model) -> Held {
     let mut f = Held {
         reside: h.reside.clone(),
@@ -567,7 +548,6 @@ fn fresh(h: &Held, m: &Model) -> Held {
     f
 }
 
-/// Checks every structure against its fresh value; returns what was read.
 fn check(s: &Store, m: &Model, at: &str) -> Held {
     let h = read(s);
     let f = fresh(&h, m);
@@ -577,8 +557,6 @@ fn check(s: &Store, m: &Model, at: &str) -> Held {
     assert_eq!(h.term_heavy, f.term_heavy, "{at}: heavy tags by term");
     assert_eq!(h.term_moving, f.term_moving, "{at}: moving tags by term");
     assert_eq!(h.moving, f.moving, "{at}: move queue");
-    // The scale was set at m_set, and the pairs haven't left the hysteresis band since, or j would have been
-    // set again (unless that set it to what it was).
     let r = &h.reside;
     let m_now = h.pairs.max(0) as u64;
     assert_eq!(r.j, j_of(r.m_set), "{at}: j {r:?}");
@@ -588,8 +566,6 @@ fn check(s: &Store, m: &Model, at: &str) -> Held {
     h
 }
 
-/// Waits until no fold, move or re-siding is left; returns the state then, checked, also against the model's
-/// carriers and the band.
 fn settle(s: &Store, m: &Model, at: &str) -> Held {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
@@ -618,7 +594,6 @@ fn settle(s: &Store, m: &Model, at: &str) -> Held {
     h
 }
 
-/// What a run went through.
 #[derive(Default, Debug)]
 struct Seen {
     j_up: bool,
@@ -649,8 +624,6 @@ impl Seen {
     }
 }
 
-/// Commits random changes with the pairs swinging between `low` and `high` `cycles` times, checking every
-/// structure after each commit and once everything settles.
 fn swing(s: &Store, m: &mut Model, cycles: usize, low: usize, high: usize, seen: &mut Seen) {
     let mut last = settle(s, m, "start");
     let mut n = 0;
@@ -670,7 +643,6 @@ fn swing(s: &Store, m: &mut Model, cycles: usize, low: usize, high: usize, seen:
             );
             let mut recs = Vec::new();
             let mut merged = false;
-            // Room to grow: enough tags and cards for the pairs wanted.
             if growing && m.live_tags().len() < 6 {
                 recs.extend(m.new_tag(true));
             }
@@ -700,7 +672,6 @@ fn swing(s: &Store, m: &mut Model, cycles: usize, low: usize, high: usize, seen:
             s.commit_wait(recs).unwrap();
             n += 1;
             let h = if merged {
-                // Assignments name tags as the folds leave them.
                 settle(s, m, &format!("commit {n}, a merge"))
             } else {
                 check(s, m, &format!("commit {n}"))
@@ -734,7 +705,6 @@ fn carriers_by_term_follow_every_change_and_equal_a_fresh_computation() {
             seen.j_up && seen.j_down && !seen.heavy.is_empty() && seen.demoted && seen.in_flight,
             "{seen:?}"
         );
-        // Reopened, everything is as it was.
         let before = read(&s);
         s.close();
         drop(s);
@@ -752,14 +722,12 @@ fn a_bulk_load_builds_the_carriers_by_term_and_commits_go_on_from_them() {
     let s = Store::open_in(&dir, SMALL, pool()).unwrap();
     let mut m = Model::new(11);
     let mut l = s.loader().unwrap();
-    // Tags 4 and 8 are keys only assignments name.
     for i in 0..8 {
         l.add(m.new_tag(i % 4 != 3)).unwrap();
     }
     for _ in 0..600 {
         let mut r = m.new_card();
         let e = card_id(m.next_card - 1);
-        // Every card carries the first tag (heavy), some the others (light).
         r.push(assign(e, 1, true));
         m.carriers.entry(1).or_default().insert(e);
         for t in 2..=8 {
@@ -822,12 +790,9 @@ fn a_views_slot_range_adds_added_maps_onto_the_published_map() {
             vec![(6, 3), (9, 4), (12, 7)]
         );
         assert_eq!(v.map_range(k1.bytes(), 6, 10, true)?, vec![(6, 3), (9, 4)]);
-        // Nothing published at k2: the same either way.
         assert_eq!(v.map_range(k2.bytes(), 0, 100, true)?, vec![(2, 1)]);
         assert_eq!(v.map_range(k2.bytes(), 0, 100, false)?, vec![(2, 1)]);
-        // A delete below hides the published map.
         assert_eq!(v.map_range(k3.bytes(), 0, 100, true)?, vec![(8, 2)]);
-        // A range reads what a whole read gives within it.
         for k in [&k1, &k2, &k3] {
             let whole = v
                 .get_val(k.bytes())?
@@ -846,15 +811,12 @@ fn a_views_slot_range_adds_added_maps_onto_the_published_map() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// With K large (many pairs, most of them of tags without names), a light tag with more carriers than a move's
-/// slice moves in several steps, a cursor between them, whatever it is renamed to meanwhile.
 #[test]
 fn a_light_tags_move_takes_several_slices() {
     let dir = temp_dir("slices");
     let s = Store::open_in(&dir, SMALL, pool()).unwrap();
     let mut m = Model::new(5);
     let mut l = s.loader().unwrap();
-    // Tags 1 and 2 named, 3..=12 keys only.
     l.add(m.new_tag(true)).unwrap();
     l.add(m.new_tag(true)).unwrap();
     for _ in 0..10 {
@@ -916,9 +878,6 @@ fn a_light_tags_move_takes_several_slices() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-// ---- queries while carriers move ----
-
-/// Tag names most of which share "dark" and its prefix terms; one has a token longer than the prefix terms.
 const DARK_NAMES: &[&str] = &[
     "dark elf",
     "Dark",
@@ -946,8 +905,6 @@ const CARD_NAMES: &[&str] = &[
     "x marks",
 ];
 
-/// Queries of every clause kind that matches tag names: a word as a prefix term (the carrier maps') or whole,
-/// a prefix past the prefix terms and phrases (found by name), the tags field alone, negated clauses.
 fn carrier_queries() -> Vec<Query> {
     let tags_field = Scope::LIBRARY
         .fields()
@@ -965,7 +922,6 @@ fn carrier_queries() -> Vec<Query> {
         ..c(t)
     };
     let not = |cl: Clause| Clause { negate: true, ..cl };
-    // No work limit: every page is exact, so every one must be the same.
     let q = |clauses: Vec<Clause>| Query {
         scope: Scope::LIBRARY,
         clauses,
@@ -1006,13 +962,9 @@ fn carrier_queries() -> Vec<Query> {
     ]
 }
 
-/// A page apart from the work it took: hits (document, score bits), total, whether that and the page are
-/// exact, more, the tied score's bits.
 type Page = (Vec<(u64, u64)>, u64, bool, bool, bool, Option<u64>);
 
-/// What the queries give in one state.
 struct Answers {
-    /// Per query: its whole page, then its first two pages of 7.
     pages: Vec<Vec<Page>>,
 }
 
@@ -1054,13 +1006,10 @@ fn answers(v: &derive::View) -> StoreResult<Answers> {
     Ok(Answers { pages })
 }
 
-/// Whether two pages are the same: their totals only when both are exact (an estimate, or a count the work
-/// limit cut short, follows the work done).
 fn same_page(p: &Page, q: &Page) -> bool {
     (&p.0, p.3, p.4, p.5) == (&q.0, q.3, q.4, q.5) && (!(p.2 && q.2) || p.1 == q.1)
 }
 
-/// Where two answers differ (empty: nowhere).
 fn differ(a: &Answers, b: &Answers) -> String {
     let qs = carrier_queries();
     assert_eq!(a.pages.len(), b.pages.len());
@@ -1087,23 +1036,17 @@ fn differ(a: &Answers, b: &Answers) -> String {
     String::new()
 }
 
-/// What the states queried had in flight.
 #[derive(Default, Debug)]
 struct Flown {
     states: usize,
     moving: bool,
-    /// A move with its cursor among its carriers.
     split: bool,
-    /// A move whose tag's indexed name or band changed since it began.
     pending: bool,
-    /// A move to another name, and to none (a tag deleted or its marker removed).
     renamed: bool,
     emptied: bool,
     promoting: bool,
     demoting: bool,
     residing: bool,
-    /// The map, heavy and moving tags of "da" past `TAGS_WALKED` cursors, so a walk scoring their carriers alone
-    /// reads the documents' own tags.
     many: bool,
 }
 
@@ -1135,9 +1078,6 @@ impl Flown {
     }
 }
 
-/// With carrier moves and re-siding held: the answers in the store's state, which equal those in the states
-/// stepping its moves and re-siding leads to until none is left: the first ten, then ever sparser (a step in
-/// `1 + steps / 10`), and the last.
 fn answers_through_steps(s: &Store, flown: &mut Flown) -> Answers {
     s.derived(|v| {
         let first = answers(v)?;
@@ -1168,7 +1108,6 @@ fn answers_through_steps(s: &Store, flown: &mut Flown) -> Answers {
     .unwrap()
 }
 
-/// Waits until no tag fold is left.
 fn wait_folds(s: &Store) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while read(s).folds {
@@ -1177,8 +1116,6 @@ fn wait_folds(s: &Store) {
     }
 }
 
-/// Holds carrier moves and re-siding while `commit` commits; then checks the answers through the steps the
-/// moves and re-siding take (`answers_through_steps`) against the answers once everything settled.
 fn held_round(
     s: &Store,
     m: &mut Model,
@@ -1202,7 +1139,6 @@ fn queries_while_carriers_move_equal_the_queries_once_everything_settles() {
     queries_while_carriers_move_equal_the_queries_once_everything_settles_in(&pool);
 }
 
-/// A simulated store run is a function of its seed: every flush, merge, fold and move the same, step for step.
 #[test]
 fn a_simulated_store_run_replays_exactly() {
     let run = || {
@@ -1213,8 +1149,6 @@ fn a_simulated_store_run_replays_exactly() {
     assert_eq!(run(), run());
 }
 
-/// `queries_while_carriers_move_equal_the_queries_once_everything_settles` simulated: background steps run as the seed picks them (`Executor::simulated`), so an interleaving
-/// that fails replays exactly with `ST_SIM_SEED`; `ST_SIM_SEEDS` sets how many seeds run (default 2).
 #[test]
 fn queries_while_carriers_move_equal_the_queries_once_everything_settles_simulated() {
     for seed in crate::keyspace::exec::sim_seeds(2) {
@@ -1222,7 +1156,6 @@ fn queries_while_carriers_move_equal_the_queries_once_everything_settles_simulat
     }
 }
 
-/// What a run ended with: the keyspace's counters and the steps run under simulation.
 fn queries_while_carriers_move_equal_the_queries_once_everything_settles_in(
     mk: &dyn Fn() -> Arc<Pool>,
 ) -> String {
@@ -1240,8 +1173,6 @@ fn queries_while_carriers_move_equal_the_queries_once_everything_settles_in(
     }
     s.commit_wait(recs).unwrap();
     let mut flown = Flown::default();
-    // Pairs up to `high` and back down to `low`; queried every `every` commits, with the carriers held since the
-    // last query.
     let (low, high, every) = (40, 1300, 200);
     let mut round = 0;
     for growing in [true, false] {
@@ -1280,7 +1211,6 @@ fn queries_while_carriers_move_equal_the_queries_once_everything_settles_in(
                         s.commit_wait(recs).unwrap();
                     }
                     if merged {
-                        // Assignments name tags as the folds leave them.
                         wait_folds(s);
                     }
                 }
@@ -1305,8 +1235,6 @@ fn queries_while_carriers_move_equal_the_queries_once_everything_settles_in(
     outcome
 }
 
-/// With K large (many pairs of tags without names), light tags with more carriers than a move's slice move in
-/// several steps: the queries are the same with a move's cursor among its carriers.
 #[test]
 fn queries_while_a_move_is_split_equal_the_queries_once_it_ends() {
     let dir = temp_dir("split");
@@ -1315,7 +1243,6 @@ fn queries_while_a_move_is_split_equal_the_queries_once_it_ends() {
     m.names = DARK_NAMES;
     m.card_names = CARD_NAMES;
     let mut l = s.loader().unwrap();
-    // Tags 1 to 3 named, 4..=13 keys only.
     for t in 0..13 {
         l.add(m.new_tag(t < 3)).unwrap();
     }
@@ -1353,7 +1280,6 @@ fn queries_while_a_move_is_split_equal_the_queries_once_it_ends() {
             }
         });
     }
-    // A tag's marker removed while it moves, and put back.
     held_round(&s, &mut m, &mut flown, "marker", |s, m| {
         s.commit_wait(vec![set(1, NAME, "darkling")]).unwrap();
         m.tags.get_mut(&1).unwrap().name = "darkling".into();
@@ -1369,14 +1295,10 @@ fn queries_while_a_move_is_split_equal_the_queries_once_it_ends() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// A store after a bulk load of characters and tags, then creates, edits, deletes, assignments, renames,
-/// markers and merges, settled; with postings written.
 fn churned(name: &str) -> (Store, PathBuf) {
     churned_checking(name, false, |_, _| {})
 }
 
-/// `churned`, calling `check` after the bulk load and after each commit; with `hold`, carrier moves and re-siding are
-/// held for 50 commits in each 100, so commits and checks meet moves mid-flight.
 fn churned_checking(
     name: &str,
     hold: bool,
@@ -1444,8 +1366,6 @@ fn churned_checking(
     (s, dir)
 }
 
-/// No key of the removed top lists' structures (46 to 49) is written by a bulk load, nor by creates, edits,
-/// deletes and tag changes after it.
 #[test]
 fn no_top_list_key_is_written() {
     let (s, dir) = churned("no-lists");
@@ -1462,8 +1382,6 @@ fn no_top_list_key_is_written() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// No key of the removed field token counters (structure 37) is written by a bulk load, nor by creates, edits,
-/// deletes and tag changes after it; and every term's counts hold the document count's slot alone.
 #[test]
 fn only_document_counts_are_written() {
     let (s, dir) = churned("doc-counts");
@@ -1493,9 +1411,6 @@ fn only_document_counts_are_written() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// The name terms a library document's tags have its block maxima raised for: each tag's indexed name's that the
-/// name its map holds the document by holds too (a moving tag's target name below its cursor, its mapped name at
-/// or above it). A query bounds a moving tag's other carriers apart.
 fn raised_terms(v: &derive::View, d: u64) -> StoreResult<BTreeSet<Term>> {
     let p = key::id(key::MEMBER_OF, d);
     let mut out = BTreeSet::new();
@@ -1519,10 +1434,6 @@ fn raised_terms(v: &derive::View, d: u64) -> StoreResult<BTreeSet<Term>> {
     Ok(out)
 }
 
-/// Each level-0 block maximum is at least what each document in its block scores for the term in that reading
-/// (`search::local_r`, with `TAG_WEIGHT` in a library document's where its tags have the term raised,
-/// `raised_terms`), and each one-field maximum what it scores in that field (`search::field_texts`), from the
-/// postings, lengths and tags the store holds. Returns how many documents were checked with a tag part.
 fn maxima_cover_their_blocks(s: &Store, at: &str) -> u64 {
     use crate::search::{
         LENGTH_BITS, block_maxima, field_max_slot, field_texts, length_block, local_r, local_text,
@@ -1540,7 +1451,6 @@ fn maxima_cover_their_blocks(s: &Store, at: &str) -> u64 {
             };
             let term = String::from_utf8(get_bytes(&k, &mut i).unwrap()).unwrap();
             let block = get_u64(&k, &mut i).unwrap();
-            // A pair's postings have no maxima.
             if term.contains(pairs::SEPARATOR) {
                 continue;
             }
@@ -1617,8 +1527,6 @@ fn maxima_cover_their_blocks(s: &Store, at: &str) -> u64 {
     .unwrap()
 }
 
-/// Each maximum of a node above level 0 is at least each of its children's in that reading and field, and no map above
-/// level 0 holds node 0. Returns the maps above level 0 by level and key.
 fn nodes_cover_their_children(s: &Store, at: &str) -> BTreeMap<(u64, Vec<u8>), Vec<(u32, u32)>> {
     use crate::search::{
         GROUP_BITS, block_maxima, field_max_slot, max_slot, max_value, unmax_slot,
@@ -1653,7 +1561,6 @@ fn nodes_cover_their_children(s: &Store, at: &str) -> BTreeMap<(u64, Vec<u8>), V
                     m.clone(),
                 );
             }
-            // Group 0's node above is node 0, which holds no maximum.
             if *group == 0 {
                 continue;
             }
@@ -1695,11 +1602,6 @@ fn nodes_cover_their_children(s: &Store, at: &str) -> BTreeMap<(u64, Vec<u8>), V
     .unwrap()
 }
 
-/// After a bulk load, and after each of the creates, edits, deletes and tag changes that follow it, every
-/// level-0 block maximum covers its block's documents with their tag parts, and every node's maximum its
-/// children's; with carrier moves held for stretches of commits and let go, and once everything settled. Levels 1
-/// and 2 are written by the load and changed by the commits. After each check, queries over every field, in one
-/// field, and of two words queue their tightening jobs, which run before the next commit, while tags move.
 #[test]
 fn block_maxima_cover_their_blocks_through_every_change() {
     let mut last = BTreeMap::new();
@@ -1732,7 +1634,6 @@ fn block_maxima_cover_their_blocks_through_every_change() {
     })
     .collect();
     let mut reported = 0;
-    // Documents checked with a tag part; checks with a move in flight.
     let (mut tagged, mut in_flight) = (0, 0);
     let (s, dir) = churned_checking("maxima", true, |s, at| {
         tagged += maxima_cover_their_blocks(s, at);
@@ -1771,9 +1672,6 @@ fn block_maxima_cover_their_blocks_through_every_change() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// Two light tags renamed to gain a term, both moving over the same card: the first move to reach the card meets
-/// the other one's carriers not yet raised, and the second meets the first's settled; after both, the card's block
-/// maximum over every field holds its score with the tag part.
 #[test]
 fn two_tags_gaining_a_term_over_one_card_raise_its_block() {
     use crate::search::{TAG_WEIGHT, block_maxima, max_slot, max_value};
@@ -1818,7 +1716,6 @@ fn two_tags_gaining_a_term_over_one_card_raise_its_block() {
         m.carriers.entry(t).or_default().insert(e);
     }
     settle(&s, &m, "both moved");
-    // Stored rounded up from the text alone, then from the text and the tag part.
     assert!(
         stored(&s) > text + TAG_WEIGHT / 2.0,
         "{} for {text} and the tag",
@@ -1829,9 +1726,6 @@ fn two_tags_gaining_a_term_over_one_card_raise_its_block() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// A tightening job run while a raise of the same maxima map waits unpublished (in a layer of its view, as a
-/// commit queued ahead of it leaves it): the map it puts back keeps the published slots of the other blocks it
-/// holds, and the waiting raise.
 #[test]
 fn a_tightening_job_keeps_published_slots_under_a_raise_not_yet_published() {
     use crate::search::index::{tighten, whole};
@@ -1846,7 +1740,6 @@ fn a_tightening_job_keeps_published_slots_under_a_raise_not_yet_published() {
             create(e, CHARACTER, &format!("c{e}.png")),
         ]
     };
-    // Block `block` and the next one, under the same level-0 map.
     let mut recs = card(base + 1, "omega");
     recs.extend(card(base + 2, "omega knight knight knight"));
     recs.extend(card(base + (1 << BLOCK_BITS), "omega knight"));
@@ -1857,7 +1750,6 @@ fn a_tightening_job_keeps_published_slots_under_a_raise_not_yet_published() {
     let next = node_at(&s, "omega", block + 1, 0);
     assert!(!next.is_empty());
     s.derived(|v| {
-        // A card scoring between the two left in `block`, its entries not published.
         let mut raised = BTreeMap::new();
         let mut out = derive::Out::default();
         let name: &[&[u8]] = &[b"omega knight"];
@@ -1904,7 +1796,6 @@ fn a_tightening_job_keeps_published_slots_under_a_raise_not_yet_published() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// Each slot `term`'s maxima map holds at `level` for the node over block `block`, by sub.
 fn node_at(s: &Store, term: &str, block: u64, level: u64) -> BTreeMap<u32, u32> {
     use crate::search::{GROUP_BITS, NODE_SLOT_BITS, block_maxima, node_of};
     let node = node_of(block, level);
@@ -1922,8 +1813,6 @@ fn node_at(s: &Store, term: &str, block: u64, level: u64) -> BTreeMap<u32, u32> 
     .collect()
 }
 
-/// The most each slot of `term`'s node over block `block` covers (`max_bits`), by sub, from the postings and
-/// lengths the store holds, with no tag part.
 fn node_truth(s: &Store, term: &str, block: u64) -> BTreeMap<u32, u32> {
     use crate::search::{
         LENGTH_BITS, field_texts, length_block, local_text, max_bits, posting_block, readings,
@@ -1975,10 +1864,6 @@ fn node_truth(s: &Store, term: &str, block: u64) -> BTreeMap<u32, u32> {
     out
 }
 
-/// A tightening job interleaved with commits that raise the same maxima map, at every level the block feeds
-/// (its ids put it under levels 1 and 2): a raise committed between the query's report and its job is kept, and
-/// one committed right after the job (queued behind it) folds over the job's put. Either way each level holds
-/// what the documents left score, no more.
 #[test]
 fn a_tightening_job_keeps_the_raises_committed_around_it() {
     let dir = temp_dir("interleave");
@@ -2026,7 +1911,6 @@ fn a_tightening_job_keeps_the_raises_committed_around_it() {
     };
     levels_hold_the_truth("fresh");
 
-    // The best card goes; a query reports its block; a card scoring between commits, then the job runs.
     s.commit_wait(vec![delete(base + 1)]).unwrap();
     let stale = node_at(&s, "omega", block, 0);
     let reports = s.search_unqueued(&q).unwrap().tighten;
@@ -2042,7 +1926,6 @@ fn a_tightening_job_keeps_the_raises_committed_around_it() {
     assert_ne!(node_at(&s, "omega", block, 0), stale);
     levels_hold_the_truth("raised before the job");
 
-    // That card goes; the job is queued, and a card scoring highest commits behind it.
     s.commit_wait(vec![delete(base + 5)]).unwrap();
     let reports = s.search_unqueued(&q).unwrap().tighten;
     assert!(

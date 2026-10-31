@@ -3,20 +3,11 @@ import express from 'express';
 import { requestStore, storeRoute, treeOf } from '../user-stores.js';
 import { requestSession } from '../request-session.js';
 
-/**
- * State layer 1's actions (build path 5b): `chat_metadata` is the state at a position in a character's or group's
- * tree, each key (and each chat variable) changed on its own, every change kept and revertible.
- */
 export const router = express.Router();
 
 /** @param {unknown} v */
 const position = v => (typeof v === 'string' && v !== '' ? v : null);
 
-/**
- * `{ avatar_url | group_id, at, ops: [{ key, variable?, value? }], ref? }`: records a change per key whose value
- * differs at the message `at` (null: the tree's root); a key without `value` is removed. Answers `{ ok, changes }`,
- * the ids of the changes recorded.
- */
 router.post('/change', storeRoute('changing the state', async (request, response) => {
     const store = await requestStore(request);
     const tree = await treeOf(store, request.body);
@@ -30,7 +21,6 @@ router.post('/change', storeRoute('changing the state', async (request, response
     return response.send(result);
 }));
 
-/** `{ change, ref? }`: reverts a change (or a revert, restoring what it reverted). Answers `{ ok, change }`. */
 router.post('/revert', storeRoute('reverting a state change', async (request, response) => {
     const store = await requestStore(request);
     const change = request.body?.change;
@@ -41,10 +31,6 @@ router.post('/revert', storeRoute('reverting a state change', async (request, re
     return response.send(result);
 }));
 
-/**
- * `{ avatar_url | group_id, at, if_hash? }`: the state at the message `at` (null: the tree's root) as
- * `chat_metadata`, with its hash; `{ unchanged: true }` when `if_hash` is that hash.
- */
 router.post('/at', storeRoute('reading the state', async (request, response) => {
     const store = await requestStore(request);
     const tree = await treeOf(store, request.body);

@@ -191,7 +191,6 @@ class MacroCstWalker {
         const flagTokens = /** @type {IToken[]} */ (children.flags || []);
         let isClosing = flagTokens.some(token => token.image === MacroFlagType.CLOSING_BLOCK);
 
-        // Lexer greedily tokenizes '//' first, so {{///}} parses as {{// /}} (comment, arg '/') not {{/ //}}; detect via the leading '/' in the first arg.
         if (!isClosing && name === '//') {
             const firstArgNode = /** @type {CstNode?} */ ((argumentNodes || [])[0]);
             if (firstArgNode) {

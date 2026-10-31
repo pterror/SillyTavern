@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// With a search term in the box, the list shows a change another tab (or the server) makes to what matches it, as
-// it does without one: the search index changes with the commit, so the change's message re-queries the page.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -21,7 +18,7 @@ async function loadList(page) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @returns {Promise<string>} the avatar key
+ * @returns {Promise<string>}
  */
 function createCharacter(page, name) {
     return page.evaluate(async (name) => {
@@ -64,7 +61,6 @@ test.describe('the character list while searching', () => {
             await deleteCharacter(page, avatar);
         }
         await expect(row).toHaveCount(0, { timeout: 15000 });
-        // The box still holds the term: the list was re-queried under it, not reset.
         await expect(page.locator('#character_search_bar')).toHaveValue(name);
     });
 });

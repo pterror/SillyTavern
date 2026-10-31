@@ -251,7 +251,7 @@ async function onVectorizeAllClick() {
                 : 100;
             const lastElapsed = elapsedLog.slice(-5);
             const averageElapsed = lastElapsed.reduce((a, b) => a + b, 0) / lastElapsed.length;
-            const pace = averageElapsed / batchSize; // time per item, for the ETA estimate
+            const pace = averageElapsed / batchSize;
             const remainingTime = Math.round(pace * pending / 1000);
 
             $('#vectorize_progress_percent').text(processedPercent);
@@ -814,7 +814,6 @@ async function rearrangeChat(chat, _contextSize, _abort, type) {
             }
         }
 
-        // Reversed because more relevant messages are at the lower indices of queryHashes.
         queriedMessages.sort((a, b) => queryHashes.indexOf(getStringHash(substituteParams(b.mes))) - queryHashes.indexOf(getStringHash(substituteParams(a.mes))));
 
         for (const message of chat) {

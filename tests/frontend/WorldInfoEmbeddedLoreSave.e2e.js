@@ -6,11 +6,10 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 }
 
 /**
- * Creates a character through the API with an embedded lorebook holding one entry.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @param {string} comment The entry's title/memo.
- * @returns {Promise<string>} The new character's avatar filename.
+ * @param {string} comment
+ * @returns {Promise<string>}
  */
 async function createCharacterWithEmbeddedLorebook(page, name, comment) {
     return page.evaluate(async ({ name, comment }) => {
@@ -31,10 +30,9 @@ async function createCharacterWithEmbeddedLorebook(page, name, comment) {
 }
 
 /**
- * Creates a character through the API with no embedded lorebook.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @returns {Promise<string>} The new character's avatar filename.
+ * @returns {Promise<string>}
  */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
@@ -50,7 +48,7 @@ async function createCharacter(page, name) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
- * @returns {Promise<any>} The character card as stored on the server.
+ * @returns {Promise<any>}
  */
 async function fetchStoredCharacter(page, avatar) {
     return page.evaluate(async (avatarUrl) => {
@@ -63,7 +61,7 @@ async function fetchStoredCharacter(page, avatar) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
- * @returns {Promise<string[]>} The titles of the entries in the stored card's embedded lorebook.
+ * @returns {Promise<string[]>}
  */
 async function storedEntryComments(page, avatar) {
     const stored = await fetchStoredCharacter(page, avatar);
@@ -71,7 +69,6 @@ async function storedEntryComments(page, avatar) {
 }
 
 /**
- * Collects the JSON body of every /api/characters/merge-attributes request from here on.
  * @param {import('@playwright/test').Page} page
  * @returns {any[]}
  */
@@ -86,8 +83,6 @@ function recordMergeRequests(page) {
 }
 
 /**
- * Loads the character into the character panel. That closes the World Info drawer if it is open; this waits
- * until it has finished closing.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -144,13 +139,11 @@ test.describe('embedded lorebook edits are saved into the card they were made on
             await expect(comment).toHaveValue('A original');
 
             await switchCharacterPanel(page, avatarB);
-            // Reopening the drawer shows the editor as it was left: still A's embedded lorebook.
             await page.locator('#WIDrawerIcon').click();
             await expect(page.locator('#WorldInfo')).toBeVisible();
             await expect(comment).toHaveValue('A original');
 
             const mergeBodies = recordMergeRequests(page);
-            // Typing is a draft; leaving the field commits it.
             await comment.fill('A edited after the panel moved');
             await comment.blur();
 
@@ -158,7 +151,6 @@ test.describe('embedded lorebook edits are saved into the card they were made on
             expect(mergeBodies.map(body => body.avatar)).toEqual([avatarA]);
             expect(mergeBodies[0]._loadedFieldHashes).toEqual({ 'data.character_book': expect.any(Number) });
 
-            // B's card and B's form are left alone.
             expect(await storedEntryComments(page, avatarB)).toEqual([]);
             await expect(page.locator('#character_book_json')).toHaveValue('');
         } finally {
@@ -177,7 +169,6 @@ test.describe('embedded lorebook edits are saved into the card they were made on
             await switchCharacterPanel(page, avatarA);
             await openEmbeddedLoreEditor(page, avatarA);
             await expect(comment).toHaveValue('A original');
-            // Typing is a draft; moving the panel on (A) and leaving the field (B) commit it.
             await comment.fill('A edit');
 
             await switchCharacterPanel(page, avatarB);
@@ -211,7 +202,6 @@ test.describe('embedded lorebook edits are saved into the card they were made on
             await expect(page.locator('#WorldInfo')).toBeVisible();
             await expect(comment).toHaveValue('A original');
 
-            // Another session changes A's lorebook, so this session's edit meets a conflict.
             await page.evaluate(async (avatar) => {
                 const { getRequestHeaders } = await import('./script.js');
                 const stored = await (await fetch('/api/characters/get', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar }) })).json();

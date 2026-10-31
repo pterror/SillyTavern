@@ -100,7 +100,7 @@ async function listInjectsCallback(args) {
 }
 
 /**
- * @returns {string} Empty string
+ * @returns {string}
  */
 function flushInjectsCallback(_, value) {
     if (!chat_metadata.script_injects) {
@@ -124,12 +124,11 @@ function flushInjectsCallback(_, value) {
 }
 
 /**
- * Gets the state of prompt entries (toggles) either via identifier/uuid or name.
- * @param {object} args Object containing arguments
- * @param {string} args.identifier Select prompt entry using an identifier (uuid)
- * @param {string} args.name Select prompt entry using name
- * @param {string} args.return The type of return value to use (simple, list, dict)
- * @returns {Object} An object containing the states of the requested prompt entries
+ * @param {object} args
+ * @param {string} args.identifier
+ * @param {string} args.name
+ * @param {string} args.return
+ * @returns {Object}
  */
 function getPromptEntryCallback(args) {
     const prompts = promptManager.serviceSettings.prompts;
@@ -173,7 +172,6 @@ function getPromptEntryCallback(args) {
         }
     });
 
-    // If return is simple (default) but more than one prompt state was retrieved, then change return type
     if (returnType === 'simple' && promptStates.size > 1) {
         returnType = args.identifier ? 'dict' : 'list';
     }
@@ -188,15 +186,13 @@ function getPromptEntryCallback(args) {
 }
 
 /**
- * Sets state of prompt entries (toggles) either via identifier/uuid or name.
- * @param {object} args Object containing arguments
- * @param {string} args.identifier Select prompt entry using an identifier (uuid)
- * @param {string} args.name Select prompt entry using name
- * @param {string} targetState The targeted state of the entry/entries
- * @returns {String} empty string
+ * @param {object} args
+ * @param {string} args.identifier
+ * @param {string} args.name
+ * @param {string} targetState
+ * @returns {String}
  */
 function setPromptEntryCallback(args, targetState) {
-    // needs promptManager to manipulate prompt entries
     const prompts = promptManager.serviceSettings.prompts;
 
     function parseArgs(arg) {
@@ -222,7 +218,6 @@ function setPromptEntryCallback(args, targetState) {
 
     if (nameList.length !== 0) {
         nameList.forEach(name => {
-            // A name can match multiple entries; find all matching identifiers
             let identifiers = [];
             prompts.forEach(entry => {
                 if (entry.name === name) {
@@ -233,7 +228,6 @@ function setPromptEntryCallback(args, targetState) {
         });
     }
 
-    // Remove duplicates to allow consistent 'toggle'
     identifiersList = [...new Set(identifiersList)];
     if (identifiersList.length === 0) return '';
 
@@ -261,7 +255,6 @@ function setPromptEntryCallback(args, targetState) {
         promptOrderEntry.enabled = getPromptOrderEntryState(promptOrderEntry);
     });
 
-    // no need to render for each identifier
     promptManager.render();
     promptManager.saveServiceSettings();
     return '';
@@ -427,7 +420,7 @@ export function registerInjectsCommands() {
                 typeList: [ARGUMENT_TYPE.STRING],
                 isRequired: true,
                 acceptsMultiple: false,
-                defaultValue: 'toggle', // unnamed arguments don't support default values yet
+                defaultValue: 'toggle',
                 enumList: commonEnumProviders.boolean('onOffToggle')(),
             }),
         ],

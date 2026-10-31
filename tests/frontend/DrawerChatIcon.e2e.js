@@ -11,7 +11,6 @@ async function awaitAppReady(page) {
 const chatIcon = page => page.locator('#chatDrawerIcon');
 
 /**
- * Whether the icon's center is on screen and a click there reaches the icon.
  * @param {import('@playwright/test').Page} page
  */
 function chatIconClickable(page) {
@@ -25,7 +24,6 @@ function chatIconClickable(page) {
 }
 
 /**
- * Whether the chat is what the user sees and can click at its own center.
  * @param {import('@playwright/test').Page} page
  */
 function chatHitAtCenter(page) {
@@ -48,7 +46,6 @@ test.describe('Chat icon in the drawer bar', () => {
         await page.setViewportSize({ width: 1400, height: 900 });
     });
 
-    // The data root is shared by the worker's later tests, which expect the defaults.
     test.afterEach(async ({ page }) => {
         await setStackedDrawers(page, false);
         await setDrawerBarPosition(page, 'top');
@@ -70,7 +67,6 @@ test.describe('Chat icon in the drawer bar', () => {
         await setStackedDrawers(page, true);
         await expect(chatIcon(page)).toHaveClass(/stackFront/);
 
-        // Fullscreen is character management's default.
         await page.locator('#rightNavDrawerIcon').click();
         await expect(page.locator('#right-nav-panel.galleryFullscreen')).toBeVisible();
         await expect(page.locator('#sheld')).toHaveClass(/stackCovered/);
@@ -80,17 +76,14 @@ test.describe('Chat icon in the drawer bar', () => {
         await expect(page.locator('#sheld')).not.toHaveClass(/stackCovered/);
         await expect.poll(() => chatHitAtCenter(page)).toBe(true);
         await expect(chatIcon(page)).toHaveClass(/stackFront/);
-        // Character management stays open, showing only where the chat doesn't cover it.
         await expect(page.locator('#right-nav-panel')).toHaveClass(/openDrawer/);
         await expect(page.locator('#right-nav-panel')).toHaveAttribute('data-stack-cut', 'true');
 
-        // In front already: clicking again changes nothing.
         const order = await chatOrder(page);
         await chatIcon(page).click();
         expect(await chatOrder(page)).toBe(order);
         await expect(chatIcon(page)).toHaveClass(/stackFront/);
 
-        // Character management brought forward again by its icon: the chat icon goes dark.
         await page.locator('#rightNavDrawerIcon').click();
         await expect(page.locator('#sheld')).toHaveClass(/stackCovered/);
         await expect(chatIcon(page)).not.toHaveClass(/stackFront/);

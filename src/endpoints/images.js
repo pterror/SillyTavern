@@ -131,9 +131,8 @@ router.post('/folders', (request, response) => {
 });
 
 /**
- * Deletes a single image at a client-relative path, validating it stays under userImages.
- * @param {import('express').Request} request The HTTP request object (used for `request.user.directories`).
- * @param {string} relativePath Client-relative path of the image to delete.
+ * @param {import('express').Request} request
+ * @param {string} relativePath
  * @returns {{ok: true}|{ok: false, status: number}}
  */
 function deleteOneImage(request, relativePath) {
@@ -153,7 +152,6 @@ function deleteOneImage(request, relativePath) {
 
 router.post('/delete', async (request, response) => {
     try {
-        // ── Bulk mode: paths array is present ─────────────────────
         if (Array.isArray(request.body.paths)) {
             const results = request.body.paths.map(p => {
                 if (typeof p !== 'string' || !p) {

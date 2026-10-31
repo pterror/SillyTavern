@@ -10,7 +10,6 @@ import { isFalseBoolean } from './utils.js';
 import { DOMPurify } from '../lib.js';
 
 export function registerActionLoaderSlashCommands() {
-    /** Accepts any slash-command arg type, but only a closure produces a handler. */
     function createClosureHandler(closure, { argName = 'onStop', throwInvalid = true } = {}) {
         if (!(closure instanceof SlashCommandClosure)) {
             if (closure && throwInvalid) {

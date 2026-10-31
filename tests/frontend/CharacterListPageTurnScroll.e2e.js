@@ -1,11 +1,7 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// Turning a page of the character list: the next page from the list's bottom starts at its top, the previous page
-// from its top starts at its bottom; a page turned from anywhere else keeps where the list was scrolled.
-
 /**
- * Characters only this test makes, shown alone (a tag only they carry), `perPage` a page, with the drawer open.
  * @param {import('@playwright/test').Page} page
  * @param {number} n
  * @param {number} perPage
@@ -45,8 +41,6 @@ test('a page turned from the list\'s end starts at the other end; from the middl
     await showOwnCharacters(page, 60, 25);
     expect((await scroll(page)).max).toBeGreaterThan(100);
 
-    // From the bottom, the next page starts at its top. Scrolled again until it stays there: rows still loading
-    // their avatars make the list taller.
     await expect.poll(async () => {
         await scrollTo(page, 'bottom');
         const s = await scroll(page);
@@ -57,13 +51,11 @@ test('a page turned from the list\'s end starts at the other end; from the middl
     await expect.poll(() => firstName(page)).not.toBe(before);
     await expect.poll(async () => (await scroll(page)).top).toBe(0);
 
-    // From the top, the previous page starts at its bottom.
     const second = await firstName(page);
     await page.locator('#rm_print_characters_pagination .paginationjs-prev').click();
     await expect.poll(() => firstName(page)).not.toBe(second);
     await expect.poll(async () => { const s = await scroll(page); return s.top === s.max; }).toBe(true);
 
-    // From the middle, the next page keeps the list where it was.
     await scrollTo(page, 50);
     const first = await firstName(page);
     await page.locator('#rm_print_characters_pagination .paginationjs-next').click();

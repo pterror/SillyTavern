@@ -87,7 +87,6 @@ fn test_set(id: u64, key: u64, value: &[u8]) -> Record {
     )
 }
 
-/// What the derived reads must show.
 #[derive(Default, Clone)]
 struct Model {
     favs: HashMap<u64, bool>,
@@ -112,7 +111,6 @@ impl Model {
             let loc = kinds::parse_loc(&s.get(&k).unwrap().unwrap()).unwrap();
             assert_eq!(s.read(loc.pos).unwrap().values[1], Value::UInt(*key));
         }
-        // The order holds each id once, under its current key, and the count matches.
         let order = key::of(key::TEST_ORDER);
         let all = s
             .scan(&order, &key::prefix_end(&order), usize::MAX)
@@ -133,8 +131,6 @@ impl Model {
     }
 }
 
-/// A deterministic workload of favs, text values and edits, and test sets over a few entities, so records
-/// keep replacing each other; commits of 1–4 records.
 fn workload(s: &Store, model: &mut Model, from: u64, n: u64) {
     let mut i = from;
     while i < from + n {
@@ -153,7 +149,6 @@ fn workload(s: &Store, model: &mut Model, from: u64, n: u64) {
                 }
                 2 if model.texts.contains_key(&e) => {
                     let t = model.texts.get_mut(&e).unwrap();
-                    // Replace the first "t" with "T!" (ASCII, so byte offsets are char offsets).
                     let at = t.find('t').unwrap_or(0);
                     let removed = usize::from(t.as_bytes().get(at) == Some(&b't'));
                     t.replace_range(at..at + removed, "T!");
@@ -209,11 +204,9 @@ fn a_text_value_is_written_whole_once_its_edits_reach_its_size() {
         kinds.push(s.read(p[0]).unwrap().kind.name);
         assert_eq!(s.text(1, &FieldRef::Code(1)).unwrap(), Some(text(&value)));
     }
-    // An edit record is ~8 bytes: the 100-byte value is rewritten about every 12 edits.
     let full = kinds.iter().filter(|k| **k == "textValue").count();
     assert!((2..=5).contains(&full), "{kinds:?}");
     assert_eq!(kinds[0], "textEdit");
-    // A first edit of a field with no value is its full value.
     let p = s.commit_wait(vec![edit(2, 1, 0, 0, "new")]).unwrap();
     assert_eq!(s.read(p[0]).unwrap().kind.name, "textValue");
     drop(s);
@@ -246,7 +239,6 @@ fn after_a_crash_replay_restores_every_acknowledged_commit() {
     let mut model = Model::default();
     let mut from = 0;
     for round in 0..6 {
-        // A budget the workload never fills: flushes come from L, so the buffer holds what replay must redo.
         let s = Store::open_in(&dir, SMALL, Pool::new(16 << 20, 64 << 10, 4, 1, 2, 2)).unwrap();
         s.wait_ready().unwrap();
         model.check(&s);
@@ -260,7 +252,6 @@ fn after_a_crash_replay_restores_every_acknowledged_commit() {
         let n = 300 + round * 211;
         workload(&s, &mut model, from, n);
         from += n;
-        // As a crash would leave it: nothing flushed at the end, merges cut off.
         s.abandon();
         std::mem::forget(s);
     }
@@ -312,12 +303,10 @@ fn cleaning_drops_replaced_records_and_keeps_every_live_one() {
     let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     let first_feed = s.feed(0, 10).unwrap();
     assert!(first_feed.0.is_empty());
-    // A text that is never replaced stays live in the first file throughout.
     s.commit_wait(vec![set_text(99, 1, "kept from the start")])
         .unwrap();
     model.texts.insert(99, "kept from the start".into());
     workload(&s, &mut model, 0, 6000);
-    // Let the flushes catch up so every file is covered and checked.
     for _ in 0..20 {
         s.inner.ks.freeze_at(s.durable_end());
         s.inner.ks.wait_flushed().unwrap();
@@ -330,7 +319,6 @@ fn cleaning_drops_replaced_records_and_keeps_every_live_one() {
     model.check(&s);
     let files = log_files(&dir);
     assert!(files[0] > 0, "the first files were removed: {files:?}");
-    // The feed from a removed file is gone; from the first file left, it never shows a copy as a change.
     assert!(matches!(
         s.feed(0, 10),
         Err(StoreError::Log(LogError::Gone(0)))
@@ -357,7 +345,6 @@ fn cleaning_drops_replaced_records_and_keeps_every_live_one() {
     );
     s.close();
     drop(s);
-    // Reopened by probing from the newest run's file: the removed files are never looked for.
     let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     model.check(&s);
     drop(s);
@@ -449,10 +436,6 @@ fn a_commit_that_writes_nothing_resolves_after_the_ones_before_it() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
-// ---- bulk loads ----
-
-/// A library of `n` entities: searched text fields from a small vocabulary (so terms repeat across fields and
-/// entities), tags, favs and test sets; an entity's records together.
 fn library(from: u64, n: u64) -> Vec<Record> {
     use kinds::test_codes::{CARD_TAGS, LIBRARY};
     let words = [
@@ -496,7 +479,6 @@ fn library(from: u64, n: u64) -> Vec<Record> {
     out
 }
 
-/// The search structures' entries, their maps without removed slots, and each entity's texts and fav.
 fn derived(s: &Store, entities: std::ops::Range<u64>) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut out = Vec::new();
     for st in [
@@ -557,7 +539,6 @@ fn a_bulk_load_derives_what_commits_derive() {
         Store::open_in(&a, SMALL, small_pool()).unwrap(),
         Store::open_in(&b, SMALL, small_pool()).unwrap(),
     );
-    // Some state first, which the load reads and replaces in part; no assignments, as the load numbers the library.
     let mut first = library(1, 20);
     first.retain(|r| r.kind.name != "tagAssign");
     for s in [&sa, &sb] {
@@ -577,14 +558,11 @@ fn a_bulk_load_derives_what_commits_derive() {
     assert_eq!(st.records, recs.len() as u64);
     assert!(!b.join(bulk::LOAD_DIR).exists());
     assert_eq!(derived(&sa, 0..320), derived(&sb, 0..320));
-    // A flush the pool asks for, of entries that no record brought (as cleaning's), covers the log past the
-    // load.
     sb.inner
         .ks
         .insert([(key::id(key::GONE, u64::MAX), Val::Del)], None);
     sb.inner.ks.request_freeze();
     sb.inner.ks.wait_flushed().unwrap();
-    // Commits go on after it, and everything holds across reopening.
     for s in [&sa, &sb] {
         s.commit_wait(library(5, 3)).unwrap();
         s.commit_wait(vec![fav(400, true)]).unwrap();
@@ -596,8 +574,6 @@ fn a_bulk_load_derives_what_commits_derive() {
     let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
 }
 
-/// A load that fits in its memory budget writes no spill file; one in a budget of a byte writes every run to a
-/// file, keeps none in memory, and derives the same, in partition order and out of it.
 #[test]
 fn a_bulk_load_spills_to_files_only_past_its_budget() {
     let recs = library(1, 300);
@@ -645,7 +621,6 @@ fn a_bulk_load_out_of_partition_order_derives_what_commits_derive() {
         Store::open_in(&a, SMALL, small_pool()).unwrap(),
         Store::open_in(&b, SMALL, small_pool()).unwrap(),
     );
-    // Each entity's records split, and the second halves in reverse entity order.
     let recs = library(1, 120);
     let (first, second): (Vec<_>, Vec<_>) = recs
         .iter()
@@ -703,21 +678,18 @@ fn an_abandoned_or_refused_bulk_load_leaves_the_store_as_it_was() {
     {
         let mut l = s.loader().unwrap();
         l.add(library(10, 40)).unwrap();
-        // Another load can't start meanwhile; commits go on.
         assert!(matches!(s.loader(), Err(StoreError::Refused(_))));
         s.commit_wait(vec![fav(3, true)]).unwrap();
         s.commit_wait(vec![fav(3, false)]).unwrap();
     }
     assert!(!dir.join(bulk::LOAD_DIR).exists());
     assert_eq!(derived(&s, 0..60), before);
-    // A kind whose commit may change the record isn't loaded.
     let mut l = s.loader().unwrap();
     assert!(matches!(
         l.add(vec![edit(1, 2, 0, 0, "x")]),
         Err(StoreError::Refused(_))
     ));
     assert!(l.finish().is_err());
-    // A record committed meanwhile in a partition the load holds refuses the load.
     let mut l = s.loader().unwrap();
     l.add(library(10, 40)).unwrap();
     s.commit_wait(vec![fav(25, true)]).unwrap();
@@ -741,7 +713,6 @@ fn a_bulk_load_stopped_while_installing_is_whole_or_absent_after_reopening() {
     for (point, visible) in [(1u8, false), (2, true)] {
         let dir = temp_dir("bulk-crash");
         let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
-        // Without assignments: the load numbers the library, which it does only over one with none.
         let mut before = library(1, 3);
         before.retain(|r| r.kind.name != "tagAssign");
         s.commit_wait(before).unwrap();
@@ -749,7 +720,6 @@ fn a_bulk_load_stopped_while_installing_is_whole_or_absent_after_reopening() {
         l.add(library(10, 50)).unwrap();
         l.fail_at(point);
         assert!(l.finish().is_err());
-        // Nothing more is written until reopening.
         assert!(s.commit_wait(vec![fav(1, true)]).is_err());
         drop(s);
         let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
@@ -763,7 +733,6 @@ fn a_bulk_load_stopped_while_installing_is_whole_or_absent_after_reopening() {
                 .unwrap()
                 .is_some()
         );
-        // The log goes on from wherever it ends.
         s.commit_wait(library(100, 5)).unwrap();
         drop(s);
         let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
@@ -797,8 +766,6 @@ fn an_added_map_kinds_keys_take_added_maps_and_deletes() {
     assert_eq!(layer.get(k.bytes()), Some(&Val::Put(map_bytes(&[(4, 5)]))));
 }
 
-/// A change feed's key put and deleted in one layer leaves nothing there to flush; any other key leaves its
-/// deletion, as does a feed key deleted in a layer that didn't put it.
 #[test]
 fn a_feed_key_put_and_deleted_in_one_layer_leaves_no_deletion() {
     use crate::keyspace::val::Val;
@@ -822,10 +789,6 @@ fn a_feed_key_put_and_deleted_in_one_layer_leaves_no_deletion() {
     );
 }
 
-/// A scan through a view reads a commit's own entries only as far as its page goes: a one-key page, either way,
-/// reads a bounded number of them however many the commit holds in the range, so a commit's cost per record
-/// doesn't grow with its size. Pages agree with a model of published entries under unpublished ones (some
-/// deleted, some over published keys).
 #[test]
 fn a_page_reads_a_commits_own_entries_only_as_far_as_it_goes() {
     use crate::keyspace::val::Val;
@@ -838,7 +801,6 @@ fn a_page_reads_a_commits_own_entries_only_as_far_as_it_goes() {
         k
     };
     let (start, end) = (vec![0xfe, 0xfc], vec![0xfe, 0xfd]);
-    // Published: every 3rd key.
     s.inner.ks.insert(
         (0..4000u32)
             .step_by(3)
@@ -846,7 +808,6 @@ fn a_page_reads_a_commits_own_entries_only_as_far_as_it_goes() {
         None,
     );
     for n in [100u32, 1600] {
-        // Unpublished: every 2nd key below n; every 10th of them a deletion.
         let mut layer = std::collections::BTreeMap::new();
         for i in (0..n).step_by(2) {
             let v = if i % 10 == 0 {
@@ -900,21 +861,16 @@ fn a_page_reads_a_commits_own_entries_only_as_far_as_it_goes() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// Each map value kind written unpublished, read through a view's layer over each published value its key can
-/// hold: a get and both scans give the newer value over the whole published map. A maxima map over a published
-/// map keeps the published slots it doesn't raise.
 #[test]
 fn a_layers_map_values_read_over_every_published_value_they_can_meet() {
     use crate::keyspace::val::{Val, count_bytes, map_bytes};
     let dir = temp_dir("layered-maps");
     let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     s.wait_ready().unwrap();
-    // A key of no structure the store writes, for a set or raised map.
     let plain = |i: u8| vec![0xfe, 0xfe, i];
     let added = |i: u64| key::test_add_map(i).bytes().to_vec();
     let base = [(1, 5), (4, 2), (9, 7)];
     let wide: Vec<(u32, u64)> = base.iter().map(|&(s, v)| (s, u64::from(v))).collect();
-    // (name, key, published, unpublished, what a read gives)
     let cases: Vec<(&str, Vec<u8>, Val, Val, Vec<(u32, u32)>)> = vec![
         (
             "Map over a Map",
@@ -1005,9 +961,6 @@ fn a_layers_map_values_read_over_every_published_value_they_can_meet() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// Each map value kind written unpublished, range-read through a view's layer over each published value its
-/// key can hold: the newer value over the published map, within the range. A maxima map over a published map
-/// keeps the published slots it doesn't raise.
 #[test]
 fn a_layers_map_values_range_read_over_every_published_value_they_can_meet() {
     use crate::keyspace::val::{Val, count_bytes, map_bytes};
@@ -1018,7 +971,6 @@ fn a_layers_map_values_range_read_over_every_published_value_they_can_meet() {
     let added = |i: u64| key::test_add_map(i).bytes().to_vec();
     let base = [(1, 5), (4, 2), (9, 7)];
     let wide: Vec<(u32, u64)> = base.iter().map(|&(s, v)| (s, u64::from(v))).collect();
-    // (name, key, published, unpublished, what a read of all slots gives)
     let cases: Vec<(&str, Vec<u8>, Val, Val, Vec<(u32, u32)>)> = vec![
         (
             "Map over a Map",

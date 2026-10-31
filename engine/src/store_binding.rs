@@ -1,11 +1,3 @@
-//! A store (record log and derived keyspace) as JavaScript sees it.
-//!
-//! A record is an object `{ kind, ...values }` named by its kind's schema (`log::format::KINDS`). Ids and
-//! positions are BigInts (they pass 2^53); other integers, times (ms) and floats are numbers; a field is a
-//! number (a known field's code) or a string (an extension's own key); text is a string, bytes a Uint8Array;
-//! bits are booleans; an optional value is left out when absent. Anything else, including a property the
-//! kind doesn't have, is refused rather than dropped.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
@@ -121,7 +113,6 @@ fn value_from_js(slot: &Slot, v: Option<Unknown>) -> Result<Value> {
     })
 }
 
-/// The names a slot's value may be given by: its own, or for a `Sel` slot each of its spaces'.
 fn slot_names(slot: &Slot) -> Vec<&'static str> {
     match slot.ty {
         Ty::Sel(spaces) => spaces.iter().map(|(_, n)| *n).collect(),
@@ -129,7 +120,6 @@ fn slot_names(slot: &Slot) -> Vec<&'static str> {
     }
 }
 
-/// A `Sel` slot's value: exactly one of its spaces' names given.
 fn sel_from_js(slot: &Slot, spaces: &[(Space, &str)], obj: &Object) -> Result<Value> {
     let mut found = None;
     for (i, (_, n)) in spaces.iter().enumerate() {
@@ -183,7 +173,6 @@ fn record_from_js(obj: &Object) -> Result<Record> {
     Record::new(kind, values).map_err(invalid)
 }
 
-/// A record and its position, converted to a JavaScript object.
 pub struct RecordAt(u64, Record);
 
 impl ToNapiValue for RecordAt {
@@ -237,7 +226,6 @@ fn text_to_js(b: Vec<u8>) -> Result<JsText> {
     ))
 }
 
-/// A JavaScript string from UTF-16 code units, lone surrogates kept.
 pub struct JsText(Vec<u16>);
 
 unsafe fn utf16_string(env: sys::napi_env, units: &[u16]) -> Result<sys::napi_value> {
@@ -248,7 +236,6 @@ unsafe fn utf16_string(env: sys::napi_env, units: &[u16]) -> Result<sys::napi_va
     Ok(out)
 }
 
-/// The lengths of the pieces the text splits into around each lone surrogate, or None if it has none.
 #[cfg(any(target_family = "wasm", test))]
 fn lone_surrogate_pieces(units: &[u16]) -> Option<Vec<usize>> {
     let mut pieces = Vec::new();
@@ -281,10 +268,6 @@ fn lone_surrogate_pieces(units: &[u16]) -> Option<Vec<usize>> {
 
 impl ToNapiValue for JsText {
     unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
-        // emnapi (the wasm build's Node-API) decodes a string of more than 16 code units with
-        // TextDecoder('utf-16le'), which turns a lone surrogate into U+FFFD; one or a few units it copies
-        // exactly. So a text holding lone surrogates is made of pieces, each lone surrogate a piece of its
-        // own, joined by String.prototype.concat.
         #[cfg(target_family = "wasm")]
         if let Some(pieces) = lone_surrogate_pieces(&val.0) {
             unsafe {
@@ -337,7 +320,6 @@ fn lone_surrogates_are_pieces_of_their_own() {
     assert_eq!(t(&[0xdc00, 0xd83d, 0xde00, 0xd800]), Some(vec![1, 2, 1]));
 }
 
-/// Runs a job on a libuv thread.
 struct RunTask(Option<Box<dyn FnOnce() + Send>>);
 
 impl Task for RunTask {
@@ -356,8 +338,6 @@ impl Task for RunTask {
     }
 }
 
-/// A promise of a read of derived data: run once replay is done, on a libuv thread (or, while replay runs, on
-/// its thread right after it), so no thread waits for replay.
 fn derived<'env, T, F>(env: &'env Env, store: &Arc<Inner>, read: F) -> Result<Object<'env>>
 where
     T: ToNapiValue + Send + 'static,
@@ -375,10 +355,8 @@ where
     Ok(promise)
 }
 
-/// A read answering a `JsTree`, run on the store.
 type TreeRead = Box<dyn FnOnce(&Inner) -> StoreResult<JsTree> + Send>;
 
-/// A chat read's answer (`store::chat_read::Js`) as JavaScript.
 pub struct JsTree(crate::store::chat_read::Js);
 
 impl ToNapiValue for JsTree {
@@ -442,7 +420,6 @@ fn byte_list(o: &Object, name: &str) -> Result<Vec<Vec<u8>>> {
         .collect()
 }
 
-/// A string (as WTF-8) or a Uint8Array's bytes.
 fn bytes_of(o: &Object, name: &str) -> Result<Vec<u8>> {
     let v: Unknown = o
         .get(name)?
@@ -469,21 +446,15 @@ fn field_arg(v: Unknown) -> Result<FieldRef> {
     }
 }
 
-/// One store directory: its record log and derived keyspace.
 #[napi]
 pub struct Store {
     store: Arc<Inner>,
 }
 
-/// The stores open in this process, by directory: every open of a directory (`open`, `openSync`) until the store
-/// is closed is the same store.
-/// A directory's open store, while one is.
 type OpenSlot = Arc<Mutex<Weak<Inner>>>;
 
 static OPEN: LazyLock<Mutex<HashMap<PathBuf, OpenSlot>>> = LazyLock::new(Default::default);
 
-/// The store in `dir`: the one open there, else opened now. An open of a directory another thread is opening waits
-/// for that open.
 fn open_shared(dir: &Path) -> StoreResult<Arc<Inner>> {
     let at = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
     let slot = OPEN.lock().unwrap().entry(at).or_default().clone();
@@ -678,7 +649,6 @@ impl ToNapiValue for TagKeys {
     }
 }
 
-/// A page of the tag manager's list as JavaScript sees it.
 pub struct TagPage(tags::Page);
 
 impl ToNapiValue for TagPage {
@@ -884,7 +854,6 @@ fn tag_query_from_js(q: &Object) -> Result<tags::Query> {
     })
 }
 
-/// A searched page of the library list as JavaScript sees it.
 pub struct LibrarySearched(library_search::Searched);
 
 impl ToNapiValue for LibrarySearched {
@@ -924,7 +893,6 @@ impl ToNapiValue for LibrarySearched {
     }
 }
 
-/// A page of the library list as JavaScript sees it.
 pub struct LibraryPage(library_read::Page);
 
 impl ToNapiValue for LibraryPage {
@@ -945,10 +913,8 @@ impl ToNapiValue for LibraryPage {
     }
 }
 
-/// Entities with their values as JavaScript sees them; null where there is none.
 pub struct LibraryEntities(Vec<Option<library_read::Entity>>);
 
-/// An entity with its values as JavaScript sees it.
 fn entity_js<'env>(env: &'env Env, e: library_read::Entity) -> Result<Object<'env>> {
     let mut o = Object::new(env)?;
     o.set("id", e.id)?;
@@ -1028,7 +994,6 @@ impl ToNapiValue for LibraryEntities {
     }
 }
 
-/// A world book read whole (`store::books::BookRead`): `{ id, entity, entries: [{ entity, position }], original? }`.
 pub struct BookReadJs(crate::store::books::BookRead);
 
 fn book_read_js<'env>(env: &'env Env, b: crate::store::books::BookRead) -> Result<Object<'env>> {
@@ -1060,7 +1025,6 @@ impl ToNapiValue for BookReadJs {
     }
 }
 
-/// `sorted`: the query needs a sort (a relevance search has none; its page is read as by name).
 fn library_query_from_js(q: &Object, sorted: bool) -> Result<library_read::Query> {
     use library_read::{Filter, RangeField, Sort};
     let tags = |name: &str| ids_arg(name, q.get(name)?).map(Option::unwrap_or_default);
@@ -1160,7 +1124,6 @@ fn library_query_rest(
     })
 }
 
-/// An `after`'s `weights` (`query::Query::weights`), each a finite number.
 fn weights_from_js(a: &Object) -> Result<Option<Vec<f64>>> {
     let Some(w) = a.get::<Vec<f64>>("weights")? else {
         return Ok(None);
@@ -1171,7 +1134,6 @@ fn weights_from_js(a: &Object) -> Result<Option<Vec<f64>>> {
     Ok(Some(w))
 }
 
-/// A relevance page's `next`, back as a later page's `after`.
 fn resume_from_js(a: &Object) -> Result<library_search::Resume> {
     if let Some(t) = a.get::<f64>("tied")? {
         let c: Buffer = a
@@ -1193,7 +1155,6 @@ fn resume_from_js(a: &Object) -> Result<library_search::Resume> {
     Ok(library_search::Resume::Score(score, doc))
 }
 
-/// A page of search results as JavaScript sees it.
 pub struct SearchPage(Found);
 
 impl ToNapiValue for SearchPage {
@@ -1340,17 +1301,14 @@ fn query_from_js(q: &Object) -> Result<Query> {
 
 #[napi(object)]
 pub struct StoreStats {
-    /// Groups written and synced, and their bytes.
     pub log_rounds: f64,
     pub log_bytes: f64,
     pub runs: f64,
     pub run_bytes: f64,
     pub flushes: f64,
     pub merges: f64,
-    /// Bytes of runs written by flushes and by merges.
     pub flush_bytes: f64,
     pub merge_bytes: f64,
-    /// Bytes of log replayed at the last open, and in how long.
     pub replay_bytes: f64,
     pub replay_ms: f64,
     pub cleaned_files: f64,
@@ -1369,15 +1327,11 @@ fn position_arg(p: BigInt) -> Result<u64> {
 
 #[napi]
 impl Store {
-    /// Opens (creating if missing) the store in `dir`. Resolves before the log after the last flush is
-    /// replayed; reads of derived data and commits wait for that.
     #[napi(ts_return_type = "Promise<Store>")]
     pub fn open(dir: String) -> AsyncTask<OpenTask> {
         AsyncTask::new(OpenTask(PathBuf::from(dir)))
     }
 
-    /// `open` on this thread: the store open in `dir`, else opened now (returning before replay). The same store
-    /// `open` gives for `dir` until it is closed.
     #[napi]
     pub fn open_sync(dir: String) -> Result<Store> {
         Ok(Store {
@@ -1385,9 +1339,6 @@ impl Store {
         })
     }
 
-    /// The defined world book keyed `key` whole, read from one state of the store on this thread (waiting for
-    /// replay), or null: `{ id, entity, entries: [{ entity, position }], original? }`, each entity as
-    /// `libraryEntities` gives it, the entries in place order, `original` the book it owns as its `originalData`.
     #[napi(ts_args_type = "key: string", ts_return_type = "any")]
     pub fn world_book_sync(&self, key: Unknown) -> Result<Option<BookReadJs>> {
         let key = string("key", key)?;
@@ -1398,23 +1349,17 @@ impl Store {
             .map(BookReadJs))
     }
 
-    /// Whether a defined world book is keyed `key`, read on this thread (waiting for replay) from one state of the
-    /// store: what `worldBookSync` would find, without reading the book.
     #[napi(ts_args_type = "key: string")]
     pub fn world_book_exists_sync(&self, key: Unknown) -> Result<bool> {
         let key = string("key", key)?;
         self.store.world_book_exists(&key).map_err(store_error)
     }
 
-    /// Resolves once replay is done; rejects if it failed.
     #[napi(ts_return_type = "Promise<void>")]
     pub fn ready<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
         derived(env, &self.store, |s| s.wait_ready())
     }
 
-    /// Commits the records together; resolves with their positions once they are durable and their derived
-    /// entries readable. Throws for a record that doesn't fit its kind; rejects, writing nothing, for one that
-    /// can't apply (such as a text edit outside the value).
     #[napi(
         ts_args_type = "records: object[]",
         ts_return_type = "Promise<bigint[]>"
@@ -1435,9 +1380,6 @@ impl Store {
         Ok(promise)
     }
 
-    /// Keeps tokenizing results in the cache: `[{ table, identity, hash, value, replace? }]` (`identity` and `hash`
-    /// strings or bytes, `value` bytes) at `now` (ms); a stored one keeps its value unless `replace`, and is marked
-    /// used once `granularity` ms or more behind. Resolves once they are readable; a crash may lose them.
     #[napi(
         ts_args_type = "puts: object[], now: number, granularity: number",
         ts_return_type = "Promise<void>"
@@ -1474,8 +1416,6 @@ impl Store {
         Ok(promise)
     }
 
-    /// Evicts up to `batch` of a cache table's least recently used entries while it holds more than `cap`; resolves
-    /// with whether it still does.
     #[napi(ts_return_type = "Promise<boolean>")]
     pub fn token_cache_evict<'env>(
         &self,
@@ -1497,8 +1437,6 @@ impl Store {
         Ok(promise)
     }
 
-    /// One slice of the pair postings' pass (the `searchPairs` record starts one); resolves with whether more
-    /// follow.
     #[napi(ts_return_type = "Promise<boolean>")]
     pub fn pairs_step<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
         let (deferred, promise) = env.create_deferred()?;
@@ -1509,13 +1447,11 @@ impl Store {
         Ok(promise)
     }
 
-    /// The pair postings' mode: 0 off, 1 building, 2 on, 3 deleting.
     #[napi(ts_return_type = "Promise<number>")]
     pub fn pairs_mode<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
         derived(env, &self.store, |s| s.pairs_mode().map(|m| m as u32))
     }
 
-    /// The record at a durable record's position.
     #[napi(ts_return_type = "Promise<object>")]
     pub fn read(&self, position: BigInt) -> Result<AsyncTask<ReadTask>> {
         Ok(AsyncTask::new(ReadTask(
@@ -1524,8 +1460,6 @@ impl Store {
         )))
     }
 
-    /// The change feed: up to `limit` records committed from `from` (0n or a `next` from here) on, and the
-    /// position to continue from. Rejects for a position whose log file cleaning has removed.
     #[napi(ts_return_type = "Promise<{ records: object[], next: bigint }>")]
     pub fn feed(&self, from: BigInt, limit: u32) -> Result<AsyncTask<FeedTask>> {
         Ok(AsyncTask::new(FeedTask(
@@ -1535,14 +1469,12 @@ impl Store {
         )))
     }
 
-    /// The entity's fav bit, or null if it has none.
     #[napi(ts_return_type = "Promise<boolean | null>")]
     pub fn fav<'env>(&self, env: &'env Env, entity: Unknown) -> Result<Object<'env>> {
         let e = integer("entity", entity)?;
         derived(env, &self.store, move |s| s.fav(e))
     }
 
-    /// A text field's value, or null if it has none.
     #[napi(
         ts_args_type = "entity: bigint | number, field: number | string",
         ts_return_type = "Promise<string | null>"
@@ -1562,35 +1494,6 @@ impl Store {
         })
     }
 
-    /// A chat read (`store::chat_read`), by `op` with its arguments in `args`:
-    /// - `messages { ids }`: each message's values, or null;
-    /// - `children { parent?, tree, after?, limit }`: `{ ids, more }`, a message's replies or a tree's openings;
-    /// - `path { tree, at? }`: the messages from the tree's root down to `at`;
-    /// - `landing { tree, session?, user? }`, `followed { tree, at?, session?, user? }`: a message or null;
-    /// - `sessions { ids }`, `sessionInTree { session, tree }`, `userInTree { user, tree }`;
-    /// - `sessionsNamed { name }`: the session named exactly `name` in the store (names are unique there), as a list;
-    /// - `history { session, from, limit }`, `recent { before?, limit }`, `conversations { before?, limit }`, `inTree { tree, before?, limit }`;
-    /// - `historyStep { session, back }`: the entry a step reaches, or null; `openingChoice { session, tree }`;
-    /// - `currentChat { session, tree }`: the session's current chat there (a bookmark), or null for none;
-    /// - `currentChats { session, after?, limit }`: `[{ tree, bookmark }]` by tree, bookmark null where it went;
-    /// - `messageCount { tree, at? }`: `{ count, estimate }`;
-    /// - `ids { space: 0 message | 1 session | 2 user, keys }`, `keyStates { space, keys }` (`{ id }`, `'gone'` for a
-    ///   deleted session's, or null), `nextIds {}`;
-    /// - `bookmarks { ids }`, `treeBookmarks { tree, after?, limit }`, `bookmarksAt { message }`;
-    /// - `treeBookmarksNewest { tree, before?: [timeKey, bookmark], limit }`: `[{ bookmark, timeKey }]`, newest first;
-    /// - `state { tree, at? }`: `[{ variable, field, json }]`;
-    /// - `stats { owners }`: `{ owners, totals }`; `itemization { message }`; `sent { owner, keys }`;
-    /// - `itemized { after?, limit }`: `{ ids, more }`, messages with an itemization in id order;
-    /// - `tokenCache { table, identity, hash }`: `{ used, value }` or null; `tokenCacheCount { table }`;
-    /// - `conversationName { session, tree }`: the stored name of the session's conversation in the tree, or null;
-    /// - `chatsNamed { name, limit }`: `[{ tree, bookmark, session }]`, the chats named exactly `name` in any tree;
-    /// - `bookmarksNamed { tree, name }`: the tree's bookmark named exactly `name`, as a list;
-    /// - `branchEnd { tree, at?, session?, user? }`: the end of the followed path below `at` (or `at`);
-    /// - `subtreeDrops { tree, roots, keep?, root? }`: what deleting those subtrees (less those of `keep`), and with
-    ///   `root` the changes at the tree's root, drops besides their messages;
-    /// - `activeChanges { message }`: the state changes in effect hanging on a message;
-    /// - `produced { messages }`: per message, the state changes made while producing it;
-    /// - `pendingDelete { tree }`: whether a subtree delete is under way in the tree.
     #[napi(
         ts_args_type = "op: string, args: object",
         ts_return_type = "Promise<any>"
@@ -1605,17 +1508,11 @@ impl Store {
         derived(env, &self.store, read)
     }
 
-    /// `chatRead` on this thread (waiting for replay): for a synchronous caller.
     #[napi(ts_args_type = "op: string, args: object", ts_return_type = "any")]
     pub fn chat_read_sync(&self, op: String, args: Object) -> Result<JsTree> {
         chat_read_job(op, &args)?(&self.store).map_err(store_error)
     }
 
-    /// A tree's messages searched (`store::chat_search::messages`): `{ tree, clauses, limit, after?: { score,
-    /// doc }, scanBelow?, scanBytes? }`: an index page (best first, after `after`, a page's `next`) with the
-    /// substring scan from the newest message, or with `scanBelow` (a `scan` cursor) the scan alone from there.
-    /// Resolves with `{ hits: [{ message, score }], scanned: bigint[], more, next?: { score, doc, weights? },
-    /// total, totalExact, scan? }`.
     #[napi(
         ts_args_type = "query: object",
         ts_return_type = "Promise<{ hits: { message: bigint, score: number }[], scanned: bigint[], more: boolean, next?: { score: number, doc: bigint, weights?: number[] }, total: number, totalExact: boolean, scan?: bigint }>"
@@ -1685,11 +1582,6 @@ impl Store {
         })
     }
 
-    /// A tree's chat list searched (`store::chat_search::chat_list`): `{ tree, clauses, session?, after?, limit,
-    /// scan?, scanBelow?, scanBytes? }` (`session` the tab's, by id; `after` the `key` of the last item read;
-    /// `scan: true` to scan the tree's message texts for the query's text as a substring on a first page, or from
-    /// `scanBelow` (a `scan` cursor) alone). Resolves with `{ hits: [{ bookmark, session, at, key }], scanned: (the
-    /// same), more, next?, exact, scan? }`, each key `[timeKey, bookmark]`.
     #[napi(
         ts_args_type = "query: object",
         ts_return_type = "Promise<{ hits: { bookmark: bigint | null, session: bigint | null, at: bigint | null, key: [bigint, bigint] }[], scanned: { bookmark: bigint | null, session: bigint | null, at: bigint | null, key: [bigint, bigint] }[], more: boolean, next?: [bigint, bigint], exact: boolean, scan?: bigint }>"
@@ -1755,21 +1647,6 @@ impl Store {
         })
     }
 
-    /// A world-info read (`store::books`), by `op` with its arguments in `args`:
-    /// - `books { after?, limit }`: `{ books: [{ id, key }], more }`, the defined world books in key order;
-    /// - `entries { book, after?, limit }`: `{ entries: [{ id, position }], more }`, a book's entries in place order;
-    /// - `resolved { ids }`: each book as its forwards resolve it, `{ id, key, defined }` or null;
-    /// - `multiLinks { after?, limit }`: `{ ids, more }`, the characters with 2 or more links, in id order;
-    /// - `numbers { book }`: `{ lastPosition, freeKey, maxIndex }`;
-    /// - `linkers { book, after?, limit }`: `{ ids, more }`, the characters linking the book itself, in id order;
-    /// - `resolving { book }`: the book and every unresolved book resolving as it.
-    /// - `history { entity, field?, before?, limit }`: `{ changes, more }`, the entity's changes of `field` (absent or
-    ///   null: its own) before change `before`, last first (`history::history_page`);
-    /// - `historyValue { entity, field, id }`: `{ json, value }` or null, the field as change `id` left it;
-    /// - `historyFields { entity, after?, limit }`: `{ fields, more }`, the fields with history (null: the entity's
-    ///   own) after `after` (null: after its own);
-    /// - `deleted { book, after?, limit }`: `{ entries: [{ id, key, position, index }], more }`, the book's deleted
-    ///   entries in id order.
     #[napi(
         ts_args_type = "op: string, args: object",
         ts_return_type = "Promise<any>"
@@ -1784,13 +1661,11 @@ impl Store {
         derived(env, &self.store, read)
     }
 
-    /// `worldRead` on this thread (waiting for replay): for a synchronous caller.
     #[napi(ts_args_type = "op: string, args: object", ts_return_type = "any")]
     pub fn world_read_sync(&self, op: String, args: Object) -> Result<JsTree> {
         world_read_job(op, &args)?(&self.store).map_err(store_error)
     }
 
-    /// The position of the entity's latest record, or null.
     #[napi(
         ts_args_type = "entity: bigint | number",
         ts_return_type = "Promise<bigint | null>"
@@ -1800,10 +1675,6 @@ impl Store {
         derived(env, &self.store, move |s| s.version(e))
     }
 
-    /// A page of search results in relevance order: `{ scope: 'library' | 'tags' | { chat: owner }, clauses:
-    /// [{ text, fields?, negate?, quoted? }], filters?: { allTags?, anyTag?, noTag?, ids?, notIds? }, limit,
-    /// after? }` (`after` the page before's `next`). Resolves with `{ hits: [{ doc, score }], total, totalExact,
-    /// pageExact, more, next?: { score, doc, weights? } }`.
     #[napi(
         ts_args_type = "query: object",
         ts_return_type = "Promise<{ hits: { doc: bigint, score: number }[], total: number, totalExact: boolean, pageExact: boolean, more: boolean, next?: { score: number, doc: bigint, weights?: number[] } }>"
@@ -1813,11 +1684,6 @@ impl Store {
         derived(env, &self.store, move |s| s.search(&q).map(SearchPage))
     }
 
-    /// A page of the library list: `{ characters, groups, fav?, allTags?, anyTags?, noTags?, world?, ranges?:
-    /// [{ field: 'create_date' | 'date_last_chat' | 'chat_size' | 'data_size' | 'closed_folders' | tag id,
-    /// min?, max? }], ids?, notIds?, sort: { key, desc? } | { fav: true, desc? } | { seed, desc? }, offset?,
-    /// limit?, cursor?, count?, cap? }`. Resolves with `{ ids, total?, totalExact, more, cursor? }`: `more`
-    /// when the work cap cut the page short, `cursor` to read on from.
     #[napi(
         ts_args_type = "query: object",
         ts_return_type = "Promise<{ ids: bigint[], total?: number, totalExact: boolean, more: boolean, cursor?: Buffer }>"
@@ -1829,7 +1695,6 @@ impl Store {
         })
     }
 
-    /// `libraryPage` on this thread (waiting for replay): for a synchronous caller.
     #[napi(
         ts_args_type = "query: object",
         ts_return_type = "{ ids: bigint[], total?: number, totalExact: boolean, more: boolean, cursor?: Buffer }"
@@ -1842,12 +1707,6 @@ impl Store {
             .map_err(store_error)
     }
 
-    /// A page of the library list searched: `libraryPage`'s query plus `clauses` (as `search` takes them, in the
-    /// library scope) and `relevance: true` for best match first (`sort`, by name if none, then orders the
-    /// matches only tag names match; `after` is a page's `next`). Resolves with `{ ids, scores, total, totalExact,
-    /// more, cursor?, next? }`: `scores` in relevance order, `cursor` in a list order, `next` in relevance order
-    /// where the next page starts (`{ score, doc }`, `{ tied, cursor }` or `{ below }`, with the idfs it ranks by,
-    /// `weights`, when it has several words).
     #[napi(
         ts_args_type = "query: object",
         ts_return_type = "Promise<{ ids: bigint[], scores: number[], total: number, totalExact: boolean, more: boolean, cursor?: Buffer, next?: ({ score: number, doc: bigint } | { tied: number, cursor: Buffer } | { below: number }) & { weights?: number[] } }>"
@@ -1871,8 +1730,6 @@ impl Store {
         })
     }
 
-    /// Each entity with everything it holds, or null. With `only: { fields, lists }` just those values (a field
-    /// by code or key; a list's items with their texts) and no hashes.
     #[napi(
         ts_args_type = "ids: (bigint | number)[], only?: { fields: (number | string)[], lists: number[] }",
         ts_return_type = "Promise<(object | null)[]>"
@@ -1890,7 +1747,6 @@ impl Store {
         })
     }
 
-    /// `libraryEntities` on this thread (waiting for replay): for a synchronous caller.
     #[napi(
         ts_args_type = "ids: (bigint | number)[], only?: { fields: (number | string)[], lists: number[] }",
         ts_return_type = "(object | null)[]"
@@ -1907,7 +1763,6 @@ impl Store {
             .map_err(store_error)
     }
 
-    /// `libraryIds` on this thread (waiting for replay): for a synchronous caller.
     #[napi(
         ts_args_type = "keys: [number, string][]",
         ts_return_type = "(bigint | null)[]"
@@ -1918,7 +1773,6 @@ impl Store {
     }
 }
 
-/// `libraryEntities`' arguments.
 fn library_entities_args(
     ids: Vec<Unknown>,
     only: Option<Object>,
@@ -1949,7 +1803,6 @@ fn library_entities_args(
     Ok((ids, only))
 }
 
-/// `libraryIds`' keys.
 fn library_keys(keys: Vec<Vec<Unknown>>) -> Result<Vec<(u64, Vec<u8>)>> {
     keys.into_iter()
         .map(|pair| {
@@ -1964,7 +1817,6 @@ fn library_keys(keys: Vec<Vec<Unknown>>) -> Result<Vec<(u64, Vec<u8>)>> {
 
 #[napi]
 impl Store {
-    /// The entity of each `[type, key]`, or null.
     #[napi(
         ts_args_type = "keys: [number, string][]",
         ts_return_type = "Promise<(bigint | null)[]>"
@@ -1978,13 +1830,11 @@ impl Store {
         derived(env, &self.store, move |s| s.library_ids(&keys))
     }
 
-    /// One more than the highest entity id ever created (1 for none).
     #[napi(ts_return_type = "Promise<bigint>")]
     pub fn library_next_id<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
         derived(env, &self.store, |s| s.library_next_id())
     }
 
-    /// The entities a card hash of kind `which` finds, at most `limit`.
     #[napi(ts_return_type = "Promise<bigint[]>")]
     pub fn library_by_hash<'env>(
         &self,
@@ -1999,7 +1849,6 @@ impl Store {
         })
     }
 
-    /// The entities both a hash of kind `which_a` and one of kind `which_b` find, at most `limit`.
     #[napi(ts_return_type = "Promise<bigint[]>")]
     pub fn library_by_hashes<'env>(
         &self,
@@ -2020,10 +1869,6 @@ impl Store {
         })
     }
 
-    /// A page of the tag manager's list: `{ sort: 0 alphabetical | 1 by entries | 2 manual, folders?, used?,
-    /// folderType?, search?, name?, contains?, ids?, after?, limit, cap? }`. Resolves with `{ ids, more,
-    /// cursor? }`: `more` when the work cap cut the page short, `cursor` to read on from (none at the end).
-    /// Rejects a cursor made for another sort.
     #[napi(
         ts_args_type = "query: object",
         ts_return_type = "Promise<{ ids: bigint[], more: boolean, cursor?: Buffer }>"
@@ -2033,8 +1878,6 @@ impl Store {
         derived(env, &self.store, move |s| s.tag_page(&q).map(TagPage))
     }
 
-    /// Each tag's carriers, with the carriers of tags merged into it that haven't moved yet; `approximate` when
-    /// those may count an entity twice.
     #[napi(
         ts_args_type = "ids: (bigint | number)[]",
         ts_return_type = "Promise<{ count: number, approximate: boolean }[]>"
@@ -2047,8 +1890,6 @@ impl Store {
         derived(env, &self.store, move |s| s.tag_counts(&ids).map(TagCounts))
     }
 
-    /// Each tag's cursor in a sort's order, null for one that isn't live: `{ id, order? }`, an `order` (a
-    /// number, or null for none) placing it in the manual order as if it had that order.
     #[napi(
         ts_args_type = "sort: number, items: { id: bigint | number, order?: number | null }[]",
         ts_return_type = "Promise<(Buffer | null)[]>"
@@ -2082,8 +1923,6 @@ impl Store {
         })
     }
 
-    /// Up to `limit` queued moves of the manual order after `after` (a `seq`, 0 for the first), in order:
-    /// `{ seq, tag, after, anchor?, value? }`; and whether more follow.
     #[napi(
         ts_return_type = "Promise<{ entries: { seq: number, tag: bigint, after: boolean, anchor?: bigint, value?: string }[], more: boolean }>"
     )]
@@ -2094,8 +1933,6 @@ impl Store {
         })
     }
 
-    /// The reorder pass: `{ pass, mode?, phase?, n?, after?, stamped, live }`, `pass` the last one's id (0 for
-    /// none), `mode` present while one runs, `stamped` the live tags it has written, `live` the live tags.
     #[napi(
         ts_return_type = "Promise<{ pass: number, mode?: number, phase?: number, n?: number, after?: Buffer, stamped: number, live: number }>"
     )]
@@ -2103,7 +1940,6 @@ impl Store {
         derived(env, &self.store, |s| s.tag_pass().map(TagPassStatus))
     }
 
-    /// Each name's value as its `metaValue` record holds it (JSON text), or null for none.
     #[napi(
         ts_args_type = "names: string[]",
         ts_return_type = "Promise<(string | null)[]>"
@@ -2116,7 +1952,6 @@ impl Store {
         derived(env, &self.store, move |s| s.meta(&names).map(MetaValues))
     }
 
-    /// How many tags nothing carries, and up to `limit` of them in alphabetical order.
     #[napi(ts_return_type = "Promise<{ count: number, ids: bigint[] }>")]
     pub fn tag_unused<'env>(&self, env: &'env Env, limit: u32) -> Result<Object<'env>> {
         derived(env, &self.store, move |s| {
@@ -2125,7 +1960,6 @@ impl Store {
         })
     }
 
-    /// The live tag each name stands for (names compared folded), or null.
     #[napi(
         ts_args_type = "names: string[]",
         ts_return_type = "Promise<(bigint | null)[]>"
@@ -2138,7 +1972,6 @@ impl Store {
         derived(env, &self.store, move |s| s.tag_by_names(&names))
     }
 
-    /// The tag deleted last with each name (names compared folded), or null.
     #[napi(
         ts_args_type = "names: string[]",
         ts_return_type = "Promise<(bigint | null)[]>"
@@ -2155,8 +1988,6 @@ impl Store {
         derived(env, &self.store, move |s| s.tag_gone_by_names(&names))
     }
 
-    /// A page of the entities of a type in key order: `{ entities: { key, id }[], more }`, those keyed after `after`
-    /// (from the first when left out), at most `limit`, deleted ones left out; `more` when others follow.
     #[napi(
         ts_args_type = "type: number, after: string | null | undefined, limit: number",
         ts_return_type = "Promise<{ entities: { key: string, id: bigint }[], more: boolean }>"
@@ -2175,7 +2006,6 @@ impl Store {
         })
     }
 
-    /// Each entity's `{ type, key }`, or null.
     #[napi(
         ts_args_type = "ids: (bigint | number)[]",
         ts_return_type = "Promise<({ type: number, key: string } | null)[]>"
@@ -2190,7 +2020,6 @@ impl Store {
         })
     }
 
-    /// The tags each entity carries as they are now (merged tags as their targets), in id order.
     #[napi(
         ts_args_type = "ids: (bigint | number)[]",
         ts_return_type = "Promise<bigint[][]>"
@@ -2203,8 +2032,6 @@ impl Store {
         derived(env, &self.store, move |s| s.library_tag_ids(&ids))
     }
 
-    /// Up to `limit` entities from id `from` on that carry tags, `{ entity, tags }` in id order, and `next`, the
-    /// id to go on from (none at the end).
     #[napi(
         ts_args_type = "from: bigint | number, limit: number",
         ts_return_type = "Promise<{ entries: { entity: bigint, tags: bigint[] }[], next?: bigint }>"
@@ -2222,7 +2049,6 @@ impl Store {
         })
     }
 
-    /// For each tag id: `{ key, state, into? }` as `tagStatus` gives them, or null.
     #[napi(
         ts_args_type = "ids: (bigint | number)[]",
         ts_return_type = "Promise<({ key: string, state: 'live' | 'undefined' | 'gone', into?: string } | null)[]>"
@@ -2235,15 +2061,11 @@ impl Store {
         derived(env, &self.store, move |s| s.tag_keys(&ids).map(TagKeys))
     }
 
-    /// The highest manual sort order of a live tag, or null.
     #[napi(ts_return_type = "Promise<number | null>")]
     pub fn tag_max_order<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
         derived(env, &self.store, |s| s.tag_max_order())
     }
 
-    /// For each tag key: `{ id, state, into? }`, `state` 'live' for a defined tag, 'undefined' for a key only
-    /// assignments name, 'gone' for a deleted tag (`into` the key of the live tag its merges lead to); null for a
-    /// key no tag entity ever had.
     #[napi(
         ts_args_type = "keys: string[]",
         ts_return_type = "Promise<({ id: bigint, state: 'live' | 'undefined' | 'gone', into?: string } | null)[]>"
@@ -2258,9 +2080,6 @@ impl Store {
         })
     }
 
-    /// Up to `limit` entries of a change feed after position `after`, each `{ pos, id }` once at its last
-    /// change: `'tags'` lists tags whose definitions changed (deleted ones too), `'entities'` characters and
-    /// groups whose tags changed. `end` is the feed's last position (0n for none).
     #[napi(
         ts_args_type = "which: 'tags' | 'entities', after: bigint, limit: number",
         ts_return_type = "Promise<{ entries: { pos: bigint, id: bigint }[], more: boolean, end: bigint }>"
@@ -2284,7 +2103,6 @@ impl Store {
         })
     }
 
-    /// The position after the last durable record.
     #[napi]
     pub fn durable_end(&self) -> u64 {
         self.store.durable_end()
@@ -2310,10 +2128,6 @@ impl Store {
         }
     }
 
-    /// Starts a bulk load (one at a time per store; commits go on meanwhile). Characters, groups, tags and their
-    /// assignments load only into a store with none; text edits and engine-only kinds don't load. `budget`: the bytes of
-    /// memory the load may take, in place of half the memory available; its allocations are held at the budget
-    /// over the allocator's overhead, so that the process's resident memory rises by no more.
     #[napi]
     pub fn load(&self, budget: Option<f64>) -> Result<Load> {
         let budget = match budget {
@@ -2331,14 +2145,12 @@ impl Store {
         })
     }
 
-    /// Finishes queued commits, flushes, and stops; later commits reject.
     #[napi(ts_return_type = "Promise<void>")]
     pub fn close(&self) -> AsyncTask<CloseTask> {
         AsyncTask::new(CloseTask(self.store.clone()))
     }
 }
 
-/// What a bulk load took and wrote (`store::bulk::LoadStats`), times in ms.
 #[napi(object)]
 pub struct LoadStats {
     pub records: f64,
@@ -2393,8 +2205,6 @@ impl From<crate::store::bulk::LoadStats> for LoadStats {
 
 type HeldLoader = Arc<std::sync::Mutex<Option<crate::store::bulk::Loader>>>;
 
-/// A bulk load (`Store.load()`): records added in order, derived on worker threads, invisible until `finish`
-/// installs them all at once. Dropped or abandoned, it leaves the store as it was.
 #[napi]
 pub struct Load {
     loader: HeldLoader,
@@ -2443,7 +2253,6 @@ impl Task for LoadFinishTask {
 
 #[napi]
 impl Load {
-    /// Adds records to the load, in order. A refusal (a kind that can't be bulk loaded) fails the whole load.
     #[napi(ts_args_type = "records: object[]", ts_return_type = "Promise<void>")]
     pub fn add(&self, records: Vec<Object>) -> Result<AsyncTask<LoadAddTask>> {
         let records = records
@@ -2456,20 +2265,17 @@ impl Load {
         )))
     }
 
-    /// Derives, merges and installs the load; resolves with what it took and wrote.
     #[napi(ts_return_type = "Promise<LoadStats>")]
     pub fn finish(&self) -> AsyncTask<LoadFinishTask> {
         AsyncTask::new(LoadFinishTask(self.loader.clone()))
     }
 
-    /// Abandons the load: nothing of it is installed.
     #[napi]
     pub fn abandon(&self) {
         drop(self.loader.lock().unwrap().take());
     }
 }
 
-/// The job of a `chatRead`.
 fn chat_read_job(op: String, args: &Object) -> Result<TreeRead> {
     use crate::store::chat_read as cr;
     let a = &args;
@@ -2828,7 +2634,6 @@ fn chat_read_job(op: String, args: &Object) -> Result<TreeRead> {
     Ok(read)
 }
 
-/// The job of a `worldRead`.
 fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
     use crate::store::books as b;
     use crate::store::history as h;
@@ -2959,18 +2764,13 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
     Ok(read)
 }
 
-/// A search clause for `textMatches` (the page's query as `searchClauses` reads it, one clause each).
 #[napi(object)]
 pub struct TextMatchClause {
     pub text: String,
-    /// Its last word is a prefix (the query's last word, not in closed quotes).
     pub prefix: bool,
     pub negate: bool,
 }
 
-/// Matches each text against the clauses with the search's tokens and folding (`search::text::match_spans`): per
-/// text, null when it doesn't match, else the matched words' places as flat `[start, end, start, end, …]` in
-/// UTF-16 units.
 #[napi]
 pub fn text_matches(clauses: Vec<TextMatchClause>, texts: Vec<String>) -> Vec<Option<Vec<u32>>> {
     let clauses: Vec<crate::search::text::MatchClause> = clauses

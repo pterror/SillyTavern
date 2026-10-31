@@ -1,8 +1,6 @@
 const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
 /**
- * A message timestamp in milliseconds, 0 when it can't be read. Takes what upstream chats have held: epoch numbers,
- * ISO strings, `Month DD, YYYY H:MMam`, and the `YYYY-MM-DD@HHhMMmSSsMSms` forms.
  * @param {unknown} timestamp
  * @returns {number}
  */

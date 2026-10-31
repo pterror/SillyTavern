@@ -7,7 +7,6 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 }
 
 /**
- * The preloader goes away before initialization finishes; persona slash commands, for one, are registered later.
  * @param {import('@playwright/test').Page} page
  */
 async function awaitAppReady(page) {
@@ -19,11 +18,10 @@ async function awaitAppReady(page) {
 }
 
 /**
- * Creates a character whose greetings are `greetings`, in order, with the first one as the default.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
  * @param {string[]} greetings
- * @returns {Promise<string>} The new character's avatar filename.
+ * @returns {Promise<string>}
  */
 async function createCharacter(page, name, greetings) {
     return page.evaluate(async ({ name, greetings }) => {
@@ -40,13 +38,11 @@ async function createCharacter(page, name, greetings) {
 }
 
 /**
- * Stores openings for a character, as the page stores a greeting shown without a row: the first selected (the tab's
- * session goes to it), the others added beside it.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
- * @param {string} name The character's name, i.e. the speaker.
+ * @param {string} name
  * @param {string[]} texts
- * @returns {Promise<string[]>} The stored rows' node ids.
+ * @returns {Promise<string[]>}
  */
 async function storeOpenings(page, avatar, name, texts) {
     return page.evaluate(async ({ avatar, name, texts }) => {
@@ -67,7 +63,6 @@ async function storeOpenings(page, avatar, name, texts) {
 }
 
 /**
- * Every opening the server has for a character, stored and card-only.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  * @returns {Promise<{total: number, stored: number, alternatives: {node_id: string|null, mes: string}[]}>}
@@ -87,7 +82,6 @@ async function fetchOpenings(page, avatar) {
 }
 
 /**
- * Opens the character (editor included) and waits for its chat's opening to be in place.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -108,7 +102,6 @@ async function openCharacter(page, avatar) {
 }
 
 /**
- * The parts of chat[0] a greeting save may change, plus the chat's length.
  * @param {import('@playwright/test').Page} page
  */
 async function openingState(page) {
@@ -128,10 +121,9 @@ async function openingState(page) {
 }
 
 /**
- * Jumps message 0 to the swipe holding `text`, the way the swipe picker's "jump to swipe" does.
  * @param {import('@playwright/test').Page} page
  * @param {number} swipeId
- * @param {string} text The greeting expected at that swipe.
+ * @param {string} text
  */
 async function showSwipe(page, swipeId, text) {
     await page.evaluate(async (swipeId) => {
@@ -147,7 +139,6 @@ async function showSwipe(page, swipeId, text) {
 }
 
 /**
- * Collects every request that could write chat rows: any POST under /api/chats/ other than the openings reads.
  * @param {import('@playwright/test').Page} page
  * @returns {{writes: string[], openingBodies: any[], landingBodies: any[]}}
  */
@@ -172,7 +163,7 @@ function recordChatRequests(page) {
 
 /**
  * @param {import('@playwright/test').Page} page
- * @param {string} op e.g. 'edit', 'default/set'
+ * @param {string} op
  */
 function greetingOpResponse(page, op) {
     return page.waitForResponse(response => new URL(response.url()).pathname === `/api/characters/greetings/${op}`, { timeout: 15000 });
@@ -188,7 +179,7 @@ const popupUnsetDefault = listToggleDefault;
 /**
  * @param {import('@playwright/test').Page} page
  * @param {number} index
- * @param {number} remaining Number of greetings the list should show after.
+ * @param {number} remaining
  */
 async function popupDelete(page, index, remaining) {
     await listDelete(page, index);
@@ -198,7 +189,7 @@ async function popupDelete(page, index, remaining) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @returns {Promise<string>} The persona's avatar id.
+ * @returns {Promise<string>}
  */
 async function createPersona(page, name) {
     return page.evaluate(async (name) => {
@@ -314,7 +305,6 @@ test.describe('provisional greeting follows greeting saves', () => {
         await popupEdit(page, 2, g2e);
         await expectShowing([g0, g1, g2e, g3], 1);
 
-        // Greeting 1 to the end of the list.
         await popupMove(page, 1);
         await expectShowing([g0, g2e, g3, g1], 3);
 
@@ -441,7 +431,6 @@ test.describe('provisional greeting follows greeting saves', () => {
         const loaded = await openingState(page);
         expect(loaded.swipes).toHaveLength(62);
 
-        // Card greeting `a` sits after the 60 stored openings and `g0`.
         await showSwipe(page, 61, a);
         const showing = await openingState(page);
         expect(showing.node_id.startsWith('card:')).toBe(true);
@@ -531,7 +520,6 @@ test.describe('persona switch redraws message 0', () => {
         }, { avatar, name: `PersonaGroup-${s}` });
         expect(groupId).not.toBe('');
 
-        // A group chat's greetings are stored when a message first follows them; this stores them the same way.
         await page.evaluate(async () => {
             const { ensureOpeningRow } = await import('/scripts/chat-store.js');
             await ensureOpeningRow(0);
@@ -542,7 +530,6 @@ test.describe('persona switch redraws message 0', () => {
         }, { timeout: 10000 }).toBe(true);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(`Plain greeting ${s}`);
 
-        // Written raw: a UI edit substitutes macros before saving, which would leave nothing to redraw.
         const editResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chats/message/edit', { timeout: 15000 });
         await page.evaluate(async () => {
             const { updateMessage, chatOpEdit } = await import('/scripts/chat-store.js');

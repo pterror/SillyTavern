@@ -1,7 +1,3 @@
-// The chat completion settings' defaults, the names of their choices, and the migration of older settings: what the page
-// loads its settings with (loadOpenAISettings()), and what the server builds chat completion prompts with. A leaf
-// module.
-
 import { chatCompletionDefaultPrompts, promptManagerDefaultPromptOrders } from './prompt-manager-defaults.js';
 
 export const default_main_prompt = 'Write {{char}}\'s next reply in a fictional chat between {{charIfNotGroup}} and {{user}}.';
@@ -71,7 +67,7 @@ export const continue_postfix_types = {
 };
 export const custom_prompt_post_processing_types = {
     NONE: '',
-    /** @deprecated Use MERGE instead. */
+    /** @deprecated */
     CLAUDE: 'claude',
     MERGE: 'merge',
     MERGE_TOOLS: 'merge_tools',
@@ -230,8 +226,7 @@ export const default_settings = {
     extensions: {},
 };
 /**
- * Migrate old Chat Completion settings to new format.
- * @param {ChatCompletionSettings} settings Settings to migrate
+ * @param {ChatCompletionSettings} settings
  */
 export function migrateChatCompletionSettings(settings) {
     const migrateMap = [
@@ -274,10 +269,7 @@ export function migrateChatCompletionSettings(settings) {
     }
 }
 
-/**
- * preset_name -> [selector, setting_name, is_checkbox, is_connection]
- * @type {Record<string, [string, string, boolean, boolean]>}
- */
+/** @type {Record<string, [string, string, boolean, boolean]>} */
 export const settingsToUpdate = {
     chat_completion_source: ['#chat_completion_source', 'chat_completion_source', false, true],
     temperature: ['#temp_openai', 'temp_openai', false, false],
@@ -385,8 +377,6 @@ export const settingsToUpdate = {
 };
 
 /**
- * The chat completion settings as the page loads them (loadOpenAISettings()): older ones migrated, and every setting
- * that has a default the saved value or else the default. What has no default is kept as saved.
  * @param {Record<string, any> | undefined} saved
  * @returns {Record<string, any>}
  */
@@ -399,5 +389,4 @@ export function chatCompletionSettingsWithDefaults(saved) {
     return settings;
 }
 
-/** The keys of a chat completion preset file that are its connection's (`settingsToUpdate`'s fourth column). */
 export const CONNECTION_PRESET_KEYS = Object.freeze(Object.entries(settingsToUpdate).filter(([, [, , , isConnection]]) => isConnection).map(([key]) => key));

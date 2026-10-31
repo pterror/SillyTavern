@@ -7,7 +7,6 @@ import { MacroParser } from '../engine/MacroParser.js';
 import { MacroCstWalker } from '../engine/MacroCstWalker.js';
 
 import { ELSE_MARKER } from '../engine/MacroConstants.js';
-// Upstream's export, which now lives in MacroConstants.js.
 export { ELSE_MARKER };
 
 export function registerCoreMacros() {
@@ -145,7 +144,6 @@ export function registerCoreMacros() {
                 const varMacro = prefix === '.' ? 'getvar' : 'getglobalvar';
                 condition = resolve(`{{${varMacro}::${varName}}}`);
             } else {
-                // Only resolve as a bare macro name if it takes no required args
                 const macroDef = MacroRegistry.getPrimaryMacro(condition);
                 if (macroDef && macroDef.minArgs === 0) {
                     condition = resolve(`{{${condition}}}`);
@@ -318,10 +316,8 @@ export function registerCoreMacros() {
                 return '';
             }
 
-            // Keep in sync with registerTestablePick() if this hashing logic changes
             const chatIdHash = getChatIdHash(env);
             const rawContentHash = env.contentHash;
-            // globalOffset differentiates otherwise-identical macros at different positions in the document
             const offset = globalOffset;
             const rerollSeed = env.state.chatMetadata?.pick_reroll_seed || null;
 
@@ -335,7 +331,6 @@ export function registerCoreMacros() {
 
     /** @param {string} listString @return {string[]} */
     function readSingleArgsRandomList(listString) {
-        // A single colon introducing the list (e.g. {{random:a::b::c}}) leaves '::' as separator, taking precedence over commas
         if (listString.includes('::')) {
             return listString.split('::').map((/** @type {string} */ item) => item.trim());
         }
@@ -358,7 +353,6 @@ export function registerCoreMacros() {
         description: 'Bans a word for Text Completion backend. (Strips quotes surrounding the banned word, if present)',
         returns: '',
         exampleUsage: ['{{banned::delve}}'],
-        // The env has where the words go only when the request bans words (text completion).
         handler: ({ unnamedArgs: [bannedWord], env }) => {
             env.state.bannedWords?.push(bannedWord.replace(/^"|"$/g, ''));
             return '';

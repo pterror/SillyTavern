@@ -3,9 +3,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { groupDigestContentHash } from '../public/scripts/hash-utils.js';
 
-// A new group id is all digits; a legacy group file stores it as a number. Legacy files can also hold numeric
-// chat_id/chats entries, which read as their string form.
-
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
 /** @type {typeof import('./converted-user.fixture.js')} */
@@ -64,32 +61,28 @@ async function post(urlPath, body, headers = {}) {
     return { status: response.status, body: parsed };
 }
 
-/** A group as stored, or null. @param {string | number} id */
+/** @param {string | number} id */
 async function stored(id) {
     return (await user.store.lib.groups([String(id)]))[0];
 }
 
-/** Every stored group's id, in name order. */
 async function storedIds() {
     const all = await post('/api/groups/all', {});
     return all.body.map(g => g.id).sort();
 }
 
-/** A legacy group: id, chat_id and chats given as numbers. */
 async function writeLegacyGroup(id = 777, extra = {}) {
     const group = { id, name: `Legacy ${id}`, members: [], disabled_members: [], chat_id: 5, chats: [5, 'Named chat'], fav: false, ...extra };
     await user.store.lib.writeGroup(group);
     return group;
 }
 
-/** A group created the current way. */
 async function createGroup() {
     const { status, body } = await post('/api/groups/create', { name: 'Group', members: [] });
     expect(status).toBe(200);
     return body;
 }
 
-// Can't name any group: not a string or an integer, or a string that could escape the groups directory.
 const UNUSABLE_IDS = [
     ['an empty string', ''],
     ['a string with a slash', 'a/b'],
@@ -102,7 +95,6 @@ const UNUSABLE_IDS = [
     ['a boolean', true],
 ];
 
-// Name a group that may exist, but aren't valid ids for creating one.
 const NON_DIGIT_IDS = [
     ['a non-digit string', 'g1'],
     ['a character avatar name', 'Alice.png'],
@@ -112,7 +104,6 @@ const NON_DIGIT_IDS = [
     ['a negative number string', '-1'],
 ];
 
-/** A group stored under a non-digit id, as older data can hold. */
 async function writeExistingNonDigitGroup(id = 'legacy-group') {
     const group = { id, name: 'Existing', members: [] };
     await user.store.lib.writeGroup(group);

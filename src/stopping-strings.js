@@ -1,33 +1,18 @@
 import { getInstructStoppingSequences } from './instruct-template-format.js';
 import { substituteParams } from './macro-substitution.js';
 
-/**
- * Server-side port of public/script.js's getStoppingStrings() plus
- * public/scripts/power-user.js's getCustomStoppingStrings().
- *
- * Like src/world-info/*.js, src/authors-note.js and src/character-card-fields.js, this takes every
- * piece of context explicitly instead of reading globals or resolving entities itself - the caller
- * resolves `groupMemberNames` (via its own groupsStore/charactersStore-equivalent lookups) and
- * `macroContext` (a SubstituteParamsContext, see src/macro-substitution.js) and passes them in as
- * plain facts. Likewise, `ephemeralStoppingStrings` is taken as a plain injected array rather than
- * read from a module-level global - the caller owns EPHEMERAL_STOPPING_STRINGS'-equivalent state
- * (pushed to via the client's addEphemeralStoppingString(), flushed after each generation via
- * flushEphemeralStoppingStrings()); this module never mutates it.
- */
-
 const onlyUnique = (value, index, array) => array.indexOf(value) === index;
 
 /**
  * @typedef {object} GetCustomStoppingStringsParams
- * @property {string} [customStoppingStringsRaw] Equivalent of power_user.custom_stopping_strings - a JSON-stringified array of strings
- * @property {boolean} [customStoppingStringsMacro] Equivalent of power_user.custom_stopping_strings_macro - whether to run each string through substituteParams()
- * @property {string[]} [ephemeralStoppingStrings] Equivalent of the client's module-level EPHEMERAL_STOPPING_STRINGS, resolved by the caller
- * @property {import('./macro-substitution.js').SubstituteParamsContext} [macroContext] Context passed to substituteParams() when customStoppingStringsMacro is true
- * @property {number} [limit] Number of strings to return. If 0 or undefined, returns all strings.
+ * @property {string} [customStoppingStringsRaw]
+ * @property {boolean} [customStoppingStringsMacro]
+ * @property {string[]} [ephemeralStoppingStrings]
+ * @property {import('./macro-substitution.js').SubstituteParamsContext} [macroContext]
+ * @property {number} [limit]
  */
 
 /**
- * Port of public/scripts/power-user.js's getCustomStoppingStrings().
  * @param {GetCustomStoppingStringsParams} [params]
  * @returns {string[]}
  */
@@ -75,26 +60,25 @@ export function getCustomStoppingStrings({
 
 /**
  * @typedef {object} GetStoppingStringsParams
- * @property {boolean} [isImpersonate] Whether this generation is a user-impersonation generation
- * @property {boolean} [isContinue] Whether this generation is continuing the last message
- * @property {string} api Equivalent of main_api - when 'openai' (chat completion), only custom stopping strings apply
- * @property {boolean} [namesAsStopStrings] Equivalent of power_user.context.names_as_stop_strings
- * @property {string} [name1] Current user persona name
- * @property {string} [name2] Current character name
- * @property {{is_user?: boolean}[]} [chat] Chat messages - only the last message's `.is_user` is read, for the continue-with-trailing-user-message case
- * @property {boolean} [isGroup] Whether a group is currently selected (equivalent of `selected_group` being set)
- * @property {{name?: string}[]} [groupMemberNames] Already-resolved group member records (or plain name strings) - caller resolves groupsStore/charactersStore, this module only reads `.name` (or the string itself)
- * @property {boolean} [singleLine] Equivalent of power_user.single_line
+ * @property {boolean} [isImpersonate]
+ * @property {boolean} [isContinue]
+ * @property {string} api
+ * @property {boolean} [namesAsStopStrings]
+ * @property {string} [name1]
+ * @property {string} [name2]
+ * @property {{is_user?: boolean}[]} [chat]
+ * @property {boolean} [isGroup]
+ * @property {{name?: string}[]} [groupMemberNames]
+ * @property {boolean} [singleLine]
  * @property {import('./instruct-template-format.js').InstructSettings} [instructPreset]
  * @property {{use_stop_strings?: boolean, chat_start?: string, example_separator?: string}} [contextSettings]
- * @property {string} [customStoppingStringsRaw] See GetCustomStoppingStringsParams
- * @property {boolean} [customStoppingStringsMacro] See GetCustomStoppingStringsParams
- * @property {string[]} [ephemeralStoppingStrings] See GetCustomStoppingStringsParams
- * @property {import('./macro-substitution.js').SubstituteParamsContext} [macroContext] See GetCustomStoppingStringsParams
+ * @property {string} [customStoppingStringsRaw]
+ * @property {boolean} [customStoppingStringsMacro]
+ * @property {string[]} [ephemeralStoppingStrings]
+ * @property {import('./macro-substitution.js').SubstituteParamsContext} [macroContext]
  */
 
 /**
- * Port of public/script.js's getStoppingStrings(isImpersonate, isContinue, api).
  * @param {GetStoppingStringsParams} params
  * @returns {string[]}
  */
@@ -118,7 +102,6 @@ export function getStoppingStrings({
 } = {}) {
     const customStoppingStringsParams = { customStoppingStringsRaw, customStoppingStringsMacro, ephemeralStoppingStrings, macroContext };
 
-    // Only custom stop strings apply to Chat Completion
     if (api === 'openai') {
         return getCustomStoppingStrings(customStoppingStringsParams);
     }
@@ -136,7 +119,6 @@ export function getStoppingStrings({
             result.push(charString);
         }
 
-        // Add group members as stopping strings if generating for a specific group member or user.
         if (isGroup && (name2 || isImpersonate)) {
             const names = (groupMemberNames || [])
                 .map(x => (typeof x === 'string' ? x : x?.name))

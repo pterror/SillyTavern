@@ -1,10 +1,3 @@
-//! Chat stats (design Q-C5; build path 5b): per owner (a character's or group's tree) and in total, kept exact at
-//! every write to a message. What counts is today's (`src/message-stats.js`): every user message, and every
-//! character message except the ones opening a tree; system messages don't count. A swipe is every counted
-//! character message beyond the first under one parent. Chat size is the bytes the tree's messages store (texts,
-//! JSON values and stored names, every alternative); the last chat is the newest message's time. The last chat and
-//! chat size are the library's sort keys of the same names.
-
 use std::collections::HashMap;
 
 use super::StoreError;
@@ -19,15 +12,11 @@ use super::library::{self, CHAT_SIZE, LAST_CHAT, counter};
 use crate::keyspace::val::{get_u64, put_u64};
 use crate::log::format::{FieldRef, Record, Value};
 
-/// Per (owner, counter) and per counter (`TOTAL`): a counter.
 pub const STAT: u64 = 160;
 pub const STAT_TOTAL: u64 = 161;
-/// Per message that has replies: its counted character replies (a counter).
 pub const CHAR_REPLIES: u64 = 162;
-/// Per (owner, send time, message) and per (send time, message): a counted user message's send time.
 pub const USER_AT: u64 = 163;
 pub const ALL_USER_AT: u64 = 164;
-/// Per (owner, time, message): every message by its time.
 pub const OWNER_TIME: u64 = 165;
 
 pub const USER_MSGS: u64 = 0;
@@ -40,13 +29,10 @@ pub const GEN_UNKNOWN: u64 = 6;
 pub const SIZE: u64 = 7;
 pub const COUNTERS: usize = 8;
 
-/// One owner's (or the totals') stats.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Stats {
     pub counters: [i64; COUNTERS],
-    /// The earliest send time of a counted user message.
     pub first_user_at: Option<i64>,
-    /// The newest message's time (None: no message).
     pub last_at: Option<i64>,
 }
 
@@ -56,13 +42,11 @@ enum Who {
     Char,
 }
 
-/// What one message adds to its owner's stats.
 #[derive(Debug, Clone, PartialEq)]
 struct Contrib {
     owner: u64,
     parent: Option<u64>,
     time: i64,
-    /// Who it counts for: None for a system message or one opening its tree as a character's.
     counted: Option<Who>,
     words: i64,
     send_at: Option<i64>,
@@ -70,7 +54,6 @@ struct Contrib {
     size: i64,
 }
 
-/// JavaScript's truthiness of a JSON value.
 fn truthy(json: &[u8]) -> bool {
     match json {
         b"false" | b"null" | b"\"\"" => false,
@@ -81,7 +64,6 @@ fn truthy(json: &[u8]) -> bool {
     }
 }
 
-/// Words as `countWords()` counts them: runs of ASCII letters, digits and `_`.
 pub fn count_words(text: &[u8]) -> i64 {
     let mut n = 0;
     let mut in_word = false;
@@ -112,7 +94,6 @@ fn time_value(view: &View, m: u64, code: u64) -> Result<Option<i64>, StoreError>
     }
 }
 
-/// A fixed boolean's value from its two flag bits: `on` is the state meaning true, 3 its JSON value's truthiness.
 fn flag(
     view: &View,
     m: u64,
@@ -129,10 +110,6 @@ fn flag(
     })
 }
 
-/// A time value as `parseTimestamp()` reads it: its ISO time (`messageTime` of `code`) or number (of `num`; 0 is
-/// falsy), else the time the writer read from its JSON value (`messageTime` of `parsed`), else 0 for a JSON value it
-/// couldn't read; None when the message doesn't have it or it is falsy. `own` is the append's time, which the deltas
-/// are from.
 fn parsed_time(
     view: &View,
     m: u64,
@@ -161,7 +138,6 @@ fn contrib(view: &View, m: u64) -> Result<Option<Contrib>, StoreError> {
         Value::Time(t) => t,
         _ => unreachable!("checked by Record::new"),
     };
-    // A later change of the fixed values' shape is a value of its own (`chat::FLAGS`).
     let flags = match json_value(view, m, chat::FLAGS)? {
         Some(j) => std::str::from_utf8(&j)
             .ok()
@@ -309,7 +285,6 @@ fn time_of_key(k: &[u8], prefix_len: usize) -> Result<(i64, u64), StoreError> {
     Ok((t, get_u64(k, &mut at).ok_or_else(bad)?))
 }
 
-/// The owner's newest message time, read from the entries as they are.
 pub fn last_chat(view: &View, owner: u64) -> Result<Option<i64>, StoreError> {
     let p = key::id(OWNER_TIME, owner);
     match view.scan_vals_rev(&p, &key::prefix_end(&p), 1)?.first() {
@@ -322,7 +297,6 @@ pub fn chat_size(view: &View, owner: u64) -> Result<i64, StoreError> {
     counter(view, &stat_key(owner, SIZE))
 }
 
-/// Applies a message's change of contribution from `before` to `after` (one owner).
 fn apply(
     view: &View,
     out: &mut Out,
@@ -341,7 +315,6 @@ fn apply(
             out.add(key::id(STAT_TOTAL, i as u64), d);
         }
     }
-    // Swipes: per parent, its counted character replies beyond the first.
     let char_parent = |c: &Option<Contrib>| {
         c.as_ref()
             .filter(|c| c.counted == Some(Who::Char))
@@ -374,7 +347,6 @@ fn apply(
     }
     let t = |c: &Option<Contrib>| c.as_ref().map(|c| c.time);
     if t(before) != t(after) {
-        // The newest time after: the two newest now, without this message's old one, and its new one.
         let p = key::id(OWNER_TIME, owner);
         let mut last = None;
         for (k, _) in view.scan_vals_rev(&p, &key::prefix_end(&p), 2)? {
@@ -405,7 +377,6 @@ fn apply(
     Ok(())
 }
 
-/// The message a record changes the stats of, if any.
 fn message_of(rec: &Record) -> Option<u64> {
     match rec.kind.name {
         "messageAppend" | "messageDelete" | "messageParent" | "messageTime" => Some(id(rec, 0)),
@@ -417,8 +388,6 @@ fn message_of(rec: &Record) -> Option<u64> {
     }
 }
 
-/// Message `m` is about to go without a record of its own (a subtree delete's slice): its contribution leaves the
-/// stats.
 pub fn removed(view: &View, out: &mut Out, m: u64) -> Result<(), StoreError> {
     let before = contrib(view, m)?;
     if before.is_some() {
@@ -427,7 +396,6 @@ pub fn removed(view: &View, out: &mut Out, m: u64) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// A deriver whose records change a message: it also keeps the stats of the message's owner.
 pub struct Counted(pub &'static dyn Deriver);
 
 impl Deriver for Counted {
@@ -503,7 +471,6 @@ fn read_counters(view: &View, k: impl Fn(u64) -> Vec<u8>) -> Result<[i64; COUNTE
     Ok(out)
 }
 
-/// An owner's stats.
 pub fn owner_stats(view: &View, owner: u64) -> Result<Stats, StoreError> {
     let p = key::id(USER_AT, owner);
     let first_user_at = match view.scan(&p, &key::prefix_end(&p), 1)?.first() {
@@ -517,7 +484,6 @@ pub fn owner_stats(view: &View, owner: u64) -> Result<Stats, StoreError> {
     })
 }
 
-/// The stats of every owner together.
 pub fn total_stats(view: &View) -> Result<Stats, StoreError> {
     let p = key::of(ALL_USER_AT);
     let first_user_at = match view.scan(&p, &key::prefix_end(&p), 1)?.first() {

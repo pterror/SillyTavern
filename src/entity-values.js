@@ -2,12 +2,6 @@ import { STATEMENT_PREFIX } from './library-codes.js';
 import { textEdit } from './text-edit.js';
 
 /**
- * An entity's values as the engine stores them, and the records turning stored values into new ones: the library's
- * and world info's entities alike.
- */
-
-/**
- * Appends `items` to `list` one by one (a spread argument list overflows the stack for a large book's records).
  * @template T
  * @param {T[]} list
  * @param {Iterable<T>} items
@@ -17,8 +11,6 @@ export function pushAll(list, items) {
 }
 
 /**
- * A stored entity less its settings statements (STATEMENT_PREFIX), for a write of the card or group's own values
- * that leaves them as they are.
  * @param {StoredEntity | null} entity
  * @returns {StoredEntity | null}
  */
@@ -27,16 +19,14 @@ export function withoutStatements(entity) {
     return { ...entity, values: entity.values.filter(v => !(typeof v.field === 'string' && v.field.startsWith(STATEMENT_PREFIX))) };
 }
 
-/** A list item's text is the text value of this field. */
 export function itemField(list, item) {
     return 1024 + item * 8 + list;
 }
 
-/** Positions of a list's items are this far apart, so an item fits between two without moving others. */
 export const POSITION_GAP = 2 ** 20;
 
 /**
- * @typedef {object} StoredEntity What `Store.libraryEntities` answers.
+ * @typedef {object} StoredEntity
  * @property {bigint} id
  * @property {number} type
  * @property {string} key
@@ -49,14 +39,12 @@ export const POSITION_GAP = 2 ** 20;
  * @property {number} [dataSize]
  * @property {number} [createMs]
  * @property {{ which: number, hash: Buffer }[]} hashes
- * @property {number | null} [tagOrder] A tag's manual sort order as recorded; absent when none was.
- * @property {{ book: bigint, key: string, version: bigint }} [link] A character's lorebook link: the book it names,
- * and the key and version of the book that resolves as.
- * @property {number} [entryIndex] An entry's recorded `displayIndex`.
+ * @property {number | null} [tagOrder]
+ * @property {{ book: bigint, key: string, version: bigint }} [link]
+ * @property {number} [entryIndex]
  */
 
 /**
- * The entity's field values and its lists (each item's text in order), with each list's item ids and positions.
  * @param {StoredEntity} entity
  */
 export function storedValues(entity) {
@@ -84,18 +72,16 @@ export function storedValues(entity) {
 }
 
 /**
- * @typedef {object} Writes How the records changing an entity's values are written.
- * @property {(entity: bigint, field: number | string, text: string) => object} text A field's text.
+ * @typedef {object} Writes
+ * @property {(entity: bigint, field: number | string, text: string) => object} text
  * @property {(entity: bigint, field: number | string, edit: { offset: number, removed: number, text: string }) => object} edit
- * An edit of its text.
- * @property {(entity: bigint, field: number | string, json: string, before: string | undefined) => object[]} json Its
- * JSON (`before`: the JSON stored, if any).
- * @property {(entity: bigint, field: number | string) => object[]} delete Its value goes.
- * @property {(entity: bigint, list: number, item: number, position: number) => object} place A list item's place.
- * @property {(entity: bigint, list: number, item: number) => object[]} unplace The item and its text go.
+ * @property {(entity: bigint, field: number | string, json: string, before: string | undefined) => object[]} json
+ * @property {(entity: bigint, field: number | string) => object[]} delete
+ * @property {(entity: bigint, list: number, item: number, position: number) => object} place
+ * @property {(entity: bigint, list: number, item: number) => object[]} unplace
  */
 
-/** @type {Writes} The records written over: each value's current record only. */
+/** @type {Writes} */
 const OVERWRITE = Object.freeze({
     text: (entity, field, text) => ({ kind: 'textValue', entity, field, text }),
     edit: (entity, field, edit) => ({ kind: 'textEdit', entity, field, ...edit }),
@@ -106,7 +92,7 @@ const OVERWRITE = Object.freeze({
 });
 
 /**
- * @typedef {object} Stamp Who made a change and when, as a history record holds it.
+ * @typedef {object} Stamp
  * @property {bigint} id
  * @property {number} time
  * @property {bigint} [session]
@@ -114,8 +100,6 @@ const OVERWRITE = Object.freeze({
  */
 
 /**
- * The records writing changes with their history (`store::history`): each a change stamped by `stamp()`, a JSON
- * value's change an edit of its JSON as a text value's is.
  * @param {() => Stamp} stamp
  * @returns {Writes}
  */
@@ -136,7 +120,6 @@ export function historyWrites(stamp) {
 }
 
 /**
- * The records turning a stored entity's values (none for a new one) into `values` and `lists`.
  * @param {bigint} entity
  * @param {StoredEntity | null} stored
  * @param {{ values: Map<number | string, { text?: string, json?: string }>, lists: Map<number, string[]> }} next
@@ -167,16 +150,12 @@ export function valueRecords(entity, stored, next, writes = OVERWRITE) {
 }
 
 /**
- * The records turning a list's items `before` (at `places`) into `after`. Items equal at both ends stay; between
- * them, items are edited in place, then the rest added between their neighbours or deleted. When no position is
- * free between the neighbours, every item of the list is placed again, POSITION_GAP apart, above every position
- * it held, so no place lands on one still taken.
  * @param {bigint} entity
  * @param {number} list
  * @param {string[]} before
  * @param {{ item: number, position: number }[]} places
  * @param {string[]} after
- * @param {{ next: number }} counter The next unused item id.
+ * @param {{ next: number }} counter
  * @param {Writes} writes
  * @returns {object[]}
  */

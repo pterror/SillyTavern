@@ -478,10 +478,6 @@
     }
 }
 
-/* Forces the same layout as the @media (max-width: 1000px) block above, regardless of
-   actual viewport width, when body.forceMobileView is toggled on (see forceMobileView
-   in power-user.js). Kept as a duplicate rule set rather than restructuring the query
-   above, since this project has no CSS preprocessor to share the rule bodies. */
 body.forceMobileView #UI-Theme-Block,
 body.forceMobileView #UI-Customization,
 body.forceMobileView #power-user-options-block,
@@ -844,7 +840,6 @@ body.forceMobileView #floatingPrompt,
 body.forceMobileView #cfgConfig,
 body.forceMobileView #logprobsViewer,
 body.forceMobileView #movingDivs>div {
-        /* 100vh are fallback units for browsers that don't support dvh */
         height: calc(100vh - 45px);
         height: calc(100dvh - 45px);
         min-width: 100dvw !important;
@@ -959,13 +954,6 @@ body.forceMobileView select[multiple] {
         overflow-y: auto;
     }
 
-/* Drawer Bar (Mobile) (power_user.drawer_bar_position_mobile) at the bottom: the bar at the bottom screen edge, the
-   chat and the drawers from the top edge to the bar. The desktop Drawer Bar setting has no effect in this layout.
-   A rule below that replaces values of a rule above repeats its selector with the setting in :where(), so it takes
-   precedence over exactly the rules the one above did.
-   The bar is placed from the top: the fixed elements' containing block is html (it has a transform, see style.css),
-   which the fixed body leaves 0px tall, so bottom: 0 would put the bar above the screen. The holder can't be moved
-   with a transform, which would make it its fixed drawers' containing block. */
 @media screen and (max-width: 1000px) {
     :root:has(> body.drawerBarMobileBottom) {
         --drawerBarTop: 0px;
@@ -1163,8 +1151,6 @@ body.forceMobileView.waifuMode:where(.drawerBarMobileBottom) #sheld {
         backdrop-filter: blur(calc(var(--SmartThemeBlurStrength) * 2));
     }
 
-    /* Sizes for a drawer bar at the top. On desktop without Force Mobile View the drawers are placed as outside iOS,
-       and with the Drawer Bar at the bottom, left or right so are the bar and the chat. */
     @media screen and (max-width: 1000px) {
         #top-bar {
             width: 100vw;
@@ -1268,7 +1254,6 @@ body.forceMobileView.waifuMode:where(.drawerBarMobileBottom) #sheld {
         height: unset;
     }
 
-    /* Drawer Bar (Mobile) at the bottom (see above). Of the sizes above, 36px is the bar, and 70px the bar and 34px. */
     @media screen and (max-width: 1000px) {
         :where(body.drawerBarMobileBottom) #sheld {
             height: calc(100vh - var(--drawerBarBottom));
@@ -1296,9 +1281,6 @@ body.forceMobileView.waifuMode:where(.drawerBarMobileBottom) #sheld {
         height: calc(100dvh - var(--drawerBarBottom));
     }
 
-    /* body.PWA with the drawer bar at the bottom: the bar, not #sheld, keeps clear of the home indicator. #sheld's
-       padding-bottom (--pwaSafeAreaBottom) goes below the bar's icons, and --drawerBarBottom includes it, so
-       whatever ends at the bar ends at its top edge. */
     :root {
         --pwaSafeAreaBottom: max(env(safe-area-inset-bottom), 15px);
     }

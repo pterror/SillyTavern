@@ -1,8 +1,6 @@
 import { createHash } from 'node:crypto';
 
 /**
- * The key of what `hint` names for a user (a connection of a source, an entry without an id of its own): a uuid
- * made from them, so converting again, or re-importing on a save, gives the same one.
  * @param {string} handle
  * @param {string} hint
  */

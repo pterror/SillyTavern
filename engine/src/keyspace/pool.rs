@@ -1,7 +1,3 @@
-//! What every open keyspace in the process shares, so memory doesn't grow with the number of stores: the threads
-//! (`Executor`), the buffer budget B, the block cache C, and the slots bounding how many flushes and merges (each
-//! holding a writer's buffers, and a thread for its length) run at once.
-
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
@@ -10,11 +6,9 @@ use super::cache::Cache;
 use super::exec::{Activity, Executor, Waiters};
 
 pub struct Pool {
-    /// B: once the stores' buffers taking inserts hold this much, the largest is frozen and flushed.
     pub buffer_bytes: usize,
     pub cache: Cache,
     pub exec: Executor,
-    /// Bytes in buffers taking inserts, and in frozen buffers waiting for their flush.
     active: AtomicI64,
     frozen: AtomicI64,
     stores: Mutex<Vec<Weak<Keyspace>>>,
@@ -23,7 +17,6 @@ pub struct Pool {
     flushes: Slots,
 }
 
-/// A counting semaphore whose takers wait by being kicked, not by blocking a thread.
 struct Slots {
     free: AtomicUsize,
     waiters: Waiters,
@@ -37,7 +30,6 @@ impl Drop for Slot<'_> {
     }
 }
 
-/// A merge slot held across steps (a merge runs as many steps); freed when dropped.
 pub struct MergeSlot(Arc<Pool>);
 
 impl Drop for MergeSlot {
@@ -59,7 +51,6 @@ impl Slots {
         }
     }
 
-    /// A slot, or None and `a` is kicked when one frees.
     fn take(&self, a: &Arc<Activity>) -> Option<Slot<'_>> {
         let got = self.waiters.check_or_wait(a, || {
             self.free
@@ -88,7 +79,6 @@ impl Pool {
         )
     }
 
-    /// A pool whose steps run under simulation, picked by `seed` (`Executor::simulated`): for tests.
     pub fn simulated(
         buffer_bytes: usize,
         cache_bytes: usize,
@@ -125,7 +115,6 @@ impl Pool {
         })
     }
 
-    /// Bytes in buffers taking inserts, and in frozen ones.
     pub fn buffered(&self) -> (u64, u64) {
         let get = |a: &AtomicI64| a.load(Ordering::Relaxed).max(0) as u64;
         (get(&self.active), get(&self.frozen))
@@ -141,28 +130,23 @@ impl Pool {
         self.active.fetch_add(delta, Ordering::Relaxed);
     }
 
-    /// A buffer of `bytes` was frozen.
     pub(super) fn froze(&self, bytes: i64) {
         self.active.fetch_sub(bytes, Ordering::Relaxed);
         self.frozen.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    /// `frozen` bytes of frozen buffers were flushed, and `active` bytes of buffers taking inserts dropped (a
-    /// store that stopped).
     pub(super) fn released(&self, frozen: i64, active: i64) {
         self.frozen.fetch_sub(frozen, Ordering::Relaxed);
         self.active.fetch_sub(active, Ordering::Relaxed);
         self.room.wake();
     }
 
-    /// After an insert: once the active buffers reach B, asks the store with the largest one to freeze it.
     pub(super) fn after_insert(&self) {
         if self.active.load(Ordering::Relaxed) >= self.buffer_bytes as i64 {
             self.freeze_largest();
         }
     }
 
-    /// Freezes the largest active buffer, as a publish finding no room does (for tests that insert directly).
     #[cfg(test)]
     pub(super) fn request_room(&self) {
         self.freeze_largest();
@@ -184,8 +168,6 @@ impl Pool {
         }
     }
 
-    /// Whether there is room to publish more entries: the active and frozen buffers hold less than 2B. If not, the
-    /// largest active buffer is frozen (if any isn't yet) and `a` is kicked when a flush frees memory.
     pub fn room_or_wait(&self, a: &Arc<Activity>) -> bool {
         let room = self.room.check_or_wait(a, || {
             self.active.load(Ordering::Relaxed) + self.frozen.load(Ordering::Relaxed)
@@ -197,7 +179,6 @@ impl Pool {
         room
     }
 
-    /// A merge slot, or None and `a` is kicked when one frees.
     pub(super) fn merge_slot(self: &Arc<Self>, a: &Arc<Activity>) -> Option<MergeSlot> {
         let slot = self.merges.take(a)?;
         std::mem::forget(slot);

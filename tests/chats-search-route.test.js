@@ -37,7 +37,10 @@ afterAll(async () => {
     await user.close();
 });
 
-/** @param {string} url @param {object} body */
+/**
+ * @param {string} url
+ * @param {object} body
+ */
 async function post(url, body) {
     const res = await fetch(base + url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ST-Session': SESSION }, body: JSON.stringify({ avatar_url: 'Bob.png', ...body }) });
     return { status: res.status, data: await res.json() };
@@ -45,7 +48,6 @@ async function post(url, body) {
 
 const msg = (/** @type {string} */ mes) => ({ name: 'Bob', is_user: false, is_system: false, mes, extra: {} });
 
-/** The labels of result rows (null: the tab's own session, unnamed). */
 const labels = (/** @type {any[]} */ rows) => rows.map(r => r.label);
 
 describe('POST /api/chats/search', () => {
@@ -61,7 +63,6 @@ describe('POST /api/chats/search', () => {
         expect(paged.data.scan_cursor).toBeNull();
         expect(paged.data.exact).toBe(true);
 
-        // Whole words found it, so the scan doesn't list it again.
         const whole = await post('/api/chats/search', { query: 'wandering', limit: 50 });
         expect(labels(whole.data.results)).toEqual([null, 'The walk']);
 
@@ -69,7 +70,6 @@ describe('POST /api/chats/search', () => {
         expect(labels(all.data)).toEqual([null, 'The walk']);
         expect((await post('/api/chats/search', { query: 'nothing here' })).data).toEqual([]);
 
-        // A scan cursor that isn't one is ignored, as a bad item cursor is.
         expect((await post('/api/chats/search', { query: 'wande', limit: 50, scan_cursor: 'x' })).data.results).toHaveLength(2);
     });
 });

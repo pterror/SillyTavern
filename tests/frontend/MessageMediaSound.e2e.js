@@ -1,9 +1,10 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// Audio in a message starts at the user's volume, and doesn't start by itself unless the user lets it.
-
-/** @param {import('@playwright/test').Page} page @param {{ volume: number, autoplay: boolean }} settings */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {{ volume: number, autoplay: boolean }} settings
+ */
 async function sendAudio(page, settings) {
     return page.evaluate(async (settings) => {
         const { power_user } = await import('/scripts/power-user.js');

@@ -1,7 +1,3 @@
-// The chat completion prompt manager's defaults: its prompts, and the order of a prompt list it makes. A leaf module:
-// the server builds chat completion prompts from them too.
-
-/** The prompt order chat completion uses for everyone, under this id in `prompt_order` (the global strategy). */
 export const GLOBAL_PROMPT_ORDER_ID = 100001;
 
 export const chatCompletionDefaultPrompts = {
@@ -142,8 +138,6 @@ export const promptManagerDefaultPromptOrder = [
 ];
 
 /**
- * The prompts as the prompt manager uses them: the defaults, when there are none; else with every default prompt they
- * lack added (PromptManager's checkForMissingPrompts()), such as the persona's description.
  * @param {object[] | undefined} prompts
  * @returns {object[]}
  */
@@ -154,8 +148,6 @@ export function promptsWithDefaults(prompts) {
 }
 
 /**
- * The prompt orders as the prompt manager uses them: with the default order under `characterId` when there is none
- * for it (PromptManager's sanitizeServiceSettings()).
  * @param {{ character_id: number | string, order: { identifier: string, enabled: boolean }[] }[] | undefined} promptOrders
  * @param {number | string} characterId
  */

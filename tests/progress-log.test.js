@@ -2,7 +2,6 @@ import { test, expect } from '@jest/globals';
 
 import { ProgressLog, formatDuration } from '../src/progress-log.js';
 
-/** A ProgressLog on a clock the test moves. */
 function makeLog(total) {
     const lines = [];
     let now = 0;
@@ -22,7 +21,6 @@ test('a pass that finishes before the first interval logs only its finished line
 
 test('a long pass logs at most one progress line per interval, with how far it is and how long is left, and no batch numbers', () => {
     const { lines, progress, advance } = makeLog(380000);
-    // 1000 items every 100 ms: 10,000 a second.
     for (let i = 0; i < 380; i++) {
         advance(100);
         progress.add(1000);

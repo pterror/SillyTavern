@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// createWorldInfoEntry() and getFreeWorldEntryUid() keep upstream's contract: the entry comes back synchronously,
-// under the lowest uid free in the page's copy, and is stored under that uid unless another page took it meanwhile.
-
 test.describe('createWorldInfoEntry keeps upstream\'s contract', () => {
     test.beforeEach(testSetup.awaitST);
 
@@ -44,7 +41,6 @@ test.describe('createWorldInfoEntry keeps upstream\'s contract', () => {
             const post = (/** @type {string} */ url, /** @type {any} */ body) => fetch(url, { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(body) });
             if (!await wi.createNewWorldInfo(name, { interactive: false })) throw new Error(`Could not create '${name}'`);
             const data = await wi.loadWorldInfo(name);
-            // Another page stores an entry under uid 0, which this page's copy still has free.
             await post('/api/worldinfo/entry/create', { name, uid: 0 });
             await post('/api/worldinfo/entry/edit', { name, uid: 0, data: { ...structuredClone(wi.newWorldInfoEntryTemplate), comment: 'elsewhere' } });
             const first = wi.createWorldInfoEntry(name, data);
@@ -64,7 +60,6 @@ test.describe('createWorldInfoEntry keeps upstream\'s contract', () => {
         expect(result.asked).toEqual([0, 1]);
         expect(Object.values(result.stored).sort()).toEqual(['elsewhere', 'first', 'second']);
         expect(result.stored[0]).toBe('elsewhere');
-        // The page's copy names each entry under the uid the server holds it by.
         for (const [key, [uid, comment]] of Object.entries(result.local)) {
             expect(String(uid)).toBe(key);
             expect(result.stored[key]).toBe(comment);

@@ -9,7 +9,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @param {string[]} greetings The first is the default.
+ * @param {string[]} greetings
  * @returns {Promise<string>}
  */
 async function createCharacter(page, name, greetings) {
@@ -40,7 +40,6 @@ async function openCharacter(page, avatar) {
 }
 
 /**
- * The character's greetings and default as the server stores them.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -56,9 +55,8 @@ async function storedModel(page, avatar) {
 }
 
 /**
- * Writes the field the way an extension written for upstream does.
  * @param {import('@playwright/test').Page} page
- * @param {string[]} values Written one after another in the same task.
+ * @param {string[]} values
  */
 async function writeFirstMessage(page, ...values) {
     await page.evaluate((values) => {

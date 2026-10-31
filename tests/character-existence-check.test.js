@@ -1,8 +1,5 @@
 import { describe, test, expect, jest, beforeEach, beforeAll } from '@jest/globals';
 
-// character-existence-check.js's only dependency is character-repository.js's `characterRepository` singleton -
-// mocked at the module boundary (same pattern tests/character-repository.test.js uses for script.js) so this
-// stays a pure unit test of the abort-on-failure contract, with no jQuery/DOM/script.js involved.
 const existsMock = jest.fn();
 jest.unstable_mockModule('../public/scripts/character-repository.js', () => ({
     characterRepository: { exists: existsMock },

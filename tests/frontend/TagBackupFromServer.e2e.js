@@ -2,9 +2,6 @@ import fs from 'node:fs';
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// The tag backup is made by the server, so it holds every tag and every character's tags, including a character and
-// a tag the page doesn't hold.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -35,10 +32,9 @@ async function api(page, path, body = {}) {
 }
 
 /**
- * Creates a character the page doesn't hold.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @returns {Promise<string>} its avatar key
+ * @returns {Promise<string>}
  */
 async function createUnheldCharacter(page, name) {
     return page.evaluate(async (name) => {

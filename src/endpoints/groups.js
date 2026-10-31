@@ -20,9 +20,6 @@ import { droppedOf, moveToChatNamed } from '../chat-request.js';
 export const router = express.Router();
 
 /**
- * The id a request names a group by, or null when it can't name one. A group that already exists keeps working
- * whatever its id, so any non-empty string is accepted here, as long as it can't escape the groups directory.
- * Only creating a group requires a valid new-group id (isValidGroupId()).
  * @param {unknown} value
  * @returns {string | null}
  */
@@ -33,10 +30,7 @@ function toRequestGroupId(value) {
     return null;
 }
 
-/**
- * Rejects a request whose `body.id` can't name a group with 400, and replaces a legacy numeric id with its string form.
- * @type {import('express').RequestHandler}
- */
+/** @type {import('express').RequestHandler} */
 function validateGroupIdBody(request, response, next) {
     const id = toRequestGroupId(request.body?.id);
     if (id === null) {
@@ -63,7 +57,6 @@ function warnOnGroupMetadata(groupData) {
 }
 
 /**
- * Whether a metadata object holds anything worth keeping.
  * @param {unknown} metadata
  * @returns {boolean}
  */
@@ -72,11 +65,9 @@ function hasMetadataContent(metadata) {
 }
 
 /**
- * Copies a file into the backup directory without ever overwriting an earlier, different backup of it:
- * an identical backup is left alone, a different one gets a timestamped sibling instead.
  * @param {string} sourcePath
  * @param {string} backupDir
- * @param {boolean} [onlyIfMissing] Copy only when no backup under the plain name exists yet
+ * @param {boolean} [onlyIfMissing]
  */
 async function backUpFile(sourcePath, backupDir, onlyIfMissing = false) {
     const name = path.basename(sourcePath);
@@ -134,10 +125,9 @@ export function logGroupMetadataMigrationDone(userDirs, anyDataMigrated) {
 }
 
 /**
- * migrateGroupChatsMetadataFormat() for one group file. The caller holds that group's lock (group-lock.js).
  * @param {import('../users.js').UserDirectoryList} userDirs
- * @param {string} fileName The group's JSON file name within `userDirs.groups`
- * @returns {Promise<boolean>} Whether anything was written
+ * @param {string} fileName
+ * @returns {Promise<boolean>}
  */
 export async function migrateGroupFileMetadataFormat(userDirs, fileName) {
     const backupPath = path.join(userDirs.backups, '_group_metadata_update');
@@ -151,8 +141,6 @@ export async function migrateGroupFileMetadataFormat(userDirs, fileName) {
         if (!hasChatMetadata && !hasPastMetadata) {
             return false;
         }
-        // The first sight of a group still holding legacy metadata is always backed up, so the
-        // original survives even if a later group save strips the keys (warnOnGroupMetadata).
         await backUpFile(groupFilePath, backupPath, true);
 
         /** @type {Record<string, object>} */
@@ -167,7 +155,7 @@ export async function migrateGroupFileMetadataFormat(userDirs, fileName) {
             return wrote;
         }
 
-        /** @type {Map<string, string>} chat id -> why its metadata could not be moved into the chat file */
+        /** @type {Map<string, string>} */
         const unlanded = new Map();
         /** @type {{ chatId: string, chatFilePath: string, newRaw: string }[]} */
         const chatWrites = [];
@@ -203,7 +191,6 @@ export async function migrateGroupFileMetadataFormat(userDirs, fileName) {
                 }
                 continue;
             }
-            // The header goes in front of the file's own bytes, so no line of it can be lost.
             const chatHeader = { chat_metadata: chatMetadata ?? {}, user_name: 'unused', character_name: 'unused' };
             chatWrites.push({ chatId, chatFilePath, newRaw: `${JSON.stringify(chatHeader)}\n${chatDataRaw}` });
         }
@@ -261,8 +248,6 @@ export async function migrateGroupFileMetadataFormat(userDirs, fileName) {
 }
 
 /**
- * Groups as the library stores them (`/api/groups/batch`'s objects: their own values, id, fav and tag ids), by id;
- * a group no id names is absent.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string[]} ids
  * @returns {Promise<Record<string, Record<string, any>>>}
@@ -278,14 +263,10 @@ export async function getGroupsByIds(directories, ids) {
 }
 
 /**
- * The compat chat values of a group for a request: `chat_id`, the UUID of the session the request acts through in
- * its tree, and `chats`, the group's chat list (`chatList()`: the tab's session when it is there, then the
- * bookmarks), each by its compat chat id (a session's UUID, a bookmark's id).
  * @param {import('../user-stores.js').UserStore} store
  * @param {import('express').Request} request
  * @param {bigint} tree
- * @param {import('../request-session.js').RequestSession} [acted] The request's session when it has acted (it may
- *   have made one).
+ * @param {import('../request-session.js').RequestSession} [acted]
  * @returns {Promise<{ chat_id: string, chats: string[] }>}
  */
 async function groupChats(store, request, tree, acted) {
@@ -303,9 +284,6 @@ async function groupChats(store, request, tree, acted) {
 }
 
 /**
- * Groups as upstream's routes answer them, for a request: the stored object (`getGroupsByIds()`) with its compat
- * `chat_id` and `chats`; with `listed`, also its dates and chat stats, as `/all` lists them. null for an id no group
- * has.
  * @param {import('express').Request} request
  * @param {string[]} ids
  * @param {{ listed?: boolean }} [o]
@@ -334,7 +312,6 @@ export async function groupObjects(request, ids, { listed = false } = {}) {
 }
 
 /**
- * A group's hash row digests, over the object `/batch` answers for it.
  * @param {Record<string, any>} group
  */
 export function groupDigests(group) {
@@ -345,10 +322,8 @@ export function groupDigests(group) {
     };
 }
 
-/** Groups read a page at a time by `/all`. */
 const ALL_PAGE = 200;
 
-/** Every group (upstream's `/all`: a bare array, streamed a page at a time), in name order. */
 router.post('/all', async (request, response) => {
     try {
         const { lib } = await requestStore(request);
@@ -383,13 +358,8 @@ router.post('/all', async (request, response) => {
 
 const BATCH_MAX_IDS = 500;
 
-// Group-side counterpart to /api/characters/batch. `fields` omitted returns every field, since groups
-// have no shallow/full split - their content hash covers the whole object, so the cache must too.
-// More than BATCH_MAX_IDS distinct ids is a 400 rather than a truncated answer, which would read as those groups
-// not existing.
 router.post('/batch', async (request, response) => {
     try {
-        // An id that can't name a group is skipped like an unknown one, so it never fails the rest of the batch.
         const ids = [...new Set((Array.isArray(request.body?.ids) ? request.body.ids : []).map(toRequestGroupId).filter(id => id !== null))];
         if (ids.length > BATCH_MAX_IDS) {
             return response.status(400).send({ error: `at most ${BATCH_MAX_IDS} distinct ids per request` });
@@ -415,7 +385,6 @@ router.post('/batch', async (request, response) => {
 });
 
 /**
- * The 500 a route answers when a group couldn't be stored; nothing of it was.
  * @param {import('express').Response} response
  * @param {string} id
  * @param {unknown} error
@@ -456,10 +425,6 @@ router.post('/create', async (request, response) => {
     }
 });
 
-/**
- * Upstream's whole-group save. Its `chat_id` moves the requesting tab's session to the chat it names ('' or null: a
- * new chat); `chats` is the group's chat list, read from its bookmarks, so a write of it does nothing.
- */
 router.post('/edit', validateGroupIdBody, async (request, response) => {
     const id = request.body.id;
     const { lib } = await requestStore(request);
@@ -479,12 +444,6 @@ router.post('/edit', validateGroupIdBody, async (request, response) => {
     return response.send({ ok: true });
 });
 
-// Top-level Group fields (see public/global.d.ts's `Group` interface) that /save-partial is allowed to
-// merge into the stored group. `id` is deliberately excluded (a group's id is its key - merging a
-// caller-supplied `id` would silently retarget/duplicate the write). This is an allowlist rather than a
-// denylist so an unrecognized/stray key (a client bug, or something like `__proto__`/`constructor`
-// riding along in a JSON body - Object.assign happily "merges" those into a live object's prototype
-// chain) is dropped instead of silently applied.
 const GROUP_PARTIAL_ALLOWED_FIELDS = new Set([
     'name', 'members', 'disabled_members', 'chat_id', 'chats',
     'generation_mode', 'generation_mode_join_prefix', 'generation_mode_join_suffix',
@@ -492,14 +451,8 @@ const GROUP_PARTIAL_ALLOWED_FIELDS = new Set([
     'avatar_url', 'hideMutedSprites', 'fav', 'date_last_chat',
 ]);
 
-/**
- * Upstream's read-time group keys: not stored with the group (`date_last_chat` is its chat stats'), so a partial
- * save of them changes nothing but `chat_id`, which moves the tab's session as `/edit`'s does.
- */
 const GROUP_READ_TIME_FIELDS = new Set(['chat_id', 'chats', 'date_last_chat']);
 
-// Field-level counterpart to /edit for single-property changes (e.g. toggling one member) - avoids
-// a whole-object last-write-wins save clobbering unrelated concurrent edits.
 router.post('/save-partial', validateGroupIdBody, async (request, response) => {
     const { id, props } = request.body;
     if (!props || typeof props !== 'object' || Array.isArray(props)) {
@@ -528,11 +481,6 @@ router.post('/save-partial', validateGroupIdBody, async (request, response) => {
     return response.send({ ok: true });
 });
 
-/**
- * Changes one member of a group: `op` is `add` (to the front), `remove`, `up`, `down`, `mute`, `unmute` or `replace`
- * (by `new_avatar`, in place), for the member `avatar`. Works on the group as stored, so two tabs changing different members both keep their change.
- * Answers `{ members, disabled_members }` as stored. Writes nothing when nothing changes.
- */
 router.post('/members', validateGroupIdBody, async (request, response) => {
     const { id, op, avatar, new_avatar: newAvatar } = request.body;
     if (typeof avatar !== 'string' || !avatar || !['add', 'remove', 'up', 'down', 'mute', 'unmute', 'replace'].includes(op)) {
@@ -571,10 +519,6 @@ router.post('/members', validateGroupIdBody, async (request, response) => {
     return response.send(answer);
 });
 
-/**
- * A new chat in a group (answer 4 of the cut): the requesting tab's session goes to the group's root, where the
- * members' greetings show provisionally. Answers the compat `chat_id` and `chats`.
- */
 router.post('/new-chat', validateGroupIdBody, async (request, response) => {
     const { id } = request.body;
     try {
@@ -592,14 +536,6 @@ router.post('/new-chat', validateGroupIdBody, async (request, response) => {
     }
 });
 
-/**
- * Deletes a group. Its chats are kept as an unowned tree a group made with its id again takes back (upstream left
- * its chat files on disk); with `delete_chats` they go too.
- */
-/**
- * Deletes a group and its chats (its whole tree, in slices), as upstream's delete always removed its chat files;
- * `delete_chats` is not read. The bookmarks and state changes that go are logged and answered in `dropped`.
- */
 router.post('/delete', validateGroupIdBody, async (request, response) => {
     const id = request.body.id;
     const store = await requestStore(request);

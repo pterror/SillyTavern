@@ -1,17 +1,12 @@
 import { Marked, showdown } from '../lib.js';
 
-// No power-user.js or script.js imports here on purpose: both transitively import
-// every consumer of this module (message-formatting.js, chats.js,
-// SlashCommandReturnHelper.js), so importing power_user/substituteParams from them
-// would create a cycle. Callers that already have the real values inject them instead
-// (see reloadMarkedProcessor).
 const identitySubstitute = (text) => text;
 
 const EXCLUSION_MARKER = '​';
 
 /**
- * @param {string} [escapeStrings] Comma-separated literal strings (power_user.markdown_escape_strings) to protect from markdown parsing.
- * @param {(text: string) => string} [substituteParamsFn] Macro-substitution function applied to escapeStrings before use (defaults to no substitution).
+ * @param {string} [escapeStrings]
+ * @param {(text: string) => string} [substituteParamsFn]
  * @returns {import('marked').MarkedExtension}
  */
 export function markdownExclusionExt(escapeStrings, substituteParamsFn = identitySubstitute) {
@@ -43,10 +38,12 @@ export function markdownExclusionExt(escapeStrings, substituteParamsFn = identit
 
 export let markedProcessor = new Marked();
 
-/** Same configuration as {@link markedProcessor}, except raw HTML tokens are shown as literal text. */
 let markedLiteralTagsProcessor = new Marked();
 
-/** @param {string} text @returns {string} */
+/**
+ * @param {string} text
+ * @returns {string}
+ */
 function escapeHtmlText(text) {
     return text
         .replace(/&/g, '&amp;')
@@ -58,9 +55,6 @@ function escapeHtmlText(text) {
 
 /** @type {import('marked').MarkedExtension} */
 const literalTagsExt = {
-    // A line holding only a tag (an example message's `<START>`) is text like any other line, so it doesn't start an
-    // HTML block that runs to the next blank line with the markdown and line breaks after it unread. Returning
-    // nothing (not false) skips marked's own HTML block rule; the block tags htmlBlockExt keeps whole aren't affected.
     tokenizer: {
         html() {
             return undefined;
@@ -73,10 +67,6 @@ const literalTagsExt = {
     },
 };
 
-/**
- * marked's GFM `_backpedal` without `_`: trailing punctuation is dropped from a bare URL so a sentence's full stop
- * isn't swallowed, but `_` isn't sentence punctuation, so a URL ending in `_` keeps it.
- */
 const urlBackpedal = /(?:[^?!.,:;*'"~()&]+|\([^)]*\)|&(?![a-zA-Z0-9]+;$)|[?!.,:;*'"~)]+(?!$))+/;
 
 /** @type {import('marked').MarkedExtension} */
@@ -99,7 +89,6 @@ const urlTrailingUnderscoreExt = {
     },
 };
 
-/** The tags showdown's `hashHTMLBlocks` keeps whole. */
 const HTML_BLOCK_TAGS = [
     'pre', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'table', 'dl', 'ol', 'ul', 'script', 'noscript',
     'form', 'fieldset', 'iframe', 'math', 'style', 'section', 'header', 'footer', 'nav', 'article', 'aside', 'address',
@@ -111,10 +100,8 @@ const htmlBlockCandidateRegex = new RegExp(`\\n {0,3}<${HTML_BLOCK_TAG_NAMES}`, 
 const htmlAttributeRegex = /\s+([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
 
 /**
- * Matches an HTML block at the start of `src`: an opening tag from {@link HTML_BLOCK_TAGS} up to its matching closing
- * tag, counting nested tags of the same name.
  * @param {string} src
- * @returns {{ raw: string, open: string, inner: string, close: string } | null} null when there's no matching closing tag.
+ * @returns {{ raw: string, open: string, inner: string, close: string } | null}
  */
 function matchHtmlBlock(src) {
     const openMatch = htmlBlockOpenRegex.exec(src);
@@ -141,8 +128,6 @@ function matchHtmlBlock(src) {
 }
 
 /**
- * PHP Markdown Extra's opt-in: an opening tag with a `markdown` attribute has its inside parsed as markdown, unless the
- * value is `0`. As in HTML, the first of repeated attributes counts.
  * @param {string} openTag
  * @returns {boolean}
  */
@@ -165,12 +150,7 @@ function htmlBlockToken(text, tagName) {
     return { type: 'html', block: true, pre: ['pre', 'script', 'style'].includes(tagName), raw: text, text };
 }
 
-/**
- * Keeps an HTML block whole: it runs to its matching closing tag, blank lines and indentation included,
- * and its inside isn't parsed as markdown unless the opening tag has a `markdown` attribute. The tags go through the
- * `html` renderer, so the literal-tags processor shows them as text.
- * @type {import('marked').MarkedExtension}
- */
+/** @type {import('marked').MarkedExtension} */
 const htmlBlockExt = {
     extensions: [{
         name: 'htmlBlockMarkdown',
@@ -210,16 +190,11 @@ const htmlBlockExt = {
     }],
 };
 
-/** Upstream's emoji set: the one showdown's `emoji` option uses. */
 const EMOJIS = showdown.helper.emojis;
 const emojiShortcodeRegex = /^:([^\s:]+):/;
 const emojiCandidateRegex = /:([^\s:]+):/g;
 
-/**
- * `:name:` shortcodes render as emoji, for the names in showdown's emoji set; any other name stays as written.
- * An inline token, so code, URLs, HTML tags and kept-whole HTML blocks are left alone.
- * @type {import('marked').MarkedExtension}
- */
+/** @type {import('marked').MarkedExtension} */
 const emojiExt = {
     extensions: [{
         name: 'emoji',
@@ -253,15 +228,11 @@ const imageSizeSideRegex = new RegExp(
     `^(?:\\*|(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:${[...IMAGE_SIZE_UNITS].sort((a, b) => b.length - a.length).join('|')})?)`,
     'i',
 );
-/** The ` =WxH` after a url; its characters are checked by {@link parseImageSize}. */
 const IMAGE_SIZE_GROUP = '( =[^\\s"\'()]*)';
 
 /**
- * Parses showdown's image size, `WxH`, with `*` as auto on either side, plus the shorthands `W`, `Wx` (width-only)
- * and `xH` (height-only). Each side is a CSS number with an optional unit from {@link IMAGE_SIZE_UNITS}, longest unit
- * first, so an `x` is the separator only when it isn't part of a unit (`1exx2`).
- * @param {string} size The text after `=`.
- * @returns {{ width?: string, height?: string } | null} null when it isn't a size.
+ * @param {string} size
+ * @returns {{ width?: string, height?: string } | null}
  */
 function parseImageSize(size) {
     const width = imageSizeSideRegex.exec(size)?.[0] ?? '';
@@ -281,11 +252,9 @@ function parseImageSize(size) {
 /** @type {Map<string, RegExp>} */
 const sizedRegexCache = new Map();
 /**
- * marked's own link or definition rule with {@link IMAGE_SIZE_GROUP} inserted right after the url group, so the
- * label, url and title follow marked exactly.
  * @param {RegExp} rule
- * @param {string} urlGroupEnd The text that ends the url group in the rule's source.
- * @returns {RegExp | null} null when marked's rule no longer has that shape.
+ * @param {string} urlGroupEnd
+ * @returns {RegExp | null}
  */
 function sizedRegex(rule, urlGroupEnd) {
     let regex = sizedRegexCache.get(rule.source);
@@ -301,11 +270,10 @@ function sizedRegex(rule, urlGroupEnd) {
 }
 
 /**
- * Runs one of marked's own tokenizers on `src` with the size cut out, and gives the token the size.
  * @param {(src: string) => any} tokenize
- * @param {RegExp | null} regex From {@link sizedRegex}.
+ * @param {RegExp | null} regex
  * @param {string} src
- * @returns {any} undefined when `src` doesn't start with a sized form.
+ * @returns {any}
  */
 function tokenizeSized(tokenize, regex, src) {
     const match = regex?.exec(src);
@@ -317,7 +285,6 @@ function tokenizeSized(tokenize, regex, src) {
         return undefined;
     }
     const [start, end] = match.indices[match.length - 1];
-    // A space in place of the size keeps a title that followed it with no space (`=1x2"t"`) separate from the url.
     const token = tokenize(src.slice(0, start) + ' ' + src.slice(end));
     if (!token || token.raw.length <= start) {
         return undefined;
@@ -326,11 +293,7 @@ function tokenizeSized(tokenize, regex, src) {
     return Object.assign(token, size);
 }
 
-/**
- * Image sizes, as upstream's showdown `parseImgDimensions`: `![alt](url =WxH)`, and a size on a reference
- * definition (`[id]: url =WxH`) for the images that use it. See {@link parseImageSize} for the forms.
- * @type {import('marked').MarkedExtension}
- */
+/** @type {import('marked').MarkedExtension} */
 const imageSizeExt = {
     extensions: [{
         name: 'sizedImageDef',
@@ -401,8 +364,8 @@ const imageSizeExt = {
 };
 
 /**
- * @param {string} [escapeStrings] power_user.markdown_escape_strings; pass the real value when calling this from a module that already imports power_user (e.g. on power_user.markdown_escape_strings change), same as the old reloadMarkdownProcessor() was called.
- * @param {(text: string) => string} [substituteParamsFn] The real `substituteParams` from script.js, from a module that already imports it.
+ * @param {string} [escapeStrings]
+ * @param {(text: string) => string} [substituteParamsFn]
  */
 export function reloadMarkedProcessor(escapeStrings, substituteParamsFn = identitySubstitute) {
     markedProcessor = new Marked({
@@ -433,8 +396,6 @@ export function renderMarkdown(text) {
 }
 
 /**
- * Renders markdown with raw HTML (block and inline tags) shown as literal text; code spans, code blocks
- * and blockquotes render as usual.
  * @param {string} text
  * @returns {string}
  */

@@ -9,11 +9,8 @@ import express from 'express';
 import { setConfigFilePath } from '../util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// chats.js's import chain reads process-wide config at import time, so the config path is set first.
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
-// Selecting a message is one request: a greeting shown without a row is stored and selected in it, and a jump to a
-// message off the loaded path gets the path down to it in the same answer.
 const { router: chatsRouter } = await import('./chats.js');
 const { newSessionKey } = await import('../chat-engine.js');
 const { SESSION_HEADER } = await import('../request-session.js');
@@ -67,7 +64,6 @@ test('a greeting shown without a row is stored and selected in one request', asy
     const path = await sessionPath(user.store, { avatar: 'bob.png' }, tab);
     assert.deepEqual(path.map(m => m.mes), ['Welcome aboard.']);
 
-    // The same greeting again lands on the same row.
     const again = await postJson('/api/chats/message/select', {
         avatar_url: 'bob.png', activate: true,
         opening: { refs: ['g2'], messages: [{ name: 'Bob', is_user: false, mes: 'Welcome aboard.', extra: {} }] },

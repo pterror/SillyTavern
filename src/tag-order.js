@@ -1,14 +1,4 @@
 /**
- * What a tag's stored definition gives the stores that order tags: its manual sort order as upstream coerces it,
- * and its folder type.
- */
-
-/**
- * The columns derived from a tag's data (a value as JSON.parse returns it), with upstream's coercion wherever
- * upstream defines it. sort_order: upstream orders by `a.sort_order - b.sort_order` among tags whose sort_order
- * isn't undefined, so null, booleans and numeric strings coerce as that subtraction does; a value it can't order
- * (NaN, a non-numeric string, an object) has no order. folder_type/is_folder follow isBogusFolder() (tags.js):
- * a folder is any present folder_type other than the string 'NONE'.
  * @param {unknown} tag
  * @returns {{ sortOrder: number | null, folderType: string, isFolder: 0 | 1 }}
  */
@@ -29,12 +19,9 @@ export function tagDerivedColumns(tag) {
 }
 
 /**
- * `count` distinct finite values after `base`, rising in steps of 1, or of the smallest power of two that still
- * moves `base` once 1 doesn't.
  * @param {number} base
  * @param {number} count
- * @returns {number[]} Shorter than `count` where the values would stop being finite; empty for a non-finite `base`,
- *   which no step moves.
+ * @returns {number[]}
  */
 export function valuesAfter(base, count) {
     if (!Number.isFinite(base)) return [];
@@ -51,11 +38,9 @@ export function valuesAfter(base, count) {
 }
 
 /**
- * valuesAfter()'s mirror: `count` distinct finite values before `base`, ascending.
  * @param {number} base
  * @param {number} count
- * @returns {number[]} Shorter than `count` where the values would stop being finite, dropping the farthest from
- *   `base`; empty for a non-finite `base`.
+ * @returns {number[]}
  */
 export function valuesBefore(base, count) {
     if (!Number.isFinite(base)) return [];
@@ -74,7 +59,7 @@ export function valuesBefore(base, count) {
 /**
  * @param {string} a
  * @param {string} b
- * @returns {number} SQLite's BINARY order on the UTF-8 bytes.
+ * @returns {number}
  */
 export function compareNameKeys(a, b) {
     return Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));

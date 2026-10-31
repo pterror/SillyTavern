@@ -16,14 +16,9 @@ import {
 } from '../saved-views.js';
 import { storeRoute } from '../user-stores.js';
 
-/**
- * The user's saved views of the character list. Each change is one action on one view; the page never sends its
- * list of views back.
- */
 export const router = express.Router();
 
 /**
- * A view name as stored: trimmed, at most SAVED_VIEW_NAME_MAX characters. null when it isn't a non-empty string.
  * @param {unknown} name
  */
 function checkName(name) {
@@ -33,8 +28,6 @@ function checkName(name) {
 }
 
 /**
- * A view object as stored (`canonicalView()`), or why it isn't one: not a plain object, JSON longer than
- * SAVED_VIEW_JSON_MAX, or a key that doesn't fit a view's shape.
  * @param {unknown} view
  * @returns {{ view: Record<string, unknown> } | { detail: string }}
  */
@@ -45,10 +38,6 @@ function checkView(view) {
     return problems.length > 0 ? { detail: problems.join('; ') } : { view: canonical };
 }
 
-/**
- * Body: `{ contains?, cursor?, limit?, known? }`. Answers `{ views, cursor }`, `cursor` set when more views follow;
- * `{ unchanged: true }` when, with no `cursor`, `known` is contentHashOf() of the first page's `views`.
- */
 router.post('/list', storeRoute('listing saved views', async (request, response) => {
     const body = request.body ?? {};
     const cursor = typeof body.cursor === 'string' ? decodeCursor(body.cursor) : null;
@@ -81,7 +70,6 @@ function decodeCursor(cursor) {
     }
 }
 
-/** Body: `{ id }`. Answers the view, or 404. */
 router.post('/get', storeRoute('reading a saved view', async (request, response) => {
     const id = request.body?.id;
     if (typeof id !== 'string') return response.status(400).send({ error: true, reason: 'id-required' });
@@ -90,7 +78,6 @@ router.post('/get', storeRoute('reading a saved view', async (request, response)
     return response.send({ id: view.id, name: view.name, view: view.view });
 }));
 
-/** Body: `{ name, view }`. Answers the new view, placed after the others; 400 `invalid-view` with a `detail`. */
 router.post('/create', storeRoute('creating a saved view', async (request, response) => {
     const name = checkName(request.body?.name);
     if (name === null) return response.status(400).send({ error: true, reason: 'invalid-name' });
@@ -100,7 +87,6 @@ router.post('/create', storeRoute('creating a saved view', async (request, respo
     return response.send({ id: created.id, name: created.name, view: created.view });
 }));
 
-/** Body: `{ id, name?, view? }`. Answers the view as stored; 404 when it no longer exists. */
 router.post('/change', storeRoute('changing a saved view', async (request, response) => {
     const { id } = request.body ?? {};
     if (typeof id !== 'string') return response.status(400).send({ error: true, reason: 'id-required' });
@@ -113,7 +99,6 @@ router.post('/change', storeRoute('changing a saved view', async (request, respo
     return response.send({ id: changed.id, name: changed.name, view: changed.view });
 }));
 
-/** Body: `{ id }`. Answers `{ deleted }`. */
 router.post('/delete', storeRoute('deleting a saved view', async (request, response) => {
     const id = request.body?.id;
     if (typeof id !== 'string') return response.status(400).send({ error: true, reason: 'id-required' });
@@ -121,7 +106,6 @@ router.post('/delete', storeRoute('deleting a saved view', async (request, respo
     return response.send({ deleted });
 }));
 
-/** Body: `{ id, anchor, side: 'before' | 'after' }`. Answers `{ result: 'moved' | 'unchanged' }`, or 404. */
 router.post('/move', storeRoute('moving a saved view', async (request, response) => {
     const { id, anchor, side } = request.body ?? {};
     if (typeof id !== 'string' || typeof anchor !== 'string' || (side !== 'before' && side !== 'after')) {

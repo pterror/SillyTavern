@@ -20,7 +20,6 @@
 @import url(css/streaming-display.css);
 @import url(css/alternatives.css);
 
-/* Set only on the drawer it applies to, never inherited (see .drawer-content). */
 @property --drawerContainerTop {
     syntax: '<length>';
     inherits: false;
@@ -39,7 +38,6 @@
     initial-value: 0px;
 }
 
-/* Registered as lengths, so they compute to px. */
 @property --drawerBarLeft {
     syntax: '<length>';
     inherits: true;
@@ -148,15 +146,10 @@
     --topBarBlockSize: calc(var(--topBarIconSize) + var(--topBarBlockPadding));
     --topBarBlockPadding: calc(var(--mainFontSize) / 3);
 
-    /* How much of each screen edge the drawer bar (#top-bar + #top-settings-holder) takes, set by the Drawer Bar
-       setting (power_user.drawer_bar_position, see toggle-dependent.css). Whatever is placed from the bar uses
-       these. --topBarBlockSize stays the bar's thickness wherever it is. */
     --drawerBarTop: var(--topBarBlockSize);
     --drawerBarBottom: 0px;
     --drawerBarLeft: 0px;
     --drawerBarRight: 0px;
-    /* The width of the screen beside the bar. The desktop layout (the chat column, the sidebars, the fullscreen
-       panels) is laid out in it as it would be in the whole window. */
     --besideDrawerBarWidth: calc(100dvw - var(--drawerBarLeft) - var(--drawerBarRight));
 
     /*styles for the color picker*/
@@ -512,8 +505,6 @@ input[type='checkbox']:focus-visible {
     cursor: default;
 }
 
-/* While the message is being edited, a content-less header is still clickable (it opens the
-   reasoning editor - see the .mes_reasoning_header click handler in reasoning.js). */
 .mes:has(.edit_textarea) .mes_reasoning_details:not([data-has-content="true"]) .mes_reasoning_header {
     cursor: pointer;
 }
@@ -549,10 +540,6 @@ input[type='checkbox']:focus-visible {
     background-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 33%, var(--SmartThemeBlurTintColor) 66%);
 }
 
-/* Hide reasoning blocks without content, except the one currently being edited, or while the
-   surrounding message itself is being edited - a blank block must stay reachable there, since
-   its header is the only way to open it back up for editing (see .mes_reasoning_header click
-   handler in reasoning.js). */
 #chat:not([data-show-hidden-reasoning="true"]) .mes_reasoning_details:not([data-has-content="true"]):not(:has(.reasoning_edit_textarea)):not(.mes:has(.edit_textarea) .mes_reasoning_details) {
     display: none;
 }
@@ -711,7 +698,6 @@ small {
     opacity: 0.7;
 }
 
-/* A sent message the server hasn't stored (failed-sends.js). */
 .mes.failed_send {
     outline: 1px dashed var(--warning);
     outline-offset: -1px;
@@ -853,9 +839,6 @@ hr {
     -webkit-backdrop-filter: blur(var(--SmartThemeBlurStrength));
 }
 
-/* A layer paints its own blur. A blurring box inside one is drawn on a layer of its own, which Firefox doesn't clip
-   by the cut the drawer stack puts on the layer, so what's inside would show through whatever covers it. The top
-   layer (dialogs, popovers) is outside every layer's cut and keeps its blur. */
 :is(#sheld, .drawer-content, #movingDivs > *, body > .draggable) :not(dialog, [popover], :is(dialog, [popover]) *) {
     backdrop-filter: none !important;
     -webkit-backdrop-filter: none !important;
@@ -1028,7 +1011,6 @@ body .panelControlBar {
     order: 2;
 }
 
-/* A send waiting for the previous one to finish; a click cancels it. */
 #send_but.send_queued {
     opacity: 0.5;
 }
@@ -1361,7 +1343,6 @@ body .panelControlBar {
     position: relative;
 }
 
-/* A finger needs more than the counter's text to hit: the area that takes a tap reaches past it. */
 @media (pointer: coarse) {
     .swipes-counter.swipe-picker-enabled::after {
         content: '';
@@ -1411,7 +1392,6 @@ body .panelControlBar {
     }
 }
 
-/* The counter shows on any message with more than one alternative, and on the last. */
 .mes:not(.last_mes) .swipes-counter[data-alternatives="1"],
 /* Hide non-visible swipe_left. */
 .mes:not(.swipes_visible) .swipe_left,
@@ -1559,7 +1539,6 @@ body.hideAllSwipeButtons :is(.swipe_left, .swipe_right),
     opacity: 1 !important;
 }
 
-/* Pinned to the strip's corner: the strip clips whatever wraps past its first line. */
 .bogus_folder_avatars_block {
     position: relative;
 }
@@ -1629,8 +1608,6 @@ textarea {
     display: block;
     background-color: var(--black30a);
     outline: none;
-    /* Vertical padding and border width, as custom properties so textarea.autoSetHeight's
-     * rows-derived min-height stays correct for whatever padding a class sets. */
     --field-padding-block: 5px;
     --field-border-width: 1px;
     border: var(--field-border-width) solid var(--SmartThemeBorderColor);
@@ -1643,22 +1620,16 @@ textarea {
     max-height: 90dvh;
 }
 
-/* Grows with its content, without limit; `rows` sets the minimum (field-sizing: content
- * ignores it on its own). Browsers without field-sizing or typed attr() get the JS fallback. */
 textarea.autoSetHeight {
     max-height: none;
     field-sizing: content;
     min-height: calc(attr(rows type(<number>), 2) * 1lh + 2 * (var(--field-padding-block) + var(--field-border-width)));
 }
 
-/* A macro's color (macro-colors.js): as light as the text, with the theme's chroma and the macro's own hue, or the
-   whole color it was given. The theme's stylesheet (#macro-colors-style) gives them by the macro's name. */
 :where(.macro-pill, .macro-source, .macro-tooltip) {
     --macro-color: oklch(from var(--SmartThemeBodyColor) l var(--macro-chroma, 0.14) var(--macro-hue, 250));
 }
 
-/* A macro is shown as a pill holding what is sent in its place (macro-pill.js), never as its {{…}} text. In the editor
-   it is unbreakable (its value shortened); in a preview a long value wraps, each line its own piece of pill. */
 .macro-pill {
     padding: 0 0.35em;
     box-decoration-break: clone;
@@ -1682,7 +1653,6 @@ textarea.autoSetHeight {
     font-size: 0.8em;
 }
 
-/* Worked out only when sent, or sending nothing: what it is, not a value. */
 .macro-pill-later,
 .macro-pill-empty {
     border-style: dashed;
@@ -1694,14 +1664,11 @@ textarea.autoSetHeight {
     font-style: italic;
 }
 
-/* A macro opened for editing, or every macro while the editor shows them as written: in the macro's color, whatever
-   styling (italics, quotes) the text around it gets. */
 .cm-editor.live-editor .macro-source,
 .cm-editor.live-editor .macro-source * {
     color: var(--macro-color);
 }
 
-/* A macro's tooltip (macro-tooltip.js), placed by its script; the pointer goes through it to what is under it. */
 .macro-tooltip {
     position: fixed;
     inset: auto;
@@ -1820,7 +1787,6 @@ textarea.autoSetHeight {
     white-space: nowrap;
 }
 
-/* A hue slider shows the hues it picks from, at the macros' lightness and chroma. */
 input[type="range"].macro-colors-hue {
     height: 0.6em;
     border-radius: 0.3em;
@@ -1837,7 +1803,6 @@ input[type="range"].macro-colors-hue {
     background: none;
 }
 
-/* No height cap of its own: a long preview scrolls with the drawer it's in. */
 .macro_preview_content {
     width: 100%;
     background-color: var(--black30a);
@@ -1884,13 +1849,10 @@ input[type="range"].macro-colors-hue {
     opacity: 0.5;
 }
 
-/* A default only: :where() keeps the specificity at a bare `img`, so any other rule still wins. Not for avatars,
-   which are sized: a percentage max-width lets a shrinkable flex parent (.avatar) collapse them to nothing. */
 :where(#char-info-panel) img:where(:not(.avatar img)) {
     max-width: 100%;
 }
 
-/* An expanded editor: a layer across the three columns, capped to Chat Width Max, like fullscreen character info. */
 .editorLayer {
     position: fixed;
     top: var(--drawerBarTop);
@@ -1928,7 +1890,6 @@ input[type="range"].macro-colors-hue {
     display: block;
 }
 
-/* The help panel: topic list beside the content on wide screens, behind the menu button on narrow ones. */
 .helpLayer .editorLayerBody {
     overflow: hidden;
 }
@@ -2035,7 +1996,6 @@ input[type="range"].macro-colors-hue {
     opacity: 0.45;
 }
 
-/* Shown while Ctrl is held on its own. A manual popover, so it sits in the top layer and takes no focus. */
 .hotkeyOverlay {
     position: fixed;
     inset: 0;
@@ -2146,7 +2106,6 @@ button {
 }
 
 #send_textarea:focus-visible {
-    /* Disable outline for the chat bar itself, we add it to the outer div */
     outline: none;
 }
 
@@ -2210,7 +2169,6 @@ button {
             width: 50vw;
         }
 
-        /* Small style variant for macro autocomplete (33vw, max 700px) */
         &[data-macros-autocomplete-style="small"] .autoComplete {
             width: 33vw;
             max-width: 700px;
@@ -3740,7 +3698,6 @@ select option[disabled]:not(:checked) {
     flex-wrap: wrap;
     align-items: center;
     gap: 4px;
-    /* text_pole already sets margin: 5px 0, which would double up with this wrapper's own margin above. */
     margin-top: 0;
     margin-bottom: 0;
 }
@@ -4029,7 +3986,6 @@ select option[disabled]:not(:checked) {
     cursor: help;
 }
 
-/* More alarming than .warning's --warning color: this is "search doesn't work", not "just slower". */
 #character_search_backend_indicator.error {
     color: #ff3b3b;
 }
@@ -4418,7 +4374,6 @@ grammarly-extension {
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 5px;
     font-family: var(--mainFontFamily);
-    /* Room for every digit of the greeting count (set by the pager), plus the spin buttons. */
     width: calc(var(--greeting-pager-digits, 1) * 1ch + 2.5em);
     text-align: center;
     padding: 1px 2px;
@@ -4822,7 +4777,6 @@ body #toast-container {
     margin-right: var(--drawerBarRight);
 }
 
-/* toastr makes these 100% wide, which the margins above can't narrow. */
 body #toast-container:is(.toast-top-center, .toast-bottom-center, .toast-top-full-width, .toast-bottom-full-width) {
     left: 0;
     width: auto;
@@ -5375,7 +5329,6 @@ input[type="range"]::-webkit-slider-thumb {
     margin: 0;
     outline: none;
     background-color: var(--black50a);
-    /* The message text's own metrics, so editing changes the content shown and not the font or wrapping. */
     font-family: inherit;
     font-size: inherit;
     font-weight: inherit;
@@ -5805,7 +5758,6 @@ body.big-avatars .missing-avatar {
     border-radius: 10px;
 }
 
-/* Only set by script.js when CSS.supports('anchor-name: --x'); otherwise the script positions the popover itself. */
 #talkativeness_button.talkativeness_anchor {
     anchor-name: --talkativeness-anchor;
 }
@@ -5974,9 +5926,6 @@ a:hover {
     cursor: pointer;
 }
 
-/* Every image a click shows in the lightbox. A default only: :where() keeps the specificity at a bare
-   `img`, so any other rule still wins. .image_lightbox is set by addImageLightbox() (image-lightbox.js).
-   An image that is a popup result control ([data-result]) shows no lightbox, so it is left out. */
 :where(#chat .mes_text, #chat .mes_reasoning, #chat .mes_bias, .field_preview, .image_lightbox, .zoomed_avatar) img:where(:not([data-result], [data-result] *)) {
     cursor: pointer;
 }
@@ -6381,8 +6330,6 @@ body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDraw
     max-height: calc(100dvh - calc(var(--drawerBarTop) + var(--drawerBarBottom) + var(--bottomFormBlockSize)));
     display: none;
     position: absolute;
-    /* --drawerContainerTop / Left / Right: how far this drawer's containing block is from the top, left and right
-       screen edges, when the drawer bar isn't at the top (toggle-dependent.css) */
     top: calc(var(--drawerBarTop) - var(--drawerContainerTop));
     left: calc(var(--drawerBarLeft) - var(--drawerContainerLeft));
     right: calc(var(--drawerBarRight) - var(--drawerContainerRight));
@@ -6442,7 +6389,6 @@ body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDraw
 .fillLeft,
 .fillRight {
     width: calc((var(--besideDrawerBarWidth) - var(--sheldWidth) - 2px) /2);
-    /* They sit beside the drawer bar, from the top of the screen, so the bar's thickness isn't theirs to give up. */
     max-height: 100vh;
     max-height: 100dvh;
     height: 0;
@@ -6701,7 +6647,6 @@ body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDraw
 .zoomed_avatar {
     /* Max height with 2/3 aspect ratio */
     --maxWidth: calc(90vh * 0.666);
-    /* Left gap between the left screen edge (or the drawer bar there) and chat */
     --leftGapWidth: calc((var(--besideDrawerBarWidth) - var(--sheldWidth)) / 2);
     /* Left position of the avatar (half of the gap minus half of the avatar width) */
     --leftPosition: calc(var(--drawerBarLeft) + max(0px, calc((var(--leftGapWidth) - var(--maxWidth)) / 2)));
@@ -7266,7 +7211,6 @@ body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDraw
     }
 }
 
-/* Preset reorder popup */
 .preset-reorder-container {
     min-width: 250px;
 }
@@ -7316,8 +7260,6 @@ body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDraw
     height: 32px;
 }
 
-/* A textarea a live editor is mounted on: still in the page with its id, value and events, but not shown. Only its
- * box is taken away, so its font, colours and padding still resolve for the editor to copy. */
 textarea.live-editor-textarea {
     position: absolute !important;
     width: 1px !important;
@@ -7342,8 +7284,6 @@ textarea.live-editor-textarea {
     line-height: inherit;
 }
 
-/* The cursor has the text box's caret color (copied onto the editor), not CodeMirror's black; a selection has the
- * system's selection color, as the text box's has. */
 .cm-editor.live-editor .cm-cursor,
 .cm-editor.live-editor .cm-dropCursor {
     border-left-color: var(--live-caret-color, currentColor);
@@ -7354,7 +7294,6 @@ textarea.live-editor-textarea {
     background: color-mix(in srgb, Highlight 55%, transparent);
 }
 
-/* A tab switch was refused because this field is being edited: its confirm and cancel buttons draw the eye. */
 @keyframes field_edit_attention {
     0%, 100% { transform: scale(1); filter: none; }
     30%, 70% { transform: scale(1.35); filter: drop-shadow(0 0 4px var(--SmartThemeQuoteColor)); }
@@ -7387,7 +7326,6 @@ textarea.live-editor-textarea {
     opacity: 0.55;
 }
 
-/* An HTML block as chat draws it, under its source. */
 .cm-editor.live-editor .live-html-render {
     cursor: default;
     white-space: normal;
@@ -7395,8 +7333,6 @@ textarea.live-editor-textarea {
     user-select: none;
 }
 
-/* Quoted dialogue in an editor of chat text that doesn't have chat's text classes (the chat box, a reasoning block):
- * chat's quote color, and no quote marks added around the typed ones. */
 .cm-editor.live-chat-text q {
     color: var(--SmartThemeQuoteColor);
 }
@@ -7465,7 +7401,6 @@ textarea.live-editor-textarea {
     border-radius: 5px;
 }
 
-/* Find and replace's buttons look like the app's. */
 .cm-editor.live-editor .cm-search .cm-button {
     background-image: none;
     background-color: var(--SmartThemeBlurTintColor);
@@ -7479,7 +7414,6 @@ textarea.live-editor-textarea {
     background-color: var(--white30a);
 }
 
-/* The app's checkboxes are blocks: each is kept on the line of its label. */
 .cm-editor.live-editor .cm-search label {
     display: inline-flex;
     align-items: center;
@@ -7502,8 +7436,6 @@ textarea.live-editor-textarea {
     opacity: 1;
 }
 
-/* The macro suggestions and a macro's tooltip look like the app's own suggestion list (--ac-* follow the STscript style
-   setting). */
 .cm-editor.live-editor .cm-tooltip.cm-tooltip-autocomplete,
 .cm-editor.live-editor .cm-tooltip.cm-completionInfo,
 .macro-tooltip {
@@ -7575,7 +7507,6 @@ textarea.live-editor-textarea {
     display: none;
 }
 
-/* Floats below the end of the paste, so it never moves the text. */
 .cm-editor.live-editor .cm-tooltip.cm-tooltip-below:has(.live-paste-picker),
 .cm-editor.live-editor .cm-tooltip.cm-tooltip-above:has(.live-paste-picker) {
     background: transparent;

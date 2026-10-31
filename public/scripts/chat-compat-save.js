@@ -1,11 +1,4 @@
-// Upstream's whole-chat save, kept for extensions: saveChat(), saveChatConditional() and saveChatDebounced() (and
-// getContext().saveChat()). Upstream's extensions change `chat` themselves (a message's `mes`, `extra`, its swipes; a
-// message pushed or spliced out) and then call one of these, so each still stores what upstream's would, but the page
-// sends only actions addressed by node id: each change against the message as last stored (`_messageSnapshots`). The
-// page never posts the chat array, so the server never has to guess which message an entry of it means.
-//
 // The app's own code never calls these (an eslint rule says so): it sends the action for what it changed where it
-// changed it.
 
 import {
     DEFAULT_SAVE_EDIT_TIMEOUT, getCurrentCharacter, getCurrentChatId, getSelectionState, is_send_press, name2, neutralCharacterName,
@@ -26,20 +19,15 @@ import { isProvisionalNodeId, isStoredNodeId, provisionalNodeId } from './node-i
 import { saveTokenCache } from './tokenizers.js';
 import { escapeHtml, waitUntilCondition } from './utils.js';
 
-// Read by several sites in script.js (send-button gating, the debounced-save wait loop) and by group-chats.js - only
-// ever reassigned here (saveChatConditional()'s own save-in-progress guard).
 export let isChatSaving = false;
 
 /** @type {ReturnType<typeof setTimeout>|null} */
 let chatSaveTimeout = null;
 
-/** An alternative's own fields upstream keeps in its `swipe_info` entry, besides its text and `extra`. */
 const SLOT_FIELDS = ['send_date', 'gen_started', 'gen_finished'];
-/** Chat metadata keys the server derives: a named save never states them. */
 const DERIVED_METADATA = new Set(['integrity', 'main_chat', 'fork_point', '_tree_stored']);
 
 /**
- * Shows what wasn't saved, each on a line of its own.
  * @param {string[]} notSaved
  * @param {string} title
  */
@@ -50,8 +38,6 @@ function warnNotSaved(notSaved, title) {
 
 
 /**
- * The alternative at slot `k` of a message other than the one it shows, as upstream keeps it: its text, and its
- * `swipe_info` entry's `send_date`, `gen_started`, `gen_finished` and `extra`.
  * @param {ChatMessage} message
  * @param {number} k
  * @returns {Record<string, any>}
@@ -66,8 +52,7 @@ function slotOf(message, k) {
 }
 
 /**
- * The shown alternative's slot fields (its text, times and `extra`), as `slotOf()` gives another's.
- * @param {Record<string, any>} content A `contentOf()`.
+ * @param {Record<string, any>} content
  * @returns {Record<string, any>}
  */
 function shownSlotOf(content) {
@@ -79,7 +64,6 @@ function shownSlotOf(content) {
 }
 
 /**
- * A new alternative of a message, at its slot `k`: the message's own fields, with the slot's.
  * @param {ChatMessage} message
  * @param {number} k
  */
@@ -96,7 +80,7 @@ function newAlternativeOf(message, k) {
 /**
  * @param {ChatMessage} message
  * @param {number} k
- * @returns {string|null} The stored node slot `k` names.
+ * @returns {string|null}
  */
 function slotId(message, k) {
     const id = message.swipe_info?.[k]?.node_id;
@@ -104,15 +88,12 @@ function slotId(message, k) {
 }
 
 /**
- * The stored nodes a message holds: the one it shows (null when that is a swipe not stored yet) and every other
- * alternative's, by slot.
  * @param {ChatMessage} message
  */
 function alternativesOf(message) {
     const swipes = Array.isArray(message.swipes) ? message.swipes : [];
     const selected = Number.isInteger(message.swipe_id) ? /** @type {number} */ (message.swipe_id) : 0;
     const own = isStoredNodeId(message.node_id) ? /** @type {string} */ (message.node_id) : null;
-    // The message's id is its shown slot's unless another slot is that message (a swipe not stored yet is shown).
     const claimed = own !== null && swipes.some((_, k) => k !== selected && slotId(message, k) === own);
     const shown = swipes.length === 0 ? own : slotId(message, selected) ?? (claimed ? null : own);
     /** @type {Map<string, number>} */
@@ -124,32 +105,14 @@ function alternativesOf(message) {
     return { swipes, selected, shown, slots };
 }
 
-/**
- * Whether a generation is running: its reply is the server's to store.
- */
 function generating() {
     return is_send_press || streamingProcessor !== null || replyInFlightIndex() >= 0;
 }
 
 /**
- * Stores what changed in the open chat since the page last stored it, as node-addressed actions (see this file's
- * header). Per kind of change, as upstream's whole save would persist it:
- * - a stored message's own fields (`mes`, `extra`, ...): an edit of its node, of the fields that changed;
- * - another swipe's text or `swipe_info` (`send_date`, `gen_started`, `gen_finished`, `extra`): an edit of that
- *   swipe's node;
- * - a swipe added (no id): a new alternative beside the message; a swipe removed: that alternative deleted (with what
- *   is below it, as deleting a swipe here does); a swipe chosen (`swipe_id`): it is chosen, on the chat's last stored
- *   message only (anywhere else it would switch the branch the rest of the chat is on);
- * - a message pushed after the last stored one: appended there; one spliced in between two stored ones: put between
- *   them; a message removed: cut from the chat's path;
- * - `chat_metadata`: its changed keys.
- * Nothing the page must not write is sent: a reply being generated, a send being stored, a reply the server couldn't
- * store, a send that failed. What can't be addressed unambiguously (a node named twice, a message the page has no
- * stored copy of, a removal while a reply is generated, ...) is refused, and a warning names each.
  * @param {object} options
- * @param {number} options.upTo Only messages before this index are looked at (upstream's `mesId`); none is deleted.
- * @param {ChatMessage[]|null} options.chatData Messages to store in place of `chat` (upstream's `chatData`): only their
- * edits, by node id.
+ * @param {number} options.upTo
+ * @param {ChatMessage[]|null} options.chatData
  * @returns {Promise<void>}
  */
 async function storeChatChanges({ upTo, chatData }) {
@@ -161,9 +124,8 @@ async function storeChatChanges({ upTo, chatData }) {
     const whole = live && end === chat.length;
     const busy = generating();
     const pending = live ? replyInFlightIndex() : -1;
-    const name = (/** @type {number} */ i, /** @type {number} [k] */ k) => (k === undefined ? t`message #${i}` : t`swipe ${k + 1} of message #${i}`);
+    const name = (/** @type {number} */ i, /** @type {number} */ k) => (k === undefined ? t`message #${i}` : t`swipe ${k + 1} of message #${i}`);
 
-    // Messages the page doesn't write: the server stores them (or stores them again).
     const inFlight = (/** @type {number} */ i) => {
         const m = messages[i];
         if (!live) return false;
@@ -189,9 +151,9 @@ async function storeChatChanges({ upTo, chatData }) {
     const removedAlternatives = [];
     /** @type {{ mesId: number, id: string, newSlot: number|null }|null} */
     let chosen = null;
-    /** Messages each change of which was stated, to take as stored once all of them are. @type {Set<number>} */
+    /** @type {Set<number>} */
     const planned = new Set();
-    /** Ids a message of the page holds (shown or as a swipe): never taken for removed. @type {Set<string>} */
+    /** @type {Set<string>} */
     const held = new Set();
 
     for (let i = 0; i < end; i++) {
@@ -203,7 +165,6 @@ async function storeChatChanges({ upTo, chatData }) {
             continue;
         }
         if (isProvisionalNodeId(m.node_id)) {
-            // A card greeting with no row: stored once its text was changed (as a new opening).
             const at = m.swipe_id ?? 0;
             const said = /** @type {any} */ (m.swipe_info?.[at])?.name ?? m.name;
             if (live && m.node_id !== provisionalNodeId(said, m.mes)) {
@@ -229,7 +190,6 @@ async function storeChatChanges({ upTo, chatData }) {
         const now = contentOf(m);
         let complete = true;
 
-        /** The stored fields of an alternative of the stored message, as its slot (null when it wasn't loaded). */
         const storedSlot = (/** @type {string} */ id) => {
             if (id === nodeId) return shownSlotOf(contentOf(stored));
             const k0 = before.slots.get(id);
@@ -245,7 +205,6 @@ async function storeChatChanges({ upTo, chatData }) {
             edits.push({ node_id: id, ...change, what, mesId: i });
         };
 
-        // The shown alternative.
         if (shown === nodeId) {
             edit(nodeId, patchOf(contentOf(stored), now), name(i));
         } else {
@@ -269,7 +228,6 @@ async function storeChatChanges({ upTo, chatData }) {
             }
         }
 
-        // The other swipes: edited by their own ids, added when they have none.
         for (let k = 0; k < swipes.length; k++) {
             if (k === (m.swipe_id ?? 0) || typeof swipes[k] !== 'string') continue;
             const id = slotId(m, k);
@@ -284,13 +242,10 @@ async function storeChatChanges({ upTo, chatData }) {
                 continue;
             }
             const base = storedSlot(id);
-            // A swipe not loaded when the page stored the message (filled in since) has nothing to compare with.
             if (base === null) continue;
             edit(id, patchOf(base, slotOf(m, k)), name(i, k));
         }
 
-        // Swipes removed: their alternatives deleted. Not when the message no longer carries swipes at all (it was
-        // replaced whole), or when swipes were also added without ids (a list rebuilt: which is which can't be told).
         const gone = [...before.slots.keys()].filter(id => id !== nodeId && id !== shown && !slots.has(id));
         if (gone.length) {
             if (!live || !Array.isArray(m.swipes) || added.some(a => a.mesId === i)) {
@@ -303,7 +258,6 @@ async function storeChatChanges({ upTo, chatData }) {
         if (complete) planned.add(i);
     }
 
-    // 1. Edits, by node id, in one request.
     const refused = await chatOpPatch(edits.map(({ node_id, patch, unset }) => ({ node_id, patch, unset }))).catch(error => {
         console.error('[saveChat] Could not store the edits:', error);
         return edits.map(e => ({ node_id: e.node_id, reason: 'the request failed' }));
@@ -316,7 +270,6 @@ async function storeChatChanges({ upTo, chatData }) {
         }
     }
 
-    // 2. Swipes added: alternatives beside their message, which takes their ids.
     for (const { mesId, k, content } of added) {
         const message = chat[mesId];
         const id = isStoredNodeId(message?.node_id)
@@ -332,7 +285,6 @@ async function storeChatChanges({ upTo, chatData }) {
         updateMessage(mesId, { swipe_info: swipeInfo });
     }
 
-    // 3. Swipes removed.
     for (const { mesId, id } of removedAlternatives) {
         const ticket = await chatOpReadyAlternativeDelete(id).catch(() => null);
         const deleted = ticket !== null && await chatOpDeleteAlternativeNode(id, chat[mesId]?.node_id, ticket).catch(() => false);
@@ -342,9 +294,6 @@ async function storeChatChanges({ upTo, chatData }) {
         }
     }
 
-    // 4. Messages removed: the stored ones the page held and holds no more, cut from the chat's path (the server cuts
-    // only what its path for this tab holds). Not for a part of the chat (`mesId`), and not while a reply is generated:
-    // the page shows less of the chat then than the server has; they stay the page's to cut on the next save.
     const removed = [..._messageSnapshots.keys()].filter(id => isStoredNodeId(id) && !held.has(id) && !messages.some(m => m?.node_id === id));
     if (removed.length && whole && busy) {
         console.info(`[saveChat] ${removed.length} message(s) left out of the chat are cut on the next save, once the reply being generated is stored.`);
@@ -356,7 +305,6 @@ async function storeChatChanges({ upTo, chatData }) {
         if (cut.refused.length) notSaved.push(t`${cut.refused.length} message(s) left out of the chat weren't deleted`);
     }
 
-    // 5. A swipe chosen on the chat's last stored message.
     if (chosen !== null) {
         const { mesId, newSlot } = chosen;
         let id = chosen.id;
@@ -376,7 +324,6 @@ async function storeChatChanges({ upTo, chatData }) {
             ok = await chatOpSelect(mesId, chat[mesId].swipe_id ?? 0).catch(() => false);
         } else if (ok) {
             updateMessage(mesId, { node_id: id });
-            // As swiping does: the chat goes on below the chosen swipe as far as the tree has it.
             await _restoreContinuation(mesId).catch(() => false);
         }
         if (!ok) {
@@ -385,7 +332,6 @@ async function storeChatChanges({ upTo, chatData }) {
         }
     }
 
-    // 6. Messages added: each run after the stored message before it, or between it and the one after.
     if (live) {
         let a = 0;
         while (a < end) {
@@ -404,7 +350,6 @@ async function storeChatChanges({ upTo, chatData }) {
         }
     }
 
-    // What every change was stated for is as stored now.
     for (const i of planned) {
         const m = chat[i];
         if (live && isStoredNodeId(m?.node_id)) markStoredAs(/** @type {string} */ (m.node_id), m);
@@ -414,11 +359,9 @@ async function storeChatChanges({ upTo, chatData }) {
 }
 
 /**
- * Stores the messages `chat[a..b]` an extension added (none of them stored): after the stored message before them, or
- * between it and the stored one after them. A chat with nothing stored takes the first as its opening.
  * @param {number} a
  * @param {number} b
- * @param {string[]} notSaved What isn't stored is added here.
+ * @param {string[]} notSaved
  * @param {(i: number) => boolean} inFlight
  */
 async function storeAddedRun(a, b, notSaved, inFlight) {
@@ -431,7 +374,6 @@ async function storeAddedRun(a, b, notSaved, inFlight) {
     }
     if (prev >= 0 && isProvisionalNodeId(chat[prev].node_id)) await ensureOpeningRow(prev).catch(() => null);
     if (prev < 0 && !chat.some(x => isStoredNodeId(x.node_id))) {
-        // A chat with nothing stored: its first message is its opening.
         updateMessage(a, { node_id: provisionalNodeId(chat[a].name, chat[a].mes) });
         if (!isStoredNodeId(await ensureOpeningRow(a).catch(() => null))) {
             notSaved.push(what);
@@ -452,7 +394,6 @@ async function storeAddedRun(a, b, notSaved, inFlight) {
             if (ids.length !== b + 1 - from) notSaved.push(what);
             return;
         }
-        // Put between two stored messages, the last first, so each has a stored message after it.
         for (let k = b; k >= from; k--) {
             if (!isStoredNodeId(await chatOpGraft(k, { silent: true }))) {
                 notSaved.push(t`message #${k}`);
@@ -466,13 +407,10 @@ async function storeAddedRun(a, b, notSaved, inFlight) {
 }
 
 /**
- * Upstream's save of the chat under another name (`chatName`): a chat of its own holding `messages`. Here a chat is a
- * bookmark: one labelled so at their last message, when every one of them is stored as the page has it; otherwise
- * nothing (which isn't stored is named in a warning).
  * @param {string} label
  * @param {ChatMessage[]} messages
  * @param {Record<string, unknown>} withMetadata
- * @returns {Promise<string|undefined>} The bookmark's compat chat id.
+ * @returns {Promise<string|undefined>}
  */
 async function storeNamedChat(label, messages, withMetadata) {
     /** @type {string[]} */
@@ -498,21 +436,17 @@ async function storeNamedChat(label, messages, withMetadata) {
     return id ?? undefined;
 }
 
-/** Compat saves run one after another, each comparing against what the one before stored. */
 let saveChain = Promise.resolve();
 
 /**
- * Saves the chat, as upstream's does for the code that changed `chat` itself: what changed goes to the server as
- * actions addressed by node id (see storeChatChanges()), never the chat itself. The app's own code doesn't call it.
- * @param {object} [options] - Additional options.
- * @param {string} [options.chatName] The name of the chat to save to: another than the open one is a bookmark of
- * that name at the last message saved (storeNamedChat()).
- * @param {object} [options.withMetadata] Additional metadata to save with the chat
- * @param {number} [options.mesId] The message ID to save the chat up to: only messages up to it are looked at
- * @param {boolean} [options.force] Accepted as upstream's; a node-addressed change has no integrity to override
- * @param {ChatMessage[]} [options.chatData] Chat snapshot to save instead of the current in-memory chat
- * @param {boolean} [options.unique] Accepted; a bookmark's label may repeat, so it never collides
- * @returns {Promise<string|void>} The chat saved: its compat chat id.
+ * @param {object} [options]
+ * @param {string} [options.chatName]
+ * @param {object} [options.withMetadata]
+ * @param {number} [options.mesId]
+ * @param {boolean} [options.force]
+ * @param {ChatMessage[]} [options.chatData]
+ * @param {boolean} [options.unique]
+ * @returns {Promise<string|void>}
  */
 export async function saveChat({ chatName, withMetadata, mesId, force = false, chatData = undefined, unique = false } = {}) {
     if (selected_group != null) {
@@ -528,7 +462,6 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
     void unique;
 
     if (getSelectionState().type === 'none' && name2 === neutralCharacterName) {
-        // Checking selection state, not the chat name: a character left selected from before could fall through to a real save under it.
         return;
     }
     const character = getCurrentCharacter();
@@ -538,7 +471,6 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
 }
 
 /**
- * The compat save of the open chat (a character's or a group's), or of a named one.
  * @param {{ chatName?: string, withMetadata?: object, mesId?: number, chatData?: ChatMessage[] }} options
  * @returns {Promise<string|void>}
  */
@@ -567,9 +499,7 @@ function storeCompat({ chatName, withMetadata, mesId, chatData }) {
 }
 
 /**
- * Saves the open chat as upstream does: saveChat() for a character's, the same node-addressed actions for a group's.
- * Waits for a save already running.
- * @param {object} [_options] Kept for callers that pass `{ heal }`; every save stores what changed.
+ * @param {object} [_options]
  */
 export async function saveChatConditional(_options = {}) {
     try {
@@ -587,7 +517,6 @@ export async function saveChatConditional(_options = {}) {
         } else {
             await saveChat();
         }
-        // Save token cache to IndexedDB storage
         saveTokenCache();
     } catch (error) {
         console.error('Error saving chat', error);
@@ -596,19 +525,10 @@ export async function saveChatConditional(_options = {}) {
     }
 }
 
-/**
- * Stores what the page holds that differs from what is stored, before something reads the stored chat (an export, a
- * reload) or the user asks for it (/forcesave): upstream saved the whole chat there, so a change an extension made to
- * `chat` in place, without asking for a save, is stored as upstream's would be. The same node-addressed actions as
- * saveChatConditional(); nothing is sent when nothing differs.
- */
 export async function storePageChatChanges() {
     await saveChatConditional();
 }
 
-/**
- * Cancels the debounced chat save if it is currently pending.
- */
 export function cancelDebouncedChatSave() {
     if (chatSaveTimeout) {
         clearTimeout(chatSaveTimeout);
@@ -617,19 +537,14 @@ export function cancelDebouncedChatSave() {
 }
 
 /**
- * True while a save asked for through saveChatDebounced() (by an extension) hasn't run yet.
- * @returns {boolean} Whether a chat save is currently scheduled.
+ * @returns {boolean}
  */
 export function isChatSaveScheduled() {
     return !!chatSaveTimeout;
 }
 
-/** The saved state the scheduled save is for, so a save for another chat never runs on this one. */
 let scheduledFor = { avatar: /** @type {string|undefined} */ (undefined), group: /** @type {string|null|undefined} */ (undefined) };
 
-/**
- * Upstream's debounced saveChatConditional(), for extensions.
- */
 export function saveChatDebounced() {
     scheduledFor = { avatar: this_avatar, group: selected_group };
     cancelDebouncedChatSave();
@@ -650,11 +565,9 @@ async function runScheduledSave() {
 }
 
 /**
- * Upstream's save of a group's chat (group-chats.js exports it): the open group's, as saveChatConditional() saves it.
- * The open chat is the only one the page holds, so a call for any other group saves nothing, with a warning.
- * @param {string} groupId Group ID
- * @param {boolean} shouldSaveGroup Whether to save the group after saving the chat
- * @param {boolean} [_force=false] Kept for upstream callers: a node-addressed change has no integrity to override
+ * @param {string} groupId
+ * @param {boolean} shouldSaveGroup
+ * @param {boolean} [_force=false]
  * @returns {Promise<void>}
  */
 export async function saveGroupChat(groupId, shouldSaveGroup, _force = false) {

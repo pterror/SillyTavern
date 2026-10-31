@@ -1,5 +1,3 @@
-/** Text-completion setting field names - must stay importable outside a browser DOM (e.g. under Node tests/server). */
-
 export const setting_names = [
     'temp', 'temperature_last', 'rep_pen', 'rep_pen_range', 'rep_pen_decay', 'rep_pen_slope',
     'no_repeat_ngram_size', 'top_k', 'top_p', 'top_a', 'tfs', 'epsilon_cutoff', 'eta_cutoff',

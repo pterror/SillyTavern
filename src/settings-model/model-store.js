@@ -1,25 +1,8 @@
 import { POSITION_GAP, historyWrites, itemField, pushAll, valueRecords } from '../entity-values.js';
 import { NO_PLACEHOLDER, PART_LISTS, REF_ARRAYS, REF_LISTS, REF_VALUES, refKey } from './refs.js';
 
-/**
- * The settings model's entities in the engine (the settings model, step 9): an EntityDraft written as an entity
- * with its history (every change a stamped change, §1.8), and read back as one.
- *
- * - A value that is text is a text value, any other JSON (`"text"` and `text` stay apart).
- * - A list of texts is text items; a list of parts (refs.js PART_LISTS) holds each part's entity as its item. An
- *   empty list, which has no items to be, is the value `list:<n>` (`[]`), so it reads back as one.
- * - A ref (refs.js REF_VALUES, REF_ARRAYS, REF_LISTS) is stored as the named entity's id; a name naming nothing gets a
- *   placeholder entity keyed by it (an unresolved ref, as a book link's), so it resolves once that entity exists. A
- *   placeholder has no DEFINED value, and reads as no entity.
- */
-
-/** The value stating an empty list: `<prefix><list number>`. */
 const EMPTY_LIST = 'list:';
 
-/**
- * The value every entity written has: one without is a placeholder (a ref's name naming nothing yet), which reads
- * as no entity and no catalog entry.
- */
 const DEFINED = 'model:defined';
 
 /**
@@ -29,7 +12,6 @@ const DEFINED = 'model:defined';
  */
 
 /**
- * The drafts and every part under them, each with the id it has or gets.
  * @param {EntityDraft[]} drafts
  */
 function flatten(drafts) {
@@ -47,7 +29,6 @@ function flatten(drafts) {
 }
 
 /**
- * A stored entity less its part lists' items (entities, with no item texts), as valueRecords reads it.
  * @param {StoredEntity} entity
  */
 function withoutPartLists(entity) {
@@ -56,13 +37,10 @@ function withoutPartLists(entity) {
 }
 
 /**
- * Writes drafts (new entities, or the stored ones they replace) with their parts, as one commit.
  * @param {LibraryEngine} lib
  * @param {EntityDraft[]} drafts
  * @param {{ actor?: import('../world-info-engine.js').Actor | null, warnings?: string[], refs?: [number, string][], extra?: (ids: Map<string, bigint>, stamp: () => import('../entity-values.js').Stamp) => Promise<object[]> }} [options]
- *   `warnings` gets a ref dropped; `refs` are more refs (type, name) to resolve, for `extra`, which adds records of
- *   the caller's to the commit, given the ids and the stamp.
- * @returns {Promise<Map<string, bigint>>} Each draft's, part's and ref's id, by `<type>:<key>`.
+ * @returns {Promise<Map<string, bigint>>}
  */
 export async function writeDrafts(lib, drafts, { actor = null, warnings = [], refs = [], extra } = {}) {
     const all = flatten(drafts);
@@ -74,7 +52,6 @@ export async function writeDrafts(lib, drafts, { actor = null, warnings = [], re
     /** @type {Map<string, StoredEntity>} */
     const stored = new Map();
 
-    // Ids: each draft's own, or a new one.
     const found = await lib.store.libraryIds(all.map(d => [d.type, d.key]));
     const existing = await lib.entities(found);
     all.forEach((d, i) => {
@@ -84,7 +61,6 @@ export async function writeDrafts(lib, drafts, { actor = null, warnings = [], re
         else records.push({ kind: 'entityCreate', entity: id, type: d.type, key: d.key, added: Date.now() });
     });
 
-    // Refs: the entities they name, a placeholder for a name naming nothing.
     /** @type {[number, string][]} */
     const targets = [];
     const noteRef = (/** @type {number} */ type, /** @type {unknown} */ name) => {
@@ -111,7 +87,6 @@ export async function writeDrafts(lib, drafts, { actor = null, warnings = [], re
             ids.set(idKey(type, key), id);
         });
     }
-    /** The ref's id as text; undefined for one dropped. */
     const refText = (/** @type {number} */ type, /** @type {unknown} */ name) => {
         if (typeof name !== 'string' || name === '') return name;
         const id = ids.get(idKey(type, refKey(type, name)));
@@ -145,7 +120,6 @@ export async function writeDrafts(lib, drafts, { actor = null, warnings = [], re
         }
         pushAll(records, valueRecords(id, was ? /** @type {StoredEntity} */ (withoutPartLists(was)) : null, { values, lists }, writes));
 
-        // Part lists: the parts in order; a part no longer listed goes.
         for (const [list, partType] of Object.entries(PART_LISTS[d.type] ?? {})) {
             const listNumber = Number(list);
             const parts = /** @type {EntityDraft[]} */ (d.lists?.[list] ?? []);
@@ -157,8 +131,6 @@ export async function writeDrafts(lib, drafts, { actor = null, warnings = [], re
                 records.push({ kind: 'histPlace', entity: id, list: listNumber, item: item.item, ...stamp() });
                 records.push({ kind: 'histEntityDelete', entity: BigInt(item.item), ...stamp() });
             }
-            // In order already: nothing to place. Otherwise every part goes above every position held, so no place
-            // lands on one still taken.
             const order = [...before].sort((a, b) => a.position - b.position).map(i => String(i.item));
             if (order.length === partIds.length && order.every((item, i) => item === String(partIds[i]))) continue;
             const top = before.reduce((m, i) => Math.max(m, i.position), 0);
@@ -171,7 +143,6 @@ export async function writeDrafts(lib, drafts, { actor = null, warnings = [], re
 }
 
 /**
- * Reads an entity back as its draft, with its parts; refs by key.
  * @param {LibraryEngine} lib
  * @param {number} type
  * @param {string} key
@@ -185,7 +156,6 @@ export async function readDraft(lib, type, key) {
 }
 
 /**
- * Whether an entity was written as one (not a placeholder).
  * @param {StoredEntity} entity
  */
 function isDefined(entity) {
@@ -256,7 +226,6 @@ async function draftOf(lib, entity) {
 }
 
 /**
- * The key each id (as decimal text) is the entity of.
  * @param {LibraryEngine} lib
  * @param {bigint[]} ids
  * @returns {Promise<Map<string, string>>}
@@ -269,17 +238,14 @@ export async function keysOf(lib, ids) {
 }
 
 /**
- * A page of a catalog: the entities of a type in key order after `after`, as drafts with their parts (the store
- * side of catalog-page.js's pages).
  * @param {LibraryEngine} lib
  * @param {number} type
  * @param {{ after?: string | null, limit: number }} page
- * @returns {Promise<{ drafts: EntityDraft[], more: boolean, last: string | null }>} `last`: the key to go on after.
+ * @returns {Promise<{ drafts: EntityDraft[], more: boolean, last: string | null }>}
  */
 export async function readCatalog(lib, type, { after = null, limit }) {
     const { entities, more } = await lib.store.libraryOfType(type, after, limit);
     const stored = await lib.entities(entities.map(e => e.id));
     const drafts = await Promise.all(stored.filter(e => e && isDefined(e)).map(e => draftOf(lib, /** @type {StoredEntity} */ (e))));
-    // `after` goes on from the last entity listed, a placeholder too.
     return { drafts, more, last: entities.length ? entities[entities.length - 1].key : after };
 }

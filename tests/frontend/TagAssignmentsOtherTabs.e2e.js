@@ -1,14 +1,9 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, holdCharacters } from './frontent-test-utils.js';
 
-// A tag put on or taken off a character or group from another tab reaches this one without a reload, whether or not
-// the character list is showing: the changes stream says something changed, and the page asks
-// /api/tags/assignment-changes which entities' tags may have changed past its cursors.
-
 /** @param {import('@playwright/test').Page} page */
 async function loadApp(page) {
     await testSetup.awaitST({ page });
-    // APP_READY is an auto-fire event: a listener added after it was emitted still runs.
     await page.evaluate(() => {
         window['__appReady'] = false;
         const { eventSource, eventTypes } = window['SillyTavern'].getContext();
@@ -33,7 +28,6 @@ async function api(page, path, body = {}) {
 }
 
 /**
- * A second tab, in a browser context of its own: the page under test learns of what it does only from the server.
  * @param {import('@playwright/test').Browser} browser
  * @returns {Promise<{ other: import('@playwright/test').Page, close: () => Promise<void> }>}
  */
@@ -44,7 +38,10 @@ async function openOtherTab(browser) {
     return { other, close: () => context.close() };
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} id */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} id
+ */
 async function createTag(page, id) {
     const answer = await api(page, '/api/tags/create', {
         tag: { id, name: id, folder_type: 'NONE', is_hidden_on_character_card: false, color: '', color2: '', create_date: Date.now() },
@@ -52,7 +49,11 @@ async function createTag(page, id) {
     expect(answer.refused).toEqual([]);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<string>} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
@@ -64,7 +65,12 @@ async function createCharacter(page, name) {
     }, name);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @param {string[]} members @returns {Promise<string>} group id */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @param {string[]} members
+ * @returns {Promise<string>}
+ */
 async function createGroup(page, name, members) {
     const group = await api(page, '/api/groups/create', { name, members });
     return String(group.id);
@@ -72,8 +78,8 @@ async function createGroup(page, name, members) {
 
 /**
  * @param {import('@playwright/test').Page} page
- * @param {string} key A character avatar or a group id.
- * @returns {Promise<string[] | null>} The tag ids this tab's own copy of the entity carries; null when it holds none.
+ * @param {string} key
+ * @returns {Promise<string[] | null>}
  */
 async function heldTagIds(page, key) {
     return page.evaluate(async (key) => {
@@ -84,14 +90,17 @@ async function heldTagIds(page, key) {
     }, key);
 }
 
-/** @param {import('@playwright/test').Page} page @returns {Promise<boolean>} whether the drawer holding the character list is open */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @returns {Promise<boolean>}
+ */
 async function listDrawerOpen(page) {
     return page.evaluate(() => document.getElementById('right-nav-panel').classList.contains('openDrawer'));
 }
 
 /**
  * @param {import('@playwright/test').Page} page
- * @returns {{ path: string, body: any }[]} every /api/tags/ request the page sends from now on
+ * @returns {{ path: string, body: any }[]}
  */
 function recordTagRequests(page) {
     /** @type {{ path: string, body: any }[]} */
@@ -106,7 +115,6 @@ function recordTagRequests(page) {
     return requests;
 }
 
-// The stream holds a change message back for up to 2s; past this, one that was coming has come.
 const STREAM_SETTLE_MS = 4000;
 
 test.describe('tag assignments changed in another tab', () => {
@@ -133,7 +141,6 @@ test.describe('tag assignments changed in another tab', () => {
             expect(await api(other, '/api/tags/assign', { id: avatar, tagId })).toEqual({ result: 'ok', assigned: tagId, reason: null, defined: true });
             await expect.poll(() => heldTagIds(page, avatar), { timeout: 15000 }).toEqual([tagId]);
             await expect(page.locator(`#tagList .tag[id="${tagId}"]`)).toHaveCount(1);
-            // The same array: what an extension holds through tag_map stays current.
             expect(await page.evaluate(avatar => window['SillyTavern'].getContext().characters.find(c => c.avatar === avatar).tag_ids === window['__tagIds'], avatar)).toBe(true);
             expect(await listDrawerOpen(page)).toBe(false);
 
@@ -161,7 +168,6 @@ test.describe('tag assignments changed in another tab', () => {
                 else if (path.startsWith('/api/characters/') && path !== '/api/characters/merge-attributes') listReads.push(path);
             });
             await api(other, '/api/characters/merge-attributes', { avatar, description: 'edited elsewhere', data: { description: 'edited elsewhere' } });
-            // The change reached this tab: the showing list is read again.
             await expect.poll(() => listReads.length, { timeout: 15000 }).toBeGreaterThan(0);
             await page.waitForTimeout(STREAM_SETTLE_MS);
             expect(asked).toEqual([]);
@@ -237,7 +243,6 @@ test.describe('tag assignments changed in another tab', () => {
         await loadApp(page);
         await holdCharacters(page, [avatar]);
         await expect.poll(() => heldTagIds(page, avatar), { timeout: 15000 }).toEqual([]);
-        // The current character is the one `tag_map` has an entry for.
         await page.evaluate(async (avatar) => {
             const { selectCharacterByAvatar } = await import('/script.js');
             await selectCharacterByAvatar(avatar);
@@ -256,7 +261,6 @@ test.describe('tag assignments changed in another tab', () => {
         requests.length = 0;
 
         await page.waitForTimeout(STREAM_SETTLE_MS);
-        // The feed was asked, and found this tab already current.
         expect(requests.map(r => r.path)).toContain('/api/tags/assignment-changes');
         expect(requests.filter(r => r.path === '/api/tags/assign')).toEqual([]);
         for (const request of requests.filter(r => r.path === '/api/tags/for')) {
@@ -310,7 +314,6 @@ test.describe('tag assignments changed in another tab', () => {
             await holdCharacters(page, [avatar]);
             await page.waitForTimeout(STREAM_SETTLE_MS);
 
-            // The first answer is made to say a million rows remain past its page.
             let rewritten = 0;
             await page.route('**/api/tags/assignment-changes', async (route) => {
                 if (rewritten > 0) return route.continue();
@@ -322,11 +325,9 @@ test.describe('tag assignments changed in another tab', () => {
             const requests = recordTagRequests(page);
 
             await api(other, '/api/tags/assign', { id: avatar, tagId });
-            // The page listed no entity, so only a re-read of everything held can bring the tag.
             await expect.poll(() => heldTagIds(page, avatar), { timeout: 15000 }).toEqual([tagId]);
             const asks = requests.filter(r => r.path === '/api/tags/assignment-changes');
             expect(asks).toHaveLength(1);
-            // Everything held, and the character rows on screen whose characters the page doesn't hold.
             const held = await page.evaluate(async () => {
                 const { characters } = await import('/scripts/character-store.js');
                 const { groups } = await import('/scripts/group-store.js');
@@ -359,16 +360,13 @@ test.describe('tag assignments changed in another tab', () => {
                 const { selectCharacterByAvatar } = await import('/script.js');
                 await selectCharacterByAvatar(avatar);
             }, avatar);
-            // A filter set on them keeps them held here.
             await expect.poll(() => page.evaluate(async (ids) => {
                 const { tagsStore } = await import('/scripts/tags.js');
                 return ids.every(id => tagsStore.has(id));
             }, [merged, gone])).toBe(true);
-            // Cut off from the tag definition feed, so this tab still holds the two tags when they are deleted.
             await page.route('**/api/tags/changes', route => route.fulfill({ status: 500 }));
             await api(other, '/api/tags/delete', { id: merged, mergeInto: target });
             await api(other, '/api/tags/delete', { id: gone });
-            // Both deletes are stored: the server answers one as merged into the target, the other as gone.
             await expect.poll(async () => {
                 const answer = await api(other, '/api/tags/by-ids', { ids: [merged, gone] });
                 return [answer.gone, answer.merged];
@@ -387,12 +385,10 @@ test.describe('tag assignments changed in another tab', () => {
 
             const toast = page.locator('#toast-container .toast-warning', { hasText: 'Tag was deleted' });
             await expect(toast).toBeVisible({ timeout: 15000 });
-            // A merge is kept: assigning the merged tag gives the character its target.
             await expect(toast).toContainText(`'${merged}' was deleted and merged into '${target}', so TagAssignOtherTabsDeleted got '${target}'.`);
             await expect(toast).toContainText(`'${gone}' was not added to TagAssignOtherTabsDeleted: the tag was deleted.`);
             expect(await heldDefinitions()).toBe(0);
             await expect(page.locator(`#tagList .tag[id="${merged}"], #tagList .tag[id="${gone}"]`)).toHaveCount(0);
-            // What the server has: the two ids, with no tag behind them.
             expect(await heldTagIds(page, avatar)).toEqual((await api(page, '/api/tags/for', { ids: [avatar] }))[avatar]);
         } finally {
             await close();

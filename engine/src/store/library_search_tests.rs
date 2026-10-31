@@ -1,6 +1,3 @@
-//! Searched library pages against a model: which entities match, in relevance order (scores descending, every
-//! match once through `after`) and in the list's orders through cursors, under the list's filters.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
@@ -170,7 +167,6 @@ fn clause(t: &str, quoted: bool) -> Clause {
     }
 }
 
-/// Whether `value` holds `phrase` (its tokens adjacent), its last token a prefix when `prefix`.
 fn holds(value: &str, phrase: &str, prefix: bool) -> bool {
     let (v, p) = (tokens(value.as_bytes()), tokens(phrase.as_bytes()));
     v.windows(p.len()).any(|w| {
@@ -186,16 +182,13 @@ fn holds(value: &str, phrase: &str, prefix: bool) -> bool {
 
 const TAG_NAMES: [&str; 3] = ["dragon riders", "love", "misc"];
 
-/// Whether an entity carries a tag whose name holds the clause's text.
 fn tagged(x: &Ent, t: &str, c: &Clause) -> bool {
     x.tags
         .iter()
         .any(|tag| holds(TAG_NAMES[(*tag - 1) as usize], t, !c.quoted))
 }
 
-/// Whether the clause matches the entity's text.
 fn texted(x: &Ent, t: &str, c: &Clause) -> bool {
-    // The name is a prefix field; the description isn't.
     holds(&x.name, t, !c.quoted)
         || holds(
             &x.description,
@@ -204,7 +197,6 @@ fn texted(x: &Ent, t: &str, c: &Clause) -> bool {
         )
 }
 
-/// The model's matches of one clause (the query's last), and the filter.
 fn expected(ents: &BTreeMap<u64, Ent>, c: &Clause, f: &Filter) -> BTreeSet<u64> {
     let t = std::str::from_utf8(&c.text).unwrap();
     ents.iter()
@@ -314,7 +306,6 @@ fn searched_pages_equal_the_model_in_every_order() {
     for f in &filters {
         for c in &clauses {
             let want = expected(&ents, c, f);
-            // Relevance, pages of 7.
             let (got, first) = all_pages(
                 &s,
                 &query(
@@ -334,13 +325,11 @@ fn searched_pages_equal_the_model_in_every_order() {
                 want,
                 "{f:?} {c:?}"
             );
-            // A phrase's total is counted as its candidates are checked: exact once the walk is through them.
             let phrase = tokens(&c.text).len() > 1;
             assert!(phrase || first.total_exact, "{f:?} {c:?} {first:?}");
             if first.total_exact {
                 assert_eq!(first.total, want.len() as u64, "{f:?} {c:?}");
             }
-            // Random: every match once.
             let (got, _) = all_pages(
                 &s,
                 &query(
@@ -360,7 +349,6 @@ fn searched_pages_equal_the_model_in_every_order() {
                 want,
                 "{f:?} {c:?} random"
             );
-            // By name, both ways, and favourites first.
             for sort in [
                 Sort::Key {
                     sort: BY_NAME,
@@ -394,7 +382,6 @@ fn searched_pages_equal_the_model_in_every_order() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
-/// Every relevance page of a query, by `next` (`by_offset`: by offsets instead), as (entity, score).
 fn relevance_pages(s: &Store, q: &Query, c: &Clause, by_offset: bool) -> Vec<(u64, f64)> {
     let mut q = q.clone();
     let mut out = Vec::new();
@@ -462,7 +449,6 @@ fn matches_only_a_tag_name_matches_tie_in_the_lists_order() {
             let want = expected(&ents, &c, &all);
             assert_eq!(got.len(), want.len(), "{word} {sort:?}");
             assert_eq!(got.iter().map(|x| x.0).collect::<BTreeSet<_>>(), want);
-            // The tied: carriers of a matching tag the text doesn't match, together, in the list's order.
             let tied: Vec<u64> = want
                 .iter()
                 .copied()
@@ -498,7 +484,6 @@ fn a_sorted_search_past_the_few_walks_the_order() {
         groups: true,
         ..Filter::default()
     };
-    // `the` matches about half: more than √(page · library) for a page of 5.
     let c = clause("the", false);
     let want = expected(&ents, &c, &f);
     assert!(want.len() as f64 > (5.0f64 * 400.0).sqrt());
@@ -563,7 +548,6 @@ fn a_tag_merge_moves_its_carriers_matches() {
         },
         7,
     );
-    // "dragon riders" merges into "misc": its carriers move.
     s.commit_wait(vec![rec("tagMerge", vec![Value::Id(1), Value::Id(3)])])
         .unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
@@ -594,7 +578,6 @@ fn a_tag_merge_moves_its_carriers_matches() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
-/// Whether tag `tag`'s carriers still wait to move (its fold hasn't run).
 fn unfolded(s: &Store, tag: u64) -> bool {
     s.derived(|v| {
         let p = key::id(key::MEMBER, tag);
@@ -603,9 +586,6 @@ fn unfolded(s: &Store, tag: u64) -> bool {
     .unwrap()
 }
 
-/// The list's required tags lead the search through their merge sources: while a merge's carriers wait to move,
-/// and once they have, pages in relevance and list order equal the model, for a merged tag, its target, and tags of
-/// which one is required.
 #[test]
 fn tag_filters_lead_through_merges_in_flight() {
     let dir = temp_dir("merging");
@@ -616,7 +596,6 @@ fn tag_filters_lead_through_merges_in_flight() {
         groups: true,
         ..Filter::default()
     };
-    // (the filter, the model's: tag 1 merged into 3 reads as 3)
     let filters = [
         (
             Filter {
@@ -663,7 +642,6 @@ fn tag_filters_lead_through_merges_in_flight() {
                 any_tags: any_tags.clone(),
                 ..f.clone()
             };
-            // Clauses no tag name holds: a merged tag's name matching its carriers is no part of this.
             for c in [clause("dark kn", false), clause("east", false)] {
                 let want = expected(ents, &c, &model);
                 let got = relevance_pages(&s, &query(f.clone(), sort, 7), &c, false);
@@ -707,8 +685,6 @@ fn tag_filters_lead_through_merges_in_flight() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
-/// A walk under a library tag filter leads by the tag: with 10 carriers among 10^4 cards holding the words, it
-/// takes about two steps per carrier, not one per card.
 #[test]
 fn a_rare_library_tag_leads_the_walk() {
     let dir = temp_dir("rare-tag");
@@ -793,9 +769,6 @@ fn a_rare_library_tag_leads_the_walk() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
-/// A merged tag stops existing at its merge: while its carriers wait to move, its old name matches nothing (a
-/// search for it finds only cards matching by text), alone or deleted in the same commit as the app does it, as
-/// a word, a prefix and a phrase; once the fold ends, its flight is gone.
 #[test]
 fn a_merged_tags_old_name_matches_nothing_while_its_carriers_wait() {
     let dir = temp_dir("merged-name");
@@ -806,7 +779,6 @@ fn a_merged_tags_old_name_matches_nothing_while_its_carriers_wait() {
         groups: true,
         ..Filter::default()
     };
-    // Two light tags of five carriers each, no word of the cards' text in their names.
     for (t, name, first) in [(4u64, "wyvern", 10u64), (5, "griffin", 20)] {
         let mut recs = vec![
             set(t, 1, name),
@@ -841,9 +813,7 @@ fn a_merged_tags_old_name_matches_nothing_while_its_carriers_wait() {
     s.jobs_wait();
     assert!(s.get(&key::id(key::TAG_MAP, 4)).unwrap().is_none(), "light");
     s.hold_folds(true);
-    // Moves held too: a merge queueing one would show.
     s.hold_carriers(true);
-    // "griffin" is renamed: its move waits, and it merges in flight.
     s.commit_wait(vec![set(5, 1, "hippogriff")]).unwrap();
     assert!(s.get(&key::id(key::MOVING, 5)).unwrap().is_some());
     for t in [4, 5] {
@@ -853,7 +823,6 @@ fn a_merged_tags_old_name_matches_nothing_while_its_carriers_wait() {
         ])
         .unwrap();
     }
-    // "dragon riders" into "misc"; "love" into none, deleted with it.
     s.commit_wait(vec![rec("tagMerge", vec![Value::Id(1), Value::Id(3)])])
         .unwrap();
     s.commit_wait(vec![
@@ -927,8 +896,6 @@ fn a_merged_tags_old_name_matches_nothing_while_its_carriers_wait() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
-/// Characters `from..from + n`, named from `WORDS`, every fourth carrying tag 1 (whose name "dragon riders" the
-/// tied words match).
 fn create_cards(s: &Store, from: u64, n: u64) {
     let mut recs = Vec::new();
     for i in 0..n {
@@ -954,9 +921,6 @@ fn create_cards(s: &Store, from: u64, n: u64) {
     s.commit_wait(recs).unwrap();
 }
 
-/// One word's next page goes on from the page before by its rank, which cards created in between (changing the
-/// library's count and the word's, so its idf and every score) don't move: page 2 is the new view's order after
-/// page 1's last card, none repeated or skipped. Pages end among the text matches and among the tied.
 #[test]
 fn a_words_next_page_goes_on_where_it_was_after_cards_are_created() {
     let dir = temp_dir("rank-stays");
@@ -1026,7 +990,6 @@ fn a_words_next_page_goes_on_where_it_was_after_cards_are_created() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
-/// Every relevance page of a query by offsets, each ranked by `weights` (`Searched::weights`).
 fn relevance_order_under(
     s: &Store,
     q: &Query,
@@ -1054,10 +1017,6 @@ fn relevance_order_under(
     }
 }
 
-/// Several words' next page ranks by the idfs page 1 ranked by, which come back with its `next`: cards created in
-/// between change the words' counts, and page 2 is the order under page 1's idfs after page 1's last card, none
-/// repeated or skipped. Pages end among the text matches and among the tied; a cursor's weights that don't fit the
-/// query are an invalid cursor.
 #[test]
 fn several_words_next_page_ranks_by_the_first_pages_idfs() {
     let dir = temp_dir("weights-stay");
@@ -1092,7 +1051,6 @@ fn several_words_next_page_ranks_by_the_first_pages_idfs() {
             let Some(next) = first.next.clone() else {
                 continue;
             };
-            // Each is one clause of two tokens, a phrase: its tokens' idfs and its short idf.
             assert_eq!(first.weights.as_ref().map(Vec::len), Some(3), "{words}");
             tied_cursors += usize::from(!matches!(next, Resume::Score(..)));
             let before = relevance_order_under(&s, &q, &c, &None);

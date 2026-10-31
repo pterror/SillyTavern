@@ -160,10 +160,6 @@ export class TextCompletionService {
             throw new Error(`Got response status ${response.status}`);
         }
 
-        // Every /api/backends/text-completions/generate streaming response is the compact binary
-        // protocol (see llamacpp-compact-stream.js for the wire format/decoder) - raw-action or not,
-        // matching every other caller of this same route (textgen-settings.js's
-        // generateTextGenWithStreaming()).
         const reader = new ResumableCompactStreamReader(response, '/api/backends/text-completions/generate/resume', getRequestHeaders);
         return async function* streamData() {
             const decoder = new CompactStreamDecoder();
@@ -232,7 +228,6 @@ export class TextCompletionService {
             if (!message.ignoreInstruct) {
                 const isLastMessage = message === prompt[prompt.length - 1];
 
-                // Prefill active: format every message except the last one.
                 if (!isLastMessage || !prefillActive) {
                     messageContent = formatInstructModeChat(
                         message.name ?? message.role,
@@ -401,7 +396,6 @@ export class TextCompletionService {
 
         preset = { ...preset, ...overridePreset };
 
-        // Only fields listed in setting_names count as TextCompletionSettings.
         const settings = structuredClone(textgenerationwebui_settings);
         for (const [key, value] of Object.entries(preset)) {
             if (!setting_names.includes(key)) continue;
@@ -497,10 +491,6 @@ export class ChatCompletionService {
             throw new Error(`Got response status ${response.status}`);
         }
 
-        // Every /api/backends/chat-completions/generate streaming response is the compact binary
-        // protocol (see llamacpp-compact-stream.js for the wire format/decoder) - raw-action or not,
-        // matching every other caller of this same route (chat-completion-settings.js's
-        // sendOpenAIRequest()).
         const reader = new ResumableCompactStreamReader(response, '/api/backends/chat-completions/generate/resume', getRequestHeaders);
         return async function* streamData() {
             const decoder = new CompactStreamDecoder();
@@ -586,7 +576,6 @@ export class ChatCompletionService {
 
         preset = { ...preset, ...overridePreset };
 
-        // presets might have bias_preset_selected but not bias_presets, but settings need both or neither.
         preset.bias_preset_selected = preset.bias_presets !== undefined ? preset.bias_preset_selected : undefined;
 
         const settings = structuredClone(oai_settings);
@@ -596,7 +585,6 @@ export class ChatCompletionService {
             settings[settingToUpdate[1]] = value;
         }
 
-        // Precedence: connection profile => CC preset => CC settings
         ['custom_url', 'vertexai_region', 'zai_endpoint', 'siliconflow_endpoint', 'minimax_endpoint', 'pollinations_endpoint'].forEach(field => {
             overridePayload[field] = overridePayload[field] || settings[field] || oai_settings[field];
         });

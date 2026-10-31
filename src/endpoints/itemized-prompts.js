@@ -4,24 +4,14 @@ import { chatContext, chatNamePosition } from '../chat-request.js';
 import { importUpstreamItemizations } from '../upstream-itemizations.js';
 import { requestStore } from '../user-stores.js';
 
-/**
- * Prompt itemizations, one per stored reply (the chat engine's). The server records a reply's itemization when it
- * stores the reply; the page reads one message's when its "Prompt" view is opened. The chat-wide routes and `/set`
- * back upstream's exports (`loadItemizedPrompts`, `saveItemizedPrompts`, `replaceItemizedPromptText`,
- * `deleteItemizedPrompts`, `clearItemizedPrompts`).
- */
 export const router = express.Router();
 
-/** The most messages one `/set` changes. */
 const SET_MAX_ITEMS = 1000;
-/** The most chats one `/import-upstream` takes. */
 const IMPORT_MAX_CHATS = 200;
 
 /**
- * The tree the request names (`group_id`, else `avatar_url`) and the position in it its `chat` names.
  * @param {import('express').Request} request
- * @returns {Promise<{ chat: import('../chat-request.js').ChatContext, at: string | null } | 'bad' | 'missing'>} `bad`
- * when it names no tree or chat; `missing` when there is no such tree or chat.
+ * @returns {Promise<{ chat: import('../chat-request.js').ChatContext, at: string | null } | 'bad' | 'missing'>}
  */
 async function chatOf(request) {
     const { group_id: group, avatar_url: avatar, chat: name } = request.body ?? {};
@@ -40,10 +30,6 @@ function isPlainObject(value) {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-/**
- * Body `{ node_id }`. Answers `{ entry, previous_node_id }`: the message's itemization, and the nearest message above
- * it whose itemization holds the prompt as sent (null when none does). 404 when the message has no itemization.
- */
 router.post('/message', async function (request, response) {
     try {
         const nodeId = request.body?.node_id;
@@ -57,11 +43,6 @@ router.post('/message', async function (request, response) {
     }
 });
 
-/**
- * Body `{ avatar_url | group_id, chat, ids_only? }`. Answers `{ entries: [{ index, node_id, entry }] }`: the
- * itemizations of the chat's messages, `index` being the message's position in the chat; with `ids_only`,
- * `{ node_ids }`: the chat's messages' node ids, in order. 404 when there is no such chat.
- */
 router.post('/chat', async function (request, response) {
     try {
         const found = await chatOf(request);
@@ -81,11 +62,6 @@ router.post('/chat', async function (request, response) {
     }
 });
 
-/**
- * Body `{ items: [{ node_id, entry } | { node_id, fields }] }`: `entry` replaces a message's itemization, `fields`
- * changes those fields of the one it has. Writes only what changed. Answers `{ written, unchanged, missing }`, node
- * ids; `missing` holds the messages that don't exist (for `entry`) or have no itemization (for `fields`).
- */
 router.post('/set', async function (request, response) {
     try {
         const items = request.body?.items;
@@ -111,10 +87,6 @@ router.post('/set', async function (request, response) {
     }
 });
 
-/**
- * Body `{ avatar_url | group_id, chat }`. Removes the itemizations of the chat's messages; answers `{ removed }`.
- * 404 when there is no such chat.
- */
 router.post('/delete', async function (request, response) {
     try {
         const found = await chatOf(request);
@@ -129,11 +101,6 @@ router.post('/delete', async function (request, response) {
     }
 });
 
-/**
- * Body `{ chats: [{ chat_id, entries }] }`: a browser's upstream itemized prompts (`SillyTavern_Prompts`), per chat id
- * (src/upstream-itemizations.js). Answers `{ results: [{ chat_id, status, stored, unchanged, unmatched, why? }] }`, in
- * order; the page lets a chat's copy go only once its entries are stored.
- */
 router.post('/import-upstream', async function (request, response) {
     try {
         const chats = request.body?.chats;
@@ -149,7 +116,6 @@ router.post('/import-upstream', async function (request, response) {
     }
 });
 
-/** Removes every itemization. */
 router.post('/clear', async function (request, response) {
     try {
         await (await requestStore(request)).chats.clearItemizations();

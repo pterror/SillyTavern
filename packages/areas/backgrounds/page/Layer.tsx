@@ -3,10 +3,6 @@ import { VIEW, CHAT_VIEW, FITTINGS } from '../protocol.ts';
 import type { BackgroundsView, ChatBackgroundsView } from '../protocol.ts';
 import { useUi } from '@st/page/context';
 
-/**
- * The background behind the chat: the old page's `#bg1` element (other old code and themes reach it by id) shows
- * what the view says shows, fitted as the options say.
- */
 export function BackgroundLayer(props: { element: HTMLElement }) {
     const { client } = useUi();
     const view = client.view<BackgroundsView>(VIEW);
@@ -22,7 +18,6 @@ export function BackgroundLayer(props: { element: HTMLElement }) {
     return null;
 }
 
-/** The user settings' "animate backgrounds" option (it changes only how the drawer shows them). */
 export function AnimationOption() {
     const { client, t } = useUi();
     const view = client.view<BackgroundsView>(VIEW);
@@ -38,10 +33,9 @@ export function AnimationOption() {
                 checked={view()?.options.animation ?? false}
                 onChange={(event) => {
                     const box = event.currentTarget;
-                    void client.send('backgrounds.options', { animation: box.checked }).then(
-                        // Refused: back to what the server has (the view didn't change, so nothing redraws it).
-                        (result) => result.ok || (box.checked = view()?.options.animation ?? false),
-                    );
+                    void client
+                        .send('backgrounds.options', { animation: box.checked })
+                        .then((result) => result.ok || (box.checked = view()?.options.animation ?? false));
                 }}
             />
             <small>{t('Animated background thumbnails')}</small>

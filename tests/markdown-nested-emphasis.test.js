@@ -2,11 +2,6 @@ import { describe, test, expect, jest, beforeAll } from '@jest/globals';
 import { Marked } from 'marked';
 import showdown from 'showdown';
 
-// Emphasis renders as CommonMark says and nothing rewrites the text first: a space next to a nested `*` or `_`
-// stays, and a lone or unclosed `*` or `"` stays as written, with none added.
-// Checked on both marked processors and through messageFormatting (the chat render path). messageFormatting's
-// DOM-bound and app-wide imports are replaced; DOMPurify needs a window, so sanitize is the identity here.
-
 jest.unstable_mockModule('../public/lib.js', () => ({
     Marked,
     showdown,

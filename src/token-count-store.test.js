@@ -4,8 +4,6 @@ import path from 'node:path';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 
-// token-count-store.js imports tokenizer-resolve.js, whose import chain reads process-wide config at import
-// time (src/endpoints/secrets.js), so the config path is set first and the module imported after it.
 import { setConfigFilePath } from './util.js';
 
 setConfigFilePath(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'config.yaml'));
@@ -29,12 +27,10 @@ const { countChatCompletionMessages } = await import('./endpoints/tokenizers.js'
 const { TABLE } = await import('./token-cache-engine.js');
 const { convertedUser } = await import('../tests/converted-user.fixture.js');
 
-// One converted user's cache holds every case; each case's identities are its own.
 const user = await convertedUser('token-count-store-test-');
 const directories = user.directories;
 const { store } = user;
 
-/** How many entries each table holds. */
 async function counted() {
     return {
         counts: await store.lib.store.chatRead('tokenCacheCount', { table: TABLE.counts }),
@@ -43,7 +39,6 @@ async function counted() {
 }
 
 /**
- * When an entry was last marked used; undefined when there is none.
  * @param {number} table
  * @param {string} identity
  * @param {string} hash
@@ -52,9 +47,6 @@ async function usedAt(table, identity, hash) {
     return (await store.tokens.read(table, identity, hash))?.used;
 }
 
-// A fake llama.cpp `/tokenize`: one token per UTF-8 byte, ids 0..n-1, or 500 when `fakeTokenize.fail`. With
-// `with_pieces`, each token's piece is its byte as a list, as llama.cpp gives a piece that isn't valid UTF-8.
-// Every request is recorded, so a test counts the tokenizer calls a counter made.
 const fakeTokenize = { fail: false, contents: /** @type {string[]} */ ([]), withPieces: /** @type {boolean[]} */ ([]) };
 const fakeServer = http.createServer((req, res) => {
     let body = '';
@@ -84,7 +76,6 @@ const tokenizerCalls = () => fakeTokenize.contents.length;
 const resetFake = () => { fakeTokenize.fail = false; fakeTokenize.contents.length = 0; fakeTokenize.withPieces.length = 0; };
 
 try {
-    // --- keys: the kind and everything the result depends on besides the tokenizer ---
     const hello = 'Hello world';
     const textHash = tokenKeyHash(TOKEN_KEY_KINDS.TEXT, hello);
     assert.match(textHash, /^[0-9a-f]{64}$/, 'sha256 hex');
@@ -94,8 +85,6 @@ try {
     assert.notEqual(textHash, tokenKeyHash(TOKEN_KEY_KINDS.TEXT, `${hello} `), 'any change in the text is another key');
     assert.throws(() => tokenKeyHash('bogus', hello), /kind/);
 
-    // A chat-completion message count adds per-message overhead that depends on the model
-    // (gpt-3.5-turbo-0301 vs gpt-4, both cl100k_base), so the model is part of its key.
     const messages = [{ role: 'user', content: hello }];
     const ccTurbo = tokenKeyHash(TOKEN_KEY_KINDS.CC_MESSAGE, chatMessageKeyText('gpt-3.5-turbo-0301', messages));
     const ccGpt4 = tokenKeyHash(TOKEN_KEY_KINDS.CC_MESSAGE, chatMessageKeyText('gpt-4', messages));
@@ -103,7 +92,6 @@ try {
     assert.notEqual(ccGpt4, tokenKeyHash(TOKEN_KEY_KINDS.CC_MESSAGE, chatMessageKeyText('gpt-4', [{ role: 'system', content: hello }])), 'another role is another key');
     assert.equal(chatMessageKeyText(undefined, messages), chatMessageKeyText(null, messages), 'no model is one key');
 
-    // --- nothing stored: a miss ---
     const idA = 'file:sentencepiece:aaaa';
     const idB = 'file:sentencepiece:bbbb';
     const idsHash = tokenKeyHash(TOKEN_KEY_KINDS.IDS, hello);
@@ -112,7 +100,6 @@ try {
     const empty = await counted();
     assert.deepEqual(await counted(), empty, 'a read writes nothing');
 
-    // --- a written count and ids array read back under their identity and hash ---
     await writeBack(directories, {
         counts: [{ identity: idA, hash: textHash, count: 3 }, { identity: idA, hash: ccGpt4, count: 11 }],
         ids: [{ identity: idA, hash: idsHash, ids: Uint32Array.from([15496, 995]) }],
@@ -121,7 +108,6 @@ try {
     assert.equal(await readCount(directories, idA, ccGpt4), 11);
     assert.deepEqual(await readIds(directories, idA, idsHash), [15496, 995]);
 
-    // ...and not under another identity or another kind.
     assert.equal(await readCount(directories, idB, textHash), null, 'another tokenizer');
     assert.equal(await readIds(directories, idB, idsHash), null, 'another tokenizer');
     assert.equal(await readCount(directories, idA, tokenKeyHash(TOKEN_KEY_KINDS.PROMPT, hello)), null, 'another kind');
@@ -129,19 +115,16 @@ try {
     assert.equal(await readCount(directories, idA, idsHash), null, 'ids are not a count');
     assert.equal(await readIds(directories, idA, textHash), null, 'a count is not ids');
 
-    // --- new keys are new entries, used when written ---
     assert.deepEqual(await counted(), { counts: empty.counts + 2, ids: empty.ids + 1 });
     assert.equal(await usedAt(TABLE.counts, idA, textHash), 1000);
     assert.equal(await usedAt(TABLE.counts, idA, ccGpt4), 1000);
 
-    // --- a reused key within LAST_USED_GRANULARITY_MS of its last_used writes nothing ---
     const DAY = LAST_USED_GRANULARITY_MS;
     assert.equal(DAY, 24 * 60 * 60 * 1000);
     await writeBack(directories, { counts: [{ identity: idA, hash: textHash, count: 3 }], ids: [{ identity: idA, hash: idsHash, ids: [15496, 995] }] }, 1000 + DAY - 1);
     assert.equal(await usedAt(TABLE.counts, idA, textHash), 1000, 'reused within a day: not marked');
     assert.equal(await usedAt(TABLE.ids, idA, idsHash), 1000);
 
-    // --- a reused key a day or more later is only marked used ---
     await writeBack(directories, { counts: [{ identity: idA, hash: textHash, count: 3 }], ids: [{ identity: idA, hash: idsHash, ids: [15496, 995] }] }, 1000 + DAY);
     assert.deepEqual(await counted(), { counts: empty.counts + 2, ids: empty.ids + 1 }, 'no entry added');
     assert.equal(await usedAt(TABLE.counts, idA, textHash), 1000 + DAY, 'marked used');
@@ -150,11 +133,9 @@ try {
     assert.equal(await readCount(directories, idA, textHash), 3);
     assert.deepEqual(await readIds(directories, idA, idsHash), [15496, 995]);
 
-    // An existing key keeps what it holds: only last_used is written to it.
     await writeBack(directories, { counts: [{ identity: idA, hash: textHash, count: 99 }] }, 2000 + DAY);
     assert.equal(await readCount(directories, idA, textHash), 3);
 
-    // --- a mix of new and reused keys, a key twice in one write-back ---
     await writeBack(directories, {
         counts: [
             { identity: idA, hash: textHash, count: 3 },
@@ -166,13 +147,11 @@ try {
     assert.deepEqual(await counted(), { counts: empty.counts + 4, ids: empty.ids + 1 }, 'the two keys new to the table');
     assert.equal(await readCount(directories, idB, textHash), 4);
 
-    // --- nothing to write: nothing written ---
     const before = await counted();
     assert.deepEqual(await writeBack(directories, { counts: [], ids: [] }, 4000 + DAY), { prunesScheduled: [] });
     await writeBack(directories, {}, 4000 + DAY);
     assert.deepEqual(await counted(), before);
 
-    // ===== createStoredCounter =====
     const storedDirs = directories;
     const gpt4 = { id: tokenizers.OPENAI, model: 'gpt-4', name: 'OpenAI' };
     const llamaCpp = (localCopy = null) => ({
@@ -192,7 +171,6 @@ try {
     const m1 = [{ role: 'user', content: t1 }];
     const m1Bytes = bytes(`user\n\n${t1}`);
 
-    // --- identity null: the tokenizer on every call, nothing pending ---
     {
         resetFake();
         const counter = createStoredCounter({ resolved: llamaCpp(), identity: null, directories: storedDirs });
@@ -206,7 +184,6 @@ try {
         assert.deepEqual(counter.pending, { counts: [], ids: [] });
     }
 
-    // --- identity set: once per distinct text, one row each ---
     const expectedRows = {
         counts: [
             { identity: llamaIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.TEXT, t1), count: bytes(t1) },
@@ -218,7 +195,6 @@ try {
             { identity: llamaIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.IDS, t1), ids: byteIds(t1) },
         ],
     };
-    /** Every method on t1/t2/m1, each text twice, checking the values. */
     const countAll = async counter => {
         for (let i = 0; i < 2; i++) {
             assert.equal(await counter.countText(t1), bytes(t1));
@@ -235,7 +211,6 @@ try {
         assert.deepEqual(fakeTokenize.contents, [t1, t2, t1, t1, `user\n\n${t1}`], 'once per distinct text and kind');
         assert.deepEqual(first.pending, expectedRows, 'one row per distinct text and kind; a count and a prompt count are two');
 
-        // --- after write-back, a new counter reads them all: no tokenizer call, the same rows pending ---
         await writeBack(storedDirs, first.pending);
         resetFake();
         const second = createStoredCounter({ resolved: llamaCpp(), identity: llamaIdentity, directories: storedDirs });
@@ -243,7 +218,6 @@ try {
         assert.equal(tokenizerCalls(), 0, 'every value read from the tables');
         assert.deepEqual(second.pending, expectedRows, 'the rows read are pending, so write-back marks them used');
 
-        // --- another identity misses ---
         const other = createStoredCounter({ resolved: llamaCpp(), identity: 'llamacpp:["/models/test.gguf","b2"]', directories: storedDirs });
         assert.equal(await other.countText(t1), bytes(t1));
         assert.equal(await other.encodeText(t1).then(ids => ids.length), bytes(t1));
@@ -251,7 +225,6 @@ try {
         assert.deepEqual(other.pending.counts.map(row => row.identity), ['llamacpp:["/models/test.gguf","b2"]']);
     }
 
-    // --- recount: counts are taken again and replace the stored ones; ids are still read ---
     {
         resetFake();
         const recounter = createStoredCounter({ resolved: llamaCpp(), identity: llamaIdentity, directories: storedDirs, recount: true });
@@ -265,7 +238,6 @@ try {
         await writeBack(storedDirs, { counts: [{ ...recounter.pending.counts[0] }] });
     }
 
-    // --- a pending object shared across counters ---
     {
         resetFake();
         const pending = { counts: [], ids: [] };
@@ -277,7 +249,6 @@ try {
         assert.deepEqual(pending.counts.map(row => row.identity), ['shared-a', 'shared-b']);
     }
 
-    // --- the local copy answering for a failed remote: the row goes under the copy's identity ---
     {
         resetFake();
         fakeTokenize.fail = true;
@@ -302,7 +273,6 @@ try {
         });
     }
 
-    // --- an estimate answer, or no ids, pushes nothing ---
     {
         resetFake();
         fakeTokenize.fail = true;
@@ -311,7 +281,6 @@ try {
         assert.equal(typeof await noCopy.countText(t4), 'number', 'the estimate');
         assert.equal(await noCopy.encodeText(t4), null);
         assert.equal(typeof await noCopy.countChatMessage([{ role: 'user', content: t4 }]), 'number', 'the estimate');
-        // The copy doesn't answer a prompt count for llama.cpp, so that one is the estimate too.
         const withCopy = createStoredCounter({ resolved: llamaCpp(gpt4), identity: llamaIdentity, directories: storedDirs });
         assert.equal(typeof await withCopy.countPromptText(t4), 'number');
         assert.deepEqual(noCopy.pending, { counts: [], ids: [] });
@@ -331,7 +300,6 @@ try {
         assert.deepEqual(nullIds.pending, { counts: [], ids: [] }, 'an encode giving null');
     }
 
-    // --- a messages count is keyed by the counting tokenizer's model too ---
     {
         const tiktokenIdentity = 'tiktoken:cl100k_base@test';
         const m5 = [{ role: 'user', content: 'Same messages, other model' }];
@@ -347,7 +315,6 @@ try {
         assert.notEqual(second.pending.counts[0].hash, first.pending.counts[0].hash);
     }
 
-    // --- the encode and countMessages overrides, and where the answeredOut they set puts the row ---
     {
         const copyIdentity = await tokenizerIdentity(gpt4, {});
         /** @type {Array<[string, unknown]>} */
@@ -380,8 +347,6 @@ try {
         await stored.encodeText('six');
         assert.equal(await stored.countChatMessage(m6), 42);
         await stored.countChatMessage(m6);
-        // The copy's row is under the copy's identity, and reads are under the resolution's, so the copy
-        // is asked again for the same text; its row is pending once.
         assert.deepEqual(calls, [['encode', 'six'], ['encode', 'six'], ['countMessages', m6]]);
         assert.deepEqual(stored.pending, {
             counts: [{ identity: 'overrides', hash: tokenKeyHash(TOKEN_KEY_KINDS.CC_MESSAGE, chatMessageKeyText('test-model', m6)), count: 42 }],
@@ -389,7 +354,6 @@ try {
         }, 'the copy\'s answer under the copy\'s identity, the resolution\'s under the given one');
         assert.ok(Array.isArray(stored.pending.ids[0].ids));
 
-        // A messages count the copy answered is keyed by the copy's model.
         const byCopy = createStoredCounter({
             resolved, identity: 'overrides', directories: storedDirs,
             countMessages: async (_messages, answeredOut) => { answeredOut.tokenizer = gpt4; return 5; },
@@ -400,7 +364,6 @@ try {
         ]);
     }
 
-    // ===== chunks: a token_ids row may hold llama.cpp's pieces, as /current/encode answers them =====
     const chunksDirs = directories;
     const idC = 'llamacpp:["/models/c.gguf","b1"]';
     const hashAe = tokenKeyHash(TOKEN_KEY_KINDS.IDS, 'aé');
@@ -422,7 +385,6 @@ try {
         assert.equal(await readIdsRow(chunksDirs, 'another', hashB), null);
     }
 
-    // --- encodeTextWithChunks ---
     {
         const counterDirs = directories;
         const counter = () => createStoredCounter({ resolved: llamaCpp(), identity: llamaIdentity, directories: counterDirs });
@@ -441,7 +403,6 @@ try {
         assert.equal(tokenizerCalls(), 0);
         assert.deepEqual(second.pending.ids, [{ identity: llamaIdentity, hash: hashAe, ids: [0, 1, 2] }], 'pending, so write-back marks it used');
 
-        // A row stored without chunks, as a server-side encode stores it, met by a request that needs them: a miss.
         resetFake();
         const plain = counter();
         assert.deepEqual(await plain.encodeText('bé'), [0, 1, 2]);
@@ -453,7 +414,6 @@ try {
         await writeBack(counterDirs, needsChunks.pending);
         assert.deepEqual(await readIdsRow(counterDirs, llamaIdentity, tokenKeyHash(TOKEN_KEY_KINDS.IDS, 'bé')), { ids: [0, 1, 2], chunks: ['b', 'é'] }, 'the row got its chunks');
 
-        // The same within one counter: ids without chunks don't answer a request that needs them.
         resetFake();
         const both = counter();
         await both.encodeText('cé');
@@ -462,7 +422,6 @@ try {
         assert.deepEqual(await both.encodeText('cé'), [0, 1, 2]);
         assert.equal(tokenizerCalls(), 2, 'ids with chunks answer a plain encode');
 
-        // A failing llama.cpp answered by its copy: no chunks, as before, and the row under the copy's identity.
         resetFake();
         fakeTokenize.fail = true;
         const byCopy = createStoredCounter({ resolved: llamaCpp(gpt4), identity: llamaIdentity, directories: counterDirs });
@@ -470,7 +429,6 @@ try {
         assert.deepEqual(copied, { ids: Array.from(await createStoredCounter({ resolved: { kind: 'local', ...gpt4, basis: 'local', localCopy: null }, identity: null, directories: counterDirs }).encodeText('dé')), chunks: null });
         assert.deepEqual(byCopy.pending.ids.map(row => [row.identity, row.chunks]), [[await tokenizerIdentity(gpt4), null]]);
 
-        // identity null: llama.cpp with pieces on every call, nothing pending.
         resetFake();
         const unstored = createStoredCounter({ resolved: llamaCpp(), identity: null, directories: counterDirs });
         assert.deepEqual(await unstored.encodeTextWithChunks('aé'), { ids: [0, 1, 2], chunks: ['a', 'é'] });
@@ -478,14 +436,12 @@ try {
         assert.deepEqual(fakeTokenize.withPieces, [true, true]);
         assert.deepEqual(unstored.pending, { counts: [], ids: [] });
 
-        // A tokenizer that isn't llama.cpp has no chunks to give: ids only, as before.
         const local = createStoredCounter({ resolved: { kind: 'local', ...gpt4, basis: 'local', localCopy: null }, identity: 'tiktoken-test', directories: counterDirs });
         const localEncoded = await local.encodeTextWithChunks('aé');
         assert.deepEqual(Object.keys(localEncoded), ['ids']);
         assert.deepEqual(local.pending.ids.map(row => Object.keys(row)), [['identity', 'hash', 'ids']]);
     }
 
-    // --- the cache's limits ---
     assert.equal(TOKEN_COUNT_ROW_CAP, 1_000_000);
     assert.equal(PRUNE_BATCH_ROWS, 5000);
     assert.equal(PRUNE_PAUSE_MS, 50);

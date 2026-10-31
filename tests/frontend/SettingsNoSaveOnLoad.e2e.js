@@ -1,10 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, awaitPowerUserSettingStored } from './frontent-test-utils.js';
 
-// Loading the page sets its controls from the settings, and their handlers fire (a color picker given its color, the
-// context size clamped to the model's): a handler saves only a value that changed, so loading saves nothing. A change,
-// and applying a theme, are saved.
-
 /** @param {import('@playwright/test').Page} page */
 function recordSaves(page) {
     const saves = [];
@@ -18,7 +14,6 @@ function recordSaves(page) {
 test('a page load saves no settings; a change does', async ({ page }) => {
     const saves = recordSaves(page);
     await testSetup.awaitST({ page });
-    // Longer than the settings save's debounce window.
     await page.waitForTimeout(3000);
     expect(saves).toEqual([]);
 
@@ -45,7 +40,6 @@ test('applying a theme stores its colors and its other settings', async ({ page 
     });
     await run('/theme Azure');
     try {
-        // default/content/themes/Azure.json
         // @ts-ignore
         expect(await page.evaluate(() => SillyTavern.getContext().powerUserSettings.main_text_color)).toBe('rgba(171, 198, 223, 1)');
         for (const key of ['theme', 'main_text_color', 'blur_strength']) await awaitPowerUserSettingStored(page, key);

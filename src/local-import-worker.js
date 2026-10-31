@@ -8,15 +8,6 @@ import { classifyJsonCandidate, computeCandidateContentIdentityHash, computeCont
 import { readFromChunks, computeAvatarIdentityHashFromChunks, computeAvatarIdentityHashFromImageBuffer, computeDefaultAvatarIdentityHash, stripCardData } from './character-card-parser.js';
 import { DEFAULT_AVATAR_PATH } from './constants.js';
 
-/**
- * Reads each source file's bytes exactly once, reusing that buffer through hashing, classification, identity
- * hashing, and the eventual write. png/json candidates use a two-phase protocol: a 'parsed' reply stashes the
- * decoded buffer/chunks in `pendingTasks`, and a later `{ type: 'continue' }` message answers the card's image to
- * store.
- * charx/byaf/yaml stay on the original single-message protocol. Never touches sqlite - that stays on the main
- * thread (no WAL/busy_timeout here, and scanDirectory() wraps a pass in one write transaction).
- */
-
 /** @type {Map<number, { sourcePath: string, sourceBuffer: Buffer, chunks: Array<{name: string, data: Uint8Array}> | null, format: string }>} */
 const pendingTasks = new Map();
 
@@ -37,7 +28,7 @@ parentPort.on('message', async (msg) => {
     if (msg.type === 'continue') {
         const pending = pendingTasks.get(msg.id);
         pendingTasks.delete(msg.id);
-        if (!pending) return; // stray/duplicate continue
+        if (!pending) return;
         await finishWrite(msg, pending);
         return;
     }
@@ -52,8 +43,6 @@ parentPort.on('message', async (msg) => {
             jsonClassification = classifyJsonCandidate(sourceBuffer);
         }
 
-        // decode once and reuse for both the identity-hash fallback and the phase-2 payload - re-extracting
-        // png chunks a second time measured ~43% of this phase's CPU.
         let decoded = null;
         if (!jsonClassification && (format === 'png' || format === 'json')) {
             decoded = decodeRawText(sourceBuffer, format);
@@ -66,7 +55,6 @@ parentPort.on('message', async (msg) => {
                 : await computeCandidateContentIdentityHash(sourceBuffer, format, msg.directories);
         }
 
-        // not gated on allowIdentityFallback like identityHash - this is cheap and always needed for a write.
         const avatarIdentityHash = decoded?.chunks
             ? computeAvatarIdentityHashFromChunks(decoded.chunks)
             : (!jsonClassification && (format === 'json' || format === 'yaml' || format === 'yml')) ? computeDefaultAvatarIdentityHash() : null;
@@ -84,8 +72,6 @@ parentPort.on('message', async (msg) => {
 });
 
 /**
- * Answers a write with the card's image, its card data stripped, and its identity hash; the main thread stores it.
- * Asked for a JSON card (the default avatar): a PNG's image is its source file, reflinked by the main thread.
  * @param {{ id: number, outcome: 'no-write' | 'write' }} msg
  * @param {{ sourcePath: string, sourceBuffer: Buffer, chunks: Array<{name: string, data: Uint8Array}> | null, format: string }} pending
  */

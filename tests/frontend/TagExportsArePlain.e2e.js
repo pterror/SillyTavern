@@ -1,14 +1,9 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// Upstream's `tags` is a plain array of plain tag objects and its `tag_map` a plain object of plain arrays, so
-// extensions may copy them, send them to a worker or put them in IndexedDB. Whatever works on upstream's has to
-// work on ours.
-
 /** @param {import('@playwright/test').Page} page */
 async function loadApp(page) {
     await testSetup.awaitST({ page });
-    // APP_READY is an auto-fire event: a listener added after it was emitted still runs.
     await page.evaluate(() => {
         window['__appReady'] = false;
         const { eventSource, eventTypes } = window['SillyTavern'].getContext();
@@ -32,7 +27,11 @@ async function api(page, path, body = {}) {
     }, { path, body });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<string>} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
@@ -45,8 +44,6 @@ async function createCharacter(page, name) {
 }
 
 /**
- * Creates the fixture data from a throwaway browser context, so the page under test learns about everything only
- * through its own boot.
  * @param {import('@playwright/test').Browser} browser
  * @param {(page: import('@playwright/test').Page) => Promise<T>} fn
  * @template T
@@ -77,7 +74,6 @@ test.describe('the tags and tag_map exports', () => {
             return { tag, card };
         });
         await loadApp(page);
-        // The current character is the one `tag_map` has an entry for.
         await page.evaluate(async (card) => {
             const { selectCharacterByAvatar } = await import('/script.js');
             await selectCharacterByAvatar(card);
@@ -90,7 +86,6 @@ test.describe('the tags and tag_map exports', () => {
             const $ = window['jQuery'];
             const json = (/** @type {any} */ value) => JSON.parse(JSON.stringify(value));
 
-            /** What each export holds, as plain data, to compare every copy against. */
             const subjects = {
                 tags: { value: tags, expected: json(tags), isArray: true },
                 tag: { value: tags.find(t => t.id === tag), expected: json(tags.find(t => t.id === tag)), isArray: false },

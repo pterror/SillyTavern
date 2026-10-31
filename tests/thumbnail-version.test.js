@@ -10,12 +10,6 @@ let tempDir;
 let thumbnailsAvatarDir;
 let charactersDir;
 
-/**
- * getThumbnailVersion() (src/endpoints/thumbnails.js) is the shared helper the character manifest,
- * background list, and persona list endpoints all use to hand a client the cached thumbnail's own mtime
- * ahead of time, so getThumbnailUrl() can skip the thumbnail route's no-cache redirect hop. This exercises it
- * directly, independent of any one endpoint's request/response plumbing.
- */
 beforeAll(async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-thumbnail-version-test-'));
     thumbnailsAvatarDir = path.join(tempDir, 'thumbnails', 'avatar');
@@ -44,7 +38,6 @@ describe('getThumbnailVersion', () => {
         const originalPath = path.join(charactersDir, 'Alice.png');
         const cachedPath = path.join(thumbnailsAvatarDir, 'Alice.png');
         fs.writeFileSync(originalPath, 'original content');
-        // Make sure the cached thumbnail's mtime is distinguishable from the original's.
         const later = new Date(Date.now() + 5000);
         fs.writeFileSync(cachedPath, 'thumbnail bytes');
         fs.utimesSync(cachedPath, later, later);

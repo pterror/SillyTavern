@@ -1,20 +1,10 @@
 /**
- * The character list's bulk selection, held as rules over the list rather than as a list of every selected
- * character: "everything the list shows" (`all`), position ranges of it, and the characters picked or left out one by
- * one. Positions count the list's rows from 0 in the list's own order, groups included, folder tiles not. The server
- * turns a selection into characters (`POST /api/characters/bulk/prepare`).
- *
- * `include` holds only characters that `all` and `ranges` don't already select (or that `excludeRanges` left out),
- * and `exclude` only ones they do, so the server can apply them in order without checking.
- */
-
-/**
  * @typedef {object} BulkSelection
- * @property {boolean} all Every character the list shows.
- * @property {[number, number][]} ranges Positions selected, both ends included, sorted, not overlapping.
- * @property {[number, number][]} excludeRanges Positions left out of `all`, same shape.
- * @property {Map<string, number>} include Characters picked one by one, with their position when picked.
- * @property {Map<string, number>} exclude Characters left out one by one, with their position when left out.
+ * @property {boolean} all
+ * @property {[number, number][]} ranges
+ * @property {[number, number][]} excludeRanges
+ * @property {Map<string, number>} include
+ * @property {Map<string, number>} exclude
  */
 
 /** @returns {BulkSelection} */
@@ -34,7 +24,7 @@ function inRanges(ranges, position) {
  * @param {[number, number][]} ranges
  * @param {number} a
  * @param {number} b
- * @returns {[number, number][]} `ranges` with a..b added, merged.
+ * @returns {[number, number][]}
  */
 function addRange(ranges, a, b) {
     const all = [...ranges, [a, b]].sort((x, y) => x[0] - y[0]);
@@ -52,7 +42,7 @@ function addRange(ranges, a, b) {
  * @param {[number, number][]} ranges
  * @param {number} a
  * @param {number} b
- * @returns {[number, number][]} `ranges` less a..b.
+ * @returns {[number, number][]}
  */
 function subtractRange(ranges, a, b) {
     /** @type {[number, number][]} */
@@ -69,10 +59,9 @@ function subtractRange(ranges, a, b) {
 }
 
 /**
- * Whether a character is selected.
  * @param {BulkSelection} selection
  * @param {string} avatar
- * @param {number} position Its position in the list.
+ * @param {number} position
  */
 export function isSelected(selection, avatar, position) {
     if (selection.exclude.has(avatar)) return false;
@@ -82,8 +71,7 @@ export function isSelected(selection, avatar, position) {
 }
 
 /**
- * Selects or unselects one character.
- * @param {BulkSelection} selection Changed in place.
+ * @param {BulkSelection} selection
  * @param {string} avatar
  * @param {number} position
  * @param {boolean} select
@@ -91,7 +79,6 @@ export function isSelected(selection, avatar, position) {
 export function setOne(selection, avatar, position, select) {
     if (isSelected(selection, avatar, position) === select) return;
     if (select) {
-        // Selected before by a rule and left out by hand: taking it off the left-out list is enough.
         if (selection.exclude.has(avatar)) selection.exclude.delete(avatar);
         else selection.include.set(avatar, position);
     } else if (selection.include.has(avatar)) {
@@ -102,8 +89,7 @@ export function setOne(selection, avatar, position, select) {
 }
 
 /**
- * Selects or unselects every character from position `a` to `b`, both included.
- * @param {BulkSelection} selection Changed in place.
+ * @param {BulkSelection} selection
  * @param {number} a
  * @param {number} b
  * @param {boolean} select
@@ -118,7 +104,6 @@ export function setRange(selection, a, b, select) {
         selection.ranges = subtractRange(selection.ranges, start, end);
         if (selection.all) selection.excludeRanges = addRange(selection.excludeRanges, start, end);
     }
-    // The range now decides these, one way or the other.
     for (const map of [selection.include, selection.exclude]) {
         for (const [avatar, position] of map) {
             if (position >= start && position <= end) map.delete(avatar);
@@ -127,8 +112,7 @@ export function setRange(selection, a, b, select) {
 }
 
 /**
- * Selects every character the list shows, or nothing.
- * @param {BulkSelection} selection Changed in place.
+ * @param {BulkSelection} selection
  * @param {boolean} select
  */
 export function setAll(selection, select) {
@@ -140,7 +124,6 @@ export function setAll(selection, select) {
 }
 
 /**
- * Whether the selection is "everything the list shows", with nothing left out.
  * @param {BulkSelection} selection
  */
 export function isEverything(selection) {
@@ -148,7 +131,6 @@ export function isEverything(selection) {
 }
 
 /**
- * Whether the selection selects anything.
  * @param {BulkSelection} selection
  */
 export function isEmpty(selection) {
@@ -156,11 +138,8 @@ export function isEmpty(selection) {
 }
 
 /**
- * How many characters the selection holds, as far as the page can tell. Exact for characters picked one by one; an
- * estimate (`approx`) when a rule is involved, since rules count list rows and groups are rows too. The server
- * gives the exact count when the selection is prepared.
  * @param {BulkSelection} selection
- * @param {number} total How many rows the list has.
+ * @param {number} total
  * @returns {{ count: number, approx: boolean }}
  */
 export function countSelection(selection, total) {
@@ -178,9 +157,8 @@ export function countSelection(selection, total) {
 }
 
 /**
- * The selection as `/api/characters/bulk/prepare` takes it.
  * @param {BulkSelection} selection
- * @param {{ filter: object, sort: object|undefined } | null} query The list the selection is over.
+ * @param {{ filter: object, sort: object|undefined } | null} query
  */
 export function selectionToWire(selection, query) {
     return {

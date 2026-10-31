@@ -1,7 +1,3 @@
-/**
- * The settings a theme holds (each a `power_user` key), in a theme file's order after its `name`. Read by the page's
- * getThemeObject and the server's theme routes (must stay importable outside a browser DOM).
- */
 export const THEME_FIELDS = Object.freeze([
     'blur_strength', 'main_text_color', 'italics_text_color', 'underline_text_color', 'quote_text_color', 'macro_colors',
     'blur_tint_color', 'chat_tint_color', 'user_mes_blur_tint_color', 'bot_mes_blur_tint_color', 'shadow_color',

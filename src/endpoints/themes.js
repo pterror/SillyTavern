@@ -14,8 +14,6 @@ router.post('/save', async (request, response) => {
     return response.sendStatus(await writeBundle(request.user.directories, 'theme', request.body.name, request.body) ? 200 : 400);
 });
 
-// Composes a theme from the server's own stored power_user settings, instead of trusting a
-// client-reassembled snapshot of settings it already has.
 router.post('/save-from-settings', async (request, response) => {
     const { name, overrides } = request.body ?? {};
     if (!name) {

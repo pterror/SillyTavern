@@ -230,7 +230,6 @@ export function generateThemePalette(dominantRgb) {
     const userTintRgb = oklchToSrgb(blurTintL, base.C * 0.4, base.h + userHueShift);
     const botTintRgb = oklchToSrgb(blurTintL, base.C * 0.4, base.h + botHueShift);
 
-    // text is checked against this, not the full background
     const panelBg = blurTintRgb;
     const panelLuminance = relativeLuminance(panelBg.r, panelBg.g, panelBg.b);
     const panelIsDark = panelLuminance < 0.3;

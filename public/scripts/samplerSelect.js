@@ -1,17 +1,12 @@
 import { localforage } from '../lib.js';
 import { newUi, newUiStarted } from './new-ui-page.js';
 
-// Upstream's sampler select. It's the server's now (the settings view's, per text generation backend; the popup is
-// the new page's, packages/areas/settings/page/tg.tsx); these names stay for extensions that import them, over the
-// new page. A tcApiType names a backend other than the one now, as upstream's did.
-
 /**
  * @param {string} [tcApiType]
  * @returns {{ manual: boolean, shown: readonly string[] }}
  */
 const select = tcApiType => (newUiStarted() ? newUi().settings.samplers(tcApiType || undefined) : { manual: false, shown: [] });
 
-/** The new page draws the panel and its sampler select. */
 export async function initCustomSelectedSamplers() { }
 
 /**
@@ -20,10 +15,8 @@ export async function initCustomSelectedSamplers() { }
  */
 export async function validateDisabledSamplers(_redraw = false) { }
 
-/** The server has the selects. */
 export async function loadApiSelectedSamplers() { }
 
-/** The server has the selects; each change is stored as it's made. */
 export async function saveApiSelectedSamplers() { }
 
 /**
@@ -76,10 +69,6 @@ export function isSamplerManualPriorityEnabled(tcApiType = '') {
     return select(tcApiType).manual;
 }
 
-/**
- * Moves the sampler selects the old page kept in the browser (IndexedDB) to the server, once: the server takes them
- * for the backends it has none for, and the browser's copy goes when it has.
- */
 export async function importBrowserSamplerSelect() {
     const store = localforage.createInstance({ name: 'SillyTavern_TextCompletions' });
     const stored = await store.getItem('selectedSamplers');

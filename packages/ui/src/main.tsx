@@ -26,35 +26,22 @@ import type { Look, OldPage } from '@st/alternatives/page';
 import { render } from 'solid-js/web';
 import type { JSX } from 'solid-js';
 
-// The new page, started by the old one (public/scripts/new-ui.js), which hands it what only the old page has yet,
-// and the containers its surfaces replace. It's the page's loader: the core (@st/page) and each area's page half
-// (packages/areas/*), mounted in the old page's containers.
-
 export type StartOptions = {
     headers: () => Record<string, string>;
     t: (text: string, key?: string) => string;
     quietPrompt: (prompt: string) => Promise<string>;
-    /** The chat the old page shows now (null: none), told to the server when the tab's stream reconnects. */
     currentChat: () => ChatOwner | null;
-    /** What the alternatives list asks of the old page (rendering as the chat does, swiping, deleting a swipe). */
     alternatives: OldPage;
     containers: {
-        /** The backgrounds drawer's content (`#Backgrounds`). */
         backgrounds: HTMLElement;
-        /** The background behind the chat (`#bg1`). */
         backgroundLayer: HTMLElement;
-        /** Where the user settings' animated-thumbnails option goes. */
         backgroundAnimation: HTMLElement;
-        /** Over the AI response configuration panel: the levels slider. */
         settingsLevels: HTMLElement;
-        /** The chat completion fields, where the old markup's runs of them were (between them the old page's). */
         ccContext: HTMLElement;
         ccSamplers: HTMLElement;
         ccUtility: HTMLElement;
         ccOptions: HTMLElement;
-        /** The fields the text APIs share (response length, context size, streaming), before the prompt cost line. */
         commonLengths: HTMLElement;
-        /** The text generation fields, likewise (between them the logit bias editor, after them the sampler orders). */
         tgTop: HTMLElement;
         tgSamplers: HTMLElement;
         tgCfg: HTMLElement;
@@ -94,7 +81,6 @@ export function start(options: StartOptions) {
     mount(tgSamplers, () => <TgSamplers />);
     mount(tgCfg, () => <TgCfg />);
 
-    // The alternatives of a message: a modal list, over everything.
     const [look, setLook] = createSignal<Look | null>(null);
     const alternativesHost = document.createElement('div');
     document.body.append(alternativesHost);
@@ -103,19 +89,15 @@ export function start(options: StartOptions) {
     ));
 
     return {
-        /** Views the server pushed on the tab's stream. */
         receive: (push: ViewPush) => {
             client.receive(push);
         },
-        /** The tab's stream (re)connected. */
         reconnected: () => client.reconnected(options.currentChat()),
-        /** The old page closed its chat (no chat shows now). */
         closeChat: () => client.send('chat.close', {}),
         backgrounds: backgroundsCompat(client, tab, options.quietPrompt, options.t),
         alternatives: alternativesCompat(setLook),
         settings: {
             ...settingsCompat(client),
-            /** What the current model supports, as the old page knows it (its toggles show it). */
             setSupport,
         },
     };

@@ -9,8 +9,6 @@ import {
 
 const SIMPLE_TEMPLATE = '{{system}}\n{{description}}\n{{personality}}\n{{persona}}\n{{scenario}}\n{{wiBefore}}\n{{loreBefore}}\n{{wiAfter}}\n{{loreAfter}}\n{{mesExamples}}';
 
-// --- renderStoryString ---
-
 {
     const params = {
         description: 'A description',
@@ -37,13 +35,11 @@ const SIMPLE_TEMPLATE = '{{system}}\n{{description}}\n{{personality}}\n{{persona
     );
 }
 
-// Trailing newline: not added when output already ends with \n
 {
     const output = renderStoryString({ description: 'x' }, { storyStringTemplate: '{{description}}\n' });
     assert.equal(output, 'x\n', 'no double newline appended when template already ends with one');
 }
 
-// Trailing newline: not added for IN_CHAT position
 {
     const output = renderStoryString({ description: 'x' }, {
         storyStringTemplate: '{{description}}',
@@ -52,7 +48,6 @@ const SIMPLE_TEMPLATE = '{{system}}\n{{description}}\n{{personality}}\n{{persona
     assert.equal(output, 'x', 'no trailing newline appended when storyStringPosition is IN_CHAT');
 }
 
-// Trailing newline: instruct enabled, not wrapped -> suppressed (per client condition)
 {
     const output = renderStoryString({ description: 'x' }, {
         storyStringTemplate: '{{description}}',
@@ -61,7 +56,6 @@ const SIMPLE_TEMPLATE = '{{system}}\n{{description}}\n{{personality}}\n{{persona
     assert.equal(output, 'x', 'instruct enabled + wrap false + no story_string_suffix -> newline suppressed');
 }
 
-// Trailing newline: instruct enabled, wrapped but has story_string_suffix -> suppressed
 {
     const output = renderStoryString({ description: 'x' }, {
         storyStringTemplate: '{{description}}',
@@ -70,7 +64,6 @@ const SIMPLE_TEMPLATE = '{{system}}\n{{description}}\n{{personality}}\n{{persona
     assert.equal(output, 'x', 'instruct enabled + wrap true + story_string_suffix set -> newline suppressed');
 }
 
-// Trailing newline: instruct enabled, wrapped, no story_string_suffix -> newline added
 {
     const output = renderStoryString({ description: 'x' }, {
         storyStringTemplate: '{{description}}',
@@ -79,7 +72,6 @@ const SIMPLE_TEMPLATE = '{{system}}\n{{description}}\n{{personality}}\n{{persona
     assert.equal(output, 'x\n', 'instruct enabled + wrap true + no story_string_suffix -> newline added');
 }
 
-// Trailing newline: instruct disabled -> newline added regardless of wrap
 {
     const output = renderStoryString({ description: 'x' }, {
         storyStringTemplate: '{{description}}',
@@ -88,25 +80,20 @@ const SIMPLE_TEMPLATE = '{{system}}\n{{description}}\n{{personality}}\n{{persona
     assert.equal(output, 'x\n', 'instruct disabled -> newline added');
 }
 
-// Leading newline stripping
 {
     const output = renderStoryString({ description: 'x' }, { storyStringTemplate: '\n\n\n{{description}}' });
     assert.equal(output, 'x\n', 'leading newlines stripped');
 }
 
-// Empty output stays empty (no newline appended to empty string)
 {
     const output = renderStoryString({ description: '' }, { storyStringTemplate: '{{description}}' });
     assert.equal(output, '', 'empty output stays empty');
 }
 
-// {{user}}/{{char}} macro substitution runs on the rendered output (not just Handlebars fields)
 {
     const output = renderStoryString({ user: 'Alice', char: 'Bob' }, { storyStringTemplate: 'Hi {{user}}, I am {{char}}' });
     assert.equal(output, 'Hi Alice, I am Bob\n', 'substituteParams runs on rendered output using params.user/params.char');
 }
-
-// --- assembleStoryString: system prompt resolution ---
 
 const baseAssembleParams = {
     description: 'Desc',
@@ -123,7 +110,6 @@ const baseAssembleParams = {
     mainApi: 'textgenerationwebui',
 };
 
-// sysprompt disabled -> system nullified
 {
     const result = assembleStoryString({
         ...baseAssembleParams,
@@ -133,7 +119,6 @@ const baseAssembleParams = {
     assert.equal(result.system, '', 'system nullified when sysprompt disabled');
 }
 
-// sysprompt enabled, preferCharacterPrompt true, character system prompt present -> substituteParams(system, {original})
 {
     const result = assembleStoryString({
         ...baseAssembleParams,
@@ -146,7 +131,6 @@ const baseAssembleParams = {
     assert.equal(result.system, 'card system with DEFAULT_SYS inside', 'prefer_character_prompt uses card system, substituting {{original}}');
 }
 
-// sysprompt enabled, preferCharacterPrompt true, but no character system prompt -> falls back to baseChatReplace(sysPromptContent)
 {
     const result = assembleStoryString({
         ...baseAssembleParams,
@@ -159,7 +143,6 @@ const baseAssembleParams = {
     assert.equal(result.system, 'DEFAULT_SYS Char', 'falls back to baseChatReplace(sysPromptContent) when card system is empty');
 }
 
-// sysprompt enabled, preferCharacterPrompt false -> always baseChatReplace(sysPromptContent), even if card system present
 {
     const result = assembleStoryString({
         ...baseAssembleParams,
@@ -172,7 +155,6 @@ const baseAssembleParams = {
     assert.equal(result.system, 'DEFAULT_SYS', 'prefer_character_prompt false ignores card system entirely');
 }
 
-// isInstruct true -> a second substituteParams(system, {original: sysPromptContent}) pass runs
 {
     const result = assembleStoryString({
         ...baseAssembleParams,
@@ -182,12 +164,9 @@ const baseAssembleParams = {
         preferCharacterPrompt: true,
         isInstruct: true,
     });
-    // First pass: substituteParams('card {{original}}', {original: 'DEFAULT {{original}}'}) -> 'card DEFAULT {{original}}'
-    // Second pass (isInstruct): substituteParams(that, {original: 'DEFAULT {{original}}'}) -> replaces remaining {{original}}
     assert.equal(result.system, 'card DEFAULT DEFAULT {{original}}', 'isInstruct applies a second substituteParams pass with a fresh {{original}} binding');
 }
 
-// OpenAI short-circuit: system passes through completely unmodified, sysprompt settings ignored
 {
     const result = assembleStoryString({
         ...baseAssembleParams,
@@ -211,8 +190,6 @@ const baseAssembleParams = {
     assert.equal(result.system, '', 'main_api === openai passes through even a falsy system unmodified (not nullified specially)');
 }
 
-// --- persona_description_position gating ---
-
 {
     const templateWithPersona = { ...baseAssembleParams, storyStringTemplate: '{{persona}}' };
 
@@ -226,12 +203,10 @@ const baseAssembleParams = {
     const elsewhere = assembleStoryString({
         ...templateWithPersona,
         persona: 'Persona details',
-        personaDescriptionPosition: 999, // any non-IN_PROMPT position, e.g. AFTER_CHAR/TOP_AN/BOTTOM_AN/AT_DEPTH
+        personaDescriptionPosition: 999,
     });
     assert.equal(elsewhere.combinedStoryString, '', 'persona blanked from the story string when position is not IN_PROMPT');
 }
-
-// --- instruct-mode combination (via real formatInstructModeStoryString) ---
 
 {
     const instructPreset = {
@@ -250,7 +225,6 @@ const baseAssembleParams = {
 }
 
 {
-    // non-instruct mode: combinedStoryString is just the rendered story string, untouched
     const result = assembleStoryString({
         ...baseAssembleParams,
         storyStringTemplate: '{{description}}',
@@ -258,8 +232,6 @@ const baseAssembleParams = {
     });
     assert.equal(result.combinedStoryString, 'Desc\n', 'non-instruct mode leaves the rendered story string unwrapped');
 }
-
-// --- applyStoryStringInject / storyStringInjection under all 4 combinations ---
 
 for (const mainApi of ['openai', 'textgenerationwebui']) {
     for (const storyStringPosition of [extension_prompt_types.IN_PROMPT, extension_prompt_types.IN_CHAT]) {
@@ -275,7 +247,6 @@ for (const mainApi of ['openai', 'textgenerationwebui']) {
         const shouldInject = mainApi !== 'openai' && storyStringPosition === extension_prompt_types.IN_CHAT;
 
         if (shouldInject) {
-            // IN_CHAT position suppresses renderStoryString's trailing-newline append (see below).
             assert.deepEqual(
                 result.storyStringInjection,
                 { content: 'Desc', depth: 3, role: extension_prompt_roles.USER },
@@ -289,9 +260,6 @@ for (const mainApi of ['openai', 'textgenerationwebui']) {
     }
 }
 
-// Note: renderStoryString computes IN_CHAT's "no trailing newline" rule using its own
-// storyStringPosition option, so combinedStoryString in the IN_CHAT injected case above still has
-// no forced trailing newline decision from that branch - verify it directly too.
 {
     const result = assembleStoryString({
         ...baseAssembleParams,
@@ -301,8 +269,6 @@ for (const mainApi of ['openai', 'textgenerationwebui']) {
     });
     assert.equal(result.storyStringInjection.content, 'Desc', 'IN_CHAT position suppresses renderStoryString\'s trailing-newline append');
 }
-
-// --- strip_examples ---
 
 {
     const kept = assembleStoryString({ ...baseAssembleParams, storyStringTemplate: '', stripExamples: false });

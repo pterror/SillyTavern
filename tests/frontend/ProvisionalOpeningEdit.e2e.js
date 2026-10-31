@@ -6,11 +6,10 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 }
 
 /**
- * Creates a character whose greetings are `greetings`, in order, with the first one as the default.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
  * @param {string[]} greetings
- * @returns {Promise<string>} The new character's avatar filename.
+ * @returns {Promise<string>}
  */
 async function createCharacter(page, name, greetings) {
     return page.evaluate(async ({ name, greetings }) => {
@@ -27,7 +26,6 @@ async function createCharacter(page, name, greetings) {
 }
 
 /**
- * Opens the character and waits for its chat's opening to be in place.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -48,7 +46,6 @@ async function openCharacter(page, avatar) {
 }
 
 /**
- * Every opening the server has for the character, stored and card-only, in order.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -150,7 +147,10 @@ test.describe('hiding messages that include a card greeting with no row', () => 
 test.describe('editing the opening to a card greeting\'s text', () => {
     test.beforeEach(testSetup.awaitST);
 
-    /** @param {import('@playwright/test').Page} page @param {string} text */
+    /**
+     * @param {import('@playwright/test').Page} page
+     * @param {string} text
+     */
     async function editOpening(page, text) {
         await page.locator('#chat .mes[mesid="0"] .mes_edit').click();
         await page.locator('#curEditTextarea').fill(text);

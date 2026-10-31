@@ -45,11 +45,10 @@ export const GENERATION_TYPE_TRIGGERS = [
 /**
  * Known injection IDs and helper functions for system extensions handling.
  */
-/** Where a persona's description goes in the prompt. */
 export const persona_description_positions = {
     IN_PROMPT: 0,
     /**
-     * @deprecated Use persona_description_positions.IN_PROMPT instead.
+     * @deprecated
      */
     AFTER_CHAR: 1,
     TOP_AN: 2,
@@ -58,11 +57,9 @@ export const persona_description_positions = {
     NONE: 9,
 };
 
-/** A persona description's depth and role in the chat, when its persona doesn't say. */
 export const persona_description_defaults = { depth: 2, role: 0 };
 
 export const inject_ids = {
-    // Injections at one place join in the order of their keys: the note sorts after the memory's (`1_memory`).
     AUTHORS_NOTE: '2_floating_prompt',
     PERSONA_DESCRIPTION: 'PERSONA_DESCRIPTION',
     STORY_STRING: '__STORY_STRING__',
@@ -168,7 +165,6 @@ export const OVERSWIPE_BEHAVIOR = {
     NONE: 'none',
     /** An overswipe will loop to the first swipe. */
     LOOP: 'loop',
-    /** Pristine greetings will loop, and chevrons will always be shown. */
     PRISTINE_GREETING: 'pristine_greeting',
     /** If chat tree is enabled, then an overswipe will allow the user to edit the message before starting a new generation. */
     EDIT_GENERATE: 'edit_generate',

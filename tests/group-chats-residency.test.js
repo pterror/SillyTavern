@@ -1,15 +1,5 @@
 import { describe, test, expect, jest, beforeEach, beforeAll } from '@jest/globals';
 
-// group-chats.js (public/scripts/) pulls in script.js and a wide chunk of the client UI stack, none of which is
-// safely importable in a plain node test env (jQuery/DOM assumptions throughout) - same problem
-// character-repository.test.js solves by mocking at the module boundary. Everything below is mocked the same
-// way: real behavior only where a test needs it (characterRepository, `characters`/`charactersStore`,
-// `onlyUnique`, `power_user`, FILTER_TYPES), inert stand-ins everywhere else.
-
-// group-chats.js has a top-level `jQuery(() => { ... })` DOM-wiring block (pre-existing, not introduced by
-// this change) that runs at module import time regardless of what's mocked above - it needs `jQuery`/`$`/`CSS`
-// globals to exist so the import itself doesn't throw. A Proxy-based infinite-chainable stands in for jQuery's
-// chaining API ($(...).on(...).fadeIn(...) etc.) since nothing under test here depends on it doing anything.
 function makeChainable() {
     const target = () => makeChainable();
     return new Proxy(target, {
@@ -26,11 +16,6 @@ const existsMock = jest.fn();
 const getManyMock = jest.fn();
 const getMock = jest.fn();
 
-// `characters` is a single stable array reference, mutated in place (never reassigned) - jest's ESM module
-// mocking snapshots a plain exported property's value at mock-factory-eval time rather than exposing a true
-// live getter, so reassigning this binding (`characters = []`) in beforeEach would silently orphan
-// group-chats.js's already-bound reference to the old (now-stale, forever-empty) array. Mutating in place keeps
-// both sides pointing at the same object.
 /** @type {{avatar: string, name: string}[]} */
 const characters = [];
 /** @type {Map<string, {avatar: string, name: string}>} */
@@ -64,13 +49,9 @@ jest.unstable_mockModule('../public/scripts/constants.js', () => ({
 
 jest.unstable_mockModule('../public/scripts/random-sort.js', () => ({
     getRandomSortSeed: jest.fn(() => 42),
-    // Reverse key order, so a test can tell the seeded order from the order the rows came in.
     compareByRandomSeed: (aKey, bKey) => (aKey < bKey ? 1 : aKey > bKey ? -1 : 0),
 }));
 
-// buildCharacterQuery/isServerQueryableSort/CharacterQueryError/isInvalidSortFieldError are re-implemented
-// minimally here (they're pure, and the real versions live in character-repository.js which itself depends on
-// script.js).
 const queryAllMock = jest.fn();
 
 class CharacterQueryError extends Error {
@@ -100,14 +81,11 @@ jest.unstable_mockModule('../public/scripts/character-repository.js', () => ({
         else if (sortField) sort = { field: sortField, order: sortOrder };
         return { filter, sort };
     },
-    // Mirrors the real function's current contract (character-repository.js): true for everything except
-    // 'search' - the client no longer pre-validates individual column names against a hand-maintained list.
     isServerQueryableSort: (sortField) => sortField !== 'search',
     CharacterQueryError,
     isInvalidSortFieldError: (error) => error instanceof CharacterQueryError && error.reason === 'invalid-sort-field',
 }));
 
-// group-chats.js re-exports upstream's saveGroupChat() from the compat save, whose own imports aren't mocked here.
 jest.unstable_mockModule('../public/scripts/chat-compat-save.js', () => ({ saveGroupChat: jest.fn() }));
 jest.unstable_mockModule('../public/script.js', () => ({
     _snapshotMessages: jest.fn(),
@@ -180,9 +158,6 @@ jest.unstable_mockModule('../public/scripts/character-field-editor.js', () => ({
     blockWhileFieldEditing: jest.fn(),
 }));
 
-// queryWithSortFallback's contract (character-list.js, covered against the real route by
-// character-list-sort-fallback.test.js): a rejected sort, or `search` with no term, is run again in name order, or
-// relevance order with a term, after a warning; any other failure reaches the caller.
 const unsupportedSortWarnings = [];
 jest.unstable_mockModule('../public/scripts/character-list.js', () => ({
     getCharacters: jest.fn(),
@@ -212,7 +187,6 @@ jest.unstable_mockModule('../public/scripts/request-headers.js', () => ({
 }));
 
 jest.unstable_mockModule('../public/scripts/character-store.js', () => {
-    // The real resolveCharacterRef, resolveCharacterRefPair and CHARACTER_REF_MISMATCH over this mock's stores.
     const CHARACTER_REF_MISMATCH = Symbol('CHARACTER_REF_MISMATCH');
     const resolveCharacterRef = (ref) => {
         const upstreamHit = characters[ref];
@@ -351,7 +325,6 @@ beforeEach(() => {
     global.toastr = { warning: jest.fn(), info: jest.fn(), success: jest.fn(), error: jest.fn() };
 });
 
-/** Registers a resident character in both `characters` and `charactersStore`. */
 function addResidentCharacter(avatar, name = avatar) {
     const character = { avatar, name };
     characters.push(character);
@@ -360,15 +333,11 @@ function addResidentCharacter(avatar, name = avatar) {
 }
 
 describe('validateGroup()', () => {
-    // validateGroup() saves through global fetch and there is no server here. saveGroupProperty() reads
-    // nothing off the response, so a bare successful one is enough.
     const SAVE_URL = '/api/groups/save-partial';
     const FIND_URL = '/api/characters/find';
     const originalFetch = globalThis.fetch;
-    /** Ids `/api/characters/find` answers per exact name; a name not listed matches nothing. */
     /** @type {Record<string, string[]>} */
     let idsByName;
-    /** When set, `/api/characters/find` answers with this status instead. */
     /** @type {number|null} */
     let findFailStatus;
 
@@ -456,7 +425,6 @@ describe('validateGroup()', () => {
     });
 
     test('§4.2: aborts the member-pruning mutation when exists() returns a partial answer', async () => {
-        // Requested two ids, server only answered for one - must not be read as "the other one is gone".
         existsMock.mockResolvedValue({ 'a.png': true });
         const group = { id: 'g1', members: ['a.png', 'b.png'], chats: [] };
 
@@ -530,7 +498,7 @@ describe('getGroupMembersResolved()', () => {
 
     test('returns an explicit unresolved list instead of undefined holes for non-resident members', async () => {
         addResidentCharacter('alice.png', 'Alice');
-        getManyMock.mockResolvedValue(new Map()); // repository has no answer either - a true miss
+        getManyMock.mockResolvedValue(new Map());
         groupsStore.create({ id: 'g3', members: ['alice.png', 'missing.png'] });
 
         const result = await getGroupMembersResolved('g3');
@@ -578,8 +546,6 @@ describe('buildGroupCandidateQuery()', () => {
 });
 
 describe('getGroupCharacters() candidates', () => {
-    // The module-wide jQuery stand-in answers `.is(':selected')` with a truthy Proxy; this block answers the sort
-    // dropdown's "Search" option from `searchOptionSelected` instead.
     const originalDollar = global.$;
     let searchOptionSelected = false;
     /** @type {import('../public/scripts/filters.js').FilterHelper} */
@@ -652,7 +618,6 @@ describe('getGroupCharacters() candidates', () => {
         expect(filter).toEqual({ search: 'ali', excludeIds: [] });
         expect(sort).toEqual({ field: 'search', order: 'asc' });
         expect(result).toEqual([toEntity(remote)]);
-        // The server did the search, tags and fav; the browser's pass keeps only the other filters.
         expect(groupCandidatesFilter.applyFiltersCalls).toEqual([{
             tempOverrides: { search: '', tag: { selected: [], excluded: [] }, fav: 'UNDEFINED' },
         }]);

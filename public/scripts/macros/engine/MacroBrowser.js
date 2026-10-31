@@ -170,7 +170,6 @@ export class MacroBrowser {
             return;
         }
 
-        // macro names in the search data don't include braces
         query = query.replace(/[{}]/g, '');
 
         const allMacros = MacroRegistry.getAllMacros();
@@ -185,7 +184,7 @@ export class MacroBrowser {
 
         const keys = [
             { name: 'name', weight: 10 },
-            { name: 'aliases', weight: 1 }, // visible aliases already have their own entry, no need to rank high
+            { name: 'aliases', weight: 1 },
             { name: 'description', weight: 5 },
             { name: 'category', weight: 3 },
             { name: 'argNames', weight: 2 },
@@ -218,7 +217,7 @@ export class MacroBrowser {
         if (this.isSorted) {
             this.#sortMacros();
         } else {
-            this.#loadMacros(); // restores registration order
+            this.#loadMacros();
         }
 
         const listPanel = this.dom.querySelector('.macro-list-panel');
@@ -246,7 +245,7 @@ export class MacroBrowser {
     }
 }
 
-/** @returns {string} Placeholder HTML, later replaced by the rendered browser. */
+/** @returns {string} */
 export function getMacrosHelp() {
     return '<div class="macroHelp"><i class="fa-solid fa-spinner fa-spin"></i> Loading macro documentation...</div>';
 }
@@ -266,7 +265,6 @@ function getCategoryConfig(category) {
 export function formatMacroSignature(macro) {
     if (macro.displayOverride) {
         if (macro.aliasOf) {
-            // displayOverride is written against the main macro's name; swap in this alias's name
             const escapedMainName = escapeRegex(macro.aliasOf);
             return macro.displayOverride.replace(new RegExp(`(?<=[\\b{\\s])${escapedMainName}(?=[\\b}:\\s])`, 'g'), `${macro.name}`);
         }
@@ -512,7 +510,6 @@ export function renderMacroDetails(macro, options = {}) {
         details.appendChild(argsSection);
     }
 
-    // shown even when macro.returns is empty, since the type badge alone is still useful
     {
         const returnsSection = document.createElement('div');
         returnsSection.classList.add('macro-details-section');

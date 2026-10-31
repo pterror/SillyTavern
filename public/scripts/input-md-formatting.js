@@ -4,7 +4,6 @@ import { isEditorEvent } from './live-editor/registry.js';
 export function initInputMarkdown() {
     $(document).on('keydown', 'textarea.mdHotkeys', function (e) {
         if (!power_user.enable_md_hotkeys) { return; }
-        // A live editor on this textarea formats with its own keys; this is its copy of the key.
         if (isEditorEvent(e.originalEvent)) { return; }
 
         // Ensure that the element is a textarea

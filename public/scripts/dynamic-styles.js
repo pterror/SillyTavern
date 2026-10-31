@@ -116,10 +116,8 @@ function applyDynamicFocusStyles(styleSheet, { fromExtension = false } = {}) {
         if (!focusRules.has(`${baseSelector}|${wrapperSignature(wrappers)}`)) {
             targetStyleSheet ??= getDynamicStyleSheet({ fromExtension });
 
-            // :focus-visible is the closest keyboard-equivalent to :hover; only generated for rules without a manual focus rule already
             const focusSelector = rule.selectorText.replace(/:hover/g, ':focus-visible');
 
-            // Pseudo-elements can't take :focus-visible appended (invalid CSS syntax)
             if (focusSelector.includes('::')) {
                 return;
             }

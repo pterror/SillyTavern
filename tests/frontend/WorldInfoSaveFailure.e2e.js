@@ -1,16 +1,9 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-/** A page's write of a whole book: the changes it made (or a new book). */
 const BOOK_WRITE = /\/api\/worldinfo\/(entries\/apply|create)$/;
 
-// A World Info write the server refuses (or never receives) shows an error toast naming what wasn't saved,
-// and nothing that depends on the file - linking a card to it, deleting the old file on rename, reporting
-// success - goes ahead without it. The failures are injected with page.route(). A book can't be written under
-// the embedded lorebook's name at all, and the user is told the same way.
-
 /**
- * Wraps toastr.error/success and WORLDINFO_UPDATED so the test can read what the page reported.
  * @param {import('@playwright/test').Page} page
  */
 async function recordReports(page) {
@@ -40,7 +33,6 @@ async function readReports(page) {
 }
 
 /**
- * The book names the server lists right now.
  * @param {import('@playwright/test').Page} page
  * @returns {Promise<string[]>}
  */
@@ -54,12 +46,10 @@ async function serverBookNames(page) {
 }
 
 /**
- * Creates a character through the UI, selects it, and gives it an embedded book named `bookName` with one
- * entry keyed `savefailurekey`.
  * @param {import('@playwright/test').Page} page
- * @param {string} name Character name
- * @param {string} bookName Name of the embedded book
- * @returns {Promise<string>} The character's avatar
+ * @param {string} name
+ * @param {string} bookName
+ * @returns {Promise<string>}
  */
 async function createCharacterWithEmbeddedBook(page, name, bookName) {
     let avatar = null;
@@ -116,8 +106,6 @@ async function deleteCharacter(page, avatar) {
 }
 
 /**
- * Clicks an editor button with Popup.show.input answering `answer`, then waits until the page has shown
- * `errorCount` error toasts in all.
  * @param {import('@playwright/test').Page} page
  * @param {string} selector
  * @param {string} answer
@@ -189,7 +177,6 @@ test.describe('a failed World Info write', () => {
             expect(linkRequests).toEqual([]);
             expect(await serverBookNames(page)).not.toContain(bookName);
 
-            // Once the write goes through, the same import links the card and reports success.
             await page.unroute(BOOK_WRITE);
             const imported = await page.evaluate(async ({ avatar }) => {
                 const { importEmbeddedWorldInfo } = await import('./scripts/world-info.js');
@@ -323,7 +310,6 @@ test.describe('a failed World Info write', () => {
 
         expect(refused).toEqual({ created: false, listed: false, cached: false });
 
-        // A request that never reaches the server still rejects, and shows the same toast first.
         await page.route(BOOK_WRITE, route => route.abort('failed'));
         const unreachable = await page.evaluate(async ({ unreachableName }) => {
             const { createNewWorldInfo, world_names, worldInfoCache } = await import('./scripts/world-info.js');
@@ -398,7 +384,6 @@ test.describe('a failed World Info write', () => {
             if (!first || !second) {
                 throw new Error('Could not create the test entries');
             }
-            // Give the file both entries' starting state, so only the edits below are in question.
             if (!await saveWorldInfoEntry(bookName, data, first.uid, true) || !await saveWorldInfoEntry(bookName, data, second.uid, true)) {
                 throw new Error('Could not save the test entries');
             }
@@ -450,8 +435,6 @@ test.describe('a failed World Info write', () => {
         const reserved = '__embedded__';
         const oldName = `WISaveFailureReserved-${Date.now()}`;
 
-        // A character whose embedded book is itself named `__embedded__`, open in the embedded lorebook editor,
-        // so a write under that name would have somewhere to land: this card.
         const avatar = await createCharacterWithEmbeddedBook(page, `WISaveFailureReservedChar-${Date.now()}`, reserved);
 
         try {
@@ -494,7 +477,6 @@ test.describe('a failed World Info write', () => {
             }, { avatar, reserved, oldName });
 
             const reports = await readReports(page);
-            // Rename, duplicate, create and Import Card Lore each say so.
             expect(reports.error).toHaveLength(4);
             for (const error of reports.error) {
                 expect(error).toContain(`'${reserved}' was not saved. That name is reserved for embedded lorebooks.`);

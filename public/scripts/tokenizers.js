@@ -37,8 +37,6 @@ export const tokenizers = {
     DEEPSEEK: 18,
     COMMAND_A: 19,
     BEST_MATCH: 99,
-    // Official tokenizer files the server downloads on demand, from 1000 up, above upstream's range.
-    // A value is fixed forever once shipped: never renumbered, reused or removed.
     QWEN3: 1000,
     LLAMA3_1: 1001,
     NEMO_TEKKEN: 1002,
@@ -234,8 +232,7 @@ export const ENCODE_TOKENIZERS = [
 ];
 
 /**
- * Whether the given (or currently active) main API is Chat Completion (OpenAI-compatible).
- * @param {string} [api] API to check. Defaults to the currently active main API.
+ * @param {string} [api]
  * @returns {boolean}
  */
 function isOpenAiApi(api = main_api) {
@@ -334,32 +331,16 @@ const TOKENIZER_URLS = {
 
 const textEncoder = new TextEncoder();
 
-/**
- * Token counts for the current chat only, keyed `${tokenizer.key}-${hash}+${padding}` (text) or
- * `${tokenizer.key}-${hash}` (a chat-completion message). Emptied on CHAT_CHANGED and whenever the
- * server names a different tokenizer.
- * @type {Map<string, number>}
- */
+/** @type {Map<string, number>} */
 const countCache = new Map();
 
-/**
- * Token ids for the current settings' entries (bias, banned tokens, NovelAI bad words and stop
- * strings), keyed `${tokenizer.key}|${tokenizer.id}|${text}`; null where the tokenizer has none.
- * Emptied whenever the server names a different tokenizer.
- * @type {Map<string, number[]|null>}
- */
+/** @type {Map<string, number[]|null>} */
 const idCache = new Map();
 
-/**
- * Per API, the texts its current entries encode, for the background prefetch.
- * @type {Map<string, () => string[]>}
- */
+/** @type {Map<string, () => string[]>} */
 const entryTextSources = new Map();
 
-/**
- * Called whenever the server names a different tokenizer for the current state.
- * @type {Set<() => void>}
- */
+/** @type {Set<() => void>} */
 const tokenizerChangeListeners = new Set();
 
 /**
@@ -372,15 +353,8 @@ export function guesstimate(str) {
     return Math.ceil(byteLength / BYTES_PER_TOKEN);
 }
 
-/**
- * A no-op: counts are kept in memory for the current chat only. Exported because upstream exports it.
- */
 export async function saveTokenCache() {}
 
-/**
- * Deletes the `tokenCache` blob older clients stored: an entry for every chat ever opened, keyed by
- * tokenizers the client picked.
- */
 async function removeStoredTokenCache() {
     try {
         await localforage.createInstance({ name: 'SillyTavern_ChatCompletions' }).removeItem('tokenCache');
@@ -397,15 +371,13 @@ async function removeStoredTokenCache() {
  */
 
 /**
- * The tokenizer a `/api/tokenizers/current/*` response names.
  * @typedef {object} CurrentTokenizer
- * @property {number} id A `tokenizers` value: API id for a remote tokenizer, NONE for an estimate.
+ * @property {number} id
  * @property {string} name
  * @property {string} [model]
  * @property {'remote'|'local'|'unknown'|'none'|'fallback'|'failed'} basis
  * @property {string} key
  * @property {{ dropped?: { one: string, many: string }, trimEstimate?: string, unknownModel?: string }} [messages]
- * Server-built wording; `dropped` has `{count}` and `{entries}` for the browser to fill in.
  */
 
 /**
@@ -438,8 +410,7 @@ export function selectTokenizer(tokenizerId) {
 }
 
 /**
- * A text completion type's model setting, as the server reads it for its sends. Never throws.
- * @param {string} type Text completion type.
+ * @param {string} type
  * @returns {string}
  */
 function getTextgenModelSetting(type) {
@@ -450,8 +421,7 @@ function getTextgenModelSetting(type) {
 }
 
 /**
- * The on-screen state of a text completion type, for `/api/tokenizers/current/*`.
- * @param {string} type Text completion type.
+ * @param {string} type
  */
 function getTextgenTokenizerState(type) {
     return {
@@ -464,9 +434,8 @@ function getTextgenTokenizerState(type) {
 }
 
 /**
- * The on-screen connection state the server resolves the tokenizer from. Names no tokenizer.
- * @param {string} [api] Main API. Defaults to the current one.
- * @returns {object|null} null for an API with no tokenizer state.
+ * @param {string} [api]
+ * @returns {object|null}
  */
 export function getTokenizerState(api = main_api) {
     switch (api) {
@@ -480,7 +449,6 @@ export function getTokenizerState(api = main_api) {
             return { api, hordeModels: Array.isArray(horde_settings.models) ? horde_settings.models : [], tokenizerSetting: power_user.tokenizer };
         case 'openai': {
             const source = oai_settings.chat_completion_source;
-            // The server counts with a custom URL's own `/tokenize` when the URL is llama.cpp.
             const url = source === chat_completion_sources.CUSTOM ? { url: oai_settings.custom_url ?? '' } : {};
             return { api, source, ...url, model: getChatCompletionModel() ?? '', tokenizerSetting: power_user.tokenizer };
         }
@@ -489,18 +457,13 @@ export function getTokenizerState(api = main_api) {
     }
 }
 
-/**
- * The server's last answer for the on-screen state, with the state it answered.
- * @type {{ stateKey: string, tokenizer: CurrentTokenizer } | null}
- */
+/** @type {{ stateKey: string, tokenizer: CurrentTokenizer } | null} */
 let rememberedTokenizer = null;
 
 /**
- * Remembers a response's tokenizer if it answered the current on-screen state, emptying the count
- * cache when it names a different tokenizer.
- * @param {string} stateKey The request's state, serialized.
+ * @param {string} stateKey
  * @param {CurrentTokenizer} tokenizer
- * @returns {boolean} Whether it answered the current state.
+ * @returns {boolean}
  */
 function rememberTokenizer(stateKey, tokenizer) {
     if (!tokenizer || typeof tokenizer !== 'object' || stateKey !== JSON.stringify(getTokenizerState())) {
@@ -515,14 +478,13 @@ function rememberTokenizer(stateKey, tokenizer) {
     }
     rememberedTokenizer = { stateKey, tokenizer };
     if (changed) {
-        // After the caller has stored what this response answered.
         queueMicrotask(prefetchEntryTokenIdsDebounced);
     }
     return true;
 }
 
 /**
- * @returns {CurrentTokenizer|null} The remembered answer, if it is for the current state.
+ * @returns {CurrentTokenizer|null}
  */
 function getRememberedTokenizer() {
     if (rememberedTokenizer && rememberedTokenizer.stateKey === JSON.stringify(getTokenizerState())) {
@@ -532,21 +494,16 @@ function getRememberedTokenizer() {
 }
 
 /**
- * The server's answer for the current on-screen state, as the last response left it. Never asks the
- * server.
- * @returns {CurrentTokenizer|null} null when no response has answered the current state.
+ * @returns {CurrentTokenizer|null}
  */
 export function getRememberedTokenizerAnswer() {
     return getRememberedTokenizer();
 }
 
-/** The routes whose response `warnings` are shown. */
 const ROUTES_WITH_NOTICES = new Set(['count', 'encode', 'trim']);
 
 /**
- * Shows the `fallback-copy` / `estimate` warnings a count, encode or trim response carries. Never
- * throws, so the functions that count add no throws.
- * @param {any} data The response.
+ * @param {any} data
  */
 function showResponseWarnings(data) {
     if (!Array.isArray(data?.warnings) || data.warnings.length === 0) {
@@ -560,11 +517,10 @@ function showResponseWarnings(data) {
 }
 
 /**
- * Posts to a `/api/tokenizers/current/*` route.
  * @param {string} route
  * @param {object} body
  * @param {boolean} async
- * @returns {any} The response data (a promise when `async`); null (or a promise of null) on failure.
+ * @returns {any}
  */
 function postCurrent(route, body, async) {
     const request = {
@@ -596,7 +552,6 @@ function postCurrent(route, body, async) {
 }
 
 /**
- * Asks the server which tokenizer answers `state`, synchronously, and remembers the answer.
  * @param {object|null} state
  * @returns {CurrentTokenizer|null}
  */
@@ -611,7 +566,6 @@ function askTokenizerSync(state) {
 }
 
 /**
- * The current state's tokenizer: the remembered answer, or one synchronous ask for it.
  * @returns {CurrentTokenizer|null}
  */
 function getCurrentTokenizerSync() {
@@ -619,7 +573,6 @@ function getCurrentTokenizerSync() {
 }
 
 /**
- * Asks the server for the current state's tokenizer in the background and remembers the answer.
  * @returns {Promise<void>}
  */
 async function refreshCurrentTokenizer() {
@@ -644,11 +597,10 @@ function idCacheKey(tokenizer, text) {
 }
 
 /**
- * Stores an encode response's ids if it answered the current state and its tokenizer didn't fail.
  * @param {string} stateKey
  * @param {string[]} texts
  * @param {any} data
- * @returns {(number[]|null)[]|null} The response's ids, null for a failed request.
+ * @returns {(number[]|null)[]|null}
  */
 function applyEncodeResponse(stateKey, texts, data) {
     const ids = Array.isArray(data?.ids) ? data.ids : null;
@@ -660,8 +612,7 @@ function applyEncodeResponse(stateKey, texts, data) {
 }
 
 /**
- * Registers the texts an API's current entries encode, so they are fetched in the background.
- * @param {string} api Main API the entries are sent to.
+ * @param {string} api
  * @param {() => string[]} getTexts
  */
 export function registerEntryTextSource(api, getTexts) {
@@ -669,7 +620,6 @@ export function registerEntryTextSource(api, getTexts) {
 }
 
 /**
- * Encodes the current API's entries that aren't in the id cache, in the background.
  * @returns {Promise<void>}
  */
 async function prefetchEntryTokenIds() {
@@ -690,12 +640,9 @@ async function prefetchEntryTokenIds() {
 export const prefetchEntryTokenIdsDebounced = debounce(prefetchEntryTokenIds);
 
 /**
- * Token ids for entry texts, sent to `api`: the id cache's, and one synchronous `/current/encode`
- * for the rest.
  * @param {string[]} texts
- * @param {string} [api] Main API the entries are sent to. Defaults to the current one.
- * @returns {{ ids: Map<string, number[]|null>, tokenizer: CurrentTokenizer|null }} null ids where
- * there are none.
+ * @param {string} [api]
+ * @returns {{ ids: Map<string, number[]|null>, tokenizer: CurrentTokenizer|null }}
  */
 export function getEntryTokenIds(texts, api = main_api) {
     const ids = new Map();
@@ -723,7 +670,6 @@ export function getEntryTokenIds(texts, api = main_api) {
 }
 
 /**
- * Calls `listener` whenever the server names a different tokenizer for the current state.
  * @param {() => void} listener
  */
 export function onTokenizerChange(listener) {
@@ -731,9 +677,7 @@ export function onTokenizerChange(listener) {
 }
 
 /**
- * The on-screen connection state of `api`, as JSON with non-ASCII characters escaped so it can be a
- * header value.
- * @param {string} [api] Main API. Defaults to the current one.
+ * @param {string} [api]
  * @returns {string}
  */
 export function getTokenizerStateHeader(api = main_api) {
@@ -741,20 +685,13 @@ export function getTokenizerStateHeader(api = main_api) {
 }
 
 /**
- * The server's tokenizer answer for `api`'s on-screen state: the remembered one, or one synchronous
- * ask for it.
- * @param {string} [api] Main API. Defaults to the current one.
+ * @param {string} [api]
  * @returns {CurrentTokenizer|null}
  */
 export function getTokenizerAnswer(api = main_api) {
     return api === main_api ? getCurrentTokenizerSync() : askTokenizerSync(getTokenizerState(api));
 }
 
-/**
- * Shows the `trim-estimate` warning, in the server's words, when the current state's remembered
- * answer after a browser-built send's counts has basis `failed`: the send was fitted to the context
- * by the estimate because the tokenizer failed. Asks the server nothing.
- */
 export function showTrimEstimateWarning() {
     const tokenizer = getRememberedTokenizer();
     if (tokenizer?.basis !== 'failed') {
@@ -769,8 +706,7 @@ export function showTrimEstimateWarning() {
 }
 
 /**
- * Shows the `dropped` warning for the entries one send left out, in the server's words.
- * @param {CurrentTokenizer|null} tokenizer The answer the entries' ids came from.
+ * @param {CurrentTokenizer|null} tokenizer
  * @param {string[]} entries
  */
 export function showDroppedEntries(tokenizer, entries) {
@@ -790,17 +726,16 @@ export function showDroppedEntries(tokenizer, entries) {
 
 /**
  * @param {number} tokenizerId
- * @returns {string} The lowercased `tokenizers` key.
+ * @returns {string}
  */
 function getTokenizerKey(tokenizerId) {
     return Object.entries(tokenizers).find(([_, value]) => value === tokenizerId)?.[0].toLocaleLowerCase() ?? '';
 }
 
 /**
- * The friendly name of a server-resolved tokenizer.
  * @param {string} api
  * @param {CurrentTokenizer|null} tokenizer
- * @returns {Tokenizer} Tokenizer info
+ * @returns {Tokenizer}
  */
 function toFriendlyTokenizer(api, tokenizer) {
     if (api === 'openai') {
@@ -848,9 +783,8 @@ export function getTokenizerBestMatch(forApi) {
 }
 
 /**
- * The tokenizer the server resolves for a text completion type's own model.
- * @param {string} type Text completion type.
- * @returns {number} Tokenizer type.
+ * @param {string} type
+ * @returns {number}
  */
 export function getTextgenTypeTokenizer(type) {
     const tokenizer = main_api === 'textgenerationwebui' && textgen_settings.type === type
@@ -860,13 +794,11 @@ export function getTextgenTypeTokenizer(type) {
 }
 
 /**
- * Counts texts with the current state's tokenizer: cached counts, and one `/current/count` request
- * for the rest. A failed request gives the estimate, uncached.
  * @param {string[]} strings
- * @param {number} padding Added to each non-empty count.
+ * @param {number} padding
  * @param {boolean} async
- * @param {boolean} [promptStart] Every text begins the prompt a generation sends, and is counted as that prompt is.
- * @param {boolean} [recount] Every count is taken again, and the server's stored ones are replaced.
+ * @param {boolean} [promptStart]
+ * @param {boolean} [recount]
  * @returns {{ counts: number[], tokenizer: CurrentTokenizer|null }|Promise<{ counts: number[], tokenizer: CurrentTokenizer|null }>}
  */
 function countTexts(strings, padding, async, promptStart = false, recount = false) {
@@ -918,11 +850,9 @@ function countTexts(strings, padding, async, promptStart = false, recount = fals
 }
 
 /**
- * Same resolution as getTokenCountAsync(), but for many strings in one call: every string that
- * isn't already cached goes to the server in a single request.
- * @param {string[]} strings Strings to tokenize, in order
- * @param {number} [padding=0] Padding tokens added to each non-empty result
- * @returns {Promise<number[]>} Token counts, same order/length as `strings`
+ * @param {string[]} strings
+ * @param {number} [padding=0]
+ * @returns {Promise<number[]>}
  */
 export async function getTokenCountsAsyncBatch(strings, padding = 0) {
     if (isOpenAiApi()) {
@@ -933,12 +863,9 @@ export async function getTokenCountsAsyncBatch(strings, padding = 0) {
 }
 
 /**
- * The token counts of messages' texts for their counters: those not counted yet in one request, which the server
- * answers from its token-count store, tokenizing only what it hasn't stored. A chat-completion api counts each text
- * as one message, as upstream's counters do.
  * @param {string[]} texts
- * @param {{ recount?: boolean }} [options] `recount`: take every count again, replacing the server's stored ones.
- * @returns {Promise<number[]>} Same order and length as `texts`; 0 for an empty text.
+ * @param {{ recount?: boolean }} [options]
+ * @returns {Promise<number[]>}
  */
 export async function getMessageTokenCounts(texts, { recount = false } = {}) {
     if (!isOpenAiApi()) {
@@ -1025,7 +952,6 @@ export async function getTokenCountAsync(str, padding = undefined) {
             // For main "shadow" prompt building
             return guesstimate(str) + padding;
         }
-        // For extensions and WI
         return counterWrapperOpenAIAsync(str);
     }
 
@@ -1034,11 +960,9 @@ export async function getTokenCountAsync(str, padding = undefined) {
 }
 
 /**
- * getTokenCountAsync() for a text that begins the prompt a generation sends: counted as the backend
- * counts that prompt, so with BOS where the backend adds one.
- * @param {string} str String to tokenize
- * @param {number | undefined} padding Optional padding tokens. Defaults to 0.
- * @returns {Promise<number>} Token count.
+ * @param {string} str
+ * @param {number | undefined} padding
+ * @returns {Promise<number>}
  */
 export async function getPromptTokenCountAsync(str, padding = undefined) {
     if (typeof str !== 'string' || !str?.length || isOpenAiApi()) {
@@ -1065,7 +989,6 @@ export function getTokenCount(str, padding = undefined) {
             // For main "shadow" prompt building
             return guesstimate(str) + padding;
         }
-        // For extensions and WI
         return counterWrapperOpenAI(str);
     }
 
@@ -1095,8 +1018,6 @@ function counterWrapperOpenAIAsync(text) {
 }
 
 /**
- * The chat-completion tokenizer model string the server resolves: the answer's model, or the
- * chat-completion model name when the answer has none (an estimate).
  * @returns {string}
  */
 export function getTokenizerModel() {
@@ -1105,7 +1026,6 @@ export function getTokenizerModel() {
 }
 
 /**
- * A chat-completion message count from a `/current/count` response; the estimate when it has none.
  * @param {string} stateKey
  * @param {object} message
  * @param {any} data
@@ -1221,7 +1141,6 @@ function getTextTokensFromServer(endpoint, str, headers = undefined) {
         success: function (data) {
             ids = data.ids;
 
-            // Don't want to break reverse compatibility, so sprinkle in some of the JS magic
             if (Array.isArray(data.chunks)) {
                 Object.defineProperty(ids, 'chunks', { value: data.chunks });
             }
@@ -1328,8 +1247,6 @@ function decodeTextTokensFromServer(endpoint, ids, headers = undefined) {
 }
 
 /**
- * Headers for an `/openai/*` request: the chat-completion state, which the server resolves from
- * instead of `?model=`. The query stays for callers that send no state.
  * @returns {Record<string, string>}
  */
 function getOpenAIRouteHeaders() {
@@ -1403,10 +1320,9 @@ export function decodeTextTokens(tokenizerType, ids) {
 }
 
 /**
- * Decodes token ids to text with the tokenizer the server resolves for the API's on-screen state.
- * @param {number[]} ids Array of token ids
- * @param {string} [api] Main API. Defaults to the current one.
- * @returns {({ text: string, chunks: string[] })} Decoded token text as a single string and individual chunks. Empty on failure.
+ * @param {number[]} ids
+ * @param {string} [api]
+ * @returns {({ text: string, chunks: string[] })}
  */
 export function decodeCurrentTokens(ids, api = main_api) {
     const state = getTokenizerState(api);
@@ -1419,11 +1335,10 @@ export function decodeCurrentTokens(ids, api = main_api) {
 }
 
 /**
- * Trims text to a token limit with the tokenizer the server resolves for the on-screen state.
- * @param {string} text Text to trim.
- * @param {number} limit Maximum number of tokens to keep.
- * @param {string} direction `start` keeps the first tokens, anything else the last.
- * @returns {Promise<{ text: string, tokenizer: CurrentTokenizer|null }|null>} The trimmed text and the tokenizer that trimmed it; null on failure.
+ * @param {string} text
+ * @param {number} limit
+ * @param {string} direction
+ * @returns {Promise<{ text: string, tokenizer: CurrentTokenizer|null }|null>}
  */
 export async function trimCurrentTokens(text, limit, direction) {
     const state = getTokenizerState();
@@ -1450,8 +1365,6 @@ export async function initTokenizers() {
 
     eventSource.on(event_types.CHAT_CHANGED, () => countCache.clear());
 
-    // The inputs the server's answer depends on. Delegated, so each runs after the control's own
-    // handler has updated its setting.
     for (const event of [
         event_types.ONLINE_STATUS_CHANGED,
         event_types.CHATCOMPLETION_SOURCE_CHANGED,

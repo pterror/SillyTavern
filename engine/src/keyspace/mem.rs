@@ -1,29 +1,15 @@
-//! The shared in-memory buffer: entries sorted by key, their bytes in large chunks the buffer owns and frees
-//! whole, the map holding only fixed-size references into them.
-//!
-//! Each entry's value carries the sequence number of the insert that wrote it. A snapshot read sees, per key, the
-//! newest value at or before its sequence; an insert keeps the value it replaces only while a live snapshot may
-//! still read it (`Readers`), and folds in place otherwise.
-
 use std::borrow::Borrow;
 use std::collections::BTreeMap;
 use std::ops::Bound;
 
 use super::val::Val;
 
-/// Chunks grow from the smallest to the largest, each as large as all before it, so a small buffer stays small and
-/// a large one is a few allocations the allocator hands back whole.
 const MIN_CHUNK: usize = 4 << 10;
 const MAX_CHUNK: usize = 1 << 20;
 
-/// Memory per entry besides its bytes in the chunks: the map's share. Measured: 85 bytes per entry of 12 bytes of
-/// key and value (`measure calibrate`), before the sequence number and the older values' list (8 + 24).
 pub const ENTRY_OVERHEAD: usize = 104;
-/// Memory per older value kept for a snapshot, besides its bytes.
 const OLDER_OVERHEAD: usize = 40;
 
-/// The sequence numbers of the live snapshots, ascending: whether one may read a value written at `from` and
-/// replaced at `to` (from ≤ its sequence < to).
 pub struct Readers<'a>(pub &'a [u64]);
 
 impl Readers<'_> {
@@ -33,7 +19,6 @@ impl Readers<'_> {
     }
 }
 
-/// Bytes in one of the buffer's chunks. A chunk's memory never moves and is freed only with the buffer.
 struct Bytes {
     ptr: *const u8,
     len: usize,
@@ -96,8 +81,6 @@ impl Stored {
     }
 }
 
-/// A key's newest value with the sequence that wrote it, and older values a snapshot may still read (oldest
-/// first).
 struct Slot {
     seq: u64,
     val: Stored,
@@ -105,7 +88,6 @@ struct Slot {
 }
 
 impl Slot {
-    /// The value a snapshot at `seq` reads (None: none yet).
     fn at(&self, seq: u64) -> Option<&Stored> {
         if self.seq <= seq {
             return Some(&self.val);
@@ -120,22 +102,16 @@ impl Slot {
 
 pub struct Mem {
     map: BTreeMap<Bytes, Slot>,
-    /// Never grown or touched through a reference once made: bytes are written through `base`.
     chunks: Vec<Vec<u8>>,
-    /// The last chunk's start, and how much of it is used.
     base: *mut u8,
     used: usize,
     cap: usize,
-    /// Memory held: the chunks, and the map at `ENTRY_OVERHEAD` per entry.
     bytes: usize,
-    /// The log position its entries cover, once frozen.
     pub(super) covered: u64,
-    /// Frozen for the pool's budget, rather than for L or a close.
     pub(super) full: bool,
 }
 
 // SAFETY: `base` points into a chunk the `Mem` owns; it is written only through `&mut Mem` (`alloc`), and what
-// `Bytes` read was written before they were made.
 unsafe impl Send for Mem {}
 unsafe impl Sync for Mem {}
 
@@ -194,8 +170,6 @@ impl Mem {
         }
     }
 
-    /// Inserts `val` over the key's value at sequence `seq` (above every sequence before); returns how many bytes
-    /// the buffer grew by. The value replaced is kept while one of `readers` may read it.
     pub(super) fn insert(&mut self, key: &[u8], val: Val, seq: u64, readers: &Readers) -> i64 {
         let before = self.bytes;
         let Some(slot) = self.map.get(key) else {
@@ -214,10 +188,8 @@ impl Mem {
         };
         let keep = readers.reads(slot.seq, seq);
         if !keep {
-            // Folded in place: no snapshot reads the value replaced.
             let slot = self.map.get_mut(key).unwrap();
             let folded = match (&mut slot.val, val) {
-                // A counter's sum over a counter, or a maximum over a maximum, is kept in place: no new bytes.
                 (Stored::Add(old), Val::Add(n)) => {
                     *old = old.wrapping_add(n);
                     None
@@ -274,7 +246,6 @@ impl Mem {
         self.bytes as i64 - before as i64
     }
 
-    /// Drops the key's older values no live snapshot reads.
     fn prune(&mut self, key: &[u8], readers: &Readers) {
         let slot = self.map.get_mut(key).unwrap();
         if slot.older.is_empty() {
@@ -305,13 +276,10 @@ impl Mem {
         self.bytes -= freed;
     }
 
-    /// The value a snapshot at `seq` reads.
     pub fn get_at(&self, key: &[u8], seq: u64) -> Option<Val> {
         self.map.get(key).and_then(|s| s.at(seq)).map(Stored::val)
     }
 
-    /// Entries in `[start, end)` as a snapshot at `seq` reads them, in order, until `live` of them aren't
-    /// deletions.
     pub(super) fn page_at(
         &self,
         start: &[u8],
@@ -338,7 +306,6 @@ impl Mem {
         out
     }
 
-    /// `page_at` (or, with no `seq`, `page`) last first.
     pub(super) fn page_rev(
         &self,
         start: &[u8],
@@ -383,14 +350,12 @@ impl Mem {
         self.map.iter().map(|(k, v)| (k.get(), v.val.val()))
     }
 
-    /// Entries in `[start, end)`, in order.
     pub fn range<'a>(&'a self, start: &[u8], end: &[u8]) -> impl Iterator<Item = (&'a [u8], Val)> {
         self.map
             .range::<[u8], _>((Bound::Included(start), Bound::Excluded(end)))
             .map(|(k, v)| (k.get(), v.val.val()))
     }
 
-    /// How many entries in `[start, end)` aren't deletions, as a snapshot at `seq` (None: now) reads them.
     pub(super) fn count(&self, start: &[u8], end: &[u8], seq: Option<u64>) -> u64 {
         self.map
             .range::<[u8], _>((Bound::Included(start), Bound::Excluded(end)))
@@ -404,7 +369,6 @@ impl Mem {
             .count() as u64
     }
 
-    /// How many entries in `[start, end)` there are, deletions too, as a snapshot at `seq` (None: now) reads them.
     pub(super) fn count_all(&self, start: &[u8], end: &[u8], seq: Option<u64>) -> usize {
         self.map
             .range::<[u8], _>((Bound::Included(start), Bound::Excluded(end)))
@@ -412,7 +376,6 @@ impl Mem {
             .count()
     }
 
-    /// Entries in `[start, end)` in order, until `live` of them aren't deletions.
     pub(super) fn page(&self, start: &[u8], end: &[u8], live: usize) -> Vec<(Vec<u8>, Val)> {
         let mut out = Vec::new();
         let mut n = 0;
@@ -468,7 +431,6 @@ mod tests {
         let mut m = Mem::default();
         m.insert(b"a", Val::Add(1), 1, &Readers(&[]));
         m.insert(b"m", Val::Map(vec![(1, 5)]), 1, &Readers(&[]));
-        // A snapshot at 1 lives while 2 and 3 are inserted.
         m.insert(b"a", Val::Add(10), 2, &Readers(&[1]));
         m.insert(b"m", Val::Map(vec![(2, 6)]), 2, &Readers(&[1]));
         m.insert(b"b", Val::Put(b"x".to_vec()), 2, &Readers(&[1]));
@@ -485,7 +447,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![b"a".to_vec(), b"m".to_vec()]
         );
-        // Once no snapshot reads them, the older values go at the next insert of their key.
         m.insert(b"a", Val::Add(1000), 4, &Readers(&[]));
         assert!(m.map.get(&b"a"[..]).unwrap().older.is_empty());
         assert_eq!(m.get(b"a"), Some(Val::Add(1111)));

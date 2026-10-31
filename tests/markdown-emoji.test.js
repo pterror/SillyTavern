@@ -2,12 +2,6 @@ import { describe, test, expect, jest, beforeAll } from '@jest/globals';
 import { Marked } from 'marked';
 import showdown from 'showdown';
 
-// `:name:` shortcodes render as emoji, with the same set as upstream's showdown `emoji` option
-// (showdown.helper.emojis). Unknown names, and shortcodes in code, URLs, HTML tags and kept-whole HTML blocks,
-// stay as written.
-// Checked on both marked processors and through messageFormatting (the chat render path). messageFormatting's
-// DOM-bound and app-wide imports are replaced; DOMPurify needs a window, so sanitize is the identity here.
-
 jest.unstable_mockModule('../public/lib.js', () => ({
     Marked,
     showdown,

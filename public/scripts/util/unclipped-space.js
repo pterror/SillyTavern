@@ -1,6 +1,4 @@
 /**
- * The part of the window where what is inside an element is not clipped by any of its scrolling or clipping
- * ancestors.
  * @param {Element} el
  * @returns {{ left: number, top: number, right: number, bottom: number }}
  */

@@ -1,8 +1,5 @@
 /**
- * Sets tag_usage, the tags rows' usage_count, entity_counts and entity_tag_counts to what the store's write path keeps
- * them at, counted from the rows. For a test that writes character_tags, group_tags, characters or groups rows raw:
- * the store counts only the rows it writes itself.
- * @param {import('better-sqlite3').Database} db character-metadata.sqlite
+ * @param {import('better-sqlite3').Database} db
  */
 export function recountStoredCounters(db) {
     const filled = (/** @type {string} */ kind, /** @type {string} */ column) =>
@@ -41,7 +38,6 @@ function sideOf(tagTable) {
 }
 
 /**
- * A tag row's counter change, as the store's write path makes it (insertTagRowSync() / deleteTagRowSync()).
  * @param {import('better-sqlite3').Database} db
  * @param {string} tagTable
  * @param {string} entityId
@@ -66,12 +62,11 @@ function countTagRow(db, tagTable, entityId, tagId, sign) {
 }
 
 /**
- * Inserts a tag row raw and counts it as the store would.
  * @param {import('better-sqlite3').Database} db
- * @param {string} tagTable 'character_tags' or 'group_tags'.
+ * @param {string} tagTable
  * @param {string} entityId
  * @param {string} tagId
- * @returns {boolean} Whether it was inserted.
+ * @returns {boolean}
  */
 export function insertTagRowRaw(db, tagTable, entityId, tagId) {
     const { column } = sideOf(tagTable);
@@ -81,12 +76,11 @@ export function insertTagRowRaw(db, tagTable, entityId, tagId) {
 }
 
 /**
- * Deletes a tag row raw and counts it out as the store would.
  * @param {import('better-sqlite3').Database} db
- * @param {string} tagTable 'character_tags' or 'group_tags'.
+ * @param {string} tagTable
  * @param {string} entityId
  * @param {string} tagId
- * @returns {boolean} Whether it was deleted.
+ * @returns {boolean}
  */
 export function deleteTagRowRaw(db, tagTable, entityId, tagId) {
     const { column } = sideOf(tagTable);
@@ -96,8 +90,6 @@ export function deleteTagRowRaw(db, tagTable, entityId, tagId) {
 }
 
 /**
- * A stand-in for a prepared `INSERT INTO <tagTable> (<entity column>, tag_id) VALUES (?, ?)`: `run(entityId, tagId)`
- * inserts the row with insertTagRowRaw().
  * @param {import('better-sqlite3').Database} db
  * @param {string} tagTable
  */
@@ -115,7 +107,6 @@ function entitySide(kind) {
 }
 
 /**
- * An entity row's counter change with its tag rows, as the store's write path makes it (countEntityRowSync()).
  * @param {import('better-sqlite3').Database} db
  * @param {'character' | 'group'} kind
  * @param {string} id
@@ -145,7 +136,6 @@ function countEntityRow(db, kind, id, fav, sign) {
 }
 
 /**
- * Runs `insert` (which inserts one entity row raw) and counts the row in, with any tag rows it already has.
  * @param {import('better-sqlite3').Database} db
  * @param {'character' | 'group'} kind
  * @param {string} id
@@ -158,7 +148,6 @@ export function insertEntityRaw(db, kind, id, fav, insert) {
 }
 
 /**
- * Deletes an entity row and then its tag rows raw, counted as the store's delete counts them.
  * @param {import('better-sqlite3').Database} db
  * @param {'character' | 'group'} kind
  * @param {string} id
@@ -171,7 +160,6 @@ export function deleteEntityRaw(db, kind, id) {
 }
 
 /**
- * Sets an entity row's fav raw, counted as the store's fav write counts it.
  * @param {import('better-sqlite3').Database} db
  * @param {'character' | 'group'} kind
  * @param {string} id

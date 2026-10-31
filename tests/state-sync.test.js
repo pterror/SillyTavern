@@ -50,7 +50,6 @@ describe('chat_metadata as state, sent per key and per variable', () => {
             const changes = metadataChanges(after, baselineOf(before));
             expect(metadataChanges(after, baselineAfter(baselineOf(before), changes))).toBeNull();
         }
-        // Setting a variable with no object there makes it.
         const changes = metadataChanges({ variables: { a: 1 } }, baselineOf({}));
         changes.set = {};
         expect([...baselineAfter(baselineOf({}), changes)]).toEqual([['variables', '{"a":1}']]);

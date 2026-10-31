@@ -1,10 +1,3 @@
-// Removes the e2e run root when the process that opened it exits. It hangs off process exit rather than a
-// reporter, because a reporter given on the command line (`--reporter=line`) replaces the configured ones,
-// and the run root would then never be removed.
-//
-// Before removing it, the data roots of workers that had a failing test or didn't finish (a server that
-// failed to start, a crash) are moved out for inspection, and where each went is printed. If the seed
-// never finished building (global setup failed), the seed is kept instead.
 import fs from 'node:fs';
 import path from 'node:path';
 import { closeRunRoot, realTmpdir } from './util/temp-run-root.js';
@@ -15,7 +8,7 @@ export const SEED_DONE_MARKER = 'E2E-SEED-DONE';
 
 /**
  * @param {string} runRoot
- * @returns {string[]} The data roots worth keeping
+ * @returns {string[]}
  */
 function rootsToKeep(runRoot) {
     const seed = path.join(runRoot, 'seed');
@@ -30,7 +23,6 @@ function rootsToKeep(runRoot) {
 }
 
 /**
- * Moves out the data roots worth keeping, prints where they went, and removes the run root.
  * @param {string} runRoot
  */
 function closeE2ERunRoot(runRoot) {
@@ -57,7 +49,6 @@ function closeE2ERunRoot(runRoot) {
 }
 
 /**
- * Removes `runRoot` when this process exits. Call it only in the process that opened the run root.
  * @param {string} runRoot
  */
 export function closeE2ERunRootOnExit(runRoot) {

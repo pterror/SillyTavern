@@ -24,16 +24,16 @@ import { accountStorage } from './util/AccountStorage.js';
 import { emptySelection, isSelected, setOne, setRange, setAll, isEverything, isEmpty, countSelection, selectionToWire } from './bulk-selection.js';
 
 /**
- * @typedef {object} PreparedSelection A selection the server has read (`/api/characters/bulk/prepare`).
- * @property {object} selection The selection as sent (`selectionToWire()`): what the actions walk.
- * @property {number} count How many characters it holds.
- * @property {boolean} containsCurrent Whether the current character is one of them.
- * @property {string[]} sample Its first avatars.
+ * @typedef {object} PreparedSelection
+ * @property {object} selection
+ * @property {number} count
+ * @property {boolean} containsCurrent
+ * @property {string[]} sample
  */
 
 /**
- * @param {object} wire A selection as `selectionToWire()` gives it.
- * @returns {Promise<PreparedSelection|null>} `null` when the server couldn't fix it (already said so).
+ * @param {object} wire
+ * @returns {Promise<PreparedSelection|null>}
  */
 async function prepareSelection(wire) {
     const response = await fetch('/api/characters/bulk/prepare', {
@@ -54,8 +54,7 @@ async function prepareSelection(wire) {
 }
 
 /**
- * A selection's avatars, a page at a time.
- * @param {object} selection The selection as sent (`selectionToWire()`).
+ * @param {object} selection
  * @returns {AsyncGenerator<string[], void, undefined>}
  */
 async function* preparedAvatars(selection) {
@@ -76,7 +75,6 @@ async function* preparedAvatars(selection) {
 }
 
 /**
- * The characters whose results the page wants sent back: the ones it holds, and the rows on screen.
  * @returns {string[]}
  */
 function watchedAvatars() {
@@ -88,7 +86,6 @@ function watchedAvatars() {
 }
 
 /**
- * A toast showing how far a bulk action is, updated in place.
  * @param {string} title
  * @param {number} total
  */
@@ -102,13 +99,11 @@ function progressToast(title, total) {
 }
 
 /**
- * Runs an action on every character of a prepared selection (`/api/characters/bulk/run`), as the server streams its
- * progress back.
  * @param {PreparedSelection} prepared
  * @param {string} action
  * @param {object} options
- * @param {string} title For the progress toast.
- * @param {(line: { avatar: string, [key: string]: any }) => Promise<void>|void} [onItem] For each watched character done.
+ * @param {string} title
+ * @param {(line: { avatar: string, [key: string]: any }) => Promise<void>|void} [onItem]
  * @returns {Promise<{ done: number, failed: { avatar: string, error: string }[], stopped: boolean }>}
  */
 async function runPrepared(prepared, action, options, title, onItem) {
@@ -169,7 +164,6 @@ async function runPrepared(prepared, action, options, title, onItem) {
 }
 
 /**
- * Says what a bulk action didn't do: every character that failed, and whether it stopped before the end.
  * @param {string} title
  * @param {{ failed: { avatar: string }[], stopped: boolean }} result
  * @param {(avatar: string) => string} [nameOf]
@@ -184,9 +178,6 @@ function reportBulkProblems(title, result, nameOf = avatar => avatar) {
     }
 }
 
-/**
- * Removes the per-character browser keys of characters that no longer exist.
- */
 async function forgetDeletedCharactersInBrowser() {
     const prefixes = ['AlertRegex_', 'mediaWarningShown:'];
     /** @type {Map<string, string[]>} */
@@ -248,8 +239,6 @@ class CharacterContextMenu {
     };
 
     /**
-     * Duplicate one or more characters in a single batch request.
-     *
      * @param {string[]} avatars
      * @returns {Promise<void>}
      */
@@ -300,7 +289,6 @@ class CharacterContextMenu {
     };
 
     /**
-     * Shows a stored fav value on the held copy, if any, and on the character's list row.
      * @param {string} avatar
      * @param {boolean} fav
      */
@@ -436,7 +424,7 @@ class BulkTagPopupHandler {
     /** @type {PreparedSelection|null} */
     #prepared = null;
 
-    /** @type {string[]} The ids of the tags every selected character carries, as the server last said. */
+    /** @type {string[]} */
     #mutualTagIds = [];
 
     /**
@@ -506,9 +494,8 @@ class BulkTagPopupHandler {
     }
 
     /**
-     * Append and show the tag control for a prepared selection.
      * @param {PreparedSelection} prepared
-     * @param {string[]} [characterIds] The characters it was made from, when named one by one.
+     * @param {string[]} [characterIds]
      */
     async showPrepared(prepared, characterIds = prepared.sample) {
         this.#prepared = prepared;
@@ -561,7 +548,6 @@ class BulkTagPopupHandler {
     }
 
     /**
-     * Runs a tag action on every selected character, says what failed, and reads the mutual tags again.
      * @param {string} action
      * @param {object} [options]
      */
@@ -570,16 +556,12 @@ class BulkTagPopupHandler {
         /** @type {string[]} */
         const shown = [];
         const result = await runPrepared(this.#prepared, action, options, t`Bulk tag edit`, line => void shown.push(line.avatar));
-        // The characters the page holds or shows take their new tags now.
         if (shown.length) await rereadResidentEntityTagIds(shown);
         reportBulkProblems(t`Bulk tag edit`, result);
         await eventSource.emit(event_types.CHARACTERS_BULK_EDITED, { action, done: result.done, failed: result.failed.length });
         await this.refresh();
     }
 
-    /**
-     * Import existing tags for all selected characters
-     */
     async importExistingTags() {
         await this.#run('tag-import', { onlyExisting: true });
     }
@@ -592,7 +574,6 @@ class BulkTagPopupHandler {
     }
 
     /**
-     * The ids of the tags every selected character has.
      * @returns {string[]}
      */
     getMutualTagIds() {
@@ -688,13 +669,9 @@ class BulkEditOverlay {
     #stateChangeCallbacks = [];
     #bulkTagPopupHandler = new BulkTagPopupHandler();
 
-    /**
-     * What is selected, as rules over the list (bulk-selection.js), never as every selected character.
-     * @type {import('./bulk-selection.js').BulkSelection}
-     */
+    /** @type {import('./bulk-selection.js').BulkSelection} */
     #selection = emptySelection();
 
-    /** The list the selection is over (getCharacterListPageContext().queryKey). Another list clears it. */
     #selectionQueryKey = '';
 
     /**
@@ -969,23 +946,17 @@ class BulkEditOverlay {
     #getDisabledElements = () => [...this.container.getElementsByClassName(BulkEditOverlay.groupClass), ...this.container.getElementsByClassName(BulkEditOverlay.bogusFolderClass)];
 
     /**
-     * Resolves the avatar (the stable id this class stores selections by) for a character row element - the
-     * only identifier a character row carries.
-     * @param {Element} character - The html element of a character row
-     * @returns {string} The avatar of the character
+     * @param {Element} character
+     * @returns {string}
      */
     static #resolveAvatar = (character) => character.getAttribute('data-avatar');
 
     /**
-     * A character row's position in the list (`data-list-position`), or NaN when it has none.
      * @param {Element} character
      * @returns {number}
      */
     static #resolvePosition = (character) => Number(character.getAttribute('data-list-position') ?? NaN);
 
-    /**
-     * Shows each row on screen as selected or not.
-     */
     #paintSelection = () => {
         for (const row of this.#getEnabledElements()) {
             const selected = isSelected(this.#selection, BulkEditOverlay.#resolveAvatar(row), BulkEditOverlay.#resolvePosition(row));
@@ -1171,7 +1142,6 @@ class BulkEditOverlay {
         await this.#withPrepared(async (prepared) => {
             const held = new Set(charactersStore.getAll().map(character => character.avatar));
             const result = await runPrepared(prepared, 'duplicate', {}, t`Duplicate`, async (line) => {
-                // Extensions see the characters the page holds; the rest are counted in CHARACTERS_BULK_EDITED.
                 if (held.has(line.avatar)) await eventSource.emit(event_types.CHARACTER_DUPLICATED, { oldAvatar: line.avatar, newAvatar: line.path });
             });
             reportBulkProblems(t`Duplicate`, result);
@@ -1249,7 +1219,6 @@ class BulkEditOverlay {
             const checkbox = popupContent.find('#del_char_checkbox');
             const confirmed = callGenericPopup(popupContent, POPUP_TYPE.CONFIRM);
 
-            // The popup is in the DOM but not resolved yet; fill its avatar list once the first characters are read.
             import('./character-repository.js')
                 .then(({ characterRepository }) => characterRepository.getMany(prepared.sample))
                 .then((resolved) => {
@@ -1266,8 +1235,6 @@ class BulkEditOverlay {
 
             if (prepared.containsCurrent && !await closeCurrentChat()) return;
 
-            // Extensions see the characters the page holds: they get CHARACTER_DELETED (and CHAT_DELETED), with the
-            // character, as a single delete gives them. The rest are counted in CHARACTERS_BULK_EDITED.
             const held = new Map(charactersStore.getAll().map(character => [character.avatar, character]));
             /** @type {Map<string, any[]>} */
             const pastChats = new Map();

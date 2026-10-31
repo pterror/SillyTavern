@@ -1,17 +1,12 @@
 import { newSessionKey } from './chat-engine.js';
 
-/**
- * A request's session (`X-ST-Session`, sent by the page with every request; see public/scripts/tab-session.js) as
- * the chat routes act through it, and what the answer tells the tab of it.
- */
-
 export const SESSION_HEADER = 'X-ST-Session';
 export const SESSION_MOVED_HEADER = 'X-ST-Session-Moved';
 export const SESSION_GONE_HEADER = 'X-ST-Session-Gone';
 
 /**
  * @param {{ get(name: string): string | undefined }} req
- * @returns {string | undefined} The header's value; undefined for a caller with no tab.
+ * @returns {string | undefined}
  */
 export function sessionHeaderOf(req) {
     const value = req.get(SESSION_HEADER);
@@ -21,26 +16,22 @@ export function sessionHeaderOf(req) {
 export class RequestSession {
     /**
      * @param {string | undefined} header
-     * @param {string} user The user's handle.
+     * @param {string} user
      * @param {{ session: string | null, identifier: string, gone?: true }} resolved
      */
     constructor(header, user, resolved) {
         this.header = header;
         this.user = user;
         this.resolved = resolved;
-        /** @type {string | null} A session made for this request's writes. */
+        /** @type {string | null} */
         this.made = null;
     }
 
-    /** The UUID the request's conversations are named by: the session's (made or named), else the caller's
-     * deterministic one in the tree. Upstream's compat chat id is `s<this>.<tree>` when it has no current chat there. */
     get identifier() {
         return this.made ?? this.resolved.identifier;
     }
 
     /**
-     * Who a write acts as: a tab with no session (or a deleted one's) acts through a new session, which the answer
-     * hands the tab.
      * @returns {import('./chat-engine.js').Actor}
      */
     actor() {
@@ -49,7 +40,6 @@ export class RequestSession {
     }
 
     /**
-     * Who a read acts as: the session landing reads, or none.
      * @returns {import('./chat-engine.js').Actor}
      */
     reader() {
@@ -57,8 +47,6 @@ export class RequestSession {
     }
 
     /**
-     * Sets the answer's session headers: gone when the request named a deleted session; moved when a session was
-     * made for it, or `moved` says its write moved the session. A caller with no tab is told nothing.
      * @param {{ setHeader(name: string, value: string): unknown }} res
      * @param {{ moved?: boolean }} [o]
      */
@@ -71,7 +59,6 @@ export class RequestSession {
 }
 
 /**
- * The request's session in a tree.
  * @param {import('./chat-engine.js').ChatEngine} chats
  * @param {{ get(name: string): string | undefined, user: { profile: { handle: string } } }} req
  * @param {bigint} tree

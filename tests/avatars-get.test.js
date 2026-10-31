@@ -12,12 +12,6 @@ let tempDir;
 let avatarsDir;
 let thumbnailsPersonaDir;
 
-/**
- * Mounts the real avatars.js router (persona avatars) behind a fake auth middleware, mirroring
- * characters-manifest.test.js's pattern. Covers the `/get` route's `thumbnailVersions` field - the piece that
- * lets the client's getThumbnailUrl() emit the thumbnail route's `?v=` for personas up front instead of always
- * taking its no-cache redirect detour.
- */
 beforeAll(async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-avatars-get-test-'));
     avatarsDir = path.join(tempDir, 'avatars');

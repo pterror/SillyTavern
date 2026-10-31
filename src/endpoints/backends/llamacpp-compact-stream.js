@@ -7,70 +7,6 @@ import { noteReplyText } from '../../reply-reasoning.js';
 import { storedMessagesOf } from '../../stored-messages.js';
 import { generationIdFor, isGenerationStopped } from '../../generation-stop.js';
 
-/**
- * Compact wire protocol, originally for the llama.cpp raw-completions streaming path, now also used
- * by every other raw-action streaming backend (text-completions.js's forwardAndPersistCompactStream(),
- * chat-completions.js's own copy, kobold.js, novelai.js) - same encoder/decoder, since all of them are
- * ultimately "content text plus a handful of out-of-band signals."
- *
- * Plain bytes = raw UTF-8 text, appended directly to accumulated content.
- * `0xFF 0xFF`                                   = literal content byte 0xFF (escape).
- * `0xFF 0x01 <1 byte index>`                    = target/swipe index changed.
- * `0xFF 0x02 <4-byte BE length><length bytes>`  = token-probabilities JSON payload.
- * `0xFF 0x03 <4-byte BE length><length bytes>`  = reasoning/thinking text chunk (UTF-8), not content.
- * `0xFF 0x04 <4-byte BE length><length bytes>`  = assistant_node_id (UTF-8 string), sent once, at the
- *                                                 very end, once persistence is known - must be the
- *                                                 LAST frame before the stream ends, since the
- *                                                 client's stream reader stops at the natural end of
- *                                                 the byte stream rather than a sentinel line.
- * `0xFF 0x05 <4-byte BE length><length bytes>`  = one tool-call delta (JSON, the same per-chunk shape
- *                                                 ToolManager.parseToolCalls() already accepts client-
- *                                                 side - {index, id?, type?, function:{name?,arguments?}}).
- * `0xFF 0x06 <4-byte BE length><length bytes>`  = one generated image (JSON {mimeType, data} - `data`
- *                                                 is base64, matching the shape image consumers already
- *                                                 expect as a data: URL body).
- * `0xFF 0x07 <4-byte BE length><length bytes>`  = thought signature (UTF-8 string) - Gemini's opaque
- *                                                 token for continuing a thinking turn across requests.
- * `0xFF 0x08 <4-byte BE length><length bytes>`  = control JSON - an out-of-band signal that isn't
- *                                                 generated content, a tool-call delta, or any of the
- *                                                 above, and has no dedicated frame type of its own.
- *                                                 Used by chat-completions.js's server-tool-calling
- *                                                 stream loop (forwardAndPersistCompactStreamWithServerTools())
- *                                                 for its three end-of-round signals - the payload is
- *                                                 always one of `{tool_call_handoff: {node_id,
- *                                                 pending_tool_calls}}`, `{tool_call_aborted: true}`, or
- *                                                 `{error: {message}}`.
- * `0xFF 0x09`                                    = keepalive - no payload, no length prefix (just the
- *                                                 sentinel + type byte, 2 bytes total). Written by
- *                                                 `withKeepalive()` whenever a raw-action generation has
- *                                                 gone `KEEPALIVE_INTERVAL_MS` (see below) without any
- *                                                 other frame being written, so a connection that's gone
- *                                                 silently dead on a lossy link (heavy packet loss/flaky
- *                                                 NAT/VPN - see the module's original design brief) is
- *                                                 never quiet long enough to be mistaken for one that's
- *                                                 still alive but just slow. Purely a liveness signal:
- *                                                 it carries no information, is a no-op for the decoder
- *                                                 (beyond resetting its "last activity" clock), and is
- *                                                 deliberately NOT written into the resumable generation
- *                                                 buffer (see RESUMABILITY below and `withKeepalive()`) -
- *                                                 there is nothing to replay about a no-op frame, and
- *                                                 letting it into the buffer would shift the byte-offset
- *                                                 accounting the `from=<offset>` resume protocol depends on.
- *
- * Private contract with the bundled client; not a public/supported surface.
- *
- * RESUMABILITY: every raw-action generation is buffered server-side, keyed by its `X-Generation-Id`
- * (see `createGenerationRecord()`/`withGenerationBuffer()` below), so a client that drops mid-stream
- * can reconnect and ask for what it's missing. No new frame type or sequence-number field was added
- * for this: the sequence number IS the raw byte offset into the compact-stream byte sequence the
- * server already writes to the response, which the client already needs to count as it reads
- * `response.body` chunks - a length-prefix/periodic-marker scheme would just be redundant with that.
- * A reconnecting client calls `GET /generate/resume/:id?from=<bytesReceivedSoFar>`, which replays the
- * exact buffered bytes from that offset (then keeps streaming live ones if the generation is still in
- * flight) into the SAME decoder instance the dropped connection was feeding, so split multi-byte
- * UTF-8 characters and control frames straddling the resume boundary decode correctly. See
- * `streamGenerationResume()`.
- */
 export const FRAME_SENTINEL = 0xFF;
 export const FRAME_TYPE_INDEX = 0x01;
 export const FRAME_TYPE_PROBABILITIES = 0x02;
@@ -82,12 +18,8 @@ export const FRAME_TYPE_THOUGHT_SIGNATURE = 0x07;
 export const FRAME_TYPE_CONTROL = 0x08;
 export const FRAME_TYPE_KEEPALIVE = 0x09;
 
-// See the RESUMABILITY doc comment above for how this interval was picked relative to the generation
-// buffer's own TTL - it just needs to comfortably beat typical NAT/proxy idle-connection timeouts
-// (commonly 30-60s) without being needlessly chatty.
 export const KEEPALIVE_INTERVAL_MS = 12 * 1000;
 
-/** Escapes any literal 0xFF byte so it can't be mistaken for a control frame. */
 export function encodeContent(text) {
     if (!text) {
         return Buffer.alloc(0);
@@ -166,10 +98,6 @@ export function encodeControlFrame(data) {
 }
 
 /**
- * The frames that end a raw-action stream: the stored reply (a `stored_reply` control frame with its node id, text and
- * reasoning fields, which the page shows in place of what it streamed) and its node id (followed by a warnings frame
- * when its prompt itemization wasn't stored), or, when storing the reply failed, a warnings frame naming the
- * generation so the page can ask for it to be stored again.
  * @param {{node_id: string, mes?: string, extra?: object}|null} persisted
  * @param {object|null|undefined} persist
  * @returns {Buffer|null}
@@ -190,8 +118,6 @@ export function encodeStoredReplyFrame(persisted, persist) {
 }
 
 /**
- * Writes a stream's `stored` control frame when this request stored anything under a page ref. Called
- * before any other frame, so it is the stream's first.
  * @param {{ write: (chunk: Buffer) => unknown }} writer
  * @param {import('express').Response} response
  */
@@ -228,7 +154,6 @@ export function encodeEvent(data, lastIndex) {
     return { bytes: parts.length ? Buffer.concat(parts) : Buffer.alloc(0), index: nextIndex };
 }
 
-// Kept reachable via /generate/meta/:id instead of re-sent on every final SSE event.
 const META_KEYS = ['prompt', 'generation_settings', 'timings', 'tokens_cached', 'model', 'truncated', 'stopping_word', 'has_new_line'];
 const META_CACHE_MAX = 50;
 const META_TTL_MS = 10 * 60 * 1000;
@@ -267,15 +192,10 @@ export function getLlamaCppStreamMeta(id) {
     return entry.data;
 }
 
-// Bounds how much of one generation's raw compact-stream bytes are kept around for a resume - once a
-// generation's buffered bytes exceed this, it's marked `truncated` and stops growing (the live stream
-// itself is completely unaffected; only the ability to resume past this point is lost). Mirrors
-// META_CACHE_MAX/META_TTL_MS's role above, for the same "don't buffer unboundedly" reason.
 const GENERATION_BUFFER_MAX_BYTES = 2 * 1024 * 1024;
 const GENERATION_CACHE_MAX = 50;
 const GENERATION_TTL_MS = 10 * 60 * 1000;
 
-/** One in-flight or recently-finished generation's buffered bytes, resumable by `id`. */
 class GenerationRecord extends EventEmitter {
     constructor(id) {
         super();
@@ -288,7 +208,7 @@ class GenerationRecord extends EventEmitter {
         this.storedAt = Date.now();
     }
 
-    /** @param {Buffer} buf Exactly what was just written to the live response. */
+    /** @param {Buffer} buf */
     append(buf) {
         if (!buf || !buf.length) return;
         this.storedAt = Date.now();
@@ -329,8 +249,6 @@ function evictStaleGenerationRecords() {
 }
 
 /**
- * Registers a new resumable generation buffer under `id` (the same id already sent as
- * `X-Generation-Id`). Call once per raw-action stream, before the first byte is written.
  * @param {string} id
  * @returns {GenerationRecord}
  */
@@ -347,10 +265,6 @@ export function getGenerationRecord(id) {
 }
 
 /**
- * Wraps a writer (`createBackpressureWriter()`'s return value, or any `{write, end}` pair with that
- * same contract) so every byte it actually writes is also appended to `record`, and `end()` also
- * marks the generation finished. Purely additive - the wrapped writer's own behavior/timing toward
- * `res` is completely unchanged.
  * @param {{write: (buf: Buffer) => void, end: () => void}} writer
  * @param {GenerationRecord} record
  */
@@ -368,11 +282,6 @@ export function withGenerationBuffer(writer, record) {
 }
 
 /**
- * Wraps a writer so that whenever `KEEPALIVE_INTERVAL_MS` passes with no call to `write()`, a keepalive
- * frame is written on its own. Must be the innermost wrapper around the real response writer (i.e.
- * `withGenerationBuffer()` wraps THIS, not the other way around): the keepalive frames this writes on
- * its own timer go straight to `writer` and never pass through `write()`'s own caller, so they never
- * reach `withGenerationBuffer()`'s `record.append()` and never shift the resume buffer's byte offsets.
  * @param {{write: (buf: Buffer) => void, end: () => void}} writer
  * @param {number} [intervalMs]
  */
@@ -410,18 +319,10 @@ export function withKeepalive(writer, intervalMs = KEEPALIVE_INTERVAL_MS) {
 }
 
 /**
- * Combines `withKeepalive()` and `withGenerationBuffer()` in the one order that keeps keepalive frames
- * out of the resume buffer (see both functions' own doc comments) - the composition every raw-action
- * streaming call site needs, so they don't each have to get that ordering right by hand.
- * @param {{write: (buf: Buffer) => void, end: () => void}} baseWriter The real writer for the live
- * response (`createBackpressureWriter()`'s return value, or an equivalent).
+ * @param {{write: (buf: Buffer) => void, end: () => void}} baseWriter
  * @param {GenerationRecord} record
  * @param {number} [intervalMs]
  * @returns {{writer: {write: (buf: Buffer) => void, end: () => void}, stopKeepalive: () => void}}
- * `writer` is what callers should write real frames to and reassign to `detachFromResponse(record)` on
- * client disconnect, same as before; `stopKeepalive` must be called at that same disconnect point, since
- * the keepalive timer otherwise has no other way to learn the live response is gone and would keep
- * firing indefinitely against a dead socket.
  */
 export function createResumableWriter(baseWriter, record, intervalMs = KEEPALIVE_INTERVAL_MS) {
     const keepaliveWriter = withKeepalive(baseWriter, intervalMs);
@@ -432,11 +333,6 @@ export function createResumableWriter(baseWriter, record, intervalMs = KEEPALIVE
 }
 
 /**
- * A `{write, end}` writer that only appends to `record` - no longer touches a real response at all.
- * Swapped in for the real writer once the client's own connection has genuinely gone, so the
- * still-in-flight upstream generation can keep running and buffering into `record` (for a later
- * `/generate/resume/:id` call, and for normal persistence once it completes) without writing to, or
- * erroring on, a dead socket.
  * @param {GenerationRecord} record
  */
 export function detachFromResponse(record) {
@@ -451,10 +347,6 @@ export function detachFromResponse(record) {
 }
 
 /**
- * Serves a resume request against `record`: replays whatever's buffered from byte offset `fromByte`
- * onward, then - if the generation is still in flight - keeps forwarding new bytes live until it
- * finishes, at which point it ends `writer` itself. The caller is responsible for ending `writer`
- * only in the synchronous-completion case (`live: false`); for `live: true` it is ended for you.
  * @param {GenerationRecord} record
  * @param {number} fromByte
  * @param {{write: (buf: Buffer) => void, end: () => void}} writer
@@ -465,9 +357,6 @@ export function streamGenerationResume(record, fromByte, writer) {
         return { ok: false, reason: 'invalid_offset' };
     }
     if (record.truncated) {
-        // The buffer stopped growing before this generation finished - there is no way to guarantee
-        // a gap-free replay past the truncation point, so refuse the whole resume rather than risk
-        // silently dropping bytes. The client falls back to treating this as a failed generation.
         return { ok: false, reason: 'buffer_truncated' };
     }
 
@@ -501,9 +390,6 @@ export function streamGenerationResume(record, fromByte, writer) {
 }
 
 /**
- * Express handler for `GET /generate/resume/:id?from=<byte offset>` - mounted identically by both
- * text-completions.js and chat-completions.js's routers, since generation ids are unique regardless
- * of which backend produced them (this module's `generationBuffers` map is shared process state).
  * @param {import('express').Request} request
  * @param {import('express').Response} response
  */
@@ -527,7 +413,6 @@ export function handleGenerationResume(request, response) {
     }
 }
 
-/** Coalesces writes while waiting for `drain` under backpressure. */
 export function createBackpressureWriter(res) {
     /** @type {Buffer[]} */
     let pending = [];
@@ -552,10 +437,6 @@ export function createBackpressureWriter(res) {
 
     return {
         write(/** @type {Buffer} */ buf) {
-            // `res.writableEnded` guards against a real client-disconnect race: the underlying
-            // socket can close (and this writer's caller may not yet have reacted to that) between
-            // one write() call and the next, and writing to an already-ended response throws
-            // ERR_STREAM_WRITE_AFTER_END.
             if (ended || res.writableEnded || !buf || !buf.length) return;
             pending.push(buf);
             flush();
@@ -579,24 +460,10 @@ export function createBackpressureWriter(res) {
 }
 
 /**
- * Pipes a llama.cpp `/completion` streaming response using the compact wire format above, instead
- * of forwarding the upstream SSE-JSON envelope byte-for-byte.
- *
- * `persist` (`pendingAssistantPersist` from text-completions.js's `/generate` route -
- * `null`/`undefined` for every non-raw-action call) is OPTIONAL and purely additive: this function
- * already fully JSON-parses every upstream SSE event into `data` (to re-encode it into the compact
- * wire format below) - `data.content` is the exact same real per-chunk text llama.cpp itself sends.
- * When `persist` is set, that text is accumulated into a running buffer and, once the stream ends
- * (`data.stop`, the upstream body closing, an upstream error, or the client disconnecting - in
- * which case whatever was generated so far is still persisted as a real, if partial, reply), handed
- * to `persistAssistantReply()`. This adds one string concatenation per event and nothing else - the
- * compact-format bytes actually written to `response` are completely unchanged either way.
  * @param {import('node-fetch').Response} upstreamResponse
  * @param {import('express').Response} response
- * @param {object} [persist] `pendingAssistantPersist`, or omit/`null` to leave behavior unchanged.
- * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The
- * generate route's per-request warnings - when non-empty, written as their own control frame
- * (`{control: {warnings: ...}}`) before any content.
+ * @param {object} [persist]
+ * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings]
  */
 export async function pipeLlamaCppCompactStream(upstreamResponse, response, persist, warnings = null) {
     if (!upstreamResponse.ok || !upstreamResponse.body) {
@@ -621,7 +488,6 @@ export async function pipeLlamaCppCompactStream(upstreamResponse, response, pers
         let settled = false;
         let accumulatedText = '';
 
-        // The node frame goes last, after the reply is stored, as on every other raw-action stream.
         function finish() {
             if (settled) return;
             settled = true;
@@ -700,11 +566,6 @@ export async function pipeLlamaCppCompactStream(upstreamResponse, response, pers
         });
 
         response.socket?.on('close', () => {
-            // The client's own connection dropped - keep consuming the still-in-flight upstream
-            // generation into the resumable buffer (module doc comment above) instead of tearing it
-            // down, so a client that reconnects via GET /generate/resume/:id gets the live
-            // continuation rather than just whatever streamed before the drop. `finish()` still runs,
-            // persisting the full reply, once the upstream body actually ends on its own below.
             stopKeepalive();
             writer = detachFromResponse(generationRecord);
         });

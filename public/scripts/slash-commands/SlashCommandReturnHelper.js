@@ -65,7 +65,6 @@ export const slashCommandReturnHelper = {
                 if (type.startsWith('chat')) sendSystemMessage(system_message_types.GENERIC, htmlOrNotHtml);
                 if (type.startsWith('toast')) {
                     const toast = toastr.info(htmlOrNotHtml, null, { escapeHtml: !shouldHtml });
-                    // No toast comes back for a suppressed duplicate
                     if (toast) addImageLightbox(toast);
                 }
 

@@ -4,10 +4,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// tokenizer-resolve.js (which owns the `tokenizers` enum) statically imports
-// src/endpoints/tokenizers.js, which reads process-wide config at module import time - the config
-// path must be set before that import chain runs, so both modules are imported dynamically,
-// after setConfigFilePath().
 import { setConfigFilePath } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -30,26 +26,20 @@ function check(api, name, expected) {
 /**
  * @param {string} api
  * @param {string} name
- * @param {string} source registry entry id
+ * @param {string} source
  */
 function checkSource(api, name, source) {
     assert.deepEqual(lookupModelTokenizer(api, name), { source }, `${api} / ${JSON.stringify(name)}`);
 }
 
-// --- Llama 2 ---
 check(GENERAL_API, 'llama-2-13b-chat', tokenizers.LLAMA);
 check(GENERAL_API, 'codellama-13b', null);
 
-// --- Llama 3.0 ---
 check(GENERAL_API, 'Llama-3-8B', tokenizers.LLAMA3);
 check(GENERAL_API, 'llama-3.4-8b', null);
-// a name naming two versions is unmapped
 check(GENERAL_API, 'llama-3-llama-3.1', null);
 check(GENERAL_API, 'llama-3.1-llama-3.3-70b', null);
 
-// --- Llama 3.1-3.3, 4 and Llama Guard: one official file each ---
-// Llama 3.1 Instruct, 3.2 1B and 3B (base and Instruct) and Llama Guard 3 1B ship one file. Ollama's
-// `llama3.1:<size>` tags and Groq's `llama-3.1-8b-instant` are the Instruct models.
 for (const name of [
     'meta-llama/Llama-3.1-8B-Instruct', 'Llama-3.1-405B-Instruct-FP8', 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',
     'Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf', 'llama3.1:8b', 'llama3.1:70b-instruct-q4_K_M', 'llama3.1:405b',
@@ -60,7 +50,6 @@ for (const name of [
 ]) {
     checkSource(GENERAL_API, name, 'llama3.1');
 }
-// Llama 3.1 base (8B, 70B, 405B-FP8)
 for (const name of ['meta-llama/Llama-3.1-8B', 'Llama-3.1-70B', 'Llama-3.1-405B-FP8', 'llama-3.1-8b', 'llama3.1:70b-text-q4_0']) {
     checkSource(GENERAL_API, name, 'llama3.1-base');
 }
@@ -70,7 +59,6 @@ for (const name of [
 ]) {
     checkSource(GENERAL_API, name, 'llama3.3');
 }
-// Llama 4 Scout and Maverick, base and Instruct, ship one file.
 for (const name of [
     'meta-llama/Llama-4-Scout-17B-16E-Instruct', 'Llama-4-Maverick-17B-128E-Instruct-FP8', 'Llama-4-Scout-17B-16E',
     'Llama-4-Maverick-17B-128E-Original', 'Llama-4-Scout-17B-16E-Instruct-Q4_K_M.gguf', 'meta-llama/llama-4-scout-17b-16e-instruct',
@@ -88,13 +76,8 @@ checkSource(GENERAL_API, 'meta-llama/Llama-Guard-3-11B-Vision', 'llama-guard-3-1
 for (const name of ['Llama-Guard-4-12B', 'meta-llama/llama-guard-4-12b']) {
     checkSource(GENERAL_API, name, 'llama-guard-4');
 }
-// The distill's own file wins over its base model's.
 checkSource(GENERAL_API, 'DeepSeek-R1-Distill-Llama-3.3-70B', 'deepseek-r1-distill-llama');
 
-// Llama names that name no one official file: 3.2 Vision (its tokenizer.json and original/tokenizer.model
-// give different ids), the 405B base (its original/mp8/tokenizer.model is unknown), the closed
-// Llama-3.3-8B-Instruct, Groq ids that served Llama 3.3, names without a size, unknown versions, Prompt
-// Guard, Llama Guard 1, and "LLaMA v2". NVIDIA's Llama-based Nemotron models are below.
 for (const name of [
     'Llama-3.2-11B-Vision-Instruct', 'meta-llama/Llama-3.2-90B-Vision', 'llama3.2-vision:11b', 'llama-3.2-11b-text-preview',
     'accounts/fireworks/models/llama-v3p2-90b-vision-instruct', 'meta-llama/Llama-3.1-405B', 'llama3.1:405b-text-q4_0',
@@ -107,15 +90,12 @@ for (const name of [
     check(GENERAL_API, name, null);
 }
 
-// --- Mistral V1 ---
 check(GENERAL_API, 'mistral-7b-instruct-v0.2', tokenizers.MISTRAL);
 check(GENERAL_API, 'mixtral-8x7b-instruct-v0.1', tokenizers.MISTRAL);
 
-// --- Mistral NeMo: the tekken.json on Mistral's API, nemo.json on every other backend (below) ---
 const nemo = { byBackend: { vendorApis: { mistralai: { source: 'nemo-tekken' } }, hf: tokenizers.NEMO, rest: tokenizers.NEMO } };
 assert.deepEqual(lookupModelTokenizer(GENERAL_API, 'Mistral-Nemo-Instruct-2407'), nemo);
 
-// --- Gemma 1/2: a name with an explicit Gemma 1 or 2 version ---
 for (const name of [
     'gemma-2-9b-it', 'google/gemma-2-27b-it', 'gemma2-9b-it', 'gemma2:27b', 'gemma2:latest', 'gemma-2b', 'gemma-7b-it',
     'gemma-1.1-7b-it', 'gemma:7b-instruct', 'gemma:2b', 'gemma:v1.1',
@@ -127,23 +107,20 @@ check(GENERAL_API, 'gemma_3', null);
 check(GENERAL_API, 'gemma 3', null);
 check(GENERAL_API, 'gemma.3', null);
 
-// --- Gemma: one official file each ---
 /**
  * @param {string} name
- * @param {string} source registry entry id
+ * @param {string} source
  */
 function checkSelfHostedOnly(name, source) {
     assert.deepEqual(lookupModelTokenizer(GENERAL_API, name), { byBackend: { other: { source } } }, name);
 }
 
-// Gemma 3's -it file, for the models Google's API also serves.
 for (const name of [
     'gemma-3-27b-it', 'google/gemma-3-1b-it', 'gemma-3-4b-it-Q4_K_M.gguf', 'unsloth/gemma-3-12b-it-GGUF',
     'mlabonne/gemma-3-27b-it-abliterated', 'gemma3:27b', 'gemma3:1b', 'gemma3:12b-it-q8_0', 'gemma3-12b',
 ]) {
     checkSelfHostedOnly(name, 'gemma-3-it');
 }
-// Gemma 3's -pt file: the -pt repos, 270m and 270m-it, the -it QAT repos, MedGemma, TranslateGemma, ShieldGemma 2.
 for (const name of [
     'gemma-3-27b-pt', 'google/gemma-3-1b-pt', 'gemma-3-270m', 'gemma-3-270m-it', 'gemma3:270m',
     'gemma-3-12b-it-qat-q4_0-unquantized', 'gemma-3-27b-it-qat-int4-unquantized', 'gemma-3-27b-pt-qat-q4_0-gguf',
@@ -152,14 +129,12 @@ for (const name of [
 ]) {
     checkSource(GENERAL_API, name, 'gemma-3-pt');
 }
-// Gemma 3n: one file for E2B and E4B, base and -it.
 for (const name of ['gemma-3n-E4B', 'gemma-3n-e2b']) {
     checkSource(GENERAL_API, name, 'gemma-3n');
 }
 for (const name of ['gemma-3n-E2B-it', 'google/gemma-3n-e4b-it', 'gemma3n:e2b', 'gemma3n:e4b-it-q8_0']) {
     checkSelfHostedOnly(name, 'gemma-3n');
 }
-// Gemma 4: the -it and base files have the same content; the assistant file lacks `<|video|>`.
 for (const name of [
     'gemma-4-E4B-it', 'gemma-4-12B-it', 'gemma4:e2b', 'gemma4:12b', 'gemma-4-31B-it-qat-q4_0-unquantized',
     'gemma4:31b-it-qat', 'gemma-4-31B', 'gemma-4-E2B',
@@ -182,7 +157,6 @@ for (const name of ['gemma-2-2b-jpn-it', 'google/gemma-2-2b-jpn-it-GGUF']) {
     checkSource(GENERAL_API, name, 'gemma-2-jpn');
 }
 
-// Unknown Gemma versions and sizes, names that pick no one model, and Gemma models whose files have no entry.
 for (const name of [
     'gemma-5-9b', 'gemma-1.2-2b', 'gemma-2.5-9b', 'gemma-3.1-27b-it', 'gemma-4.1-31b-it', 'codegemma-2-7b',
     'medgemma-2-4b-it', 'translategemma-2-4b-it', 'shieldgemma-3-4b', 'gemma-3-2b-it', 'gemma-4-8b-it',
@@ -195,20 +169,16 @@ for (const name of [
     check(GENERAL_API, name, null);
 }
 
-// --- Yi ---
 check(GENERAL_API, 'yi-34b-chat', tokenizers.YI);
 
-// --- Jamba 1.5 ---
 check(GENERAL_API, 'jamba-1.5-large', tokenizers.JAMBA);
 check(GENERAL_API, 'jamba-instruct', null);
 
-// --- Qwen2 ---
 check(GENERAL_API, 'qwen2-72b-instruct', tokenizers.QWEN2);
 checkSource(GENERAL_API, 'qwen2.5-72b', 'qwen2.5');
 check(GENERAL_API, 'Qwen1.5-7B-Chat', tokenizers.QWEN2);
 check(GENERAL_API, 'Qwen2-Audio-7B', tokenizers.QWEN2);
 
-// --- Qwen: one official file each ---
 checkSource(GENERAL_API, 'Qwen2-VL-7B-Instruct', 'qwen2-vl');
 for (const name of [
     'Qwen2.5-7B-Instruct', 'Qwen2.5-Coder-32B-Instruct', 'Qwen2.5-Math-72B', 'Qwen2.5-VL-72B-Instruct',
@@ -232,7 +202,6 @@ for (const name of ['Qwen3.8-27B', 'Qwen3.8-2.4T-A95B', 'Qwen3.8-Flash-Next']) {
 }
 checkSource(GENERAL_API, 'CodeQwen1.5-7B-Chat', 'codeqwen1.5');
 
-// Qwen repos whose file differs from their family's (or that have none) are unmapped.
 for (const name of [
     'Qwen2-VL-7B-Instruct-AWQ', 'Qwen2-VL-2B-Instruct-GPTQ-Int4', 'Qwen2.5-Omni-7B', 'Qwen2.5-Math-PRM-72B',
     'Qwen2.5-Math-7B-PRM800K', 'Qwen3-Embedding-8B', 'Qwen3-VL-Embedding-2B', 'Qwen3-ASR-1.7B',
@@ -242,7 +211,6 @@ for (const name of [
     check(GENERAL_API, name, null);
 }
 
-// Closed DashScope ids count by estimate.
 for (const name of [
     'qwen3.5-plus', 'qwen3.5-flash-02-23', 'qwen3.6-max-preview', 'qwen3.8-flash', 'qwen3.8-max',
     'qwen3.8-omni-flash', 'qwen3-8-omni-flash', 'qwen3-max', 'qwen3-max-2025-09-23', 'qwen3-coder-plus',
@@ -252,7 +220,6 @@ for (const name of [
     check(GENERAL_API, name, null);
 }
 
-// A Qwen name that doesn't pick one model is a moving alias.
 for (const alias of [
     'qwen3', 'qwen3:latest', 'qwen3.6', 'qwen3.6:latest', 'qwen3.7', 'qwen3-coder', 'qwen3-vl', 'qwen3-vl-pro',
     'qwen3-vl-instruct', 'qwen3-next', 'qwq', 'qwen2.5-coder', 'qwen1.5', 'codeqwen1.5', 'qwen3.5', 'qwen3.8',
@@ -261,20 +228,15 @@ for (const alias of [
     check('openai', alias, null);
 }
 
-// An unknown Qwen3 version is unmapped.
 check(GENERAL_API, 'qwen3.7-27b', null);
 
-// --- Command-R ---
 check(GENERAL_API, 'command-r-plus', tokenizers.COMMAND_R);
-// Command R7B ships command-a.json's content (below).
 check(GENERAL_API, 'command-r7b-12-2024', tokenizers.COMMAND_A);
 
-// --- Command-A ---
 check(GENERAL_API, 'command-a-03-2025', tokenizers.COMMAND_A);
 check(GENERAL_API, 'command-r', tokenizers.COMMAND_R);
 check(GENERAL_API, 'command', null);
 
-// --- DeepSeek: one official file each ---
 for (const name of ['DeepSeek-V2-Lite-Chat', 'DeepSeek-V2', 'deepseek-v2:16b', 'deepseek-v2:latest']) {
     checkSource(GENERAL_API, name, 'deepseek-v2');
 }
@@ -302,7 +264,6 @@ for (const name of [
 for (const name of ['DeepSeek-R1-Distill-Llama-8B', 'DeepSeek-R1-Distill-Llama-70B', 'deepseek-r1:8b-llama-distill-q4_K_M', 'deepseek-r1:70b-llama-distill-q8_0']) {
     checkSource(GENERAL_API, name, 'deepseek-r1-distill-llama');
 }
-// This merge ships llama3.json's content, not the distill's.
 check(GENERAL_API, 'mergekit-community/Llama-3-DeepSeek-R1-Distill-8B-LewdPlay-Uncensored', tokenizers.LLAMA3);
 checkSource(GENERAL_API, 'DeepSeek-R1-0528-Qwen3-8B', 'deepseek-r1-0528-qwen3');
 for (const name of ['DeepSeek-V4-Pro', 'DeepSeek-V4-Flash-0731', 'DeepSeek-V4-Pro-0813', 'DeepSeek-V4-Flash-DSpark', 'DeepSeek-V4-Pro-Base']) {
@@ -312,14 +273,10 @@ for (const name of ['DeepSeek-V4.1-Flash', 'DeepSeek-V4-Flash-Vision-Exp']) {
     checkSource(GENERAL_API, name, 'deepseek-v4.1');
 }
 
-// Unknown DeepSeek versions are unmapped.
 for (const name of ['deepseek-v3.5', 'deepseek-v3-1226', 'deepseek-v4.2-flash']) {
     check(GENERAL_API, name, null);
 }
 
-// DeepSeek names that don't name one official file are unmapped: Ollama's bare `deepseek-r1` and its
-// sizes other than 671b are the distills; `deepseek-v4`, `deepseek-v4-lite`, `-latest` and
-// `~deepseek/…` are moving aliases; the rest ship other files, or have no rule.
 for (const name of [
     'DeepSeek-R1', 'deepseek-r1', 'deepseek-r1:latest', 'deepseek-r1:1.5b', 'deepseek-r1:8b', 'deepseek-r1:32b', 'deepseek-r1:70b',
     'deepseek-r1:8b-0528-qwen3-q4_K_M', 'r1-1776:70b-distill-llama-q4_K_M',
@@ -335,14 +292,11 @@ for (const name of [
     check(GENERAL_API, name, null);
 }
 
-// --- OpenAI (tiktoken on the lowercased raw name) ---
 check(GENERAL_API, 'GPT-4o', 'gpt-4o');
-// gpt-oss is not in tiktoken's list; its registry entry is below.
 check(GENERAL_API, 'gpt_4o', null);
 check(GENERAL_API, 'gpt 4o', null);
 check(GENERAL_API, 'gpt.4o', null);
 
-// --- NovelAI: only the NovelAI entries ---
 check('novel', 'clio-v1', tokenizers.NERD);
 check('novel', 'kayra-v1', tokenizers.NERD2);
 check('novel', 'erato-v1', tokenizers.LLAMA3);
@@ -350,13 +304,10 @@ check('novel', 'llama-3-8b', null);
 check('novel', 'clio-kayra', null);
 check(GENERAL_API, 'kayra-v1', null);
 
-// --- models whose official tokenizer.model is byte-identical to a bundled file ---
-// Yi 1.5 (every 01-ai/Yi-1.5-* tokenizer.model is yi.model)
 check(GENERAL_API, 'Yi-1.5-34B-Chat', tokenizers.YI);
 check(GENERAL_API, 'yi-1.5-34b', tokenizers.YI);
 check(GENERAL_API, 'yi1-34b', null);
 
-// Jamba 1.6 / 1.7 and Jamba-tiny-dev (their tokenizer.model is jamba.model)
 check(GENERAL_API, 'AI21-Jamba-Mini-1.7', tokenizers.JAMBA);
 check(GENERAL_API, 'AI21-Jamba-Large-1.6', tokenizers.JAMBA);
 check(GENERAL_API, 'jamba-1.6-mini', tokenizers.JAMBA);
@@ -367,7 +318,6 @@ check(GENERAL_API, 'AI21-Jamba2-Mini', null);
 check(GENERAL_API, 'AI21-Jamba-Reasoning-3B', null);
 check(GENERAL_API, 'jamba-large', null);
 
-// Phi-3 / Phi-3.5 mini, medium and MoE (llama.model); small and vision have their own entries (below)
 check(GENERAL_API, 'Phi-3.5-mini-instruct', tokenizers.LLAMA);
 check(GENERAL_API, 'Phi-3-mini-4k-instruct', tokenizers.LLAMA);
 check(GENERAL_API, 'Phi-3-medium-128k-instruct', tokenizers.LLAMA);
@@ -377,13 +327,10 @@ checkSource(GENERAL_API, 'Phi-3-vision-128k-instruct', 'phi-3-vision');
 checkSource(GENERAL_API, 'Phi-3.5-vision-instruct', 'phi-3-vision');
 check(GENERAL_API, 'phi-3.1-mini', null);
 
-// Mixtral 8x22B base v0.1 (mistral.model); the Instruct and v0.3 files differ (the Instruct: Mistral, below)
 check(GENERAL_API, 'Mixtral-8x22B-v0.1', tokenizers.MISTRAL);
 check(GENERAL_API, 'mixtral-8x22B-v0.3', null);
 check(GENERAL_API, 'open-mixtral-8x22b', null);
 
-// CodeLlama 34b (llama.model); the 7b/13b base and Instruct and all 70b files differ, and each repo's
-// tokenizer.model and tokenizer.json give different ids
 check(GENERAL_API, 'CodeLlama-34b-Instruct-hf', tokenizers.LLAMA);
 check(GENERAL_API, 'CodeLlama-34b-Python-hf', tokenizers.LLAMA);
 check(GENERAL_API, 'CodeLlama-7b-hf', null);
@@ -398,20 +345,16 @@ check(GENERAL_API, 'CodeLlama-7b-Instruct-hf', null);
 check(GENERAL_API, 'CodeLlama-70b-Python-hf', null);
 check(GENERAL_API, 'codellama:python', null);
 
-// Jamba-tiny-reward-dev (jamba.model)
 check(GENERAL_API, 'Jamba-tiny-reward-dev', tokenizers.JAMBA);
 check(GENERAL_API, 'Jamba-tiny-random', null);
 
-// Ollama's single-token Phi forms (phi3 is Phi-3 mini/medium, phi3.5 is Phi-3.5-mini)
 check(GENERAL_API, 'phi3:mini', tokenizers.LLAMA);
 check(GENERAL_API, 'phi3:14b-medium-4k-instruct-q4_0', tokenizers.LLAMA);
 check(GENERAL_API, 'phi3.5:3.8b-mini-instruct-q4_0', tokenizers.LLAMA);
-// ':' is a separator like '.', so 'phi3:3.8b' reads as 'phi3.3.8b' (an unknown version)
 check(GENERAL_API, 'phi3:3.8b', null);
 checkSource(GENERAL_API, 'phi3-small', 'phi-3-small');
 checkSource(GENERAL_API, 'phi3-vision', 'phi-3-vision');
 
-// Gemma-derived models whose tokenizer.model (RecurrentGemma sfp-cpp: tokenizer.spm) is gemma.model
 check(GENERAL_API, 'recurrentgemma-2b-it', tokenizers.GEMMA);
 check(GENERAL_API, 'recurrentgemma-9b', tokenizers.GEMMA);
 check(GENERAL_API, 'recurrentgemma-2b-it-sfp-cpp', tokenizers.GEMMA);
@@ -424,22 +367,17 @@ check(GENERAL_API, 'txgemma-9b-chat', tokenizers.GEMMA);
 check(GENERAL_API, 'txgemma-27b-predict', tokenizers.GEMMA);
 check(GENERAL_API, 'txgemma-2b-chat', null);
 
-// --- separator forms ---
 check(GENERAL_API, 'llama 2', tokenizers.LLAMA);
 check(GENERAL_API, 'llama.2', tokenizers.LLAMA);
 check(GENERAL_API, 'llama_2', tokenizers.LLAMA);
 
-// --- unmapped ---
 check(GENERAL_API, 'claude-sonnet-4', null);
 check(GENERAL_API, 'gemini-2.5-pro', null);
 check(GENERAL_API, '', null);
 check(GENERAL_API, undefined, null);
 check(GENERAL_API, 42, null);
 
-// --- facts about the bundled tokenizer files, so a replaced file fails this test ---
-
 /**
- * Counts the top-level repeated field 1 (`pieces`) of a sentencepiece ModelProto.
  * @param {Buffer} buf
  * @returns {number}
  */
@@ -492,7 +430,6 @@ for (const [file, expected] of Object.entries(expectedPieceCounts)) {
     assert.equal(countSentencepiecePieces(buf), expected, `${file} piece count`);
 }
 
-// sha256 of each bundled .model, which is byte-identical to the official files named above
 const expectedSha256 = {
     'llama.model': '9e556afd44213b6bd1be2b850ebbbd98f5481437a8021afaf58ee7fb1818d347',
     'mistral.model': 'dadfd56d766715c61d2ef780a525ab43b8e6da4de6865bda3d95fdef5e134055',
@@ -512,18 +449,14 @@ const addedById = new Map(llama3.added_tokens.map(t => [t.id, t.content]));
 assert.equal(addedById.get(128004), '<|reserved_special_token_2|>');
 assert.equal(addedById.get(128008), '<|reserved_special_token_4|>');
 
-// --- registry results, `supersedes`, several official files, moving aliases ---
 const { pickMapResult } = await import('./tokenizer-model-map.js');
 assert.equal(typeof pickMapResult, 'function', 'pickMapResult is exported');
 
-// A registry result `{ source }` is told apart by its entry id.
 assert.deepEqual(pickMapResult([{ result: { source: 'a' } }, { result: { source: 'a' } }]), { source: 'a' });
 assert.equal(pickMapResult([{ result: { source: 'a' } }, { result: { source: 'b' } }]), null, 'two entries with different results stay unmapped');
 assert.equal(pickMapResult([{ result: { source: 'a' } }, { result: tokenizers.QWEN2 }]), null);
 assert.equal(pickMapResult([]), null);
 
-// An entry that supersedes another wins when both match; it names a registry entry id, a
-// `tokenizers` key, or `tiktoken` for the tiktoken lookup.
 const distillQwen = { result: { source: 'r1-distill-qwen' }, supersedes: ['qwen2.5'] };
 assert.deepEqual(pickMapResult([{ result: { source: 'qwen2.5' } }, distillQwen]), { source: 'r1-distill-qwen' });
 assert.deepEqual(pickMapResult([distillQwen, { result: { source: 'qwen2.5' } }]), { source: 'r1-distill-qwen' }, 'order does not matter');
@@ -537,12 +470,10 @@ assert.equal(pickMapResult([
     { result: { source: 'b' }, supersedes: ['a'] },
 ]), null, 'entries superseding each other leave nothing');
 
-// One model, several official files: one result carrying a file per kind of backend.
 const severalFiles = { byBackend: { vendorApis: { mistralai: { source: 'nemo-tekken' } }, hf: tokenizers.NEMO } };
 assert.deepEqual(pickMapResult([{ result: severalFiles }, { result: structuredClone(severalFiles) }]), severalFiles);
 assert.equal(pickMapResult([{ result: severalFiles }, { result: tokenizers.NEMO }]), null);
 
-// Ids that point at different models over time are never in the map.
 for (const alias of [
     'deepseek-chat', 'deepseek-flash', 'deepseek-reasoner',
     'mistral-large-latest', 'mistral-small-latest', 'mistral-small', 'open-mistral-7b', 'open-mixtral-8x22b',
@@ -552,8 +483,6 @@ for (const alias of [
     check('openai', alias, null);
 }
 
-// DeepSeek's hosted `deepseek-v4-pro` and `deepseek-v4-flash` are moving aliases: unmapped everywhere
-// except on a self-hosted backend, where the name is the weights the user loaded.
 const { selectBackendResult } = await import('./tokenizer-map-resolution.js');
 const { CHAT_COMPLETION_SOURCES, TEXTGEN_TYPES } = await import('./constants.js');
 const selfHostedTextgen = ['ooba', 'vllm', 'aphrodite', 'tabby', 'koboldcpp', 'llamacpp', 'ollama'];
@@ -576,13 +505,10 @@ for (const alias of ['deepseek-v4-pro', 'deepseek-v4-flash']) {
     }
 }
 
-// DeepSeek's own API gives every id the estimate.
 for (const name of ['deepseek-v3', 'deepseek-v3.1', 'DeepSeek-V3.2', 'deepseek-v4.1-flash', 'DeepSeek-R1-0528', 'deepseek-chat']) {
     assert.equal(selectBackendResult(lookupModelTokenizer('openai', name), { api: 'openai', source: 'deepseek' }), null, name);
 }
 
-// Gemma models Google's own API also serves (gemma-4-31b-it, gemma-4-26b-a4b-it, gemma-3-*-it, gemma-3n-*-it)
-// map only on a self-hosted backend. The others map on every backend.
 /** @param {{ api: string, type?: string }} state */
 const isSelfHosted = state => state.api === 'kobold' || (state.api === GENERAL_API && selfHostedTextgen.includes(state.type));
 for (const [name, source] of [['gemma-3-27b-it', 'gemma-3-it'], ['gemma-3n-e4b-it', 'gemma-3n'], ['gemma-4-31b-it', 'gemma-4'], ['gemma-4-26b-a4b-it', 'gemma-4']]) {
@@ -597,7 +523,6 @@ for (const [name, source] of [['gemma-3-27b-pt', 'gemma-3-pt'], ['gemma-4-E4B-it
     }
 }
 
-// No vendor API serves Llama models under these names, so they map on every backend, hosted APIs included.
 for (const [name, source] of [
     ['llama-3.3-70b-versatile', 'llama3.3'], ['meta-llama/llama-3.1-8b-instruct', 'llama3.1'], ['llama3.1:8b-text-q4_0', 'llama3.1-base'],
     ['meta-llama/llama-4-maverick-17b-128e-instruct', 'llama4'], ['meta-llama/llama-guard-4-12b', 'llama-guard-4'],
@@ -608,8 +533,6 @@ for (const [name, source] of [
     }
 }
 
-// --- Mistral: the model's native file on Mistral's own API, its repo's HF tokenizer.json as `hf`, and
-// none on every other backend ---
 /**
  * @param {import('./tokenizer-model-map.js').MapResult} native
  * @param {string} [hf]
@@ -621,7 +544,6 @@ const large2411 = { source: 'mistral-large-2411' };
 const tekken = { source: 'nemo-tekken' };
 /** @type {Array<[string, import('./tokenizer-model-map.js').MapResult]>} */
 const mistralCases = [
-    // The v0.3 file; mistral-common's v2 file for the closed Small 2402 and Large 2402, and mistral.model for Medium 2312.
     ['Mistral-7B-Instruct-v0.3', onMistralApi(v03, 'mistral-7b-v0.3-hf')],
     ['mistralai/Mistral-7B-v0.3', onMistralApi(v03, 'mistral-7b-v0.3-hf')],
     ['mistral:7b-instruct-v0.3-q4_K_M', onMistralApi(v03, 'mistral-7b-v0.3-hf')],
@@ -629,7 +551,6 @@ const mistralCases = [
     ['mistral-small-2402', onMistralApi(v03)],
     ['mistral-large-2402', onMistralApi(v03)],
     ['mistral-medium-2312', onMistralApi(tokenizers.MISTRAL)],
-    // Mathstral's file (Codestral 22B's has the same content), each repo with its own tokenizer.json.
     ['Mathstral-7B-v0.1', onMistralApi(mathstralFile, 'mathstral-hf')],
     ['mathstral:7b', onMistralApi(mathstralFile, 'mathstral-hf')],
     ['codestral-2405', onMistralApi(mathstralFile, 'codestral-22b-hf')],
@@ -639,12 +560,10 @@ const mistralCases = [
     ['Mistral-Small-Instruct-2409', onMistralApi(mathstralFile, 'mathstral-hf')],
     ['mistral-large-2407', onMistralApi(mathstralFile, 'mathstral-hf')],
     ['Mistral-Large-Instruct-2407', onMistralApi(mathstralFile, 'mathstral-hf')],
-    // Large 2411's file.
     ['mistral-large-2411', onMistralApi(large2411, 'mistral-large-2411-hf')],
     ['Mistral-Large-Instruct-2411', onMistralApi(large2411, 'mistral-large-2411-hf')],
     ['pixtral-large-2411', onMistralApi(large2411)],
     ['Pixtral-Large-Instruct-2411', onMistralApi(large2411)],
-    // Tekken.
     ['open-mistral-nemo', nemo],
     ['open-mistral-nemo-2407', nemo],
     ['ministral-8b-2410', onMistralApi(tekken, 'ministral-8b-2410-hf')],
@@ -690,8 +609,6 @@ for (const [name, expected] of mistralCases) {
     assert.deepEqual(lookupModelTokenizer(GENERAL_API, name), expected, name);
     assert.deepEqual(lookupModelTokenizer('openai', name), expected, name);
 }
-// Unmapped: ids Mistral's own sources name different files for; aliases, undated ids and `labs-` ids;
-// closed models; unknown versions.
 for (const name of [
     'mistral-small-2409', 'mistral-tiny-2312', 'mistral-small-2312', 'mistral-tiny-2407', 'open-mixtral-8x22b-2404',
     'open-mistral-7b', 'mistral-large-latest', 'mistral-small-latest', 'mistral-medium-latest', 'codestral-latest',
@@ -708,7 +625,6 @@ for (const name of [
     check(GENERAL_API, name, null);
     check('openai', name, null);
 }
-// On Mistral's API the native file; on every other backend none, except that Nemo keeps nemo.json.
 for (const [name, expected] of mistralCases) {
     for (const state of backendStates) {
         const selected = selectBackendResult(lookupModelTokenizer(state.api, name), state);
@@ -719,9 +635,6 @@ for (const [name, expected] of mistralCases) {
     }
 }
 
-// --- Cohere: one file per content. Cohere's API reads the file its `tokenizer_url` names; where a
-// repo's HF tokenizer.json gives other ids (Aya Vision 32B, Command R 08-2024), Cohere's API gets
-// Cohere's file and every other backend none ---
 /**
  * @param {import('./tokenizer-model-map.js').MapResult} native
  * @param {string} hf
@@ -729,7 +642,6 @@ for (const [name, expected] of mistralCases) {
 const onCohereApi = (native, hf) => ({ byBackend: { vendorApis: { cohere: native }, hf: { source: hf } } });
 /** @type {Array<[string, import('./tokenizer-model-map.js').MapResult]>} */
 const cohereCases = [
-    // command-r.json's content: Command R and R+ (v01, 04-2024, 08-2024 R+), Aya 23 and Aya Expanse.
     ['command-r', tokenizers.COMMAND_R],
     ['command-r-plus', tokenizers.COMMAND_R],
     ['command-r-03-2024', tokenizers.COMMAND_R],
@@ -745,11 +657,9 @@ const cohereCases = [
     ['c4ai-aya-expanse-8b', tokenizers.COMMAND_R],
     ['c4ai-aya-expanse-32b', tokenizers.COMMAND_R],
     ['aya-expanse:8b', tokenizers.COMMAND_R],
-    // Command R 08-2024: Cohere's file is command-r.json's content, its HF tokenizer.json has FIM tokens.
     ['command-r-08-2024', onCohereApi(tokenizers.COMMAND_R, 'command-r-08-2024-hf')],
     ['CohereLabs/c4ai-command-r-08-2024', onCohereApi(tokenizers.COMMAND_R, 'command-r-08-2024-hf')],
     ['c4ai-command-r-08-2024-Q4_K_M.gguf', onCohereApi(tokenizers.COMMAND_R, 'command-r-08-2024-hf')],
-    // command-a.json's content: Command A, Reasoning, Translate, and Command R7B.
     ['command-a-03-2025', tokenizers.COMMAND_A],
     ['c4ai-command-a-03-2025', tokenizers.COMMAND_A],
     ['command-a-reasoning-08-2025', tokenizers.COMMAND_A],
@@ -758,20 +668,16 @@ const cohereCases = [
     ['CohereLabs/c4ai-command-r7b-12-2024', tokenizers.COMMAND_A],
     ['command-r7b-arabic-02-2025', tokenizers.COMMAND_A],
     ['c4ai-command-r7b-arabic-02-2025', tokenizers.COMMAND_A],
-    // Command A Vision's file: Command A Vision and Aya Vision 8B.
     ['command-a-vision-07-2025', { source: 'command-a-vision' }],
     ['CohereLabs/command-a-vision-07-2025', { source: 'command-a-vision' }],
     ['c4ai-aya-vision-8b', { source: 'command-a-vision' }],
     ['CohereLabs/aya-vision-8b', { source: 'command-a-vision' }],
-    // Aya Vision 32B: Cohere's file and its HF tokenizer.json give different ids.
     ['c4ai-aya-vision-32b', onCohereApi({ source: 'aya-vision-32b' }, 'aya-vision-32b-hf')],
     ['CohereLabs/aya-vision-32b', onCohereApi({ source: 'aya-vision-32b' }, 'aya-vision-32b-hf')],
-    // Command A Plus's file: Command A Plus and North Mini Code 1.0.
     ['command-a-plus-05-2026', { source: 'command-a-plus' }],
     ['CohereLabs/command-a-plus-05-2026-bf16', { source: 'command-a-plus' }],
     ['north-mini-code-1-0', { source: 'command-a-plus' }],
     ['CohereLabs/North-Mini-Code-1.0-fp8', { source: 'command-a-plus' }],
-    // Tiny Aya: Global, Earth, Fire, Water, Base 32K and the Thinkers ship one file; Tiny Aya Base its own.
     ['tiny-aya-global', { source: 'tiny-aya' }],
     ['tiny-aya-earth', { source: 'tiny-aya' }],
     ['tiny-aya-fire', { source: 'tiny-aya' }],
@@ -786,8 +692,6 @@ for (const [name, expected] of cohereCases) {
     assert.deepEqual(lookupModelTokenizer(GENERAL_API, name), expected, name);
     assert.deepEqual(lookupModelTokenizer('openai', name), expected, name);
 }
-// Unmapped: ids with no version or size, which name no one model; Cohere's older command models;
-// unknown versions; models whose files weren't researched.
 for (const name of [
     'command', 'command-light', 'command-nightly', 'command-light-nightly', 'command-r7b', 'command-a-vision',
     'command-a-plus', 'north-mini-code', 'c4ai-aya-23', 'aya-expanse', 'c4ai-aya-vision', 'tiny-aya',
@@ -797,8 +701,6 @@ for (const name of [
     check(GENERAL_API, name, null);
     check('openai', name, null);
 }
-// On Cohere's API Cohere's file; on every other backend, the same file where Cohere's and the repo's
-// agree, none where they don't.
 for (const [name, expected] of cohereCases) {
     for (const state of backendStates) {
         const selected = selectBackendResult(lookupModelTokenizer(state.api, name), state);
@@ -810,13 +712,10 @@ for (const [name, expected] of cohereCases) {
     }
 }
 
-// --- GLM, Kimi, MiniMax and gpt-oss: one entry per tokenizer. A model its vendor's own API also serves
-// under its name (Z.ai, Moonshot, MiniMax, OpenAI) maps on self-hosted backends only ---
 /** @param {string} source */
 const selfHostedOnly = source => ({ byBackend: { other: { source } } });
 /** @type {Array<[string, import('./tokenizer-model-map.js').MapResult]>} */
 const vendorFamilyCases = [
-    // GLM-4-0414's file: GLM-4-0414, Z1, 4.1V; the GLM-4-9B repos, GLM-4V-9B and GLM-4-Voice-9B ship its content.
     ['zai-org/GLM-4-9B-0414', { source: 'glm-4-0414' }],
     ['GLM-4-32B-Base-0414', { source: 'glm-4-0414' }],
     ['GLM-4-32B-0414', selfHostedOnly('glm-4-0414')],
@@ -830,7 +729,6 @@ const vendorFamilyCases = [
     ['glm4:9b-text-q4_K_M', { source: 'glm-4-0414' }],
     ['glm-4v-9b', { source: 'glm-4-0414' }],
     ['glm-4-voice-9b', { source: 'glm-4-0414' }],
-    // GLM-4.5's file: GLM-4.5 (Air, V, Base), 4.6 (V, V-Flash), 4.7. Z.ai's API serves all but the base models.
     ['zai-org/GLM-4.5', selfHostedOnly('glm-4.5')],
     ['GLM-4.5-Air-UD-Q4_K_XL-00001-of-00002.gguf', selfHostedOnly('glm-4.5')],
     ['GLM-4.5-Air-Base', { source: 'glm-4.5' }],
@@ -838,7 +736,6 @@ const vendorFamilyCases = [
     ['z-ai/glm-4.6', selfHostedOnly('glm-4.5')],
     ['glm-4.6v-flash', selfHostedOnly('glm-4.5')],
     ['GLM-4.7-FP8', selfHostedOnly('glm-4.5')],
-    // GLM-5's file: GLM-4.7-Flash, GLM-5, 5.1, 5.2, 5.3 and 5.3-Flash.
     ['glm-4.7-flash:q8_0', selfHostedOnly('glm-5')],
     ['GLM-5', selfHostedOnly('glm-5')],
     ['GLM-5.1-FP8', selfHostedOnly('glm-5')],
@@ -846,7 +743,6 @@ const vendorFamilyCases = [
     ['glm-edge-1.5b-chat', { source: 'glm-edge' }],
     ['zai-org/glm-edge-v-5b', { source: 'glm-edge' }],
     ['AutoGLM-Phone-9B-Multilingual', { source: 'autoglm-phone' }],
-    // Kimi: one tiktoken.model, read per model.
     ['moonshotai/Kimi-K2-Instruct', { source: 'kimi' }],
     ['Kimi-K2-Instruct-0905-UD-Q2_K_XL-00001-of-00008.gguf', { source: 'kimi' }],
     ['moonshotai/kimi-k2-0905', { source: 'kimi' }],
@@ -860,7 +756,6 @@ const vendorFamilyCases = [
     ['Kimi-VL-A3B-Thinking-2506', { source: 'kimi-vl' }],
     ['moonshotai/Moonlight-16B-A3B-Instruct', { source: 'moonlight' }],
     ['Kimi-Dev-72B', { source: 'qwen2.5' }],
-    // MiniMax: Text-01 and VL-01, M1, M2 to M2.7 and M3 ship four files. MiniMax's API serves M2 to M3.
     ['MiniMax-Text-01', { source: 'minimax-text-01' }],
     ['MiniMaxAI/MiniMax-VL-01', { source: 'minimax-text-01' }],
     ['minimax/minimax-m1', { source: 'minimax-m1' }],
@@ -868,7 +763,6 @@ const vendorFamilyCases = [
     ['MiniMax-M2', selfHostedOnly('minimax-m2')],
     ['MiniMax-M2.7', selfHostedOnly('minimax-m2')],
     ['MiniMax-M3-MXFP8', selfHostedOnly('minimax-m3')],
-    // gpt-oss: OpenAI's API documents gpt-oss-20b and gpt-oss-120b; gpt-oss-safeguard only ships weights.
     ['gpt-oss-20b', selfHostedOnly('gpt-oss')],
     ['openai/gpt-oss-120b', selfHostedOnly('gpt-oss')],
     ['gpt-oss:20b', selfHostedOnly('gpt-oss')],
@@ -878,11 +772,6 @@ for (const [name, expected] of vendorFamilyCases) {
     assert.deepEqual(lookupModelTokenizer(GENERAL_API, name), expected, name);
     assert.deepEqual(lookupModelTokenizer('openai', name), expected, name);
 }
-// Unmapped: Z.ai's and Moonshot's API-only ids, names that pick no one model, unknown versions, models
-// whose tokenizer differs from their family's (LongWriter, LongCite and LongReward GLM-4-9B encode
-// GLM-4's special-token text, such as <|user|>, as ordinary text), and models no reader here was checked against: WebRL GLM-4-9B, CodeGeeX4,
-// chatglm2-6b and Kimi-Audio, whose tokenization code fails with the reference transformers, and
-// chatglm3-6b, whose code gives other ids than its tokenizer.model.
 for (const name of [
     'glm-4.5-flash', 'glm-4.5-x', 'glm-4.5-airx', 'glm-4.7-flashx', 'glm-5-turbo', 'glm-5v-turbo', 'glm-4-plus', 'glm-4-flash-250414',
     'glm-4.1v-thinking-flash', 'autoglm-phone-multilingual', 'glm4', 'glm4:latest', 'thudm/glm-4-32b', 'glm-4.8', 'glm-5.4',
@@ -907,7 +796,6 @@ for (const [name, expected] of vendorFamilyCases) {
 }
 
 /**
- * Checks each name on every backend: a `byBackend.other` result on self-hosted backends only.
  * @param {Array<[string, import('./tokenizer-model-map.js').MapResult]>} cases
  */
 function checkOnEveryBackend(cases) {
@@ -925,10 +813,7 @@ function checkOnEveryBackend(cases) {
     }
 }
 
-// --- Phi: one entry per tokenizer. Microsoft's API serves Phi-4, Phi-4-mini-instruct, Phi-4-mini-reasoning,
-// Phi-4-multimodal-instruct and Phi-4-reasoning under their names, which map on self-hosted backends only ---
 checkOnEveryBackend([
-    // Phi-1, Phi-1.5 and Phi-2 ship one file. Ollama's `phi` is Phi-2.
     ['microsoft/phi-1', { source: 'phi-1' }],
     ['phi-1_5', { source: 'phi-1' }],
     ['phi-1.5', { source: 'phi-1' }],
@@ -936,36 +821,29 @@ checkOnEveryBackend([
     ['phi-2-pytdml', { source: 'phi-1' }],
     ['phi:2.7b', { source: 'phi-1' }],
     ['phi:2.7b-chat-v2-q4_0', { source: 'phi-1' }],
-    // Phi-mini-MoE, Phi-tiny-MoE and the Phi-3.5-mini ONNX repo ship Phi-3's tokenizer.json and no tokenizer.model.
     ['Phi-mini-MoE-instruct', { source: 'phi-3-hf' }],
     ['microsoft/Phi-tiny-MoE-instruct', { source: 'phi-3-hf' }],
     ['microsoft/Phi-3.5-mini-instruct-onnx', { source: 'phi-3-hf' }],
-    // Phi-3-small: one tiktoken file, read with its code.
     ['Phi-3-small-128k-instruct', { source: 'phi-3-small' }],
     ['Phi-3-small-8k-instruct-onnx-cuda', { source: 'phi-3-small' }],
-    // Phi-3-vision, Phi-3.5-vision, their ONNX repo and Phi-Ground ship files with one content.
     ['microsoft/Phi-3-vision-128k-instruct-onnx', { source: 'phi-3-vision' }],
     ['Phi-3.5-vision-instruct-onnx', { source: 'phi-3-vision' }],
     ['microsoft/Phi-Ground', { source: 'phi-3-vision' }],
     ['Phi-Ground-Any', { source: 'phi-3-vision' }],
-    // Phi-4.
     ['microsoft/phi-4', selfHostedOnly('phi-4')],
     ['phi4:14b', selfHostedOnly('phi-4')],
     ['phi4', selfHostedOnly('phi-4')],
     ['phi-4-Q4_K_M.gguf', selfHostedOnly('phi-4')],
     ['microsoft/phi-4-onnx', selfHostedOnly('phi-4')],
-    // Phi-4-mini-instruct, Phi-4-mini-reasoning and Phi-4-mini-flash-reasoning ship files with one content.
     ['Phi-4-mini-instruct', selfHostedOnly('phi-4-mini')],
     ['phi4-mini:3.8b', selfHostedOnly('phi-4-mini')],
     ['Phi-4-mini-instruct-onnx', selfHostedOnly('phi-4-mini')],
     ['microsoft/Phi-4-mini-reasoning', selfHostedOnly('phi-4-mini')],
     ['phi4-mini-reasoning:3.8b-q8_0', selfHostedOnly('phi-4-mini')],
     ['Phi-4-mini-flash-reasoning', { source: 'phi-4-mini' }],
-    // Phi-4-multimodal adds two tokens.
     ['Phi-4-multimodal-instruct', selfHostedOnly('phi-4-multimodal')],
     ['Phi-4-multimodal-instruct-onnx', selfHostedOnly('phi-4-multimodal')],
     ['microsoft/paza-Phi-4-multimodal-instruct', { source: 'phi-4-multimodal' }],
-    // Phi-4-reasoning and -plus ship one file; Phi-4-reasoning-vision's has <nothink>.
     ['Phi-4-reasoning', selfHostedOnly('phi-4-reasoning')],
     ['phi4-reasoning:14b', selfHostedOnly('phi-4-reasoning')],
     ['Phi-4-reasoning-onnx', selfHostedOnly('phi-4-reasoning')],
@@ -973,9 +851,6 @@ checkOnEveryBackend([
     ['phi4-reasoning:plus', { source: 'phi-4-reasoning' }],
     ['Phi-4-reasoning-vision-15B', { source: 'phi-4-reasoning-vision' }],
 ]);
-// Unmapped: names that pick no one model or version, Dolphin's Phi-2 (its file adds tokens), Phi-3-vision's
-// ONNX CPU, CUDA and DirectML repos (their files have other added tokens), MediPhi (its tokenizer.json and
-// tokenizer.model give different ids), and unknown versions.
 for (const name of [
     'phi', 'phi:latest', 'phi:chat', 'phi-1.2', 'phi-2.5', 'dolphin-phi:2.7b', 'cognitivecomputations/dolphin-2_6-phi-2',
     'Phi-3.5-small', 'Phi-3-vision-128k-instruct-onnx-cpu', 'microsoft/Phi-3-vision-128k-instruct-onnx-directml',
@@ -985,12 +860,7 @@ for (const name of [
     check('openai', name, null);
 }
 
-// --- Nemotron: each name gets the file its NVIDIA repo ships. NVIDIA's API serves Llama-3.1-Nemotron-51B-Instruct,
-// -70B-Instruct, -Ultra-253B-v1 and -Safety-Guard-8B-v3, Nemotron-4-340B-Instruct and -Reward, Nemotron 3 Nano
-// 30B-A3B, Super and Ultra, Nemotron 3.5 Lightning and Nemotron 3.5 Content Safety, which map on self-hosted
-// backends only ---
 checkOnEveryBackend([
-    // Llama 3.1 Instruct's file, whatever Llama version the name says.
     ['nvidia/Llama-3.1-Nemotron-70B-Instruct-HF', selfHostedOnly('llama3.1')],
     ['nvidia/Llama-3.1-Nemotron-70B-Instruct', selfHostedOnly('llama3.1')],
     ['nemotron:70b-instruct-q4_K_M', selfHostedOnly('llama3.1')],
@@ -1000,7 +870,6 @@ checkOnEveryBackend([
     ['Llama-3.3-Nemotron-70B-Select', { source: 'llama3.1' }],
     ['Llama-3.1-Minitron-4B-Width-Base', { source: 'llama3.1' }],
     ['nvidia/Llama-3.1-Minitron-4B-Depth-Base', { source: 'llama3.1' }],
-    // Llama 3.3's file.
     ['nvidia/Llama-3.1-Nemotron-Nano-8B-v1', { source: 'llama3.3' }],
     ['Llama-3.1-Nemotron-Nano-4B-v1.1', { source: 'llama3.3' }],
     ['nvidia/Llama-3_1-Nemotron-Ultra-253B-v1', selfHostedOnly('llama3.3')],
@@ -1011,14 +880,12 @@ checkOnEveryBackend([
     ['Llama-3_3-Nemotron-Super-49B-GenRM-Multilingual', { source: 'llama3.3' }],
     ['Llama-3.1-Nemotron-8B-UltraLong-4M-Instruct', { source: 'llama3.3' }],
     ['nvidia/llama-3.1-nemotron-safety-guard-8b-v3', selfHostedOnly('llama3.3')],
-    // Their own files.
     ['Llama-3_1-Nemotron-51B-Instruct', selfHostedOnly('llama-3.1-nemotron-51b')],
     ['nvidia/Llama-3.1-Nemotron-Nano-VL-8B-V1', { source: 'llama-3.1-nemotron-nano-vl' }],
     ['Llama-3.1-Nemotron-Nano-VL-8B-V1-FP4-QAD', { source: 'llama-3.1-nemotron-nano-vl' }],
     ['nvidia/Nemotron-4-340B-Instruct', selfHostedOnly('nemotron-4')],
     ['nemotron-4-340b-reward', selfHostedOnly('nemotron-4')],
     ['Nemotron-4-340B-Base', { source: 'nemotron-4' }],
-    // Nemotron-H and Nemotron Nano v2 ship one file; Nano 12B v2 VL adds image tokens.
     ['nvidia/Nemotron-H-8B-Base-8K', { source: 'nemotron-h' }],
     ['Nemotron-H-47B-Reasoning-128K-FP8', { source: 'nemotron-h' }],
     ['NVIDIA-Nemotron-Nano-9B-v2', { source: 'nemotron-h' }],
@@ -1028,9 +895,7 @@ checkOnEveryBackend([
     ['nvidia/Nemotron-Elastic-12B', { source: 'nemotron-h' }],
     ['NVIDIA-Nemotron-Nano-12B-v2-VL-BF16', { source: 'nemotron-nano-12b-v2-vl' }],
     ['nvidia/nemotron-nano-12b-v2-vl', { source: 'nemotron-nano-12b-v2-vl' }],
-    // Nemotron-Flash ships nemo.json's content.
     ['nvidia/Nemotron-Flash-3B-Instruct', tokenizers.NEMO],
-    // Nemotron 3 and the models built on it ship files with one content.
     ['nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16', selfHostedOnly('nemotron-3')],
     ['nvidia/nemotron-nano-3-30b-a3b', selfHostedOnly('nemotron-3')],
     ['nemotron-3-nano:30b-cloud', selfHostedOnly('nemotron-3')],
@@ -1053,11 +918,9 @@ checkOnEveryBackend([
     ['Nemotron-Labs-Diffusion-8B-Base', { source: 'nemotron-3' }],
     ['Nemotron-Labs-TwoTower-30B-A3B-Base-BF16', { source: 'nemotron-3' }],
     ['nvidia/Nemotron-3-Labs-Ultra-Math-RL', { source: 'nemotron-3' }],
-    // Nemotron Content Safety ships Gemma 3 -it's files.
     ['nvidia/Nemotron-3-Content-Safety', { source: 'gemma-3-it' }],
     ['Nemotron-Content-Safety-Reasoning-4B', { source: 'gemma-3-it' }],
     ['nvidia/nemotron-3.5-content-safety', selfHostedOnly('gemma-3-it')],
-    // Built on Qwen2.5, DeepSeek-R1-Distill-Qwen and Qwen3.
     ['nvidia/OpenReasoning-Nemotron-32B', { source: 'qwen2.5' }],
     ['OpenCodeReasoning-Nemotron-1.1-7B', { source: 'qwen2.5' }],
     ['OpenMath-Nemotron-14B-Kaggle', { source: 'qwen2.5' }],
@@ -1071,12 +934,6 @@ checkOnEveryBackend([
     ['nvidia/Nemotron-Orchestrator-8B', { source: 'qwen3' }],
     ['Nemotron-Research-GooseReason-4B-Instruct', { source: 'qwen3' }],
 ]);
-// Unmapped: names that pick no one model, unknown versions, models whose tokenizer.json and tokenizer.model
-// give different ids (Nemotron-Mini-4B, Minitron-4B and -8B, Nemotron-4-Mini-Hindi-4B) and Nemotron-Mini-4B's
-// ONNX INT4 repo, which ships that tokenizer.json's content alone; repos that ship no tokenizer file (Nano-VL
-// mcore, Super MTPv2, 3.5 Lightning DFlash and DSpark), the gated 2023 Nemotron-3-8B models, models whose files
-// differ from their family's (Nemotron 3 Nano Omni, Labs Diffusion VLM, Audex), embedding, reranking, parsing
-// and speech models, and Mistral's closed mistral-nemotron.
 for (const name of [
     'nemotron', 'nemotron:latest', 'nemotron-3.6-nano-30b', 'nemotron-4.5-340b', 'AceReason-Nemotron-1.2-7B',
     'Nemotron-Mini-4B-Instruct', 'nemotron-mini:4b', 'nvidia/Minitron-8B-Base', 'Nemotron-4-Mini-Hindi-4B-Instruct',

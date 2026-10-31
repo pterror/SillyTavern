@@ -1,39 +1,17 @@
-//! Entry values and the order-preserving key encodings.
-
 use crate::log::format::{get_uvarint, put_uvarint};
 
-/// An entry's value in the keyspace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Val {
     Put(Vec<u8>),
-    /// The key has no value: hides older values until a merge reaches the oldest run.
     Del,
-    /// Adds to the key's counter (a `Put` of `counter_bytes`, or 0 if it has none) without reading it.
     Add(i64),
-    /// Raises the key's maximum (a `Put` of `max_bytes`, or nothing if it has none) to at least this, without
-    /// reading it.
     Max(u64),
-    /// Sets slots of the key's map (a `Put` of `map_bytes`, or an empty map if it has none) without reading it:
-    /// (slot, value) pairs sorted by slot, value 0 removing the slot.
     Map(Vec<(u32, u32)>),
-    /// Raises slots of the key's map (as `Map`'s) to at least these values without reading it: pairs sorted by
-    /// slot.
     MaxMap(Vec<(u32, u32)>),
-    /// Adds to slots of the key's map (as `Map`'s) without reading it: (slot, delta) pairs sorted by slot, no
-    /// delta 0; a slot whose count reaches 0 is removed. A key written with it is never written with `Map` or
-    /// `MaxMap` (`store::derive::AddMapKind`). Its counts are up to 64 bits (`count_bytes`).
     AddMap(Vec<(u32, i64)>),
-    /// An `AddMap` key's whole map as its counts, sorted by slot, none 0: only ever made by `settled` and
-    /// `over_settled`, never written. Anywhere it isn't read as pairs it is `Put(count_bytes(..))`.
     Counts(Vec<(u32, u64)>),
 }
 
-/// A map's pairs (sorted by slot, values not 0) as `Put` bytes, the same encoding as a `Map` value's payload: a
-/// varint of the count shifted left, its low bit the form, whichever is smaller. Packed (0): per chunk of `CHUNK`
-/// pairs the bit widths of its slot differences and of its values (a byte each), then those bit-packed, least
-/// significant first, difference then value per pair. Varints (1): per pair a varint of the slot difference
-/// shifted left with the low bit set when the value is 1, any other value following as a varint. A slot's
-/// difference is from the slot before (from 0 for the first).
 pub fn map_bytes(pairs: &[(u32, u32)]) -> Vec<u8> {
     let mut out = Vec::with_capacity(map_len(pairs));
     put_map(&mut out, pairs);
@@ -46,7 +24,6 @@ fn bits(v: u32) -> u32 {
     32 - v.leading_zeros()
 }
 
-/// Each chunk's widths.
 fn chunks(pairs: &[(u32, u32)]) -> impl Iterator<Item = (&[(u32, u32)], u32, u32, u32)> {
     let mut prev = 0u32;
     pairs.chunks(CHUNK).map(move |c| {
@@ -127,7 +104,6 @@ fn map_len(pairs: &[(u32, u32)]) -> usize {
         + varints_len(pairs).min(packed_len(pairs))
 }
 
-/// A map's pairs from `map_bytes` (or a `Map` payload).
 pub fn map_pairs(b: &[u8]) -> Option<Vec<(u32, u32)>> {
     let mut at = 0;
     let head = get_uvarint(b, &mut at).ok()?;
@@ -189,7 +165,6 @@ fn bits64(v: u64) -> u32 {
     64 - v.leading_zeros()
 }
 
-/// Each chunk's widths, for a map of wide counts.
 fn count_chunks(pairs: &[(u32, u64)]) -> impl Iterator<Item = (&[(u32, u64)], u32, u32, u32)> {
     let mut prev = 0u32;
     pairs.chunks(CHUNK).map(move |c| {
@@ -224,7 +199,6 @@ fn count_packed_len(pairs: &[(u32, u64)]) -> usize {
         .sum()
 }
 
-/// `put_map` for counts up to 64 bits: the same layout, value widths up to 64.
 fn put_counts(out: &mut Vec<u8>, pairs: &[(u32, u64)]) {
     let varints = count_varints_len(pairs) < count_packed_len(pairs);
     put_uvarint(out, (pairs.len() as u64) << 1 | u64::from(varints));
@@ -245,7 +219,6 @@ fn put_counts(out: &mut Vec<u8>, pairs: &[(u32, u64)]) {
     for (c, base, bd, bv) in count_chunks(pairs) {
         out.push(bd as u8);
         out.push(bv as u8);
-        // At most 7 bits left over plus a 64-bit width: a u128 holds them.
         let (mut acc, mut n, mut p) = (0u128, 0u32, base);
         let mut push = |x: u64, w: u32, acc: &mut u128, n: &mut u32| {
             *acc |= u128::from(x) << *n;
@@ -272,14 +245,12 @@ fn count_len(pairs: &[(u32, u64)]) -> usize {
         + count_varints_len(pairs).min(count_packed_len(pairs))
 }
 
-/// `map_bytes` for counts up to 64 bits. Counts that all fit in 32 bits give exactly `map_bytes`'s bytes.
 pub fn count_bytes(pairs: &[(u32, u64)]) -> Vec<u8> {
     let mut out = Vec::with_capacity(count_len(pairs));
     put_counts(&mut out, pairs);
     out
 }
 
-/// A map's pairs from `count_bytes` (or `map_bytes`), counts up to 64 bits.
 pub fn map_counts(b: &[u8]) -> Option<Vec<(u32, u64)>> {
     let mut at = 0;
     let head = get_uvarint(b, &mut at).ok()?;
@@ -337,12 +308,10 @@ pub fn map_counts(b: &[u8]) -> Option<Vec<(u32, u64)>> {
     (at == b.len()).then_some(out)
 }
 
-/// `newer`'s pairs over `older`'s, sorted by slot.
 pub fn map_over(newer: &[(u32, u32)], mut older: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
     if newer.is_empty() {
         return older;
     }
-    // Pairs past every older slot, as ids growing in order bring them: appended.
     if older.last().is_none_or(|&(s, _)| s < newer[0].0) {
         older.extend_from_slice(newer);
         return older;
@@ -374,7 +343,6 @@ pub fn map_over(newer: &[(u32, u32)], mut older: Vec<(u32, u32)>) -> Vec<(u32, u
     out
 }
 
-/// Two maps' pairs, each slot at the higher value, sorted by slot.
 pub fn map_max(a: &[(u32, u32)], mut b: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
     if a.is_empty() {
         return b;
@@ -410,7 +378,6 @@ pub fn map_max(a: &[(u32, u32)], mut b: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
     out
 }
 
-/// Two sets of deltas summed per slot (wrapping, as `Add`'s), sums of 0 dropped, sorted by slot.
 pub fn add_pairs(a: &[(u32, i64)], mut b: Vec<(u32, i64)>) -> Vec<(u32, i64)> {
     if a.is_empty() {
         return b;
@@ -449,8 +416,6 @@ pub fn add_pairs(a: &[(u32, i64)], mut b: Vec<(u32, i64)>) -> Vec<(u32, i64)> {
     out
 }
 
-/// `deltas` added onto the counts of a whole map (`base`, sorted by slot), sorted by slot, counts of 0 dropped.
-/// A count that leaves the range of a count is a fault in the derived data: the slot is dropped and logged.
 pub fn add_onto(key: &[u8], deltas: &[(u32, i64)], base: Vec<(u32, u64)>) -> Vec<(u32, u64)> {
     let mut out = Vec::with_capacity(base.len() + deltas.len());
     let mut put = |slot: u32, n: i128| {
@@ -493,13 +458,10 @@ pub fn add_onto(key: &[u8], deltas: &[(u32, i64)], base: Vec<(u32, u64)>) -> Vec
     out
 }
 
-/// Deltas as a map's pairs, each zigzagged: an `AddMap` value's payload. A delta that fits in an `i32` zigzags
-/// to what it did as one, so its payload is a narrow map's bytes.
 fn add_map_pairs(deltas: &[(u32, i64)]) -> Vec<(u32, u64)> {
     deltas.iter().map(|&(s, d)| (s, zigzag(d))).collect()
 }
 
-/// A map's pairs as stored: removals dropped; nothing when empty.
 fn map_stored(mut pairs: Vec<(u32, u32)>) -> Val {
     pairs.retain(|&(_, v)| v != 0);
     if pairs.is_empty() {
@@ -509,14 +471,12 @@ fn map_stored(mut pairs: Vec<(u32, u32)>) -> Val {
     }
 }
 
-/// Counts narrowed to a map's pairs; None when one doesn't fit in 32 bits.
 fn narrow(p: Vec<(u32, u64)>) -> Option<Vec<(u32, u32)>> {
     p.into_iter()
         .map(|(s, v)| u32::try_from(v).ok().map(|v| (s, v)))
         .collect()
 }
 
-/// Counts as stored: nothing when empty.
 fn counts_stored(pairs: Vec<(u32, u64)>) -> Val {
     if pairs.is_empty() {
         Val::Del
@@ -525,14 +485,12 @@ fn counts_stored(pairs: Vec<(u32, u64)>) -> Val {
     }
 }
 
-/// A maximum's value as `Put` bytes.
 pub fn max_bytes(n: u64) -> Vec<u8> {
     let mut out = Vec::new();
     put_uvarint(&mut out, n);
     out
 }
 
-/// A maximum's value from `Put` bytes.
 pub fn max_value(b: &[u8]) -> Option<u64> {
     let mut at = 0;
     let v = get_uvarint(b, &mut at).ok()?;
@@ -547,14 +505,12 @@ fn unzigzag(v: u64) -> i64 {
     ((v >> 1) as i64) ^ -((v & 1) as i64)
 }
 
-/// A counter's value as `Put` bytes.
 pub fn counter_bytes(n: i64) -> Vec<u8> {
     let mut out = Vec::new();
     put_uvarint(&mut out, zigzag(n));
     out
 }
 
-/// A counter's value from `Put` bytes.
 pub fn counter_value(b: &[u8]) -> Option<i64> {
     let mut at = 0;
     let v = get_uvarint(b, &mut at).ok()?;
@@ -562,7 +518,6 @@ pub fn counter_value(b: &[u8]) -> Option<i64> {
 }
 
 impl Val {
-    /// This value (newer) over `older`, the values of `key`.
     pub fn over(self, key: &[u8], older: &Val) -> Val {
         match (self, older) {
             (Val::Add(d), Val::Add(o)) => Val::Add(o.wrapping_add(d)),
@@ -610,9 +565,6 @@ impl Val {
         }
     }
 
-    /// This value (newer) over `settled`, the value `key`'s older values settle to (`settled`), whose `Map` is
-    /// the whole map. The settled forms only `settled` makes, `Counts` and the `Map` a key written by `MaxMap`
-    /// settles to, combine with a newer value here; `over` would take the newer value alone.
     pub fn over_settled(self, key: &[u8], settled: &Val) -> Val {
         match (self, settled) {
             (Val::AddMap(n), Val::Counts(p)) => Val::Counts(add_onto(key, &n, p.clone())),
@@ -621,7 +573,6 @@ impl Val {
         }
     }
 
-    /// `over`, taking the older value: a map over a map is merged in place.
     pub fn over_owned(self, key: &[u8], older: Val) -> Val {
         match (self, older) {
             (Val::Map(n), Val::Map(o)) => Val::Map(map_over(&n, o)),
@@ -631,7 +582,6 @@ impl Val {
         }
     }
 
-    /// Whether the value builds on older ones (an `Add`, a `Max` or a map's), so a read goes on to them.
     pub fn is_partial(&self) -> bool {
         matches!(
             self,
@@ -639,8 +589,6 @@ impl Val {
         )
     }
 
-    /// The value as the oldest one of `key`'s: a `Del` is nothing, an `Add` a counter from 0, a `Max` itself, a
-    /// map its pairs (an `AddMap`'s added onto an empty map; nothing when none is left).
     pub fn bottom(self, key: &[u8]) -> Option<Val> {
         match self {
             Val::Del => None,
@@ -659,8 +607,6 @@ impl Val {
         }
     }
 
-    /// The value it amounts to when nothing older exists, a map kept as its pairs (none removed): `resolved`
-    /// without encoding a map that a reader would decode again.
     pub fn settled(self, key: &[u8]) -> Option<Val> {
         match self {
             Val::Map(mut pairs) | Val::MaxMap(mut pairs) => {
@@ -676,7 +622,6 @@ impl Val {
         }
     }
 
-    /// A settled value's map pairs; None when a count doesn't fit in 32 bits.
     pub fn into_pairs(self, key: &[u8]) -> Option<Vec<(u32, u32)>> {
         match self {
             Val::Map(p) => Some(p),
@@ -687,7 +632,6 @@ impl Val {
         }
     }
 
-    /// A settled value's counts (an `AddMap` key's).
     pub fn into_counts(self, key: &[u8]) -> Option<Vec<(u32, u64)>> {
         match self {
             Val::Counts(p) => Some(p),
@@ -697,7 +641,6 @@ impl Val {
         }
     }
 
-    /// A settled value's bytes (a map's encoded).
     pub fn into_bytes(self, key: &[u8]) -> Vec<u8> {
         match self {
             Val::Put(b) => b,
@@ -707,7 +650,6 @@ impl Val {
         }
     }
 
-    /// The value it resolves to when nothing older exists.
     pub fn resolved(self, key: &[u8]) -> Option<Vec<u8>> {
         match self.bottom(key)? {
             Val::Put(b) => Some(b),
@@ -715,7 +657,6 @@ impl Val {
         }
     }
 
-    /// Bytes of the encoded value (without its tag).
     pub fn payload_len(&self) -> usize {
         match self {
             Val::Put(b) => b.len(),
@@ -728,7 +669,6 @@ impl Val {
         }
     }
 
-    /// Appends the tag varint `(payload length << 3) | kind`, then the payload.
     pub fn encode(&self, out: &mut Vec<u8>) {
         match self {
             Val::Put(b) => {
@@ -766,7 +706,6 @@ impl Val {
         }
     }
 
-    /// Decodes a value written by `encode`.
     pub fn decode(buf: &[u8], at: &mut usize) -> Option<Val> {
         let tag = get_uvarint(buf, at).ok()?;
         let len = usize::try_from(tag >> 3).ok()?;
@@ -791,7 +730,6 @@ impl Val {
     }
 }
 
-/// Folds `key`'s values, newest first, into the value they amount to.
 pub fn fold<I: IntoIterator<Item = Val>>(key: &[u8], vals: I) -> Option<Val> {
     let mut acc: Option<Val> = None;
     for v in vals {
@@ -807,9 +745,6 @@ pub fn fold<I: IntoIterator<Item = Val>>(key: &[u8], vals: I) -> Option<Val> {
     acc
 }
 
-// ---- key encodings: every component is prefix-free and sorts as its value ----
-
-/// A u64 as one length byte (0–8) and its big-endian bytes without leading zeros: sorts numerically.
 pub fn put_u64(out: &mut Vec<u8>, v: u64) {
     let n = (8 - v.leading_zeros() / 8) as usize;
     out.push(n as u8);
@@ -826,7 +761,6 @@ pub fn get_u64(buf: &[u8], at: &mut usize) -> Option<u64> {
     Some(bytes.iter().fold(0, |acc, b| (acc << 8) | u64::from(*b)))
 }
 
-/// Bytes with 0x00 written as 0x00 0xff and ended by 0x00 0x01: sorts as the bytes do.
 pub fn put_bytes(out: &mut Vec<u8>, b: &[u8]) {
     for &c in b {
         out.push(c);
@@ -926,7 +860,6 @@ mod tests {
             fold(K, [Val::Max(3), Val::Del]),
             Some(Val::Put(max_bytes(3)))
         );
-        // Maps: newer slots win, 0 removes, an empty map is no value.
         let older = Val::Put(map_bytes(&[(1, 1), (5, 7), (9, 2)]));
         assert_eq!(
             fold(
@@ -944,7 +877,6 @@ mod tests {
             Some(Val::Del)
         );
         assert_eq!(Val::Map(vec![(3, 0)]).bottom(K), None);
-        // Maxima per slot.
         assert_eq!(
             fold(
                 K,
@@ -981,7 +913,6 @@ mod tests {
         }
     }
 
-    /// Every value one bracketing of combining `vals` (newest first) neighbour by neighbour can give.
     fn bracketings(vals: &[Val]) -> Vec<Val> {
         if vals.len() == 1 {
             return vec![vals[0].clone()];
@@ -1017,7 +948,6 @@ mod tests {
     fn added_maps_merged_in_any_order_give_what_adding_each_in_turn_gives() {
         let base_pairs = [(1, 2), (5, 1)];
         let base = Val::Put(map_bytes(&base_pairs));
-        // Oldest first.
         let adds = vec![
             Val::AddMap(vec![(1, -1), (3, 2)]),
             Val::AddMap(vec![(5, -1), (9, 4)]),
@@ -1030,7 +960,6 @@ mod tests {
             seq = a.clone().over(K, &seq);
             steps.push(seq.clone());
         }
-        // Slots reaching 0 are gone: 5 at the second add, 1 and 9 at the third, 3 at the fourth.
         assert_eq!(steps[1], Val::Put(map_bytes(&[(1, 1), (3, 2), (9, 4)])));
         assert_eq!(steps[2], Val::Put(map_bytes(&[(3, 1)])));
         assert_eq!(seq, Val::Put(map_bytes(&[(7, 1)])));
@@ -1057,7 +986,6 @@ mod tests {
             assert_eq!(fold(K, newest_first), Some(seq.clone()));
         }
         assert_eq!(tried, 24 * 5);
-        // Deltas summing to 0 are dropped while still partial.
         assert_eq!(
             Val::AddMap(vec![(3, -1), (9, -4)])
                 .over_owned(K, Val::AddMap(vec![(3, 1), (9, 4), (12, 2)])),
@@ -1080,7 +1008,6 @@ mod tests {
             fold(K, [v, Val::Del, Val::Put(map_bytes(&[(2, 9)]))]),
             Some(stored.clone())
         );
-        // Every count back at 0: no value.
         let gone = Val::AddMap(vec![(2, -3), (8, -1)]);
         assert_eq!(gone.over(K, &stored), Val::Del);
         assert_eq!(Val::AddMap(Vec::new()).bottom(K), None);
@@ -1135,7 +1062,6 @@ mod tests {
                 assert_eq!(form(&b), want);
                 assert_eq!(b.len(), count_len(&pairs));
                 assert_eq!(map_counts(&b), Some(pairs));
-                // A narrow reader rejects a count past 32 bits.
                 assert_eq!(map_pairs(&b), None);
             }
         }
@@ -1153,9 +1079,7 @@ mod tests {
         };
         assert_eq!(map_counts(&b), Some(want.clone()));
         assert_eq!(v.clone().into_counts(K), Some(want.clone()));
-        // A narrow reader is told it doesn't fit.
         assert_eq!(v.clone().into_pairs(K), None);
-        // Settled, then added onto, then stored and read back.
         let more = Val::AddMap(vec![(2, -1)]).over_settled(K, &v.settled(K).unwrap());
         assert_eq!(more, Val::Counts(vec![(2, past as u64 - 1), (8, 2)]));
         let stored = Val::AddMap(vec![(2, -1)]).over(K, &Val::Put(count_bytes(&want)));

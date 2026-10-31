@@ -5,16 +5,6 @@ import path from 'node:path';
 
 import express from 'express';
 
-// Route-level Express-integration test for src/endpoints/quick-replies.js's `/save-partial` route,
-// added as part of migrating QuickReplySet.js's client-side accumulator+debounce off a single
-// shared bundle and onto one-request-per-user-action dispatch (see this task's own report). Mirrors
-// this directory's established convention (groups.test.js): a real express app mounting the real
-// router, real on-disk quick-reply-set JSON fixtures, and direct filesystem assertions of the
-// post-write state - no mocking of quick-replies.js itself, since it has no external network
-// dependency to stub out. Each test case below corresponds to exactly one bucket the redesigned
-// client now sends per real user action (setProps-only, qrUpdates-only, qrAdds-only, qrDeletes-only,
-// qrOrder-only), plus the couple of legitimate multi-bucket single-action cases (add bumping
-// idIndex, insert-before bundling an add with a reposition).
 const { router: quickRepliesRouter } = await import('./quick-replies.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-quick-replies-save-partial-test-'));
@@ -53,9 +43,8 @@ async function postJson(app, urlPath, body) {
 }
 
 /**
- * Writes a fresh baseline quick-reply-set fixture straight to disk (bypassing the route).
  * @param {string} name
- * @returns {object} The fixture object written.
+ * @returns {object}
  */
 function writeSetFixture(name) {
     const fixture = {
@@ -83,8 +72,6 @@ function readSetFromDisk(name) {
 async function run() {
     const app = buildTestApp();
 
-    // (a) setProps only - a single discrete set-level property toggle (e.g. a checkbox click)
-    // touches exactly that property and nothing else.
     {
         const name = 'set-props-only';
         writeSetFixture(name);
@@ -97,7 +84,6 @@ async function run() {
         assert.equal(onDisk.qrList.length, 2, 'qrList is untouched by a setProps-only call');
     }
 
-    // (b) qrUpdates only - a single entry's rename/edit touches only that entry, by stable id.
     {
         const name = 'qr-update-only';
         writeSetFixture(name);
@@ -110,9 +96,6 @@ async function run() {
         assert.equal(onDisk.disableSend, false, 'set-level props are untouched by a qrUpdates-only call');
     }
 
-    // (c) qrAdds bundled with the idIndex bump - this is the ONE legitimate multi-bucket single
-    // action (see QuickReplySet.saveQrAdd's own comment): adding a QR and bumping idIndex are two
-    // facets of the same "add a quick reply" gesture, not two different actions.
     {
         const name = 'qr-add-with-id-index';
         writeSetFixture(name);
@@ -129,8 +112,6 @@ async function run() {
         assert.equal(onDisk.idIndex, 3);
     }
 
-    // (c2) qrAdds without a client-picked id - the server mints one, matching addQuickReplyRemote()'s
-    // wire shape (used whenever the client can't safely assert an id itself).
     {
         const name = 'qr-add-server-minted-id';
         writeSetFixture(name);
@@ -145,7 +126,6 @@ async function run() {
         assert.ok(onDisk.qrList.some(qr => qr.id === mintedId && qr.label === 'NoId'));
     }
 
-    // (d) qrDeletes only - a single delete-click removes exactly that entry.
     {
         const name = 'qr-delete-only';
         writeSetFixture(name);
@@ -156,8 +136,6 @@ async function run() {
         assert.equal(onDisk.qrList[0].id, 2, 'the other entry survives');
     }
 
-    // (e) qrOrder only - a drag-and-drop reorder is one action touching every item's position, sent
-    // in one bulk request (the legitimate bulk exception, matching tags.js's saveTagsNow()).
     {
         const name = 'qr-order-only';
         writeSetFixture(name);
@@ -167,10 +145,6 @@ async function run() {
         assert.deepEqual(onDisk.qrList.map(qr => qr.id), [2, 1]);
     }
 
-    // (f) insert-before: a single request bundling qrAdds + setProps(idIndex) + qrOrder - the other
-    // legitimate multi-bucket single action (see QuickReplySet.js's onInsertBefore comment): minting
-    // the new entry and placing it at a specific position are two facets of one "insert before"
-    // gesture, sent together instead of racing two separate requests against the same file.
     {
         const name = 'qr-insert-before';
         writeSetFixture(name);
@@ -187,8 +161,6 @@ async function run() {
         assert.equal(onDisk.idIndex, 3);
     }
 
-    // (g) unrecognized top-level body fields (qrList/name riding along inside setProps) are stripped,
-    // matching the route's own safe-props guard.
     {
         const name = 'qr-setprops-guard';
         writeSetFixture(name);
@@ -203,7 +175,6 @@ async function run() {
         assert.equal(onDisk.color, 'red', 'the one legitimate sibling field in the same call was still applied');
     }
 
-    // (h) a missing `name` still 400s (baseline route-shape regression guard).
     {
         const { status } = await postJson(app, '/api/quick-replies/save-partial', { setProps: { color: 'red' } });
         assert.equal(status, 400);

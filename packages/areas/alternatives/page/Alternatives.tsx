@@ -9,34 +9,20 @@ import { markWords, matchedWords } from './marks.ts';
 import { createSeen } from './seen.ts';
 import type { Seen } from './seen.ts';
 
-// The alternatives of a message (docs/design/alternatives.md): one list, every alternative rendered as the chat
-// renders it. The server sends the list, the counts and the search's matches; the page draws them, and keeps only
-// what is its own: which list is open, the search box's text, the greeting being edited.
-
-/** What only the old page does yet. */
 export type OldPage = {
-    /** An alternative's text as the chat renders it. */
     format(text: string, item: { name: string; role: Item['role'] }, mesId: number | null): DocumentFragment;
-    /** A stored send date as the chat shows dates. */
     date(value: string | number): string;
-    /** The on-screen connection's tokenizer state (the count routes'), null when there's none. */
     tokenizer(): Record<string, unknown> | null;
-    /** Why the chat can't show another alternative of this message now (null: it can). */
     cantGo(mesId: number): string | null;
-    /** The chat shows this alternative of the message. */
     go(mesId: number, index: number): Promise<void>;
-    /** Deletes one of a chat message's alternatives (asking first, as the chat's delete does). */
     remove(mesId: number, index: number): Promise<void>;
     copy(text: string): Promise<void>;
-    /** The card's greetings changed through this list: the old page's character and greeting pager take them. */
     greetingsChanged(card: NonNullable<ListView['card']>, edit: { hash: number; text: string } | null): void;
 };
 
-/** A list opened: what it's of, and the message it's for in the chat on screen (null: a greetings list). */
 export type Look = { target: Target; mesId: number | null; title: string; at?: number };
 
 const keyOf = (target: Target) => JSON.stringify(target);
-/** How many rows around the current one go on the page first. */
 const FIRST_ROWS = 40;
 
 export function Alternatives(props: { look: Look | null; old: OldPage; onClose: () => void }) {
@@ -58,10 +44,8 @@ type RowState = {
     li: HTMLLIElement;
     body: HTMLElement;
     item: Item;
-    /** The rendered text, and the text it is of. */
     html: DocumentFragment | null;
     htmlOf: string;
-    /** What the body shows now: text and matches. */
     painted: string;
     visible: boolean;
 };
@@ -70,7 +54,6 @@ const idle: (work: (deadline: { timeRemaining(): number }) => void) => void =
     typeof requestIdleCallback === 'function'
         ? (work) => void requestIdleCallback(work, { timeout: 200 })
         : (work) => {
-              // No idle callbacks (Safari): a frame's first few milliseconds.
               requestAnimationFrame(() => {
                   const start = performance.now();
                   work({ timeRemaining: () => Math.max(0, 8 - (performance.now() - start)) });
@@ -94,7 +77,6 @@ function Dialog(props: {
     const mesId = props.look.mesId;
 
     const isOurs = (list: ListView | undefined) => !!list?.target && keyOf(list.target) === key;
-    // What this browser last saw of the list, until the server's whole list is here.
     const [seen, setSeen] = createSignal<Seen | null>(null);
     void props.seen.find(key).then(setSeen);
     const list = createMemo(() => {
@@ -103,19 +85,16 @@ function Dialog(props: {
         return seen()?.list ?? null;
     });
     const items = () => list()?.items ?? [];
-    /** All of them, or (while the list is still coming) how many there will be. */
     const total = () => list()?.total ?? 0;
     const byIndex = createMemo(() => new Map(items().map((item) => [item.index, item])));
     const itemAt = (index: number) => byIndex().get(index);
     const counts = () => (isOurs(props.views.list()) ? props.views.counts()?.counts : seen()?.counts.counts) ?? {};
     const current = () => list()?.current ?? null;
     const matches = () => props.views.matches()?.matches ?? null;
-    /** The server is still checking alternatives for the search. */
     const searching = () => {
         const view = props.views.matches();
         return view?.matches != null && view.checked < view.total;
     };
-    // What the matches are, read through: the store merges a new answer into the one before, in place.
     const matchesKey = createMemo(() => JSON.stringify(matches()));
 
     const [query, setQuery] = createSignal('');
@@ -125,7 +104,6 @@ function Dialog(props: {
     const [drop, setDrop] = createSignal<{ id: string; side: 'before' | 'after' } | null>(null);
     const [ticks, setTicks] = createSignal<{ top: number; current: boolean }[]>([]);
 
-    // The tab looks at this list until it's closed; the server forgetting it (a restart) is told to it again.
     const [opened, setOpened] = createSignal(false);
     const open = () =>
         void client
@@ -156,8 +134,6 @@ function Dialog(props: {
     let scroller: HTMLOListElement | undefined;
     onMount(() => dialog?.showModal());
 
-    // Rows are drawn as the chat draws messages: those in view first, the rest when there's time. A row not drawn
-    // yet shows its text as it is.
     const rows = new Map<string, RowState>();
     const spansOf = (id: string) => matches()?.[id] ?? null;
     const paint = (row: RowState) => {
@@ -219,7 +195,6 @@ function Dialog(props: {
             observer.unobserve(li);
             if (rows.get(item.id) === row) rows.delete(item.id);
         });
-        // A text that changed (an edit) is drawn again.
         createEffect(
             on(
                 () => item.text,
@@ -234,13 +209,11 @@ function Dialog(props: {
         );
     };
 
-    // The matches drawn: those in view at once, the rest when there's time.
     createEffect(
         on(matchesKey, (now, before) => {
             for (const row of rows.values()) if (row.visible) paint(row);
             paintRest();
             measure();
-            // The search cleared: back to the current one, now that every row shows again.
             if (now === 'null' && before !== undefined && before !== 'null') {
                 queueMicrotask(() => scrollTo(current() ?? 0, false));
             }
@@ -259,10 +232,7 @@ function Dialog(props: {
         if (focus) row.li.focus({ preventScroll: true });
     };
 
-    // Opens on the current alternative (or the one asked for), once the list is there.
     let placed = false;
-    // A long list goes on the page as the server sends it: the rows around the one it opens on first, then more and
-    // more around them, a step a frame, until all are there (as one list). A list shown at once (seen before) too.
     const [reach, setReach] = createSignal(FIRST_ROWS / 2);
     const mounted = createMemo(() => {
         const at = untrack(() => props.look.at ?? current() ?? 0);
@@ -270,7 +240,6 @@ function Dialog(props: {
         return within >= total() ? items() : items().filter((item) => Math.abs(item.index - at) <= within);
     });
     const widen = () => {
-        // Once all are there, so are any that come later.
         if (reach() >= total()) {
             setReach(Number.POSITIVE_INFINITY);
             return;
@@ -282,18 +251,15 @@ function Dialog(props: {
         if (placed || items().length === 0) return;
         placed = true;
         const at = props.look.at ?? current() ?? 0;
-        // Drawn before it's shown, with its neighbours: what's first in view isn't raw text.
         for (let i = Math.max(0, at - 3); i <= at + 3; i++) {
             const row = rowOf(i);
             if (row) paint(row);
         }
         scrollTo(at, false);
         paintRest();
-        // The rest of the rows once the first are on screen.
         requestAnimationFrame(() => requestAnimationFrame(widen));
     });
 
-    // Markers beside the list: matches and the current one, where they are in it.
     let measuring = false;
     const measure = () => {
         if (measuring) return;
@@ -307,7 +273,6 @@ function Dialog(props: {
             const at = (id: string, isCurrent: boolean) => {
                 const row = rows.get(id);
                 if (!row || hidden(row.item)) return;
-                // One marker per pixel row of the track at most.
                 const top = Math.round((row.li.offsetTop / height) * 1000) / 10;
                 marks.set(top, (marks.get(top) ?? false) || isCurrent);
             };
@@ -336,8 +301,6 @@ function Dialog(props: {
         return found === null ? total() : Object.keys(found).length;
     };
 
-    // The one selected in the list: the current one until another is picked (by its number, or a click on it). Go
-    // sends the chat to it; selecting only finds it.
     const [picked, setPicked] = createSignal<number | null>(props.look.at ?? null);
     const selected = () => picked() ?? current();
     const select = (text: string) => {
@@ -363,7 +326,6 @@ function Dialog(props: {
         if (item) void go(item, index!);
     };
 
-    // What can be done with a row, and why not when it can't.
     const whyNotGo = (item: Item, index: number): string | null => {
         if (greetingsList) {
             if (list()?.chatOpen !== true) return t('Open a chat with this character to show a greeting in it.');
@@ -371,7 +333,6 @@ function Dialog(props: {
             return null;
         }
         if (index === current()) return t('The chat shows this one.');
-        // Asked each time: the chat may be busy (a reply being written) now and not a moment later.
         return mesId === null ? null : props.old.cantGo(mesId);
     };
     const go = async (item: Item, index: number) => {
@@ -384,7 +345,6 @@ function Dialog(props: {
         if (greetingsList) await props.old.go(0, item.opening!);
         else await props.old.go(mesId!, index);
     };
-    // The card's controls are on the card's greetings wherever the list shows them; a stored alternative is the chat's.
     const isCardRow = (item: Item) => item.card !== null && list()?.card != null;
     const canRemove = (item: Item) => !greetingsList && item.nodeId !== null && total() > 1;
     const remove = async (index: number) => {
@@ -451,7 +411,6 @@ function Dialog(props: {
         );
     };
 
-    // Dragging a greeting by its handle: where it would land is shown, and it's moved when let go.
     const dragFrom = (item: Item, event: PointerEvent) => {
         const handle = event.currentTarget as HTMLElement;
         handle.setPointerCapture(event.pointerId);
@@ -488,8 +447,6 @@ function Dialog(props: {
         handle.addEventListener('pointerup', done);
         handle.addEventListener('pointercancel', cancel);
     };
-    // The arrow keys move a greeting by one; Home and End to the start and the end.
-    // Among the card's greetings (a chat's openings list has stored ones between them, which aren't the card's).
     const keyMove = (item: Item, event: KeyboardEvent) => {
         const cards = items().filter((i) => i.card !== null);
         const at = cards.findIndex((i) => i.id === item.id);
@@ -554,7 +511,6 @@ function Dialog(props: {
                     <form
                         class="alternatives-select"
                         onSubmit={(event) => {
-                            // Enter, as the button: the chat goes to the one selected.
                             event.preventDefault();
                             goSelected();
                         }}

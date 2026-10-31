@@ -147,7 +147,6 @@ export function redirectDeprecatedEndpoints(app) {
  * @param {import('express').Express} app The Express app to use
  */
 export function setupPrivateEndpoints(app) {
-    // Every route reads the settings as the user's settings document holds them.
     app.use('/api', settingsDocumentMiddleware);
     app.use('/', userDataRouter);
     app.use('/api/users', usersPrivateRouter);
@@ -176,8 +175,6 @@ export function setupPrivateEndpoints(app) {
     app.use('/api/groups', groupsRouter);
     app.use('/api/worldinfo', worldInfoRouter);
     app.use('/api/stats', statsRouter);
-    // The old routes that write what the new page shows (upstream's, kept for the old page and extensions): what they
-    // change is pushed to the user's tabs that show it, as the new page's own actions are.
     const OLD_WRITES = [
         [/^\/api\/(backgrounds\/(delete|rename|upload)|image-metadata\/folders\/(create|set-thumbnails|update|delete|assign|set-membership|unassign))$/, BACKGROUND_VIEWS],
         [/^\/api\/settings\/(save|save-partial|level|toggle-extension)$/, SETTINGS_VIEWS],

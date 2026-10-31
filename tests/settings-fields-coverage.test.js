@@ -2,11 +2,6 @@ import { describe, test, expect } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
 
-// The settings declarations (packages/areas/settings/protocol.ts) against the old panel they replace: every setting
-// the old tables list is declared or named here with where it belongs instead, and every declared control is in the
-// old markup. Deleted with the old panel.
-
-/** The old tables' settings that aren't fields of the panel, and why. */
 const ELSEWHERE = {
     'oai_settings.bias_preset_selected': 'the logit bias editor',
     'textgenerationwebui_settings.sampler_order': 'the sampler order list',
@@ -28,7 +23,6 @@ describe('settings declarations', () => {
         const { setting_names } = await import('../public/scripts/textgen-setting-names.js');
         const declared = new Set(FIELDS.map(field => field.path));
         const listed = [
-            // `#NULL_SELECTOR` marks a preset key with no control (carried in presets only).
             ...Object.values(settingsToUpdate).filter(([selector, , , connection]) => selector && selector !== '#NULL_SELECTOR' && !connection).map(([, key]) => `oai_settings.${key}`),
             ...setting_names.map(name => `textgenerationwebui_settings.${name}`),
         ];

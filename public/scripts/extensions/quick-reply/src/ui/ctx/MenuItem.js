@@ -43,7 +43,6 @@ export class MenuItem {
                 item.classList.add('list-group-item');
                 item.classList.add('ctx-item');
 
-                // Falls back to the QR content, same as the main QR list.
                 item.title = this.title || this.value;
 
                 if (this.callback) {

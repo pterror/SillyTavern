@@ -1,13 +1,3 @@
-/**
- * Character data residency (docs/design/character-data-residency-redesign.md).
- *
- * The property under test: a metadata-only edit - description, greetings, a rename, anything that is not
- * image pixels - must NOT rewrite the character's PNG. The new content is parked in the metadata db's
- * card tables and becomes authoritative; the file keeps its old bytes AND its old mtime.
- *
- * The hard requirement it must not break: an export still carries a CURRENT embedded chunk, because that is all
- * other tools can read. A duplicate is a library entry like any other - image-only, its content in its db row.
- */
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -27,7 +17,6 @@ let baseUrl;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
-// writeCharacterData()'s DEFAULT_AVATAR_PATH fallback is repo-root-relative - same chdir as the sibling suites.
 const originalCwd = process.cwd();
 
 beforeAll(async () => {
@@ -72,7 +61,6 @@ const post = (route, body) => fetch(`${baseUrl}/api/characters/${route}`, {
     body: JSON.stringify(body),
 });
 
-/** The character's image file in `characters/`, or null when it has none. */
 async function imageFile(avatar) {
     const file = avatars.avatarFile(directories, avatar);
     return fs.existsSync(file) ? file : null;
@@ -84,18 +72,15 @@ async function fileStamp(avatar) {
     return { mtimeMs: s.mtimeMs, size: s.size };
 }
 
-/** The card JSON actually embedded in the PNG on disk, ignoring the store entirely. */
 async function chunkOnDisk(avatar) {
     return JSON.parse(await cardParser.parse(/** @type {string} */ (await imageFile(avatar)), 'png'));
 }
 
-/** The stored card as JSON, or null for no such character. */
 async function cardJsonOf(avatar) {
     const [card] = await user.store.lib.cards([avatar]);
     return card === null || card === undefined ? null : JSON.stringify(card);
 }
 
-/** Where the characters' change feed is: it moves with every write that changes a character. */
 const changeSeq = () => user.store.lib.changesEnd();
 
 describe('metadata-only edits do not touch the PNG', () => {
@@ -107,7 +92,6 @@ describe('metadata-only edits do not touch the PNG', () => {
 
         expect((await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED' })).status).toBe(200);
 
-        // The file did not move at all - not its bytes, not its mtime.
         expect(await fileStamp('Alice.png')).toEqual(before);
 
         await expect(chunkOnDisk('Alice.png')).rejects.toThrow('PNG metadata does not contain any');
@@ -128,9 +112,6 @@ describe('metadata-only edits do not touch the PNG', () => {
     });
 
     test('/batch resolves parked content for multiple characters in one request', async () => {
-        // /batch is the route fetchCharactersDelta() (script.js) calls to catch up on changed characters - it
-        // has its own getCharacterIndexRowsByIds() prefetch (mirroring /all's per-batch one), so this exercises that it still
-        // resolves each avatar's parked content correctly when several ids in the same request are stale.
         await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' });
         await post('create', { ch_name: 'Bob', description: 'original', file_name: 'Bob' });
         await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED-ALICE' });
@@ -172,8 +153,6 @@ describe('export still hands out a self-contained, current card', () => {
         await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' });
         await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED' });
 
-        // Precondition: the stored file carries no character data at all (image-only since creation - see
-        // writeCharacterData()'s imageOnly write path), so this test can't pass vacuously by reading it.
         await expect(chunkOnDisk('Alice.png')).rejects.toThrow('PNG metadata does not contain any');
 
         const response = await post('export', { avatar_url: 'Alice.png', format: 'png' });
@@ -192,7 +171,6 @@ describe('export still hands out a self-contained, current card', () => {
         await post('export', { avatar_url: 'Alice.png', format: 'png' });
         await post('export', { avatar_url: 'Alice.png', format: 'png' });
 
-        // Export is a read-shaped action a user can trigger in bulk; it must not write to the library.
         expect(await fileStamp('Alice.png')).toEqual(before);
         expect(await cardJsonOf('Alice.png')).not.toBeNull();
     });
@@ -234,10 +212,6 @@ describe('an image write keeps the stored card set', () => {
 });
 
 describe('greeting operations read and write the same place', () => {
-    // These ops carry a precondition hash over the text the caller believes is at a position, and refuse with
-    // 409 on a mismatch. That makes them the sharpest possible detector of a read/write residency split: if
-    // applyGreetingOperation() read through the db seam but its write landed somewhere the next read didn't
-    // look, the SECOND op in a chain would fail its precondition every time.
     test('add -> edit -> delete chains through returned hashes without a 409', async () => {
         await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
 
@@ -246,8 +220,6 @@ describe('greeting operations read and write the same place', () => {
         const addBody = await add.json();
         expect(addBody.hashes).toHaveLength(2);
 
-        // The hash this op asserts came from the PREVIOUS op's response, so it only matches if the write
-        // actually landed where the next read looks.
         const edited = await post('greetings/edit', { avatar_url: 'Alice.png', position: 1, expected_hash: addBody.hashes[1], text: 'second-edited' });
         expect(edited.status).toBe(200);
         const editedBody = await edited.json();
@@ -264,8 +236,6 @@ describe('greeting operations read and write the same place', () => {
         expect((await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'second' })).status).toBe(200);
 
         expect(await fileStamp('Alice.png')).toEqual(before);
-        // Stored file carries no character data at all (image-only since creation), so there's nothing there for
-        // the greeting op to have touched - see the create/export test above for the same invariant.
         await expect(chunkOnDisk('Alice.png')).rejects.toThrow('PNG metadata does not contain any');
         expect(JSON.parse(await cardJsonOf('Alice.png')).data.alternate_greetings).toEqual(['second']);
     });
@@ -345,7 +315,6 @@ describe('add and unset-default are conflict-checked too', () => {
 describe('/greetings/move places next to a hash-checked target', () => {
     const storedCard = async () => JSON.parse(await cardJsonOf('Alice.png'));
 
-    /** Alice with greetings ['hello', 'second', 'third'], 'hello' the default. Resolves to their hashes. */
     async function aliceWithThreeGreetings() {
         await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
         await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'second' });
@@ -400,7 +369,6 @@ describe('/greetings/move places next to a hash-checked target', () => {
         const hashes = await aliceWithThreeGreetings();
         const seqBefore = await changeSeq();
 
-        // 'second' already sits right before 'third'.
         const moved = await post('greetings/move', {
             avatar_url: 'Alice.png', source_position: 1, expected_hash: hashes[1], side: 'before', target_position: 2, target_expected_hash: hashes[2],
         });
@@ -415,7 +383,6 @@ describe('/greetings/move places next to a hash-checked target', () => {
 describe('delete, set default and move find a greeting that moved by its hash, and answer with the positions they used', () => {
     const storedCard = async () => JSON.parse(await cardJsonOf('Alice.png'));
 
-    /** Alice with greetings ['hello', 'second', 'third'], 'hello' the default. Resolves to their hashes. */
     async function aliceWithThreeGreetings() {
         await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
         await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'second' });
@@ -503,7 +470,6 @@ describe('/greetings/add with append appends without a length check', () => {
     test('append with empty text is refused', async () => {
         await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
         const appended = await post('greetings/add', { avatar_url: 'Alice.png', append: true, text: '' });
-        // Invalid input, not a conflict.
         expect(appended.status).toBe(400);
         expect((await appended.json()).reason).toBe('refused to add empty greeting text');
     });
@@ -512,7 +478,6 @@ describe('/greetings/add with append appends without a length check', () => {
 describe('/greetings/default/unset with expected_default_hash checks the default greeting, not its position', () => {
     const storedCard = async () => JSON.parse(await cardJsonOf('Alice.png'));
 
-    /** Alice with greetings ['hello', 'second', 'third'], 'second' the default. Resolves to their hashes. */
     async function aliceWithDefaultSecond() {
         await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
         await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'second' });
@@ -610,7 +575,6 @@ describe('every greeting op answers with the greeting list as stored', () => {
 
         const add = await body(await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'second' }));
         expect(add.greetings).toEqual(['hello', 'second']);
-        // A write this caller didn't make: its next response carries it.
         await body(await post('greetings/add', { avatar_url: 'Alice.png', position: 2, expected_length: 2, text: 'third' }));
 
         const edit = await body(await post('greetings/edit', { avatar_url: 'Alice.png', position: 1, expected_hash: add.hashes[1], text: 'second-edited' }));
@@ -634,10 +598,6 @@ describe('every greeting op answers with the greeting list as stored', () => {
 });
 
 describe('/edit\'s content-hash conflict check survives the residency split', () => {
-    // The other 409 in this area: /edit compares client-supplied hashes against freshly computed ones. The
-    // client's come from /get (which reads the parked copy and stamps db-authoritative fields); the server's
-    // come from its own read. If those two ever resolved content differently, every save after the first
-    // would 409.
     test('repeated load-then-save cycles keep matching, including after content is parked', async () => {
         await post('create', { ch_name: 'Alice', description: 'v1', file_name: 'Alice' });
 

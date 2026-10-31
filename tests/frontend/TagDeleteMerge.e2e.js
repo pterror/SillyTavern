@@ -1,10 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, holdCharacters } from './frontent-test-utils.js';
 
-// Deleting a tag from the tag manager, with or without a tag to merge it into, sends one request naming the merge
-// target. The server applies it to every card carrying the deleted tag, including cards this page never loaded, or
-// refuses it, and the page shows what the server did.
-
 /** @param {import('@playwright/test').Page} page */
 async function loadApp(page) {
     await testSetup.awaitST({ page });
@@ -31,7 +27,11 @@ async function api(page, path, body = {}) {
     }, { path, body });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<string>} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
@@ -43,7 +43,11 @@ async function createCharacter(page, name) {
     }, name);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<string>} tag id */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
 async function createTag(page, name) {
     const id = `tag-delete-merge-${name}`;
     await api(page, '/api/tags/create', {
@@ -89,19 +93,16 @@ function trackTagRequests(page) {
 }
 
 /**
- * Opens the delete dialog for `tagId` in the tag manager and chooses `mergeInto` (or no merge) in it.
  * @param {import('@playwright/test').Page} page
  * @param {string} tagId
  * @param {string | null} mergeInto
- * @returns {Promise<import('@playwright/test').Locator>} The dialog, not yet confirmed.
+ * @returns {Promise<import('@playwright/test').Locator>}
  */
 async function openDeleteDialog(page, tagId, mergeInto) {
     await page.locator(`#tag_view_list .tag_view_item[id="${tagId}"] .tag_delete`).click();
     const popup = page.locator('dialog.popup', { hasText: 'Delete Tag' });
     await expect(popup).toBeVisible({ timeout: 10000 });
     if (mergeInto) {
-        // As if picked from the search: the picker holds an option for the picked tag only. The tag may be gone from
-        // the server by now, so its name comes from its id (createTag()).
         const name = mergeInto.replace(/^tag-delete-merge-/, '');
         await page.evaluate(({ id, name }) => {
             window['jQuery']('#merge_tag_select').append(new Option(name, id, true, true)).trigger('change');
@@ -111,11 +112,9 @@ async function openDeleteDialog(page, tagId, mergeInto) {
 }
 
 /**
- * Confirms an open delete dialog and waits until the page's tag requests have settled.
  * @param {import('@playwright/test').Page} page
  * @param {import('@playwright/test').Locator} popup
- * @returns {Promise<{ body: unknown, paths: string[] }>} The /api/tags/delete request body, and the path of every
- *   /api/tags/ request the page sent from the confirm on.
+ * @returns {Promise<{ body: unknown, paths: string[] }>}
  */
 async function confirmDelete(page, popup) {
     const requests = trackTagRequests(page);
@@ -133,7 +132,6 @@ async function confirmDelete(page, popup) {
 }
 
 /**
- * Deletes `tagId` from the tag manager, choosing `mergeInto` (or no merge) in its dialog.
  * @param {import('@playwright/test').Page} page
  * @param {string} tagId
  * @param {string | null} mergeInto
@@ -151,7 +149,11 @@ async function countSettingsUpdated(page) {
     });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} key @returns {Promise<string[]>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} key
+ * @returns {Promise<string[]>}
+ */
 async function pageTagIds(page, key) {
     return page.evaluate(async (key) => {
         const { charactersStore } = await import('/scripts/character-store.js');
@@ -160,7 +162,10 @@ async function pageTagIds(page, key) {
     }, key);
 }
 
-/** @param {import('@playwright/test').Page} page @returns {Promise<string[]>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @returns {Promise<string[]>}
+ */
 async function pageTagDefinitionIds(page) {
     return page.evaluate(async () => (await import('/scripts/tags.js')).tagsStore.getAll().map(t => t.id));
 }
@@ -180,7 +185,6 @@ test.describe('Deleting a tag from the tag manager', () => {
             return { deleted, target, loadedCard, hiddenCard };
         });
 
-        // The page never receives hiddenCard, so only the server can move its tag.
         await page.route('**/api/characters/changes', async route => {
             const response = await route.fetch();
             const json = await response.json();
@@ -205,7 +209,6 @@ test.describe('Deleting a tag from the tag manager', () => {
             [fixture.hiddenCard]: [fixture.target],
         });
 
-        // One delete; the page writes no assignment of its own.
         expect(paths.filter(p => p === '/api/tags/delete')).toHaveLength(1);
         expect(paths.filter(p => /\/(assign|unassign|assign-many|edit|create)$/.test(p))).toEqual([]);
         await expect(page.locator('.toast-success', { hasText: `'deleted-${stamp}' deleted and merged into 'target-${stamp}'.` })).toBeVisible();
@@ -253,7 +256,6 @@ test.describe('Deleting a tag from the tag manager', () => {
         await withSetupPage(browser, setup => api(setup, '/api/tags/delete', { id: fixture.gone }));
         await confirmDelete(page, popup);
 
-        // 'was deleted' until the server has finished removing the target, 'no longer exists' after.
         await expect(page.locator('.toast-warning', {
             hasText: new RegExp(`'kept-${stamp}' was not deleted: 'gone-${stamp}', the tag to merge it into, (was deleted|no longer exists)\\.`),
         })).toBeVisible();
@@ -284,9 +286,6 @@ test.describe('Deleting a tag from the tag manager', () => {
         await loadApp(page);
         await holdCharacters(page, [fixture.card]);
         await openTagManagement(page);
-        // The server follows a picked tag to the tag it was merged into only until it has finished removing the picked
-        // one, which a test can't hold open. So the request is sent on naming the final tag, and its answer is what
-        // the server gives in that window.
         await page.route('**/api/tags/delete', async route => {
             const response = await route.fetch({ postData: JSON.stringify({ id: fixture.deleted, mergeInto: fixture.final }) });
             await route.fulfill({ response });

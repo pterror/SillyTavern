@@ -8,40 +8,13 @@ import { mock } from 'node:test';
 import express from 'express';
 
 import { write as writeCard } from '../character-card-parser.js';
-// novelai.js -> text-completion-generation-input.js pulls in src/endpoints/characters.js (via
-// readCardContent), which (via character-shallow.js) reads process-wide config at import time -
-// the config path must be set before that import chain runs, same as
-// text-completions.test.js/text-completion-generation-input.test.js.
 import { setConfigFilePath } from '../util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
-// Route-level Express-integration test for novelai.js's own raw-action /generate branch (see
-// `git show 341d1dead` for the commit that added it), mirroring
-// src/endpoints/backends/text-completions.test.js's established convention: a real express app
-// mounting the real router, a real on-disk fixture set (writeCharacter/buildSettingsFixture/
-// saveChatToTree/writeAllSettings), and loadBranch()-based tree-persistence assertions - plus this
-// file's own `mock.module()` node-fetch reroute (below), since NovelAI genuinely needs it.
-//
-// JUDGMENT CALL: unlike Kobold (kai_settings.api_server, a real settings-driven URL),
-// NovelAI's backend URL is CONFIRMED hardcoded, not assumed - verified by reading novelai.js's own
-// /generate handler in full: `const baseURL = (req.body.model.includes('kayra') ||
-// req.body.model.includes('erato')) ? TEXT_NOVELAI : API_NOVELAI;` where both `TEXT_NOVELAI`
-// (`https://text.novelai.net`) and `API_NOVELAI` (`https://api.novelai.net`) are hardcoded
-// module-level constants - there is no settings.json field, request field, or raw-action-resolved
-// value that can override this for either the raw-action OR the legacy request shape. So this file
-// uses this repo's own established technique for exactly this case (see
-// src/endpoints/backends/chat-completions.test.js's own `canMockAi21Backend`/`mock.module()`
-// comment, used there for AI21/Cohere/AI-ML-API/Chutes/MiniMax/Electron Hub - the same "no
-// caller-supplied endpoint override at all" situation): `node:test`'s `mock.module()` reroutes ONLY
-// requests whose origin is `https://api.novelai.net` or `https://text.novelai.net` to this
-// session's own local fake `node:http` backend - a REAL `node-fetch` call still runs against that
-// local server (the mock is a thin reroute, not a hand-built fake Response), and every other URL
-// passes straight through to the real, unmodified `node-fetch`. Must run before novelai.js is
-// first imported (its own top-level `import fetch from 'node-fetch'` needs to resolve to the mock).
 const canMockNovelBackend = typeof mock.module === 'function';
-/** @type {string|null} Set by pointNovelBackendAt() below; read by the node-fetch reroute mock. */
+/** @type {string|null} */
 let novelFakeBackendUrl = null;
 if (canMockNovelBackend) {
     const realNodeFetch = (await import(path.join(__dirname, '..', '..', 'node_modules', 'node-fetch', 'src', 'index.js'))).default;
@@ -79,7 +52,6 @@ globalThis.DATA_ROOT = user.dataRoot;
 const { newSessionKey } = await import('../chat-engine.js');
 
 /**
- * The chat context a request naming `nodeId` acts in: the session of the branch holding it, else a new one.
  * @param {string} avatar
  * @param {unknown} nodeId
  */
@@ -124,12 +96,6 @@ async function writeCharacter(avatar, overrides = {}) {
     return avatar;
 }
 
-/** Real settings.json fixture - only the keys resolveTextCompletionGenerationInput()/createNovelGenerationData() actually read, plus a real nai_settings shape matching src/novel-generation-data.test.js's own baseSettings() field names.
- *
- * model_novel is 'llama-3-erato-v1' (Erato, tokenizers.LLAMA3), which goes to the `TEXT_NOVELAI`
- * host (novelai.js's `(model.includes('kayra') || model.includes('erato')) ? TEXT_NOVELAI :
- * API_NOVELAI`); the fake-backend `mock.module()` reroute below matches both real hosts.
- */
 function buildSettingsFixture() {
     return {
         username: 'Tester',
@@ -174,7 +140,6 @@ function buildSettingsFixture() {
     };
 }
 
-/** Deterministic fake local encoder, injected via tokenizerOptions so no real tokenizer model files or network calls are needed - same technique as text-completions.test.js/kobold.test.js. */
 const fakeTokenizerOptions = {
     encodeLocal: async (_key, text) => Array.from(String(text ?? '')).map(ch => ch.codePointAt(0)),
 };
@@ -222,7 +187,6 @@ async function postGenerate(app, body) {
     }
 }
 
-/** Decodes a full compact-stream byte buffer (using the real client-side CompactStreamDecoder) into `{text, assistantNodeId, probabilities}`. */
 function decodeCompactStream(bytes) {
     const decoder = new CompactStreamDecoder();
     const events = [...decoder.push(new Uint8Array(bytes)), ...decoder.flush()];
@@ -267,10 +231,6 @@ async function run() {
     });
 
     const ownerId = avatar;
-    // `branchName` here is ONLY the chat store's own label/bookmark concept - a real, still-
-    // supported, unrelated primitive. It is NOT a raw-action request field anymore (see
-    // buildRawActionNovelRequest()'s own ADDRESSING MODEL doc comment) - every raw-action call below
-    // resolves and passes the real `node_id` (a leaf id from `loadBranch()`) instead.
     const branchName = 'main-chat';
     await saveBranch(user.store, { avatar: ownerId }, branchName, [
         { chat_metadata: {} },
@@ -280,7 +240,6 @@ async function run() {
     ]);
     const mainLeafId = (await loadBranch(user.store, { avatar: ownerId }, branchName)).branch.leaf_id;
 
-    // --- buildRawActionNovelRequest(): basic real assembly ---
     {
         const built = await buildRawActionNovelRequest(directories, {
             characterAvatar: avatar, chat: await chatOf(avatar, mainLeafId), nodeId: mainLeafId,
@@ -297,7 +256,6 @@ async function run() {
         assert.equal(built.params.streaming, undefined, 'createNovelGenerationData()\'s own returned object has NO `streaming` field at all - CONFIRMED by reading its full return statement in src/novel-generation-data.js - so req.body.streaming after the raw-action body replacement is always undefined/falsy, regardless of what the client originally sent');
     }
 
-    // --- error handling: unknown character ---
     await assert.rejects(
         async () => buildRawActionNovelRequest(directories, {
             characterAvatar: 'NoSuchCharacter.png', chat: await chatOf(avatar, mainLeafId), nodeId: mainLeafId,
@@ -306,7 +264,6 @@ async function run() {
         /Character not found/,
     );
 
-    // --- error handling: unknown node ---
     await assert.rejects(
         async () => buildRawActionNovelRequest(directories, {
             characterAvatar: avatar, chat: await chatOf(avatar, 'no-such-node-id'), nodeId: 'no-such-node-id',
@@ -315,8 +272,6 @@ async function run() {
         /Chat node not found/,
     );
 
-    // --- error handling: node_id key entirely absent (not even explicit null) - loud failure instead
-    // of a silent wrong-guess (see buildRawActionNovelRequest()'s own ADDRESSING MODEL doc comment). ---
     await assert.rejects(
         async () => buildRawActionNovelRequest(directories, {
             characterAvatar: avatar, chat: await chatOf(avatar, undefined),
@@ -325,8 +280,6 @@ async function run() {
         /node_id is required \(pass null explicitly for a brand-new, empty conversation\)/,
     );
 
-    // --- error handling: node_id: null on an owner that ALREADY has real history - must be a real,
-    // reportable error, never a silent guess at "the current leaf". ---
     await assert.rejects(
         async () => buildRawActionNovelRequest(directories, {
             characterAvatar: avatar, chat: await chatOf(avatar, null), nodeId: null,
@@ -335,9 +288,6 @@ async function run() {
         /node_id is required: this chat is not at its start/,
     );
 
-    // --- happy path: node_id: null on a GENUINELY BRAND-NEW character with zero prior messages - the
-    // ONLY case where omitting a real node id is safe. Resolves via the owner's own anchor to an
-    // empty chat, and still produces a real, appendable anchorNodeId. ---
     {
         const freshAvatar = await writeCharacter('NovelFresh.png', {
             name: 'Fresh',
@@ -354,7 +304,6 @@ async function run() {
         assert.ok(!builtFresh.params.input.includes('Hello there, traveler.'), 'no unrelated prior history (Rex\'s) leaked into a brand-new character\'s resolved, empty chat');
     }
 
-    // --- tokenizer: the send resolves its tokenizer with resolveTokenizer() ---
 
     function tokenizerSettings(modelNovel, tokenizerSetting) {
         const settings = buildSettingsFixture();
@@ -366,7 +315,6 @@ async function run() {
         return settings;
     }
 
-    /** A fake local encoder that records which tokenizer key each call used. */
     function recordingTokenizerOptions() {
         const keys = [];
         return {
@@ -382,7 +330,6 @@ async function run() {
 
     const codePoints = (text) => Array.from(text).map(ch => ch.codePointAt(0));
 
-    // A clio fixture with stop strings -> NERD (nerdstash) ids.
     {
         writeAllSettings(directories, tokenizerSettings('clio-v1', undefined));
         const { keys, options } = recordingTokenizerOptions();
@@ -400,9 +347,6 @@ async function run() {
         assert.ok(built.params.bad_words_ids.some(ids => JSON.stringify(ids) === JSON.stringify([5, 6])), 'a raw-id bad word goes through');
     }
 
-    // An estimate resolution (an explicit None setting, or a model the NovelAI list doesn't know)
-    // leaves out every entry that needs ids and lists each one in a `dropped` warning; raw-id
-    // entries still go through, and nothing is encoded.
     for (const [label, modelNovel, tokenizerSetting] of [
         ['explicit None setting', 'clio-v1', tokenizers.NONE],
         ['model the NovelAI list does not know', 'some-future-model', undefined],
@@ -431,8 +375,6 @@ async function run() {
         assert.ok(warning.message.includes('dragon') && warning.message.includes('sword'), `${label}: the message names the entries`);
     }
 
-    // A tokenizer that fails to load: counts use the estimate, entries needing ids are left out
-    // and listed, raw-id entries still go through.
     {
         writeAllSettings(directories, tokenizerSettings('clio-v1', undefined));
         const built = await buildRawActionNovelRequest(directories, {
@@ -451,7 +393,6 @@ async function run() {
         assert.ok(dropped.message.includes('NerdStash'), dropped.message);
     }
 
-    // A second build after write-back encodes nothing the first encoded.
     {
         const storeAvatar = await writeCharacter('NovelStore.png', {
             name: 'NovelStore',
@@ -494,10 +435,6 @@ async function run() {
         return;
     }
 
-    // (a) route-level: non-streaming raw-action /generate success - real NovelAI `/ai/generate`
-    // response shape `{output: "..."}`, verified against novelai.js's own comment citing
-    // public/script.js's own `data.output` read of this exact endpoint (`git show
-    // 341d1dead:src/endpoints/novelai.js`, the persistAssistantReply() call site comment).
     {
         const fakeBackend = await startFakeBackend((req, res) => {
             assert.equal(req.url, '/ai/generate', 'the non-streaming raw-action request really hits NovelAI\'s real /ai/generate endpoint (llama-3-erato-v1 routes to TEXT_NOVELAI, not API_NOVELAI, but the path is the same either way - the mock.module() reroute matches both real hardcoded hosts)');
@@ -534,11 +471,6 @@ async function run() {
         assert.equal(userAlternatives.total, 1, 'the persisted user message has no siblings - it is a genuine new child, not a swipe alternative');
     }
 
-    // (b) STREAMING raw-action: proves the real, verified "raw-action requests never carry a
-    // `streaming` field at all" constraint documented above - even with the client requesting
-    // `stream: true`, req.body.streaming (built.params.streaming) is undefined, so the route
-    // resolves to the non-streaming JSON path and the fake backend only ever receives a request at
-    // /ai/generate, never /ai/generate-stream.
     {
         let sawStreamRequest = false;
         const fakeBackend = await startFakeBackend((req, res) => {
@@ -578,15 +510,6 @@ async function run() {
         const [, assistantMsg] = branchAfter.messages.slice(-2);
         assert.equal(assistantMsg.mes, 'Non-streamed despite stream:true.', 'persistence still worked correctly via the (only reachable) non-streaming path');
 
-        // Direct, unit-level exercise of the REAL forwardAndPersistCompactStream() function together
-        // with the route's own literal extractor lambdas (`json => json?.token` /
-        // `json => json?.logprobs`, copied verbatim from novelai.js's real /generate handler) against
-        // a REAL SSE HTTP response - proves the real per-chunk accumulation/re-encoding/persistence
-        // logic for NovelAI's real `{"token": "...", "logprobs": {...}}` streaming shape (token is
-        // already-decoded text, per novelai.js's own comment citing generateNovelWithStreaming() in
-        // public/scripts/nai-settings.js) works correctly, even though the full HTTP route currently
-        // cannot reach this branch for raw-action requests (createNovelGenerationData() never sets a
-        // `streaming` field - see this test's own top-of-section comment).
         const sseChunks = ['Rex ', 'streams ', 'a ', 'reply.'];
         const sseLogprobs = { chosen: [['Rex', -0.1]] };
         const sseBackend = await startFakeBackend((_req, res) => {
@@ -601,9 +524,6 @@ async function run() {
         const branchBeforeDirect = await loadBranch(user.store, { avatar: ownerId }, directStreamBranch);
         const anchorNodeId = branchBeforeDirect.branch.leaf_id;
 
-        // Uses `node-fetch` (NOT the global web-standard `fetch`) - forwardAndPersistCompactStream()
-        // requires the real node-fetch Response whose `.body` is a node Readable stream (`.on(...)`),
-        // exactly what the real route's own `import fetch from 'node-fetch'` provides.
         const fetchResponse = await nodeFetch(sseBackend.url);
         const chunks = [];
         const fakeExpressResponse = {
@@ -634,7 +554,6 @@ async function run() {
         assert.equal(branchAfterDirect.messages[1].is_user, false);
     }
 
-    // (b2) an estimate resolution's `dropped` warning reaches the non-streaming reply.
     {
         const fakeBackend = await startFakeBackend((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -659,7 +578,6 @@ async function run() {
         assert.ok(data.warnings[0].entries.includes('dragon'));
     }
 
-    // (c) failed backend response: only the user message is persisted, no spurious assistant reply.
     {
         const fakeBackend = await startFakeBackend((_req, res) => {
             res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -686,9 +604,6 @@ async function run() {
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].is_user, true);
     }
 
-    // (e) a non-raw-action (legacy) request is completely unaffected: no owner_id/character_avatar,
-    // so the raw-action branch never runs, req.body is dispatched through the existing (unchanged)
-    // bad-words/logit-bias enrichment exactly as before 341d1dead, and no persistence is attempted.
     {
         const fakeBackend = await startFakeBackend((req, res) => {
             assert.equal(req.url, '/ai/generate');
@@ -702,8 +617,6 @@ async function run() {
 
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
-            // No owner_id/character_avatar/group_id - legacy shape: input/model/parameters are sent
-            // directly in the body, exactly as the pre-341d1dead client always did.
             input: 'Legacy raw prompt, no raw-action fields.',
             model: 'clio-v1',
             temperature: 1,
@@ -720,8 +633,6 @@ async function run() {
         assert.equal(branchAfter.messages.length, messageCountBefore, 'no persistence was attempted for a non-raw-action request');
     }
 
-    // --- write-back: /generate stores its counts and ids once the backend has the request ---
-    /** The keys (hex text hashes) the user's token cache was given to store, per tokenizer identity. */
     const written = new Map();
     const realWriteBack = user.store.tokens.writeBack.bind(user.store.tokens);
     user.store.tokens.writeBack = async (pending, now) => {
@@ -731,16 +642,11 @@ async function run() {
         }
         return realWriteBack(pending, now);
     };
-    /** Rows stored under `identity` in token_counts and token_ids together. */
     async function storedRowsUnder(identity) {
         return written.get(identity)?.size ?? 0;
     }
 
     let writeBackChats = 0;
-    /**
-     * A new chat on clio (the bundled NerdStash tokenizer); `onGenerate(req, res, body)` answers `/ai/generate`. Returns
-     * the backend, the URLs it was asked, the tokenizer identity and the request body.
-     */
     async function setUpWriteBackGeneration(onGenerate) {
         const name = `NovelWriteBack${++writeBackChats}`;
         const writeBackAvatar = await writeCharacter(`${name}.png`, { name, data: { name, description: `${name} keeps the orchard.`, first_mes: 'Welcome.' } });
@@ -822,7 +728,6 @@ async function run() {
         }
     }
 
-    // --- a failed read of the token tables fails nothing: upstream's /generate never reads them ---
     {
         const generates = [];
         const { backend, identity, body } = await setUpWriteBackGeneration((_req, res, requestBody) => {
@@ -833,7 +738,6 @@ async function run() {
         const tokens = user.store.tokens;
         const realRead = tokens.read;
         try {
-            // Earlier cases stored made-up ids under this identity; the first request has to count fresh.
             tokens.read = async (table, id, hash) => (id === identity ? null : realRead.call(tokens, table, id, hash));
             const fresh = await postGenerate(buildTestApp(), body);
             assert.equal(fresh.status, 200);
@@ -854,8 +758,6 @@ async function run() {
         }
     }
 
-    // `stored`: the node the user message was stored at, under the `user_message_ref` the page sent, as
-    // a field on the non-streaming answer.
     {
         const chatName = 'novel-stored-ref-nonstream';
         const backend = await startFakeBackend((_req, res) => {
@@ -884,8 +786,6 @@ async function run() {
         }
     }
 
-    // An error answer after the user message was stored still reports it: NovelAI's own 500 carries
-    // `stored` and the X-ST-Stored header.
     {
         const chatName = 'novel-stored-error-nonstream';
         const backend = await startFakeBackend((_req, res) => {

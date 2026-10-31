@@ -1,7 +1,3 @@
-/**
- * An uploaded image that can't be read must fail the request and write nothing: it never silently becomes the default
- * avatar over the character's existing one. Creating a character with no upload at all still gets the default.
- */
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jest } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -68,18 +64,15 @@ afterEach(async () => {
     await user.close();
 });
 
-/** Whether the library has a character with this avatar file name. */
 async function hasCharacter(avatar) {
     const { TYPE } = await import('../src/library-codes.js');
     return (await user.store.lib.entity(TYPE.character, avatar)) !== null;
 }
 
-/** The bytes of a character's stored image. */
 async function imageOf(avatar) {
     return fs.readFileSync(/** @type {string} */ (await avatars.avatarPathOf(user.store.lib, directories, avatar)));
 }
 
-/** What the user's image folder and chat folder hold. */
 function written() {
     const list = dir => (fs.existsSync(dir) ? fs.readdirSync(dir).sort() : []);
     return [list(directories.characters), list(directories.chats)];

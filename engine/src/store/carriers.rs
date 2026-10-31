@@ -1,13 +1,3 @@
-//! Tags' carriers by the terms of their names: for each term, the carriers summed (`TERM_CARRIERS`), and the
-//! carriers themselves split by the tag's side. A light tag's carriers are counted per carrier in the term's map
-//! (`TAG_CARRIERS`); a heavy tag is listed under the term (`TERM_HEAVY`) and its own member blocks stand for its
-//! carriers. A tag is heavy once it carries more than 2K pairs and light again under K/2, where K = 2^j and j is
-//! set from the pairs of every tag (`CARRIER_PAIRS`) with hysteresis (`Reside`).
-//!
-//! A tag whose side or indexed name changes while it has carriers is moved: its map entries follow a carrier
-//! at a time, in steps of at most `MOVE_BUDGET` entries (`move_step`), below a cursor in the new state and at or above it in the
-//! old. A change of j re-sides every tag outside the new band, a slice of tags at a time (`reside_step`).
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::StoreError;
@@ -20,14 +10,12 @@ use crate::search::index::raise_tagged;
 use crate::search::text::{grams, tokens};
 use crate::search::{Scope, TermKind};
 
-/// A name term: a token whole (`Exact`) or one of its prefix terms (`Gram`).
 pub type Term = (TermKind, String);
 
 fn entry_err(why: &str) -> StoreError {
     StoreError::Entry(why.into())
 }
 
-/// The terms of a name.
 pub fn name_terms(name: &[u8]) -> BTreeSet<Term> {
     let mut out = BTreeSet::new();
     for tok in tokens(name) {
@@ -39,7 +27,6 @@ pub fn name_terms(name: &[u8]) -> BTreeSet<Term> {
     out
 }
 
-/// A tag's name as one text: a tag's name field holds at most one.
 pub fn one_name(texts: &[&[u8]]) -> Result<Vec<u8>, StoreError> {
     match texts {
         [] => Ok(Vec::new()),
@@ -48,13 +35,11 @@ pub fn one_name(texts: &[&[u8]]) -> Result<Vec<u8>, StoreError> {
     }
 }
 
-/// The tag's name as the search index holds it (empty: none).
 pub fn indexed_name(view: &View, tag: u64) -> Result<Vec<u8>, StoreError> {
     let texts = search_texts(view, Scope::TAGS, tag, 0)?;
     one_name(&texts.iter().map(Vec::as_slice).collect::<Vec<_>>())
 }
 
-/// The least j with 4^j ≥ m.
 pub fn j_of(m: u64) -> u32 {
     let mut j = 0;
     while 4u128.pow(j) < u128::from(m) {
@@ -63,7 +48,6 @@ pub fn j_of(m: u64) -> u32 {
     j
 }
 
-/// The side a tag with `c` carriers takes, from side `heavy`, at scale `k`.
 pub fn want(c: i64, heavy: bool, k: u64) -> bool {
     let c = c.max(0) as u128;
     let k = u128::from(k);
@@ -76,23 +60,17 @@ pub fn want(c: i64, heavy: bool, k: u64) -> bool {
     }
 }
 
-// ---- stored values ----
-
-/// A move under way: carriers below `cursor` are in the target state, the rest in the mapped one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Flight {
     pub mapped_name: Vec<u8>,
     pub target_heavy: bool,
     pub target_name: Vec<u8>,
     pub cursor: u64,
-    /// The indexed name or the band changed since the move began.
     pub pending: bool,
 }
 
-/// A heavy or moving tag's `TAG_MAP`; a tag without one is light, mapped by its indexed name, and not moving.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TagMap {
-    /// The settled side (while moving, the side the move leaves).
     pub heavy: bool,
     pub flight: Option<Flight>,
 }
@@ -155,13 +133,10 @@ pub fn tag_map(view: &View, tag: u64) -> Result<Option<TagMap>, StoreError> {
         .transpose()
 }
 
-/// The scale the sides were last made for, and a re-siding scan under way.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Reside {
     pub j: u32,
-    /// The pairs when j was last set: j is considered again once the pairs reach 4× or fall to ¼ of it.
     pub m_set: u64,
-    /// The scan's phase (0: promotions, 1: demotions) and the last key it read.
     pub scan: Option<(u64, Option<Vec<u8>>)>,
 }
 
@@ -221,9 +196,6 @@ pub fn reside(view: &View) -> Result<Reside, StoreError> {
     })
 }
 
-// ---- the mapped state ----
-
-/// The (side, name) the map holds `tag`'s carrier `entity` by.
 fn mapped_at<'a>(m: &'a Option<TagMap>, indexed: &'a [u8], entity: u64) -> (bool, &'a [u8]) {
     match m {
         None => (false, indexed),
@@ -244,7 +216,6 @@ fn mapped_at<'a>(m: &'a Option<TagMap>, indexed: &'a [u8], entity: u64) -> (bool
     }
 }
 
-/// The terms a moving tag is listed under (`TERM_MOVING`): its mapped, target and indexed names'.
 fn moving_terms(f: &Flight, indexed: &[u8]) -> BTreeSet<Term> {
     let mut t = name_terms(&f.mapped_name);
     t.extend(name_terms(&f.target_name));
@@ -252,11 +223,8 @@ fn moving_terms(f: &Flight, indexed: &[u8]) -> BTreeSet<Term> {
     t
 }
 
-/// Entries one step of a carrier move writes at most, a carrier counting the terms written for it and at least 1.
 pub const MOVE_BUDGET: usize = 16_384;
 
-/// The terms a move writes map entries for at each carrier: a light side's name terms, those both sides map by
-/// cancelling.
 fn mapped_writes(
     heavy: bool,
     mapped_name: &[u8],
@@ -270,7 +238,6 @@ fn mapped_writes(
         .collect()
 }
 
-/// The terms a move raises its carriers' block maxima for: the target name's that the mapped name lacks.
 fn gained(mapped_name: &[u8], target: &[u8]) -> BTreeSet<Term> {
     name_terms(target)
         .difference(&name_terms(mapped_name))
@@ -278,14 +245,11 @@ fn gained(mapped_name: &[u8], target: &[u8]) -> BTreeSet<Term> {
         .collect()
 }
 
-/// Whether a move from (`heavy`, `mapped_name`) to (`target_heavy`, `target`) writes or raises nothing at its
-/// carriers, so it is taken at once, without walking them.
 fn idle(heavy: bool, mapped_name: &[u8], target_heavy: bool, target: &[u8]) -> bool {
     mapped_writes(heavy, mapped_name, target_heavy, target).is_empty()
         && gained(mapped_name, target).is_empty()
 }
 
-/// The `TERM_HEAVY` entries of a tag going from listed by `was` (None: light) to listed by `is`.
 fn relist(out: &mut Out, tag: u64, was: Option<&[u8]>, is: Option<&[u8]>) {
     let terms = |n: Option<&[u8]>| n.map_or_else(BTreeSet::new, name_terms);
     let (was, is) = (terms(was), terms(is));
@@ -297,8 +261,6 @@ fn relist(out: &mut Out, tag: u64, was: Option<&[u8]>, is: Option<&[u8]>) {
     }
 }
 
-/// A settled tag (side `heavy`, its carriers mapped by `mapped_name`) starts moving to (`target_heavy`, `indexed`);
-/// a move that writes and raises nothing at its carriers (`idle`) is taken at once.
 fn start_move(
     out: &mut Out,
     tag: u64,
@@ -351,10 +313,6 @@ fn start_move(
     );
 }
 
-// ---- upkeep ----
-
-/// Entity `entity` starts (`delta` 1) or stops (-1) carrying `tag`. Call before the change's own `MEMBER_COUNT`
-/// write shows in `view`; a record making several calls shows each one's output to the next.
 pub fn changed(
     view: &View,
     out: &mut Out,
@@ -381,7 +339,6 @@ pub fn changed(
             out.add_map(key::tag_carriers(kind, &term, block), vec![(slot, delta)]);
         }
     }
-    // The scale, with hysteresis.
     let mut r = reside(view)?;
     let m1 = (m0 + delta).max(0) as u64;
     if u128::from(m1) >= 4 * u128::from(r.m_set) || 4 * u128::from(m1) <= u128::from(r.m_set) {
@@ -395,7 +352,6 @@ pub fn changed(
             out.put(key::of(key::RESIDE), r.bytes());
         }
     }
-    // The band.
     let c1 = c0 + delta;
     let k = r.k();
     match m {
@@ -431,14 +387,11 @@ pub fn changed(
         }
     }
     if delta > 0 {
-        // Raised for each term of the name, but where another tag has the entity raised for it already: read off
-        // the term's own counts, not off every tag the entity carries (assigning n tags one by one was n²).
         raise_gained(view, out, tag, &name_terms(&name), &[entity])?;
     }
     Ok(())
 }
 
-/// The tags `entity` carries, in order.
 fn tags_of(view: &View, entity: u64) -> Result<Vec<u64>, StoreError> {
     let prefix = key::id(key::MEMBER_OF, entity);
     let end = key::prefix_end(&prefix);
@@ -462,8 +415,6 @@ fn tags_of(view: &View, entity: u64) -> Result<Vec<u64>, StoreError> {
     }
 }
 
-/// The name terms of the tags `entity` carries, by their indexed names: the tag part a create or an edit raises
-/// its maxima with.
 pub fn carried_terms(view: &View, entity: u64) -> Result<BTreeSet<Term>, StoreError> {
     let mut out = BTreeSet::new();
     for tag in tags_of(view, entity)? {
@@ -472,7 +423,6 @@ pub fn carried_terms(view: &View, entity: u64) -> Result<BTreeSet<Term>, StoreEr
     Ok(out)
 }
 
-/// A term's tags other than one, as `covered` reads their carriers.
 struct Others {
     kind: TermKind,
     term: String,
@@ -480,9 +430,6 @@ struct Others {
     movers: Vec<OtherMover>,
 }
 
-/// A moving tag of a term: whether the term's map counts its carriers below and at or above its cursor, and
-/// whether they are raised for the term there (its indexed name holds the term, and so does the name its map
-/// holds them by).
 struct OtherMover {
     tag: u64,
     cursor: u64,
@@ -491,7 +438,6 @@ struct OtherMover {
 }
 
 impl Others {
-    /// The term's heavy and moving tags but `except`.
     fn read(view: &View, kind: TermKind, term: &str, except: u64) -> Result<Others, StoreError> {
         let want = (kind, term.to_string());
         let holds = |name: &[u8]| name_terms(name).contains(&want);
@@ -512,7 +458,6 @@ impl Others {
             else {
                 return Err(entry_err("a moving tag has no move"));
             };
-            // Until the indexed name or the band changes, the move's target name is the indexed name.
             let named = if f.pending {
                 holds(&indexed_name(view, tag)?)
             } else {
@@ -534,8 +479,6 @@ impl Others {
         Ok(o)
     }
 
-    /// The carriers in member block `block` some of these tags, or a settled light one the term's map counts,
-    /// has raised the term's maxima for.
     fn covered(&self, view: &View, block: u64) -> Result<BTreeSet<u64>, StoreError> {
         let first = block << key::MEMBER_BITS;
         let mut k = key::tag_carriers_of(self.kind, &self.term);
@@ -573,7 +516,6 @@ impl Others {
     }
 }
 
-/// The tags keyed under `prefix`, in order.
 fn tags_under(view: &View, prefix: Vec<u8>) -> Result<Vec<u64>, StoreError> {
     let end = key::prefix_end(&prefix);
     let mut from = prefix.clone();
@@ -596,7 +538,6 @@ fn tags_under(view: &View, prefix: Vec<u8>) -> Result<Vec<u64>, StoreError> {
     }
 }
 
-/// A member block's or a term map block's carriers (in member block `block`) with their counts.
 fn places(view: &View, k: &[u8], block: u64) -> Result<Vec<(u64, u32)>, StoreError> {
     let Some(v) = view.get_val(k)? else {
         return Ok(Vec::new());
@@ -609,8 +550,6 @@ fn places(view: &View, k: &[u8], block: u64) -> Result<Vec<(u64, u32)>, StoreErr
         .collect())
 }
 
-/// Raises the block maxima of the carriers `taken` (in order) of `tag` for each term of `terms`, but at the carriers
-/// another tag already has them raised for (`Others::covered`).
 fn raise_gained(
     view: &View,
     out: &mut Out,
@@ -641,7 +580,6 @@ fn raise_gained(
     Ok(())
 }
 
-/// `tag`'s indexed name changes from `old` to `new` (empty: none), its carriers as `view` holds them.
 pub fn renamed(
     view: &View,
     out: &mut Out,
@@ -666,7 +604,6 @@ pub fn renamed(
         }
     }
     match tag_map(view, tag)? {
-        // Its carriers' maxima are raised for the terms it gains as a move passes them.
         Some(TagMap {
             heavy: true,
             flight: None,
@@ -705,12 +642,6 @@ pub fn renamed(
     Ok(())
 }
 
-/// `tag` is merged away while it has carriers: its fold is its move to no name. It is put in flight with the
-/// fold's progress as its cursor: the fold takes its carriers in id order and each one it moves stops being a
-/// carrier, so a flight cursor of 0 splits them as the fold does, and the fold's `changed` removes each one's
-/// entries by its mapped state. A move under way stops where it is, its cursor still splitting the map. Queries
-/// leave out the carriers not yet moved (`TERM_MOVING`, with the name gone from the index); `folded` ends the
-/// flight. Call before the name leaves the index, which then sees the tag in flight.
 pub fn merging(view: &View, out: &mut Out, tag: u64) -> Result<(), StoreError> {
     if view.is_bulk() || counter(view, &key::id(key::MEMBER_COUNT, tag))? == 0 {
         return Ok(());
@@ -763,7 +694,6 @@ pub fn merging(view: &View, out: &mut Out, tag: u64) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// A merged tag's fold has moved its last carrier: its flight (`merging`) ends, and with it its listings.
 pub fn folded(view: &View, out: &mut Out, tag: u64) -> Result<(), StoreError> {
     let Some(TagMap {
         heavy,
@@ -780,9 +710,6 @@ pub fn folded(view: &View, out: &mut Out, tag: u64) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// One step of the first queued move: as many of its carriers as `MOVE_BUDGET` allows move to the target state,
-/// their block maxima raised for the terms the target name gains; once none is left, the move ends, or the next
-/// one starts. Returns whether a move was queued.
 pub fn move_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
     let qp = key::of(key::MOVING);
     let Some((qk, _)) = view.scan(&qp, &key::prefix_end(&qp), 1)?.into_iter().next() else {
@@ -803,7 +730,6 @@ pub fn move_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
     let raised = gained(&f.mapped_name, &f.target_name);
     let cap = (MOVE_BUDGET / (writes.len() + raised.len()).max(1)).max(1);
 
-    // ---- the carriers at or above the cursor, up to the budget ----
     let bp = key::id(key::MEMBER_BLOCK, tag);
     let bend = key::prefix_end(&bp);
     let mut from = key::member_block(tag, f.cursor);
@@ -834,7 +760,6 @@ pub fn move_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
         }
     }
 
-    // ---- their map entries ----
     let mut adds: BTreeMap<(Term, u64), BTreeMap<u32, i32>> = BTreeMap::new();
     for &e in &taken {
         let (block, slot) = (e >> key::MEMBER_BITS, key::member_slot(e));
@@ -880,13 +805,11 @@ pub fn move_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
         return Ok(true);
     }
 
-    // ---- the end ----
     let c = counter(view, &key::id(key::MEMBER_COUNT, tag))?;
     let next = want(c, f.target_heavy, reside(view)?.k());
     let was = moving_terms(&f, &name);
     let again = next != f.target_heavy || name_terms(&name) != target_terms;
     if again && idle(f.target_heavy, &f.target_name, next, &name) {
-        // The next move is taken at once.
         relist(
             out,
             tag,
@@ -958,10 +881,6 @@ pub fn move_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
     Ok(true)
 }
 
-/// One step of a re-siding scan: up to `FOLD_SLICE` tags read, those outside the band starting their moves.
-/// Phase 0 reads the tags by carriers from the most down while they have more than 2K (settled light ones are
-/// promoted); phase 1 reads every heavy or moving tag (settled heavy ones under K/2 are demoted). Returns whether
-/// a scan was under way.
 pub fn reside_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
     let mut r = reside(view)?;
     let Some((phase, cursor)) = r.scan.clone() else {
@@ -1040,7 +959,6 @@ pub fn reside_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
     Ok(true)
 }
 
-/// Whether the entries write the move queue (`MOVING`) or the re-siding state (`RESIDE`): (moves, re-siding).
 pub fn wakes<'a>(keys: impl IntoIterator<Item = &'a Vec<u8>>) -> (bool, bool) {
     let (mp, rp) = (key::of(key::MOVING), key::of(key::RESIDE));
     let mut w = (false, false);

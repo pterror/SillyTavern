@@ -5,23 +5,8 @@ import { textgen_types } from '../../public/scripts/textgen-connection-defaults.
 import { draft, without } from './entity-draft.js';
 import { templateKey } from './templates.js';
 
-/**
- * The catalogs around connections (§1.3, §1.4, step 3c): reverse proxies, the server URL history, and connection
- * profiles, made from upstream's settings and given back as them.
- *
- * - A proxy (`TYPE.proxy`, key its name): `url`, `password`. The selected one is a slot naming it; upstream's
- *   `selected_proxy` is a copy of an entry, and a copy that isn't one is kept as a proxy of its own, warned (§2.4.2).
- * - A server history entry (`TYPE.serverHistory`, key `<label> <url>`): `lastConnection`.
- * - A connection profile (`TYPE.connectionProfile`, key its id): its `name` and `mode`, the bundles it states by their
- *   keys (`preset`, `instruct`, `context`, `sysprompt`, `reasoning-template`; `regex-preset` by id), the connection
- *   its `api` names (`connection`, a ref; an `api` naming none is kept as it came), its other values as they came,
- *   and `exclude` as its list 0.
- */
-
-/** Upstream's `/api` names, each a family and a source or type within it, in the order `/api` reads them back. */
 const API_NAMES = Object.entries(buildConnectApiMap(textgen_types, chat_completion_sources));
 
-/** The connection type an `/api` name selects. */
 const FAMILY_OF_SELECTED = Object.freeze({ openai: 'openai', textgenerationwebui: 'textgenerationwebui', kobold: 'kobold', novel: 'novel', koboldhorde: 'horde' });
 
 /**
@@ -37,19 +22,15 @@ export function connectionTypeOfApi(api) {
 }
 
 /**
- * The `/api` name upstream reads back for a connection type: the first that selects it.
  * @param {string} type
  */
 export function apiOfConnectionType(type) {
     return API_NAMES.find(([name]) => connectionTypeOfApi(name) === type)?.[0];
 }
 
-/**
- * @typedef {import('./entity-draft.js').EntityDraft} EntityDraft
- */
+/** @typedef {import('./entity-draft.js').EntityDraft} EntityDraft */
 
 /**
- * A key not yet taken, or a fallback beside it, warned.
  * @param {string} key
  * @param {Set<string>} seen
  * @param {string} what
@@ -64,8 +45,8 @@ function uniqueKey(key, seen, what, warnings) {
 }
 
 /**
- * @param {Record<string, any>[]} proxies Upstream's `proxies`.
- * @param {Record<string, any> | undefined} selected Upstream's `selected_proxy`.
+ * @param {Record<string, any>[]} proxies
+ * @param {Record<string, any> | undefined} selected
  * @returns {{ proxies: EntityDraft[], selected: string | undefined, warnings: string[] }}
  */
 export function proxiesFromUpstream(proxies, selected) {
@@ -100,7 +81,7 @@ export function proxiesToUpstream(proxies, selected) {
 }
 
 /**
- * @param {Record<string, any>[]} servers Upstream's `power_user.servers`.
+ * @param {Record<string, any>[]} servers
  * @returns {{ servers: EntityDraft[], warnings: string[] }}
  */
 export function serverHistoryFromUpstream(servers) {
@@ -108,7 +89,6 @@ export function serverHistoryFromUpstream(servers) {
     const warnings = [];
     const seen = new Set();
     const drafts = (Array.isArray(servers) ? servers : []).map((server) => {
-        // The key holds the label and the URL (a URL has no spaces); an entry not of that form keeps them as values.
         const keyed = typeof server?.label === 'string' && typeof server?.url === 'string' && !/\s/.test(server.url);
         const key = uniqueKey(keyed ? `${server.label} ${server.url}` : JSON.stringify(server), seen, 'server history entry', warnings);
         return draft(TYPE.serverHistory, key, keyed && key === `${server.label} ${server.url}` ? without(server, ['label', 'url']) : { ...server });
@@ -128,17 +108,14 @@ export function serverHistoryToUpstream(servers) {
     });
 }
 
-/** A profile's values that name templates, by their kind. */
 const PROFILE_TEMPLATES = Object.freeze({ instruct: 'instruct', context: 'context', sysprompt: 'sysprompt', 'reasoning-template': 'reasoning' });
 
-/** The sampler preset family of a profile's mode. */
 const PROFILE_PRESET_FAMILY = Object.freeze({ cc: 'openai', tc: 'textgenerationwebui' });
 
 /**
- * A connection profile made from upstream's.
- * @param {Record<string, any>} profile An entry of `extension_settings.connectionManager.profiles`.
- * @param {(type: string) => string | undefined} connectionOf The key of the connection of a type, if there is one.
- * @param {Set<string>} seen The profile keys taken so far.
+ * @param {Record<string, any>} profile
+ * @param {(type: string) => string | undefined} connectionOf
+ * @param {Set<string>} seen
  * @param {string[]} warnings
  * @returns {EntityDraft}
  */
@@ -164,7 +141,6 @@ export function profileFromUpstream(profile, connectionOf, seen, warnings) {
 }
 
 /**
- * Upstream's connection profile.
  * @param {EntityDraft} profile
  * @param {(key: string) => EntityDraft | undefined} connection
  * @returns {Record<string, unknown>}
@@ -186,7 +162,6 @@ export function profileToUpstream(profile, connection) {
 }
 
 /**
- * Upstream's connection profiles, and the selected one.
  * @param {{ profiles?: Record<string, any>[], selectedProfile?: string | null }} connectionManager
  * @param {(type: string) => string | undefined} connectionOf
  * @returns {{ profiles: EntityDraft[], selected: string | null | undefined, warnings: string[] }}

@@ -244,13 +244,10 @@ export class QuickReplyApi {
     }
 
     /**
-     * Same as createQuickReply(), but lets the server mint the new quick reply's id instead of
-     * picking one client-side. Prefer this over createQuickReply() in new code.
-     *
-     * @param {string} setName name of the quick reply set to insert the new quick reply into
-     * @param {string} label label for the new quick reply (text on the button)
-     * @param {object} [props] see createQuickReply() for the full list of supported properties
-     * @returns {Promise<QuickReply>} the new quick reply
+     * @param {string} setName
+     * @param {string} label
+     * @param {object} [props]
+     * @returns {Promise<QuickReply>}
      */
     async createQuickReplyRemoteAsync(setName, label, props = {}) {
         const set = this.getSetByName(setName);

@@ -1,11 +1,8 @@
-// What several chat e2e tests share: a mock llama.cpp server, and a character to chat with over it.
 import http from 'node:http';
 import { expect } from './fixtures.js';
 import { openCharacterManagementDrawer } from './frontent-test-utils.js';
 
 /**
- * A mock llama.cpp server. Answers the n-th completion with `reply(n)` (whole, or streamed in one piece), after
- * `delayMs`, and logs every request it gets.
  * @param {{ model?: string, reply?: (n: number) => string, delayMs?: number }} [options]
  * @returns {Promise<{ url: string, log: { url: string, body: any }[], close: () => Promise<void> }>}
  */
@@ -58,7 +55,6 @@ export function startLlamaCpp({ model = 'mock-llamacpp-model', reply = n => `Moc
 }
 
 /**
- * Creates a character with one greeting and returns its avatar filename.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
  * @param {string} [greeting]
@@ -77,7 +73,6 @@ export function createCharacter(page, name, greeting = 'Hello.') {
 }
 
 /**
- * Opens the character's chat and waits for its greeting.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -94,8 +89,6 @@ export async function openCharacter(page, avatar) {
 }
 
 /**
- * Switches to Text Completion, llama.cpp, at `url`, connects, and gives the settings save time to land (the server
- * reads the backend from the saved settings).
  * @param {import('@playwright/test').Page} page
  * @param {string} url
  */
@@ -107,7 +100,6 @@ export async function connectLlamaCpp(page, url) {
     await page.selectOption('#main_api', 'textgenerationwebui', { force: true });
     await page.locator('#textgen_type').selectOption('llamacpp');
     await page.locator('#llamacpp_api_url_text').fill(url);
-    // A worker's earlier tests leave server URLs in the history, whose suggestions would cover the button.
     // @ts-ignore
     await page.evaluate(() => { const field = $('#llamacpp_api_url_text'); if (field.autocomplete('instance')) field.autocomplete('close'); });
     await page.locator('#api_button_textgenerationwebui').click();

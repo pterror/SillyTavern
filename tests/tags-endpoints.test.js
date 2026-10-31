@@ -15,9 +15,6 @@ let baseUrl;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
-/**
- * Mounts the real tags.js router behind a fake auth middleware, same shape as characters-manifest.test.js.
- */
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
@@ -39,7 +36,6 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
-// Each test wants a clean store.
 beforeEach(async () => {
     user = await fixture.emptyUser('st-tags-endpoints-test-');
     directories = user.directories;
@@ -48,7 +44,7 @@ beforeEach(async () => {
 
 afterEach(() => user.close());
 
-/** Stores tag definitions. @param {{ id: string, name: string }[]} tags */
+/** @param {{ id: string, name: string }[]} tags */
 async function saveTags(tags) {
     for (const tag of tags) await user.store.lib.tags.create(tag);
 }
@@ -65,7 +61,6 @@ async function getJson(urlPath) {
     return fetch(`${baseUrl}${urlPath}`);
 }
 
-/** Seeds a bare-minimum metadata row for `avatar` directly, without needing a real PNG on disk. */
 async function seedCharacter(avatar) {
     const cardJson = JSON.stringify({
         name: avatar.replace(/\.png$/, ''),
@@ -74,7 +69,6 @@ async function seedCharacter(avatar) {
     await user.store.lib.writeCard(directories, avatar, cardJson);
 }
 
-/** Seeds a bare-minimum `groups` row directly, without needing a real group JSON file on disk. */
 async function seedGroup(id, name = id) {
     await user.store.lib.writeGroup({ id, name, members: [] });
 }

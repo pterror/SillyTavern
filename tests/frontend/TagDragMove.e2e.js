@@ -1,13 +1,9 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// Dragging a tag in Manage Tags sends the server one move (which tag, next to which), never the page's tag list.
-// The page then shows what the server answered: the new order, or the old one with the reason it was refused.
-
 /** @param {import('@playwright/test').Page} page */
 async function loadApp(page) {
     await testSetup.awaitST({ page });
-    // APP_READY is an auto-fire event: a listener added after it was emitted still runs.
     await page.evaluate(() => {
         window['__appReady'] = false;
         const { eventSource, eventTypes } = window['SillyTavern'].getContext();
@@ -31,7 +27,6 @@ async function api(page, path, body = {}) {
 }
 
 /**
- * Runs `work` on a page of its own context, so the page under test learns of what it does only from the server.
  * @param {import('@playwright/test').Browser} browser
  * @param {(page: import('@playwright/test').Page) => Promise<void>} work
  */
@@ -47,7 +42,6 @@ async function elsewhere(browser, work) {
 }
 
 /**
- * Keeps the page from hearing of tag changes made elsewhere, as a tab whose live updates are down is.
  * @param {import('@playwright/test').Page} page
  */
 async function cutOffTagChanges(page) {
@@ -56,7 +50,7 @@ async function cutOffTagChanges(page) {
 
 /**
  * @param {import('@playwright/test').Page} page
- * @param {string} id Also the tag's name.
+ * @param {string} id
  * @param {number} sortOrder
  */
 async function createTag(page, id, sortOrder) {
@@ -71,7 +65,7 @@ async function createTag(page, id, sortOrder) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string[]} ids
- * @returns {Promise<string[]>} Those of `ids` the server has, in its manual order.
+ * @returns {Promise<string[]>}
  */
 async function serverManualOrder(page, ids) {
     const { tags } = await api(page, '/api/tags/by-ids', { ids });
@@ -81,7 +75,7 @@ async function serverManualOrder(page, ids) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string[]} ids
- * @returns {Promise<boolean>} Whether the page holds the server's sort_order for each of `ids` the server has.
+ * @returns {Promise<boolean>}
  */
 async function pageHoldsServerOrders(page, ids) {
     const { tags } = await api(page, '/api/tags/by-ids', { ids });
@@ -91,7 +85,6 @@ async function pageHoldsServerOrders(page, ids) {
 }
 
 /**
- * Opens Manage Tags in `mode`, showing only the tags whose name has `term`.
  * @param {import('@playwright/test').Page} page
  * @param {'manual' | 'alphabetical'} mode
  * @param {string} term
@@ -110,7 +103,6 @@ function shownOrder(page) {
 }
 
 /**
- * Drags row `id` by its handle and drops it just above row `aboveId`, or back where it was with no `aboveId`.
  * @param {import('@playwright/test').Page} page
  * @param {string} id
  * @param {string} [aboveId]
@@ -121,7 +113,6 @@ async function drag(page, id, aboveId) {
     const y = from.y + from.height / 2;
     await page.mouse.move(x, y);
     await page.mouse.down();
-    // Longer than the sortable's start delay.
     await page.waitForTimeout(150);
     if (aboveId) {
         const to = await page.locator(`.tag_view_item[id="${aboveId}"]`).boundingBox();
@@ -134,7 +125,6 @@ async function drag(page, id, aboveId) {
 }
 
 /**
- * Records every tag write the page sends from now on.
  * @param {import('@playwright/test').Page} page
  * @returns {{ path: string, body: any }[]}
  */
@@ -163,8 +153,6 @@ test.describe('dragging a tag in Manage Tags', () => {
         });
         await loadApp(page);
         await cutOffTagChanges(page);
-        // After the page booted, so the page doesn't hold it. Manage Tags lists it all the same: its rows are the
-        // server's.
         await elsewhere(browser, other => createTag(other, z, 9004));
 
         await openTagManagement(page, 'manual', stamp);
@@ -197,7 +185,6 @@ test.describe('dragging a tag in Manage Tags', () => {
             await expect.poll(() => shownOrder(page)).toEqual([a, b]);
 
             await drag(page, b);
-            // Longer than any debounce between a drop and its request.
             await page.waitForTimeout(2500);
 
             expect(writes, mode).toEqual([]);
@@ -219,7 +206,6 @@ test.describe('dragging a tag in Manage Tags', () => {
 
         await openTagManagement(page, 'manual', stamp);
         await expect.poll(() => shownOrder(page)).toEqual([a, b, c]);
-        // Deleted once the rows are drawn, and the page doesn't hear of it: the row is still there to drop next to.
         await elsewhere(browser, other => api(other, '/api/tags/delete', { id: b }).then(() => {}));
 
         await drag(page, c, b);
@@ -253,7 +239,6 @@ test.describe('dragging a tag in Manage Tags', () => {
     test('Alphabetical: sends one reorder, switches to Manual, and takes the server\'s order once it is applied', async ({ browser, page }) => {
         const stamp = `draga${Date.now()}`;
         const [a, b, c] = ['a', 'b', 'c'].map(letter => `${stamp}-${letter}`);
-        // A manual order unlike the alphabetical one, so the page's own values are wrong until it re-reads them.
         await elsewhere(browser, async (other) => {
             await createTag(other, a, 9403);
             await createTag(other, b, 9401);

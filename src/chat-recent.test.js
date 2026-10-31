@@ -1,5 +1,3 @@
-// Recent chats on the engine: the conversations (a bookmark, or a session's where it has no current chat) by their
-// last meaningful activity, one row per compat chat id; a message without a key is a bug.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -37,15 +35,12 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
 
         assert.deepEqual(await ids({ limit: 10 }), []);
 
-        // Sessions in several characters' trees: one row each, the latest act first.
         const one = await send(1n, null, 'one');
         const two = await send(2n, null, 'two', b);
         await send(3n, null, 'three');
-        // A session's conversation's chat id: its name, the character's and the session's time.
         const s = (/** @type {any} */ actor, /** @type {bigint} */ tree) => chatNameAt({ group: false, name: `Char${tree}` }, /** @type {number} */ (sessionTime(actor.session)));
         assert.deepEqual(await ids({ limit: 10 }), [s(a, 3n), s(b, 2n), s(a, 1n)]);
 
-        // A row's shape: the chat id, the message it is at, and that message's text and time.
         const [top] = (await chats.recentConversations({ limit: 1 })).rows;
         assert.equal(top.name, null);
         assert.equal(top.tree, 3n);
@@ -54,25 +49,20 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const stored = (await chats.stored(await chats.messageIds([top.at]))).values().next().value;
         assert.equal(top.last_activity, stored.time);
 
-        // Paging by the last row's position.
         const first = await chats.recentConversations({ limit: 2 });
         assert.equal(first.more, true);
         const rest = await chats.recentConversations({ limit: 2, before: first.rows[1].position });
         assert.deepEqual([first.rows, rest.rows].flat().map((/** @type {any} */ r) => r.id), [s(a, 3n), s(b, 2n), s(a, 1n)]);
         assert.equal(rest.more, false);
 
-        // A bookmark made through a session is that session's act, not a row of its own.
         const made = /** @type {any} */ (await chats.createBookmark({ tree: 1n, node_id: one, name: 'Mark', actor: a }));
         assert.deepEqual(await ids({ limit: 10 }), [s(a, 1n), s(a, 3n), s(b, 2n)]);
 
-        // Switching to it is no activity, and the conversation became the bookmark's.
         await chats.setCurrentChat({ tree: 1n, bookmark: String(made.bookmark), actor: a });
         assert.deepEqual(await ids({ limit: 10 }), [s(a, 3n), s(b, 2n)]);
 
-        // The next act in it gives the bookmark its row: titled by its label, at the message it follows to.
         const reply = await send(1n, one, 'one-reply');
         const rows = (await chats.recentConversations({ limit: 10 })).rows;
-        // A bookmark's chat id is its label, which no other bookmark of the tree has.
         assert.deepEqual(rows.map((/** @type {any} */ r) => r.id), ['Mark', s(a, 3n), s(b, 2n)]);
         assert.equal(rows[0].name, 'Mark');
         assert.equal(rows[0].at, reply);
@@ -80,14 +70,12 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.equal(rows[0].message_count, 2);
         assert.equal(rows[1].name, null);
 
-        // Another session using the same bookmark: still one row, moved up by that session's act.
         await chats.setCurrentChat({ tree: 1n, bookmark: String(made.bookmark), actor: b });
         await send(2n, two, 'two-reply', b);
         assert.deepEqual(await ids({ limit: 10 }), [s(b, 2n), 'Mark', s(a, 3n)]);
         await send(1n, reply, 'one-again', b);
         assert.deepEqual(await ids({ limit: 10 }), ['Mark', s(b, 2n), s(a, 3n)]);
 
-        // A deleted bookmark and a deleted session leave the list.
         assert.deepEqual(await chats.changeBookmark({ tree: 1n, bookmark: String(made.bookmark), change: { delete: true } }), { ok: true });
         assert.deepEqual(await ids({ limit: 10 }), [s(b, 2n), s(a, 3n)]);
         assert.deepEqual(await chats.deleteSession(b.session), { ok: true });

@@ -1,8 +1,3 @@
-// Makes sure engine/dist/ has a build of this checkout's crate, downloading it from the crate's release if not,
-// and building it here with cargo if the release doesn't have it yet (a dev build).
-// The server runs this before loading the engine; `node engine/fetch.js` runs it alone (the Docker image build
-// does, so the image never fetches at start).
-
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
@@ -17,7 +12,7 @@ export class EngineFetchError extends Error {}
 
 /**
  * @param {string} url
- * @returns {Promise<Buffer|null>} The body, or null on 404
+ * @returns {Promise<Buffer|null>}
  */
 async function download(url) {
     const response = await fetch(url);
@@ -39,9 +34,8 @@ function writeDist(distDir, name, data) {
 }
 
 /**
- * Removes the files in the dist directory built for any source hash other than `key`.
  * @param {string} distDir
- * @param {string} key Release key (16 hex) to keep
+ * @param {string} key
  */
 function removeOtherHashes(distDir, key) {
     for (const name of fs.readdirSync(distDir)) {
@@ -51,14 +45,11 @@ function removeOtherHashes(distDir, key) {
 }
 
 /**
- * Leaves engine/dist/ with a file for this checkout's source hash: the platform's native build if the release has
- * one, else the wasm build; with no release, a native build made here. Never a file of another hash; once this hash's
- * file is there (downloaded, built or already present), other hashes' files are removed.
  * @param {object} [options]
- * @param {string|null} [options.platform] targets.json native platform, or null to take the wasm
- * @param {string} [options.releaseBase] URL the `engine-<key>/<file>` paths are under
+ * @param {string|null} [options.platform]
+ * @param {string} [options.releaseBase]
  * @param {string} [options.distDir]
- * @returns {Promise<string>} Path of the file in the dist directory
+ * @returns {Promise<string>}
  */
 export async function ensureEngine({ platform = currentPlatform(), releaseBase = RELEASE_BASE, distDir = DIST_DIR } = {}) {
     const key = sourceKey();

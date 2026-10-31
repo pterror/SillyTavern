@@ -13,7 +13,6 @@ async function awaitAppReady(page) {
 }
 
 /**
- * Starts a slash command script without waiting for it: a popup command only returns once its popup closes.
  * @param {import('@playwright/test').Page} page
  * @param {string} script
  */
@@ -29,7 +28,6 @@ function lightbox(page) {
 }
 
 /**
- * Expects the lightbox to show the test image, then closes it.
  * @param {import('@playwright/test').Page} page
  */
 async function expectLightboxThenClose(page) {
@@ -40,7 +38,6 @@ async function expectLightboxThenClose(page) {
 }
 
 /**
- * The open popup holding the given text, once its opening animation is over.
  * @param {import('@playwright/test').Page} page
  * @param {string} text
  */
@@ -59,7 +56,7 @@ function toastWith(page, text) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {boolean} value
- * @returns {Promise<boolean>} The previous value.
+ * @returns {Promise<boolean>}
  */
 async function setClickToEdit(page, value) {
     return page.evaluate(async (value) => {
@@ -132,7 +129,6 @@ test.describe('Lightbox on images in user-written HTML', () => {
     });
 
     test('an image in the regex debugger message render shows in the lightbox', async ({ page }) => {
-        // The debugger renders nothing without a rule; this one leaves the input as it is.
         await page.evaluate(() => {
             window['SillyTavern'].getContext().extensionSettings.regex.push({
                 id: 'lightbox-test-rule',
@@ -209,7 +205,6 @@ test.describe('Lightbox on images in user-written HTML', () => {
             await runScript(page, `/popup <img src="${IMAGE}" alt="button" data-result="1"> control words`);
             const popup = openPopup(page, 'control words');
             await expect(popup).toBeVisible();
-            // Not a lightbox image, so it gets no pointer from the lightbox rule.
             await expect(popup.locator('.popup-content img')).not.toHaveCSS('cursor', 'pointer');
 
             await popup.locator('.popup-content img').click();
@@ -274,7 +269,6 @@ test.describe('Lightbox on images in user-written HTML', () => {
             await expect(toast).toBeVisible();
             await expect(toastWith(page, 'closure ran')).toHaveCount(0);
 
-            // Outside the image the toast keeps its own click.
             await toast.locator('span', { hasText: 'toast words' }).click();
             await expect(toastWith(page, 'closure ran')).toBeVisible();
             await expect(toast).toHaveCount(0);

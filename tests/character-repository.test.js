@@ -6,11 +6,9 @@ import {
 const getRequestHeadersMock = jest.fn(() => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }));
 const unshallowCharacterMock = jest.fn();
 
-// HASH_VERSION / GROUP_HASH_VERSION in character-cache.js (not exported).
 const CHARACTER_HASH_VERSION = 5;
 const GROUP_HASH_VERSION = 1;
 
-/** Same hashes saveCachedGroups() stores, and the server ships as a group row's hashes. */
 function groupHashes(group) {
     return {
         fav: groupDigestFavHash(group),
@@ -19,11 +17,7 @@ function groupHashes(group) {
     };
 }
 
-/**
- * In-memory stand-in for both character-cache.js IndexedDB stores. Records are structured-cloned in and out,
- * as IndexedDB does.
- * @type {Map<string, {character?: object, group?: object, hashes: {version?: number | null, fav?: number, tagIds?: number, content?: number, v: number}}>}
- */
+/** @type {Map<string, {character?: object, group?: object, hashes: {version?: number | null, fav?: number, tagIds?: number, content?: number, v: number}}>} */
 let cacheRecords = new Map();
 
 async function getCachedEntriesByIdsFake(ids) {
@@ -58,11 +52,9 @@ async function saveCachedGroupsFake(entries) {
     return [];
 }
 
-// HASH_QUERY_SEARCH_BACKEND_CODES in src/endpoints/characters.js.
 const SEARCH_BACKEND_CODES = { tantivy: 1, native: 2, wasm: 3, unavailable: 4 };
 
 /**
- * Mirrors serializeQueryHashesBinary() in src/endpoints/characters.js byte for byte (it isn't exported).
  * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string}} params
  * @returns {ArrayBuffer}
  */
@@ -134,16 +126,11 @@ function encodeQueryHashes({ seq, token, total, approxTotal, hashRows, searchBac
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
-/**
- * Per-test fake server: character fixtures are their shallow records, each with its `versions` entry, group fixtures
- * their stamped group objects, `live` the per-id fields a hash row carries outside its cache key, and
- * `queryResponses` the /query answers in call order.
- */
 let server;
 let liveCounter;
 let versionCounter;
 
-/** @param {object} fields Stored as the shallow record shallow_json holds for a card with these fields. */
+/** @param {object} fields */
 function addCharacter(fields) {
     const character = { fav: false, tag_ids: [], ...fields, data: shallowCharacterData(fields, false) };
     liveCounter++;
@@ -163,7 +150,6 @@ function addCharacter(fields) {
 function addGroup(group) {
     liveCounter++;
     server.groups.set(group.id, group);
-    // The server never ships a chat for a group hash row.
     server.live.set(group.id, {
         chat: null,
         date_added: 1000 + liveCounter,
@@ -175,10 +161,6 @@ function addGroup(group) {
     return group;
 }
 
-/**
- * The next /query answer: `ids` in server order, each a character or group fixture id. With `unchanged`, the
- * answer is the server's JSON `{seq, token, unchanged: true}` stub instead.
- */
 function queueQuery({ ids = [], total = undefined, approxTotal = false, seq, token = null, searchBackend = undefined, unchanged = false, more = false, cursor = undefined, refused = undefined }) {
     server.queryResponses.push({ ids, total, approxTotal, seq, token, searchBackend, unchanged, more, cursor, refused });
 }
@@ -250,12 +232,10 @@ async function fakeFetch(url, init) {
     throw new Error(`unexpected fetch to ${url}`);
 }
 
-/** What hash mode returns for a character fixture. */
 function hashModeCharacter(character) {
     return { ...character, ...server.live.get(character.avatar), shallow: true };
 }
 
-/** What hash mode returns for a group fixture (fixtures carry `fav`/`tag_ids`, as /api/groups/batch stamps them). */
 function hashModeGroup(group) {
     return { ...group, ...server.live.get(group.id) };
 }
@@ -268,9 +248,6 @@ function fetchedUrls() {
     return global.fetch.mock.calls.map(([url]) => url);
 }
 
-// None of these load in a plain node env: script.js assumes jQuery/DOM, character-store.js imports script.js,
-// and character-cache.js pulls in lib.js, which needs `window`. `charactersStore` exists only so the module's
-// default `characterRepository` singleton constructs on import; tests use their own store from makeStore().
 jest.unstable_mockModule('../public/script.js', () => ({
     unshallowCharacter: unshallowCharacterMock,
 }));
@@ -287,9 +264,6 @@ jest.unstable_mockModule('../public/scripts/character-cache.js', () => ({
     saveCachedGroups: saveCachedGroupsFake,
     getCacheUserHandle: () => 'tester',
 }));
-// Browser storage: what the query cache keeps, by request signature. It outlives a reload (the repository
-// re-imported) and is emptied before each test. Kept pages are read back only where a test sets `keepPages`; else
-// every query goes to the (fake) server, and only the cursors kept with pages are read.
 /** @type {Map<string, any>} */
 const stored = new Map();
 let keepPages = false;
@@ -330,14 +304,11 @@ let CharacterQueryError;
 /** @type {typeof import('../public/scripts/character-repository.js').isInvalidSortFieldError} */
 let isInvalidSortFieldError;
 
-// Re-imported per test: the module keeps a last-response-per-request cache that would otherwise carry `ifToken`
-// from one test's request into another's.
 beforeEach(async () => {
     jest.resetModules();
     ({ CharacterRepository, buildCharacterQuery, isServerQueryableSort, normalizeQueryRow, CharacterQueryError, isInvalidSortFieldError } = await import('../public/scripts/character-repository.js'));
 });
 
-/** Minimal fake of the EntityStore surface CharacterRepository actually uses. */
 function makeStore(initial = []) {
     const byId = new Map(initial.map(c => [c.avatar, c]));
     const listeners = new Set();
@@ -395,9 +366,6 @@ describe('get()', () => {
         const body = JSON.parse(global.fetch.mock.calls[0][1].body);
         expect(body.filter).toEqual({ ids: ['bob'] });
         expect(body.want).toEqual(['hashes']);
-        // The deliberate non-caching behavior (see get()'s doc comment): a server-fallback fetch must never
-        // silently grow the resident store, since call sites elsewhere treat its size as "the boot-loaded
-        // library" (design doc §4.1's "N hidden" badge).
         expect(store.get).not.toHaveBeenCalledWith('bob', expect.anything());
         expect(store.byId.has('bob')).toBe(false);
     });
@@ -481,7 +449,6 @@ describe('full()', () => {
         const store = makeStore([alice]);
         const repo = new CharacterRepository(store);
         unshallowCharacterMock.mockImplementation(async (id) => {
-            // Simulate unshallowCharacter's real effect: mutates the resident entity in place.
             if (id === 'alice') Object.assign(alice, { shallow: false, description: 'hydrated' });
         });
 
@@ -588,11 +555,9 @@ describe('query()', () => {
         expect(second.rows.map(row => row.avatar)).toEqual(['b']);
         const bodies = global.fetch.mock.calls.filter(([url]) => url === '/api/characters/query').map(([, init]) => JSON.parse(init.body));
         expect(bodies.map(body => [body.page, body.cursor])).toEqual([[1, undefined], [2, 'end-of-1'], [2, undefined]]);
-        // The refused cursor is let go: page 2 isn't asked from it again.
         expect([...stored.values()].map(entry => entry.cursor)).not.toContain('end-of-1');
     });
 
-    /** The page and cursor of each `/query` request so far. */
     const sent = () => global.fetch.mock.calls.filter(([url]) => url === '/api/characters/query').map(([, init]) => JSON.parse(init.body)).map(body => [body.page, body.cursor]);
     const nameSort = { field: 'name', order: 'asc' };
 
@@ -617,7 +582,6 @@ describe('query()', () => {
         queueQuery({ ids: ['b'], seq: 1, token: 't2' });
 
         await new CharacterRepository(makeStore([])).query({ search: 'x' }, nameSort, 1, 1, ['rows']);
-        // A reload: the module is read again (which also clears the recorded requests).
         const beforeReload = sent();
         jest.resetModules();
         const { CharacterRepository: Reloaded } = await import('../public/scripts/character-repository.js');
@@ -750,7 +714,6 @@ describe('query()', () => {
         queueQuery({ ids: ['alice'], total: 1, seq: 4, token: 'tokenA' });
         await repo.query({ search: 'a' });
 
-        // The index caught up with a write: same seq, new token, a new hit.
         queueQuery({ ids: ['alice', 'bob'], total: 2, seq: 4, token: 'tokenB' });
         const second = await repo.query({ search: 'a' });
         expect(second.rows).toEqual([alice, bob].map(hashModeCharacter));
@@ -859,9 +822,6 @@ describe('queryAll()', () => {
     test('loops pages until a short page terminates it, never trusting an approximate total to stop early', async () => {
         const store = makeStore([]);
         const repo = new CharacterRepository(store);
-        // Page size is the server's MAX_QUERY_PAGE_SIZE (2000), duplicated in character-repository.js as
-        // QUERY_ALL_PAGE_SIZE - a full first page must not be treated as "the whole result", even with an
-        // approximate ('~'-prefixed) total that looks like it might already cover everything.
         const fullPage = Array.from({ length: 2000 }, (_, i) => addCharacter({ avatar: `c${i}` }));
         const shortPage = [addCharacter({ avatar: 'last' })];
         await cacheCharacters(...fullPage, ...shortPage);
@@ -1030,11 +990,6 @@ describe('query()/queryAll() with includeGroups', () => {
 });
 
 describe('isServerQueryableSort()', () => {
-    // The client no longer keeps its own copy of "which columns the server supports" (that used to be
-    // QUERYABLE_CLIENT_SORT_FIELDS, removed - see this function's doc comment for the drift it caused twice).
-    // It answers "should the caller even attempt /query for this field", which is true for essentially
-    // everything - real column names, made-up ones, 'random' - the server's own 400 invalid-sort-field response
-    // is what actually decides support now (see isInvalidSortFieldError() below).
     test('accepts every column /query can actually sort by', () => {
         for (const field of ['name', 'date_last_chat', 'chat_size', 'fav', 'create_date', 'data_size']) {
             expect(isServerQueryableSort(field)).toBe(true);

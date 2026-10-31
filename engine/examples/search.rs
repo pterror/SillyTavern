@@ -1,24 +1,3 @@
-//! Measures search (P3) against the design's search cost table (`.plans/2026-10-03-storage-from-needs.md` 7.5) on
-//! synthetic libraries, and checks every query's results against a scan of every card.
-//!
-//!   cargo run --release --features measure --example search -- <dir> <seedpng|synth> <cards> [--no-check]
-//!
-//! Generators:
-//! - `seedpng`: `walrepro/seedpng.mjs`'s cards (a 15-word vocabulary; the cards of the old index's 3.68 MB at
-//!   2000), card tags assigned as tags by name, as importing them did.
-//! - `synth`: `scripts/bench-search-synth.mjs`'s text generator (30,000-word Zipf vocabulary, its word list placed
-//!   at the share of cards per field the live library had), with fixed numbers in place of its live samples
-//!   (`SAMPLE`).
-//!
-//! Prints one JSON object per phase: load, space, writes, and one per query.
-//!
-//! `--real`: the library as the app stores it (build path 5d): tags and characters as entities (`entityCreate`),
-//! each card field its code's text value, card tags and alternate greetings as list items; tags take ids
-//! 1..=tags, cards the ids after them. The store can then be opened by `LibraryEngine` (`scripts/bench-search-synth.mjs`).
-//!
-//! `--spread` (with `--real`): the cards' ids in runs of 64, each run `1 << 26` ids after the last, so they sit
-//! under many nodes of the search's block maxima above level 0 (`search::node_of`).
-
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -33,17 +12,14 @@ use st_engine::store::kinds::test_codes::ITEM_SEPARATOR;
 use st_engine::store::kinds::{key, test_codes};
 use st_engine::store::{Store, StoreConfig};
 
-/// A card: per library field, its values; and its tags.
 struct Card {
     fields: Vec<Vec<String>>,
     tags: Vec<u64>,
 }
 
 trait Generator: Send {
-    /// Every tag: id, name.
     fn tags(&self) -> &[(u64, String)];
     fn card(&mut self) -> Card;
-    /// The text's vocabulary, most frequent first (`--phrases`); none for a generator without one.
     fn vocab(&self) -> &[String] {
         &[]
     }
@@ -62,14 +38,11 @@ const TAGS: usize = 9;
 const ALTERNATE: usize = 10;
 const FIELDS: usize = 11;
 
-/// The library field a generator field is: the generator places words in the names of the tags a card carries
-/// as a field of its own (`RESOLVED`), which the library doesn't have.
 fn library_field(f: usize) -> u32 {
     assert_ne!(f, RESOLVED);
     (if f > RESOLVED { f - 1 } else { f }) as u32
 }
 
-/// A generator field by its name (the library's, and `resolved_tags`).
 fn field_index(name: &str) -> usize {
     [
         "name",
@@ -88,8 +61,6 @@ fn field_index(name: &str) -> usize {
     .position(|f| *f == name)
     .unwrap()
 }
-
-// ---- seedpng.mjs ----
 
 const SEED_WORDS: [&str; 15] = [
     "the",
@@ -132,7 +103,6 @@ impl SeedPng {
         }
     }
 
-    /// `seed = (seed * 1103515245 + 12345) & 0x7fffffff` in JavaScript's doubles, then `seed / 0x7fffffff`.
     fn rnd(&mut self) -> f64 {
         let x = (self.seed as f64) * 1103515245.0 + 12345.0;
         self.seed = (x as u128 as u64) & 0x7fff_ffff;
@@ -208,10 +178,6 @@ impl Generator for SeedPng {
     }
 }
 
-// ---- bench-search-synth.mjs ----
-
-/// Per (term, field): the share of the live library's cards holding it (the kept report of the generator's last
-/// run).
 const SHARES: &[(&str, &str, f64)] = &[
     ("girl", "name", 0.003622711798412005),
     ("girl", "resolved_tags", 0.07727925662059132),
@@ -354,11 +320,8 @@ const TERMS: [&str; 11] = [
     "knight",
 ];
 const VOCAB_SIZE: usize = 30000;
-/// The live library's tag count (the kept report of the generator's last run).
 const LIVE_TAGS: usize = 68823;
 
-/// The numbers the generator took from live card samples, fixed: text lengths in characters per field, the
-/// alternate greetings' count and total length, tags per card, a tag name's length.
 struct Sample {
     lens: [(usize, usize); 8],
     greetings: usize,
@@ -390,7 +353,6 @@ struct Synth {
     word_cdf: Vec<f64>,
     tag_cdf: Vec<f64>,
     tags: Vec<(u64, String)>,
-    /// Ids of the tags named exactly as each term.
     word_tags: HashMap<&'static str, u64>,
     inserts: Vec<Vec<(usize, &'static str)>>,
     i: usize,
@@ -429,7 +391,6 @@ impl Synth {
                 g.vocab.push(w);
             }
         }
-        // Which cards get which word in which field: the live share of cards, every card eligible.
         for (term, field, share) in SHARES {
             let f = field_index(field);
             let target = (share * cards as f64).round() as usize;
@@ -612,8 +573,6 @@ fn generator(kind: &str, cards: usize) -> Box<dyn Generator> {
     }
 }
 
-// ---- loading ----
-
 fn rec(kind: &str, values: Vec<Value>) -> Record {
     Record::new(kind_by_name(kind).unwrap(), values).unwrap()
 }
@@ -631,26 +590,22 @@ fn text_value(e: u64, code: u64, s: &str) -> Record {
     )
 }
 
-/// `--real`: the library as the app stores it.
 fn real() -> bool {
     static REAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *REAL.get_or_init(|| std::env::args().any(|a| a == "--real"))
 }
 
-/// `--spread`: the cards' ids spread out.
 fn spread() -> bool {
     static SPREAD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *SPREAD.get_or_init(|| std::env::args().any(|a| a == "--spread"))
 }
 
-/// The id of the generator's card `i` (from 0): after the tags' ids with `--real`.
 fn card_id(i: usize, tags: usize) -> u64 {
     let i = i as u64;
     let at = if spread() { i % 64 + (i / 64 << 26) } else { i };
     at + 1 + if real() { tags as u64 } else { 0 }
 }
 
-/// A generator field's text code (`src/library-codes.js`) or list (`LIST`), as the app stores a card.
 fn real_code(f: usize) -> Result<u64, u64> {
     match f {
         NAME => Ok(1),
@@ -667,7 +622,6 @@ fn real_code(f: usize) -> Result<u64, u64> {
     }
 }
 
-/// The field code a description edit writes.
 fn description_code() -> u64 {
     if real() {
         10
@@ -737,7 +691,6 @@ fn card_records(doc: u64, c: &Card) -> Vec<Record> {
 }
 
 fn real_card_records(doc: u64, c: &Card) -> Vec<Record> {
-    // What `splitCard()` keeps of a V2 card besides its fields.
     let mut out: Vec<Record> = [
         ("name:data", ""),
         ("present:data", ""),
@@ -796,7 +749,6 @@ fn real_card_records(doc: u64, c: &Card) -> Vec<Record> {
     out
 }
 
-/// Commits in flight at once, of `batch` records each.
 fn commit_all(s: &Store, recs: impl Iterator<Item = Record>, batch: usize) {
     let inflight = Arc::new((std::sync::Mutex::new(0u32), std::sync::Condvar::new()));
     let mut recs = recs.peekable();
@@ -848,8 +800,6 @@ fn proc_kb(field: &str) -> u64 {
         .unwrap_or(0)
 }
 
-// ---- queries ----
-
 fn c(text: &str) -> Clause {
     Clause {
         text: text.as_bytes().to_vec(),
@@ -859,7 +809,6 @@ fn c(text: &str) -> Clause {
     }
 }
 
-/// The query set: (label, words typed, clauses, filters). Text as typed: whitespace separates clauses.
 fn queries(tags: &[(u64, String)]) -> Vec<(String, usize, Vec<Clause>, Vec<Filter>)> {
     let tag_of = |n: &str| tags.iter().find(|(_, t)| t == n).map(|(id, _)| *id);
     let words = |s: &str| s.split(' ').map(c).collect::<Vec<_>>();
@@ -883,7 +832,6 @@ fn queries(tags: &[(u64, String)]) -> Vec<(String, usize, Vec<Clause>, Vec<Filte
     ] {
         out.push((q.to_string(), q.split(' ').count(), words(q), Vec::new()));
     }
-    // A word of the name of the tag carried most (the first by the generator's tag order).
     if let Some(w) = tags
         .first()
         .and_then(|(_, n)| tokens(n.as_bytes()).into_iter().next())
@@ -925,9 +873,6 @@ fn phrases_mode() -> bool {
     std::env::args().any(|a| a == "--phrases")
 }
 
-/// `--phrases`: closed-quote phrases of 2 to 4 tokens over every field and over the name: all common (the
-/// vocabulary's most frequent words, as "in the", "she said that"), or led by a rare word (`RARE`th by
-/// frequency). Text phrases follow the unigram Zipf text, so a common phrase's documents grow with the library.
 fn phrase_queries(vocab: &[String]) -> Vec<(String, usize, Vec<Clause>, Vec<Filter>)> {
     const RARE: usize = 20_000;
     let w = |i: usize| vocab[i].clone();
@@ -954,10 +899,6 @@ fn phrase_queries(vocab: &[String]) -> Vec<(String, usize, Vec<Clause>, Vec<Filt
     out
 }
 
-/// A positional index's size, estimated from the text: per (document, term) one entry whose key is the term and
-/// the document (`KEY_FIXED` bytes besides the term), and whose value is, per field holding the term, the field,
-/// the count and the positions as varint deltas (a value's first token one past the last one's, so a phrase never
-/// spans two values).
 #[derive(Default)]
 struct PositionalEstimate {
     entries: u64,
@@ -979,7 +920,6 @@ fn varint_len(mut v: u64) -> u64 {
 
 impl PositionalEstimate {
     fn add(&mut self, card: &Card) {
-        // term -> per field, its positions
         let mut by: HashMap<String, BTreeMap<u32, Vec<u64>>> = HashMap::new();
         for (f, vals) in card.fields.iter().enumerate() {
             if f == RESOLVED {
@@ -1011,10 +951,6 @@ impl PositionalEstimate {
     }
 }
 
-/// `pair-curve <generator> <cards> <T,T,..>`: the pair index's size for each threshold T, a pair indexed when both
-/// its words are in more than T documents: distinct pairs, posting entries (pair, block of `1 << BLOCK_BITS` ids),
-/// slots (pair, document, field) and occurrences; and the words over T. From the generated text alone, no store:
-/// one pass counts the words' documents, then one pass per threshold.
 fn pair_curve(kind: &str, cards: usize, thresholds: &str) {
     use std::collections::HashSet;
     use std::hash::{Hash, Hasher};
@@ -1023,7 +959,6 @@ fn pair_curve(kind: &str, cards: usize, thresholds: &str) {
         x(&mut h);
         h.finish()
     };
-    // The cards' searched values per field: (library field, value tokens).
     let values = |card: &Card| -> Vec<(u32, Vec<String>)> {
         card.fields
             .iter()
@@ -1088,19 +1023,14 @@ fn pair_curve(kind: &str, cards: usize, thresholds: &str) {
     }
 }
 
-/// One term's postings, summed as the generator's documents arrive in id order.
 #[derive(Default, Clone, Copy)]
 struct TermAcc {
     df: u32,
-    /// Slots (document, field).
     slots: u64,
     blocks: u32,
-    /// Its posting blocks' entries, key and value bytes, as the index writes them.
     posting_bytes: u64,
-    /// Its postings inline in one entry: the documents as deltas, each field with its count.
     inline_bytes: u64,
     last_doc: u64,
-    /// Its block maxima's slots: per block, one over every field and one per field holding it, per reading.
     max_slots: u64,
     key_len: u16,
     readings: u8,
@@ -1110,11 +1040,6 @@ fn varint_bytes(v: u64) -> u64 {
     varint_len(v)
 }
 
-/// `layout-curve <generator> <cards> <K,K,..>`: the index's size, pairs and words apart, with postings inline in
-/// one entry for a term in at most K documents (no count or maxima entries), and for the rest posting blocks, a
-/// count, and maxima only for a term in more than one block. Posting bytes are exact (the index's own key and map
-/// encodings); maxima are estimated at `MAX_SLOT_BYTES` per slot plus a key per group of blocks. K = 0 with maxima
-/// for every term is the index as it is.
 fn layout_curve(kind: &str, cards: usize, ks: &str) {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -1123,11 +1048,9 @@ fn layout_curve(kind: &str, cards: usize, ks: &str) {
     let scope = Scope::LIBRARY;
     let defs = scope.fields();
     let started = Instant::now();
-    // Per kind (0 words, 1 pairs): term hash → its sums.
     let mut acc: [HashMap<u64, TermAcc>; 2] = [HashMap::new(), HashMap::new()];
     let mut g = generator(kind, cards);
     let tag_count = g.tags().len();
-    // The current block's postings per kind: term hash → (key length, readings, slot → (exact, gram)).
     type BlockTerms = HashMap<u64, (u16, u8, BTreeMap<u32, (u64, u64)>)>;
     let mut block_terms: [BlockTerms; 2] = [HashMap::new(), HashMap::new()];
     let mut cur_block = None;
@@ -1145,7 +1068,6 @@ fn layout_curve(kind: &str, cards: usize, ks: &str) {
                         (sl, se::pack(defs[f as usize].prefix, se::FieldHit { exact: e, gram: gr }))
                     })
                     .collect();
-                // posting_block's key: the term's key and the block.
                 let mut kb = Vec::new();
                 st_engine::keyspace::val::put_u64(&mut kb, block);
                 a.posting_bytes += u64::from(key_len) + kb.len() as u64
@@ -1216,14 +1138,11 @@ fn layout_curve(kind: &str, cards: usize, ks: &str) {
         flush(b, &mut block_terms, &mut acc);
     }
     eprintln!("layout-curve: read in {:.1}s", started.elapsed().as_secs_f64());
-    // A term count's entry: its key (the term's, under its own structure) and an added map's few bytes.
     let count_bytes = |a: &TermAcc| u64::from(a.key_len) + 4;
-    // A maxima entry's key per group of `1 << GROUP_BITS` blocks it spans (at most one at these sizes), and slots.
     let maxima_bytes = |a: &TermAcc| u64::from(a.key_len) + 4 + a.max_slots * MAX_SLOT_BYTES;
     for (k, name) in [(0usize, "words"), (1, "pairs")] {
         let terms = acc[k].len() as u64;
         let slots: u64 = acc[k].values().map(|a| a.slots).sum();
-        // As it is: posting blocks, a count and maxima for every term.
         let (mut now_bytes, mut now_keys) = (0u64, 0u64);
         for a in acc[k].values() {
             now_bytes += a.posting_bytes + count_bytes(a) + maxima_bytes(a);
@@ -1236,7 +1155,6 @@ fn layout_curve(kind: &str, cards: usize, ks: &str) {
             let (mut bytes, mut keys, mut inlined) = (0u64, 0u64, 0u64);
             for a in acc[k].values() {
                 if a.df <= kk {
-                    // One entry: the term's key, its document count and its postings.
                     bytes += u64::from(a.key_len) + varint_bytes(u64::from(a.df)) + a.inline_bytes;
                     keys += 1;
                     inlined += 1;
@@ -1253,9 +1171,6 @@ fn layout_curve(kind: &str, cards: usize, ks: &str) {
                 "{{\"phase\":\"layout\",\"kind\":\"{name}\",\"cards\":{cards},\"k\":{kk},\"terms\":{terms},\"inlined\":{inlined},\"bytes\":{bytes},\"keys\":{keys}}}"
             );
         }
-        // Postings chunked by count, not by id range: a term's postings in entries of at most `chunk` documents
-        // (each keyed by the term and its first document), as delta varints; a count and per-chunk maxima only
-        // for a term in more than one chunk; with `inline`, a term in one chunk is one dictionary entry.
         for chunk in [64u64, 128, 256] {
             let (mut bytes, mut keys, mut dict) = (0u64, 0u64, 0u64);
             for a in acc[k].values() {
@@ -1272,7 +1187,6 @@ fn layout_curve(kind: &str, cards: usize, ks: &str) {
                 "{{\"phase\":\"layout_chunked\",\"kind\":\"{name}\",\"cards\":{cards},\"chunk\":{chunk},\"bytes\":{bytes},\"keys\":{keys},\"dictionary_key_bytes\":{dict}}}"
             );
         }
-        // How documents per term spread: terms and slots by df bucket.
         let mut buckets: BTreeMap<u32, (u64, u64)> = BTreeMap::new();
         for a in acc[k].values() {
             let b = a.df.next_power_of_two();
@@ -1288,7 +1202,6 @@ fn layout_curve(kind: &str, cards: usize, ks: &str) {
     }
 }
 
-/// The best matches and the number of matches.
 type Answer = (Vec<(u64, f64)>, u64);
 
 fn fields_of(card: &Card) -> Fields {
@@ -1299,7 +1212,6 @@ fn fields_of(card: &Card) -> Fields {
         .filter(|(f, _)| *f != RESOLVED)
         .map(|(_, vals)| vals.iter().map(|v| tokens(v.as_bytes())).collect())
         .collect();
-    // A card has no group fields.
     out.resize(Scope::LIBRARY.fields().len(), Vec::new());
     out
 }
@@ -1307,7 +1219,6 @@ fn fields_of(card: &Card) -> Fields {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args[1] == "sum" {
-        // The generator's text, to compare with the JavaScript it ports.
         let mut g = generator(&args[2], args[3].parse().unwrap());
         let mut total = 0usize;
         for i in 0..args[3].parse::<usize>().unwrap() {
@@ -1332,17 +1243,13 @@ fn main() {
     let kind = args[2].as_str();
     let cards: usize = args[3].parse().unwrap();
     let check = !args.iter().any(|a| a == "--no-check");
-    // Without --real, tags share the cards' ids.
     assert!(!spread() || real(), "--spread needs --real");
-    // --reuse: a store an earlier run left with the same library; only the queries run.
     let reuse = args.iter().any(|a| a == "--reuse") && dir.exists();
     if !reuse {
         let _ = std::fs::remove_dir_all(&dir);
     }
     let s = Store::open(&dir, StoreConfig::default()).unwrap();
     s.wait_ready().unwrap();
-    // `--pairs-first`: pairs indexed from the start, as a new store has them, so the load writes them (with
-    // `--pair-build` only measured after).
     if !reuse && args.iter().any(|a| a == "--pairs-first") {
         s.commit_wait(vec![rec("searchPairs", vec![Value::Bit(true)])]).unwrap();
     }
@@ -1353,7 +1260,6 @@ fn main() {
         load_and_space(&s, &dir, kind, cards, g.as_mut(), &tags);
     }
 
-    // ---- queries: latency (median of 7 after one warm-up) and reads ----
     let qs = if phrases_mode() {
         phrase_queries(generator(kind, 0).vocab())
     } else {
@@ -1369,7 +1275,6 @@ fn main() {
             limit: 50,
             after: None,
             weights: None,
-            // `--phrases`: a page's whole cost, its walk never stopped.
             limits: if phrases_mode() {
                 Limits {
                     enumerate: u64::MAX / 4,
@@ -1384,7 +1289,6 @@ fn main() {
         let first = s.search(&q).unwrap();
         let mut times = Vec::new();
         let ks0 = s.stats().ks;
-        // `--once`: one timed run after the warm-up, for queries too slow to repeat.
         let runs = if std::env::args().any(|a| a == "--once") { 1 } else { 7 };
         for _ in 0..runs {
             let t = Instant::now();
@@ -1404,7 +1308,6 @@ fn main() {
         ));
     }
 
-    // ---- the check: every card read twice (statistics, then matches) ----
     let mut checked: Vec<Option<Answer>> = vec![None; results.len()];
     let mut tied: Vec<Option<usize>> = vec![None; results.len()];
     if check {
@@ -1499,18 +1402,14 @@ fn load_and_space(
     g: &mut dyn Generator,
     tags: &[(u64, String)],
 ) {
-    // ---- load ----
     let started = Instant::now();
     let bulk = std::env::args().any(|a| a == "--bulk");
-    // --no-lists: tag names committed first, not loaded with the cards. With --real the tags
-    // come first in the load (their ids are below the cards').
     let tags_first = !bulk || std::env::args().any(|a| a == "--no-lists");
     if tags_first {
         commit_all(s, tags.iter().flat_map(|(id, n)| tag_records(*id, n)), 1000);
     }
     let mut text_bytes = 0u64;
     let mut positional = PositionalEstimate::default();
-    // Tags and cards share ids: in a load, id by id, so each partition comes once.
     let by_id: HashMap<u64, &str> = if tags_first {
         HashMap::new()
     } else {
@@ -1555,8 +1454,6 @@ fn load_and_space(
             ),
     );
     if bulk {
-        // Into an empty store, tag names and all. The cards are generated on a
-        // thread of their own, so the load's time is the loader's, not the generator's.
         let mut l = s.loader().unwrap();
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<Record>>(16);
         std::thread::scope(|sc| {
@@ -1606,7 +1503,6 @@ fn load_and_space(
         );
     }
 
-    // ---- space by structure: every entry's key and value bytes ----
     let mut by: BTreeMap<u64, (u64, u64)> = BTreeMap::new();
     for structure in [
         key::SEARCH_POSTING,
@@ -1660,8 +1556,6 @@ fn load_and_space(
     }
 }
 
-/// `--pair-build`: the pair postings built over the loaded library (the `searchPairs` option's pass), timed, and
-/// their entries counted apart from the words' (terms joined by `pairs::SEPARATOR`).
 fn pair_build(s: &Store) {
     use st_engine::search::pairs::SEPARATOR;
     let started = Instant::now();
@@ -1677,8 +1571,6 @@ fn pair_build(s: &Store) {
     }
     settle(s);
     let build_s = started.elapsed().as_secs_f64();
-    // Per structure (postings, block maxima, term counts): pairs' and words' entries and bytes, by the term in
-    // each key.
     let mut parts = Vec::new();
     let mut pair_terms = std::collections::HashSet::new();
     let (mut pair_total, mut word_total) = (0u64, 0u64);
@@ -1733,7 +1625,6 @@ fn pair_build(s: &Store) {
     );
 }
 
-/// Search entries by structure and term kind: entries, key bytes, value bytes and map pairs.
 fn space_detail(s: &Store) {
     let mut by: BTreeMap<(u64, u8), [u64; 4]> = BTreeMap::new();
     for structure in [
@@ -1778,8 +1669,6 @@ fn space_detail(s: &Store) {
     terms(s);
 }
 
-/// Terms by their documents: how many have more than a top list's documents, and what lists of 128 and of 1024
-/// for each of them would hold together.
 fn terms(s: &Store) {
     let start = key::SEARCH_TERM_COUNTS.prefix();
     let end = key::prefix_end(&start);
@@ -1818,7 +1707,6 @@ fn terms(s: &Store) {
 }
 
 fn writes(s: &Store, cards: usize, tag_count: usize) {
-    // ---- writes per action ----
     let mut r = 12345u64;
     let mut next = || {
         r = r
@@ -1836,14 +1724,12 @@ fn writes(s: &Store, cards: usize, tag_count: usize) {
             continue;
         };
         let old = String::from_utf8(old).unwrap();
-        // One word replaced by another.
         let spaces: Vec<usize> = old.match_indices(' ').map(|(i, _)| i).collect();
         if spaces.len() < 3 {
             continue;
         }
         let w = (next() as usize) % (spaces.len() - 1);
         let (a, b) = (spaces[w] + 1, spaces[w + 1]);
-        // A word no card has: the next query finds this card by it, or the write wasn't found.
         let fresh = format!("fresh{n}word");
         let word = fresh.as_str();
         let new = format!("{}{}{}", &old[..a], word, &old[b..]);
@@ -1944,7 +1830,6 @@ fn writes(s: &Store, cards: usize, tag_count: usize) {
             Value::Absent,
         ],
     )]);
-    // The tag the most cards carry, renamed.
     let carried = s
         .scan(
             &key::of(key::MEMBER_COUNT),
@@ -1987,11 +1872,8 @@ fn writes(s: &Store, cards: usize, tag_count: usize) {
     );
 }
 
-/// Entries written per card created and per card deleted (`--real`, where cards are entities): the generator's
-/// cards past the library's, each created in a commit of its own, then each deleted.
 fn creates_and_deletes(s: &Store, kind: &str, cards: usize, tag_count: usize) {
     const N: usize = 50;
-    // A generator of N more cards, its first `cards` passed over.
     let mut g = generator(kind, cards + N);
     for _ in 0..cards {
         g.card();
@@ -2010,7 +1892,6 @@ fn creates_and_deletes(s: &Store, kind: &str, cards: usize, tag_count: usize) {
         .iter()
         .map(|&id| entries_of(card_records(id, &g.card())))
         .sum();
-    // A create counts each of its terms once.
     let (max_writes, terms) = (produced(maxima) - m0, produced(counts) - c0);
     let deleted: u64 = ids
         .iter()
@@ -2027,8 +1908,6 @@ fn creates_and_deletes(s: &Store, kind: &str, cards: usize, tag_count: usize) {
     );
 }
 
-/// Times single reads of the store's derived entries: a point read of a term's counts, and a scan of a term's
-/// postings.
 fn probe(s: &Store) {
     use st_engine::search::{postings, term_counts_of};
     let words = ["dragon", "quokka", "saxophone", "girl", "the", "vampire"];
@@ -2045,7 +1924,6 @@ fn probe(s: &Store) {
         s.scan(&p, &key::prefix_end(&p), 1).unwrap();
     }
     let scan_us = t.elapsed().as_secs_f64() * 1e6 / n as f64;
-    // A document's lengths: its length block read, and its pairs decoded.
     let mut r = 99u64;
     let docs: Vec<u64> = (0..n)
         .map(|_| {

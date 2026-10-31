@@ -1,25 +1,17 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-/** A page's write of a whole book: the changes it made (or a new book). */
 const BOOK_WRITE = /\/api\/worldinfo\/(entries\/apply|create)$/;
-
-// deleteWorldInfo() unlinks only the open character, as upstream does. Every other character whose primary
-// lorebook is the deleted one keeps its link, and a warning names the first 20 of them and counts the rest.
-// A create or import that overwrites a book under a name differing from it (here, in case) deletes it too, but warns
-// only if no book has that name afterwards. One under exactly its name writes over its file without deleting it, so
-// it never warns.
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
 /**
- * Creates characters through the API, each with `world` as its primary lorebook ('' for none).
  * @param {import('@playwright/test').Page} page
  * @param {string[]} names
  * @param {string} world
- * @returns {Promise<string[]>} The avatar filenames, in the order of `names`.
+ * @returns {Promise<string[]>}
  */
 async function createCharacters(page, names, world) {
     return page.evaluate(async ({ names, world }) => {
@@ -56,7 +48,7 @@ async function deleteCharacters(page, avatars) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
- * @returns {Promise<string>} The stored card's primary lorebook.
+ * @returns {Promise<string>}
  */
 async function storedWorld(page, avatar) {
     return page.evaluate(async (avatar) => {
@@ -97,7 +89,6 @@ async function deleteWorld(page, worldName) {
 }
 
 /**
- * Overwrites an existing book through createNewWorldInfo() or importWorldInfo(), confirming the overwrite prompt.
  * @param {import('@playwright/test').Page} page
  * @param {'create'|'import'} how
  * @param {string} worldName
@@ -124,23 +115,20 @@ async function overwriteWorld(page, how, worldName) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} worldName
- * @returns {Promise<boolean>} Whether the server lists a book with exactly this name.
+ * @returns {Promise<boolean>}
  */
 async function worldExists(page, worldName) {
     return page.evaluate(async (worldName) => {
         const worldInfo = await import('./scripts/world-info.js');
         await worldInfo.updateWorldInfoList();
-        // Read off the module namespace after the reload: world_names is reassigned, not mutated.
         return worldInfo.world_names.includes(worldName);
     }, worldName);
 }
 
 /**
- * Records, from here on, every `/api/characters/query` request filtered to `worldName`: the still-linked warning's
- * lookup.
  * @param {import('@playwright/test').Page} page
  * @param {string} worldName
- * @returns {object[]} The request bodies, filled in as they are sent.
+ * @returns {object[]}
  */
 function recordStillLinkedQueries(page, worldName) {
     const bodies = [];
@@ -153,8 +141,6 @@ function recordStillLinkedQueries(page, worldName) {
     return bodies;
 }
 
-// Before the overwrite paths awaited their deletion, its warning could show after the create or import had
-// returned; this is long enough for one that is going to show to have been looked up.
 const QUIET_MS = 2500;
 
 const stillLinkedToast = (page, worldName) => page.locator('#toast-container .toast-warning .toast-message', { hasText: `Deleted lorebook ${worldName} is still the primary lorebook of` });
@@ -165,7 +151,6 @@ test.describe('deleting a lorebook other characters still link to', () => {
     test('leaves the other characters linked and names the first 20, counting the rest', async ({ page }) => {
         const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
         const worldName = `WI_DELETE_LINKED_${s}`;
-        // Index 00 is opened in the editor; 01 to 21 are the other 21 linked characters.
         const names = Array.from({ length: 22 }, (_, i) => `WIDeleteLinked-${s}-${String(i).padStart(2, '0')}`);
 
         await createWorld(page, worldName);
@@ -192,11 +177,9 @@ test.describe('deleting a lorebook other characters still link to', () => {
             expect(text).not.toContain(names[21]);
             expect(text).toContain('and 1 more.');
 
-            // The other characters keep their link, as upstream leaves them.
             expect(await storedWorld(page, avatars[1])).toBe(worldName);
             expect(await storedWorld(page, avatars[21])).toBe(worldName);
 
-            // The open character is the one deleteWorldInfo() unlinked, so it is the one left out of the warning.
             await page.evaluate(async () => {
                 const { flushCharacterFieldSaves } = await import('/script.js');
                 await flushCharacterFieldSaves();
@@ -257,7 +240,6 @@ test.describe('deleting a lorebook other characters still link to', () => {
     test('warns when the write after an overwrite fails and the book is gone', async ({ page }) => {
         const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
         const worldName = `WI_OVERWRITE_FAILED_${s}`;
-        // Differs only in case, so the overwrite deletes the old book before its write.
         const newName = worldName.toLowerCase();
         const names = [`WIOverwriteFailed-${s}-00`, `WIOverwriteFailed-${s}-01`];
 

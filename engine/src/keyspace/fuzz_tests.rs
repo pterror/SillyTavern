@@ -1,11 +1,3 @@
-//! Seeded fuzzing of the keyspace's decoders: values (`Val::decode`, map and count encodings), blocks
-//! (`Block::parse` and every cursor over what parses) and whole runs (`Run::in_memory`, its footer, index and
-//! reads). Valid encodings are mutated: bytes flipped, inserted, removed, cut off, overwritten; and, so mutations
-//! reach past the checksums, sometimes with the checksum recomputed over the damage. Every decode must refuse or
-//! read back, never panic, never loop.
-//!
-//! `ST_FUZZ_SECS=<s>` runs each target for s seconds (default 2); a failure names the target, seed and input.
-
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::{Duration, Instant};
 
@@ -39,7 +31,6 @@ fn secs() -> Duration {
     )
 }
 
-/// Runs `one(seed)` for fresh seeds until the time is up; a panic is reported with its seed.
 fn fuzz(target: &str, salt: u64, one: impl Fn(u64)) {
     let until = Instant::now() + secs();
     let mut seed = salt.wrapping_mul(0x1000_0000_01b3);
@@ -111,7 +102,6 @@ fn gen_val(rng: &mut Rng) -> Val {
     }
 }
 
-/// `b` damaged in a random way.
 fn mutate(rng: &mut Rng, b: &mut Vec<u8>) {
     for _ in 0..1 + rng.below(4) {
         match rng.below(6) {
@@ -139,7 +129,6 @@ fn mutate(rng: &mut Rng, b: &mut Vec<u8>) {
     }
 }
 
-/// Recomputes a block's trailing CRC-32C over its damaged bytes, so the damage reaches the decoder.
 fn fix_crc(b: &mut [u8]) {
     if b.len() >= 4 {
         let n = b.len() - 4;
@@ -157,7 +146,6 @@ fn fuzz_values_round_trip_and_damaged_ones_never_panic() {
         v.encode(&mut b);
         let mut at = 0;
         let back = Val::decode(&b, &mut at);
-        // An `AddMap`'s deltas round-trip by value; every other kind exactly.
         assert_eq!(back.as_ref(), Some(&v), "round trip of {v:?}");
         assert_eq!(at, b.len());
         if let Val::Map(p) | Val::MaxMap(p) = &v {
@@ -187,7 +175,6 @@ fn key(i: u64) -> Vec<u8> {
     k
 }
 
-/// Entries in key order: keys sharing prefixes, some long, values of every kind.
 fn entries(rng: &mut Rng, n: u64) -> Vec<(Vec<u8>, Val)> {
     let mut ids: Vec<u64> = (0..n).map(|_| rng.below(n * 4 + 1)).collect();
     ids.sort();
@@ -203,8 +190,6 @@ fn entries(rng: &mut Rng, n: u64) -> Vec<(Vec<u8>, Val)> {
         .collect()
 }
 
-/// Every read of a block that parsed: forward through all, seeks, and backward through all. Bounded: a damaged
-/// block that parses must still end.
 fn read_block(b: Arc<Block>, rng: &mut Rng, keys: &[Vec<u8>]) {
     if let Ok(mut c) = Cursor::first(b.clone()) {
         let mut n = 0;
@@ -267,7 +252,6 @@ fn fuzz_blocks_read_back_and_damaged_ones_never_panic() {
         }
         let bytes = bb.finish(KIND_DATA);
         let keys: Vec<Vec<u8>> = es.iter().map(|(k, _)| k.clone()).collect();
-        // Whole: every entry reads back, in order.
         let b = Arc::new(Block::parse(bytes.clone()).unwrap());
         let mut c = Cursor::first(b.clone()).unwrap();
         for (k, v) in &es {
@@ -291,7 +275,6 @@ fn fuzz_blocks_read_back_and_damaged_ones_never_panic() {
     });
 }
 
-/// Every read of a run that opened: point gets, a forward and a backward walk, sorted gets, an estimate.
 fn read_run(run: Arc<Run>, rng: &mut Rng, keys: &[Vec<u8>]) {
     let cache = Cache::new(1 << 20);
     let counts = ReadCounts::default();
@@ -350,7 +333,6 @@ fn fuzz_runs_read_back_and_damaged_ones_never_panic() {
         let (lo, hi) = (rng.below(100), 100 + rng.below(100));
         let bytes = w.finish_in_memory(rng.below(1 << 40), lo, hi).unwrap();
         let keys: Vec<Vec<u8>> = es.iter().map(|(k, _)| k.clone()).collect();
-        // Whole: every entry reads back by key and in order.
         let run = Arc::new(Run::in_memory(&path, bytes.clone(), lo, hi).unwrap());
         let cache = Cache::new(1 << 20);
         let counts = ReadCounts::default();
@@ -368,13 +350,11 @@ fn fuzz_runs_read_back_and_damaged_ones_never_panic() {
         for _ in 0..4 {
             let mut d = bytes.clone();
             match rng.below(3) {
-                // Damage in a block, which its checksum must catch on read.
                 0 if d.len() > 64 + 16 => {
                     let at = rng.below((d.len() - 64) as u64) as usize;
                     let i = at.min(d.len() - 65);
                     d[i] ^= 1 << rng.below(8);
                 }
-                // Damage in the footer, its checksum (bytes 56..60 of it) made to hold.
                 1 if d.len() >= 64 => {
                     let f = d.len() - 64;
                     let i = f + rng.below(56) as usize;

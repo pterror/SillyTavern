@@ -1,7 +1,3 @@
-// A tree's chats on the engine: upstream's chat list (`ChatEngine.chatList`: its bookmarks, and the tab's session
-// when no bookmark is at its message), that list searched (`searchChatList`: by name, or by the path down to an item
-// holding the words), the tree's messages searched (`searchMessages`: the index, then the capped substring scan), a
-// new chat, and sessions found by exact name (`sessionNamed`).
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -43,8 +39,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const morning = await chats.createBookmark({ tree: t, node_id: u2, name: 'Morning visit', mode: MODE.pinned, actor: one });
         await chats.createBookmark({ tree: t, node_id: b1, name: 'Evening walk', mode: MODE.pinned, actor: two });
 
-        // The chat list, newest first by the time of the message each is at: bookmarks, and the tab's session when it
-        // has no current chat there, even beside a bookmark at its message (before it).
         assert.deepEqual((await chats.chatList({ tree: t, session: one.session, limit: 10 })).rows.map(r => r.name ?? r.session), [one.session, 'Morning visit', 'Evening walk']);
         assert.ok(morning.ok);
         await chats.setCurrentChat({ tree: t, bookmark: morning.ok ? morning.bookmark : null, actor: one });
@@ -53,7 +47,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const withThree = (await chats.chatList({ tree: t, session: three.session, limit: 10 })).rows;
         assert.deepEqual(withThree.map(r => [r.session, r.name]), [[null, 'Morning visit'], [null, 'Evening walk'], [three.session, null]]);
         assert.equal(withThree[0].last_mes, 'Just visiting.');
-        // Paged: each page goes on after the last row of the one before.
         const paged = [];
         let listAfter;
         for (;;) {
@@ -64,7 +57,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         }
         assert.deepEqual(paged, ['Morning visit', 'Evening walk', three.session]);
 
-        // Searched: by name (a part of it, lower-cased), or by the path down to an item holding the words.
         const found = (/** @type {string} */ search, session = one.session) => names({ search, session });
         assert.deepEqual(await found('visiting'), ['Morning visit']);
         assert.deepEqual(await found('how'), ['Evening walk']);
@@ -80,7 +72,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const rest = await chats.searchChatList({ tree: t, search: 'hello', session: one.session, limit: 1, after: first.next });
         assert.deepEqual([...first.rows, ...rest.rows].map(r => r.name), ['Morning visit', 'Evening walk']);
 
-        // Messages: the index's whole words best first, then what the substring scan adds.
         const messages = async (/** @type {string} */ search, p = {}) => (await chats.searchMessages({ tree: t, search, limit: 10, ...p }));
         const hello = await messages('hello');
         assert.deepEqual(hello.rows.map(r => [r.id, r.snippet, r.depth]), [[greeting, 'Hello there!', 1n]]);
@@ -89,7 +80,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual((await messages('VISIT')).rows.map(r => r.id), [u2]);
         assert.deepEqual((await messages('visiting')).rows.map(r => [r.id, r.score === null]), [[u2, false]], 'whole words aren\'t scanned twice');
         assert.deepEqual((await messages('hello visit')).rows, []);
-        // A scan stopped by its cap is marked and goes on from its cursor.
         const capped = await messages('visit', { scanBytes: 0 });
         assert.equal(capped.partial, true);
         const all = capped.rows.map(r => r.id);
@@ -102,35 +92,29 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.equal(cursor, undefined);
         assert.deepEqual(all, [u2]);
 
-        // An edit is found by the next searches, and the old word no longer is.
         await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: u2, content: msg(true, 'Just wandering.') }], actor: one });
         assert.deepEqual(await found('wandering'), ['Morning visit']);
         assert.deepEqual(await found('visiting'), []);
         assert.deepEqual((await messages('wander')).rows.map(r => r.id), [u2]);
 
-        // The chat list by the scan too: a part of a word, whole-query and lower-cased, the path down to an item.
         assert.deepEqual(await found('wande'), ['Morning visit'], 'a part of a word, by the scan');
         assert.deepEqual(await found('WANDE'), ['Morning visit']);
         assert.deepEqual(await found('ello'), ['Morning visit', 'Evening walk'], 'a message on both paths');
         assert.deepEqual(await found('ello', three.session), ['Morning visit', 'Evening walk', three.session]);
         assert.deepEqual(await found('wande x'), [], 'the whole query is one substring');
         assert.deepEqual(await found('just wande'), ['Morning visit'], 'a substring across words');
-        // Search syntax isn't scanned for: a phrase's quotes, a leading dash (no negation: the index reads a word).
         assert.deepEqual(await found('"just wande"'), ['Morning visit'], 'a closed phrase without its quotes');
         assert.deepEqual(await found('"just wande'), ['Morning visit'], 'an open phrase without its quote');
         assert.deepEqual(await found('-wande'), ['Morning visit'], 'a leading dash dropped');
         assert.deepEqual((await messages('-wande')).rows.map(r => r.id), [u2], 'messages: a leading dash dropped');
-        // Deduped: whole words found it, the scan finds the message too, and the item is listed once.
         assert.deepEqual(await found('wandering'), ['Morning visit']);
         assert.deepEqual(await found('walk'), ['Evening walk'], 'a name match');
         const mixed = await names({ search: 'o', session: one.session });
         assert.equal(new Set(mixed).size, mixed.length, 'index, name and scan matches of one item are listed once');
-        // The scan's items come after a first page's rows; a later page of items scans nothing.
         const firstPage = await chats.searchChatList({ tree: t, search: 'ello', session: one.session, limit: 1 });
         assert.deepEqual(firstPage.rows.map(r => r.name), ['Morning visit', 'Evening walk']);
         const laterPage = await chats.searchChatList({ tree: t, search: 'ello', session: one.session, limit: 10, after: '99999999999999999:99999999999' });
         assert.deepEqual(laterPage.rows, []);
-        // A scan stopped by its cap is marked "~" (not exact) and goes on from its cursor.
         const cappedList = await chats.searchChatList({ tree: t, search: 'wande', session: one.session, limit: 10, scanBytes: 0 });
         assert.equal(cappedList.exact, false);
         assert.ok(cappedList.scanCursor);
@@ -146,13 +130,10 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual([...new Set(listed)], ['Morning visit']);
         await assert.rejects(chats.searchChatList({ tree: t, search: 'x', limit: 1, scanCursor: 'nope' }), /invalid scan cursor/);
 
-        // A new chat (no current chat): the session goes to a fresh greeting; no bookmark is made.
         await chats.newChat({ tree: t, actor: one });
         await chats.setCurrentChat({ tree: t, bookmark: null, actor: one });
         const fresh = (await chats.chatList({ tree: t, session: one.session, limit: 10 })).rows;
-        // At the tree's root it is placed by when it got there: the newest, so first, as upstream lists a new chat.
         assert.deepEqual(fresh.map(r => [r.session, r.name, r.at]), [[one.session, null, null], [null, 'Morning visit', u2], [null, 'Evening walk', b1]]);
-        // A bookmark at the root is placed by when it was made: made last, it comes first.
         const now = chats.now;
         chats.now = () => Date.now() + 60_000;
         await chats.createBookmark({ tree: t, node_id: null, name: 'Blank', actor: two });
@@ -160,14 +141,12 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const withBlank = (await chats.chatList({ tree: t, session: one.session, limit: 10 })).rows.map(r => r.name ?? r.session);
         assert.deepEqual(withBlank, ['Blank', one.session, 'Morning visit', 'Evening walk']);
 
-        // A name finds its session exactly, while one session has it; names are the store's, whoever asks.
         await chats.nameSession({ session: two.session, name: 'Evening walk', actor: two });
         const named = (/** @type {string} */ name) => chats.sessionNamed(name);
         assert.equal(await named('Evening walk'), two.session);
         assert.equal(await named('evening walk'), null);
         assert.deepEqual(await chats.nameSession({ session: one.session, name: '!!!', actor: one }), { ok: true, name: '!!!' });
         assert.equal(await named('!!!'), one.session);
-        // A name another session holds is kept as given, whichever user names it; the name then finds neither.
         assert.deepEqual(await chats.nameSession({ session: one.session, name: 'Evening walk', actor: { ...one, user: 'someone else' } }), { ok: true, name: 'Evening walk' });
         assert.equal(await named('Evening walk'), null);
         assert.equal(await named('!!!'), null);
@@ -184,13 +163,11 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const chats = await ChatEngine.open(store, people);
         const t = cara.id;
         const empty = await chats.createBookmark({ tree: t, node_id: null, name: 'Empty chat', actor: one });
-        // A chat's name is once in its tree: the second, suggested so, is the next free one.
         const pinned = await chats.createBookmark({ tree: t, node_id: null, name: 'Empty chat', suggested: true, mode: MODE.pinned, actor: one });
         assert.deepEqual([empty.ok, empty.name, pinned.name], [true, 'Empty chat', 'Empty chat (2)']);
         const rows = (await chats.bookmarks({ tree: t, limit: 10 })).rows;
         assert.deepEqual(rows.map(r => [r.id, r.name, r.at, r.made_at]), [[String(empty.bookmark), 'Empty chat', null, null], [String(pinned.bookmark), 'Empty chat (2)', null, null]]);
         const listed = (await chats.chatList({ tree: t, limit: 10 })).rows;
-        // Both at the root, by when each was made: the newest first.
         assert.deepEqual(listed.map(r => [r.bookmark, r.name, r.at, r.message_count]), [[String(pinned.bookmark), 'Empty chat (2)', null, 0], [String(empty.bookmark), 'Empty chat', null, 0]]);
         assert.deepEqual(await chats.changeBookmark({ tree: t, bookmark: String(pinned.ok && pinned.bookmark), change: { name: 'Kept' } }), { ok: true, name: 'Kept' });
         assert.deepEqual((await chats.changeBookmark({ tree: 99n, bookmark: String(pinned.ok && pinned.bookmark), change: { name: 'x' } })).ok, false);

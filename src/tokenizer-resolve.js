@@ -10,19 +10,8 @@ import { TOKENIZER_NAMES, describeMapEntry, describeTokenizerId, localResolution
 import { findTokenizerSource } from './tokenizer-sources.js';
 import { loadRegistryTokenizer } from './tokenizer-loader.js';
 
-/**
- * The server's one tokenizer resolution (resolveTokenizer), and counting and encoding with its
- * answer. The client's sessionStorage gates on remote tokenizers (TOKENIZER_WARNING_KEY /
- * TOKENIZER_SUPPORTED_KEY) have no counterpart here: the remote is tried on every request.
- */
-
 export { tokenizers };
 
-/**
- * Mirrors public/scripts/tokenizers.js's ENCODE_TOKENIZERS: local tokenizers that support
- * encoding/decoding token ids. NERD/NERD2 are deliberately excluded, per the client's own
- * comment, because no weights have been released for them yet.
- */
 export const ENCODE_TOKENIZERS = [
     tokenizers.LLAMA,
     tokenizers.MISTRAL,
@@ -124,11 +113,6 @@ export const ENCODE_TOKENIZERS = [
     tokenizers.NEMOTRON_3,
 ];
 
-/**
- * Mirrors public/scripts/tokenizers.js's TEXTGEN_TOKENIZERS (populated at runtime there via
- * initTokenizers() due to circular imports; here it's just a static list since there's no such
- * circularity server-side).
- */
 export const TEXTGEN_TOKENIZERS = [
     TEXTGEN_TYPES.OOBA,
     TEXTGEN_TYPES.TABBY,
@@ -142,43 +126,27 @@ export { TOKENIZER_TYPE_KEYS };
 
 /**
  * @typedef {object} EncodeWithTokenizerTypeOptions
- * @property {import('express').Request} [request] Original request, forwarded to
- * encodeViaTextgenAPI() for header forwarding (only needed for API_TEXTGENERATIONWEBUI/API_CURRENT).
- * @property {string} [textgenBaseUrl] Textgen backend base URL (API_TEXTGENERATIONWEBUI/API_CURRENT).
- * @property {string} [textgenModel] Textgen backend model name (API_TEXTGENERATIONWEBUI/API_CURRENT).
- * @property {string} [textgenApiType] One of TEXTGEN_TYPES (API_TEXTGENERATIONWEBUI/API_CURRENT).
- * @property {string} [koboldBaseUrl] KoboldAI Classic backend base URL (API_KOBOLD).
- * @property {(tokenizerType: string, text: string) => Promise<number[]>} [encodeLocal] Injected
- * replacement for encodeTextByLocalTokenizerType, for testing without real tokenizer model files.
+ * @property {import('express').Request} [request]
+ * @property {string} [textgenBaseUrl]
+ * @property {string} [textgenModel]
+ * @property {string} [textgenApiType]
+ * @property {string} [koboldBaseUrl]
+ * @property {(tokenizerType: string, text: string) => Promise<number[]>} [encodeLocal]
  * @property {(request: any, text: string, baseUrl: string, model: string, apiType: string) => Promise<{count: number, ids: number[]}|{error: true}>} [encodeTextgenRemote]
- * Injected replacement for encodeViaTextgenAPI, for testing without real network calls.
- * @property {typeof fetch} [fetchImpl] Injected replacement for the global fetch, used for the
- * API_KOBOLD remote-count call.
- * @property {TokenizerOutcome} [outcome] Records what encodeWithTokenizer()/countWithTokenizer()
- * fell back to and which tokenizer files they downloaded, for one request's warnings and basis.
- * @property {import('./users.js').UserDirectoryList} [directories] The requesting user's directories,
- * for their saved Hugging Face token when a registry entry's file is downloaded. Defaults to
- * `request.user.directories`.
+ * @property {typeof fetch} [fetchImpl]
+ * @property {TokenizerOutcome} [outcome]
+ * @property {import('./users.js').UserDirectoryList} [directories]
  * @property {import('./tokenizer-loader.js').RegistryTokenizerOptions['registry']} [registry]
- * Replaces the tokenizer registry, for tests.
  * @property {import('./tokenizer-loader.js').RegistryTokenizerOptions['loadPinned']} [loadPinned]
- * Replaces the registry file loader, for tests.
- * @property {boolean} [promptStart] The text begins the prompt a generation sends. llama.cpp's
- * `/tokenize` then puts BOS in as the generation does (`add_special`); whether that backend adds BOS
- * depends on the loaded gguf, so when it fails no local copy answers for it.
- * @property {{ pieces?: Array<string|number[]> }} [piecesOut] Asks llama.cpp's `/tokenize` for each
- * token's piece, and receives them when it answers.
- * @property {{ tokenizer?: ResolvedTokenizer|LocalTokenizer|null }} [answeredOut] Receives the tokenizer
- * that gave this call's ids or count: the resolution, its local copy when that answered for a failed
- * remote one, or null for the estimate. Per call, because a request's outcome only says a copy answered
- * some call.
+ * @property {boolean} [promptStart]
+ * @property {{ pieces?: Array<string|number[]> }} [piecesOut]
+ * @property {{ tokenizer?: ResolvedTokenizer|LocalTokenizer|null }} [answeredOut]
  */
 
-/** A remote tokenizer answered with an HTTP error, a network error or a reply without token ids. */
 export class TokenizerFailure extends Error {
     /**
      * @param {string} message
-     * @param {boolean} [unreachable] The backend couldn't be reached, which is already logged.
+     * @param {boolean} [unreachable]
      */
     constructor(message, unreachable = false) {
         super(message);
@@ -187,18 +155,10 @@ export class TokenizerFailure extends Error {
 }
 
 /**
- * Token ids from one `tokenizers` type, with no fallback: a remote failure throws a
- * TokenizerFailure and a local tokenizer's own error propagates. encodeWithTokenizer() decides
- * what a failure becomes.
- *
- * OPENAI and GPT2 both encode with tiktoken's gpt2 here; an OPENAI resolution with a model is
- * encoded with that model's tiktoken by encodeWithTokenizer() before reaching this.
- *
- * @param {number} tokenizerType A `tokenizers` value.
- * @param {string} text Text to encode.
+ * @param {number} tokenizerType
+ * @param {string} text
  * @param {EncodeWithTokenizerTypeOptions} [options]
- * @returns {Promise<number[]>} Array of token ids. Empty array for tokenizers.NONE (matches the
- * client, which effectively doesn't tokenize when no API is selected).
+ * @returns {Promise<number[]>}
  */
 export async function encodeWithTokenizerType(tokenizerType, text, options = {}) {
     const {
@@ -260,7 +220,6 @@ export async function encodeWithTokenizerType(tokenizerType, text, options = {})
 }
 
 /**
- * The `/tokenize` fields llama.cpp gets for these options, or undefined for upstream's request.
  * @param {EncodeWithTokenizerTypeOptions} options
  * @returns {{ addSpecial?: boolean, withPieces?: boolean }|undefined}
  */
@@ -273,13 +232,12 @@ function llamaCppTokenizeOptions(options) {
 }
 
 /**
- * @param {any} result An encodeViaTextgenAPI() answer
+ * @param {any} result
  * @param {string|undefined} apiType
  * @param {EncodeWithTokenizerTypeOptions} options
  * @returns {number[]}
  */
 function remoteIds(result, apiType, options) {
-    // encodeViaTextgenAPI() shapes a reply with no token list as `ids: []` with no count.
     if (result && !('error' in result) && Array.isArray(result.ids) && typeof result.count === 'number') {
         if (options.piecesOut && Array.isArray(result.pieces)) {
             options.piecesOut.pieces = result.pieces;
@@ -290,7 +248,6 @@ function remoteIds(result, apiType, options) {
 }
 
 /**
- * Whether the resolution's tokenizer is llama.cpp's `/tokenize`.
  * @param {ResolvedTokenizer} resolved
  * @param {EncodeWithTokenizerTypeOptions} options
  * @returns {boolean}
@@ -300,7 +257,6 @@ export function isLlamaCppTokenizer(resolved, options) {
         && (!!resolved.llamaCpp || (resolved.id === tokenizers.API_TEXTGENERATIONWEBUI && options.textgenApiType === TEXTGEN_TYPES.LLAMACPP));
 }
 
-/** Explicit settings that name a local tokenizer. */
 const EXPLICIT_LOCAL_TOKENIZERS = [
     ...ENCODE_TOKENIZERS,
     tokenizers.GPT2,
@@ -311,8 +267,7 @@ const EXPLICIT_LOCAL_TOKENIZERS = [
 ];
 
 /**
- * Token ids from a registry entry's tokenizer, recording a download of its file in the request's outcome.
- * @param {string} source A registry entry id
+ * @param {string} source
  * @param {string} text
  * @param {EncodeWithTokenizerTypeOptions} options
  * @returns {Promise<number[]>}
@@ -327,41 +282,31 @@ async function encodeWithRegistryEntry(source, text, options) {
     return Array.from(await tokenizer.encode(text));
 }
 
-/**
- * The model upstream counts an explicit OpenAI setting with: `/openai/encode` gets no model and
- * falls to `getTokenizerModel('')`'s default.
- */
 const EXPLICIT_OPENAI_MODEL = 'gpt-3.5-turbo';
 
 /** @typedef {import('./connection-state-header.js').TokenizerState} TokenizerState */
 
 /**
  * @typedef {object} LocalTokenizer
- * @property {number} id A `tokenizers` value.
- * @property {string} [source] A registry entry id (src/tokenizer-sources.js), for a registry entry.
+ * @property {number} id
+ * @property {string} [source]
  * @property {string} name
- * @property {string} [model] The tiktoken model for OPENAI; for chat completion, the tokenizer
- * model string `/openai/encode` takes.
+ * @property {string} [model]
  */
 
 /**
  * @typedef {object} ResolvedTokenizer
  * @property {'remote'|'local'|'estimate'} kind
- * @property {number} id A `tokenizers` value; API_TEXTGENERATIONWEBUI or API_KOBOLD for remote, NONE for an estimate.
- * @property {string} [source] A registry entry id, for a local registry entry.
+ * @property {number} id
+ * @property {string} [source]
  * @property {string} name
  * @property {string} [model]
- * @property {'remote'|'local'|'unknown'|'none'|'fallback'|'failed'} basis resolveTokenizer() gives
- * the first four; `fallback` (the local copy answered after a failure) and `failed` (no tokenizer
- * answered, so the estimate and no ids) describe one request's outcome, from tokenizerOutcomeBasis().
- * @property {LocalTokenizer|null} localCopy The map's exact local tokenizer for the model, or null.
- * The only fallback when the tokenizer fails.
- * @property {import('./custom-llamacpp.js').CustomLlamaCppEndpoint & { model: string }} [llamaCpp] A
- * chat-completion custom URL that is llama.cpp: where its `/tokenize` is and the model setting it gets.
+ * @property {'remote'|'local'|'unknown'|'none'|'fallback'|'failed'} basis
+ * @property {LocalTokenizer|null} localCopy
+ * @property {import('./custom-llamacpp.js').CustomLlamaCppEndpoint & { model: string }} [llamaCpp]
  */
 
 /**
- * Whether `value` is an explicit pick (rule 1): a local tokenizer or NONE.
  * @param {unknown} value
  * @returns {value is number}
  */
@@ -370,8 +315,7 @@ export function isExplicitTokenizer(value) {
 }
 
 /**
- * Rule 1: an explicit pick resolves to that local tokenizer, or to the estimate for NONE.
- * @param {number} id An id isExplicitTokenizer() accepts.
+ * @param {number} id
  * @param {import('./tokenizer-map-resolution.js').MapDeps['registry']} registry
  * @returns {ResolvedTokenizer}
  */
@@ -386,15 +330,8 @@ function resolveExplicitSetting(id, registry) {
 }
 
 /**
- * The one tokenizer resolution, used for counts and token ids alike. Never falls back to LLAMA:
- * only the map, an explicit setting or the NovelAI list give llama.
  * @param {TokenizerState} state
  * @param {{ directories?: import('./users.js').UserDirectoryList, customIncludeHeaders?: string, llamaCppProps?: import('./llamacpp-props.js').LlamaCppPropsCheck } & import('./tokenizer-map-resolution.js').MapDeps} [deps]
- * directories give the backend's API key headers for the model lookup and capability probe;
- * customIncludeHeaders are a server-built chat-completion send's custom headers, its macros substituted.
- * llamaCppProps asks a llama.cpp backend's `/props`, for its identity (tokenizerIdentity()) and, when
- * the model setting is empty and the reply has `model_alias`, its model name in place of `/v1/models`.
- * Without it, the name comes from `/v1/models` and nothing asks `/props`.
  * @returns {Promise<ResolvedTokenizer>}
  */
 export async function resolveTokenizer(state, deps = {}) {
@@ -402,12 +339,10 @@ export async function resolveTokenizer(state, deps = {}) {
     const tokenizerSetting = state.tokenizerSetting ?? tokenizers.BEST_MATCH;
     const { lookupModel = lookupModelTokenizer, registry } = deps;
 
-    // A tokenizer the caller named outright, like a named route: before every other rule, on every api.
     if (isExplicitTokenizer(state.explicitTokenizer)) {
         return resolveExplicitSetting(state.explicitTokenizer, registry);
     }
 
-    // Upstream never applies the tokenizer setting to chat completion.
     if (api === 'openai') {
         return resolveChatCompletionTokenizer(state.model, state.source, { ...deps, url: state.url });
     }
@@ -415,9 +350,6 @@ export async function resolveTokenizer(state, deps = {}) {
     if (isExplicitTokenizer(tokenizerSetting)) {
         return resolveExplicitSetting(tokenizerSetting, registry);
     }
-
-    // Every other setting (API_CURRENT, BEST_MATCH) resolves alike: the remote tokenizer when
-    // the backend has one, else the map.
 
     if (api === 'koboldhorde') {
         const results = (hordeModels ?? []).map(model => selectBackendResult(lookupModel(api, model), state));
@@ -427,7 +359,6 @@ export async function resolveTokenizer(state, deps = {}) {
     }
 
     const backend = { api, type, url, directories: deps.directories };
-    // No URL set: there is no backend to ask, for its model or its tokenizer; the model setting alone picks one.
     const reachable = Boolean(url);
     const props = reachable && api === 'textgenerationwebui' && type === TEXTGEN_TYPES.LLAMACPP && deps.llamaCppProps
         ? await deps.llamaCppProps.ask(textgenLlamaCppBackend(url, state.model ?? '', deps.directories))
@@ -445,7 +376,6 @@ export async function resolveTokenizer(state, deps = {}) {
 }
 
 /**
- * Upstream's no-tokenizer count: UTF-8 bytes / 3.35, rounded up.
  * @param {string} text
  * @returns {number}
  */
@@ -454,13 +384,11 @@ export function estimateTokenCount(text) {
 }
 
 /**
- * What one request's counts and encodes fell back to. Nothing outlives the request: the next one
- * tries the tokenizer again.
  * @typedef {object} TokenizerOutcome
- * @property {LocalTokenizer|null} usedCopy The local copy that answered for a failed remote tokenizer.
- * @property {boolean} failed Some count or encode had no tokenizer: the estimate, or no ids.
- * @property {boolean} countEstimated Some count fell to the estimate.
- * @property {Array<{ family: string, license: string }>} downloads The registry files this request downloaded.
+ * @property {LocalTokenizer|null} usedCopy
+ * @property {boolean} failed
+ * @property {boolean} countEstimated
+ * @property {Array<{ family: string, license: string }>} downloads
  */
 
 /** @returns {TokenizerOutcome} */
@@ -469,7 +397,6 @@ export function createTokenizerOutcome() {
 }
 
 /**
- * The basis one request's counts and ids actually had.
  * @param {ResolvedTokenizer} resolved
  * @param {TokenizerOutcome} outcome
  * @returns {ResolvedTokenizer['basis']}
@@ -481,28 +408,13 @@ export function tokenizerOutcomeBasis(resolved, outcome) {
 }
 
 /**
- * What tokenizerIdentity() knows besides the tokenizer.
  * @typedef {object} TokenizerIdentityFacts
- * @property {string} [textgenApiType] One of TEXTGEN_TYPES, for a text-completion remote tokenizer.
- * @property {any} [llamaCppProps] The llama.cpp backend's parsed `GET /props` reply, asked for the
- * counts this identity is for.
- * @property {import('./tokenizer-map-resolution.js').MapDeps['registry']} [registry] Replaces the
- * tokenizer registry, for tests.
+ * @property {string} [textgenApiType]
+ * @property {any} [llamaCppProps]
+ * @property {import('./tokenizer-map-resolution.js').MapDeps['registry']} [registry]
  */
 
 /**
- * The name of the tokenizer a count or ids came from, for storing them: two tokenizers with the same
- * identity give the same ids for every text. null when there's none to trust, so nothing is stored:
- * - a registry entry: `file:<format>:<pinned sha256>`, and for the `tiktoken` format the sha256 of its
- *   config too, because entries that share a file read it differently;
- * - a bundled or downloaded file: getLocalTokenizerFileIdentity();
- * - tiktoken: getTiktokenIdentity();
- * - llama.cpp's `/tokenize`: `llamacpp:` and the JSON of `/props`' `[model_path, build_info]`, null
- *   when the reply is missing either, because llama.cpp says nothing else about the file it loaded
- *   and a new build can tokenize differently;
- * - every other remote tokenizer: null, because none reports anything tied to the file it loaded;
- * - the estimate, or no tokenizer: null.
- * For the tokenizer that answered a call, pass encodeWithTokenizer()'s `answeredOut.tokenizer`.
  * @param {ResolvedTokenizer|LocalTokenizer|null|undefined} tokenizer
  * @param {TokenizerIdentityFacts} [facts]
  * @returns {Promise<string|null>}
@@ -554,7 +466,7 @@ function llamaCppIdentity(props) {
 }
 
 /**
- * @param {string} source A registry entry id
+ * @param {string} source
  * @param {TokenizerIdentityFacts['registry']} registry
  * @returns {string|null}
  */
@@ -571,12 +483,9 @@ function registryIdentity(source, registry) {
 }
 
 /**
- * Counts `text` with a resolveTokenizer() answer; an estimate resolution gives the estimate, as
- * does a tokenizer that fails with no local copy to answer for it.
  * @param {ResolvedTokenizer} resolved
  * @param {string} text
- * @param {EncodeWithTokenizerTypeOptions} [options] What a remote tokenizer needs (backend URL,
- * model, type, request), the request's `outcome`, and test stubs.
+ * @param {EncodeWithTokenizerTypeOptions} [options]
  * @returns {Promise<number>}
  */
 export async function countWithTokenizer(resolved, text, options = {}) {
@@ -593,12 +502,9 @@ export async function countWithTokenizer(resolved, text, options = {}) {
 }
 
 /**
- * Token ids for `text` with a resolveTokenizer() answer, or null when there are none: an estimate
- * resolution, or a tokenizer that failed (a remote failure, or a local tokenizer that throws) with
- * no local copy to answer for it. Every call tries the tokenizer again.
  * @param {ResolvedTokenizer} resolved
  * @param {string} text
- * @param {EncodeWithTokenizerTypeOptions} [options] As for countWithTokenizer().
+ * @param {EncodeWithTokenizerTypeOptions} [options]
  * @returns {Promise<number[]|null>}
  */
 export async function encodeWithTokenizer(resolved, text, options = {}) {
@@ -631,9 +537,6 @@ export async function encodeWithTokenizer(resolved, text, options = {}) {
 }
 
 /**
- * Token ids as encodeWithTokenizer() gives them, and the chunks llama.cpp's `/tokenize` names for them
- * when it is the tokenizer and answered: `chunks` is undefined for any other tokenizer, and null when
- * llama.cpp didn't answer.
  * @param {ResolvedTokenizer} resolved
  * @param {string} text
  * @param {EncodeWithTokenizerTypeOptions} [options]
@@ -650,7 +553,7 @@ export async function encodeWithTokenizerAndChunks(resolved, text, options = {})
 }
 
 /**
- * @param {{id: number, source?: string, model?: string, llamaCpp?: ResolvedTokenizer['llamaCpp']}} tokenizer A resolution or a LocalTokenizer.
+ * @param {{id: number, source?: string, model?: string, llamaCpp?: ResolvedTokenizer['llamaCpp']}} tokenizer
  * @param {string} text
  * @param {EncodeWithTokenizerTypeOptions} options
  * @returns {Promise<number[]>}
@@ -672,9 +575,6 @@ async function encodeWithLocalOrType(tokenizer, text, options) {
 }
 
 /**
- * The `key` of every warning about this resolution: `api|type-or-source|url|model|tokenizer`. The
- * tokenizer part is the registry entry id when the resolution or its local copy is a registry entry,
- * because the model setting can be empty (llama.cpp), and then only the entry tells two models apart.
  * @param {TokenizerState} state
  * @param {ResolvedTokenizer} resolved
  * @returns {string}
@@ -688,7 +588,6 @@ function tokenizerWarningKey(state, resolved) {
 }
 
 /**
- * A `license` warning for each registry file the request downloaded.
  * @param {string} key
  * @param {TokenizerOutcome} outcome
  * @returns {Array<{kind: 'license', key: string, message: string}>}
@@ -702,11 +601,10 @@ function licenseWarnings(key, outcome) {
 }
 
 /**
- * The `dropped` warning for entries a send left out because it had no token ids for them.
  * @param {TokenizerState} state
  * @param {ResolvedTokenizer} resolved
  * @param {string[]} entries
- * @returns {{ kind: 'dropped', key: string, message: string, entries: string[] } | null} null when nothing was dropped
+ * @returns {{ kind: 'dropped', key: string, message: string, entries: string[] } | null}
  */
 export function droppedEntriesWarning(state, resolved, entries) {
     if (entries.length === 0) {
@@ -724,8 +622,6 @@ export function droppedEntriesWarning(state, resolved, entries) {
 }
 
 /**
- * The `dropped` warning's wording for one entry and for several, with `{count}` and `{entries}`
- * left for the browser to fill in on the sends it builds.
  * @param {ResolvedTokenizer} resolved
  * @returns {{ one: string, many: string }}
  */
@@ -749,10 +645,6 @@ function droppedReason(resolved) {
 }
 
 /**
- * Every warning one server-built send carries about its tokenizer: `fallback-copy` when a local
- * copy answered for a failed remote tokenizer, `trim-estimate` when a failure left a count to the
- * estimate, `dropped` for the entries it had no ids for, and `license` for each registry file it
- * downloaded.
  * @param {TokenizerState} state
  * @param {ResolvedTokenizer} resolved
  * @param {TokenizerOutcome} outcome
@@ -803,10 +695,6 @@ function failedTokenizerName(resolved) {
 }
 
 /**
- * The `tokenizer` a `/api/tokenizers/current/*` response names: the tokenizer that answered (the
- * local copy when it answered for a failed remote one), the request's basis, and the `key` its
- * warnings carry, and the wording the browser shows for it: a `dropped` or `trim-estimate` warning
- * for a send it builds, and the on-screen marker's title for an unknown model.
  * @param {TokenizerState} state
  * @param {ResolvedTokenizer} resolved
  * @param {TokenizerOutcome} outcome
@@ -832,9 +720,6 @@ export function tokenizerAnswer(state, resolved, outcome) {
 }
 
 /**
- * The warnings a `/api/tokenizers/current/*` response carries: `fallback-copy` when a local copy
- * answered for a failed remote tokenizer, `estimate` when a tokenizer failed with none to answer,
- * and `license` for each registry file the request downloaded.
  * @param {TokenizerState} state
  * @param {ResolvedTokenizer} resolved
  * @param {TokenizerOutcome} outcome
@@ -862,9 +747,6 @@ export function tokenizerResponseWarnings(state, resolved, outcome) {
 }
 
 /**
- * The tokenizer setting a connection-profile send uses: the profile's own `tokenizer` (a
- * lowercased `tokenizers` key, as the `/tokenizer` command returns it) when it names one, else
- * the main setting.
  * @param {string|undefined} profileTokenizer
  * @param {number} mainSetting
  * @returns {number}

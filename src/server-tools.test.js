@@ -11,14 +11,6 @@ import {
     toOpenAIToolSchema,
 } from './server-tools.js';
 
-// plugin-loader.js reads `enableServerPlugins`/`enableServerPluginsAutoUpdate` from config at
-// *module import time* (see its top-level `const enableServerPlugins = ...`). `getConfigValue()`
-// checks a `SILLYTAVERN_<KEY>` environment variable before ever touching the config file/
-// `setConfigFilePath()` (see src/util.js's `_getValue()`), so setting these env vars before
-// importing plugin-loader.js lets this test call the real `loadPlugins()` without a config.yaml
-// on disk at all, and confirms the enableServerPlugins gate is enforced by the *caller*
-// (server-main.js checks it before ever calling loadPlugins() in production) rather than inside
-// loadPlugins() itself - loadPlugins() has no gate of its own beyond this same config value.
 process.env.SILLYTAVERN_ENABLESERVERPLUGINS = 'true';
 process.env.SILLYTAVERN_ENABLESERVERPLUGINSAUTOUPDATE = 'false';
 const { loadPlugins } = await import('./plugin-loader.js');
@@ -37,11 +29,7 @@ function makeTool(overrides = {}) {
 }
 
 /**
- * Removes every id from the registry, so each test section starts from a clean slate regardless of
- * what earlier sections registered. `server-tools.js` keeps its registry as process-wide module
- * state (by design - it's a singleton registry), so tests in the same process must clean up after
- * themselves.
- * @param {string[]} ids Ids to unregister.
+ * @param {string[]} ids
  */
 function cleanup(ids) {
     for (const id of ids) {
@@ -50,7 +38,6 @@ function cleanup(ids) {
 }
 
 async function run() {
-    // --- Basic registration + getRegisteredServerTools()/toOpenAIToolSchema() round-trip ---
     {
         const tool = makeTool();
         registerServerTool(tool);
@@ -76,7 +63,6 @@ async function run() {
         }
     }
 
-    // --- id collision throws ---
     {
         const tool = makeTool({ id: 'dup:id', name: 'dup_name_a' });
         registerServerTool(tool);
@@ -91,7 +77,6 @@ async function run() {
         }
     }
 
-    // --- name collision across different ids throws ---
     {
         const first = makeTool({ id: 'plugin-a:tool', name: 'shared_name' });
         registerServerTool(first);
@@ -106,7 +91,6 @@ async function run() {
         }
     }
 
-    // --- Missing/invalid required fields throw, one assertion per field ---
     {
         assert.throws(() => registerServerTool(makeTool({ id: '' })), /"id"/, 'empty id throws');
         assert.throws(() => registerServerTool(makeTool({ id: undefined })), /"id"/, 'missing id throws');
@@ -128,18 +112,15 @@ async function run() {
 
         assert.throws(() => registerServerTool(makeTool({ shouldEnable: 'nope' })), /"shouldEnable"/, 'non-function shouldEnable throws');
 
-        // None of the above should have left anything registered.
         assert.equal(getRegisteredServerTools().some(t => t.id === 'test-plugin:tool'), false, 'no partial registration survives a validation failure');
     }
 
-    // --- unregisterServerTool() removes it, and the id can be re-registered ---
     {
         const tool = makeTool();
         registerServerTool(tool);
         unregisterServerTool(tool.id);
         assert.equal(getRegisteredServerTools().some(t => t.id === tool.id), false, 'unregistered tool no longer listed');
 
-        // Re-registering with the same id (and same name) now succeeds again.
         registerServerTool(tool);
         try {
             assert.ok(getRegisteredServerTools().some(t => t.id === tool.id), 'id can be re-registered after unregistering');
@@ -147,11 +128,9 @@ async function run() {
             cleanup([tool.id]);
         }
 
-        // unregistering an id that was never registered is a harmless no-op.
         assert.doesNotThrow(() => unregisterServerTool('never-registered:id'));
     }
 
-    // --- getEnabledServerTools(ctx) filtering ---
     {
         const always = makeTool({ id: 'enable-test:always', name: 'always_on' });
         const disabled = makeTool({ id: 'enable-test:disabled', name: 'always_off', shouldEnable: async () => false });
@@ -190,12 +169,6 @@ async function run() {
         }
     }
 
-    // --- End-to-end: a real plugin file, loaded through the real loadPlugins() loader from a
-    // temp fixture directory (never touching the real gitignored plugins/ directory), registers
-    // and unregisters a tool via this module. This also verifies loadPlugins() does not itself
-    // gate on the enableServerPlugins config value - that gate is the caller's (server-main.js's)
-    // responsibility, not plugin-loader.js's, since we call loadPlugins() directly here with no
-    // config file present at all and it still runs the plugin.
     {
         const serverToolsPath = new URL('./server-tools.js', import.meta.url).pathname;
         const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'st-server-tools-plugin-fixture-'));
@@ -236,8 +209,6 @@ export async function exit() {
 `;
         fs.writeFileSync(path.join(pluginDir, 'index.mjs'), pluginSource);
 
-        // Minimal fake Express app - loadPlugins() only calls app.use() when the plugin's router
-        // actually registered routes, which this fixture plugin never does.
         const fakeApp = { use: () => { } };
 
         const cleanupFn = await loadPlugins(fakeApp, fixtureRoot);

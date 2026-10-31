@@ -82,8 +82,6 @@ export class CommandLineParser {
             basicAuthMode: yamlDefaults.basicAuthMode,
             enableKeepAlive: yamlDefaults.enableKeepAlive,
             requestProxyEnabled: yamlDefaults.requestProxy.enabled,
-            // Not derived: default/config.yaml's requestProxy.url is a format example for that file's own
-            // documentation, not a real default value.
             requestProxyUrl: '',
             requestProxyBypass: yamlDefaults.requestProxy.bypass,
             getIPv4ListenUrl: function () {

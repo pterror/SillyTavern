@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// A saved view's first page is kept pinned in browser storage: it is never evicted, so opening the view after a
-// reload is drawn before the server answers. Deleting the view lets go of it.
-
 /** @param {import('@playwright/test').Page} page */
 async function loadApp(page) {
     await testSetup.awaitST({ page });
@@ -15,7 +12,11 @@ async function loadApp(page) {
     await page.waitForFunction(() => window['__appReady'], null, { timeout: 60000 });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<string>} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
@@ -27,7 +28,11 @@ async function createCharacter(page, name) {
     }, name);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} owner @returns {Promise<string[]>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} owner
+ * @returns {Promise<string[]>}
+ */
 async function pinnedKeys(page, owner) {
     return page.evaluate(async (owner) => {
         const cache = await import('/scripts/query-result-cache.js');
@@ -42,7 +47,10 @@ async function openSearchBar(page) {
     if (!(await page.locator('#character_search_bar').isVisible())) await page.locator('#rm_button_search').click();
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
 const row = (page, avatar) => page.locator(`#rm_print_characters_block .character_select[data-avatar="${avatar}"]`);
 
 test.describe('saved views pin their first page', () => {
@@ -67,7 +75,6 @@ test.describe('saved views pin their first page', () => {
         const [key] = await pinnedKeys(page, `view:${id}`);
         expect(key).toContain(`Pinned${stamp}`);
 
-        // The pinned page is drawn before the server answers.
         /** @type {(() => void)[]} */
         const waiting = [];
         await page.route('**/api/characters/query', async (route) => {
@@ -75,7 +82,6 @@ test.describe('saved views pin their first page', () => {
             await new Promise(resolve => waiting.push(resolve));
             await route.continue();
         });
-        // Only the splash is waited for: APP_READY waits for the characters, whose query is the one held back.
         await testSetup.awaitST({ page });
         await openCharacterManagementDrawer(page);
         await expect(page.locator('#character_view_picker .view_picker_name')).toHaveText(`Pinned view ${stamp}`);

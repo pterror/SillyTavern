@@ -15,8 +15,6 @@ import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods
 import { exposedCharacters, charactersStore, this_avatar, this_chid, setCharacterId, holdCharacter, keepHeldCharacters, selectCharacterById, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './scripts/character-store.js';
 import { printCharacters, printCharactersDebounced, getEntitiesList, findCharacterListPage, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onCharacterListShown, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
 import { onSavedViewsChanged } from './scripts/saved-views.js';
-// Re-exported for existing importers (upstream's script.js exports these too). Extensions get the characters
-// they are shown, not every character the page holds.
 export { exposedCharacters as characters, charactersStore, selectCharacterById, setCharacterId, this_chid };
 export { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, getCharacters, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT };
 import { userStatsHandler, statMesProcess, initStats } from './scripts/stats.js';
@@ -173,7 +171,6 @@ import {
     cancelDebounce,
     uuidv4,
 } from './scripts/utils.js';
-// Imported directly from hash-utils.js, not re-exported via utils.js, so tests mocking utils.js aren't affected.
 import { getAtPath, seedKeyHashes, settingsWithoutCharLore, characterDigestFieldsHash, characterDigestCardBodyHash, normalizeFav } from './scripts/hash-utils.js';
 import { debounce_timeout, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
 
@@ -280,7 +277,6 @@ import { beginServerGeneration, endServerGeneration, takeStopResult } from './sc
 import { chat, chat_metadata, setChatMetadata } from './scripts/chat-state.js';
 import { active_character, active_group, name1, default_user_name, setActiveCharacter, setActiveGroup, setActiveCharacterAndGroupFromSettings, setName1Raw } from './scripts/app-selection-state.js';
 import { amount_gen, max_context, main_api, setAmountGen, setMaxContext, setMainApi } from './scripts/generation-params.js';
-// Re-exported for existing importers (upstream's script.js exports these too).
 export { event_types, eventSource, getRequestHeaders, token, chat, chat_metadata, active_character, active_group, name1, amount_gen, max_context, main_api, setActiveCharacter, setActiveGroup };
 import { initAccessibility } from './scripts/a11y.js';
 import { applyStreamFadeIn } from './scripts/util/stream-fadein.js';
@@ -288,11 +284,9 @@ import { initDomHandlers } from './scripts/dom-handlers.js';
 import { SimpleMutex } from './scripts/util/SimpleMutex.js';
 import { AudioPlayer } from './scripts/audio-player.js';
 import { MacroEnvBuilder } from './scripts/macros/engine/MacroEnvBuilder.js';
-// Lives in message-formatting.js, isolated from this module's chat-store write access; re-exported for existing importers.
 import { messageFormatting } from './scripts/message-formatting.js';
 import { reportStoredHeader } from './scripts/stored-report.js';
 export { messageFormatting };
-// Lives in chat-store.js, the only module allowed to write messages; re-exported for existing importers.
 import {
     updateMessage, updateIn,
     ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpCut, chatOpSelect, chatOpGraft, chatOpReadyAlternativeDelete, chatOpDeleteAlternativeNode,
@@ -303,17 +297,13 @@ export {
     updateMessage, updateIn, adoptStored, openingForRequest,
     ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpCut, chatOpSelect, chatOpGraft, chatOpReadyAlternativeDelete, chatOpDeleteAlternativeNode,
 };
-// Lives in node-identity.js, a standalone module with no dependency on anything else in this cluster; re-exported for existing importers.
 import { isStoredNodeId, isProvisionalNodeId, provisionalNodeId } from './scripts/node-identity.js';
 export { isStoredNodeId, isProvisionalNodeId, provisionalNodeId };
-// Lives in metadata-store.js, isolated so it can be typechecked under strict null checks; re-exported for existing importers.
 import { saveMetadata, _resetMetadataSaveSnapshot, onStateChanged, openChatMacroScope } from './scripts/metadata-store.js';
 export { openChatMacroScope };
 export { saveMetadata };
-// Lives in node-navigation.js, isolated so it can be typechecked under strict null checks; re-exported for existing importers.
 import { switchToNode, switchToAlternativePath } from './scripts/node-navigation.js';
 export { switchToNode };
-// Lives in generation.js, isolated so it can be typechecked under strict null checks; re-exported for existing importers.
 import {
     Generate, stopGeneration,
     streamingProcessor, abortController, setAbortController, kobold_horde_model, generation_started,
@@ -326,8 +316,6 @@ export {
     streamingProcessor,
     _messageSnapshots, _snapshotMessages, markStoredAs, isAsStored, forgetStored, isReplyGenerating,
 };
-// Upstream's whole-chat save, kept for extensions (chat-compat-save.js): the app's own code sends the action for what it
-// changed instead. Re-exported for upstream's importers.
 import {
     saveChat, saveChatConditional, saveChatDebounced, cancelDebouncedChatSave, isChatSaveScheduled, storePageChatChanges, isChatSaving,
 } from './scripts/chat-compat-save.js';
@@ -401,7 +389,6 @@ toastr.options = {
     hideMethod: 'fadeOut',
     escapeHtml: true,
     onHidden: function () {
-        // Keep the toastr-container alive inside an open dialog, or its toasts stop showing there.
         fixToastrForDialogs();
     },
 };
@@ -437,7 +424,6 @@ export const characterGroupOverlay = new BulkEditOverlay();
 
 // Markdown converter
 export let mesForShowdownParse; //intended to be used as a context to compare showdown strings against
-// Setter exists because `mesForShowdownParse` is an ESM live-binding: message-formatting.js can't assign to it directly.
 export function setMesForShowdownParse(value) {
     mesForShowdownParse = value;
 }
@@ -460,14 +446,11 @@ export let settingsReady = false;
 let currentVersion = '0.0.0';
 export let displayVersion = 'SillyTavern';
 
-// Not narrowed to specific ops/fields: invalidateCharactersFuseIndex() just sets a dirty flag, rebuild is lazy.
 charactersStore.onChange(() => invalidateCharactersFuseIndex());
 export function getCurrentCharacter() {
     return this_avatar !== undefined ? charactersStore.get(this_avatar) : undefined;
 }
 
-// Classifies selection as a tristate (character / group / none) instead of repeating the
-// `this_chid === undefined && !selected_group` conjunction at every call site.
 export function getSelectionState() {
     if (selected_group) {
         return { type: 'group', groupId: selected_group };
@@ -517,14 +500,12 @@ const FORM_TO_CARD = {
     '#depth_prompt_depth': { v2: 'data.extensions.depth_prompt.depth', transform: 'int' },
     '#depth_prompt_role': { v2: 'data.extensions.depth_prompt.role' },
     '#character_world': { v2: 'data.extensions.world' },
-    // #character_book_json is a hidden field, not a visible control; world-info.js writes it directly.
     '#character_book_json': { v2: 'data.character_book', transform: 'json' },
 };
 
 /**
- * What the editor shows in a FORM_TO_CARD input for a stored card.
  * @param {object} character
- * @param {string} formId A FORM_TO_CARD key.
+ * @param {string} formId
  * @returns {string}
  */
 function characterFormValue(character, formId) {
@@ -551,16 +532,12 @@ function characterFormValue(character, formId) {
     }
 }
 
-// Per-field hash of the value as it stood when the editor was populated, keyed by v2 path. Captured
-// once at load time so a later change-feed sync of the character store can't mask a real conflict.
-// Only ever describes the character the editor currently has loaded (`_loadedCharacterFieldHashesAvatar`).
 /** @type {Map<string, number>} */
 const _loadedCharacterFieldHashes = new Map();
 /** @type {string|null} */
 let _loadedCharacterFieldHashesAvatar = null;
 
 /**
- * Same hash the server computes for its per-field conflict check.
  * @param {object} character
  * @param {string} v2Path
  * @returns {number}
@@ -571,8 +548,6 @@ function hashCharacterFieldValue(character, v2Path) {
 }
 
 /**
- * Seeds the conflict baseline for every field from the character just loaded into the editor; each field
- * save afterwards replaces its own entry with the hash the server hands back.
  * @param {object} character
  */
 function snapshotLoadedCharacterFieldHashes(character) {
@@ -584,11 +559,8 @@ function snapshotLoadedCharacterFieldHashes(character) {
 }
 
 /**
- * A conflict baseline for one field of any character, loaded in the editor or not, taken off the character
- * object the value being edited was read from. Pass it to {@link saveCharacterField}, which sends it and
- * keeps it current after each save.
  * @param {object} character
- * @param {string} formId A FORM_TO_CARD key, e.g. `'#character_book_json'`.
+ * @param {string} formId
  * @returns {{hash: number|undefined}}
  */
 export function characterFieldBaseline(character, formId) {
@@ -600,7 +572,6 @@ export function characterFieldBaseline(character, formId) {
 }
 
 /**
- * Converts a form field's string value into the value stored on the card.
  * @param {string} formId
  * @param {{transform?: string}} mapping
  * @param {string} value
@@ -618,7 +589,6 @@ function characterFieldValueToCardValue(formId, mapping, value) {
         return { ok: true, value: !isNaN(n) ? n : 4 };
     }
     if (mapping.transform === 'json') {
-        // '' means "no value" - unset the card path entirely rather than write an empty string/null over it.
         if (!value) {
             return { ok: true, value: UNSET_VALUE };
         }
@@ -632,18 +602,10 @@ function characterFieldValueToCardValue(formId, mapping, value) {
     return { ok: true, value };
 }
 
-/**
- * Field saves waiting out their debounce, keyed per character + field so a pending edit to one field is
- * never cancelled or absorbed by an edit to another.
- * @type {Map<string, {timer: ReturnType<typeof setTimeout>, avatar: string, formId: string, value: string}>}
- */
+/** @type {Map<string, {timer: ReturnType<typeof setTimeout>, avatar: string, formId: string, value: string}>} */
 const pendingCharacterFieldSaves = new Map();
 
-/**
- * Field saves in flight, serialized per character + field. `hash` is that field's current server-side
- * conflict baseline for this character, carried from one save to the next in the chain.
- * @type {Map<string, {tail: Promise<boolean>, hash: number|undefined}>}
- */
+/** @type {Map<string, {tail: Promise<boolean>, hash: number|undefined}>} */
 const characterFieldSaveChains = new Map();
 
 /**
@@ -654,7 +616,6 @@ function characterFieldSaveKey(avatar, formId) {
     return `${avatar}\n${formId}`;
 }
 
-// A character whose field saves are still in flight, or that is loaded in the editor, stays held.
 keepHeldCharacters(() => {
     const avatars = [...characterFieldSaveChains.keys(), ...pendingCharacterFieldSaves.keys()].map(key => key.split('\n')[0]);
     if (_loadedCharacterFieldHashesAvatar) avatars.push(_loadedCharacterFieldHashesAvatar);
@@ -662,9 +623,6 @@ keepHeldCharacters(() => {
 });
 
 /**
- * The `id` CHARACTER_EDITED carries for an edit to `avatar`'s card: upstream's index into `characters`, which
- * upstream always takes from the edited character. `this_chid` when the edited character is the current one,
- * and undefined otherwise, so the event never carries an index that names a different character.
  * @param {string|undefined} avatar
  * @returns {string|undefined}
  */
@@ -673,15 +631,11 @@ function characterEditedId(avatar) {
 }
 
 /**
- * Saves exactly one character field - only this field is sent, through `/api/characters/merge-attributes`,
- * with its own per-field conflict check. Never reads the form.
- * @param {string} avatar Avatar filename of the character being edited.
- * @param {string} formId A FORM_TO_CARD key, e.g. `'#description_textarea'`.
- * @param {string} value The field's value, in the form's own string representation.
- * @param {{hash: number|undefined}} [baseline] The conflict baseline the value was edited from, from
- * {@link characterFieldBaseline}; required when the character isn't the one loaded in the editor. Updated with
- * the server's hash after each save.
- * @returns {Promise<boolean>} Whether the value was saved.
+ * @param {string} avatar
+ * @param {string} formId
+ * @param {string} value
+ * @param {{hash: number|undefined}} [baseline]
+ * @returns {Promise<boolean>}
  */
 export function saveCharacterField(avatar, formId, value, baseline = undefined) {
     const mapping = FORM_TO_CARD[formId];
@@ -699,8 +653,6 @@ export function saveCharacterField(avatar, formId, value, baseline = undefined) 
         if (baseline) {
             hash = baseline.hash;
         } else {
-            // Read synchronously, before any await: callers that switch the editor to another character
-            // flush first (see flushCharacterFieldSaves()), so the baseline here is still this character's.
             if (_loadedCharacterFieldHashesAvatar !== avatar) {
                 throw new Error(`saveCharacterField: ${avatar} is not the character loaded in the editor`);
             }
@@ -728,7 +680,6 @@ export function saveCharacterField(avatar, formId, value, baseline = undefined) 
                 body: JSON.stringify(mergeData),
             });
 
-            // The server's fresh post-write hash for this field, on a plain (non-conflict) success.
             let savedHash;
 
             if (fetchResult.status === 409) {
@@ -741,7 +692,6 @@ export function saveCharacterField(avatar, formId, value, baseline = undefined) 
                     .replace(/^data\.extensions\./, '')
                     .replace(/^data\./, '')
                     .replace(/_/g, ' ');
-                // Named, since the save may be for a character other than the one the panel now shows.
                 const characterName = escapeHtml(String(charactersStore.get(avatar)?.name ?? avatar));
 
                 const confirmOverwrite = await callGenericPopup(
@@ -778,7 +728,6 @@ export function saveCharacterField(avatar, formId, value, baseline = undefined) 
             await getOneCharacter(avatar);
             const character = charactersStore.get(avatar);
 
-            // Server-issued when it gave one; otherwise (forced overwrite) computed off the reloaded card.
             chain.hash = Number.isFinite(savedHash) ? savedHash : hashCharacterFieldValue(character, mapping.v2);
             if (_loadedCharacterFieldHashesAvatar === avatar) {
                 _loadedCharacterFieldHashes.set(mapping.v2, chain.hash);
@@ -813,7 +762,6 @@ export function saveCharacterField(avatar, formId, value, baseline = undefined) 
 }
 
 /**
- * Debounced {@link saveCharacterField}: one debounce per character + field.
  * @param {string} avatar
  * @param {string} formId
  * @param {string} value
@@ -833,8 +781,6 @@ export function saveCharacterFieldDebounced(avatar, formId, value) {
 }
 
 /**
- * Starts every debounced field save now, then resolves once every field save (including ones already in
- * flight) has finished. The debounced ones are started synchronously, before this returns.
  * @returns {Promise<void>}
  */
 export async function flushCharacterFieldSaves() {
@@ -847,13 +793,12 @@ export async function flushCharacterFieldSaves() {
     await Promise.all([...characterFieldSaveChains.values()].map(chain => chain.tail));
 }
 
-/** @returns {string} Avatar filename of the character loaded in the editor, or '' when none is. */
+/** @returns {string} */
 function getEditorCharacterAvatar() {
     return String($('#avatar_url_pole').val() ?? '');
 }
 
 /**
- * In create mode the value goes into `create_save`, which is what Create builds the new character from.
  * @param {string} formId
  * @param {keyof typeof create_save} createSaveKey
  * @param {string} value
@@ -867,42 +812,66 @@ async function saveTextField(formId, createSaveKey, value) {
     return await saveCharacterField(getEditorCharacterAvatar(), formId, value);
 }
 
-/** @param {string} value @returns {Promise<boolean>} */
+/**
+ * @param {string} value
+ * @returns {Promise<boolean>}
+ */
 export function saveCreatorNotesField(value) {
     return saveTextField('#creator_notes_textarea', 'creator_notes', value);
 }
 
-/** @param {string} value @returns {Promise<boolean>} */
+/**
+ * @param {string} value
+ * @returns {Promise<boolean>}
+ */
 export function saveDescriptionField(value) {
     return saveTextField('#description_textarea', 'description', value);
 }
 
-/** @param {string} value @returns {Promise<boolean>} */
+/**
+ * @param {string} value
+ * @returns {Promise<boolean>}
+ */
 export function saveSystemPromptField(value) {
     return saveTextField('#system_prompt_textarea', 'system_prompt', value);
 }
 
-/** @param {string} value @returns {Promise<boolean>} */
+/**
+ * @param {string} value
+ * @returns {Promise<boolean>}
+ */
 export function savePostHistoryInstructionsField(value) {
     return saveTextField('#post_history_instructions_textarea', 'post_history_instructions', value);
 }
 
-/** @param {string} value @returns {Promise<boolean>} */
+/**
+ * @param {string} value
+ * @returns {Promise<boolean>}
+ */
 function savePersonalityField(value) {
     return saveTextField('#personality_textarea', 'personality', value);
 }
 
-/** @param {string} value @returns {Promise<boolean>} */
+/**
+ * @param {string} value
+ * @returns {Promise<boolean>}
+ */
 function saveScenarioField(value) {
     return saveTextField('#scenario_pole', 'scenario', value);
 }
 
-/** @param {string} value @returns {Promise<boolean>} */
+/**
+ * @param {string} value
+ * @returns {Promise<boolean>}
+ */
 function saveCharacterNoteField(value) {
     return saveTextField('#depth_prompt_prompt', 'depth_prompt_prompt', value);
 }
 
-/** @param {string} value @returns {Promise<boolean>} */
+/**
+ * @param {string} value
+ * @returns {Promise<boolean>}
+ */
 function saveExampleMessagesField(value) {
     return saveTextField('#mes_example_textarea', 'mes_example', value);
 }
@@ -917,7 +886,6 @@ export let chatDragDropHandler = null;
 /** @type {debounce_timeout} The debounce timeout used for chat/settings save. debounce_timeout.long: 1.000 ms */
 export const DEFAULT_SAVE_EDIT_TIMEOUT = debounce_timeout.relaxed;
 
-// The window's keys are already in pendingSettingsKeys.
 const _debouncedSaveImpl = debounce(() => {
     const { full } = _settingsSaveWindow;
     _settingsSaveWindow = { full: false };
@@ -934,19 +902,15 @@ function scheduleSettingsSave({ full }) {
 }
 
 /**
- * Saves settings after the debounce window. A string first argument is a keyed partial save of the string arguments;
- * anything else (a number, or no argument) is a full save, which also includes any pending keys.
- * @param {number|string} [loopCounter] The first key of a keyed save (upstream's retry count, a number, is ignored).
- * @param {...string} keys Further settings keys to save.
+ * @param {number|string} [loopCounter]
+ * @param {...string} keys
  */
 export function saveSettingsDebounced(loopCounter, ...keys) {
-    // Upstream's extensions change `tags` and `tag_map` and then ask for a settings save to have them stored.
     noteTagExportsMayHaveChanged();
     scheduleSettingsSave(readSettingsSaveArgs(loopCounter, keys));
 }
 
 
-// The search index changes with the commit, so a search term's page is re-queried here like any other.
 const getCharactersDebounced = debounce(() => getCharacters({ keepListPosition: true }), 2000);
 
 /**
@@ -976,10 +940,8 @@ function onCharacterChangeMessage() {
     }
 }
 
-// One SSE connection per tab, doubling as change notification and presence heartbeat - avoids exhausting the per-origin connection pool.
 function setupCharacterChangeStream() {
     if (typeof EventSource === 'undefined') return;
-    // Messages sent while the stream was down are lost, so an open that follows an error counts as a character change and a tags change.
     let hadError = false;
     let notice = null;
     let noticeTimer = null;
@@ -1014,7 +976,6 @@ function setupCharacterChangeStream() {
                 void onStateChanged({ tree: message.tree ?? null, at: message.at ?? null });
                 return;
             }
-            // `{}`: characters changed. Their tags changing is 'groups-changed'.
             if (message !== null && typeof message === 'object' && message.type === undefined) onCharacterChangeMessage();
         },
         open: () => {
@@ -1108,8 +1069,6 @@ export function getCurrentChatId() {
     }
 }
 
-// null means no fully-resolved chat to scope a draft to - callers must skip save/load/clear, not fall back to
-// a shared key that unrelated chats could collide on.
 /** @returns {import('./scripts/chat-draft.js').DraftContext|null} */
 export function getCurrentDraftContext() {
     const selection = getSelectionState();
@@ -1127,8 +1086,7 @@ export function getCurrentDraftContext() {
 }
 
 /**
- * The open chat, as getCurrentDraftContext() names it, but also for a chat with no messages stored yet (`chatId` '').
- * @returns {import('./scripts/chat-draft.js').DraftContext|null} null when no character or group is open.
+ * @returns {import('./scripts/chat-draft.js').DraftContext|null}
  */
 export function getCurrentChatContext() {
     const selection = getSelectionState();
@@ -1142,14 +1100,12 @@ export function getCurrentChatContext() {
     return null;
 }
 
-// Synchronous, so safe to call directly right before a page reload rather than relying on the debounced wrapper.
 export function flushDraftSave() {
     const context = getCurrentDraftContext();
     if (!context) {
         return;
     }
     const text = String($('#send_textarea').val());
-    // The box was emptied by a send the server hasn't stored yet: the sent text stays the draft.
     if (!text.trim() && isDraftHeld(context)) {
         return;
     }
@@ -1176,7 +1132,6 @@ export let menu_type = '';
 
 let _charactersDirty = false;
 let characterListWasShowing = false;
-// Set while select_rm_characters() shows the list, since it re-queries the list itself.
 let characterListShowHandledByCaller = false;
 
 export let selected_button = ''; //which button pressed
@@ -1228,21 +1183,15 @@ let this_edit_mes_id = undefined;
 
 //settings
 export let settings;
-// Lets saveSettings() skip a POST when the rebuilt payload hashes the same as last time.
 /** @type {number|null} */
 let lastSavedSettingsHash = null;
-// Hash (server key order) of settings this client believes is persisted server-side; sent as X-Settings-Hash for conflict detection.
 /** @type {number|null} */
 let knownServerSettingsHash = null;
-// Settings keys marked for saving and not yet sent; a keyed save sends them, a full save includes them in the blob.
 const pendingSettingsKeys = new Set();
-// Per-key content hashes of what this client believes the server has; used for the partial save's expectedHashes conflict check.
 /** @type {Record<string, number>} */
 const serverKeyHashes = {};
 
 /**
- * Seeds serverKeyHashes from settings at `key` ('' for the whole settings object), `world_info.charLore` left out:
- * characters' extra lorebook links are the store's, and no settings hash covers them (the server's leave them out).
  * @param {unknown} value
  * @param {string} [key]
  */
@@ -1252,11 +1201,9 @@ function seedSettingsHashes(value, key = '') {
 }
 
 /**
- * Takes the hashes a save answered for the settings as the server stored them (it may store them otherwise than
- * sent: in its key order, without what nothing reads): each key under `tops` (every key for null) is the server's.
  * @param {Record<string, number> | undefined} keyHashes
- * @param {string[] | null} tops The top-level keys written; null for the whole settings.
- * @returns {boolean} Whether the answer had them.
+ * @param {string[] | null} tops
+ * @returns {boolean}
  */
 function takeServerKeyHashes(keyHashes, tops) {
     if (!keyHashes || typeof keyHashes !== 'object') return false;
@@ -1266,10 +1213,8 @@ function takeServerKeyHashes(keyHashes, tops) {
     Object.assign(serverKeyHashes, keyHashes);
     return true;
 }
-// Kind of the pending debounced save window (see scheduleSettingsSave()); reset when the window runs or is cancelled.
 /** @type {{ full: boolean }} */
 let _settingsSaveWindow = { full: false };
-// Serializes saveSettings() so overlapping calls can't race on a stale serverKeyHashes snapshot.
 let _saveQueue = Promise.resolve();
 /** User preference for swipeable messages */
 let swipes = true;
@@ -1419,7 +1364,6 @@ async function firstLoadInit() {
     await initLocales();
     initChatUtilities();
     initCharacterFieldEditor({
-        // The character in the editor, in the open chat; a character being created has no chat or card yet.
         macroScope: () => (menu_type === 'create' ? {} : { ...openChatMacroScope(), avatar_url: getEditorCharacterAvatar() }),
         messageFormatting,
         formatCreatorNotes: (text, valueOf, styleScope) => formatCreatorNotes(text, menu_type === 'create' ? '' : getCurrentCharacter()?.avatar, { valueOf, styleScope }),
@@ -1491,13 +1435,10 @@ async function firstLoadInit() {
     initBookmarks();
     await getUserAvatars(true, user_avatar);
 
-    // Doesn't gate first paint; awaited right before APP_READY, so the first sync has run by then.
     let residencySettled = false;
     const characterResidencyPromise = (async () => {
         await seedCharactersFromCache();
         await getCharacters();
-        // Must run after getCharacters() (also awaits getGroups()): tag assignments live on characters'/groups'
-        // own tag_ids, so their usage-count index can't be built until both are resident.
         await reindexTagAssignments();
     })();
     characterResidencyPromise.then(() => { residencySettled = true; }, () => { residencySettled = true; });
@@ -1507,10 +1448,8 @@ async function firstLoadInit() {
     setupCharacterChangeStream();
 
     setStage('Loading assets');
-    // The new page (packages/ui): the backgrounds are its.
     startNewUi({
         quietPrompt: prompt => generateQuietPrompt({ quietPrompt: prompt }),
-        // What this page shows, said again to the server whenever the tab's stream reconnects.
         currentChat: () => {
             if (selected_group != null) return { group: String(selected_group) };
             const avatar = getCurrentCharacter()?.avatar;
@@ -1635,12 +1574,9 @@ export function resultCheckStatus() {
     stopStatusLoading();
 }
 
-// Prefer this over selectCharacterById() internally - avatar is the source of truth (this_avatar), no
-// array-index lookup needed.
 export async function selectCharacterByAvatar(avatar, { switchMenu = true } = {}) {
     let entity = charactersStore.get(avatar);
     if (!entity) {
-        // Can be hit before boot residency hydration finishes; an explicit open is worth an on-demand fetch.
         try {
             const response = await fetch('/api/characters/get', {
                 method: 'POST',
@@ -1649,13 +1585,8 @@ export async function selectCharacterByAvatar(avatar, { switchMenu = true } = {}
             });
             if (response.ok) {
                 const data = await response.json();
-                // Same normalization as finalizeFetchedCharacter(): a character with no active
-                // chat pointer comes back with `chat` unset/null (Workstream 6 - that's a valid,
-                // common state now, not an error) - `String(undefined)` would otherwise corrupt it
-                // into the literal string "undefined" and get treated as a real (bogus) chat name.
                 data.chat = data.chat ? String(data.chat) : '';
                 data.shallow = false;
-                // Re-check: a concurrent fetch may have made this resident while this request was in flight.
                 entity = charactersStore.get(avatar) ?? charactersStore.create(data)?.entity;
             }
         } catch (error) {
@@ -1708,7 +1639,6 @@ export async function selectCharacterByAvatar(avatar, { switchMenu = true } = {}
 async function delChat(chatfile) {
     const name = chatfile.replace('.jsonl', '');
     const avatar = getCurrentCharacter().avatar;
-    // Deleting the open chat opens the one the character moves to, in the same request.
     const isCurrent = name === getCurrentCharacter().chat;
     const response = await fetch('/api/chats/delete', {
         method: 'POST',
@@ -1762,13 +1692,6 @@ export async function deleteCharacterChatByName(characterId, fileName) {
         return;
     }
 
-    // The server already atomically repointed the deleted chat's owner - whichever character that
-    // is, not necessarily the globally-selected/on-screen one, since this is called from the
-    // "recent chats" list, which can list any character - to its most recently active remaining
-    // chat (or cleared the pointer if none remain), as part of the delete itself. When it did,
-    // `activeChat` carries the result; mirror it onto the stored character record without touching
-    // the live `chat`/`chat_metadata` UI state, which belongs to whichever character is actually
-    // being displayed right now.
     const data = await response.json().catch(() => null);
     if (data && typeof data.activeChat === 'string') {
         character.chat = data.activeChat;
@@ -1777,28 +1700,13 @@ export async function deleteCharacterChatByName(characterId, fileName) {
     await eventSource.emit(event_types.CHAT_DELETED, fileName);
 }
 
-/**
- * Clears this character's active-chat pointer and rebuilds the opening state from the card/tree,
- * with no name-minting step (Workstream 6: a character's conversation is one anchor with no
- * required name - "nothing to point at yet" is a valid, final state, not something that needs a
- * fabricated `${name} - ${timestamp}` string, client- or server-side).
- *
- * getFirstMessage() -> _openingFromTree() resolves this character's real, stored opening node id
- * whenever real anchor-rooted history already exists (even if it was never labeled/named) - and
- * loadAtNode()'s own default-child descent (server-side) recovers the FULL current conversation
- * from that single node id on the next load, not just the opening line. Only a genuinely
- * never-touched character, or one whose card-only greeting has never been used, falls back to an
- * empty pointer here.
- */
 async function pointToFreshChat(replace = null) {
     _setCurrentTarget('', null);
     $('#selected_chat_pole').val('');
     setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
     await openCharacterConversation({ fresh: true });
     const openingNodeId = chat[0]?.node_id;
-    // The new chat is the tab's session, moved to the stored opening (none stored: the tree's root).
     const opening = isStoredNodeId(openingNodeId) ? openingNodeId : '';
-    // One request: the character's chat moves to the new one, and the chat it replaces (if any) is deleted.
     let current = getCurrentChatId() ?? '';
     try {
         const response = await fetch('/api/chats/new', {
@@ -1819,10 +1727,6 @@ async function pointToFreshChat(replace = null) {
     setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
 }
 
-/**
- * Upstream's "the current chat is gone, open another": opens the character's conversation the server resolves
- * (its current chat, else its most recently active one, else a new one).
- */
 export async function replaceCurrentChat() {
     await clearChat({ clearData: true });
     await openCharacterConversation();
@@ -1986,11 +1890,6 @@ export async function clearChat({ clearData = false } = {}) {
     }
 }
 
-/**
- * The app's own removal of the last message from the page (a placeholder, a turn the view lets go of): whatever the
- * tree stored of it stays there, so the page no longer counts it as a message it holds (the compat save never takes it
- * for one an extension deleted).
- */
 export async function dropLastMessage() {
     forgetStored([chat[chat.length - 1]?.node_id]);
     await deleteLastMessage();
@@ -2006,13 +1905,9 @@ export async function deleteLastMessage() {
 }
 
 /**
- * Widens a single message id backward to include any preceding tool-invocation system messages,
- * so deleting an assistant message also removes the tool-call preamble that produced it.
- * Exported so bulk-delete callers (e.g. doMesCut()) can precompute the true removal range once,
- * against the still-intact `chat[]`, instead of relying on deleteMessage()'s own per-call widening.
- * @param {number} id The ID of the message that is about to be deleted.
- * @param {boolean} [deleteToolCalls=true] Whether to widen over preceding tool-call messages.
- * @returns {number} The actual first message ID to delete.
+ * @param {number} id
+ * @param {boolean} [deleteToolCalls=true]
+ * @returns {number}
  */
 export function getMessageDeletionStartId(id, deleteToolCalls = true) {
     const message = chat[id];
@@ -2084,8 +1979,6 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
     const firstMessageId = getMessageDeletionStartId(id, deleteToolCalls);
     const messageIds = Array.from({ length: id - firstMessageId + 1 }, (_, index) => id - index);
 
-    // The messages leave the chat on the server first, while `chat[]` still names them; a delete the user asked for
-    // here can still be called off there (what else it drops is asked about first).
     if (persist) {
         const cut = await chatOpCut(firstMessageId, id, { ask: askConfirmation }).catch(error => {
             console.error('Could not remove the deleted message(s) from the tree:', error);
@@ -2094,7 +1987,6 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
         if (cut === false) return;
     }
 
-    // Close the editor first, before its DOM element and chat entry are removed.
     if (this_edit_mes_id !== undefined && messageIds.includes(Number(this_edit_mes_id))) {
         closeMessageEditor();
     }
@@ -2120,17 +2012,11 @@ export const reloadCurrentChat = reloadChatMutex.update.bind(reloadChatMutex);
 
 export const userInputGenerateMutex = new SimpleMutex(sendTextareaMessage);
 
-// A send asked for after a reply has shown the Send button again but while the previous send is still
-// finishing (the lock is held until Generate() returns) would otherwise be dropped by the lock. It is kept
-// instead, one at a time, and runs once the page is idle; the input is read then, so the latest text goes.
 const QUEUED_SEND_POLL_MS = 50;
 /** @type {{ chat: string, timer: ReturnType<typeof setInterval> } | null} */
 let queuedSend = null;
 
 /**
- * Sends what is in the input, as the Send button and Enter do. In the gap after a reply, while the previous
- * send still holds the lock, or while a swipe is under way, the send is queued instead of dropped: the button
- * shows "send queued", a click on it cancels, Enter leaves it queued, and a chat change cancels it with a toast.
  * @param {'button'|'enter'} source
  */
 export async function requestTextareaSend(source) {
@@ -2138,16 +2024,13 @@ export async function requestTextareaSend(source) {
         if (source === 'button') cancelQueuedSend();
         return;
     }
-    // A swipe under way (its slide, or the alternative it generates) would drop the send too: it waits for the swipe.
     const inGap = (userInputGenerateMutex.isBusy && !isGenerating() || swipeState === SWIPE_STATE.SWIPING) && $('#send_but').is(':visible');
     if (!inGap) {
         await userInputGenerateMutex.update();
         return;
     }
-    // Keeps the text in this chat's draft, in case a chat change cancels the send.
     flushDraftSave();
     queuedSend = {
-        // A tab's chat id is its session, the same for every character or group it opens: the owner tells them apart.
         chat: JSON.stringify(getCurrentDraftContext()),
         timer: setInterval(() => {
             const idle = !userInputGenerateMutex.isBusy && !isGenerating() && swipeState === SWIPE_STATE.NONE && !isExecutingCommandsFromChatInput;
@@ -2167,7 +2050,7 @@ function clearQueuedSend() {
 }
 
 /**
- * @param {string} [reason] Shown as a toast when set.
+ * @param {string} [reason]
  */
 function cancelQueuedSend(reason) {
     if (!queuedSend) return;
@@ -2208,7 +2091,6 @@ export async function sendTextareaMessage() {
     if (swipeState !== SWIPE_STATE.NONE) return; // don't proceed if mid-swipe.
     if (is_send_press) return;
 
-    // An overswipe's slot is stored by its own Done; a message sent meanwhile would follow nothing stored.
     const lastIndex = chat.length - 1;
     if (lastIndex >= 0 && lastIndex === Number(this_edit_mes_id) && isComposedSlot(chat[lastIndex])) {
         toastr.warning(t`Press Done to keep the new alternative, or cancel it, first.`, t`Not sent`);
@@ -2367,7 +2249,6 @@ export function ensureMessageMediaIsArray(mes) {
             return;
         }
 
-        // Frozen objects can't have properties defined on them; the wrappers were set up pre-freeze.
         if (Object.isFrozen(obj)) {
             return;
         }
@@ -2396,7 +2277,6 @@ export function ensureMessageMediaIsArray(mes) {
      * @param {ChatMessageExtra} obj
      */
     function migrateMediaToArray(obj) {
-        // Frozen objects (deep-frozen messages) already had migration applied pre-freeze.
         if (Object.isFrozen(obj)) {
             return;
         }
@@ -2632,7 +2512,6 @@ export function appendMediaToMessage(mes, messageElement, scrollBehavior = SCROL
             }
         }));
 
-        // An attachment starts at the user's volume too (initMessageMediaVolume()).
         audio.get(0).dataset.userVolume = '';
         new AudioPlayer(audio.get(0), template.get(0), { volume: Math.max(0, Math.min(100, Number(power_user.media_volume) || 0)) / 100 });
 
@@ -2736,7 +2615,6 @@ export function appendMediaToMessage(mes, messageElement, scrollBehavior = SCROL
 
     // Add files to message
     if (hasFiles) {
-        // Resolved once and reused for every clone, instead of re-running the selector per iteration.
         const $fileTemplate = $('#message_file_template .mes_file_container');
         for (let index = 0; index < mes.extra.files.length; index++) {
             const file = mes.extra.files[index];
@@ -2888,15 +2766,13 @@ export function addOneMessage(mes, { type = undefined, insertAfter = null, scrol
     return messageElement;
 }
 
-/** Drawn messages whose token counters wait for their counts, by index. @type {Set<number>} */
+/** @type {Set<number>} */
 const uncountedShownMessages = new Set();
 /** @type {ReturnType<typeof setTimeout>|null} */
 let shownCountsTimer = null;
-/** How long drawn messages are gathered before their counts are asked for together. */
 const SHOWN_COUNTS_DELAY_MS = 30;
 
 /**
- * Asks for a drawn message's token count, together with the others drawn around the same time (fillTokenCounters()).
  * @param {number} mesId
  */
 function countShownMessage(mesId) {
@@ -2911,11 +2787,8 @@ function countShownMessage(mesId) {
 }
 
 /**
- * Fills messages' token counters: their counts in one request (getMessageTokenCounts(), answered from the server's
- * token-count store), set on each message's `extra.token_count` for display, never stored. A message whose text
- * changed meanwhile is left for its next draw.
  * @param {number[]} mesIds
- * @param {{ recount?: boolean }} [options] `recount`: take the counts again, replacing the stored ones.
+ * @param {{ recount?: boolean }} [options]
  */
 async function fillTokenCounters(mesIds, { recount = false } = {}) {
     const shown = mesIds
@@ -3022,7 +2895,6 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
     messageElement.find('.mes_text').html(messageHTML);
     addCopyToCodeBlocks(messageElement);
 
-    // User messages can carry alternatives too, so this isn't limited to non-user messages.
     updateSwipeCounter(messageId, { message: mes, messageElement });
     countShownMessage(messageId);
 
@@ -3192,7 +3064,6 @@ export function substituteParams(content, options = {}) {
         content = String(content);
     }
 
-    // The legacy signature (content, name1, name2, original, group, replaceCharacterCard, additionalMacro, postProcessFn)
     const isOptionsObject = options && typeof options === 'object' && !Array.isArray(options);
     if (!isOptionsObject) {
         return substituteParamsLegacy.call(this, ...arguments);
@@ -3299,7 +3170,6 @@ export async function generateQuietPrompt({ quietPrompt = '', quietToLoud = fals
             force_name2: true,
             quietImage: quietImage ?? null,
             quietName: quietName ?? null,
-            // forceChId (legacy numeric id) translated to an avatar here, so everything downstream is avatar-shaped.
             force_avatar: forceAvatar ?? ((forceChId !== null && forceChId !== undefined) ? exposedCharacters[forceChId]?.avatar ?? null : null),
             jsonSchema: jsonSchema ?? null,
         };
@@ -3790,14 +3660,10 @@ export class StreamingProcessor {
         this.toolCalls = [];
         /** @type {{node_id: string, pending_tool_calls: any[]}?} */
         this.toolCallHandoff = null;
-        // THIS TASK (stealth-tool parity) - see this class's end-of-stream call site
-        // (finishGenerating()) and forwardAndPersistCompactStreamWithServerTools()'s `aborted` branch doc
-        // comment (src/endpoints/backends/chat-completions.js) for the full mechanism. Mirrors
-        // `toolCallHandoff` above exactly, for the distinct "abort, nothing persisted" trailer.
         this.toolCallAborted = false;
-        /** @type {string?} The node persistAssistantReply() wrote, if the server sent one ahead of [DONE]. */
+        /** @type {string?} */
         this.assistantNodeId = null;
-        /** @type {unknown} The server's last `stored` list this stream adopted (see adoptStored(), chat-store.js). */
+        /** @type {unknown} */
         this.adoptedStored = null;
         // Initialize reasoning in its own handler
         this.reasoningHandler = new ReasoningHandler(timeStarted);
@@ -3904,7 +3770,6 @@ export class StreamingProcessor {
             this.#updateMessageBlockVisibility();
             const currentTime = new Date();
 
-            // Immutable message update: batch property changes into one replace
             updateMessage(messageId, {
                 mes: processedText,
                 gen_started: this.timeStarted,
@@ -3912,7 +3777,6 @@ export class StreamingProcessor {
                 extra: { ...(chat[messageId].extra || {}), time_to_first_token: this.timeToFirstToken },
             });
 
-            // Update reasoning (may itself call updateMessage)
             await this.reasoningHandler.process(messageId, mesChanged, this.promptReasoning);
             processedText = chat[messageId].mes;
 
@@ -3948,7 +3812,6 @@ export class StreamingProcessor {
                 }
             }
 
-            // The count comes after the message is drawn (fillTokenCounters()), which then sets the timer's speed.
             const timePassed = formatGenerationTimer(this.timeStarted, currentTime, 0, this.reasoningHandler.getDuration(), this.timeToFirstToken);
             if (this.messageTimerDom instanceof HTMLElement) {
                 this.messageTimerDom.textContent = timePassed.timerValue;
@@ -3997,14 +3860,13 @@ export class StreamingProcessor {
                 swipes: [...(message.swipes || []), ...this.swipes],
                 swipe_info: [...(message.swipe_info || []), ...swipeInfoArray],
             });
-            message = chat[messageId]; // refresh local reference after update
+            message = chat[messageId];
         }
 
         syncMesToSwipe(messageId);
         saveLogprobsForActiveMessage(this.messageLogprobs.filter(Boolean), this.continueMessage);
 
         if (Array.isArray(this.images) && this.images.length > 0) {
-            // processImageAttachment mutates its argument; clone so the frozen original isn't touched.
             const mutableMsg = structuredClone(chat[messageId]);
             await processImageAttachment(mutableMsg, { imageUrls: this.images });
             updateMessage(messageId, { extra: mutableMsg.extra });
@@ -4020,9 +3882,6 @@ export class StreamingProcessor {
             message = chat[messageId];
         }
 
-        // The reply's node, when the server said where it stored it, goes on the message before its events: whatever
-        // handles them (an extension's edit, the reasoning parse, an edit opened by a click) addresses the reply's own
-        // node, never the alternative an overswipe replaces.
         if (unlockUI && this.type !== 'impersonate' && isStoredNodeId(this.assistantNodeId)) {
             stampReplyNode(messageId, /** @type {string} */ (this.assistantNodeId));
             message = chat[messageId];
@@ -4033,13 +3892,11 @@ export class StreamingProcessor {
         }
 
         if (this.type !== 'impersonate') {
-            // The reply as the server stored it (its reasoning split off) replaces what this page streamed.
             const shown = applyStoredReply(messageId, takeStoredReply(this.assistantNodeId), { received: true });
             if (shown) {
                 message = shown;
                 updateMessageBlock(messageId, shown);
             }
-            // The reply as the server stored it, before its handlers change anything.
             if (isStoredNodeId(chat[messageId]?.node_id) && chat[messageId].node_id === this.assistantNodeId) {
                 markStoredAs(chat[messageId].node_id, chat[messageId]);
             }
@@ -4059,12 +3916,7 @@ export class StreamingProcessor {
         if (!isAborted && power_user.auto_swipe && generatedTextFiltered(text)) {
             return await swipe(null, SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.AUTO_SWIPE, repeated: true, forceMesId: chat.length - 1 });
         }
-        // Save/persist decision extracted to generation.js (finishStreamedReplyPersistence()) so it can
-        // be typechecked under strict null checks with the rest of that invariant-critical cluster -
-        // see that function's own comment for the assistantNodeId-vs-heal reasoning.
         await finishStreamedReplyPersistence({ assistantNodeId: this.assistantNodeId });
-        // Where upstream saved the chat after a reply: the reply is on its node and its handlers have run, so a change
-        // an extension made in place there (MESSAGE_RECEIVED, ...) is stored; nothing is sent when nothing differs.
         await storePageChatChanges();
 
         playMessageSound();
@@ -4124,8 +3976,6 @@ export class StreamingProcessor {
         const isContinue = this.type == 'continue';
         this.stoppingStrings = getStoppingStrings(isImpersonate, isContinue, main_api);
 
-        // Draws at most once per frame interval. An update that falls inside the interval is drawn when it
-        // ends, so the latest text shows even when no further chunk arrives to trigger a draw.
         const interval = new Stopwatch(1000 / power_user.streaming_fps).interval;
         let lastDraw = Date.now();
         /** @type {ReturnType<typeof setTimeout>|null} */
@@ -4165,14 +4015,7 @@ export class StreamingProcessor {
                 }
 
                 this.toolCalls = toolCalls;
-                // Streaming raw-action tool-calling cutover - see StreamingProcessor.toolCallHandoff's
-                // own use at this class's end-of-stream call site (finishGenerating()) and
-                // forwardAndPersistCompactStreamWithServerTools()'s doc comment (src/endpoints/backends/
-                // chat-completions.js) for the full mechanism. `state` is the SAME object reused across
-                // every yield of this generator, so once set it stays set for every later iteration.
                 this.toolCallHandoff = state?.toolCallHandoff ?? this.toolCallHandoff;
-                // THIS TASK (stealth-tool parity) - see StreamingProcessor.toolCallAborted's own
-                // declaration comment above.
                 this.toolCallAborted = state?.toolCallAborted ?? this.toolCallAborted;
                 this.assistantNodeId = state?.assistantNodeId ?? this.assistantNodeId;
                 if (state?.stored && state.stored !== this.adoptedStored) {
@@ -4455,11 +4298,6 @@ export async function generateRaw({ prompt = '', api = null, instructOverride = 
     return message;
 }
 
-/**
- * A response length a quiet or raw generation asks for in place of the setting's, for as long as it builds its
- * request. The setting itself isn't changed (it's the server's): the request carries it (response_length), and the
- * page's own request builders read it through responseLengthFor().
- */
 class TempResponseLength {
     /** @type {number | null} */
     static #length = null;
@@ -4486,7 +4324,6 @@ class TempResponseLength {
         this.#length = null;
     }
 
-    /** The response length asked for, or null. */
     static get length() {
         return this.#length;
     }
@@ -4586,9 +4423,6 @@ export async function previewFullPrompt() {
         return;
     }
 
-    // Generate() can recurse internally (e.g. re-running once WI activation changes the budget), firing the
-    // combine-prompt event more than once per dry run - keep overwriting so we end up with the last (final)
-    // one once Generate() actually returns, rather than an earlier, possibly-incomplete recursive pass.
     let captured = null;
     const onChatCompletionReady = (data) => { if (data.dryRun) captured = { chatCompletion: data.chat }; };
     const onCombinePrompts = (data) => { if (data.dryRun) captured = { textCompletion: data.prompt }; };
@@ -4617,10 +4451,9 @@ export async function previewFullPrompt() {
 }
 
 /**
- * Injects extension prompts into chat messages.
- * @param {object[]} messages Array of chat messages
- * @param {boolean} isContinue Whether the generation is a continuation. If true, the extension prompts of depth 0 are injected at position 1.
- * @returns {Promise<number[]>} Array of indices where the extension prompts were injected
+ * @param {object[]} messages
+ * @param {boolean} isContinue
+ * @returns {Promise<number[]>}
  */
 export async function doChatInject(messages, isContinue) {
     const injectedMessages = [];
@@ -4629,7 +4462,6 @@ export async function doChatInject(messages, isContinue) {
 
     const maxDepth = getExtensionPromptMaxDepth();
     for (let i = 0; i <= maxDepth; i++) {
-        // Order of priority (most important go lower)
         const roles = [extension_prompt_roles.SYSTEM, extension_prompt_roles.USER, extension_prompt_roles.ASSISTANT];
         const names = {
             [extension_prompt_roles.SYSTEM]: '',
@@ -4684,11 +4516,9 @@ export function flushWIInjections() {
 }
 
 /**
- * Unblocks the UI after a generation is complete.
- * @param {string} [type] Generation type (optional)
+ * @param {string} [type]
  */
 export function unblockGeneration(type) {
-    // Don't unblock if a parallel stream is still running
     if (type === 'quiet' && streamingProcessor && !streamingProcessor.isFinished) {
         return;
     }
@@ -4871,7 +4701,6 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
         is_system: false,
         send_date: getMessageTimeStamp(),
         mes: substituteParams(messageText),
-        // Identity uses the avatar id, not the display name, since the name drifts on rename.
         persona: avatar,
         extra: {
             isSmallSys: compact,
@@ -4890,8 +4719,6 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
 
     await populateFileAttachment(message);
     statMesProcess(message, 'user', exposedCharacters, this_chid, '');
-    // A raw-action send asks the server to store this message and sends this ref with it, so the
-    // server's answer can say which node it was stored at.
     setStoreRef(message, uuidv4());
 
     chat_metadata.tainted = true;
@@ -4899,12 +4726,6 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
     if (typeof insertAt === 'number' && insertAt >= 0 && insertAt <= chat.length) {
         chat.splice(insertAt, 0, message);
         recordSend({ key: storeRefOf(message), kind: 'graft' });
-        // A mid-chain insert is a graft (the new node lands between the message that used to precede
-        // this slot and the one that used to follow it) — the diff engine can't see this correctly,
-        // since every message after the insertion point keeps its own unchanged node_id.
-        // See this function's own `skipTreePersistence` doc comment - not reachable with
-        // `skipTreePersistence: true` from Generate() today (it never passes `insertAt`), kept
-        // here purely so the parameter's contract holds for any future/other caller.
         if (!skipTreePersistence) {
             const nodeId = await chatOpGraft(insertAt, { silent: true }).catch(() => null);
             if (!isStoredNodeId(nodeId)) keepFailedSend({ key: storeRefOf(message), kind: 'graft' });
@@ -4921,8 +4742,6 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
         await eventSource.emit(event_types.MESSAGE_SENT, chat_id);
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, chat_id);
 
-        // Awaited, not fire-and-forget: otherwise the next save can miss the isChatSaving window and drop the AI message.
-        // See skipTreePersistence's own doc comment above.
         if (!skipTreePersistence) {
             const nodeIds = await chatOpAppend(chat_id, undefined, { silent: true }).catch(() => []);
             if (!isStoredNodeId(nodeIds[0])) keepFailedSend({ key: storeRefOf(message), kind: 'append' });
@@ -4933,12 +4752,9 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
 }
 
 /**
- * Stores a message a slash command put on the chat (`/sendas`, `/sys`, `/comment`, a quiet-to-loud reply) as
- * sendMessageAsUser() stores the user's: it is kept as a send until the server has it, and one the server didn't
- * store is shown as not saved (failed-sends.js) instead of looking sent.
- * @param {number} index The message's place in `chat`, where it is already shown.
+ * @param {number} index
  * @param {object} [options]
- * @param {boolean} [options.graft] Put between the messages around it, not at the end.
+ * @param {boolean} [options.graft]
  */
 export async function storeSentMessage(index, { graft = false } = {}) {
     const message = chat[index];
@@ -4999,7 +4815,6 @@ export function getMaxResponseTokens() {
 }
 
 /**
- * The response length a request for an API asks for now: a quiet or raw generation's own, or the setting's.
  * @param {string} api
  * @returns {number}
  */
@@ -5014,7 +4829,6 @@ export function responseLengthFor(api) {
     return 0;
 }
 
-/** The response length a raw-action generate request carries: a quiet or raw generation's own, else none. */
 export function requestedResponseLength() {
     return TempResponseLength.length ?? undefined;
 }
@@ -5081,7 +4895,6 @@ export async function duplicateCharacter({ avatar = null, silent = false } = {})
     // Determine the character to duplicate
     let targetAvatar;
     if (avatar) {
-        // The server answers for a character the page doesn't hold, and says when there is none.
         targetAvatar = avatar;
     } else {
         if (!getCurrentCharacter()) {
@@ -5119,8 +4932,6 @@ export async function duplicateCharacter({ avatar = null, silent = false } = {})
     await eventSource.emit(event_types.CHARACTER_DUPLICATED, { oldAvatar: targetAvatar, newAvatar: data.path });
     await getCharacters({ silent: true, skipPrint: true });
     charactersStore.reportCreated(data.path);
-    // The duplicate's sorted position isn't knowable client-side (sort can be by name/date/fav/random/search) -
-    // re-fetch just the current page rather than guess where to insert a new row.
     if (!refreshCharacterListCurrentPage()) {
         await printCharacters(false);
     }
@@ -5154,104 +4965,18 @@ export function setInContextMessages(msgInContextCount, type) {
  */
 
 /**
- * Chunk (c) of the tool-calling raw-action cutover: resolves a chain of `pending_tool_calls`
- * hand-offs from the raw-action chat-completion route (src/endpoints/backends/chat-completions.js,
- * `runServerToolRounds()`'s own doc comment) by actually invoking the named CLIENT tools (registered
- * via `ToolManager.registerFunctionTool()`, public/scripts/tool-calling.js - the ones the server
- * genuinely cannot execute itself: arbitrary client JS callbacks, DOM access, extension state) and
- * submitting their results back via `type: 'tool_result'` follow-up requests, resuming the server's
- * own loop each time.
- *
- * This is a SMALL, LOCAL loop - not a recursive `Generate('normal', {...depth})` call like the
- * legacy (non-raw-action) tool-calling path (see the `canPerformToolCalls` block inside
- * `finishGenerating()`'s `onSuccess()`) - because recursing through the whole `Generate()` function
- * again would re-trigger legacy assembly checks/UI side effects that don't belong mid-tool-loop.
- * Every round here is a real raw-action request; there is no fallback to legacy client-side prompt
- * assembly at any point.
- *
- * TERMINATION: bounded by `ToolManager.RECURSE_LIMIT` (5, the same numeric bound the legacy
- * client-side tool-calling loop and the server's own `SERVER_TOOL_ROUND_LIMIT` use) - the `for` loop
- * below runs at most that many iterations, and each iteration makes exactly one `fetch()` call (no
- * further recursion), so the worst case is a bounded, finite number of network round-trips, never an
- * infinite loop. If `data.pending_tool_calls` is STILL set after the loop exits (bound exceeded, not
- * a normal exit), a real `Error` is thrown - mirroring the server's own "exceeded round limit" 500 -
- * rather than returning a malformed `pending_tool_calls`-shaped object to `onSuccess()` (which
- * expects a normal `{choices: [...]}` result and would otherwise crash confusingly on
- * `extractMessageFromData()`).
- *
- * STEALTH TOOLS - FIXED (this task; formerly a documented KNOWN LIMITATION here). Precise legacy
- * semantics, verified by reading `ToolManager.invokeFunctionTools()`/`finishGenerating()`'s
- * `onSuccess()` in full (public/scripts/tool-calling.js, this file): `stealth` is a per-TOOL
- * registration property (`ToolManager.registerFunctionTool()`'s own `stealth` param - never
- * per-call), and `shouldStopGeneration = (!invocationResult.invocations.length && shouldDeleteMessage)
- * || invocationResult.stealthCalls.length` - the `||` means ANY stealth call present in a round stops
- * generation entirely and UNCONDITIONALLY discards the whole round (even an already-succeeded
- * non-stealth invocation in the SAME round never gets `saveFunctionToolInvocations()`'d), not merely
- * "every call in the round was stealth" (the narrower case this doc comment used to describe).
- *
- * This could not be replicated here before this task because, by the time the client saw a
- * `pending_tool_calls` hand-off, the server had ALREADY persisted the pending tool-call node with no
- * way to know a tool is "stealth" (a client-only registration flag, never sent to the server). Fixed
- * by teaching the server about it in advance: `Generate()`'s raw-action gate now also sends a
- * `stealth_tool_names` list (the subset of `client_tools` names `ToolManager.isStealthTool()` flags -
- * see that gate's own `stealthToolNamesPayload` doc comment for why this is a separate list rather
- * than an extra key smuggled into the OpenAI-standard `client_tools` schema entries themselves) and
- * `runServerToolRounds()` (src/endpoints/backends/chat-completions.js) checks it BEFORE persisting
- * anything: if ANY call in a round is in that set, the round returns `{ok: 'aborted'}` - no tool
- * invoked, no tree node written, no hand-off - so this function typically never even sees such a round
- * (it never reaches `pending_tool_calls` at all for a first-round abort - see `finishGenerating()`'s
- * own `isStreamWithToolCallAborted`/non-streaming `data.aborted` checks, which intercept it earlier).
- * The one place THIS function still has to care is a LATER round of its own loop (this function's own
- * `tool_result` follow-up can just as easily trigger a fresh abort) - handled by the explicit
- * `data?.aborted` check inside the loop below, which stops iterating and returns the `{aborted: true}`
- * body straight back to the caller, exactly like a first-round abort.
- *
- * DOCUMENTED, DELIBERATE NARROWING (not a parity gap - see `runServerToolRounds()`'s own doc comment,
- * step 2b, for the full reasoning): unlike legacy (which invokes every non-stealth call first, real
- * side effects happen, and only THEN discards the round), the server here never invokes anything once
- * a stealth name is detected in a round - it does not run a real server-native tool's `invoke()`
- * purely to throw the result away. This is exact, verified parity for a stealth call mixed with other
- * CLIENT-ONLY calls (stealth or not) - legacy has no equivalent concept of "server-native" tools at
- * all, so a stealth call mixed with a genuine server-native call is the one case with no legacy
- * precedent to match; the "never invoke, just abort" behavior was chosen there as the safer,
- * user-visibly-identical ("nothing persisted, generation stops") simplification. Also documented,
- * narrower-than-legacy on the CLIENT side: any real narrative text the model generated in the SAME
- * round as the stealth call is not preserved either (the in-progress placeholder message is deleted
- * unconditionally on abort - see `isStreamWithToolCallAborted` above - whereas legacy keeps
- * already-persisted visible text and only discards the tool-invocation record).
- *
- * NO DOUBLE-FIRE OF PERSISTENCE: this function never itself writes to the chat tree - every write
- * (the in-flight tool-invocation node, the in-place edit resolving it, the eventual final reply) is
- * performed SERVER-side, exactly once per real fact, by the same code chunk (b) already uses
- * (`runServerToolRounds()`/`resolvePendingToolResults()`/`persistAssistantReply()`). This function
- * only invokes the client's own tool callback (a pure computation from the caller's point of view -
- * `ToolManager.invokeFunctionTool()` has no chat-tree side effect) and forwards its result; it never
- * calls `ToolManager.saveFunctionToolInvocations()` (that would create a SECOND, redundant
- * client-side tree write for a turn the server already persisted).
- * @param {object} initialData The raw-action route's response body, already known to carry a
- *   non-empty `pending_tool_calls` array (`[{node_id, tool_call_id, name, arguments}, ...]`).
- * @param {object} rawAction The SAME raw-action object originally sent (`character_avatar`/
- *   `group_id`/`owner_id` are read off it; `node_id`/`type`/`user_message` are not used here - each
- *   round addresses the pending node named in that round's own `pending_tool_calls` entries instead).
- * @returns {Promise<object>} The final response body once the server stops returning
- *   `pending_tool_calls` (a normal `{choices: [...]}` result, or an `{error: true, ...}` body if the
- *   server rejected the follow-up for some other reason - both handled identically to any other
- *   `sendGenerationRequest()` result by the caller).
- * @throws {Error} If the response isn't ok, or if the bound above is exceeded without ever reaching a
- *   non-`pending_tool_calls` response.
+ * @param {object} initialData
+ * @param {object} rawAction
+ * @returns {Promise<object>}
+ * @throws {Error}
  */
 export async function resolveClientToolHandoffLoop(initialData, rawAction) {
     let data = initialData;
 
     for (let round = 0; round < ToolManager.RECURSE_LIMIT && Array.isArray(data?.pending_tool_calls) && data.pending_tool_calls.length; round++) {
         const pending = data.pending_tool_calls;
-        // Chunk (b)/(c)'s single-node-per-round persistence (see `runServerToolRounds()`'s own doc
-        // comment) means every entry in one `pending_tool_calls` array shares the same `node_id`.
         const nodeId = pending[0]?.node_id;
 
-        // Reuse the EXISTING client tool-invocation machinery (toasts, error handling, stealth
-        // handling) rather than hand-rolling it - `ToolManager.invokeFunctionTools()` just needs a
-        // synthetic OpenAI-Chat-Completions-shaped `data` object to read `tool_calls` off of.
         const syntheticData = {
             choices: [{
                 index: 0,
@@ -5269,10 +4994,6 @@ export async function resolveClientToolHandoffLoop(initialData, rawAction) {
         }
         const invocationsById = new Map(invocationResult.invocations.map(invocation => [invocation.id, invocation]));
 
-        // Every pending call gets a real tool_results entry regardless of `stealthCalls`/an unknown
-        // name (`ToolManager.invokeFunctionTool()` itself already turns "no such tool registered"
-        // into an Error result, not a thrown exception) - the server-side pending invocation MUST be
-        // resolved one way or another, or the round can never advance.
         const tool_results = pending.map(call => {
             const invocation = invocationsById.get(call.tool_call_id);
             return {
@@ -5282,18 +5003,6 @@ export async function resolveClientToolHandoffLoop(initialData, rawAction) {
             };
         });
 
-        // Re-advertise the SAME client tools - the server never remembers a live client-only tool
-        // list across requests (REST is stateless; the tree is the only durable state) - see
-        // `buildRawActionChatCompletionRequest()`'s own `clientToolSchemas` doc comment. THIS TASK:
-        // `stealth_tool_names` is re-derived and re-sent alongside them every round for the identical
-        // reason - a LATER round's own backend response can call a (possibly different) stealth tool
-        // just as easily as the first one could, and the server has no memory of the first round's
-        // advertised set either. See `Generate()`'s own identical `stealthToolNamesPayload`
-        // computation/doc comment (this function's own doc comment references it) for the full
-        // rationale - duplicated here rather than shared, since `registerFunctionToolsOpenAI()` itself
-        // must NOT gain a `stealth_tool_names` field (it also builds the LEGACY path's real backend
-        // request body via the SAME method - see that method's own callers - so anything it adds would
-        // leak a non-standard field straight into an actual provider request).
         const toolsHolder = {};
         await ToolManager.registerFunctionToolsOpenAI(toolsHolder);
         const stealthNames = (toolsHolder.tools ?? [])
@@ -5320,15 +5029,6 @@ export async function resolveClientToolHandoffLoop(initialData, rawAction) {
         }
         data = await response.json();
 
-        // THIS TASK (stealth-tool parity) - a LATER round (this `tool_result` follow-up's own backend
-        // response) can hit a stealth call too, exactly like the very first round can (see
-        // `finishGenerating()`'s own `isStreamWithToolCallAborted`/non-streaming `data.aborted` checks,
-        // which only ever see the FIRST round - this loop's own subsequent rounds need the identical
-        // check inline). The server already decided not to persist/hand off anything for this round
-        // (`{aborted: true}`, no `.pending_tool_calls`) - stop looping (the `for` condition below would
-        // stop anyway, since `data.pending_tool_calls` is absent) and let the caller's own `.aborted`
-        // check (both call sites in `finishGenerating()`) handle unblocking generation, exactly the
-        // same way it would have for a first-round abort.
         if (data?.aborted) {
             return data;
         }
@@ -5351,22 +5051,10 @@ export async function resolveClientToolHandoffLoop(initialData, rawAction) {
  */
 export async function sendGenerationRequest(type, data, options = {}) {
     if (main_api === 'openai') {
-        // `data.rawAction`, when set, is the raw-action chat-completion cutover object built in Generate()'s
-        // `case 'openai':` block - forwarded through as an option so sendOpenAIRequest() can detect and use it
-        // (see that function's own "Raw-action chat-completion cutover" comment). `undefined` for every other
-        // (non-cutover) call, exactly like today - a no-op for sendOpenAIRequest() in that case.
         return await sendOpenAIRequest(type, data.prompt, abortController.signal, { ...options, rawAction: data.rawAction });
     }
 
     if (main_api === 'koboldhorde') {
-        // Real raw-action cutover (see JUDGMENT CALL #7 above `let rawActionGenerateData;`, and
-        // src/endpoints/horde.js's own `buildRawActionHordePayload()` doc comment for the full
-        // architecture) - `data.owner_id` is only ever present on a real raw-action payload (see
-        // `rawActionGenerateData`'s own construction), matching the exact same detection kobold.js's
-        // own raw-action `/generate` route uses server-side. generateHordeRawAction() is a dedicated
-        // function, not a branch inside generateHorde() itself, because the real request SHAPE
-        // differs (no client-resolved `prompt`/`params` at all - the server resolves those) even
-        // though the submit-then-poll mechanics are shared (see that function's own doc comment).
         if (data.owner_id) {
             return await generateHordeRawAction(data, abortController.signal, true);
         }
@@ -5383,7 +5071,6 @@ export async function sendGenerationRequest(type, data, options = {}) {
             signal: abortController.signal,
         });
 
-        // An error answer after the server stored the user message names it in this header, whatever its body.
         reportStoredHeader(response);
         if (!response.ok) {
             const error = await response.json();
@@ -5403,8 +5090,6 @@ export async function sendGenerationRequest(type, data, options = {}) {
 }
 
 /**
- * A stopped non-streaming request leaves no message on the page. If the server had already stored its
- * reply when the stop arrived, the chat is read again so the page shows it.
  * @param {string} generationId
  */
 export function takeInStoppedReply(generationId) {
@@ -5427,8 +5112,6 @@ export async function sendStreamingRequest(type, data, options = {}) {
 
     switch (main_api) {
         case 'openai':
-            // See sendGenerationRequest()'s identical comment above `data.rawAction` - same forwarding here for the
-            // streaming call path.
             return await sendOpenAIRequest(type, data.prompt, streamingProcessor.abortController.signal, { ...options, rawAction: data.rawAction });
         case 'textgenerationwebui':
             return await generateTextGenWithStreaming(data, streamingProcessor.abortController.signal);
@@ -5951,7 +5634,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
     const generationFinished = new Date();
     if (type === 'swipe') {
         oldMessage = lastMessage.mes;
-        // Empty string, not undefined - a non-string slot made ensureSwipes warn/repair on every generation.
         const newSwipes = [...(lastMessage.swipes || []), ''];
         const newSwipeInfo = [...(lastMessage.swipe_info || []), {
             send_date: getMessageTimeStamp(),
@@ -5974,7 +5656,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
                 send_date: getMessageTimeStamp(), extra: newExtra,
             });
             lastMessage = chat[lastMesId];
-            // processImageAttachment mutates — clone, process, apply back
             if (imageUrls?.length) {
                 const mutableMsg = structuredClone(lastMessage);
                 await processImageAttachment(mutableMsg, { imageUrls });
@@ -6038,7 +5719,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
             updateMessage(lastMesId, { extra: mutableMsg.extra });
             lastMessage = chat[lastMesId];
         }
-        // We don't know if the reasoning duration extended, so we don't update it here on purpose.
         const chat_id = lastMesId;
         if (storedNodeId !== null) stampReplyNode(chat_id, storedNodeId);
         applyStoredReply(chat_id, storedReply, { received: !fromStreaming });
@@ -6160,7 +5840,6 @@ export function ensureSwipes(message, mesId = undefined) {
         return updated;
     }
 
-    //Small system messages should not have swipes.
     if (message?.extra?.isSmallSys) {
         return updated;
     }
@@ -6173,7 +5852,6 @@ export function ensureSwipes(message, mesId = undefined) {
         extra: {},
     });
 
-    // Collect all needed updates, apply once at the end
     const updates = {};
 
     let swipes = Array.isArray(message.swipes) ? [...message.swipes] : null;
@@ -6196,7 +5874,6 @@ export function ensureSwipes(message, mesId = undefined) {
     let swipesDirty = !Array.isArray(message.swipes);
     let swipeInfoDirty = !Array.isArray(message.swipe_info);
 
-    // A tree-backed message can have null holes (unfetched alternatives) among its swipes - left alone here, belongs to hydrateSwipes() instead.
     const hasHoles = !!message.node_id || (Array.isArray(message.swipe_info) && message.swipe_info.some(info => isStoredNodeId(info?.node_id)));
 
     for (let i = 0; i < swipes.length; i++) {
@@ -6216,7 +5893,6 @@ export function ensureSwipes(message, mesId = undefined) {
         }
     }
 
-    // Stamps the selected slot with this message's node_id, except a still-blank overswipe slot, or when another slot already carries this node_id.
     const selectedSlot = updates.swipe_id ?? message.swipe_id ?? 0;
     const slotIsBlank = typeof swipes[selectedSlot] === 'string' && swipes[selectedSlot].length === 0;
     const nodeIdClaimedElsewhere = message.node_id
@@ -6233,14 +5909,12 @@ export function ensureSwipes(message, mesId = undefined) {
     if (updated) {
         mesId ??= chat.indexOf(message);
         if (mesId >= 0) {
-            // Backfilling missing swipe arrays isn't an edit; restore the snapshot so it doesn't read as changed.
             const wasClean = isAsStored(message);
             updateMessage(mesId, updates);
             if (wasClean && chat[mesId]?.node_id) {
                 markStoredAs(chat[mesId].node_id, chat[mesId]);
             }
         } else if (!Object.isFrozen(message)) {
-            // Not in the chat array and not frozen (e.g., newly created message) — mutate directly
             Object.assign(message, updates);
         }
     }
@@ -6312,11 +5986,9 @@ export function syncMesToSwipe(messageId = null) {
     return true;
 }
 
-// Matches the window the server sends inline, so stepping onward stays instant.
 const ALTERNATIVE_FETCH_WINDOW = 25;
 
 /**
- * A tree-backed load leaves unfetched alternatives as `null` holes rather than empty strings; this fills them in on demand.
  * @param {number} mesId
  * @param {{ index?: number|null, all?: boolean }} [options]
  * @returns {Promise<boolean>}
@@ -6335,14 +6007,12 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
         return true;
     }
 
-    // Filling holes isn't an edit, so a clean message should stay clean afterward.
     const wasClean = isAsStored(message);
 
     if (!message.node_id) {
         return false;
     }
 
-    // The opening's alternatives are stored openings plus card-only greetings; /alternatives only knows the stored half.
     const isOpening = mesId === 0;
     const character = isOpening ? getCurrentCharacter() : null;
     if (isOpening && !character?.avatar) {
@@ -6359,7 +6029,6 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
         body.offset = Math.max(0, index - ALTERNATIVE_FETCH_WINDOW);
         body.limit = ALTERNATIVE_FETCH_WINDOW * 2 + 1;
     } else if (isOpening) {
-        // The openings endpoint windows by default, so "every hole" needs an explicit range.
         body.offset = 0;
         body.limit = message.swipes.length;
     }
@@ -6381,7 +6050,6 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
         return false;
     }
 
-    // Re-read: an await means the message may have been replaced while the fetch was in flight.
     const current = chat[mesId];
     if (!current || current.node_id !== message.node_id || !Array.isArray(current.swipes)) {
         return false;
@@ -6389,16 +6057,13 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
 
     const swipes = [...current.swipes];
     const swipeInfo = Array.isArray(current.swipe_info) ? [...current.swipe_info] : new Array(swipes.length).fill(null);
-    // The openings endpoint answers with the window it actually served, which it is free to clamp.
     const from = (isOpening ? payload.offset : undefined) ?? body.offset ?? 0;
 
     payload.alternatives.forEach((alt, i) => {
         const at = from + i;
         if (at >= swipes.length) return;
-        // Never overwrite an already-hydrated slot - a local edit could otherwise be clobbered by the stored copy.
         if (typeof swipes[at] === 'string') return;
         swipes[at] = alt.mes ?? '';
-        // An id marks this slot as settled; without one the save path reads it as a brand new alternative forever.
         swipeInfo[at] = {
             send_date: alt.send_date,
             extra: alt.extra ?? {},
@@ -6410,7 +6075,6 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
 
     updateMessage(mesId, { swipes, swipe_info: swipeInfo });
 
-    // Hydrating only fills in what was already stored, so it does not make the message unsaved.
     if (wasClean && chat[mesId]?.node_id) {
         markStoredAs(chat[mesId].node_id, chat[mesId]);
     }
@@ -6433,7 +6097,6 @@ export function syncSwipeToMes(messageId = null, swipeId = null, targetMessage =
         return false;
     }
 
-    // False when called with an external targetMessage (e.g. a cloned snapshot) that can be mutated directly.
     const isChatResident = !targetMessage;
     const resolvedMessageId = messageId ?? chat.length - 1;
 
@@ -6596,7 +6259,6 @@ export function deactivateSendButtons() {
 export function resetChatState() {
     // replaces deleted charcter name with system user since it will be displayed next.
     name2 = (getSelectionState().type !== 'character' && neutralCharacterName) ? neutralCharacterName : systemUserName;
-    //unsets the expected selection before reloading (related to getCharacters/printCharacters from using old arrays)
     setCharacterId(undefined);
     // sets up system user to tell user about having deleted a character
     chat.splice(0, chat.length, ...SAFETY_CHAT);
@@ -6677,7 +6339,6 @@ function beginInlineCharacterRename() {
         }
     });
     input.on('blur', () => void finish(true));
-    // Clicks in the box are the box's: not the heading's (which switches the panel's tab).
     input.on('click dblclick mousedown', event => event.stopPropagation());
 }
 
@@ -6738,8 +6399,6 @@ export async function renameCharacter(name = null, { silent = false, renameChats
             const oldName = getCharaFilename(null, { manualAvatarKey: oldAvatar });
             const newName = getCharaFilename(null, { manualAvatarKey: newAvatar });
 
-            // Tag assignments live on the character's own tag_ids, carried forward by the server's rename
-            // route and picked up fresh by the getCharacters() reload below - nothing to do here.
 
             // Additional lore books
             const charLore = world_info.charLore?.find(x => x.name == oldName);
@@ -6767,7 +6426,6 @@ export async function renameCharacter(name = null, { silent = false, renameChats
             setCharacterId(undefined);
             // Reload characters list
             await getCharacters({ silent: true, skipPrint: true });
-            // A sync only refreshes characters the page already holds; the renamed one comes in under its new key.
             if (!charactersStore.has(newAvatar)) {
                 const { characterRepository } = await import('./scripts/character-repository.js');
                 const renamed = await characterRepository.full(newAvatar);
@@ -6790,7 +6448,6 @@ export async function renameCharacter(name = null, { silent = false, renameChats
                     throw new Error('New character not selected');
                 }
 
-                // The new name shows where it was typed: no toast.
                 if (renamePastChats) {
                     await reloadCurrentChat();
                 }
@@ -6872,7 +6529,6 @@ async function read_avatar_load(input) {
     }
 }
 
-// Thumbnail versions known ahead of a request, so getThumbnailUrl() can emit `?v=` on the first request instead of taking the no-cache redirect detour. Best-effort; self-correcting if stale.
 const thumbnailVersionCache = new Map();
 
 /**
@@ -6886,8 +6542,6 @@ export function setThumbnailVersion(type, file, version) {
 }
 
 /**
- * Who a mention macro names, for its card: {{user}} the active persona; {{char}} the character with that avatar, else
- * the one of that name, else the character open.
  * @param {string} macroName
  * @param {{ avatar?: string, name?: string }} character
  * @returns {import('./scripts/macro-pill.js').MacroPerson | null}
@@ -6938,7 +6592,6 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
         if (entity.type === 'character') {
             avatarTemplate.attr('data-avatar', entity.item.avatar);
         }
-        // loading="lazy": avoids a request storm when this list is the whole library (group member/candidate pickers).
         avatarTemplate.find('img').attr('src', this_avatar).attr('loading', 'lazy').attr('alt', entity.item.name);
         avatarTemplate.attr('title', `${entity.item.name}\nFile: ${entity.item.avatar}`);
         if (highlightFavs) {
@@ -7000,30 +6653,23 @@ export async function unshallowCharacter(characterId) {
 }
 
 /**
- * The answer to POST /api/chats/open (see src/endpoints/chats.js).
  * @typedef {object} ChatOpenAnswer
- * @property {string} chat Upstream's identifier for the open chat: its name (its current chat's label, else its
- * conversation's name).
+ * @property {string} chat
  * @property {ChatMetadata} chat_metadata
  * @property {ChatMessage[]} messages
  * @property {import('./scripts/chat-store.js').OpeningsResponse|null} openings
  * @property {import('./scripts/chat-store.js').OpeningsResponse|null} card_openings
- * @property {string[]} [chats] A group's chats.
- * @property {number} [date_last_chat] A group's.
+ * @property {string[]} [chats]
+ * @property {number} [date_last_chat]
  * @property {string|null} active_character
  * @property {string|null} active_group
  * @property {number} [settings_hash]
- * @property {string[]} [stored_sends] Of the send keys the request named, those the server has stored.
- * @property {{ key: string, version: number, value: unknown }[]} [ui_views] The new page's views that follow the chat,
- * as they are for the chat opened.
+ * @property {string[]} [stored_sends]
+ * @property {{ key: string, version: number, value: unknown }[]} [ui_views]
  */
 
 /**
- * Opens a character's or group's conversation on the server, which resolves which one, records what was
- * opened, and answers everything the screen draws. Takes on the "last opened" settings it answers.
  * @param {{ avatar_url?: string, group_id?: string, chat?: string|null, make_current?: boolean, fresh?: boolean }} body
- * `chat`: open this chat (a chat name or node id) when it exists; `make_current`: and make it the owner's
- * current chat; `fresh`: open no conversation, only the card's greetings (a new chat).
  * @returns {Promise<ChatOpenAnswer>}
  */
 export async function requestChatOpen(body) {
@@ -7047,8 +6693,6 @@ function chatOpenOwner(body) {
 }
 
 /**
- * The send keys this page keeps for a character's or group's sends (failed-sends.js), which an open asks the server
- * about (`send_keys`).
  * @param {{ avatar_url?: string, group_id?: string }} body
  * @returns {string[]}
  */
@@ -7057,14 +6701,11 @@ export function chatOpenSendKeys(body) {
 }
 
 /**
- * Takes on what an open answered (from /api/chats/open, or another action that opened a chat): the kept sends the
- * server has stored, and the "last opened" settings.
- * @param {{ avatar_url?: string, group_id?: string }} body The open's owner.
+ * @param {{ avatar_url?: string, group_id?: string }} body
  * @param {ChatOpenAnswer} answer
  * @returns {ChatOpenAnswer}
  */
 export function takeChatOpenAnswer(body, answer) {
-    // The new page's views for the chat now open (its background...).
     takeViews(answer.ui_views);
     forgetStoredSends(chatOpenOwner(body), Array.isArray(answer.stored_sends) ? answer.stored_sends : []);
     setActiveCharacter(answer.active_character);
@@ -7076,10 +6717,8 @@ export function takeChatOpenAnswer(body, answer) {
 }
 
 /**
- * Takes on settings values the server wrote itself (as part of another action), so this page's own keyed saves of
- * them aren't refused as conflicts.
- * @param {Record<string, unknown>} values By settings key or dotted path, as the server stored them.
- * @param {number} [settingsHash] The server's hash of all settings after the write.
+ * @param {Record<string, unknown>} values
+ * @param {number} [settingsHash]
  */
 export function takeServerSettings(values, settingsHash) {
     for (const [key, value] of Object.entries(values)) seedSettingsHashes(value, key);
@@ -7087,10 +6726,7 @@ export function takeServerSettings(values, settingsHash) {
 }
 
 /**
- * Opens the selected character's conversation and draws it.
- * @param {{ chat?: string|null, makeCurrent?: boolean, fresh?: boolean, opened?: ChatOpenAnswer|null }} [options] See
- * requestChatOpen(). Without `chat`, the server opens the one the character is on. `opened`: an answer already in
- * hand, drawn as it is.
+ * @param {{ chat?: string|null, makeCurrent?: boolean, fresh?: boolean, opened?: ChatOpenAnswer|null }} [options]
  */
 async function openCharacterConversation({ chat: requested = null, makeCurrent = false, fresh = false, opened = null } = {}) {
     /** @type {ChatOpenAnswer|null} */
@@ -7116,12 +6752,10 @@ async function openCharacterConversation({ chat: requested = null, makeCurrent =
     if (chat.length) await _mergeCardGreetingsIntoOpening({ openings });
     await getChatResult({ openings });
 
-    // printMessages() -> ensureSwipes() synthesizes missing swipe shape via updateMessage(); re-snapshot so that alone doesn't queue an edit.
     _snapshotMessages();
 
     eventSource.emit(event_types.CHAT_LOADED, { detail: { id: this_chid, character: getCurrentCharacter() } });
 
-    // Focus on the textarea if not already focused on a visible text input
     delay(debounce_timeout.short).then(() => {
         if (getMountedTextarea(document.activeElement) || $(document.activeElement).is('input:visible, textarea:visible')) {
             return;
@@ -7131,10 +6765,8 @@ async function openCharacterConversation({ chat: requested = null, makeCurrent =
 }
 
 /**
- * Upstream's: loads the selected character's chat named by its `chat` (when that exists; otherwise the one the
- * server resolves). Doesn't change which chat is the character's current one.
  * @param {object} [options]
- * @param {boolean} [options.isNewChat] Open no conversation, only the card's greetings (a new chat).
+ * @param {boolean} [options.isNewChat]
  */
 export async function getChat({ isNewChat = false } = {}) {
     await unshallowCharacter(getCurrentCharacter()?.avatar);
@@ -7142,11 +6774,10 @@ export async function getChat({ isNewChat = false } = {}) {
 }
 
 /**
- * Puts the character's greeting into an empty chat as message 0. The caller prints the chat afterwards.
- * @returns {Promise<boolean>} Whether a message was pushed.
+ * @returns {Promise<boolean>}
  */
 /**
- * @param {{ openings?: import('./scripts/chat-store.js').OpeningsResponse|null }} [options] The character's openings, when already read.
+ * @param {{ openings?: import('./scripts/chat-store.js').OpeningsResponse|null }} [options]
  */
 async function pushFirstMessageIntoEmptyChat({ openings = null } = {}) {
     if (chat.length !== 0) {
@@ -7166,12 +6797,11 @@ async function pushFirstMessageIntoEmptyChat({ openings = null } = {}) {
 }
 
 /**
- * @param {{ openings?: { openings: import('./scripts/chat-store.js').OpeningsResponse|null } }} [options] The character's openings, when already read.
+ * @param {{ openings?: { openings: import('./scripts/chat-store.js').OpeningsResponse|null } }} [options]
  */
 async function getChatResult({ openings = undefined } = {}) {
     name2 = getCurrentCharacter().name;
     const freshChat = await pushFirstMessageIntoEmptyChat({ openings: openings?.openings ?? null });
-    // A message's itemization is read when its "Prompt" view is opened; the event keeps upstream's timing.
     await eventSource.emit(event_types.ITEMIZED_PROMPTS_LOADED, { chatId: getCurrentChatId() });
     await printMessages();
     select_selected_character(getCurrentCharacter()?.avatar);
@@ -7186,18 +6816,14 @@ async function getChatResult({ openings = undefined } = {}) {
     }
 }
 
-// _openingFromTree() is the only builder of a real greeting; its null return means the card itself
-// has no greeting text (not a failure - see that function's own doc comment), which callers treat as
-// "nothing to open on" via the empty `mes` below.
 /**
- * @param {{ openings?: import('./scripts/chat-store.js').OpeningsResponse|null }} [options] The character's openings, when already read.
+ * @param {{ openings?: import('./scripts/chat-store.js').OpeningsResponse|null }} [options]
  */
 async function getFirstMessage({ openings = null } = {}) {
     const character = getCurrentCharacter();
     const { greetings, defaultIndex } = cardToGreetingsModel(character);
     const swipeId = defaultIndex ?? 0;
 
-    // Raw greetings, not regexed: identity is the message as stored, and regex is a display transform.
     const fromTree = await _openingFromTree(greetings, swipeId, openings);
     if (fromTree) return fromTree;
 
@@ -7211,13 +6837,10 @@ async function getFirstMessage({ openings = null } = {}) {
     };
 }
 
-// Builds the opening from existing opening nodes so it carries a real node_id - the only place a
-// greeting is ever built. A null return means the card genuinely has no greeting text; a failure to
-// resolve the character or reach the store is a thrown error, not a silent, less-correct fallback.
 /**
  * @param {string[]} cardGreetings
  * @param {number} preferredIndex
- * @param {import('./scripts/chat-store.js').OpeningsResponse|null} [prefetched] The character's openings (as /api/chats/openings answers an empty body), when already read.
+ * @param {import('./scripts/chat-store.js').OpeningsResponse|null} [prefetched]
  */
 async function _openingFromTree(cardGreetings, preferredIndex, prefetched = null) {
     const character = getCurrentCharacter();
@@ -7244,13 +6867,10 @@ async function _openingFromTree(cardGreetings, preferredIndex, prefetched = null
         extra: {},
     });
 
-    // Used only locally for the preferred-index fallback match; the server merges the card's greetings at read time.
     const contents = (cardGreetings ?? [])
         .filter(text => typeof text === 'string' && text.length > 0)
         .map(asMessage);
 
-    // A malformed (non-JSON) response is a real failure too, same as the request itself not being ok -
-    // neither means "no chat history yet" or "no openings yet".
     const openings = prefetched ?? await post('/api/chats/openings', {});
     if (!openings) throw new Error('_openingFromTree: /api/chats/openings returned no usable body');
 
@@ -7264,12 +6884,10 @@ async function _openingFromTree(cardGreetings, preferredIndex, prefetched = null
     }
     if (chosenOffset < 0) chosenOffset = 0;
 
-    // Nothing to open on only happens when the card itself has no greeting.
     const chosen = openings.alternatives[chosenOffset]
         ?? (preferredText !== undefined ? { node_id: null, mes: preferredText, name: speaker, is_user: false, send_date: sendDate, extra: {} } : null);
     if (!chosen) return null;
 
-    // Showing a greeting is not using it: a greeting with no row gets a provisional id, minted for real only when needed.
     const chosenNodeId = chosen.node_id ?? provisionalNodeId(chosen.name ?? speaker, chosen.mes);
 
     const message = {
@@ -7283,14 +6901,12 @@ async function _openingFromTree(cardGreetings, preferredIndex, prefetched = null
     };
 
     if (openings.total > 1) {
-        // Same holed shape a chat load produces: a slot with no node_id is a card-only greeting.
         const swipes = new Array(openings.total).fill(null);
         const swipeInfo = new Array(openings.total).fill(null);
         openings.alternatives.forEach((alt, k) => {
             const at = windowStart + k;
             if (at >= openings.total) return;
             swipes[at] = alt.mes;
-            // Every slot carries an id, real or provisional, rather than a separate card_only flag to keep in step.
             const nodeId = alt.node_id ?? provisionalNodeId(alt.name ?? speaker, alt.mes);
             swipeInfo[at] = {
                 send_date: alt.send_date, extra: alt.extra ?? {},
@@ -7307,10 +6923,9 @@ async function _openingFromTree(cardGreetings, preferredIndex, prefetched = null
 }
 
 /**
- * Switches the tab to a character's chat by name ('' a new chat; POST /api/characters/chat).
  * @param {string} avatar
  * @param {string} chat
- * @returns {Promise<{ chat: string } | false>} The tab's compat chat id there; false when it wasn't saved.
+ * @returns {Promise<{ chat: string } | false>}
  */
 export async function saveActiveChat(avatar, chat) {
     try {
@@ -7331,10 +6946,8 @@ export async function saveActiveChat(avatar, chat) {
 }
 
 /**
- * Opens one of the selected character's chats and makes it the character's current one (the server records it).
- * @param {string} file_name The chat's name or node id.
- * @param {{ opened?: ChatOpenAnswer|null }} [options] `opened`: the answer of an action that already opened it
- * (taken on with takeChatOpenAnswer()), drawn instead of asking the server again.
+ * @param {string} file_name
+ * @param {{ opened?: ChatOpenAnswer|null }} [options]
  */
 export async function openCharacterChat(file_name, { opened = null } = {}) {
     await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
@@ -7500,27 +7113,15 @@ function reloadLoop() {
     }
 }
 
-/**
- * Cached result of the last successful POST /api/settings/get, and the in-flight request for one
- * currently underway (if any). getSettings() itself is the only caller that runs at a point where
- * this data can actually be stale (after a save conflict), and it always passes `force: true`.
- * Every other caller - including extensions like quick-reply, which activate synchronously inside
- * getSettings()'s own call chain (getSettings -> loadExtensionSettings -> activateExtensions ->
- * an extension's init()) and so want the exact response getSettings() just fetched - can safely
- * reuse this cache instead of issuing their own separate ~60KB POST for identical data.
- * @type {{data: any}|null}
- */
+/** @type {{data: any}|null} */
 let rawSettingsCache = null;
 /** @type {Promise<any>|null} */
 let rawSettingsFetchPromise = null;
 
 /**
- * Fetches the raw POST /api/settings/get payload (settings.json plus companion catalogs like
- * world_names, quickReplyPresets, presets, etc).
  * @param {object} [options]
- * @param {boolean} [options.force=false] Bypass the cache and fetch fresh data (for callers that
- * know the cached copy may be stale, e.g. after a save conflict).
- * @returns {Promise<any>} Parsed JSON response body
+ * @param {boolean} [options.force=false]
+ * @returns {Promise<any>}
  */
 export function fetchRawSettings({ force = false } = {}) {
     if (force) {
@@ -7591,8 +7192,6 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
         // Allow subscribers to mutate settings
         await eventSource.emit(event_types.SETTINGS_LOADED_BEFORE, settings);
 
-        // The response length and context size: the server's once the new page has started (they mirror its view);
-        // before, what was loaded.
         if (!newUiStarted()) {
             setAmountGen(settings.amount_gen);
             if (settings.max_context !== undefined)
@@ -7689,8 +7288,6 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
         }
     }
 
-    // Seeds the dirty-check baseline so the first saveSettings() doesn't re-write the exact payload it just received.
-    // Not after onboarding: its changes aren't in that payload, and a baseline that included them would skip their save.
     if (!onboarded) {
         const bootPayload = JSON.stringify({
             firstRun: firstRun,
@@ -7723,17 +7320,13 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
 
 //MARK: saveSettings()
 /**
- * Saves settings now. A string first argument is a keyed partial save of the string arguments;
- * anything else (a number, or no argument) is a full save, which also includes any pending keys.
- * @param {number|string} [loopCounter] The first key of a keyed save (upstream's retry count, a number, is ignored).
- * @param {...string} keys Further settings keys to save.
+ * @param {number|string} [loopCounter]
+ * @param {...string} keys
  */
 export async function saveSettings(loopCounter, ...keys) {
     noteTagExportsMayHaveChanged();
     const save = readSettingsSaveArgs(loopCounter, keys);
-    // This save sends the pending keys, leaving a keyed window nothing to send; a full window must still run.
     if (!save.full && !_settingsSaveWindow.full) {
-        // debounce()'s returned function has no .cancel of its own; cancelDebounce() finds it via the WeakMap.
         cancelDebounce(_debouncedSaveImpl);
         _settingsSaveWindow = { full: false };
     }
@@ -7741,9 +7334,8 @@ export async function saveSettings(loopCounter, ...keys) {
 }
 
 /**
- * Marks the string keys pending and returns the save's kind.
- * @param {any} loopCounter The first argument.
- * @param {any[]} keys The remaining arguments.
+ * @param {any} loopCounter
+ * @param {any[]} keys
  * @returns {{ full: boolean }}
  */
 function readSettingsSaveArgs(loopCounter, keys) {
@@ -7755,8 +7347,7 @@ function readSettingsSaveArgs(loopCounter, keys) {
 }
 
 /**
- * A rescheduled save keeps its kind, and a keyed save's keys stay pending for it.
- * @param {{ full: boolean }} save The save's kind.
+ * @param {{ full: boolean }} save
  */
 async function runSettingsSave({ full }) {
     if (!settingsReady) {
@@ -7765,10 +7356,8 @@ async function runSettingsSave({ full }) {
         return;
     }
 
-    // Upstream's settings save stores `tags`; here what an extension changed in it goes out as its own requests.
     storeTagChangesMadeThroughExport();
 
-    // Queue behind any save already in flight, so overlapping calls can't race on a stale serverKeyHashes snapshot.
     const run = () => performSave({ full });
     const queued = _saveQueue.then(run, run);
     _saveQueue = queued.catch(() => {});
@@ -7776,14 +7365,11 @@ async function runSettingsSave({ full }) {
 }
 
 /**
- * The body of a save, pulled out so it can be queued behind _saveQueue instead of running concurrently.
- * @param {{ full: boolean }} save A full save includes the pending keys in its blob; a keyed save sends only them.
+ * @param {{ full: boolean }} save
  */
 async function performSave({ full }) {
-    // Drain accumulated keys before the async gap - anything added after this point belongs to the next save.
     const dirtyKeys = full ? null : [...pendingSettingsKeys];
     pendingSettingsKeys.clear();
-    // An earlier save already sent this keyed save's keys; it must not become a full save.
     if (dirtyKeys && dirtyKeys.length === 0) {
         return;
     }
@@ -7815,14 +7401,11 @@ async function performSave({ full }) {
     const payloadHash = getStringHash(payloadString);
 
     if (dirtyKeys) {
-        // Partial save path: send only the keys that were explicitly marked dirty.
         const partialPayload = {};
         for (const key of dirtyKeys) {
             if (key.includes('.')) {
-                // Dotted path: extract just the addressed sub-field from the payload.
                 const topLevel = key.split('.')[0];
                 if (topLevel in payload) {
-                    // Skip undefined: JSON.stringify would drop it while it still asserted an absence in expectedHashes.
                     const value = getAtPath(payload, key);
                     if (value !== undefined) {
                         partialPayload[key] = value;
@@ -7837,7 +7420,6 @@ async function performSave({ full }) {
             return;
         }
 
-        // A key with no cached hash was never observed by this client - omit it rather than assert a fabricated 0.
         const expectedHashes = {};
         for (const key of Object.keys(partialPayload)) {
             if (key in serverKeyHashes) {
@@ -7865,8 +7447,6 @@ async function performSave({ full }) {
                 throw new Error(`Failed to save partial settings: ${result.statusText}`);
             }
 
-            // Not lastSavedSettingsHash: it only ever means "this exact full payload reached the server", and a keyed save sent only part of it.
-            // Server-returned hash keeps knownServerSettingsHash in sync without a full copy of the settings content.
             const partialSaveResponse = await result.json().catch(() => ({}));
             if (!takeServerKeyHashes(partialSaveResponse.keyHashes, Object.keys(partialPayload).map(key => key.split('.')[0]))) {
                 for (const key of Object.keys(partialPayload)) {
@@ -7882,8 +7462,6 @@ async function performSave({ full }) {
             toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Settings could not be saved`);
         }
     } else {
-        // Full save path (backward compat for callers that didn't specify keys).
-        // Keyed saves skip this check: the hash only means "this exact full payload reached the server".
         if (payloadHash === lastSavedSettingsHash) {
             return;
         }
@@ -7912,9 +7490,7 @@ async function performSave({ full }) {
             }
 
             lastSavedSettingsHash = payloadHash;
-            // Server-returned hashes, not a local JSON.stringify(payload) computation.
             const saveResponse = await result.json().catch(() => ({}));
-            // Per-key hashes as stored (recursively - see seedKeyHashes()); the payload's for a server not answering them.
             if (!takeServerKeyHashes(saveResponse.keyHashes, null)) seedSettingsHashes(payload);
             if (saveResponse.settingsHash != null) {
                 knownServerSettingsHash = saveResponse.settingsHash;
@@ -7927,12 +7503,9 @@ async function performSave({ full }) {
     }
 }
 
-//MARK: savePartialSettings()
 /**
- * Sends only the given top-level settings keys to be merged into settings.json, instead of the full blob saveSettings() sends.
- * Conflict check is per-key (via serverKeyHashes), not saveSettings()'s whole-file hash - two concurrent updates to disjoint keys can both succeed.
- * @param {Record<string, unknown>} partialSettings Top-level settings keys to merge; only these keys change.
- * @returns {Promise<boolean>} True if the update was applied, false if it was rejected due to a conflict.
+ * @param {Record<string, unknown>} partialSettings
+ * @returns {Promise<boolean>}
  */
 export async function savePartialSettings(partialSettings) {
     const keys = Object.keys(partialSettings).filter(key => partialSettings[key] !== undefined);
@@ -7953,7 +7526,6 @@ export async function savePartialSettings(partialSettings) {
 
     if (result.status === 409) {
         const data = await result.json().catch(() => ({}));
-        // Refetch and let the caller/user redo the change, rather than risk re-clobbering the other session's write.
         console.warn('Partial settings save rejected, conflicting keys:', data.conflictingKeys);
         toastr.warning(t`Settings were changed in another tab or device. Refreshing - please reapply your change.`, t`Settings save rejected`);
         await getSettings(null, null, { force: true });
@@ -7982,7 +7554,6 @@ export async function savePartialSettings(partialSettings) {
  * @returns {Promise<void>}
  */
 export function setGenerationParamsFromPreset(preset) {
-    // Not async, as upstream's isn't (extensions call it without waiting); the promise is there for who waits.
     return (async () => {
         if (preset.max_length !== undefined) await newUi().settings.fitContext(Number(preset.max_length));
         if (preset.genamt !== undefined) await newUi().settings.setValue('amount_gen', Number(preset.genamt));
@@ -7990,8 +7561,6 @@ export function setGenerationParamsFromPreset(preset) {
 }
 
 /**
- * Once the new page shows the fields the text APIs share: the response length and context size this page reads
- * (generation-params.js's variables) mirror its view, and the old settings objects' fields of them read it.
  * @param {import('/ui/entry.js').NewUi['settings']} settings
  */
 function bindSharedSettings(settings) {
@@ -8000,7 +7569,6 @@ function bindSharedSettings(settings) {
     settings.bind(nai_settings, 'nai_settings');
     settings.mirror('amount_gen', value => setAmountGen(Number(value)));
     settings.mirror('max_context', value => setMaxContext(Number(value)));
-    // Kobold's own rep pen range follows the unlock.
     settings.watch(['power_user.max_context_unlocked'], () => switchMaxContextSize());
 }
 
@@ -8013,14 +7581,11 @@ function applyMessageEdit(div) {
     const mesId = Number(mesElement.attr('mesid'));
     let mes = chat[mesId];
 
-    // editing old messages — ensure extra exists via immutable update if needed
     if (!mes.extra || typeof mes.extra !== 'object') {
         updateMessage(mesId, { extra: {} });
         mes = chat[mesId];
     }
 
-    // An opening edited to one of the card's greetings is that greeting, as the card has it (macros unfilled, as
-    // every card greeting is shown and stored), so it stays one alternative with it instead of becoming another.
     const cardGreeting = cardGreetingOfEditedOpening(mesId, mes, String(text));
     if (cardGreeting !== null) {
         return finishMessageEdit(mesBlock, mesId, mes, cardGreeting, '');
@@ -8050,8 +7615,6 @@ function applyMessageEdit(div) {
         text = text.trim();
     }
 
-    // The opening's macros are filled in each time it is shown (messageFormatting()), as a card greeting's are: it
-    // keeps them as written, so it stays the same text as the same greeting on the card.
     const keepsMacros = mesId === 0 && !mes.is_user && !mes.is_system;
     const bias = substituteParams(extractMessageBias(text));
     if (!keepsMacros) {
@@ -8065,12 +7628,10 @@ function applyMessageEdit(div) {
 }
 
 /**
- * The card greeting an edit of a character chat's opening is: the one whose text is the edited text (with spaces
- * trimmed off both, when edits are trimmed). Null for any other message, or text no greeting has.
  * @param {number} mesId
  * @param {ChatMessage} mes
- * @param {string} text The edited text, as typed.
- * @returns {string|null} The greeting's text, as the card has it.
+ * @param {string} text
+ * @returns {string|null}
  */
 function cardGreetingOfEditedOpening(mesId, mes, text) {
     if (mesId !== 0 || mes.is_user || mes.is_system || (selected_group != null && selected_group !== '')) return null;
@@ -8084,7 +7645,6 @@ function cardGreetingOfEditedOpening(mesId, mes, text) {
 }
 
 /**
- * Writes an edited message's final text (and bias) into the chat.
  * @param {JQuery<HTMLElement>} mesBlock
  * @param {number} mesId
  * @param {ChatMessage} mes
@@ -8100,7 +7660,6 @@ function finishMessageEdit(mesBlock, mesId, mes, text, bias) {
         editUpdates.swipes = newSwipes;
     }
 
-    // Set bias on extra (must be included in the same updateMessage call since extra is frozen)
     const biasValue = (mes?.is_system || mes?.is_user || mes.extra?.type === system_message_types.NARRATOR)
         ? (bias ?? null) : null;
     editUpdates.extra = { ...(mes.extra || {}), bias: biasValue };
@@ -8137,19 +7696,15 @@ function openMessageDelete(fromSlashCommand, deleteToolCalls = true) {
     is_delete_mode = true;
 }
 
-// A single shared debounce instance is fine: only one message is ever in edit mode at a time
-// (this_edit_mes_id). messageEditDone() cancels this before its own save to avoid a double write.
 const messageEditAutoSaveDebounced = debounce((mesId) => {
-    // An overswipe's slot is stored once, by Done.
     if (isComposedSlot(chat[mesId])) return;
     chatOpEdit(mesId).catch(error =>
         console.error('Could not save the edited message:', error));
 }, DEFAULT_SAVE_EDIT_TIMEOUT);
 
 /**
- * Uploads an image an editor's image button picked, to the user's files.
  * @param {File} file
- * @returns {Promise<string>} The image's URL.
+ * @returns {Promise<string>}
  */
 async function uploadEditorImage(file) {
     const extension = /\.[a-z0-9]+$/i.exec(file.name)?.[0] ?? '';
@@ -8261,10 +7816,8 @@ export async function messageEdit(editMessageId) {
 }
 
 /**
- * Gives up the slot an overswipe opened on message mesId (isComposedSlot()), stored nowhere: it goes, and the message
- * is back on the alternative before it, with what follows that alternative.
  * @param {number} mesId
- * @returns {Promise<boolean>} Whether there was such a slot.
+ * @returns {Promise<boolean>}
  */
 async function leaveComposedSlot(mesId) {
     const message = chat[mesId];
@@ -8335,7 +7888,6 @@ async function messageEditDone(div) {
         return;
     }
 
-    // A message a reply is being generated into isn't the user's to change yet: the editor stays open with the text.
     if (isReplyGenerating(Number(this_edit_mes_id))) {
         toastr.warning(t`This message is still being generated, so the edit wasn't saved. Press Done again once it is.`, t`Not saved yet`, { preventDuplicates: true });
         return;
@@ -8343,7 +7895,6 @@ async function messageEditDone(div) {
 
     const composed = isComposedSlot(chat[this_edit_mes_id]);
     let { mesBlock, text, mes, bias } = applyMessageEdit(div);
-    // Nothing written in an overswipe's slot: it is given up, as by Cancel.
     if (composed && !String(chat[this_edit_mes_id]?.mes ?? '').length) {
         await messageEditCancel(this_edit_mes_id);
         return;
@@ -8379,11 +7930,7 @@ async function messageEditDone(div) {
     await eventSource.emit(event_types.MESSAGE_UPDATED, this_edit_mes_id);
     const editedMesId = this_edit_mes_id;
     this_edit_mes_id = undefined;
-    // Cancel a pending keystroke-driven autosave (messageEditAutoSaveDebounced) so it can't fire a
-    // stale write after this call's own save lands.
     cancelDebounce(messageEditAutoSaveDebounced);
-    // Says the edit directly rather than letting the fallback save infer it from a snapshot diff.
-    // chatOpEdit() already retries transient failures itself (chat-store.js's _chatOpPost).
     try {
         if (composed && isComposedSlot(chat[editedMesId])) {
             if (await chatOpStoreComposed(editedMesId) === null) throw new Error('The new alternative was not stored.');
@@ -8533,7 +8080,6 @@ export async function displayPastChats(hightlightNames = []) {
         debouncedDisplay(searchQuery);
     });
 
-    // UX convenience: Focus the search field when the bookmark list opens.
     setTimeout(function () {
         const textSearchElement = $('#select_chat_search');
         textSearchElement.trigger('click').trigger('focus').trigger('select');
@@ -8542,15 +8088,9 @@ export async function displayPastChats(hightlightNames = []) {
     addChatBackupsBrowser();
 }
 
-/** Rows of the chat picker read per request. */
 const CHAT_PICKER_PAGE = 50;
-/** Counts the chat picker's lists, so a page arriving for a list already replaced is dropped. */
 let chatPickerList = 0;
 
-/**
- * Shows a character's or group's chats in the picker, newest first, a page at a time: the next page is read when the
- * list is scrolled near its end.
- */
 async function displayChats(searchQuery, currentChat, displayName, avatarImg, selected_group, highlightNames) {
     const list = ++chatPickerList;
     const $chatDiv = $('#select_chat_div');
@@ -8558,9 +8098,8 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
     $chatDiv.empty().off('scroll.chatPicker');
     /** @type {string|null} */
     let cursor = null;
-    /** Where the search of the chats' texts goes on, once the chats are read. @type {string|null} */
+    /** @type {string|null} */
     let scanCursor = null;
-    /** An item whose path holds matches in two reads of the scan is shown once. */
     const shown = new Set();
     let reading = false;
     let ended = false;
@@ -8589,7 +8128,6 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
             for (const chat of page.results) {
                 if (shown.has(chat.file_name)) continue;
                 shown.add(chat.file_name);
-                // `file_name` is the chat's id (a bookmark's label, a conversation's name), `label` a bookmark's label.
                 const isSelected = currentChat === chat.file_name;
                 const template = $chatTemplate.clone();
                 template.find('.select_chat_block').attr('file_name', chat.file_name).attr('chat_label', chat.label ?? '');
@@ -8617,8 +8155,6 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
                 }
             }
             cursor = page.cursor;
-            // The first read searches the chats' texts and gives where it stopped; the reads of later pages of chats
-            // search none, and the ones that go on from that cursor give the next.
             if (!readingChats) scanCursor = page.scan_cursor ?? null;
             ended = !cursor && !scanCursor;
             if (ended && page.exact === false) {
@@ -8631,7 +8167,6 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
         } finally {
             reading = false;
         }
-        // A page that doesn't fill the list can't be scrolled to the next one.
         const div = $chatDiv[0];
         if (!ended && list === chatPickerList && div && div.scrollHeight <= div.clientHeight) await readPage();
     };
@@ -8643,24 +8178,17 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
     await readPage();
 }
 
-// Only pinnable drawers can stay open behind another drawer: opening or bringing forward a drawer closes every
-// unpinned one (closeUnpinnedDrawersFor). With stacked drawers on (body.stackedDrawers), the drawer fronted last is
-// on top and cuts away what it covers under it (drawer-stack.js); with it off, a pinned drawer stays visible under the
-// front one.
 
-// accountStorage keys holding whether each pinnable panel was open, so a reload can restore it.
 const PANEL_OPEN_STATE_KEYS = {
     'right-nav-panel': 'NavOpened',
     'char-info-panel': 'CharInfoNavOpened',
     'left-nav-panel': 'LNavOpened',
     'WorldInfo': 'WINavOpened',
 };
-// Startup can open and close drawers before the saved state is read; recording is held off until then.
 let panelOpenStatesRead = false;
 
 /**
- * Reads which pinnable panels were open when the page was last left, and starts recording changes from here on.
- * @returns {Record<string, boolean>} Open state by panel id.
+ * @returns {Record<string, boolean>}
  */
 export function readSavedPanelOpenStates() {
     const states = Object.fromEntries(Object.entries(PANEL_OPEN_STATE_KEYS).map(([id, key]) => [id, accountStorage.getItem(key) === 'true']));
@@ -8668,7 +8196,6 @@ export function readSavedPanelOpenStates() {
     return states;
 }
 
-/** After a drawer opens, closes or comes forward: recomputes the stack, records open panels, runs the shown hooks. */
 function onDrawersChanged() {
     drawerStackChanged();
     if (panelOpenStatesRead) {
@@ -8679,7 +8206,6 @@ function onDrawersChanged() {
     onDrawerVisibilityChanged();
 }
 
-/** The character list and editor load what they show when they become visible, including by being uncovered. */
 function onDrawerVisibilityChanged() {
     onCharacterEditorMaybeShown();
     onCharacterListMaybeShown();
@@ -8698,8 +8224,7 @@ function onCharacterListMaybeShown() {
 }
 
 /**
- * Puts a drawer on top of everything it overlaps. Every path that opens or re-fronts a drawer calls this.
- * @param {string} contentId The .drawer-content element's id.
+ * @param {string} contentId
  */
 export function frontDrawer(contentId) {
     const content = document.getElementById(contentId);
@@ -8708,7 +8233,6 @@ export function frontDrawer(contentId) {
     autosizeTextareas(document.getElementById(contentId) ?? document);
 }
 
-/** Puts the layers a reload brought back (the chat and the reopened panels) in the order they were last in. */
 export function restoreDrawerOrder() {
     restoreLayerOrder();
     onDrawersChanged();
@@ -8719,17 +8243,17 @@ function closeDrawerContent(content) {
     onDrawersChanged();
 }
 
-/** @param {Element} content A .drawer-content. @returns {Element|null} Its navbar icon. */
+/**
+ * @param {Element} content
+ * @returns {Element|null}
+ */
 function getDrawerIcon(content) {
     return content.parentElement?.querySelector(':scope > .drawer-toggle .drawer-icon') ?? null;
 }
 
 /**
- * Closes every unpinned open drawer other than `content`, as opening or bringing forward `content` requires.
- * With stacked drawers on, the two .fillRight panels coexist, so one never closes the other. With it off only one
- * right-side panel is open at a time: opening either .fillRight panel closes the other, pinned or not.
- * @param {Element} content The .drawer-content being opened or brought forward.
- * @returns {number} How many drawers were closed.
+ * @param {Element} content
+ * @returns {number}
  */
 function closeUnpinnedDrawersFor(content) {
     const isFillRight = content.classList.contains('fillRight');
@@ -8756,7 +8280,6 @@ function closeUnpinnedDrawersFor(content) {
     return closed;
 }
 
-/** With stacked drawers off, closes every open .fillRight panel but the front one. */
 export function keepOneRightPanelOpen() {
     if (power_user.stacked_drawers) return;
     const open = Array.from(document.querySelectorAll('.fillRight.openDrawer'));
@@ -8770,9 +8293,7 @@ export function keepOneRightPanelOpen() {
 }
 
 /**
- * Brings an already open drawer to the front. Every path that does so goes through here, so it closes
- * unpinned drawers exactly as opening would.
- * @param {Element} content The open .drawer-content.
+ * @param {Element} content
  */
 function bringOpenDrawerForward(content) {
     closeUnpinnedDrawersFor(content);
@@ -8794,8 +8315,7 @@ function ensureDrawerOpen(drawerId) {
 }
 
 /**
- * Switches which menu is visible; hiding a menu here doesn't close it (only closeRightMenu() does).
- * @param {string} selectedMenuId The menu to show, e.g. 'rm_ch_create_block'.
+ * @param {string} selectedMenuId
  */
 export function selectRightMenuWithAnimation(selectedMenuId) {
     const displayModes = {
@@ -8805,7 +8325,6 @@ export function selectRightMenuWithAnimation(selectedMenuId) {
     };
     const normalizedId = selectedMenuId ? selectedMenuId.replace('#', '') : null;
     $('#result_info').toggle(normalizedId === 'rm_ch_create_block');
-    // Only hide/show menus within the panel that contains the target menu, not the other panel's.
     const targetMenu = normalizedId ? document.getElementById(normalizedId) : null;
     const targetPanel = targetMenu?.closest('#right-nav-panel, #char-info-panel');
     if (targetPanel) {
@@ -8818,7 +8337,6 @@ export function selectRightMenuWithAnimation(selectedMenuId) {
     } else if (normalizedId === 'rm_characters_block') {
         ensureDrawerOpen('rightNavHolder');
     }
-    // #right-nav-panel only has one real menu - it never needs the hide-all-then-show-one dance.
     if (targetPanel?.id === 'right-nav-panel') {
         const charBlock = document.getElementById('rm_characters_block');
         if (charBlock) {
@@ -8851,7 +8369,6 @@ export function select_rm_info(type, charId, previousCharId = null, displayName 
         toastr.error(t`Invalid process (no 'type')`);
         return;
     }
-    // charId is not a friendly display value (especially with uuidv7 file names); callers with the real name should pass displayName.
     if (type !== 'group_create' && displayName === null) {
         displayName = String(charId).replace('.png', '');
     }
@@ -8911,7 +8428,6 @@ export function select_rm_info(type, charId, previousCharId = null, displayName 
         }
 
         if (type === 'group_create') {
-            // Find the page at which the group is located
             const perPage = Number(accountStorage.getItem('Characters_PerPage')) || per_page_default;
             const page = await findCharacterListPage((x) => x?.type === 'group' && String(x?.item?.id) === String(charId), perPage);
 
@@ -8975,7 +8491,6 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
     }
 
     $('#add_avatar_button').val('');
-    // Before the fields: a field keeps its unsaved text per character, keyed by this.
     $('#avatar_url_pole').val(character.avatar);
 
     $('#character_name_pole').val(characterFormValue(character, '#character_name_pole'));
@@ -9036,12 +8551,8 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
     $('#char-management-dropdown option').not('[value="default"]').prop('disabled', false);
     $('#character_source').attr('disabled', !getCharacterSource(character) ? '' : null);
 
-    // An index is emitted as passed. The avatar and object forms emit `this_chid` only when they resolve to the
-    // current character (`this_avatar`), and undefined otherwise, so a wrong index is never emitted.
     const editorOpenedChid = exposedCharacters[chid] !== undefined ? chid : (avatar === this_avatar ? this_chid : undefined);
     eventSource.emit(event_types.CHARACTER_EDITOR_OPENED, editorOpenedChid);
-
-    // Only populates DOM fields from already-persisted data; nothing here needs saving.
 }
 
 /**
@@ -9050,8 +8561,6 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
  * @param {boolean} [options.switchMenu=true] Whether to switch the menu
  */
 function select_rm_create({ switchMenu = true } = {}) {
-    // Must start before the editor is repopulated: a pending field save reads its conflict baseline
-    // from the character currently loaded.
     void flushCharacterFieldSaves();
     switchMenu && setMenuType('create');
 
@@ -9114,17 +8623,13 @@ function select_rm_create({ switchMenu = true } = {}) {
     _loadedCharacterFieldHashesAvatar = null;
     $('.form_create_bottom_buttons_block .chat_lorebook_button').hide();
     $('#character_open_media_overrides').hide();
-    // A preference about a saved character's styles: off while creating (it changed the last-opened character's).
     $('#creators_note_styles_button').hide();
-    // The character being created isn't saved yet: every action on a saved character (extensions' included) is off,
-    // so none of them acts on the character whose chat is open. Linking lorebooks is staged for the new one.
     $('#char-management-dropdown option').not('[value="default"], #set_character_world').prop('disabled', true);
 }
 
 function select_rm_characters() {
     const doFullRefresh = menu_type === 'characters';
     setMenuType('characters');
-    // Both branches below re-query the list, so showing it here mustn't fetch it a second time.
     characterListShowHandledByCaller = true;
     try {
         selectRightMenuWithAnimation('rm_characters_block');
@@ -9139,13 +8644,11 @@ function select_rm_characters() {
 }
 
 /**
- * Runs the change sync that a change message arriving while the list was hidden left pending, and reprints the list.
- * @param {boolean} doFullRefresh Passed to printCharacters(): false keeps the list's page and scroll distance.
+ * @param {boolean} doFullRefresh
  */
 function syncDirtyCharacterList(doFullRefresh) {
     _charactersDirty = false;
     if (hasActiveCharacterSearch()) {
-        // Only the page fetch, without getCharacters()' extra search query.
         getCharacters({ skipPrint: true }).then(() => printCharacters(doFullRefresh));
     } else {
         getCharacters({ keepListPosition: !doFullRefresh });
@@ -9217,8 +8720,6 @@ export function removeDepthPrompts() {
 export function updateChatMetadata(newValues, reset) {
     setChatMetadata(reset ? { ...newValues } : { ...chat_metadata, ...newValues });
     if (reset) {
-        // A wholesale replace (chat switch, import, group-chat metadata load) - the previous
-        // save snapshot no longer describes what the server has for this metadata object.
         _resetMetadataSaveSnapshot();
     }
 }
@@ -9286,7 +8787,6 @@ export async function setCharacterSettingsOverrides() {
         pendingChanges.system_prompt = '';
     });
 
-    // OK keeps the edits; closing any other way (Escape, the close button) discards them.
     const result = await callGenericPopup($template, POPUP_TYPE.TEXT, '', {
         wide: true,
         large: true,
@@ -9390,7 +8890,6 @@ export async function updateSwipeCounter(mesId, { message = undefined, messageEl
     const canJumpToSwipe = canJumpToSwipeForMessage(mesId);
 
     swipeCounter.text(formatSwipeCounter(currentNum, totalNum));
-    // A message with one alternative shows no counter, unless it's the last (style.css).
     swipeCounter.attr('data-alternatives', totalNum);
 
     swipeCounter
@@ -9443,7 +8942,6 @@ export function isMessageSwipeable(messageId, message = undefined) {
         //Only messages below the currently edited message can be swiped, if it's not mid-swipe edit.
         ((messageId > (this_edit_mes_id ?? -1)) && (swipeState != SWIPE_STATE.EDITING)) &&
 
-        //Any message can be swiped now, not just the last - each carries its own sibling set (see getOverswipeBehavior() for the generate-on-overswipe rule).
         (message &&
             //Small system messages cannot be swiped.
             !(message?.extra?.isSmallSys) &&
@@ -9471,7 +8969,6 @@ export function isMessageSwipeable(messageId, message = undefined) {
 export function getOverswipeBehavior(messageId, message = undefined) {
     message ??= chat[messageId];
 
-    // Every branch below is a property of the message, not of where it sits - generating mid-conversation just forks a new sibling.
     const isGreeting = messageId === 0;
 
     //Do not override explicitly set overswipe_behavior.
@@ -9480,11 +8977,9 @@ export function getOverswipeBehavior(messageId, message = undefined) {
     else if (message?.extra?.swipeable === false) return OVERSWIPE_BEHAVIOR.NONE;
     //Small System messages can't be swiped.
     else if (message?.extra?.isSmallSys) return OVERSWIPE_BEHAVIOR.NONE;
-    //Greetings are user-authored card data, never LLM output, so overswiping one opens the editor instead of generating.
     else if (isGreeting) return OVERSWIPE_BEHAVIOR.EDIT_GENERATE;
     //Non-user and non-prompt hidden messages will regenerate.
     else if (!message?.is_user && !message?.is_system) return OVERSWIPE_BEHAVIOR.REGENERATE;
-    //User messages will open the editor on a new, empty swipe.
     else if (message?.is_user) return OVERSWIPE_BEHAVIOR.EDIT_GENERATE;
     //By default, all other messages will loop. Their swipe chevrons will only be shown if there is more than one swipe.
     else { return OVERSWIPE_BEHAVIOR.LOOP; }
@@ -9540,7 +9035,6 @@ export function refreshSwipeButtons(updateCounters = false, fade = true) {
 
             div.classList.toggle('last_swipe', isOverswipeable);
 
-            //Shown for a single swipe too when an overswipe is still meaningful (e.g. a single-greeting card can still add a second).
             div.classList.toggle('swipes_visible', hasSwipes || isOverswipeable);
             swipePickerButton.toggle(canOpenSwipePicker);
 
@@ -9613,7 +9107,6 @@ export async function deleteSwipe(swipeId = null, messageId = chat.length - 1, {
         return;
     }
 
-    // Clone arrays before splicing (originals are frozen)
     const newSwipes = [...message.swipes];
     newSwipes.splice(swipeId, 1);
 
@@ -9635,8 +9128,6 @@ export async function deleteSwipe(swipeId = null, messageId = chat.length - 1, {
     messageId = Number(messageId);
     swipeId = Number(swipeId);
 
-    // The deleted alternative goes on the server with everything below it; what else that drops is asked about
-    // before anything changes here. A shown swipe is deleted once swipe() has moved the selection off it.
     const isShownSwipe = swipeId === currentSwipeId;
     const deletedNodeId = isShownSwipe ? message.node_id : message.swipe_info?.[swipeId]?.node_id;
     let ticket = null;
@@ -9649,12 +9140,10 @@ export async function deleteSwipe(swipeId = null, messageId = chat.length - 1, {
     }
 
     if (!isShownSwipe && ticket) {
-        // A failed request was reported to the user; the swipe still goes here.
         const deleted = await chatOpDeleteAlternativeNode(deletedNodeId, message.node_id, ticket, { ask }).catch(error => {
             console.error('Could not remove the deleted alternative from the tree:', error);
             return true;
         });
-        // Asked again (someone else changed what it drops meanwhile) and the user said no.
         if (!deleted) return;
     }
     chat_metadata.tainted = true;
@@ -9666,8 +9155,6 @@ export async function deleteSwipe(swipeId = null, messageId = chat.length - 1, {
         const direction = (swipeId <= newSwipeId) ? SWIPE_DIRECTION.RIGHT : SWIPE_DIRECTION.LEFT;
         // Animate swipe and swap displayed message when the currently visible swipe was deleted.
         await swipe(null, direction, { source: SWIPE_SOURCE.DELETE, repeated: false, forceMesId: messageId, forceSwipeId: newSwipeId });
-        // If swipe() bailed out early (chat[messageId] is still on deletedNodeId), this refuses without asking the
-        // server.
         if (ticket) {
             await chatOpDeleteAlternativeNode(deletedNodeId, chat[messageId]?.node_id, ticket, { ask }).catch(error =>
                 console.error('Could not remove the deleted alternative from the tree:', error));
@@ -9792,15 +9279,12 @@ async function openCharacterWorldPopup() {
 
     const worldCharacter = charactersStore.get(avatar);
 
-    // Explicit undefined when unresolved, distinct from getCharaFilename()'s own "no avatar given" fallback to the currently selected character.
     // TODO: Maybe make this utility function not use the window context?
     const fileName = worldCharacter ? getCharaFilename(avatar) : undefined;
     const charName = (menu_type == 'create' ? create_save.name : worldCharacter?.data?.name) || 'Nameless';
     const worldId = (menu_type == 'create' ? create_save.world : worldCharacter?.data?.extensions?.world) || '';
-    // A name with no World file, on a card with its own embedded lorebook, links that embedded book.
     const linksEmbeddedBook = menu_type != 'create' && getCharacterWorldLink(worldCharacter) === character_world_link.EMBEDDED;
     const embeddedBookValue = 'embedded';
-    // Any other name with no World file gets its own option too, so the link shows as set and choosing "None" clears it.
     const linksUnlistedName = worldId !== '' && !linksEmbeddedBook && !world_names.includes(worldId);
     const unlistedNameValue = 'unlisted';
     const template = $('#character_world_template .character_world').clone();
@@ -9823,7 +9307,6 @@ async function openCharacterWorldPopup() {
         const selectedValues = $(el).val();
         const selected = Array.isArray(selectedValues) ? selectedValues : [];
         const nextList = selected.map(i => world_names[i]).filter(Boolean);
-        // The popup's character (undefined while one is being created: staged for it), not the open chat's.
         charSetAuxWorlds(fileName, nextList);
     }
 
@@ -9834,7 +9317,6 @@ async function openCharacterWorldPopup() {
         primarySelect.append(new Option(t`${worldId} (Embedded Lore)`, embeddedBookValue, true, true));
     }
     if (linksUnlistedName) {
-        // A shallow card carries no character_book, so its link may still be to an embedded book: shown by name only.
         const label = worldCharacter?.shallow === true ? worldId : t`${worldId} (not found)`;
         primarySelect.append(new Option(label, unlistedNameValue, true, true));
     }
@@ -9858,7 +9340,6 @@ async function openCharacterWorldPopup() {
             primarySelect.on('change', handlePrimaryWorldSelect);
             extrasSelect.on('change', handleExtrasWorldSelect);
 
-            // Not needed on mobile.
             if (!isMobile()) {
                 extrasSelect.select2({
                     width: '100%',
@@ -9874,17 +9355,11 @@ async function openCharacterWorldPopup() {
     await popup.show();
 }
 
-// Records the default greeting's stable-order position separately, so picking a new default doesn't reorder the list.
 const GREETING_DEFAULT_POSITION_KEY = 'greeting_default_position';
 
-/**
- * @typedef {{greetings: string[], defaultIndex: number|null}} GreetingsModel Ordered greeting list,
- *   independent of which one (if any) is the default; `defaultIndex` is where the default sits in
- *   that order, or null when the card has no default greeting at all.
- */
+/** @typedef {{greetings: string[], defaultIndex: number|null}} GreetingsModel */
 
 /**
- * Reads a character (or a create-mode-shaped equivalent) into a {@link GreetingsModel}.
  * @param {{first_mes?: string, data?: {alternate_greetings?: string[], extensions?: Record<string, any>}}} card
  * @returns {GreetingsModel}
  */
@@ -9893,7 +9368,6 @@ export function cardToGreetingsModel(card) {
     const altGreetings = Array.isArray(card?.data?.alternate_greetings) ? card.data.alternate_greetings : [];
 
     if (firstMes === '') {
-        // Empty first_mes means "no default" - alternate_greetings holds the entire list, in order.
         return { greetings: altGreetings.slice(), defaultIndex: null };
     }
 
@@ -9904,12 +9378,10 @@ export function cardToGreetingsModel(card) {
         return { greetings, defaultIndex: recordedPosition };
     }
 
-    // No usable recorded position - fall back to the pre-existing behavior: the default leads the list.
     return { greetings: [firstMes, ...altGreetings], defaultIndex: 0 };
 }
 
 /**
- * Inverse of {@link cardToGreetingsModel}. Callers still run `alternateGreetings` through stripEmptyAlternateGreetings() themselves before writing.
  * @param {GreetingsModel} model
  * @returns {{firstMes: string, alternateGreetings: string[], greetingDefaultPosition: number|null}}
  */
@@ -9924,7 +9396,6 @@ function greetingsModelToCardFields({ greetings, defaultIndex }) {
 }
 
 /**
- * Removing the default itself clears it (returns null) rather than guessing which neighbor should inherit default status.
  * @param {number|null} defaultIndex
  * @param {number} removedIndex
  */
@@ -9935,7 +9406,6 @@ function reindexDefaultAfterRemoval(defaultIndex, removedIndex) {
 }
 
 /**
- * Only used to seed the initial per-position hash list after a fresh load; every hash after that comes verbatim from a greeting-op response, never recomputed from what the client has typed.
  * @param {string} text
  * @returns {number}
  */
@@ -9944,17 +9414,16 @@ function hashGreetingText(text) {
 }
 
 /**
- * @typedef {object} GreetingOpResult A confirmed greeting op: the character's greeting list as the server holds it after the op.
+ * @typedef {object} GreetingOpResult
  * @property {true} ok
  * @property {string[]} greetings
- * @property {number[]} hashes Position-aligned with `greetings`.
+ * @property {number[]} hashes
  * @property {number|null} defaultPosition
- * @property {number} [position] Where an edit, delete, set-default or appending add acted.
+ * @property {number} [position]
  */
 
 /**
- * Posts one named greeting-list operation; resolves to a result object rather than throwing, even for a refused op (409) or network failure.
- * @param {string} opName The path segment after `/greetings/`, e.g. `'add'`, `'default/set'`.
+ * @param {string} opName
  * @param {object} body
  * @returns {Promise<GreetingOpResult|{ok: false, status?: number, reason?: string}>}
  */
@@ -9978,7 +9447,6 @@ async function postGreetingOp(opName, body) {
 }
 
 /**
- * Writes a GreetingsModel onto an in-memory character object, and refreshes the digest caches other UI reads off it.
  * @param {object} character
  * @param {import('../src/greeting-list.js').GreetingsModel} model
  */
@@ -10000,14 +9468,9 @@ function applyGreetingsModelToCharacter(character, model) {
 }
 
 /**
- * Gives the character and the pager the greeting list the server returned for a confirmed op, which also carries
- * whatever other sessions changed. Call it only from inside {@link queueGreetingSave}: the save's CHARACTER_EDITED
- * fires once the save has released its queue slot.
  * @param {object} character
  * @param {GreetingOpResult} result
- * @param {{expectedHash: number, text: string}} [edit] For an edit op: the edited greeting's hash before the edit, and the text sent.
- * Only this is recorded as a text change for the save's CHARACTER_EDITED: the list before and after can also differ by
- * other sessions' changes, which aren't this page's to announce.
+ * @param {{expectedHash: number, text: string}} [edit]
  */
 function applyGreetingOpSuccess(character, result, edit) {
     const run = greetingSaveRuns.get(character?.avatar);
@@ -10026,9 +9489,6 @@ function applyGreetingOpSuccess(character, result, edit) {
 }
 
 /**
- * Fires the one CHARACTER_EDITED for a greeting save that applied anything. `greetingEdits` lists the text edits
- * this save made, in order; `greetingEdit` is its one text edit, null when it made none or more than one. Neither
- * ever carries another session's change.
  * @param {GreetingSaveRun} run
  * @returns {Promise<void>}
  */
@@ -10039,22 +9499,21 @@ function emitGreetingSaveEdited(run) {
 }
 
 /**
- * @typedef {object} GreetingSaveRun What one queued greeting save applied.
- * @property {object|null} character Null until the save applies an op.
- * @property {{from: string, to: string, index: number}[]} edits Each text edit the save made, in order; `index` is where it landed.
+ * @typedef {object} GreetingSaveRun
+ * @property {object|null} character
+ * @property {{from: string, to: string, index: number}[]} edits
  */
 
-/** @type {Map<string, Promise<void>>} Per character avatar, the tail of its queue of greeting saves; only held while one is queued or in flight. */
+/** @type {Map<string, Promise<void>>} */
 const greetingSaveQueues = new Map();
 
-/** @type {Map<string, GreetingSaveRun>} Per character avatar, the greeting save holding its queue slot. */
+/** @type {Map<string, GreetingSaveRun>} */
 const greetingSaveRuns = new Map();
 
-/** @type {Map<string, Promise<void>>} Per character avatar, settles once the newest queued save's CHARACTER_EDITED has started, or it had none to fire. */
+/** @type {Map<string, Promise<void>>} */
 const greetingEventStarts = new Map();
 
 /**
- * Keeps `promise` under `key` until it settles, unless something newer has replaced it by then.
  * @param {Map<string, Promise<void>>} map
  * @param {string} key
  * @param {Promise<void>} promise
@@ -10069,12 +9528,6 @@ function holdUntilSettled(map, key, promise) {
 }
 
 /**
- * Runs a greeting save once every earlier greeting save for the same character has finished (and had its result
- * applied), so it reads the preconditions and the confirmed list those left behind rather than the ones before them.
- * The slot covers only the server writes and the local state update. The save's CHARACTER_EDITED fires after the
- * slot is released, and starts after the earlier saves' ones have started, so a listener that starts a greeting
- * save of its own and waits for it queues behind rather than waiting on itself. The returned promise settles once
- * that event's listeners have finished.
  * @template T
  * @param {string} avatar
  * @param {() => Promise<T>} save
@@ -10104,9 +9557,6 @@ function queueGreetingSave(avatar, save) {
     return run.then(result => fired.then(() => result), error => fired.then(() => { throw error; }));
 }
 
-// In-memory state for the sidebar greeting pager; `hashes` is the post-op per-position precondition hash list.
-// `committed[i] === false` marks a just-added, still-blank slot from the New Greeting button - not yet a real
-// array entry server-side, a new greeting is only stored once it has text.
 const greetingPagerState = {
     greetings: [''],
     defaultIndex: 0,
@@ -10116,33 +9566,26 @@ const greetingPagerState = {
 };
 
 /**
- * @typedef {object} GreetingPagerEdit The greeting `greeting_field` is editing, from the moment its edit starts until it ends.
- * @property {number} position Where the greeting is: the pager position when the edit started, then wherever the edit's own saves landed.
- * @property {boolean} committed False while the greeting is a still-pending New Greeting slot that no add has saved yet.
- * @property {number|undefined} hash Precondition hash of the greeting: the one the pager held when the edit started, then the one the server returned for the edit's last save.
- * @property {{greetings: string[], defaultIndex: number|null, hashes: number[]}|null} pending The newest pager state that arrived during the edit, applied when it ends.
+ * @typedef {object} GreetingPagerEdit
+ * @property {number} position
+ * @property {boolean} committed
+ * @property {number|undefined} hash
+ * @property {{greetings: string[], defaultIndex: number|null, hashes: number[]}|null} pending
  */
 
 /** @type {GreetingPagerEdit|null} */
 let greetingPagerEdit = null;
 
-/** Starts tracking the greeting `greeting_field` now edits; the pager state stays as it is until the edit ends. */
 function beginGreetingPagerEdit() {
     const { index, committed, hashes } = greetingPagerState;
     greetingPagerEdit = { position: index, committed: committed[index] !== false, hash: hashes[index], pending: null };
 }
 
-/**
- * Applies the newest pager state that arrived during the edit, if any, showing the edited greeting where it now is:
- * at its position if the hash there matches, else at the one position holding its hash; otherwise the index is clamped.
- */
 function endGreetingPagerEdit() {
     const edit = greetingPagerEdit;
     greetingPagerEdit = null;
     if (!edit) return;
     if (!edit.pending) {
-        // A New Greeting slot left empty isn't a greeting: it leaves the list (the one blank slot shown when there
-        // are no greetings stays).
         if (!edit.committed && greetingPagerState.greetings.length > 1 && String($('#greeting_field').val() ?? '') === '') {
             dropUncommittedPagerSlot(edit.position);
         }
@@ -10161,7 +9604,6 @@ function endGreetingPagerEdit() {
 }
 
 /**
- * Takes a slot no add has saved out of the pager (in create mode, out of `create_save` too).
  * @param {number} position
  */
 function dropUncommittedPagerSlot(position) {
@@ -10181,13 +9623,9 @@ function dropUncommittedPagerSlot(position) {
 }
 
 /**
- * Replaces the pager's greetings, default pointer, and precondition hashes, and clamps the current index in case the list shrank.
- * Every position here is confirmed by the server (or is the pre-load placeholder), so all are marked committed.
- * While `greeting_field` is being edited nothing is replaced: the state is kept and applied when the edit ends, so
- * the edit's saves keep targeting the greeting it started on.
- * @param {string[]} greetings Stable-order greeting list.
+ * @param {string[]} greetings
  * @param {number|null} defaultIndex
- * @param {number[]} hashes Position-aligned with `greetings`.
+ * @param {number[]} hashes
  */
 function setGreetingPagerGreetings(greetings, defaultIndex, hashes) {
     if (greetingPagerEdit) {
@@ -10197,28 +9635,23 @@ function setGreetingPagerGreetings(greetings, defaultIndex, hashes) {
     greetingPagerState.greetings = greetings.length > 0 ? greetings.slice() : [''];
     greetingPagerState.defaultIndex = greetings.length > 0 ? defaultIndex : 0;
     greetingPagerState.hashes = greetings.length > 0 ? hashes.slice() : [];
-    // With no greetings, the one blank slot shown is a new greeting still to be added, not a stored one to edit.
     greetingPagerState.committed = greetings.length > 0 ? greetingPagerState.greetings.map(() => true) : [false];
     greetingPagerState.index = Math.max(0, Math.min(greetingPagerState.index, greetingPagerState.greetings.length - 1));
     renderGreetingPager();
     $('#firstmessage_textarea').val(greetings.length > 0 && defaultIndex !== null ? greetings[defaultIndex] ?? '' : '');
 }
 
-/** Redraws the pager controls and the visible greeting field from the current pager state. */
 function renderGreetingPager() {
     const { greetings, index } = greetingPagerState;
     setFieldValue('greeting_field', greetings[index] ?? '');
     autosizeTextareas(document.getElementById('greeting_field'));
     $('.greeting-pager-input').val(index + 1).css('--greeting-pager-digits', String(String(greetings.length).length));
     $('.greeting-pager-total').text(`/${greetings.length}`);
-    // The one blank slot shown with no greetings is nothing to delete.
     $('.greeting-pager-delete').toggleClass('disabled', greetings.length === 1 && greetings[0] === '');
-    // .val() above doesn't fire a native input event, so the token counter needs an explicit nudge.
     countCharTokensWhenShown();
 }
 
 /**
- * Commits the visible field into the greetings array before stepping to a wrapped index.
  * @param {number} newIndex
  */
 function navigateGreetingPager(newIndex) {
@@ -10229,17 +9662,15 @@ function navigateGreetingPager(newIndex) {
 }
 
 /**
- * Saves an edit to an already-committed pager greeting. Call it only from inside {@link queueGreetingSave}.
- * The server edits the greeting at `position` if it still has `expectedHash`, else the one greeting that has it.
  * @param {string} avatar
  * @param {object} character
  * @param {number} position
  * @param {number|undefined} expectedHash
  * @param {string} text
- * @returns {Promise<{position: number, hash: number}|null>} Where the edit landed and the greeting's new hash there; null if it wasn't saved.
+ * @returns {Promise<{position: number, hash: number}|null>}
  */
 async function saveGreetingPagerEdit(avatar, character, position, expectedHash, text) {
-    if (!Number.isFinite(expectedHash)) return null; // Position out of range of what the server last confirmed.
+    if (!Number.isFinite(expectedHash)) return null;
 
     const result = await postGreetingOp('edit', { avatar_url: avatar, position, expected_hash: expectedHash, text });
     if (result.ok) {
@@ -10257,13 +9688,9 @@ async function saveGreetingPagerEdit(avatar, character, position, expectedHash, 
 }
 
 /**
- * Commits a value for the greeting currently shown in the pager: a still-pending (uncommitted) slot is
- * added once it has text, a committed one is edited in place; in create mode it goes to `create_save`.
- * An empty value removes the greeting, but only when the edit is confirmed: an autosave of a greeting emptied
- * mid-edit saves nothing (typing goes on), and a still-pending slot left empty is dropped when its edit ends.
  * @param {string} value
- * @param {{ confirmed?: boolean }} [options] `confirmed`: the edit's Done, not an autosave.
- * @returns {Promise<boolean>} Whether the value was saved.
+ * @param {{ confirmed?: boolean }} [options]
+ * @returns {Promise<boolean>}
  */
 async function commitGreetingFieldValue(value, { confirmed = false } = {}) {
     const { index, defaultIndex } = greetingPagerState;
@@ -10277,9 +9704,6 @@ async function commitGreetingFieldValue(value, { confirmed = false } = {}) {
     const avatar = $('.open_alternate_greetings').data('avatar');
     const character = avatar ? charactersStore.get(avatar) : null;
     if (!character) return false;
-    // The target is read once the earlier saves are done: an add still in flight commits the slot, and an edit's
-    // earlier saves move its target to where they landed. While `greeting_field` is being edited the target is the
-    // greeting the edit started on; otherwise it is the pager's current greeting.
     return await queueGreetingSave(avatar, async () => {
         const edit = greetingPagerEdit;
         const target = edit ?? { position: index, committed: greetingPagerState.committed[index] !== false, hash: greetingPagerState.hashes[index] };
@@ -10309,7 +9733,6 @@ async function commitGreetingFieldValue(value, { confirmed = false } = {}) {
             }
             return true;
         }
-        // Nothing to add: confirmed, the edit ends and its empty slot is dropped (endGreetingPagerEdit()).
         if (value === '') return confirmed;
         const expectedLength = greetingPagerState.hashes.length;
         const result = await postGreetingOp('add', { avatar_url: avatar, position: target.position, expected_length: expectedLength, text: value });
@@ -10319,7 +9742,6 @@ async function commitGreetingFieldValue(value, { confirmed = false } = {}) {
                 edit.committed = true;
                 edit.hash = result.hashes[target.position];
             }
-            // The first greeting a character gets is its default, as in create mode.
             if (expectedLength === 0 && result.defaultPosition === null) {
                 const made = await postGreetingOp('default/set', { avatar_url: avatar, position: target.position, expected_hash: result.hashes[target.position] });
                 if (made.ok) {
@@ -10337,14 +9759,9 @@ async function commitGreetingFieldValue(value, { confirmed = false } = {}) {
     });
 }
 
-/**
- * Deletes the greeting the pager shows, once the user confirms; the pager stays at its position (clamped). A New
- * Greeting slot no add has saved yet is just dropped. In create mode the greeting goes from `create_save`.
- */
 async function deleteGreetingPagerGreeting() {
     const { greetings, committed, index, defaultIndex, hashes } = greetingPagerState;
     if (greetings.length === 1 && greetings[0] === '') return;
-    // The greeting shown when asked: if it has changed by the time the delete is sent, the server refuses it.
     const expectedHash = hashes[index];
     if (committed[index] === false && menu_type !== 'create') {
         dropUncommittedPagerSlot(index);
@@ -10385,23 +9802,17 @@ async function deleteGreetingPagerGreeting() {
 }
 
 /**
- * Saves the greeting currently shown in the pager with this value.
  * @param {string} value
- * @param {{ confirmed?: boolean }} [options] `confirmed`: the edit's Done (see {@link commitGreetingFieldValue}).
- * @returns {Promise<boolean>} Whether the value was saved.
+ * @param {{ confirmed?: boolean }} [options]
+ * @returns {Promise<boolean>}
  */
 export async function saveGreetingField(value, { confirmed = false } = {}) {
     return await commitGreetingFieldValue(value, { confirmed });
 }
 
-/** @type {{value: string}|null} A write to `#firstmessage_textarea` queued behind an earlier save, not yet sent. */
+/** @type {{value: string}|null} */
 let queuedFirstMessageWrite = null;
 
-/**
- * Saves what code wrote into `#firstmessage_textarea`, upstream's first message field, as the default greeting:
- * its text is replaced; with no default, the value is added and made the default; an empty value clears the default
- * and keeps the greeting. Writes made while one is waiting to be sent replace its value, so only the latest is sent.
- */
 function onFirstMessageFieldInput() {
     const value = String($('#firstmessage_textarea').val());
     if (queuedFirstMessageWrite) {
@@ -10431,7 +9842,6 @@ function onFirstMessageFieldInput() {
 }
 
 /**
- * Sends the ops that make `value` the default greeting. Call it only from inside {@link queueGreetingSave}.
  * @param {string} avatar
  * @param {object} character
  * @param {string} value
@@ -10461,8 +9871,6 @@ async function saveFirstMessage(avatar, character, value) {
 }
 
 /**
- * Create mode: makes `value` the default greeting of the character being created, by the same rules as
- * {@link onFirstMessageFieldInput}.
  * @param {string} value
  */
 function setCreateModeFirstMessage(value) {
@@ -10485,9 +9893,8 @@ function setCreateModeFirstMessage(value) {
 }
 
 /**
- * Final safety net for the "no empty string ever lands in alternate_greetings" invariant.
  * @param {string[]} alternateGreetings
- * @param {string} context Short label identifying which write path this ran in, for the log.
+ * @param {string} context
  */
 function stripEmptyAlternateGreetings(alternateGreetings, context) {
     const filtered = alternateGreetings.filter(greeting => greeting !== '');
@@ -10499,8 +9906,6 @@ function stripEmptyAlternateGreetings(alternateGreetings, context) {
 }
 
 /**
- * The greetings button in character info is for the character shown; a character still being created has its
- * greetings in the form's pager until it's saved.
  * @param {string|null} avatar
  */
 function setGreetingsButton(avatar) {
@@ -10510,7 +9915,6 @@ function setGreetingsButton(avatar) {
         .attr('aria-disabled', String(!avatar));
 }
 
-/** Opens the list of the shown character's greetings (the alternatives of its chats' first message). */
 function openGreetingsList() {
     if (blockWhileFieldEditing()) {
         return;
@@ -10524,11 +9928,9 @@ function openGreetingsList() {
 }
 
 /**
- * The card's greetings as the server holds them after an operation the alternatives list sent: the character and
- * the greeting pager take them, and the save's CHARACTER_EDITED fires, as for the pager's own saves.
  * @param {string} avatar
  * @param {{ greetings: string[], hashes: number[], defaultPosition: number|null }} card
- * @param {{ hash: number, text: string } | null} edit A text edit: the greeting's hash before it, and its new text.
+ * @param {{ hash: number, text: string } | null} edit
  * @returns {Promise<void>}
  */
 export function applyServerGreetings(avatar, card, edit) {
@@ -10547,8 +9949,7 @@ export function applyServerGreetings(avatar, card, edit) {
 }
 
 /**
- * Builds the `/api/characters/create` request body from the confirmed create-mode values in `create_save`.
- * @param {string} [jsonData] Card JSON the new card starts from; `create_save`'s values are written over it.
+ * @param {string} [jsonData]
  * @returns {Promise<FormData>}
  */
 async function createSaveToFormData(jsonData) {
@@ -10568,7 +9969,6 @@ async function createSaveToFormData(jsonData) {
     formData.set('creator', create_save.creator);
     formData.set('character_version', create_save.character_version);
     formData.set('tags', create_save.tags);
-    // The tags picked in the form's tag list, assigned by the create itself: the new character has no key to assign them to before.
     for (const tagId of $('#tagList').find('.tag').map((_, el) => $(el).attr('id')).get()) {
         if (tagId) formData.append('tag_ids', tagId);
     }
@@ -10590,8 +9990,7 @@ async function createSaveToFormData(jsonData) {
 }
 
 /**
- * Names the picked tags the create couldn't assign (the server lists their ids), so none goes missing silently.
- * @param {string|null} header The create response's `X-Unassigned-Tag-Ids`.
+ * @param {string|null} header
  */
 function warnUnassignedCreateTags(header) {
     if (!header) return;
@@ -10607,9 +10006,8 @@ function warnUnassignedCreateTags(header) {
 }
 
 /**
- * Creates a new character from the confirmed create-mode values in `create_save`.
  * @param {object} [options]
- * @param {string} [options.jsonData] Card JSON the new card starts from; `create_save`'s values are written over it.
+ * @param {string} [options.jsonData]
  */
 export async function createCharacterFromCreateSave({ jsonData } = {}) {
     if (blockWhileFieldEditing()) {
@@ -10621,7 +10019,6 @@ export async function createCharacterFromCreateSave({ jsonData } = {}) {
     }
 
     $('#rm_info_avatar').html('');
-    // Captured before the post-save field-clearing loop resets create_save.name to '', for the "Character Created" toast.
     const newCharacterName = create_save.name;
     const headers = getRequestHeaders({ omitContentType: true });
 
@@ -10634,7 +10031,6 @@ export async function createCharacterFromCreateSave({ jsonData } = {}) {
         return;
     }
     try {
-        //if the character name text area isn't empty (only posible when creating a new character)
         let url = '/api/characters/create';
 
         if (crop_data != undefined) {
@@ -10681,11 +10077,10 @@ export async function createCharacterFromCreateSave({ jsonData } = {}) {
             $(field.id).val(fieldValue);
             field.callback && field.callback(fieldValue);
         });
-        create_save.first_message = ''; // was reset via the #firstmessage_textarea fields-loop entry above
+        create_save.first_message = '';
         setGreetingPagerGreetings([''], 0, []);
 
         if (Array.isArray(create_save.extra_books) && create_save.extra_books.length > 0) {
-            // The staged extra books, as an action on the character now stored.
             await sendAuxBooksOp(getCharaFilename(null, { manualAvatarKey: avatarId }), 'set', create_save.extra_books);
         }
         create_save.extra_books = [];
@@ -10700,8 +10095,6 @@ export async function createCharacterFromCreateSave({ jsonData } = {}) {
         warnUnassignedCreateTags(fetchResult.headers.get('X-Unassigned-Tag-Ids'));
         crop_data = undefined;
 
-        // The new character opens, as picking it in the list does: its one card is read, not the library, and the
-        // list shows it through the server's change message like any other new character. No toast: it's on screen.
         await selectCharacterByAvatar(avatarId);
     } catch (error) {
         console.error('Error creating character', error);
@@ -10709,12 +10102,8 @@ export async function createCharacterFromCreateSave({ jsonData } = {}) {
     }
 }
 
-// Upstream's whole-form save, kept for third-party extensions: they write a `#form_create` input, then call
-// createOrEditCharacter() or saveCharacterDebounced(). First-party code saves the one field it changed instead
 // (.eslintrc.cjs forbids importing these two). Edit mode writes only what differs, each through the fork's own
-// conflict-checked path.
 
-/** Create-mode inputs and the `create_save` key each one's input handler keeps in sync. */
 const CREATE_SAVE_INPUTS = {
     '#character_name_pole': 'name',
     '#description_textarea': 'description',
@@ -10735,18 +10124,14 @@ const CREATE_SAVE_INPUTS = {
 };
 const NUMERIC_CREATE_SAVE_KEYS = new Set(['talkativeness', 'depth_prompt_depth']);
 
-/** Card paths only the /greetings/* operations may change. */
 const GREETING_CARD_PATHS = [['first_mes'], ['data', 'first_mes'], ['alternate_greetings'], ['data', 'alternate_greetings'], ['data', 'extensions', GREETING_DEFAULT_POSITION_KEY]];
-/** merge-attributes reads these as request fields, not card paths. */
 const MERGE_REQUEST_PATHS = [['avatar'], ['_loadedFieldHashes']];
 
 let createOrEditCharacterTail = Promise.resolve();
 
 /**
- * Upstream's save of the whole character form. Create mode creates the character; edit mode saves each
- * form value that differs from what is stored, then redraws the first message the way upstream regenerated it.
- * @param {Event} [e] A `newChat` CustomEvent skips the first-message redraw.
- * @returns {Promise<void>} Resolves undefined, never rejects; failures are toasted.
+ * @param {Event} [e]
+ * @returns {Promise<void>}
  */
 export async function createOrEditCharacter(e) {
     const run = createOrEditCharacterTail.then(() => runCreateOrEditCharacter(e));
@@ -10754,7 +10139,6 @@ export async function createOrEditCharacter(e) {
     await run;
 }
 
-/** Upstream's debounced {@link createOrEditCharacter}. */
 export const saveCharacterDebounced = debounce(() => { void createOrEditCharacter(); }, DEFAULT_SAVE_EDIT_TIMEOUT);
 
 /** @param {Event} [e] */
@@ -10813,7 +10197,6 @@ function createModeJsonData() {
     if (!card) {
         return undefined;
     }
-    // The greetings come from create_save; a position recorded against the JSON's own greetings would misplace the default.
     lodash.unset(card, ['data', 'extensions', GREETING_DEFAULT_POSITION_KEY]);
     return JSON.stringify(card);
 }
@@ -10826,7 +10209,7 @@ async function saveEditedCharacterFromForm(isNewChat) {
     }
     await flushCharacterFieldSaves();
 
-    /** @type {string[][]} Card paths a changed form input writes; `#character_json_data` leaves them alone. */
+    /** @type {string[][]} */
     const formPaths = [];
 
     const changedFields = [];
@@ -10883,9 +10266,8 @@ function formValuesMatch(formId, mapping, value, storedValue) {
 }
 
 /**
- * Saves what an outside writer changed in `#character_json_data` since the fork last wrote it.
  * @param {string} avatar
- * @param {string[][]} formPaths Paths a changed form input already writes.
+ * @param {string[][]} formPaths
  */
 async function saveJsonDataFromForm(avatar, formPaths) {
     const raw = String($('#character_json_data').val() ?? '');
@@ -10924,7 +10306,6 @@ function parseJsonObject(raw) {
 }
 
 /**
- * Every leaf path whose value differs between two JSON objects. Arrays are compared whole.
  * @param {Record<string, any>} before
  * @param {Record<string, any>} after
  * @param {string[]} [prefix]
@@ -10948,7 +10329,6 @@ function diffJsonPaths(before, after, prefix = [], out = []) {
 }
 
 /**
- * Whether `path` is, contains or sits inside any of `paths`.
  * @param {string[]} path
  * @param {string[][]} paths
  */
@@ -10963,10 +10343,9 @@ function pathsOverlap(path, paths) {
 }
 
 /**
- * Writes card paths through merge-attributes. A removed path is unset.
  * @param {string} avatar
  * @param {{path: string[], value?: any, removed?: boolean}[]} changes
- * @returns {Promise<boolean>} Whether they were saved.
+ * @returns {Promise<boolean>}
  */
 async function mergeCharacterPaths(avatar, changes) {
     const mergeData = { avatar };
@@ -10994,8 +10373,6 @@ async function mergeCharacterPaths(avatar, changes) {
 }
 
 /**
- * A merge changed stored fields the editor shows: show the stored value and take it as the conflict baseline,
- * except in a field being edited or with a save pending, whose own save then meets the change as a conflict.
  * @param {string} avatar
  * @param {{path: string[]}[]} changes
  */
@@ -11014,8 +10391,6 @@ function refreshEditorFieldsAfterMerge(avatar, changes) {
 }
 
 /**
- * Drops empty greetings other than the default, as stripEmptyAlternateGreetings() does, keeping the
- * default's place among the rest.
  * @param {GreetingsModel} model
  * @returns {GreetingsModel}
  */
@@ -11034,17 +10409,10 @@ function withoutEmptyGreetings(model) {
 }
 
 /**
- * Makes the stored greetings equal the JSON's, through the greeting operations. Every edit, delete and default
- * change is checked against the greetings as the fork last loaded them (with this run's own saved ops applied), so a
- * greeting another session changed since then is refused, not overwritten; clearing the default is checked against
- * the default greeting's text, not its position. A refused op is skipped and the rest of
- * the run still goes through; a warning then lists each change that wasn't saved, with its text. An op that fails
- * any other way stops the run: the warning then also lists it and every change after it, none of them sent. Adds can't
- * overwrite anything, so they are appended to the list as currently stored, with no length check.
  * @param {string} avatar
  * @param {object} baselineCard
  * @param {object} card
- * @returns {Promise<boolean>} False when an op failed other than by being refused; the ones after it were not sent.
+ * @returns {Promise<boolean>}
  */
 async function saveGreetingsFromForm(avatar, baselineCard, card) {
     const start = cardToGreetingsModel(baselineCard);
@@ -11053,16 +10421,13 @@ async function saveGreetingsFromForm(avatar, baselineCard, card) {
         return true;
     }
 
-    // One queued save for the whole run: its ops never overlap another greeting write for this character.
     return await queueGreetingSave(avatar, async () => {
-        // The greetings as loaded, with this run's saved ops applied: every precondition is read from here.
         const planned = start.greetings.slice();
         let plannedDefault = start.defaultIndex;
-        /** @type {string[]} Changes refused because another session changed their greeting. */
+        /** @type {string[]} */
         const refused = [];
-        /** @type {string[]} The change whose op failed otherwise, and every change after it, none of them sent. */
+        /** @type {string[]} */
         const notSent = [];
-        // Set by an op that failed other than by being refused: no op after it is sent.
         let stopped = false;
 
         const warnNotSaved = () => {
@@ -11079,7 +10444,7 @@ async function saveGreetingsFromForm(avatar, baselineCard, card) {
         /**
          * @param {string} opName
          * @param {object} body
-         * @param {string} description What the change was, for the warning if it isn't saved.
+         * @param {string} description
          * @returns {Promise<'saved'|'not saved'>}
          */
         const runOp = async (opName, body, description) => {
@@ -11134,7 +10499,6 @@ async function saveGreetingsFromForm(avatar, baselineCard, card) {
                     const text = target.greetings[target.defaultIndex];
                     const description = t`Default greeting set to: ${text}`;
                     if (planned[target.defaultIndex] !== text) {
-                        // The change that would have put this greeting there wasn't saved.
                         (stopped ? notSent : refused).push(description);
                     } else {
                         await runOp('default/set', { position: target.defaultIndex, expected_hash: hashGreetingText(text) }, description);
@@ -11151,8 +10515,6 @@ async function saveGreetingsFromForm(avatar, baselineCard, card) {
 }
 
 /**
- * Upstream regenerated message 0 on save when the chat had not started. The fork never rewrites stored rows,
- * so it shows message 0 from the current card and persona and fires the events upstream fired.
  * @param {string} avatar
  */
 async function redrawFirstMessage(avatar) {
@@ -11172,10 +10534,9 @@ async function redrawFirstMessage(avatar) {
 }
 
 /**
- * Saves a new avatar image for an existing character - only the image, through `/api/characters/edit-avatar`.
- * @param {string} avatar Avatar filename of the character.
- * @param {File} file The picked image; cropped server-side by the current `crop_data`, if any.
- * @returns {Promise<boolean>} Whether the image was saved.
+ * @param {string} avatar
+ * @param {File} file
+ * @returns {Promise<boolean>}
  */
 async function saveCharacterAvatar(avatar, file) {
     try {
@@ -11260,20 +10621,16 @@ export async function swipe(event, direction, { source, repeated, message = chat
 
     const mesId = Number(forceMesId ?? event?.currentTarget?.closest('.mes')?.getAttribute('mesid') ?? messageIndex ?? chat.length - 1);
 
-    //`message` defaults to the last message; without this an arrow on an earlier message would be checked against the wrong one.
     if (forceMesId == null && event?.currentTarget?.closest('.mes')?.getAttribute('mesid') != null && chat[mesId]) {
         message = chat[mesId];
         messageIndex = mesId;
     }
 
-    // Most checks are bypassed for these sources.
     if (![SWIPE_SOURCE.DELETE, SWIPE_SOURCE.BACK, SWIPE_SOURCE.AUTO_SWIPE, SWIPE_SOURCE.SLASH_COMMAND, SWIPE_SOURCE.SWIPE_PICKER].includes(source)) {
-        //Only show an error if swipes are not hidden and a message is generating.
         if (isGenerating() && (swipes && !swipesHidden && (swipeState === SWIPE_STATE.NONE))) {
             toastr.warning(t`Cannot swipe while generating. Stop the request and try again.`, t`Swipe aborted`);
             return;
         }
-        //Only allow one concurrent swipe.
         if (!isSwipingAllowed()) {
             console.info('The swipe has been ignored messages cannot currently be swiped.');
             return;
@@ -11284,14 +10641,12 @@ export async function swipe(event, direction, { source, repeated, message = chat
         }
     }
 
-    // Cancel pending save to prevent accidental swipe_id overwrites.
     cancelDebouncedChatSave();
 
     swipeState = SWIPE_STATE.SWIPING;
     try {
         let generation;
 
-        // Reassigned after loadFromSwipeId() below, which can redraw the DOM out from under mesId.
         let thisMesDiv = chatElement.children('.mes').filter(`[mesid="${mesId}"]`);
         let thisMesText = thisMesDiv.find('.mes_block .mes_text');
         if (![thisMesDiv.length, thisMesText.length].every(num => num > 0)) {
@@ -11302,41 +10657,33 @@ export async function swipe(event, direction, { source, repeated, message = chat
         let newSwipeId = Number(forceSwipeId ?? originalSwipeId);
 
         /**
-         * Calculates the next swipe duration with how many swipes have been repeated.
          * @param {number} animation_duration
-         * @returns {number} The adjusted swipe duration.
+         * @returns {number}
          */
         function getSwipeDuration(animation_duration) {
             const now = performance.now();
             const resetTime = animation_duration * 2 + 300;
 
-            //Reset the counter if the last swipe was more than half a second ago.
             if (now - lastSwipeInfo.now >= resetTime || direction !== lastSwipeInfo.direction) recentSwipes = 0;
             recentSwipes++;
             lastSwipeInfo = { now, direction };
 
-            //At 4 swipes, animation_duration will be halved.
             const sigmoid = 1 / (1 + Math.exp(recentSwipes - 4));
 
             return animation_duration * sigmoid;
         }
 
         const swipeDuration = forceDuration ?? getSwipeDuration(animation_duration);
-        // Set when loadFromSwipeId() moved what follows mesId in `chat` without redrawing it yet.
         let continuationChanged = false;
 
-        //The offscreen messages may be visible if the user resizes the viewport during a swipe.
         const thisMesDivWidth = thisMesDiv.width() + 30;
         let swipeRange = (direction === SWIPE_DIRECTION.RIGHT) ? -thisMesDivWidth : thisMesDivWidth;
 
         /**
-         * Waits for the generation to end, reverts the swipe if swipe_id has not changed.
-         * @param {boolean} revert Attept to revert the swipe without saving.
+         * @param {boolean} revert
          */
         async function endSwipe(revert = false) {
-            //Wait for the generation to end.
             try {
-                //`mes_buttons` need to be hidden until the animation completes.
                 if (generation) {
                     document.body.dataset.swiping = 'true';
                     await generation;
@@ -11345,21 +10692,16 @@ export async function swipe(event, direction, { source, repeated, message = chat
                 console.warn(`Swipe failed, Swiping back. ${error}`);
             }
 
-            //Clamp Id between swipes.
             let clampedId = clamp(chat[mesId].swipe_id, 0, Math.max(0, chat[mesId].swipes.length - 1));
 
             await updateSwipeCounter(mesId);
-            //Fallback.
             if (mesId != chat.length - 1) {
                 await updateSwipeCounter(chat.length - 1);
             }
 
-            // If swipe_id has not changed, give the user feedback.
             if (clampedId == originalSwipeId && source != SWIPE_SOURCE.DELETE) {
                 try {
-                    //Shake 700/140=5px
                     shakeElement(thisMesDiv, -swipeRange / 140, animation_duration, 'ease-in');
-                    //Flash red.
                     const flashTime = Math.max(animation_duration * 2, 100);
                     await Promise.race([thisMesDiv.find('.swipes-counter').animate({ color: 'red' }, flashTime).animate({ color: '' }).promise(), createTimeout(flashTime * 4, `The shake animation did not end within ${flashTime * 4}ms`)].filter(Boolean));
                 } catch (error) {
@@ -11367,14 +10709,11 @@ export async function swipe(event, direction, { source, repeated, message = chat
                 }
             }
 
-            //If the id is not within bounds, Swipe back.
             if (chat[mesId]?.swipe_id !== clampedId || revert) {
-                // Prevent recursion.
                 if (source != SWIPE_SOURCE.BACK) {
                     source = SWIPE_SOURCE.BACK;
                     updateMessage(mesId, { swipe_id: clampedId });
 
-                    //Update the chat.
                     await loadFromSwipeId(mesId, clampedId);
                     continuationChanged = false;
                     await redisplayChat({ startIndex: mesId });
@@ -11389,28 +10728,22 @@ export async function swipe(event, direction, { source, repeated, message = chat
                 }
             }
 
-            // A swipe that ended without animating (e.g. a failed load) still shows what follows the new alternative.
             await redrawSwipedContinuation();
         }
 
         async function standardSwipe(newSwipeId) {
-            //If swipe_id has changed, or the source is being deleted.
             if (newSwipeId !== originalSwipeId || source == SWIPE_SOURCE.DELETE || source == SWIPE_SOURCE.BACK) {
-                //Update the chat.
                 await loadFromSwipeId(mesId, newSwipeId);
-                // Reacquire the live element in case anything replaced it while the load awaited.
                 thisMesDiv = chatElement.children('.mes').filter(`[mesid="${mesId}"]`);
                 thisMesText = thisMesDiv.find('.mes_block .mes_text');
-                //Transition to the new chat.
                 await animateSwipe();
             }
             await endSwipe();
         }
 
         /**
-         * Builds the updates that clear a message's extra and gen times.
          * @param {ChatMessage} message
-         * @returns {Partial<ChatMessage>} Updates to pass to updateMessage.
+         * @returns {Partial<ChatMessage>}
          */
         function clearMessageData(message) {
             const updates = { gen_started: undefined, gen_finished: undefined };
@@ -11432,14 +10765,10 @@ export async function swipe(event, direction, { source, repeated, message = chat
         }
 
         /**
-         * Sets the message to the newSwipeId and loads it.
          * @param {number} mesId
          * @param {number} newSwipeId
          */
         async function loadFromSwipeId(mesId, newSwipeId) {
-            // The message names the node its shown slot names. The slot left keeps the node (a message with one
-            // alternative arrives with no ids in its slots), so swiping back to it finds it again.
-            // The slot left is the one shown when the swipe began; an overswipe has moved swipe_id onto its new slot already.
             const leaving = chat[mesId];
             const leftAt = originalSwipeId;
             if (leftAt !== newSwipeId && leaving?.node_id != null && leaving.swipe_info?.[leftAt] && leaving.swipe_info[leftAt].node_id == null) {
@@ -11448,13 +10777,10 @@ export async function swipe(event, direction, { source, repeated, message = chat
                 updateMessage(mesId, { swipe_info: swipeInfo });
             }
 
-            // A wide fork point arrives with most alternatives as holes; fetch this one first so the swipe never lands on empty.
             await hydrateSwipes(mesId, { index: newSwipeId });
 
-            //Update the swipe_id and clear stale generation data.
             updateMessage(mesId, { swipe_id: newSwipeId, ...clearMessageData(chat[mesId]) });
 
-            //Load from swipes.
             if (syncSwipeToMes(mesId, newSwipeId) == false) {
                 let errorMessage = t`When swiping ${direction} on message ${mesId}, syncSwipeToMes has returned false. Attempting to swipe back!`;
                 toastr.error(errorMessage);
@@ -11464,21 +10790,15 @@ export async function swipe(event, direction, { source, repeated, message = chat
                 return true;
             }
 
-            // Moving to a different alternative means adopting its node and loading what follows it. Only the data moves
-            // here; the screen changes in animateSwipe(), between the slide-out and the slide-in.
             const switched = await switchToAlternativePath(mesId, newSwipeId, { redraw: false });
             if (switched) {
                 continuationChanged = true;
             } else if (chat[mesId].swipe_info?.[newSwipeId] && chat[mesId].swipe_info[newSwipeId].node_id == null) {
-                // A slot no node is stored for yet (isComposedSlot()): an edit of it must not reach the alternative left.
                 updateMessage(mesId, { node_id: undefined });
             }
             return true;
         }
 
-        /**
-         * Redraws what follows mesId after loadFromSwipeId() moved it in `chat`. mesId itself is redrawn by addOneMessage().
-         */
         async function redrawSwipedContinuation() {
             if (!continuationChanged) return;
             continuationChanged = false;
@@ -11490,30 +10810,24 @@ export async function swipe(event, direction, { source, repeated, message = chat
         }
 
         /**
-         * Animates a swipe for all messages >= mesId.
          * @param {number} mesId
          * @param {object} params
          * @param {string} [params.xStart='opx']
          * @param {string} [params.xEnd='0px']
          * @param {number} [params.duration=animation_duration]
-         * @param {string} [params.classes=''] Additional CSS classes to target during the swipe.
-         * @param {boolean} [params.freeze=true] When true, do not remove the class from the animation, leaving it stuck at xEnd.
-         * @returns {Promise<boolean|Function>} endSlide unfreezes the messages from xEnd.
+         * @param {string} [params.classes='']
+         * @param {boolean} [params.freeze=true]
+         * @returns {Promise<boolean|Function>}
          */
         async function animateSwipeTransition(mesId, { xStart = '0px', xEnd = '0px', duration = animation_duration, classes = '', freeze = false } = {}) {
-            // If the animation_duration is zero, the 'animationend' promise will never resolve.
-            //Skip the animation if it's faster than 50ms.
             if (duration <= 50) return;
 
-            //Select MAXIMUM_ANIMATED messages after mesId. Ideally, only visible messages would be animated.
             const MAXIMUM_ANIMATED = 100;
 
             const messages = chatElement.children('.mes');
             const firstDisplayedMesId = Number(messages.first().attr('mesid'));
 
             const swipedMessagesDiv = messages.filter((index, div) => {
-                // const messageId = Number($(div).attr('mesid')); //Slower.
-                //This assumes the messages are in order and their Id's are accurate.
                 const divMessageId = firstDisplayedMesId + index;
 
                 return (divMessageId < mesId + MAXIMUM_ANIMATED && divMessageId >= mesId);
@@ -11522,22 +10836,17 @@ export async function swipe(event, direction, { source, repeated, message = chat
                 let swipeClasses = '.mes_block, .mesAvatarWrapper';
                 swipeClasses += classes;
 
-                //Select only the target classes.
                 const swipedElementsDiv = swipedMessagesDiv.children(swipeClasses);
                 if (swipedElementsDiv.length > 0) {
-                    //This is a global variable, only one swipe transition can occur concurrently.
                     document.documentElement.style.setProperty('--slide-mes-x-start', xStart);
                     document.documentElement.style.setProperty('--slide-mes-x-end', xEnd);
                     document.documentElement.style.setProperty('--slide-mes-x-duration', `${duration}ms`);
 
-                    //The class must be removed to unfreze previous slides.
                     swipedElementsDiv.removeClass('slide');
-                    //CSS starts the animation.
                     void swipedElementsDiv[0].offsetWidth;
                     swipedElementsDiv.addClass('slide');
 
                     const endSlide = () => {
-                        //Remove the style when done.
                         swipedElementsDiv.removeClass('slide');
 
                         document.documentElement.style.setProperty('--slide-mes-x-start', '');
@@ -11545,7 +10854,6 @@ export async function swipe(event, direction, { source, repeated, message = chat
                         document.documentElement.style.setProperty('--slide-mes-duration', '');
                         return true;
                     };
-                    //Wait for the animation's end. https://developer.mozilla.org/en-US/docs/Web/API/Animation/finished
                     const animations = swipedElementsDiv[0]?.getAnimations() ?? [];
                     const animation = animations.filter((a) => a instanceof globalThis.CSSAnimation && a.animationName == 'slide')[0];
                     try {
@@ -11554,7 +10862,6 @@ export async function swipe(event, direction, { source, repeated, message = chat
                         console.warn(error);
                     }
 
-                    //If not frozen, end the slide now.
                     return freeze ? endSlide : endSlide();
                 }
             }
@@ -11563,15 +10870,13 @@ export async function swipe(event, direction, { source, repeated, message = chat
         }
 
         /**
-         * @returns {number|null} The scrollTop that pins mesId's live element's bottom to the chat's visible bottom, or null if it has no live on-screen element.
+         * @returns {number|null}
          */
         function getMessageBottomHeight() {
-            // Resolved fresh against mesId every call, never a held reference - the element can be replaced mid-swipe by redisplayChat().
             const liveMesDiv = chatElement.children('.mes').filter(`[mesid="${mesId}"]`);
             if (!liveMesDiv[0]?.isConnected) {
                 return null;
             }
-            // Viewport-relative rects must anchor to chatElement's own rect before combining with its content-relative scrollTop().
             const containerRect = chatElement[0].getBoundingClientRect();
             const thisMesRect = liveMesDiv[0].getBoundingClientRect();
             const overflow = thisMesRect.bottom - containerRect.bottom;
@@ -11579,44 +10884,34 @@ export async function swipe(event, direction, { source, repeated, message = chat
         }
 
         /**
-         * @returns {boolean} Whether the chat is scrolled to its end.
+         * @returns {boolean}
          */
         function isChatAtBottom() {
             return chatElement.scrollTop() >= (chatElement.prop('scrollHeight') - chatElement.outerHeight()) - 10;
         }
 
         /**
-         * Anime a swipe, optionally running a generation.
          * @param {boolean} run_generate
          * @param {boolean} [skipSwipeOut=false]
          */
         async function animateSwipe(run_generate = false, skipSwipeOut = false) {
             if (!skipSwipeOut) {
-                //Swipe out.
                 await animateSwipeTransition(mesId, { xEnd: `${swipeRange}px`, duration: swipeDuration });
             }
 
-            // Read before the new alternative is drawn: a chat at its end stays at it, keeping the swipe buttons in place.
             const wasAtBottom = isChatAtBottom();
 
             if (run_generate) {
                 await updateSwipeCounter(mesId);
-                //shows "..." while generating
                 thisMesDiv.find('.mes_text').html('...');
-                // resets the timer
                 thisMesDiv.find('.mes_timer').html('');
                 thisMesDiv.find('.tokenCounterDisplay').text('');
                 updateReasoningUI(thisMesDiv, { reset: true });
             } else {
-                //console.log('showing previously generated swipe candidate, or "..."');
-                //console.log('onclick right swipe calling addOneMessage');
-
-                //The swipe buttons will be refreshed in endSwipe(), refreshing them now will cause flickering.
                 addOneMessage(chat[mesId], { type: 'swipe', forceId: mesId, scroll: false, showSwipes: false });
                 await redrawSwipedContinuation();
             }
 
-            // The one place a swipe sets the scroll position, from the layout just drawn.
             const pinned = wasAtBottom ? getMessageBottomHeight() : null;
             if (pinned !== null) chatElement.scrollTop(pinned);
 
@@ -11631,7 +10926,6 @@ export async function swipe(event, direction, { source, repeated, message = chat
                 generation = Generate('swipe');
             }
 
-            //Swipe in from the opposite side.
             await animateSwipeTransition(mesId, { xStart: `${-swipeRange}px`, xEnd: `${0}px`, duration: swipeDuration });
         }
 
@@ -11642,15 +10936,13 @@ export async function swipe(event, direction, { source, repeated, message = chat
             streamingProcessor.onStopStreaming();
         }
 
-        //If the swipe is not being deleted.
         if (source != SWIPE_SOURCE.DELETE && source != SWIPE_SOURCE.BACK) {
-            // Make sure ad-hoc changes to extras are saved before swiping away
             syncMesToSwipe(mesId);
 
-            if (chat[mesId].swipe_id === undefined) {              // if there is no swipe-message in the last spot of the chat array
+            if (chat[mesId].swipe_id === undefined) {
                 updateMessage(mesId, {
-                    swipe_id: 0,                                  // set it to id 0
-                    swipes: [chat[mesId].mes],                    // assign swipe array with last chat[mesId] from chat
+                    swipe_id: 0,
+                    swipes: [chat[mesId].mes],
                     swipe_info: [{
                         'send_date': chat[mesId].send_date,
                         'gen_started': chat[mesId].gen_started,
@@ -11659,26 +10951,21 @@ export async function swipe(event, direction, { source, repeated, message = chat
                     }],
                 });
             }
-            // If the user is holding down the key and we're at the last or first swipe, don't do anything.
             let isLastSwipe = (direction === SWIPE_DIRECTION.RIGHT) ? (chat[mesId].swipe_id === Math.max(0, chat[mesId].swipes.length - 1)) : chat[mesId].swipe_id === 0;
             if (source === SWIPE_SOURCE.KEYBOARD && repeated && isLastSwipe) {
                 await endSwipe();
                 return;
             }
         } else if (source == SWIPE_SOURCE.DELETE || source == SWIPE_SOURCE.BACK) {
-            //If the swipe is being deleted or reverted.
             await standardSwipe(newSwipeId);
             return;
         }
 
-        //If swiping left.
         if (direction === SWIPE_DIRECTION.LEFT) {
             if (forceSwipeId == null) newSwipeId--;
-            //Loop to last swipe if negative.
             if (newSwipeId < 0) {
                 newSwipeId = Math.max(0, chat[mesId].swipes.length - 1);
             }
-            //Limit swipe_id to swipes.
             if (newSwipeId > chat[mesId].swipes.length - 1) {
                 toastr.warning(`The swipe_id for message #${mesId} was ${newSwipeId}. It has been reset to ${chat[mesId].swipes.length - 1}.`);
                 updateMessage(mesId, { swipe_id: chat[mesId].swipes.length - 1 });
@@ -11688,11 +10975,8 @@ export async function swipe(event, direction, { source, repeated, message = chat
             await standardSwipe(newSwipeId);
             return;
         } else if (direction === SWIPE_DIRECTION.RIGHT) {
-            //If swiping right.
-            // make new slot in array
             if (forceSwipeId == null) newSwipeId++;
 
-            //Minimum of zero.
             if (newSwipeId < 0) {
                 toastr.warning(`The swipe_id for message #${mesId} was ${newSwipeId}. It has been reset to zero.`);
                 updateMessage(mesId, { swipe_id: 0 });
@@ -11700,33 +10984,24 @@ export async function swipe(event, direction, { source, repeated, message = chat
                 return;
             }
 
-            //If overswiping.
             if (newSwipeId >= chat[mesId].swipes.length) {
                 newSwipeId = chat[mesId].swipes.length;
 
-                //Update the swipe_id.
                 updateMessage(mesId, { swipe_id: newSwipeId });
 
                 const overswipe = getOverswipeBehavior(mesId);
 
-                //Cancel the generation.
                 if (overswipe == OVERSWIPE_BEHAVIOR.NONE) {
-                    //Cancel swipe.
                     updateMessage(mesId, { swipe_id: originalSwipeId });
                     await endSwipe();
                     return;
                 } else if (overswipe == OVERSWIPE_BEHAVIOR.REGENERATE) {
-                    // Truncates rather than deletes: what followed belonged to the previous alternative and comes back on swiping back to it.
-                    // Also makes the generation target the right message - every part of the generate path answers "which message is this for" with chat.length - 1.
                     if (chat.length > mesId + 1) {
                         forgetStored(chat.splice(mesId + 1).map(m => m.node_id));
                         await redisplayChat({ startIndex: mesId + 1 });
                         updateViewMessageIds();
                     }
 
-                    // The new slot is shown with no node of its own until the server stores the reply: the message names
-                    // none meanwhile (an edit of it is refused, never sent to the alternative swiped from), which keeps
-                    // its id in its own slot and is what the reply goes beside (beginSwipeReply()).
                     const swipedFrom = chat[mesId].node_id;
                     /** @type {Partial<ChatMessage>} */
                     const inFlight = { ...clearMessageData(chat[mesId]), node_id: undefined };
@@ -11740,13 +11015,10 @@ export async function swipe(event, direction, { source, repeated, message = chat
                     }
                     updateMessage(mesId, inFlight);
                     let run_generate = true;
-                    //Generate.
                     await animateSwipe(run_generate);
                     await endSwipe();
                     return;
                 } else if (overswipe == OVERSWIPE_BEHAVIOR.EDIT_GENERATE) {
-                    // A new, empty slot for the user to write a new alternative into, instead of generating. It names no
-                    // node (isComposedSlot()) until Done stores it (chatOpStoreComposed()); cancelling drops it.
                     const newSwipes = [...chat[mesId].swipes, ''];
                     const newSwipeInfo = [...(chat[mesId].swipe_info || []), {
                         send_date: getMessageTimeStamp(),
@@ -11757,18 +11029,15 @@ export async function swipe(event, direction, { source, repeated, message = chat
                     updateMessage(mesId, { swipes: newSwipes, swipe_info: newSwipeInfo });
                     await standardSwipe(newSwipeId);
 
-                    // Truncates the view, not the tree: what followed belongs to the alternative swiped from.
                     if (chat.length > mesId + 1) {
                         forgetStored(chat.splice(mesId + 1).map(m => m.node_id));
                         await redisplayChat({ startIndex: mesId });
                         updateViewMessageIds();
                     }
 
-                    // Open the message editor on the new empty swipe.
                     await messageEdit(mesId);
                     return;
                 } else if (overswipe == OVERSWIPE_BEHAVIOR.LOOP || overswipe == OVERSWIPE_BEHAVIOR.PRISTINE_GREETING) {
-                    // Loop to the first swipe.
                     newSwipeId = 0;
                 }
             }
@@ -11776,7 +11045,6 @@ export async function swipe(event, direction, { source, repeated, message = chat
             return;
         }
     } finally {
-        // Every way out of a swipe (an early return, an error) allows the next one.
         swipeState = SWIPE_STATE.NONE;
         delete document.body.dataset.swiping;
         showSwipeButtons();
@@ -11810,7 +11078,6 @@ export async function swipe_right(event = null, { source, repeated, message } = 
     await swipe.call(this, event, SWIPE_DIRECTION.RIGHT, { source: source, repeated: repeated, message: message });
 }
 
-/** Imports a batch import keeps in flight at once. */
 const IMPORTS_IN_FLIGHT = 4;
 
 /**
@@ -11849,7 +11116,6 @@ export async function processDroppedFiles(files, data = new Map(), { sourceUrls 
         return;
     }
 
-    // A batch: more than one file.
     const useBatchImportMode = importable.length > 1;
     if (useBatchImportMode) {
         await beginMetadataBatchImport();
@@ -11858,8 +11124,6 @@ export async function processDroppedFiles(files, data = new Map(), { sourceUrls 
     const avatarFileNames = [];
     let duplicateCount = 0;
 
-    // In a batch, several imports are in flight at once (the server commits the ones arriving together in one
-    // commit); their results are handled one by one in file order.
     const ahead = useBatchImportMode ? IMPORTS_IN_FLIGHT : 1;
     /** @type {ReturnType<typeof importCharacter>[]} */
     const started = [];
@@ -11868,7 +11132,6 @@ export async function processDroppedFiles(files, data = new Map(), { sourceUrls 
         const file = importable[i];
         const preservedName = data instanceof Map && data.get(file);
         started[i] = importCharacter(file, { preserveFileName: preservedName, sourceUrl: sourceUrls.get(file) });
-        // Awaited in order below; one failing while it waits its turn isn't unhandled meanwhile.
         started[i].catch(() => {});
     };
 
@@ -11892,14 +11155,12 @@ export async function processDroppedFiles(files, data = new Map(), { sourceUrls 
 
             let tagsAdded = false;
             if (result.serverHandledTags) {
-                // ALL/ONLY_EXISTING: the server already resolved and assigned tags atomically as part of the import - no separate assign round trip needed.
                 mergeServerTagDefinitions(result.tagDefinitions);
                 tagsAdded = Array.isArray(result.character?.tag_ids) && result.character.tag_ids.length > 0;
             } else if (power_user.tag_import_setting !== tag_import_setting.NONE) {
                 tagsAdded = await importTags(result.character, { suppressSuccessToast: true });
             }
 
-            // One toast per character for the whole create/replace + tag-import outcome, instead of a separate popup for each.
             const charName = result.character?.name || String(result.avatarFileName).replace('.png', '');
             const toastMessage = result.replaced
                 ? (tagsAdded ? t`Replaced character '${charName}' (tags imported)` : t`Replaced character '${charName}'`)
@@ -11907,15 +11168,12 @@ export async function processDroppedFiles(files, data = new Map(), { sourceUrls 
             toastr.success(toastMessage);
         }
     } finally {
-        // Always ends batch mode, even on a mid-loop throw - an un-ended batch leaves writes silently buffered well past this request.
         if (useBatchImportMode) {
             await endMetadataBatchImport();
         }
     }
 
     if (avatarFileNames.length > 0) {
-        // selectImportedChar() -> select_rm_info('char_import_no_toast', ...) does its own real, targeted
-        // lookup+page-navigation - no separate list refresh needed here first.
         selectImportedChar(avatarFileNames[avatarFileNames.length - 1]);
     }
 
@@ -11926,7 +11184,6 @@ export async function processDroppedFiles(files, data = new Map(), { sourceUrls 
     return avatarFileNames;
 }
 
-// Never throws: a failure here only means this batch's imports are committed one by one.
 async function beginMetadataBatchImport() {
     try {
         const result = await fetch('/api/characters/metadata/batch-import/begin', {
@@ -11941,7 +11198,6 @@ async function beginMetadataBatchImport() {
     }
 }
 
-// Always called even after a begin failure - the server treats begin/end as idempotent no-ops when batch mode was never entered.
 async function endMetadataBatchImport() {
     try {
         const result = await fetch('/api/characters/metadata/batch-import/end', {
@@ -11956,12 +11212,10 @@ async function endMetadataBatchImport() {
     }
 }
 
-// Must run before importTags() for the same character - getTagKeyForEntity() can't resolve a key for an avatar not yet in charactersStore.
 function applyImportedCharacter(character) {
     if (!character?.avatar) {
         return;
     }
-    // The import answer is the whole card.
     character.shallow = false;
     if (charactersStore.has(character.avatar)) {
         charactersStore.update(character.avatar, character);
@@ -11971,8 +11225,6 @@ function applyImportedCharacter(character) {
 }
 
 /**
- * Whether a character with this avatar exists. A check the server can't answer counts as no: it only decides how
- * the import is reported and whether a cached thumbnail is reloaded.
  * @param {string} avatar
  * @returns {Promise<boolean>}
  */
@@ -12013,7 +11265,6 @@ async function importCharacter(file, { preserveFileName = '', sourceUrl = '' } =
         return;
     }
 
-    // Whether the import replaces a character: asked of the server, since the page holds only some characters.
     const exists = preserveFileName ? await characterExistsOnServer(preserveFileName) : false;
 
     const format = ext[1].toLowerCase();
@@ -12025,7 +11276,6 @@ async function importCharacter(file, { preserveFileName = '', sourceUrl = '' } =
     if (preserveFileName) formData.append('preserved_name', preserveFileName);
     if (sourceUrl) formData.append('source_url', sourceUrl);
 
-    // ALL/ONLY_EXISTING have no interactive decision to make (unlike ASK), so tell the server the mode up front to seed tags atomically in the same request.
     const effectiveTagSetting = Object.values(tag_import_setting).find(setting => setting === power_user.tag_import_setting) ?? tag_import_setting.ASK;
     if (effectiveTagSetting === tag_import_setting.ALL) {
         formData.append('tagImportMode', 'all');
@@ -12064,7 +11314,6 @@ async function importCharacter(file, { preserveFileName = '', sourceUrl = '' } =
 
             $('#character_search_bar').val('').trigger('input');
 
-            // No toast here - processDroppedFiles() folds this into one combined notification per character.
             return {
                 avatarFileName, replaced: exists, character: data.character,
                 serverHandledTags: effectiveTagSetting === tag_import_setting.ALL || effectiveTagSetting === tag_import_setting.ONLY_EXISTING,
@@ -12118,10 +11367,6 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
     if (selected_group) {
         await createNewGroupChat(selected_group, { replace: deleteCurrentChat ? chat_file_for_del : null });
     } else {
-        // Workstream 6: a brand-new conversation needs no name-minting step at all, client- or
-        // server-side - it's just an empty tree under this character's anchor until the user
-        // sends a message (which mints a real row) or explicitly labels a point in it. See
-        // pointToFreshChat() for how the pointer is (or isn't) actually resolved.
         setChatMetadata({});
         _resetMetadataSaveSnapshot();
         await pointToFreshChat(deleteCurrentChat ? chat_file_for_del : null);
@@ -12194,13 +11439,10 @@ export async function renameGroupOrCharacterChat({ characterId, characterAvatar,
             newFileName = data.sanitizedFileName;
         }
 
-        // A rename relabels the chat and keeps its id: a pointer follows only when the id answered differs.
         const idChanged = newFileName !== oldFileName;
         if (idChanged && groupId) {
             await renameGroupChat(groupId, oldFileName, newFileName);
         } else if (idChanged && avatarUrl !== undefined && avatarUrl === this_avatar && charactersStore.get(avatarUrl)?.chat === oldFileName) {
-            // Same node under a new label, not a different node - carry the current integrity forward
-            // rather than clearing to unknown (see _setCurrentTarget()'s own doc comment).
             _setCurrentTarget(newFileName, chat_metadata.integrity);
             $('#selected_chat_pole').val(charactersStore.get(avatarUrl).chat);
             setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
@@ -12263,7 +11505,6 @@ export async function closeCurrentChat() {
         chatClosed();
         selected_button = 'characters';
         $('#rm_button_selected_ch').children('h2').text('');
-        // A real close, not just switching the visible menu away - the panel's character/chat no longer applies.
         closeRightMenu('rm_ch_create_block');
         select_rm_characters();
         await eventSource.emit(event_types.CHAT_CHANGED, getCurrentChatId());
@@ -12286,7 +11527,6 @@ export async function updateRemoteChatName(characterId, newName) {
         console.warn(`Character not found: ${characterId}`);
         return;
     }
-    // The name switches the tab to the chat it names; the answer is its compat chat id there.
     const answer = await saveActiveChat(character.avatar, newName);
     if (answer) charactersStore.update(character.avatar, { chat: answer.chat });
 }
@@ -12298,10 +11538,6 @@ function doCharListDisplaySwitch() {
     saveSettingsDebounced('power_user.charListGrid');
 }
 
-/**
- * Option of {@link deleteCharacter} carrying the CHARACTER_DELETED `id`. A symbol, so no outside caller's options
- * can set it: upstream's `deleteCharacter` ignores every option but `deleteChats`.
- */
 const DELETED_CHARACTER_INDEX = Symbol('deletedCharacterIndex');
 
 /**
@@ -12321,8 +11557,6 @@ export async function handleDeleteCharacter(this_chid, delete_chats) {
         return;
     }
 
-    // CHARACTER_DELETED's `id` is the deleted character's index, known only when the argument is that index.
-    // The property key, not `String()`, which throws on a symbol.
     const key = Reflect.ownKeys({ [this_chid]: 0 })[0];
     const index = typeof key === 'string' ? Number(key) : NaN;
     const isIndex = Number.isInteger(index) && index >= 0 && String(index) === key && resolveCharacterRef(key) === character;
@@ -12366,7 +11600,6 @@ export async function deleteCharacter(characterKey, { deleteChats = true, [DELET
     /** @type {{avatar: string, entity: object}[]} */
     const removedCharacters = [];
 
-    // Resolved through the repository, not charactersStore: a character the page doesn't hold still gets deleted.
     let resolved;
     try {
         const { characterRepository } = await import('./scripts/character-repository.js');
@@ -12409,7 +11642,7 @@ export async function deleteCharacter(characterKey, { deleteChats = true, [DELET
 
     const data = await response.json();
     const okAvatars = new Set((data.results ?? []).filter(entry => entry.ok).map(entry => entry.avatar_url));
-    /** The deleted characters' chats, by avatar, as the server named them. @type {Map<string, string[]>} */
+    /** @type {Map<string, string[]>} */
     const deletedChats = new Map((data.results ?? []).filter(entry => entry.ok).map(entry => [entry.avatar_url, Array.isArray(entry.chats) ? entry.chats : []]));
 
     for (const character of characters) {
@@ -12429,7 +11662,6 @@ export async function deleteCharacter(characterKey, { deleteChats = true, [DELET
             }
         }
 
-        // `undefined` unless handleDeleteCharacter passed an index: an avatar → index lookup would be a scan.
         await eventSource.emit(event_types.CHARACTER_DELETED, { id: deletedIndex, character: character });
         removedCharacters.push({ avatar: character.avatar, entity: character });
         deleted = true;
@@ -12451,12 +11683,9 @@ export async function removeCharacterFromUI(removedCharacters = []) {
     preserveNeutralChat();
     await clearChat();
     resetChatState();
-    // A real close, not just switching the visible menu away - the panel's character no longer exists.
     closeRightMenu('rm_ch_create_block');
     $(document.getElementById('rm_button_selected_ch')).children('h2').text('');
     restoreNeutralChat();
-    // Known exactly which rows to drop when the deletes themselves succeeded - skip getCharacters()'s own
-    // reprint and remove just those rows. On a failed/empty delete, fall back to its full resync instead.
     const knownRemovals = removedCharacters.length > 0;
     await getCharacters({ silent: knownRemovals, skipPrint: knownRemovals });
     for (const { avatar, entity } of removedCharacters) {
@@ -12481,7 +11710,6 @@ export async function newAssistantChat({ temporary = false } = {}) {
     chat.splice(0, chat.length);
     setChatMetadata({});
     _resetMetadataSaveSnapshot();
-    // A temporary chat is no stored chat: nothing of one shows (its background...).
     chatClosed();
     setCharacterName(neutralCharacterName);
     sendSystemMessage(system_message_types.ASSISTANT_NOTE);
@@ -12509,7 +11737,6 @@ function doDrawerOpenClick() {
  * @returns {Promise<void>}
  */
 export async function doNavbarIconClick() {
-    // The chat has no drawer to open or close; its icon only brings it forward.
     if ($(this).parent().is('#chat-button')) {
         bringChatForward();
         return;
@@ -12518,8 +11745,6 @@ export async function doNavbarIconClick() {
     const drawer = $(this).parent().find('.drawer-content');
     const drawerWasOpenAlready = $(this).parent().find('.drawer-content').hasClass('openDrawer');
     const targetDrawerID = $(this).parent().find('.drawer-content').attr('id');
-    // Character management is for picking a character, which an edit in progress refuses: it doesn't open, and an
-    // open one closes even when covered (the edited layer stays on top, so it can't be brought forward).
     const pickingRefused = targetDrawerID === 'right-nav-panel' && isFieldBeingEdited();
 
     if (!drawerWasOpenAlready) {
@@ -12545,8 +11770,6 @@ export async function doNavbarIconClick() {
 
         frontDrawer(targetDrawerID);
     } else if (drawerWasOpenAlready) {
-        // Open but partly or wholly under another drawer (only with stacked drawers on): the click brings it forward
-        // rather than closing it.
         if (!pickingRefused && isDrawerCovered(drawer[0])) {
             bringOpenDrawerForward(drawer[0]);
             return;
@@ -12625,18 +11848,14 @@ jQuery(async function () {
 
     $(document).on('click', '.api_loading', () => cancelStatusCheck('Canceled because connecting was manually canceled'));
 
-    //////////DRAFT PERSISTENCE LOGIC/////////////
-    // Debounced save on every keystroke, including programmatic ones (e.g. slash commands filling the box).
     $('#send_textarea').on('input', () => saveDraftDebounced());
 
-    // Editing a greeting changes the card, and an open chat's openings are the union of stored rows and the card's current greetings.
     eventSource.on(event_types.CHARACTER_EDITED, async (event) => {
         const edited = event?.detail?.character?.avatar;
         if (!edited || edited !== getCurrentCharacter()?.avatar) return;
         await _mergeCardGreetingsIntoOpening({ greetingEdit: event.detail.greetingEdit, greetingEdits: event.detail.greetingEdits });
     });
 
-    // Restores the draft for whatever chat just became current; no-op when none exists for this exact context.
     eventSource.on(event_types.CHAT_CHANGED, () => {
         if (queuedSend && queuedSend.chat !== JSON.stringify(getCurrentDraftContext())) {
             cancelQueuedSend(t`The queued send was cancelled because the chat changed. Your text is kept as that chat's draft.`);
@@ -12726,8 +11945,6 @@ jQuery(async function () {
         select_rm_create();
     });
     $('#rm_button_selected_ch').on('click', function () {
-        // On the character's own info the name is a field: a click edits it. Elsewhere (the list, a group, a group
-        // member's info under the group's name) the name leads to its panel.
         if (!selected_group && menu_type === 'character_edit') {
             beginInlineCharacterRename();
             return;
@@ -12743,7 +11960,6 @@ jQuery(async function () {
     $(document).on('click', '.character_select', async function () {
         const avatar = $(this).attr('data-avatar');
         await selectCharacterByAvatar(avatar);
-        // Picking a character is picking its conversation: it comes to the front, over a fullscreen list.
         if (!selected_group && String(this_avatar) === String(avatar)) bringChatForward();
     });
 
@@ -12959,11 +12175,9 @@ jQuery(async function () {
         read_avatar_load(inputElement);
     });
 
-    // Whether the click that submits the form next came from the user rather than from a script.
     let createButtonClickedByUser = false;
     $('#create_button').on('click', (e) => {
         createButtonClickedByUser = e.originalEvent?.isTrusted === true;
-        // A click that doesn't submit (the form failed validation) mustn't vouch for a later scripted submit.
         setTimeout(() => { createButtonClickedByUser = false; });
     });
 
@@ -12971,11 +12185,9 @@ jQuery(async function () {
         const byUser = createButtonClickedByUser;
         createButtonClickedByUser = false;
         if (!byUser) {
-            // An extension's `.val()` write, then a scripted click or submit: upstream's whole-form save.
             void createOrEditCharacter(e.originalEvent);
             return;
         }
-        // The user's own Create builds from confirmed values only; an existing character's fields save themselves.
         if ($('#form_create').attr('actiontype') === 'createcharacter') {
             createCharacterFromCreateSave();
         }
@@ -13016,7 +12228,6 @@ jQuery(async function () {
         '#depth_prompt_role': function () { create_save.depth_prompt_role = String($('#depth_prompt_role').val()); },
     };
 
-    // The previewed text fields are saved by character-field-editor.js, including values written by code.
     Object.keys(elementsToUpdate).forEach(function (id) {
         $(id).on('input', function () {
             if (menu_type == 'create') {
@@ -13027,7 +12238,6 @@ jQuery(async function () {
         });
     });
 
-    // Greeting pager: steps through the stable-order greeting list in the sidebar, editing whichever one is currently shown.
     $('.greeting-pager-prev').on('click', function () {
         navigateGreetingPager(greetingPagerState.index - 1);
     });
@@ -13042,7 +12252,6 @@ jQuery(async function () {
         }
         const { greetings, committed, index } = greetingPagerState;
         greetings[index] = String($('#greeting_field').val());
-        // The slot shown is already a new, blank greeting (as with no greetings at all): that's the one to write.
         if (committed[index] === false && greetings[index] === '') {
             beginEdit('greeting_field');
             return;
@@ -13065,7 +12274,7 @@ jQuery(async function () {
     function jumpGreetingPager() {
         const requested = parseInt(String($('.greeting-pager-input').val()), 10);
         if (Number.isNaN(requested)) {
-            renderGreetingPager(); // reset the invalid input display back to the current index
+            renderGreetingPager();
             return;
         }
         navigateGreetingPager(requested - 1);
@@ -13088,10 +12297,8 @@ jQuery(async function () {
         const newState = !fav_ch_checked;
         updateFavButtonState(newState);
         if (menu_type == 'create') {
-            // No row exists yet - rides along in the create request's own `fav` field instead.
             return;
         }
-        // A pure metadata-store mutation now, not a card-file edit - its own immediate, targeted write.
         const character = getCurrentCharacter();
         if (!character?.avatar) return;
         try {
@@ -13101,7 +12308,6 @@ jQuery(async function () {
                 body: JSON.stringify({ avatar: character.avatar, fav: newState }),
             });
             if (!response.ok) throw new Error(String(response.status));
-            // Shown on the list row as soon as it's stored, not once the re-reads below are back.
             character.fav = newState;
             if (character.data?.extensions) character.data.extensions.fav = newState;
             updateCharacterListRow(character.avatar);
@@ -13131,7 +12337,6 @@ jQuery(async function () {
             talkativenessPopover.style.right = `${document.documentElement.clientWidth - rect.right}px`;
         };
 
-        // Light dismiss closes the popover on the pointerup that precedes this click, so the open state is read at pointerdown.
         let wasOpenAtPointerDown = false;
         talkativenessButton.addEventListener('pointerdown', () => {
             wasOpenAtPointerDown = talkativenessPopover.matches(':popover-open');
@@ -13153,7 +12358,6 @@ jQuery(async function () {
             }
         });
 
-        // Runs before the document-level Escape handler so an Escape that closes the popover does nothing else.
         window.addEventListener('keydown', (e) => {
             if (e.key !== 'Escape' || e.isComposing || !talkativenessPopover.matches(':popover-open')) return;
             e.stopPropagation();
@@ -13161,7 +12365,6 @@ jQuery(async function () {
         }, true);
     }
 
-    // The character's name at the top of its info renames it in place: the pen, or a click on the name.
     const nameHeading = document.querySelector('#rm_button_selected_ch h2');
     const showRenameButton = () => $('#character_rename_inline').toggle(getSelectionState().type === 'character' && Boolean(nameHeading?.textContent));
     if (nameHeading) new MutationObserver(showRenameButton).observe(nameHeading, { childList: true, characterData: true, subtree: true });
@@ -13182,7 +12385,6 @@ jQuery(async function () {
             return;
         }
 
-        // The chat is named by its compat id; the new name is its label (the id stays).
         await renameChat(chatId, newName);
 
         await delay(250);
@@ -13193,8 +12395,6 @@ jQuery(async function () {
     $(document).on('click', '.exportChatButton, .exportRawChatButton', async function (e) {
         e.stopPropagation();
         const format = $(this).data('format') || 'txt';
-        // Exporting reads what the server stores: what the page holds that differs from it (an extension's change to
-        // `chat` in place) is stored first, as upstream saved the chat here.
         await storePageChatChanges();
         const block = $(this).closest('.select_chat_block_wrapper').find('.select_chat_block');
         const chatId = block.attr('file_name');
@@ -13408,8 +12608,6 @@ jQuery(async function () {
             $(this).prop('checked', false);
         });
 
-        // The messages from the chosen one to the end leave the chat on the server first; what else that drops is
-        // asked about there, and saying no keeps everything.
         const cut = this_del_mes >= 0
             ? await chatOpCut(this_del_mes, chat.length - 1, { ask: true }).catch(error => {
                 console.error('Could not cut the conversation back:', error);
@@ -13599,19 +12797,16 @@ jQuery(async function () {
         }
     });
 
-    // Saves as a new alternative rather than over the original - the original keeps its row and children.
     $(document).on('click', '.mes_edit_duplicate', async function () {
         const mesElement = $(this).closest('.mes');
         const mesId = Number(mesElement.attr('mesid'));
         const message = chat[mesId];
 
-        // An overswipe's slot is a new alternative already: saving it is storing it, beside no other new one.
         if (isComposedSlot(message)) {
             await messageEditDone($(this));
             return;
         }
 
-        // Needs a row to sit alongside. A file-backed chat has no nodes to fork between.
         if (!message?.node_id) {
             toastr.info(t`This chat does not support alternatives.`);
             return;
@@ -13622,14 +12817,12 @@ jQuery(async function () {
             return;
         }
 
-        // Forking beside a card-only greeting is one of the things that earns it a row - the new alternative needs a sibling.
         const siblingNodeId = await ensureOpeningRow(mesId);
         if (isProvisionalNodeId(message.node_id) && !siblingNodeId) {
             toastr.error(t`Could not create the alternative.`);
             return;
         }
 
-        // Re-read: ensureOpeningRow() above may have replaced the message with one carrying its new id.
         const content = { ...(chat[mesId] ?? message), mes: text };
         delete content.swipes;
         delete content.swipe_info;
@@ -13659,14 +12852,12 @@ jQuery(async function () {
             return;
         }
 
-        // Re-read: the fetch above awaited, so chat[mesId] may have been replaced since.
         const current = chat[mesId] ?? message;
         const swipes = Array.isArray(current.swipes) ? [...current.swipes] : [current.mes ?? ''];
         const swipeInfo = Array.isArray(current.swipe_info)
             ? [...current.swipe_info]
             : [{ send_date: current.send_date, extra: current.extra ?? {}, node_id: current.node_id }];
 
-        // Already there (identical text) - just move onto it rather than adding a duplicate slot.
         let at = swipeInfo.findIndex(info => info?.node_id === createdId);
         if (at < 0) {
             swipes.push(text);
@@ -13676,7 +12867,6 @@ jQuery(async function () {
             });
             at = swipes.length - 1;
         }
-        // `mes` must move onto the new text too - switchToAlternativePath() adopts the node and swipe index but never touches text, and messageEditCancel() redraws from `mes`.
         updateMessage(mesId, { swipes, swipe_info: swipeInfo, mes: text });
 
         await messageEditCancel(mesId);
@@ -13747,7 +12937,6 @@ jQuery(async function () {
             return;
         }
 
-        // Same bulk-import shape as a drag-and-drop, just a different trigger.
         await processDroppedFiles(Array.from(e.target.files));
 
         // Clear the file input value to allow re-uploading the same file
@@ -13954,7 +13143,6 @@ jQuery(async function () {
         const messageElement = $(this).closest('.mes');
         const thumbURL = $(this).children('img').attr('src');
         const charsPath = '/characters/';
-        // Pull the `file=` query param specifically - a trailing `&v=`/`&t=` cache-buster would otherwise win the "last =" slice.
         let targetAvatarImg;
         try {
             const fileParam = new URL(thumbURL, window.location.origin).searchParams.get('file');
@@ -13963,7 +13151,6 @@ jQuery(async function () {
             targetAvatarImg = thumbURL.substring(thumbURL.lastIndexOf('=') + 1);
         }
         const charname = targetAvatarImg.replace('.png', '');
-        // Only a system message's avatar can be either a character's or a persona's.
         let isValidCharacter = false;
         if (messageElement.attr('is_system') == 'true') {
             const avatarKey = decodeURIComponent(targetAvatarImg);
@@ -13974,7 +13161,6 @@ jQuery(async function () {
             }
         }
 
-        // One zoomed avatar at a time: another character's goes.
         $('.zoomed_avatar').each(function () {
             const currentForChar = $(this).attr('forChar');
             if (currentForChar !== charname && typeof currentForChar !== 'undefined') {
@@ -14038,7 +13224,6 @@ jQuery(async function () {
         }
     });
 
-    // Clicking a zoomed avatar opens its image in the lightbox. The control bar (drag handle, close) keeps its own behavior.
     $(document).on('click', '.zoomed_avatar', function (e) {
         if (e.target.closest('.panelControlBar')) {
             return;
@@ -14152,7 +13337,6 @@ jQuery(async function () {
                             defaultResult: onlineUrl ? POPUP_RESULT_URL : POPUP_RESULT_FILE,
                         });
 
-                    // Remember the chat currently selected, so we can reload it after the replacement
                     const currentChatFile = getCurrentCharacter().chat;
                     async function postReplace() {
                         await openCharacterChat(currentChatFile);
@@ -14196,20 +13380,10 @@ jQuery(async function () {
                 case 'import_tags': {
                     await importTags(getCurrentCharacter(), { importSetting: tag_import_setting.ASK });
                 } break;
-                /*case 'delete_button':
-                    popup_type = "del_ch";
-                    callPopup(`
-                            <h3>Delete the character?</h3>
-                            <b>THIS IS PERMANENT!<br><br>
-                            THIS WILL ALSO DELETE ALL<br>
-                            OF THE CHARACTER'S CHAT FILES.<br><br></b>`
-                    );
-                    break;*/
                 default:
                     await eventSource.emit(event_types.CHARACTER_MANAGEMENT_DROPDOWN, target);
             }
         } finally {
-            // Back to "More..." however the action ended, so picking the same option again fires again.
             $('#char-management-dropdown').prop('selectedIndex', 0);
         }
     });
@@ -14225,7 +13399,6 @@ jQuery(async function () {
 
     var isManualInput = false;
     var valueBeforeManualInput;
-    // The new page's settings fields handle their own counters (packages/areas/settings/page/fields.tsx).
     const counterInputs = '.range-block-counter input:not([data-field] input), .neo-range-input';
 
     $(document).on('input', counterInputs, function () {
@@ -14324,8 +13497,6 @@ jQuery(async function () {
         }
     });
 
-    // Grid/list toggle: in fullscreen mode, toggles charGalleryGrid (body class + setting).
-    // In sidebar mode, toggles charListGrid (existing behavior).
     $('#charListGridToggle').on('click', async () => {
         const panel = document.getElementById('right-nav-panel');
         const isFullscreen = panel && panel.classList.contains('galleryFullscreen');
@@ -14348,7 +13519,6 @@ jQuery(async function () {
                 btn.classList.toggle('fa-expand', !power_user.charGalleryFullscreen);
                 btn.classList.toggle('fa-compress', power_user.charGalleryFullscreen);
             }
-            // Fullscreen changes which drawers this panel covers.
             if (panel.classList.contains('openDrawer')) bringOpenDrawerForward(panel);
             saveSettingsDebounced('power_user.charGalleryFullscreen');
         }
@@ -14366,7 +13536,6 @@ jQuery(async function () {
                 btn.classList.toggle('fa-expand', !power_user.charInfoFullscreen);
                 btn.classList.toggle('fa-compress', power_user.charInfoFullscreen);
             }
-            // Fullscreen changes which drawers this panel covers.
             if (panel.classList.contains('openDrawer')) bringOpenDrawerForward(panel);
             saveSettingsDebounced('power_user.charInfoFullscreen');
         }

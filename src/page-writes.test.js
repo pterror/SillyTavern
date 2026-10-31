@@ -15,11 +15,6 @@ import { setConfigFilePath } from './util.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 
-// A raw-action generate request carries what the page has that the server doesn't: the chat's greetings when none
-// is stored, messages an extension put on the chat without storing them, and the chat metadata keys the page
-// changed. The server stores them first, through the request's session, builds the prompt from them, and stores the
-// user message exactly as the page sent it.
-
 const { applyPageWrites } = await import('./page-writes.js');
 const { chatContext } = await import('./chat-request.js');
 const { newSessionKey } = await import('./chat-engine.js');
@@ -55,14 +50,12 @@ async function writeCharacter(avatar, name) {
 }
 
 /**
- * A request as the chat routes read it.
- * @param {string} [session] The tab's session.
+ * @param {string} [session]
  */
 function fakeRequest(session) {
     return { user: user.user, get: (/** @type {string} */ name) => (name === SESSION_HEADER ? session : undefined) };
 }
 
-/** A response that records what applyPageWrites() answers and stores. */
 function fakeResponse() {
     const response = {
         locals: {},
@@ -79,7 +72,6 @@ function fakeResponse() {
 }
 
 /**
- * The messages from the first one down to `nodeId`, and the state there.
  * @param {{ avatar?: string, group?: string }} owner
  * @param {string} nodeId
  */
@@ -115,7 +107,6 @@ test('a character chat with no stored greeting: the greeting, a message an exten
     assert.deepEqual(loaded.metadata.variables, { mood: 'calm' });
     assert.deepEqual(await user.store.chats.pointer(session), { tree: await treeOf(user.store, { avatar }), at: written.nodeId }, 'the session moved to what was stored');
 
-    // Sent again (a retry), nothing is stored twice.
     const again = fakeResponse();
     const rewritten = await applyPageWrites(again, await chatContext(fakeRequest(session), { avatar }), body);
     assert.equal(rewritten.nodeId, written.nodeId);
@@ -177,7 +168,6 @@ test('a message\'s token count is not stored', async () => {
 });
 
 /**
- * A text-completion backend answering `reply`, and the router mounted for the converted user.
  * @param {string} reply
  */
 async function generateServer(reply) {
@@ -297,7 +287,6 @@ test('no node_id is refused once the chat has messages and the session isn\'t at
     assert.equal(behind.status, 400);
     assert.match((await behind.json()).message, /node_id is required/);
 
-    // A session at the tree's root (a new chat) may send without one.
     const fresh = newSessionKey();
     await user.store.chats.goTo({ tree: await treeOf(user.store, { avatar }), node_id: null, actor: { user: 'u', session: fresh } });
     const atStart = await generate.post(body, { [SESSION_HEADER]: fresh });

@@ -14,10 +14,6 @@ import { setConfigFilePath } from '../../util.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 
-// The server stores every reply that lands in the chat, once. When storing fails, the page is told so
-// (a `reply-not-saved` warning naming the generation) instead of being left to write the reply itself,
-// and `POST /api/generation/store/:id` stores it from the text the server kept.
-
 const { router: textRouter } = await import('./text-completions.js');
 const { router: chatRouter } = await import('./chat-completions.js');
 const { router: generationRouter } = await import('../generation.js');
@@ -31,8 +27,6 @@ const user = await convertedUser('st-reply-not-saved-test-');
 const { directories } = user;
 globalThis.DATA_ROOT = user.dataRoot;
 
-// `reply`: fail the next reply store (an append of a non-user message); the user's own message still stores.
-// `user`: fail the next store of the user's message.
 const failures = { reply: 0, user: 0 };
 const append = user.store.chats.appendMessages.bind(user.store.chats);
 user.store.chats.appendMessages = async (/** @type {any} */ p) => {
@@ -91,7 +85,6 @@ function chatSettings(url) {
     };
 }
 
-/** A fake backend answering every generation with `reply`, streamed in three pieces or as one JSON body. */
 async function startBackend({ reply, format, json }) {
     const hits = { generations: 0 };
     const server = http.createServer((req, res) => {
@@ -147,21 +140,14 @@ async function closeApp(server) {
 let branches = 0;
 
 /**
- * A new conversation of `avatar`'s, its greeting stored through a session of its own.
  * @param {string} avatar
  */
 async function newBranch(avatar) {
     const session = newSessionKey();
-    // A greeting of its own: one with the same text would be the stored one, and so would the messages after it.
     const [greeting] = await seedMessages(user.store, { avatar }, null, [{ name: 'Rex', is_user: false, mes: `Hello there. (${++branches})`, send_date: 1, extra: {} }], { session });
     return { session, leaf: greeting, messages: await sessionPath(user.store, { avatar }, session) };
 }
 
-/**
- * One generation per case: once stored normally (exactly one reply, its node id given to the page), and
- * once with the store failing (no reply stored, the page told `reply-not-saved` with the generation id,
- * then the retry stores it exactly once).
- */
 async function storeCase({ label, router, settings, format, json, stream, avatar }) {
     const reply = 'The ship sails at dawn.';
     const backend = await startBackend({ reply, format, json });
@@ -178,7 +164,7 @@ async function storeCase({ label, router, settings, format, json, stream, avatar
 
     const shown = (/** @type {{ session: string }} */ branch) => sessionPath(user.store, { avatar }, branch.session);
 
-    /** @param {{ failReply?: boolean }} [o] `failReply`: the reply's store fails (the branch is made first). */
+    /** @param {{ failReply?: boolean }} [o] */
     async function generate({ failReply = false } = {}) {
         const branch = await newBranch(avatar);
         if (failReply) failures.reply = 1;
@@ -213,7 +199,6 @@ async function storeCase({ label, router, settings, format, json, stream, avatar
         return { branch, id, text, nodeId, warnings };
     }
 
-    /** The stored reply carries when it was generated, as ISO strings, started no later than it finished. */
     function assertGenerationTimes(message, before, after) {
         assert.equal(typeof message.gen_started, 'string', `${label}: the reply's gen_started is stored`);
         assert.equal(typeof message.gen_finished, 'string', `${label}: the reply's gen_finished is stored`);
@@ -223,7 +208,6 @@ async function storeCase({ label, router, settings, format, json, stream, avatar
     }
 
     try {
-        // Stored normally: exactly one reply, and the page is told where.
         {
             const before = Date.now();
             const result = await generate();
@@ -237,7 +221,6 @@ async function storeCase({ label, router, settings, format, json, stream, avatar
             assertGenerationTimes(last, before, afterTime);
         }
 
-        // The store fails: nothing is stored, the page is told, and the retry stores it once.
         {
             const before = Date.now();
             const result = await generate({ failReply: true });
@@ -267,11 +250,9 @@ async function storeCase({ label, router, settings, format, json, stream, avatar
             const last = final[final.length - 1];
             assert.equal(last.mes, reply);
             assert.equal(last.node_id, stored.node_id);
-            // A retry keeps the times of the generation, not of the retry.
             assertGenerationTimes(last, before, generatedBy);
         }
 
-        // The user's message can't be stored: the request says so and generates nothing.
         {
             const branch = await newBranch(avatar);
             const generationsBefore = backend.hits.generations;
@@ -288,8 +269,6 @@ async function storeCase({ label, router, settings, format, json, stream, avatar
             assert.equal(after.length, branch.messages.length, `${label}: nothing was stored`);
         }
 
-        // A send repeated with its key is stored once, even when the repeat names another place: it lands
-        // on the stored message.
         {
             const branch = await newBranch(avatar);
             const ref = randomUUID();

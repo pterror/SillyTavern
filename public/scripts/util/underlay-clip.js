@@ -1,24 +1,14 @@
-/**
- * Cuts holes in the elements under a see-through overlay, so what it covers doesn't show through it. Each overlay
- * is one source; an element covered by several sources gets all their holes at once.
- */
+/** @typedef {{top: number, right: number, bottom: number, left: number, radii?: [number, number][]}} Rect */
 
-/**
- * A box; `radii` rounds its corners (top left, top right, bottom right, bottom left), each [horizontal, vertical].
- * @typedef {{top: number, right: number, bottom: number, left: number, radii?: [number, number][]}} Rect
- */
-
-/** Straight segments drawn for each rounded corner. */
 const ARC_STEPS = 8;
 
-/** @type {Map<HTMLElement, Map<string, Rect | Rect[]>>} element -> source -> holes, in the element's own coordinates */
+/** @type {Map<HTMLElement, Map<string, Rect | Rect[]>>} */
 const holes = new Map();
 
 /** @type {Set<() => void>} */
 const updaters = new Set();
 
 /**
- * Splits a union of rectangles into disjoint ones, so an evenodd polygon cuts each covered point exactly once.
  * @param {Rect[]} rects
  * @returns {Rect[]}
  */
@@ -46,11 +36,8 @@ function disjointRects(rects) {
 }
 
 /**
- * The parts of the holes' rounded corners that stay uncut: between each corner of a hole's box and its arc, as
- * polygons from the corner along the arc. A corner whose square reaches another hole stays square: there the shape's
- * corner isn't the hole's own.
  * @param {Rect[]} rects
- * @returns {number[][][]} Each polygon's points, [x, y]
+ * @returns {number[][][]}
  */
 function roundedCorners(rects) {
     const out = [];
@@ -86,10 +73,6 @@ function apply(el) {
         }
         return;
     }
-    // Each hole is reached from the corner and the path goes back to it along the same line, so the links between
-    // holes enclose no area. Going straight from one hole to the next would draw diagonal edges, and evenodd would
-    // cut the triangles between them.
-    // A rounded corner lies inside exactly one hole, so drawing it again uncuts it.
     const cut = [
         ...disjointRects(rects).map(r => [[r.left, r.top], [r.right, r.top], [r.right, r.bottom], [r.left, r.bottom]]),
         ...roundedCorners(rects),
@@ -97,7 +80,6 @@ function apply(el) {
         .map(points => [...points, points[0]].map(([x, y]) => `${x}px ${y}px`).join(', ') + ', 0 0')
         .join(', ');
     const clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${cut})`;
-    // Rewriting an unchanged value would still wake observers of the style attribute.
     if (el.dataset.underlayClip !== clipPath) {
         el.dataset.underlayClip = clipPath;
         el.style.clipPath = clipPath;
@@ -105,10 +87,9 @@ function apply(el) {
 }
 
 /**
- * Sets every hole one source cuts in `el`, replacing that source's earlier ones.
  * @param {HTMLElement} el
  * @param {string} source
- * @param {Rect[]} rects In `el`'s own coordinates; empty removes the source's holes
+ * @param {Rect[]} rects
  */
 export function setHoles(el, source, rects) {
     if (rects.length === 0) {
@@ -123,20 +104,17 @@ export function setHoles(el, source, rects) {
 }
 
 /**
- * @param {Rect[]} rects Possibly overlapping
- * @returns {number} The area they cover together
+ * @param {Rect[]} rects
+ * @returns {number}
  */
 export function unionArea(rects) {
     return disjointRects(rects).reduce((sum, r) => sum + (r.right - r.left) * (r.bottom - r.top), 0);
 }
 
 /**
- * How many separate pieces of a `width` × `height` box stay uncovered by `rects`. Pieces touching only at a corner
- * count as separate. Slivers thinner than `minSide` neither count nor join pieces (a 1px gap left by rounding isn't
- * something anyone sees), and a piece smaller than `minArea` doesn't count.
  * @param {number} width
  * @param {number} height
- * @param {Rect[]} rects In the box's own coordinates
+ * @param {Rect[]} rects
  * @param {number} [minSide]
  * @param {number} [minArea]
  * @returns {number}
@@ -180,7 +158,6 @@ export function uncoveredPieces(width, height, rects, minSide = 4, minArea = 64)
 }
 
 /**
- * The nearest ancestor of `el` that scrolls (or the document), which the cut stops at.
  * @param {HTMLElement} el
  * @returns {HTMLElement}
  */
@@ -194,8 +171,7 @@ export function scrollContainerOf(el) {
 }
 
 /**
- * One overlay's holes.
- * @param {string} source A name unique to the overlay
+ * @param {string} source
  */
 export function underlayClip(source) {
     /** @type {Set<HTMLElement>} */
@@ -203,8 +179,6 @@ export function underlayClip(source) {
 
     return {
         /**
-         * Cuts `cover` (viewport coordinates) out of every sibling of `anchor` and of each of its ancestors, up to
-         * `stopAt`: everything laid out next to the overlay's place in the page that the overlay sits on.
          * @param {Rect} cover
          * @param {HTMLElement} anchor
          * @param {HTMLElement} stopAt
@@ -244,7 +218,6 @@ export function underlayClip(source) {
             }
             mine = now;
         },
-        /** Removes this overlay's holes. */
         clear() {
             for (const el of mine) {
                 holes.get(el)?.delete(source);
@@ -256,16 +229,14 @@ export function underlayClip(source) {
 }
 
 /**
- * Registers a function that recomputes an overlay's holes, for {@link refreshUnderlayClips}.
  * @param {() => void} update
- * @returns {() => void} Unregisters it
+ * @returns {() => void}
  */
 export function registerUnderlayClip(update) {
     updaters.add(update);
     return () => updaters.delete(update);
 }
 
-/** Recomputes every overlay's holes, e.g. after the setting that turns them on changes. */
 export function refreshUnderlayClips() {
     for (const update of updaters) {
         update();

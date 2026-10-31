@@ -1,6 +1,3 @@
-//! Chat reads for the binding (build path 5b): what the JavaScript side assembles upstream's shapes from.
-//! Each answers a `Js` value, a plain tree the binding turns into JavaScript.
-
 use super::chat::{self, APPEND_OWNER, children_prefix};
 use super::derive::{Loc, View};
 use super::kinds::{Holder, bytes, key, parse_loc, parse_varints, text_value_of};
@@ -10,15 +7,12 @@ use super::{StoreError, prune, state, stats};
 use crate::keyspace::val::{get_u64, max_value};
 use crate::log::format::{FieldRef, Value};
 
-/// A value as JavaScript gets it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Js {
     Null,
     Bool(bool),
     Num(f64),
-    /// A BigInt.
     Big(u64),
-    /// A string, from WTF-8.
     Text(Vec<u8>),
     Bytes(Vec<u8>),
     Arr(Vec<Js>),
@@ -36,10 +30,6 @@ fn field_js(f: &FieldRef) -> Js {
     }
 }
 
-/// Every message's own values: its append's slots, its values, texts and times, its depth, its itemization's
-/// kind, the bookmarks created at it, its outside key (its id from before the engine) or null, and how many replies
-/// it has. Read together: the entries and records of all of them at once, and per message only what its shape
-/// says it holds.
 pub fn messages(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
     let entries = chat::message_entries(view, ids)?;
     let found: Vec<usize> = (0..ids.len()).filter(|&i| entries[i].is_some()).collect();
@@ -49,7 +39,6 @@ pub fn messages(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
     let records = view.records(&locs.iter().map(|(l, _)| l.pos).collect::<Vec<_>>())?;
     let depth_keys: Vec<Vec<u8>> = fids.iter().map(|m| key::id(sessions::DEPTH, *m)).collect();
     let depths = view.get_many(&depth_keys)?;
-    // Outside keys and itemizations, for the messages whose shape says they have one.
     let keyed: Vec<usize> = (0..fids.len()).filter(|&j| shapes[j].keyed).collect();
     let key_locs = view.get_many(
         &keyed
@@ -72,7 +61,6 @@ pub fn messages(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
         old_keys[j] = Some(bytes(&key_records[n], 1).to_vec());
     }
     let mut out: Vec<Js> = vec![Js::Null; ids.len()];
-    // A message of a subtree being deleted reads as deleted.
     let mut pending = std::collections::HashMap::new();
     for (j, &i) in found.iter().enumerate() {
         let m = fids[j];
@@ -206,7 +194,6 @@ pub fn messages(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
     Ok(Js::Arr(out))
 }
 
-/// The replies of `parent` (None: the messages opening `tree`) in order, from after `after`, at most `limit`.
 pub fn children(
     view: &View,
     parent: Option<u64>,
@@ -241,7 +228,6 @@ pub fn children(
     ]))
 }
 
-/// The messages from the tree's root down to `at` (a position shows nothing below it).
 pub fn path(view: &View, at: Option<u64>) -> Result<Js, StoreError> {
     Ok(Js::Arr(
         chat::path_to(view, at)?.into_iter().map(Js::Big).collect(),
@@ -252,7 +238,6 @@ pub fn landing(view: &View, tree: u64, s: Option<u64>, u: Option<u64>) -> Result
     Ok(opt_big(sessions::landing(view, s, u, tree)?))
 }
 
-/// The reply followed at a fork (the replies of `at`, or the tree's openings).
 pub fn followed(
     view: &View,
     tree: u64,
@@ -276,7 +261,6 @@ fn position_name(view: &View, p: u64) -> Result<Js, StoreError> {
     }
 }
 
-/// Each session's pointer, name, outside key and place in its history (`cursor`), or null.
 pub fn sessions(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
     let mut out = Vec::new();
     for &s in ids {
@@ -305,7 +289,6 @@ pub fn sessions(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
     Ok(Js::Arr(out))
 }
 
-/// The session's last position in a tree (`{ at }`, at null for the root), or null when it hasn't been there.
 pub fn session_in_tree(view: &View, s: u64, tree: u64) -> Result<Js, StoreError> {
     Ok(match sessions::session_in_tree(view, s, tree)? {
         Some(at) => Js::Obj(vec![("at", opt_big(at))]),
@@ -313,7 +296,6 @@ pub fn session_in_tree(view: &View, s: u64, tree: u64) -> Result<Js, StoreError>
     })
 }
 
-/// The user's last move in a tree: `{ session, at }` (session null: set by no session's move), or null.
 pub fn user_in_tree(view: &View, u: u64, tree: u64) -> Result<Js, StoreError> {
     Ok(match sessions::user_in_tree(view, u, tree)? {
         Some((s, at)) => Js::Obj(vec![
@@ -331,8 +313,6 @@ pub fn user_in_tree(view: &View, u: u64, tree: u64) -> Result<Js, StoreError> {
     })
 }
 
-/// A session's history entries from the n-th on: `{ n, target, tree, gone }`, `target` the message (null: `tree`'s
-/// root, `tree` null otherwise).
 pub fn history(view: &View, s: u64, from: u64, limit: usize) -> Result<Js, StoreError> {
     Ok(Js::Arr(
         sessions::history(view, s, from, limit)?
@@ -353,7 +333,6 @@ pub fn history(view: &View, s: u64, from: u64, limit: usize) -> Result<Js, Store
     ))
 }
 
-/// The history entry a step back (or forward) reaches: `{ n, target, tree }` as `history` answers them, or null.
 pub fn history_step(view: &View, s: u64, back: bool) -> Result<Js, StoreError> {
     Ok(match sessions::step_target(view, s, back)? {
         Some((n, t)) => {
@@ -371,12 +350,10 @@ pub fn history_step(view: &View, s: u64, back: bool) -> Result<Js, StoreError> {
     })
 }
 
-/// The session's current chat in the tree: its bookmark, or null for none.
 pub fn current_chat(view: &View, s: u64, tree: u64) -> Result<Js, StoreError> {
     Ok(sessions::current_chat(view, s, tree)?.map_or(Js::Null, Js::Big))
 }
 
-/// A page of the session's current chats: `[{ tree, bookmark }]`, bookmark null when it went.
 pub fn current_chats(
     view: &View,
     s: u64,
@@ -391,7 +368,6 @@ pub fn current_chats(
     ))
 }
 
-/// The card greeting's index the session chose for the tree with no message stored, or null.
 pub fn opening_choice(view: &View, s: u64, tree: u64) -> Result<Js, StoreError> {
     Ok(sessions::opening_choice(view, s, tree)?.map_or(Js::Null, |i| Js::Num(i as f64)))
 }
@@ -404,14 +380,10 @@ fn order_page(list: Vec<(u64, u64)>) -> Js {
     )
 }
 
-/// Sessions by their last move, newest first, before a position (the last one of a page before).
 pub fn recent(view: &View, before: Option<u64>, limit: usize) -> Result<Js, StoreError> {
     Ok(order_page(sessions::recent(view, before, limit)?))
 }
 
-/// Conversations by their last meaningful activity, newest first, before a position (the last one of a page
-/// before): `{ position, bookmark, session, tree }`, a bookmark's (its tree) or a session's (and its tree); a
-/// bookmark of no tree is left out.
 pub fn conversations(view: &View, before: Option<u64>, limit: usize) -> Result<Js, StoreError> {
     let mut out = Vec::new();
     for (pos, c) in sessions::conversations(view, before, limit)? {
@@ -432,7 +404,6 @@ pub fn conversations(view: &View, before: Option<u64>, limit: usize) -> Result<J
     Ok(Js::Arr(out))
 }
 
-/// A tree's sessions by their last meaningful activity there, newest first.
 pub fn in_tree(
     view: &View,
     tree: u64,
@@ -450,7 +421,6 @@ pub fn message_count(view: &View, tree: u64, at: Option<u64>) -> Result<Js, Stor
     ]))
 }
 
-/// Whether `message` is `at` or one of its ancestors (false when either is missing).
 pub fn within(view: &View, message: u64, at: u64) -> Result<Js, StoreError> {
     if chat::message_entry(view, at)?.is_none() || chat::message_entry(view, message)?.is_none() {
         return Ok(Js::Bool(false));
@@ -459,7 +429,6 @@ pub fn within(view: &View, message: u64, at: u64) -> Result<Js, StoreError> {
     Ok(Js::Bool(prune::under(view, tree, message, at)?))
 }
 
-/// The id each outside key names in a space (0 message, 1 session, 2 user), or null.
 pub fn ids_by_keys(view: &View, space: u8, keys: &[Vec<u8>]) -> Result<Js, StoreError> {
     Ok(Js::Arr(
         keys.iter()
@@ -468,7 +437,6 @@ pub fn ids_by_keys(view: &View, space: u8, keys: &[Vec<u8>]) -> Result<Js, Store
     ))
 }
 
-/// What each outside key names in a space: `{ id }`, `'gone'` (a deleted session's), or null.
 pub fn key_states(view: &View, space: u8, keys: &[Vec<u8>]) -> Result<Js, StoreError> {
     Ok(Js::Arr(
         keys.iter()
@@ -483,7 +451,6 @@ pub fn key_states(view: &View, space: u8, keys: &[Vec<u8>]) -> Result<Js, StoreE
     ))
 }
 
-/// One more than the highest id given, per space.
 pub fn next_ids(view: &View) -> Result<Js, StoreError> {
     let get = |s: u64| -> Result<Js, StoreError> {
         Ok(Js::Big(
@@ -506,7 +473,6 @@ fn bookmark(view: &View, b: u64) -> Result<Js, StoreError> {
     };
     let (r, _) = view.record(parse_loc(&v)?.pos)?;
     let id = |i| super::kinds::id(&r, i);
-    // Made at a tree's root, it was made at no message.
     let made_at = (r.kind.name == "positionCreate").then(|| id(4));
     Ok(Js::Obj(vec![
         ("id", Js::Big(b)),
@@ -518,8 +484,6 @@ fn bookmark(view: &View, b: u64) -> Result<Js, StoreError> {
         ),
         ("name", position_name(view, b)?),
         ("createdAt", opt_big(made_at)),
-        // Its place in the tree's order by time (the receive time of the message it is at, or when it was made at
-        // the root), ms.
         (
             "time",
             match view.get(&key::id(key::BOOKMARK_TIME, b))? {
@@ -532,7 +496,6 @@ fn bookmark(view: &View, b: u64) -> Result<Js, StoreError> {
     ]))
 }
 
-/// A tree's bookmarks in id order (the order they were made), after `after`, at most `limit`.
 pub fn tree_bookmarks(
     view: &View,
     tree: u64,
@@ -554,8 +517,6 @@ pub fn tree_bookmarks(
     Ok(Js::Arr(out))
 }
 
-/// A tree's bookmarks newest first, by the receive time of the message each is at (one at the root by when it was
-/// made), each `{ bookmark, timeKey }`, from before `before` (a `[timeKey, bookmark]` cursor), at most `limit`.
 pub fn tree_bookmarks_newest(
     view: &View,
     tree: u64,
@@ -585,7 +546,6 @@ pub fn tree_bookmarks_newest(
     Ok(Js::Arr(out))
 }
 
-/// Each bookmark, or null.
 pub fn bookmarks(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
     Ok(Js::Arr(
         ids.iter()
@@ -594,7 +554,6 @@ pub fn bookmarks(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
     ))
 }
 
-/// The bookmarks at a message now.
 pub fn bookmarks_at(view: &View, m: u64) -> Result<Js, StoreError> {
     Ok(Js::Arr(
         chat::bookmarks_at(view, m)?
@@ -604,7 +563,6 @@ pub fn bookmarks_at(view: &View, m: u64) -> Result<Js, StoreError> {
     ))
 }
 
-/// The state at a message (None: the tree's root): `[{ variable, field, json }]` in object order.
 pub fn state_at(view: &View, tree: u64, at: Option<u64>) -> Result<Js, StoreError> {
     Ok(Js::Arr(
         state::state_at(view, tree, at)?
@@ -620,7 +578,6 @@ pub fn state_at(view: &View, tree: u64, at: Option<u64>) -> Result<Js, StoreErro
     ))
 }
 
-/// `estimate`: a subtree delete is under way, its messages still counted.
 fn stats_js(s: stats::Stats, estimate: bool) -> Js {
     let c = |i: u64| Js::Num(s.counters[i as usize] as f64);
     Js::Obj(vec![
@@ -641,7 +598,6 @@ fn stats_js(s: stats::Stats, estimate: bool) -> Js {
     ])
 }
 
-/// Each owner's stats, then the totals.
 pub fn chat_stats(view: &View, owners: &[u64]) -> Result<Js, StoreError> {
     let list = owners
         .iter()
@@ -668,7 +624,6 @@ pub fn itemization(view: &View, m: u64) -> Result<Js, StoreError> {
     })
 }
 
-/// Messages with an itemization, in id order, after `after`, at most `limit`: `{ ids, more }`.
 pub fn itemized(view: &View, after: Option<u64>, limit: usize) -> Result<Js, StoreError> {
     let p = key::of(chat::ITEMIZED);
     let start = match after {
@@ -693,7 +648,6 @@ pub fn itemized(view: &View, after: Option<u64>, limit: usize) -> Result<Js, Sto
     ]))
 }
 
-/// The message stored for each send key in the owner's tree, or null.
 pub fn sent(view: &View, owner: u64, keys: &[Vec<u8>]) -> Result<Js, StoreError> {
     let mut out = Vec::new();
     for k in keys {
@@ -702,12 +656,10 @@ pub fn sent(view: &View, owner: u64, keys: &[Vec<u8>]) -> Result<Js, StoreError>
     Ok(Js::Arr(out))
 }
 
-/// The stored name of a session's conversation in a tree, or null.
 pub fn conversation_name(view: &View, s: u64, tree: u64) -> Result<Js, StoreError> {
     Ok(sessions::convo_name(view, s, tree)?.map_or(Js::Null, Js::Text))
 }
 
-/// The chats named exactly `name` in any tree: `[{ tree, bookmark, session }]`, one of the last two set.
 pub fn chats_named(view: &View, name: &[u8], limit: usize) -> Result<Js, StoreError> {
     Ok(Js::Arr(
         chat::chats_named(view, name, limit)?
@@ -723,7 +675,6 @@ pub fn chats_named(view: &View, name: &[u8], limit: usize) -> Result<Js, StoreEr
     ))
 }
 
-/// The tree's bookmarks named exactly `name` (names are unique in a tree: at most one).
 pub fn bookmarks_named(view: &View, tree: u64, name: &[u8]) -> Result<Js, StoreError> {
     Ok(Js::Arr(
         chat::bookmarks_named(view, tree, name)?
@@ -733,8 +684,6 @@ pub fn bookmarks_named(view: &View, tree: u64, name: &[u8]) -> Result<Js, StoreE
     ))
 }
 
-/// The end of the followed path below `at` (the replies each fork follows for the session and user, down to a
-/// message with none), or `at` itself.
 pub fn branch_end(
     view: &View,
     tree: u64,
@@ -750,9 +699,6 @@ pub fn branch_end(
     ))
 }
 
-/// What deleting the subtrees of `roots` (those of `keep` left out: they move away first), and with `root` the
-/// changes at the tree's root, drops besides their messages: `{ bookmarks: [{ id, at }], changes: [{ id, message,
-/// key, variable }] }` (`message` null: at the root).
 pub fn subtree_drops(
     view: &View,
     tree: u64,
@@ -794,14 +740,11 @@ pub fn subtree_drops(
     ]))
 }
 
-/// For each message, the state changes made while producing it (`state::PRODUCED`), reverted or not, in order:
-/// `{ key, variable, value }` (`value` null: the key was removed).
 pub fn produced(view: &View, ms: &[u64]) -> Result<Js, StoreError> {
     let shapes = chat::shapes(view, ms)?;
     let mut out = Vec::with_capacity(ms.len());
     for (m, shape) in ms.iter().zip(shapes) {
         let mut cs = Vec::new();
-        // Only a message whose shape counts something besides its append can hold a change.
         if shape.extras > 0 {
             for (c, _) in state::changes_at(view, state::Hang::Message(*m))? {
                 let l = state::change_loc(view, c)?
@@ -846,8 +789,6 @@ fn change_key(view: &View, c: u64) -> Result<(Js, bool), StoreError> {
     Ok((key, super::kinds::id(&r, 3) & state::VARIABLE != 0))
 }
 
-/// The changes in effect hanging on message `m`, in order, each as its record holds it: `{ id, time, author, ref,
-/// confidence, key, value, session, user }` (absent values null).
 pub fn active_changes(view: &View, m: u64) -> Result<Js, StoreError> {
     let mut out = Vec::new();
     for (c, active) in state::changes_at(view, state::Hang::Message(m))? {
@@ -892,9 +833,6 @@ pub fn active_changes(view: &View, m: u64) -> Result<Js, StoreError> {
     Ok(Js::Arr(out))
 }
 
-/// Up to `limit` entries of the entity change feed (`key::ENTITY_CHANGE`) after position `after`, each entity once at
-/// its last change: `{ pos, id, gone }` (`gone`: `{ kind, key }` for a deleted entity, else null), whether more
-/// follow, and the feed's last position (0 for none).
 pub fn entity_changes(view: &View, after: u64, limit: usize) -> Result<Js, StoreError> {
     let p = key::of(key::ENTITY_CHANGE);
     let found = view.scan(
@@ -943,9 +881,6 @@ pub fn entity_changes(view: &View, after: u64, limit: usize) -> Result<Js, Store
     ]))
 }
 
-/// The entities of `kind` whose folded name (`library::fold_name`) is `name`'s, read from the name order of the
-/// whole library (favourites and the rest), at most `limit`: `[{ id }]` in id order per part (the order's tie).
-/// What compares equal more strictly (exactly, or case- and accent-insensitively) is the caller's check.
 pub fn library_named(view: &View, kind: u64, name: &[u8], limit: usize) -> Result<Js, StoreError> {
     use super::library::{BY_NAME, Scope, fold_name, order_prefix};
     let folded = fold_name(name);
@@ -964,7 +899,6 @@ pub fn library_named(view: &View, kind: u64, name: &[u8], limit: usize) -> Resul
     Ok(Js::Arr(out))
 }
 
-/// The local import scan's records of `paths`: per path `{ mtime, duplicateOf }` or null.
 pub fn local_import_mtimes(view: &View, paths: &[Vec<u8>]) -> Result<Js, StoreError> {
     Ok(Js::Arr(
         paths
@@ -981,7 +915,6 @@ pub fn local_import_mtimes(view: &View, paths: &[Vec<u8>]) -> Result<Js, StoreEr
     ))
 }
 
-/// The local import scan's skip of `path`: `{ mtime, reason }` or null.
 pub fn local_import_skip(view: &View, path: &[u8]) -> Result<Js, StoreError> {
     Ok(match super::local_import::skip(view, path)? {
         Some((m, r)) => Js::Obj(vec![("mtime", Js::Num(m)), ("reason", Js::Text(r))]),
@@ -989,7 +922,6 @@ pub fn local_import_skip(view: &View, path: &[u8]) -> Result<Js, StoreError> {
     })
 }
 
-/// Up to `limit` paths with an mtime record after `after` (none: from the first), in path order.
 pub fn local_import_paths(
     view: &View,
     after: Option<&[u8]>,

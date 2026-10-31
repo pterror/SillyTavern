@@ -162,9 +162,7 @@ export const power_user = {
     play_message_sound: false,
     play_sound_unfocused: true,
     auto_save_msg_edits: false,
-    /** The volume audio and video in messages start at, 0 to 100. */
     media_volume: 50,
-    /** Whether audio and video in messages may start playing by themselves. */
     media_autoplay: false,
     confirm_message_delete: true,
 
@@ -306,8 +304,6 @@ export const power_user = {
         max_additions: 1,
     },
 
-    // personas/persona_descriptions are compat Proxy views over persona_data (installPersonaCompatProxies())
-    // for outside code that still expects the old two-dict shape. In-repo code should use personaStore instead.
     personas: {},
     default_persona: null,
     persona_descriptions: {},
@@ -364,9 +360,6 @@ export const power_user = {
     image_overswipe: IMAGE_OVERSWIPE.GENERATE,
 };
 
-// Upstream's Auto-fix Markdown setting. Nothing here rewrites message text, so it always reads as off. A write
-// (an extension, or a settings file that still carries it) is accepted and ignored, and it is not enumerable,
-// so it is never saved.
 Object.defineProperty(power_user, 'auto_fix_generated_markdown', {
     get: () => false,
     set: () => {},
@@ -374,14 +367,12 @@ Object.defineProperty(power_user, 'auto_fix_generated_markdown', {
     configurable: false,
 });
 
-// #region Persona store (persona_data + power_user.personas/persona_descriptions compat views)
 
 /**
- * @typedef {object} PersonaRecord The merged, canonical shape of one persona - avatarId (the persona's user
- * avatar filename) is its key in power_user.persona_data, not a field on the record itself.
+ * @typedef {object} PersonaRecord
  * @property {string} name
  * @property {string} description
- * @property {number} position - one of persona_description_positions
+ * @property {number} position
  * @property {number} depth
  * @property {number} role
  * @property {string} lorebook
@@ -390,7 +381,7 @@ Object.defineProperty(power_user, 'auto_fix_generated_markdown', {
  */
 
 /**
- * @returns {PersonaRecord} A freshly-defaulted persona record.
+ * @returns {PersonaRecord}
  */
 export function defaultPersonaRecord() {
     return {
@@ -405,17 +396,10 @@ export function defaultPersonaRecord() {
     };
 }
 
-/**
- * The canonical persona store - avatarId-keyed, backed by power_user.persona_data. In-repo code should use
- * this going forward; power_user.personas/persona_descriptions (below) are compat views over it.
- * @type {DictEntityStore<PersonaRecord>}
- */
+/** @type {DictEntityStore<PersonaRecord>} */
 export let personaStore = new DictEntityStore(power_user.persona_data);
 
 /**
- * Merges the legacy power_user.personas/persona_descriptions dicts into persona_data. Idempotent (skips ids
- * already present) and never drops a persona present in either legacy dict, so upgrading doesn't silently
- * orphan existing data.
  * @param {{[avatarId: string]: string}} legacyPersonas
  * @param {{[avatarId: string]: Partial<PersonaRecord>}} legacyDescriptions
  */
@@ -434,9 +418,6 @@ export function migrateLegacyPersonaDicts(legacyPersonas, legacyDescriptions) {
 }
 
 /**
- * Read-through/write-through Proxy making personaStore look like the old `power_user.personas`
- * (avatarId -> name string) shape, for code that hasn't migrated onto personaStore and for settings.json's
- * on-disk compat shape. No state of its own - every read is computed live, so nothing can drift out of sync.
  * @returns {{[avatarId: string]: string}}
  */
 function makePersonasCompatProxy() {
@@ -484,9 +465,6 @@ function makePersonasCompatProxy() {
 }
 
 /**
- * Same idea as makePersonasCompatProxy(), for the old `power_user.persona_descriptions` shape. get() returns
- * the *live* PersonaRecord rather than a copy, so old-style nested in-place mutation
- * (`power_user.persona_descriptions[id].title = x`) keeps working - a copy would silently discard those writes.
  * @returns {{[avatarId: string]: Partial<PersonaRecord>}}
  */
 function makePersonaDescriptionsCompatProxy() {
@@ -510,7 +488,7 @@ function makePersonaDescriptionsCompatProxy() {
             if (typeof prop === 'symbol') { target[prop] = value; return true; }
             if (personaStore.has(prop)) {
                 const patch = { ...value };
-                delete patch.name; // the personas proxy owns the name field, never let a descriptions write clobber it
+                delete patch.name;
                 personaStore.update(prop, patch);
             } else {
                 personaStore.create(prop, { ...defaultPersonaRecord(), ...value, name: '' });
@@ -535,11 +513,6 @@ function makePersonaDescriptionsCompatProxy() {
     });
 }
 
-/**
- * (Re)builds personaStore to wrap the current power_user.persona_data reference, migrates any not-yet-merged
- * legacy persona data into it, and installs fresh compat proxies. Called at module load and again after
- * settings load replaces persona_data/personas/persona_descriptions with the saved values.
- */
 export function installPersonaCompatProxies() {
     if (!power_user.persona_data || typeof power_user.persona_data !== 'object') {
         power_user.persona_data = {};
@@ -552,7 +525,6 @@ export function installPersonaCompatProxies() {
 
 installPersonaCompatProxies();
 
-// #endregion
 
 let themes = [];
 /** @type {ContextSettings[]} */
@@ -755,13 +727,12 @@ async function switchZenSliders() {
         $('#clickSlidersTips').hide();
         $('#pro-settings-block input[type=\'number\']').hide();
         //hide number inputs that are not 'seed' inputs
-        // The new page's fields draw their own zen sliders (packages/areas/settings/page/fields.tsx).
         $(`#textgenerationwebui_api-settings :input[type='number']:not([id^='seed']):not([id^='n_']),
             #kobold_api-settings :input[type='number']:not([id^='seed'])`).not('[data-field] input').hide();
         //hide original sliders
         $(`#textgenerationwebui_api-settings input[type='range'],
             #kobold_api-settings input[type='range'],
-            #pro-settings-block input[type='range']:not(#max_context)`).not('[data-field] input') //exclude max context because its creation is handled by switchMaxContext()
+            #pro-settings-block input[type='range']:not(#max_context)`).not('[data-field] input')
             .hide()
             .each(function () {
                 //make a zen slider for each original slider
@@ -1141,7 +1112,6 @@ function switchStackedDrawers() {
     drawerStackChanged();
 }
 
-/** Values of power_user.drawer_bar_position. */
 const drawerBarPositions = ['top', 'bottom', 'left', 'right'];
 
 function applyDrawerBarPosition() {
@@ -1155,7 +1125,6 @@ function applyDrawerBarPosition() {
     drawerStackChanged();
 }
 
-/** Values of power_user.drawer_bar_position_mobile, the Drawer Bar in the mobile layout. */
 const drawerBarMobilePositions = ['top', 'bottom'];
 
 function applyDrawerBarMobilePosition() {
@@ -1258,9 +1227,6 @@ function applyToastrPosition() {
 }
 
 function getChatWidthValue() {
-    // The rendered width is whichever is smaller: the % of the width beside the drawer bar (the viewport's, unless
-    // the bar is at a side), or the ch-based cap.
-    // This keeps the chat readable on ultrawide monitors without affecting narrower screens.
     return `min(calc(var(--besideDrawerBarWidth) * ${power_user.chat_width} / 100), ${power_user.chat_width_max}ch)`;
 }
 
@@ -1287,7 +1253,7 @@ function applyChatWidth(type) {
     $('#chat_width_slider_counter').val(power_user.chat_width);
 }
 
-/** @param {string} [type] Which color to apply; every one when left out. */
+/** @param {string} [type] */
 function applyThemeColor(type) {
     if (type === undefined) {
         for (const picker of themeColorPickers) applyThemeColor(picker.type);
@@ -1415,7 +1381,6 @@ function showMediaDisplayReloadPrompt() {
     );
 }
 
-/** The theme's color settings, each with its picker and the colors it applies. */
 const themeColorPickers = [
     { key: 'main_text_color', selector: '#main-text-color-picker', type: 'main' },
     { key: 'italics_text_color', selector: '#italics-color-picker', type: 'italics' },
@@ -1535,7 +1500,6 @@ function applyTheme(name) {
         {
             key: 'chat_width_max',
             action: () => {
-                // If chat width max is not set, set it to 120
                 if (!power_user.chat_width_max) {
                     power_user.chat_width_max = 120;
                 }
@@ -1762,14 +1726,12 @@ function getExampleMessagesBehavior() {
 }
 
 //MARK: loadPowerUser
-/** The most "keep recently used characters" can keep; each is a whole card in memory. */
 const MAX_RECENT_CHARACTERS = 5000;
-/** How many recently used characters one request asks the server for. */
 const RECENT_CHARACTERS_PAGE_SIZE = 500;
 
 /**
  * @param {any} value
- * @returns {number} a whole number from 1 to {@link MAX_RECENT_CHARACTERS}
+ * @returns {number}
  */
 function clampRecentCharacterCount(value) {
     const count = Math.trunc(Number(value));
@@ -1779,15 +1741,9 @@ function clampRecentCharacterCount(value) {
 
 let holdRecentCharactersRun = 0;
 
-/**
- * Applies "keep recently used characters": with it on, the page keeps the most recently chatted-with characters in
- * memory, up to the set number, and shows them to extensions; with it off, only the current character or group.
- * Which ones comes from the server's "Recent" order, read in pages; the cards the page doesn't hold are read in full.
- */
 async function applyHoldRecentCharacters() {
     const run = ++holdRecentCharactersRun;
     const limit = power_user.hold_recent_characters ? clampRecentCharacterCount(power_user.hold_recent_characters_count) : 0;
-    // Lowering the number or turning it off lets go at once, without waiting for the server.
     setRecentCharacters(limit, getRecentCharacters());
     if (limit === 0) return;
 
@@ -1805,7 +1761,6 @@ async function applyHoldRecentCharacters() {
             }
             if (rows.length < pageSize) break;
         }
-        // Characters used since the page loaded stay first; the server's order fills the rest.
         setRecentCharacters(limit, [...getRecentCharacters(), ...avatars]);
 
         const missing = getRecentCharacters().filter(avatar => !charactersStore.has(avatar));
@@ -1835,15 +1790,12 @@ export async function loadPowerUserSettings(settings, data) {
             settings.power_user.tag_sort_mode = settings.power_user.auto_sort_tags ? tag_sort_mode.ALPHABETICAL : tag_sort_mode.MANUAL;
             delete settings.power_user.auto_sort_tags;
         }
-        // The fields the new page shows are the server's once it has started (they read its view).
         for (const [key, value] of Object.entries(settings.power_user)) {
             if (newUiStarted() && SERVER_OWNED.has(`power_user.${key}`)) continue;
             power_user[key] = value;
         }
     }
 
-    // Rebuild against whatever came back from settings.json, or the store/proxies keep pointing at stale
-    // pre-load defaults; also migrates any legacy persona data, a no-op if already migrated.
     installPersonaCompatProxies();
 
     if (power_user.stscript === undefined) {
@@ -2113,20 +2065,16 @@ function toggleMDHotkeyIconDisplay() {
 function loadCharListState() {
     document.body.classList.toggle('charListGrid', power_user.charListGrid);
     document.body.classList.toggle('charGalleryGrid', power_user.charGalleryGrid);
-    // Gallery-style browsing is the permanent character list view - always on, not a toggle.
     document.body.classList.add('charGalleryView');
-    // Fullscreen state: persisted via power_user, restored as a class on the panel element.
     const panel = document.getElementById('right-nav-panel');
     if (panel) {
         panel.classList.toggle('galleryFullscreen', power_user.charGalleryFullscreen);
-        // Sync the toggle button icon
         const btn = document.getElementById('galleryFullscreenToggle');
         if (btn) {
             btn.classList.toggle('fa-expand', !power_user.charGalleryFullscreen);
             btn.classList.toggle('fa-compress', power_user.charGalleryFullscreen);
         }
     }
-    // #char-info-panel is a separate drawer from #right-nav-panel - restore its fullscreen state too.
     const charInfoPanel = document.getElementById('char-info-panel');
     if (charInfoPanel) {
         charInfoPanel.classList.toggle('charInfoFullscreen', power_user.charInfoFullscreen);
@@ -2138,20 +2086,12 @@ function loadCharListState() {
     }
 }
 
-/**
- * Upstream's MovingUI panel layouts, removed here; kept as an export because extensions import it. Does nothing.
- */
 export function loadMovingUIState() {}
 
 function loadMaxContextUnlocked() {
-    // The unlock is the new page's field; Kobold's own rep pen range follows it (script.js watches it too).
     switchMaxContextSize();
 }
 
-/**
- * Kobold's own rep pen range (this page's still) to the context limit, by the unlock. The response length, context
- * size and text generation's ranges follow it on the server (the settings view's ranges, withinUnlock).
- */
 export function switchMaxContextSize() {
     const maxValue = power_user.max_context_unlocked ? MAX_CONTEXT_UNLOCKED : MAX_CONTEXT_DEFAULT;
     for (const element of [$('#rep_pen_range'), $('#rep_pen_range_counter')]) {
@@ -2338,50 +2278,27 @@ export function performFuzzySearch(type, data, keys, searchValue, fuzzySearchCac
     return results;
 }
 
-/**
- * Persistent Fuse indexes for the character/group/tag list search, keyed by fuzzySearchCategories.
- * Rebuilding a Fuse index over the full character list (including heavy text fields like description,
- * mes_example, etc, plus a per-character tag lookup) is expensive at scale - too expensive to redo on every
- * keystroke. These are rebuilt lazily (on next search) only when marked dirty by an actual data change
- * (character/group added/deleted/edited, or a tag mutation affecting an indexed field), via
- * invalidateCharactersFuseIndex()/invalidateGroupsFuseIndex()/invalidateTagsFuseIndex().
- * @type {{ characters: import('fuse.js').default?, groups: import('fuse.js').default?, tags: import('fuse.js').default? }}
- */
+/** @type {{ characters: import('fuse.js').default?, groups: import('fuse.js').default?, tags: import('fuse.js').default? }} */
 const persistentFuseIndexes = { characters: null, groups: null, tags: null };
 const persistentFuseIndexesDirty = { characters: true, groups: true, tags: true };
 
-/**
- * Marks the persistent character search index as stale, so it gets rebuilt on the next search.
- * Call after characters are added/removed/reloaded, or after a tag mutation that could affect a
- * character's indexed `#tags` field.
- */
 export function invalidateCharactersFuseIndex() {
     persistentFuseIndexesDirty.characters = true;
 }
 
-/**
- * Marks the persistent group search index as stale, so it gets rebuilt on the next search.
- * Call after groups are added/removed/reloaded, or after a tag mutation that could affect a
- * group's indexed `#tags` field.
- */
 export function invalidateGroupsFuseIndex() {
     persistentFuseIndexesDirty.groups = true;
 }
 
-/**
- * Marks the persistent tag search index as stale, so it gets rebuilt on the next search.
- * Call after tags are created/deleted/renamed.
- */
 export function invalidateTagsFuseIndex() {
     persistentFuseIndexesDirty.tags = true;
 }
 
 /**
- * Gets (rebuilding if necessary) a persistent Fuse index for one of the character-list search categories.
- * @param {'characters'|'groups'|'tags'} type - Which persistent index to get
- * @param {any[]} data - The current data array to index if a rebuild is needed
- * @param {Array<{name: string, weight: number, getFn?: (obj: any) => string}>} keys - Fuse.js keys configuration
- * @returns {import('fuse.js').default} The (possibly freshly rebuilt) Fuse index
+ * @param {'characters'|'groups'|'tags'} type
+ * @param {any[]} data
+ * @param {Array<{name: string, weight: number, getFn?: (obj: any) => string}>} keys
+ * @returns {import('fuse.js').default}
  */
 function getPersistentFuseIndex(type, data, keys) {
     if (!persistentFuseIndexes[type] || persistentFuseIndexesDirty[type]) {
@@ -2404,7 +2321,6 @@ function getPersistentFuseIndex(type, data, keys) {
  * @returns {import('fuse.js').FuseResult<any>[]} Results as items with their score
  */
 export function fuzzySearchCharacters(searchValue, fuzzySearchCaches = null) {
-    // Check cache if provided
     if (fuzzySearchCaches) {
         const cache = fuzzySearchCaches[fuzzySearchCategories.characters];
         if (cache?.resultMap.has(searchValue)) {
@@ -2641,7 +2557,6 @@ const compareFunc = (first, second) => {
 
     switch (power_user.sort_rule) {
         case 'boolean': {
-            // 'boolean' is only the fav sort; compare the normalized fav, same ordering as before for true/false.
             const favA = normalizeFav(a);
             const favB = normalizeFav(b);
             if (favA) return 1;
@@ -2655,11 +2570,6 @@ const compareFunc = (first, second) => {
     }
 };
 
-/**
- * Shows/hides the random-sort reroll button. It only makes sense while random sort is the active *order*
- * (`power_user.sort_order`), independent of whether a search is currently narrowing the list - search and
- * random compose, so the button stays available while searching too.
- */
 function updateRandomSortRerollVisibility() {
     $('#charListRandomReroll').toggle(power_user.sort_order === 'random');
 }
@@ -2677,10 +2587,6 @@ export function sortEntitiesList(entities, forceSearch, filterHelper = null) {
     }
 
     const isSearch = forceSearch || $('#character_sort_order option[data-field="search"]').is(':selected');
-    // Random rides on sort_order like any other order, and composes with search unconditionally: search
-    // narrows the candidate set (isSearch above), this decides how whatever survives that narrowing is
-    // ordered. The two are independent, so both can be true derived states of different inputs, but the
-    // dropdown only ever selects one *sort*, hence the else-if.
     const isRandom = !isSearch && power_user.sort_order === 'random';
     const randomSeed = isRandom ? getRandomSortSeed(accountStorage) : null;
 
@@ -2698,8 +2604,6 @@ export function sortEntitiesList(entities, forceSearch, filterHelper = null) {
             return (aScore - bScore);
         }
 
-        // Seeded hash instead of a shuffle: a stable total order, so it doesn't reshuffle on every re-render,
-        // and narrowing the set (search, tag filters) never reorders whatever survives.
         if (isRandom) {
             return compareByRandomSeed(`${a.type}.${a.id}`, `${b.type}.${b.id}`, randomSeed);
         }
@@ -2860,11 +2764,9 @@ async function saveTheme(name = undefined, overrides = undefined) {
 }
 
 /**
- * Writes a theme object to the server as-is, without composing it from stored settings. Only for
- * an already-complete theme the user supplied directly (e.g. an imported file).
- * @param {string} name Theme name.
- * @param {object} theme Complete theme object.
- * @returns {Promise<object>} A promise that resolves when the theme is saved.
+ * @param {string} name
+ * @param {object} theme
+ * @returns {Promise<object>}
  */
 async function saveThemeRaw(name, theme) {
     const response = await fetch('/api/themes/save', {
@@ -2924,11 +2826,8 @@ export function resetMovableStyles(id) {
 }
 
 /**
- * Picks one random character, optionally tag-filtered, via the server's `ORDER BY RANDOM() LIMIT 1` - a
- * one-shot pick unrelated to the persisted seeded random-sort *list* ordering, so it goes straight through
- * `characterRepository.query()` instead of scanning `characters`/`groups`.
- * @param {string} [tagName] Optional tag name to filter the pick to.
- * @returns {Promise<string|undefined>} The avatar of the randomly selected character, or undefined if none matched.
+ * @param {string} [tagName]
+ * @returns {Promise<string|undefined>}
  */
 async function getRandomCharacterAvatar(tagName) {
     let tagId;
@@ -2939,8 +2838,6 @@ async function getRandomCharacterAvatar(tagName) {
         }
     }
 
-    // Reuses buildCharacterQuery() - the same filter/sort builder other query call sites go through - rather
-    // than hand-shaping the wire filter here.
     const { filter, sort } = buildCharacterQuery({
         tagsInclude: tagId ? [tagId] : [],
         sortField: 'random',
@@ -2950,7 +2847,6 @@ async function getRandomCharacterAvatar(tagName) {
     return rows?.[0]?.avatar;
 }
 
-/** `/random`'s tag suggestions: used tags, the held ones at once, the rest from the server as they are typed. */
 function randomTagEnumProvider() {
     const toOption = tag => new SlashCommandEnumValue(tag.name, null, enumTypes.enum, enumIcons.tag);
     const provider = () => {
@@ -3021,15 +2917,6 @@ async function doMesCut(args, text) {
     const messagesToCut = chat.slice(range.start, range.end + 1);
     let cutText = '';
 
-    // Persist the whole cut as ONE tree op instead of relying on deleteMessage()'s own per-message
-    // persistence (which would fire one chatOpCut request per cut message).
-    // deleteMessage()'s widening (getMessageDeletionStartId) can pull extra preceding tool-call
-    // messages into the deletion, but that can only happen on the FIRST message it's asked to delete,
-    // since it walks the *entire* contiguous run of preceding tool-call messages in one pass - by the
-    // time the loop below reaches later messages in the range, that whole prefix has already been
-    // resolved (removed if it matched, otherwise a guaranteed non-match), so nothing after the first
-    // call can widen any further. Computing it once here, against the still-intact chat[], therefore
-    // reproduces exactly the range the old per-message loop would have removed - just in one request.
     if (messagesToCut.length > 0) {
         const firstMessageId = getMessageDeletionStartId(range.start, deleteToolCalls);
         try {
@@ -3057,9 +2944,6 @@ async function doMesCut(args, text) {
         }
 
         setEditedMessageId(mesIDToCut);
-        // The tree persistence for this whole range was already handled above in one call - this
-        // still performs every local effect (splice, DOM removal, tainting, view update, event
-        // emission) for this one message, it just skips the per-call network round trip.
         await deleteMessage(mesIDToCut, null, false, deleteToolCalls, false);
     }
 
@@ -3145,7 +3029,6 @@ async function setAvgBG(args) {
     // Generate a full theme palette from the dominant color
     const palette = generateThemePalette(dominantRgb);
 
-    // Save as a new theme; the server composes the base from current settings, palette overrides the colors
     await saveTheme(themeName, palette);
     applyTheme(themeName);
 
@@ -3303,10 +3186,6 @@ export function forceCharacterEditorTokenize() {
     $('#rm_ch_create_block').trigger('input');
 }
 
-/**
- * Marks every character editor count stale and recounts once the editor is showing.
- * The internal counterpart of forceCharacterEditorTokenize(), which counts right away.
- */
 export function markCharacterEditorCountsStale() {
     clearCharacterEditorCountHashes();
     countCharTokensWhenShown();
@@ -3514,8 +3393,6 @@ jQuery(() => {
 
     $('#chat_display').on('change', function () {
         const value = Number($(this).find(':selected').val());
-        // applyChatDisplay toggles body classes and must run every time (including on load),
-        // but the save should only fire when the value is actually changing.
         const changed = power_user.chat_display !== value;
         power_user.chat_display = value;
         applyChatDisplay();
@@ -3526,8 +3403,6 @@ jQuery(() => {
 
     $('#toastr_position').on('change', function () {
         const value = String($(this).find(':selected').val());
-        // applyToastrPosition sets a global toastr option that isn't otherwise persisted in the DOM,
-        // so it must run every time (including on load), but the save should only fire on real changes.
         const changed = power_user.toastr_position !== value;
         power_user.toastr_position = value;
         applyToastrPosition();
@@ -3619,7 +3494,6 @@ jQuery(() => {
 
     for (const { key, selector, type } of themeColorPickers) {
         $(selector).on('change', (/** @type {ColorPickerEvent} */ evt) => {
-            // Setting a picker's color (loading the settings, applying a theme) fires this too; only a new color is a change.
             if (evt.detail.rgba === power_user[key]) return;
             power_user[key] = evt.detail.rgba;
             applyThemeColor(type);
@@ -3704,13 +3578,8 @@ jQuery(() => {
         saveSettingsDebounced('power_user.sort_field', 'power_user.sort_order', 'power_user.sort_rule');
     });
 
-    // Random sort persists its order (seeded hash, not a fresh shuffle - see random-sort.js), so it needs an
-    // explicit way to get a new order on demand. Re-picking "Random" in the dropdown fires no `change` event,
-    // which is why this can't just live on the dropdown itself.
     $('#charListRandomReroll').on('click', function () {
         rerollRandomSortSeed(accountStorage);
-        // The seed is part of the ordering's identity, so a reroll is a full refresh, not a re-render: it
-        // resets to page 1 rather than reshuffling underneath whatever page the user is currently on.
         printCharacters(true);
     });
     updateRandomSortRerollVisibility();
@@ -3791,8 +3660,6 @@ jQuery(() => {
     $('#reload_chat').on('click', async function () {
         const currentChatId = getCurrentChatId();
         if (currentChatId !== undefined && currentChatId !== null) {
-            // Reloading shows what the server stores: what the page holds that differs from it (an extension's change
-            // to `chat` in place) is stored first, as upstream saved the chat here.
             await storePageChatChanges();
             await reloadCurrentChat();
         }
@@ -3858,8 +3725,6 @@ jQuery(() => {
             $(this).prop('checked', false).trigger('input');
             return;
         }
-        // switchZenSliders builds/tears down DOM state and must run every time (including on load),
-        // but the save should only fire when the value is actually changing.
         const changed = power_user.enableZenSliders !== value;
         power_user.enableZenSliders = value;
         switchZenSliders();
@@ -3877,8 +3742,6 @@ jQuery(() => {
             return;
         }
 
-        // switchLabMode applies real DOM/UI state and must run every time (including on load),
-        // but the save should only fire when the value is actually changing.
         const changed = power_user.enableLabMode !== value;
         power_user.enableLabMode = value;
         switchLabMode({ noReset: fromInit });
@@ -4105,9 +3968,6 @@ jQuery(() => {
         $('#stscript_autocomplete_font_scale_counter').val(value);
         power_user.stscript.autocomplete.font.scale = Number(value);
         document.body.style.setProperty('--ac-font-scale', value.toString());
-        // Only the autocomplete box itself needs to react to this - a real window resize dispatch here also
-        // fires unrelated resize-listeners (favorites hotswap refetch, zoom report), so call
-        // the one thing this change actually affects directly instead of faking a resize.
         adjustAutocompleteDebounced();
         saveSettingsDebounced('power_user.stscript.autocomplete.font.scale');
     });
@@ -4122,7 +3982,6 @@ jQuery(() => {
 
     $('#stscript_autocomplete_width_left').on('input', function () {
         const value = Number($(this).val());
-        // adjustAutocompleteDebounced() must run every time (including on load), but the save should only fire on real changes.
         const changed = power_user.stscript.autocomplete.width.left !== value;
         power_user.stscript.autocomplete.width.left = value;
         /**@type {HTMLElement}*/(this.closest('.doubleRangeInputContainer')).style.setProperty('--value', value.toString());
@@ -4134,7 +3993,6 @@ jQuery(() => {
 
     $('#stscript_autocomplete_width_right').on('input', function () {
         const value = Number($(this).val());
-        // adjustAutocompleteDebounced() must run every time (including on load), but the save should only fire on real changes.
         const changed = power_user.stscript.autocomplete.width.right !== value;
         power_user.stscript.autocomplete.width.right = value;
         /**@type {HTMLElement}*/(this.closest('.doubleRangeInputContainer')).style.setProperty('--value', value.toString());

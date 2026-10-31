@@ -3,7 +3,6 @@ import { test, expect } from './fixtures.js';
 test.use({ freshAccount: true });
 
 test('the first-run dialog result is saved, so the dialog does not come back', async ({ page }) => {
-    // The settings as the server stores them (the settings model's, not files).
     const storedFirstRun = () => page.evaluate(async () => {
         const { getRequestHeaders } = await import('./scripts/request-headers.js');
         const data = await (await fetch('/api/settings/get', { method: 'POST', headers: getRequestHeaders(), body: '{}' })).json();

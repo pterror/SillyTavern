@@ -5,10 +5,6 @@ import os from 'node:os';
 import process from 'node:process';
 import { Buffer } from 'node:buffer';
 
-// importFromJson()/importFromYaml() write through DEFAULT_AVATAR_PATH ('./public/img/...', repo-root-relative)
-// when no real uploaded image is being re-encoded - same fix byaf-import.test.js already needed for the same
-// reason (see that file's own comment). Captured before any chdir, and used below (not '..'-relative like
-// characters-rename.test.js's setConfigFilePath call) so it stays correct regardless of chdir ordering.
 const originalCwd = process.cwd();
 afterAll(() => process.chdir(originalCwd));
 
@@ -21,7 +17,6 @@ let avatars;
 let TYPE;
 let HASH;
 
-/** How many characters the library has. */
 async function characterCount() {
     const res = await fetch(`${baseUrl}/api/characters/query`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ want: ['total'] }) });
     return (await res.json()).total;
@@ -33,13 +28,6 @@ let baseUrl;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
-/**
- * Mounts the real characters.js router (including multer, exactly as server-main.js wires it - see that file's
- * "File uploads" section) behind a fake auth middleware, mirroring characters-rename.test.js's setup. Multer is
- * required here (unlike the other endpoint test files) because `/import` reads `request.file`, only populated by
- * multer's `.single('avatar')` middleware - none of the sibling *-test.js files needed this, so there's no
- * existing pattern to reuse for the upload side specifically.
- */
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(originalCwd, '..', 'default', 'config.yaml'));
@@ -49,8 +37,6 @@ beforeAll(async () => {
     ({ TYPE } = await import('../src/library-codes.js'));
     ({ HASH } = await import('../src/library-engine.js'));
 
-    // importFromJson()/importFromYaml() read DEFAULT_AVATAR_PATH ('./public/img/...') relative to cwd - see
-    // this file's own note on `originalCwd` above.
     process.chdir(path.resolve(originalCwd, '..'));
 
     const express = (await import('express')).default;
@@ -65,7 +51,6 @@ beforeAll(async () => {
         next();
     });
     app.use('/api/characters', router);
-    // A character's image as the image route sends it (users.js): its stored file without its text chunks.
     const { sendPngWithoutText } = await import('../src/png-text-strip.js');
     app.get('/avatar/:avatar', async (req, res) => sendPngWithoutText(req, res, /** @type {string} */ (await avatars.avatarPathOf(user.store.lib, directories, req.params.avatar))));
     server = app.listen(0, '127.0.0.1');
@@ -84,8 +69,6 @@ beforeEach(async () => {
 afterEach(() => user.close());
 
 /**
- * POSTs a v1-JSON character import (the simplest format importFromJson() accepts - no PNG re-encode pipeline
- * involved, so the uploaded bytes are exactly the JSON text below).
  * @param {object} [overrides]
  * @returns {Promise<Response>}
  */
@@ -121,7 +104,7 @@ describe('POST /api/characters/import', () => {
         const e = await user.store.lib.entity(TYPE.character, `${data.file_name}.png`);
         const contentHash = e.hashes.find(h => h.which === HASH.content)?.hash.toString('hex');
         expect(contentHash).toEqual(expect.any(String));
-        expect(contentHash.length).toBe(64); // sha256 hex digest
+        expect(contentHash.length).toBe(64);
     });
 
     test('exact byte-identical dedup: importing the same bytes twice skips the second one', async () => {
@@ -136,7 +119,6 @@ describe('POST /api/characters/import', () => {
         expect(secondData.duplicate_of).toBe(`${firstData.file_name}.png`);
         expect(secondData.file_name).toBeUndefined();
 
-        // Only one character actually exists.
         expect(await characterCount()).toBe(1);
     });
 
@@ -172,7 +154,6 @@ describe('POST /api/characters/import', () => {
             expect(endResponse.status).toBe(204);
         }
 
-        // After the batch, still only one character.
         expect(await characterCount()).toBe(1);
     });
 
@@ -180,12 +161,10 @@ describe('POST /api/characters/import', () => {
         const first = await importJsonCharacter();
         const firstData = await first.json();
 
-        // Import a second, distinct character to replace.
         const second = await importJsonCharacter({ name: 'Replace Target' });
         const secondData = await second.json();
         expect(secondData.file_name).not.toBe(firstData.file_name);
 
-        // Re-upload the FIRST character's exact bytes again, but as an explicit replace of the SECOND character.
         const body = JSON.stringify({ name: 'Ghost', description: 'A test character' });
         const formData = new FormData();
         formData.append('avatar', new Blob([body], { type: 'application/json' }), 'ghost.json');
@@ -195,8 +174,6 @@ describe('POST /api/characters/import', () => {
         const replaceResponse = await fetch(`${baseUrl}/api/characters/import`, { method: 'POST', body: formData });
         const replaceData = await replaceResponse.json();
 
-        // Not skipped as a duplicate, even though these bytes already exist under firstData.file_name - the
-        // explicit replace target takes precedence (see the route's own comment on why).
         expect(replaceData.duplicate).toBeUndefined();
         expect(replaceData.file_name).toBe(secondData.file_name);
         expect(replaceData.character.name).toBe('Ghost');
@@ -215,8 +192,6 @@ describe('POST /api/characters/import', () => {
 
         const e = await user.store.lib.entity(TYPE.character, `${firstData.file_name}.png`);
         const originalRow = await user.store.lib.findByHash(HASH.content, e.hashes.find(h => h.which === HASH.content)?.hash.toString('hex') ?? null);
-        // The stored hash now resolves back to this same id, and a fresh duplicate of the REPLACED content
-        // (not the original) is what a subsequent identical upload should be caught against.
         expect(originalRow).toBe(`${firstData.file_name}.png`);
 
         const duplicateCheck = await importJsonCharacter({ name: 'Replaced', description: 'new bytes' });
@@ -239,8 +214,6 @@ describe('POST /api/characters/import - fav/chat no longer written to the card (
         const response = await fetch(`${baseUrl}/api/characters/import`, { method: 'POST', body: formData });
         const data = await response.json();
 
-        // Post-import canonical PNGs are image-only (no embedded chara/ccv3 chunk - see writeCharacterData()'s
-        // imageOnly write path), so the stored card is verified through the metadata db, the only place it lives.
         const storedJson = (await user.store.lib.cards([`${data.file_name}.png`]))[0];
 
         expect('fav' in storedJson).toBe(false);
@@ -264,7 +237,6 @@ describe('POST /api/characters/import - PNG import no longer re-encodes the avat
     /** @type {typeof import('../src/character-card-parser.js').write} */
     let writeCard;
 
-    // Same 1x1 PNG fixture characters-duplicate.test.js uses - just enough for png-chunks-extract to parse.
     const BLANK_PNG = Buffer.from(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
         'base64',
@@ -287,11 +259,8 @@ describe('POST /api/characters/import - PNG import no longer re-encodes the avat
 
         const stored = fs.readFileSync(/** @type {string} */ (await avatars.avatarPathOf(user.store.lib, directories, `${data.file_name}.png`)));
 
-        // The uploaded file itself, reflinked (copied where the filesystem can't): no Jimp round trip, no re-encode,
-        // its card chunk left in place (the store is the card; nothing reads it, character-avatars.js).
         expect(stored.equals(sourceCard)).toBe(true);
 
-        // Sent without its text chunks.
         const answer = await fetch(`${baseUrl}/avatar/${data.file_name}.png`);
         expect(answer.headers.get('content-type')).toBe('image/png');
         const sent = Buffer.from(await answer.arrayBuffer());
@@ -299,8 +268,6 @@ describe('POST /api/characters/import - PNG import no longer re-encodes the avat
         expect(sentChunks.map(c => c.name)).not.toContain('tEXt');
         const imageChunks = extract(new Uint8Array(sourceCard)).filter(c => c.name !== 'tEXt');
         expect(sentChunks.map(c => c.name)).toEqual(imageChunks.map(c => c.name));
-        // A page holding the current copy is answered 304. (Cache-Control as a browser revalidating sends it: fetch()
-        // would otherwise add `no-cache` to a conditional request, which asks for the whole answer.)
         const again = await fetch(`${baseUrl}/avatar/${data.file_name}.png`, { headers: { 'If-None-Match': String(answer.headers.get('etag')), 'Cache-Control': 'max-age=0' } });
         expect(again.status).toBe(304);
     });
@@ -349,11 +316,6 @@ describe('POST /api/characters/import - a failed import names the file', () => {
     });
 });
 
-// unsetPrivateFields() (src/character-card-normalize.js) strips per-user local state - the favorite flag and the
-// active chat filename - so a shared card doesn't leak the sharer's local state into the importer's library, and
-// an exported card doesn't leak the exporter's. It's called from 5 sites in characters.js; these two tests cover
-// the spec-v2 JSON import site (importFromJson()) and the JSON export site (the /export route's 'json' case) -
-// the two reachable through this file's already-mounted router without needing a real PNG upload.
 describe('unsetPrivateFields is applied on the real import/export routes', () => {
     test('importing a Spec V2 JSON character clears fav and chat even when the uploaded file sets them', async () => {
         const body = JSON.stringify({
@@ -408,18 +370,10 @@ describe('unsetPrivateFields is applied on the real import/export routes', () =>
     });
 });
 
-// Regression coverage for a live local-import-scan.js failure: importFromPng()/importFromJson() used to read
-// jsonData.data.name a second time AFTER already overwriting it in place with sanitize(jsonData.data.name) -
-// so a name that sanitizes down to an empty string (e.g. "." - an otherwise-valid, non-empty string) made the
-// second read see that now-empty, falsy value and fall through to the top-level jsonData.name, which is
-// `undefined` on a real-world v2/v3 card (they only ever populate data.name). sanitize(undefined) then threw
-// "Input must be string" (from the sanitize-filename package) and aborted the whole import, surfaced upstream
-// only as "[local-import] Failed to process ..., will retry next pass: Input must be string" with no stack.
 describe('POST /api/characters/import - a card whose name sanitizes to empty no longer crashes the import', () => {
     /** @type {typeof import('../src/character-card-parser.js').write} */
     let writeCard;
 
-    // Same 1x1 PNG fixture the other PNG-import describe block above uses.
     const BLANK_PNG = Buffer.from(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
         'base64',

@@ -3,10 +3,6 @@ import { LEVELS, VIEW } from '../protocol.ts';
 import type { Level, SettingsView } from '../protocol.ts';
 import { useUi } from '@st/page/context';
 
-// The levels slider over the AI response configuration panel: which levels a tab shows and edits (its fields are in
-// fields.tsx and the sections, e.g. cc.tsx).
-
-/** The levels a tab shows and edits: two handles over the five levels, each labeled with how many fields it sets. */
 export function LevelSlider() {
     const { client, t } = useUi();
     const view = client.view<SettingsView>(VIEW);

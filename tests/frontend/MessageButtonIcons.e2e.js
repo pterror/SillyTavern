@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// A message's bookmark button shows the bookmark glyph, as the menu's "Save bookmark" does; the swipe history button
-// shows a stack of alternatives, not a bookmark.
-
 test('the bookmark and swipe history buttons each show their own glyph', async ({ page }) => {
     await testSetup.awaitST({ page });
     const glyph = (selector) => page.locator(selector).first().evaluate(el => getComputedStyle(el, '::before').content);

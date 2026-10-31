@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// The page holds only some characters. These readers used to find a character only among the ones the page holds;
-// each test makes its characters after the page has loaded and keeps the page from hearing of them.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -20,10 +17,9 @@ async function loadApp(page) {
 }
 
 /**
- * Creates a character the page doesn't hold.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @returns {Promise<string>} its avatar key
+ * @returns {Promise<string>}
  */
 async function createUnheldCharacter(page, name) {
     const avatar = await page.evaluate(async (name) => {
@@ -53,7 +49,6 @@ async function isHeld(page, avatar) {
 }
 
 /**
- * The held copy of a character, or null.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  * @returns {Promise<{ shallow?: boolean, description?: string }|null>}
@@ -67,8 +62,6 @@ async function heldCopy(page, avatar) {
 }
 
 /**
- * Records in `__heldShallow` every shallow row the page takes in, and makes the page's row reads (`get()`, `getMany()`) answer shallow rows with no description, as /query does with
- * lazyLoadCharacters on.
  * @param {import('@playwright/test').Page} page
  */
 async function shallowRowReads(page) {

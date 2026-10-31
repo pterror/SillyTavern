@@ -17,27 +17,12 @@ import { LIBRARY_LABELS, cursorWeights, cursorWeightsOf, searchClauses } from '.
 import { SLOT, WorldInfoEngine, isEntryList } from './world-info-engine.js';
 import { groupDigestContentHash, groupDigestFavHash, groupDigestTagIdsHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
 
-/**
- * The library on the engine: characters, groups and tags as entities whose values are the engine's records.
- *
- * A card is stored as splitCard() splits it, each part its own value: the known text fields as text values, other
- * known values and every extension key and other path as JSON (a marker as empty JSON), greetings and the card's
- * own tag names as list items. A write records only the values that differ from the stored ones: a changed text as
- * one edit, a list by its changed items. The sort keys the app computes with its own functions (the data size, the
- * create date as a time, the content identity hash) are recorded with the card whenever they change.
- */
-
 export { FIELD, TAG_KEY_PREFIX, TYPE, textEdit, wtf8Length, itemField, valueRecords };
 
 /** @typedef {import('./entity-values.js').StoredEntity} StoredEntity */
 
-/**
- * List codes. A character's `links` are its lorebook links, one ordered list of equal links (each item's text a
- * book's id in decimal, no book twice): the first is the card's `extensions.world`, the rest upstream's `charLore`.
- */
 export const LIST = Object.freeze({ alternate_greetings: 0, group_only_greetings: 1, tags: 2, nameHistory: NAME_HISTORY, links: LINKS });
 
-/** A group's field codes; its other keys are stored by key, `group:<key>`. */
 export const GROUP_FIELD = Object.freeze({
     name: 1,
     avatar_url: 50,
@@ -50,38 +35,24 @@ export const GROUP_FIELD = Object.freeze({
     hideMutedSprites: 57,
 });
 
-/** A group's lists: a non-empty list of strings is stored as items, any other value as JSON under its key. */
 export const GROUP_LIST = Object.freeze({ members: 3, disabled_members: 4 });
 
 const GROUP_KEY_PREFIX = 'group:';
 
-/**
- * A group object's keys that aren't values of its own: the id is its key, `fav` its fav record and `tag_ids` its
- * tag assignments; the dates and chat activity are the library's, and `chat_id` and `chats` are the sessions in its
- * tree.
- */
 const GROUP_READ_KEYS = new Set(['id', 'fav', 'tag_ids', 'date_added', 'create_date', 'date_last_chat', 'chat_size', 'chat_id', 'chats']);
 
 /**
- * The owner key a character's chats were kept under before the engine (upstream's chats folder name): an unowned
- * tree with this key is the character's once it is created.
  * @param {string} avatar
  */
 export function ownerKeyOf(avatar) {
     return String(avatar).replace('.png', '');
 }
 
-/** `cardHash` kinds. */
 export const HASH = Object.freeze({ identity: 0, content: 1, avatarIdentity: 3 });
 
 /**
- * A relevance page's cursor as the engine's `after`: `s<rank>:<entity>` (the page ended at that hit),
- * `t<rank>:<order>.<list cursor>` (among the matches tied at that rank, ordered by `order`), `b<rank>` (past
- * those), each followed by `:<idf>,<idf>,…` when the query has several words (the idfs page 1 ranked by, so every
- * page ranks alike). A rank is a hit's place in the order: one word's score before its idf, which cards added or
- * removed don't move; else the score. A tied cursor made in another order is refused (`'invalid'`).
  * @param {string} cursor
- * @param {string} order The page's tie order (`order` as list cursors name it).
+ * @param {string} order
  * @returns {({ score: number, doc: bigint } | { tied: number, cursor: Buffer } | { below: number }) & { weights?: number[] } | 'invalid' | null}
  */
 function parseRelevanceCursor(cursor, order) {
@@ -110,7 +81,6 @@ function parseRelevanceCursor(cursor, order) {
 }
 
 /**
- * The engine's `next` of a relevance page as a cursor (see `parseRelevanceCursor`).
  * @param {{ score?: number, doc?: bigint, tied?: number, cursor?: Buffer, below?: number, weights?: number[] }} next
  * @param {string} order
  * @returns {string}
@@ -123,7 +93,6 @@ function relevanceCursorOf(next, order) {
 }
 
 /**
- * A list sort as the engine takes it.
  * @param {string | undefined} field
  * @param {string | undefined} order
  * @param {number | undefined} seed
@@ -137,18 +106,13 @@ function listSort(field, order, seed) {
     return { key: SORT_KEYS.name, desc: false };
 }
 
-/** The word pairs' modes (`search::pairs`): their pass building them, and every document's built. */
 const PAIRS = Object.freeze({ indexing: 4, indexed: 5 });
 
-/** Sort key codes of `Store.libraryPage`. */
 export const SORT_KEYS = Object.freeze({ name: 0, create_date: 1, date_added: 2, date_last_chat: 3, chat_size: 4, data_size: 5 });
 
 const EXTENSION_PREFIX = 'ext:';
 
 /**
- * The values a character's list row is made from (the old store's `listRowsFromFieldsSync()` reads the same): its
- * name, creator, version, lorebook and create date, the few paths and the extension those can be in, its card tags,
- * and creator notes when the list shows them.
  * @param {boolean} includeCreatorNotes
  * @returns {{ fields: (number | string)[], lists: number[] }}
  */
@@ -163,11 +127,9 @@ export function listRowValues(includeCreatorNotes) {
     };
 }
 
-/** No values: an entity's key, dates, sizes, fav, tags, link and version. */
 const NO_VALUES = Object.freeze({ fields: [], lists: [] });
 
 /**
- * A card's parts as the values and lists the engine stores.
  * @param {import('./character-card-storage.js').CardParts} parts
  * @returns {{ values: Map<number | string, { text?: string, json?: string }>, lists: Map<number, string[]> }}
  */
@@ -194,14 +156,12 @@ export function cardValues(parts) {
 }
 
 /**
- * A character's rename history items (`renameItem()`) after a rename from `renamed.from`, given those it has.
  * @param {string[]} items
  * @param {{ from: string, pastChats: boolean, at?: number }} renamed
  * @returns {string[]}
  */
 function renamedHistory(items, { from, pastChats, at = Date.now() }) {
     if (pastChats) return [];
-    // Entries stay in time order even if the clock stepped back.
     const until = Math.max(at, renamesOf(items.slice(-1))[0]?.until ?? 0);
     return [...items, renameItem({ until, name: from })];
 }
@@ -210,7 +170,6 @@ const CODE_NAMES = new Map(Object.entries(FIELD).map(([k, v]) => [v, k]));
 const LIST_NAMES = new Map(Object.entries(LIST).map(([k, v]) => [v, k]));
 
 /**
- * An engine entity's values as a card's parts, the inverse of cardValues().
  * @param {StoredEntity} entity
  * @returns {import('./character-card-storage.js').CardParts}
  */
@@ -238,8 +197,6 @@ export function cardParts(entity) {
         if (name === 'tags') texts.forEach((text, position) => parts.tags.push({ position, name: text }));
         else if (name === 'alternate_greetings' || name === 'group_only_greetings') texts.forEach((text, position) => parts.greetings.push({ list: name, position, text }));
     }
-    // A lorebook linked by id reads as the name of the book it resolves as; a card's own text is kept only where
-    // it differs from that name.
     if (parts.columns.world === undefined && entity.link) parts.columns.world = entity.link.key;
     parts.columns.fav = entity.fav;
     return parts;
@@ -249,7 +206,6 @@ const GROUP_CODE_NAMES = new Map(Object.entries(GROUP_FIELD).map(([k, v]) => [v,
 const GROUP_LIST_NAMES = new Map(Object.entries(GROUP_LIST).map(([k, v]) => [v, k]));
 
 /**
- * A group object's own values and lists, as the engine stores them.
  * @param {Record<string, unknown>} group
  * @returns {{ values: Map<number | string, { text?: string, json?: string }>, lists: Map<number, string[]> }}
  */
@@ -272,7 +228,6 @@ export function groupValues(group) {
 }
 
 /**
- * The records turning a stored group (none: a new one) into `group`: its fav (normalizeFav()) and its own values.
  * @param {bigint} id
  * @param {StoredEntity | null} stored
  * @param {Record<string, unknown>} group
@@ -286,7 +241,6 @@ function groupRecords(id, stored, group) {
 }
 
 /**
- * A stored group's object: its id and its own values, the inverse of groupValues().
  * @param {StoredEntity} entity
  * @returns {Record<string, unknown>}
  */
@@ -294,7 +248,6 @@ export function groupObject(entity) {
     const { values, lists } = storedValues(entity);
     /** @type {Record<string, unknown>} */
     const group = { id: entity.key };
-    // A key such as `__proto__` is set as the group's own property, as JSON.parse() gave it.
     const set = (/** @type {string} */ key, /** @type {unknown} */ value) => Object.defineProperty(group, key, { value, enumerable: true, writable: true, configurable: true });
     for (const [field, v] of values) {
         const key = typeof field === 'number' ? GROUP_CODE_NAMES.get(field) : field.startsWith(GROUP_KEY_PREFIX) ? field.slice(GROUP_KEY_PREFIX.length) : undefined;
@@ -307,23 +260,12 @@ export function groupObject(entity) {
     return group;
 }
 
-/** Entities `findCharacters()` reads at most before it answers with what it found. */
 export const FIND_WORK_CAP = 20000;
 
-/**
- * The library of one user's store.
- */
-/** The lane type of an import's upload content hash, beside the entity types' lanes. */
 const IMPORT_LANE = -1;
 
-/** Records a grouped commit holds at most. */
 const GROUP_RECORDS = 4000;
 
-/**
- * Commits writes together: a write waiting while a commit is under way goes in the next one, so a lone write is sent
- * at once and writes arriving together share a commit. A refused commit (which writes nothing) is retried one write
- * at a time, so one write's refusal fails only that write.
- */
 class GroupedCommits {
     /** @param {any} store */
     constructor(store) {
@@ -335,7 +277,7 @@ class GroupedCommits {
 
     /**
      * @param {object[]} records
-     * @returns {Promise<void>} Once they are durable.
+     * @returns {Promise<void>}
      */
     commit(records) {
         return new Promise((resolve, reject) => {
@@ -379,7 +321,7 @@ class GroupedCommits {
 
 export class LibraryEngine {
     /**
-     * @param {any} store The engine's `Store`.
+     * @param {any} store
      * @param {bigint} nextId
      */
     constructor(store, nextId) {
@@ -389,11 +331,10 @@ export class LibraryEngine {
         this.writing = new Map();
         this.tags = new LibraryTags(this);
         this.books = new WorldInfoEngine(this);
-        /** @type {Promise<void> | null} The pair postings' pass being run. */
+        /** @type {Promise<void> | null} */
         this.pairsRun = null;
         this.pairsAgain = false;
         this.pairsStopped = false;
-        /** Open batch imports (`beginBatch()` less `endBatch()`). */
         this.batches = 0;
         this.cardCommits = new GroupedCommits(store);
         /** @type {Promise<import('./actor-ids.js').NextIds> | null} */
@@ -401,8 +342,6 @@ export class LibraryEngine {
     }
 
     /**
-     * The store's id counters for messages, sessions, users and changes: one object, which every writer of the store
-     * (its chats, its world info) hands ids out of.
      * @returns {Promise<import('./actor-ids.js').NextIds>}
      */
     nextIds() {
@@ -410,10 +349,6 @@ export class LibraryEngine {
         return /** @type {Promise<import('./actor-ids.js').NextIds>} */ (this.counters);
     }
 
-    /**
-     * Opens a batch import: until it ends, card writes are committed together, the cards whose writes are waiting
-     * while a commit is under way in the next one. Each write still answers only once its card is durable.
-     */
     beginBatch() {
         this.batches++;
     }
@@ -423,8 +358,6 @@ export class LibraryEngine {
     }
 
     /**
-     * Runs `write` after every earlier one given the same upload content hash: an import's duplicate check and its
-     * write, so an identical file sent alongside finds the first stored.
      * @template T
      * @param {string} contentHash
      * @param {() => Promise<T>} write
@@ -435,7 +368,7 @@ export class LibraryEngine {
     }
 
     /**
-     * @param {any} engine The engine binding.
+     * @param {any} engine
      * @param {string} dir
      */
     static async open(engine, dir) {
@@ -451,8 +384,6 @@ export class LibraryEngine {
     }
 
     /**
-     * Whether the word pairs (`search::pairs`, the index terms quoted phrases are read through) are built: false
-     * while their pass is under way, or before a store made without them has started it.
      * @returns {Promise<boolean>}
      */
     async pairsBuilt() {
@@ -460,8 +391,6 @@ export class LibraryEngine {
     }
 
     /**
-     * Builds the word pairs over the store's text if it hasn't them (a store made before they were index terms, or
-     * with the old option's pairs, which go first), then runs their pass.
      * @param {number} [pauseMs]
      * @returns {Promise<void>}
      */
@@ -472,8 +401,6 @@ export class LibraryEngine {
     }
 
     /**
-     * Runs the word pairs' pass under way, if any, a slice at a time with `pauseMs` between, until done or the store
-     * closes; one run at a time.
      * @param {number} [pauseMs]
      * @returns {Promise<void>}
      */
@@ -498,8 +425,6 @@ export class LibraryEngine {
     }
 
     /**
-     * Runs `write` after every earlier write to the same entity has settled, so each diffs against what the one
-     * before it stored.
      * @template T
      * @param {number} type
      * @param {string} key
@@ -519,8 +444,6 @@ export class LibraryEngine {
     }
 
     /**
-     * Stamps for the changes of one write by `actor` (null: by no one known): each its own change id, the write's
-     * time, and the actor's user and session (their keys made in `records` when new).
      * @param {import('./world-info-engine.js').Actor | null | undefined} actor
      * @param {object[]} records
      * @returns {Promise<() => import('./entity-values.js').Stamp>}
@@ -557,7 +480,7 @@ export class LibraryEngine {
 
     /**
      * @param {(bigint | null)[]} ids
-     * @param {{ fields: (number | string)[], lists: number[] }} [only] Read only these values, and no hashes.
+     * @param {{ fields: (number | string)[], lists: number[] }} [only]
      * @returns {Promise<(StoredEntity | null)[]>}
      */
     async entities(ids, only) {
@@ -577,17 +500,16 @@ export class LibraryEngine {
     }
 
     /**
-     * Stores a character's card, writing only what differs from the stored one; a new avatar is a new character.
      * @param {import('./users.js').UserDirectoryList} directories
      * @param {string} avatar
      * @param {string} cardJson
      * @param {object} [options]
-     * @param {string | null} [options.contentHash] sha256 of the uploaded file's bytes (imports).
+     * @param {string | null} [options.contentHash]
      * @param {string | null} [options.avatarIdentityHash]
      * @param {number} [options.dateAdded]
-     * @param {boolean} [options.fav] The favourite flag for a new character; a stored one keeps its own.
-     * @param {{ from: string, pastChats: boolean, at?: number }} [options.renamed] The card is the stored one renamed from `from`. With `pastChats`, past messages show the new name (the rename history is cleared); without, messages sent before `at` (now) keep showing `from`, and any earlier rename's names stay.
-     * @param {bigint[]} [options.tags] Tag ids added to what the character carries, in the same commit as the card.
+     * @param {boolean} [options.fav]
+     * @param {{ from: string, pastChats: boolean, at?: number }} [options.renamed]
+     * @param {bigint[]} [options.tags]
      * @returns {Promise<{ id: bigint, records: number }>}
      */
     writeCard(directories, avatar, cardJson, { contentHash = null, avatarIdentityHash = null, dateAdded = Date.now(), fav, renamed, tags = [] } = {}) {
@@ -601,7 +523,6 @@ export class LibraryEngine {
                 if (seeded) records.push({ kind: 'fav', entity: id, fav: true });
             }
             const parts = splitCard(card);
-            // A `character_book` holding a list of entries is the character's own book; anything else stays JSON.
             const bookAt = parts.extra.findIndex(x => x.path === 'data:character_book');
             const book = bookAt === -1 ? undefined : JSON.parse(/** @type {string} */ (parts.extra[bookAt].value));
             if (isEntryList(book)) parts.extra.splice(bookAt, 1);
@@ -611,13 +532,10 @@ export class LibraryEngine {
             const kept = storedLists.get(NAME_HISTORY) ?? [];
             const history = renamed ? renamedHistory(kept, renamed) : kept;
             if (history.length > 0) next.lists.set(NAME_HISTORY, history);
-            // The links are written by linkRecords(), not as the card's values.
             if (storedLists.has(LIST.links)) next.lists.set(LIST.links, storedLists.get(LIST.links));
             const world = next.values.get(FIELD.world)?.text;
             const linkKey = world ? bookKey(world) : '';
             if (linkKey && world === linkKey) next.values.delete(FIELD.world);
-            // No first link: the next one reads as `world`, so an empty `world` isn't kept over it, and the identity
-            // hash is of the card as it then reads.
             let identityCard = card;
             const links = storedLinks(stored);
             if (!linkKey && links.length > 1) {
@@ -626,7 +544,6 @@ export class LibraryEngine {
                 if (typeof name === 'string') identityCard = _.set(_.cloneDeep(card), 'data.extensions.world', name);
             }
             records.push(...valueRecords(id, withoutStatements(stored), next));
-            // Loaded here, not at the top: it reaches the world book reads, which reach the user stores, which load this module.
             const { getCharaCardV2 } = await import('./character-card-normalize.js');
             const normalized = getCharaCardV2(JSON.parse(cardJson), directories, false);
             const size = calculateDataSize(normalized.data ?? {});
@@ -635,14 +552,12 @@ export class LibraryEngine {
             if (!stored || (stored.createMs ?? null) !== ms) records.push({ kind: 'createDate', entity: id, ...(ms === null ? {} : { ms }) });
             const hashes = [[HASH.identity, computeContentIdentityHash(identityCard)], [HASH.content, contentHash], [HASH.avatarIdentity, avatarIdentityHash]];
             for (const [which, hex] of hashes) {
-                // A hash is replaced only by a new one: most writers have none, and an import's must outlive them.
                 if (hex === null) continue;
                 const had = stored?.hashes.find(h => h.which === which);
                 if (had && had.hash.toString('hex') === hex) continue;
                 records.push({ kind: 'cardHash', entity: id, which, hash: Buffer.from(hex, 'hex') });
             }
             records.push(...this.tags.addRecords(stored ?? { id, tags: [] }, tags));
-            // A new entity's create comes after its values, so it enters the orders once, with its keys.
             if (!stored) records.push({ kind: 'entityCreate', entity: id, type: TYPE.character, key: avatar, added: dateAdded });
             const commit = async () => {
                 records.push(...(await this.linkRecords(id, stored, linkKey)));
@@ -650,7 +565,6 @@ export class LibraryEngine {
                 if (this.batches > 0) await this.cardCommits.commit(records);
                 else await this.store.commit(records);
             };
-            // A name no book has becomes an unresolved book, made once whichever card links it first.
             if (linkKey) await this.serialized(TYPE.book, linkKey, commit);
             else await commit();
             return { id, records: records.length };
@@ -658,9 +572,6 @@ export class LibraryEngine {
     }
 
     /**
-     * The records making the book keyed `key` character `id`'s first link (none: removing only the first, so the
-     * next one is first), the book made as an unresolved name when there is none. A later link to that book goes
-     * (the first kept). Runs in the key's lane.
      * @param {bigint} id
      * @param {StoredEntity | null} stored
      * @param {string} key
@@ -669,7 +580,6 @@ export class LibraryEngine {
     async linkRecords(id, stored, key) {
         const before = storedLinks(stored);
         if (!key) return before.length > 0 ? linkListRecords(id, before, before.slice(1).map(l => l.book)) : [];
-        // A first link already resolving as the book with that key names it, through whatever forwards.
         if (stored?.link?.key === key) return [];
         const records = [];
         let [book] = await this.ids(TYPE.book, [key]);
@@ -683,7 +593,6 @@ export class LibraryEngine {
     }
 
     /**
-     * The names each book reads as (the key of the book it resolves as), or null for no book.
      * @param {bigint[]} books
      * @returns {Promise<Map<bigint, string | null>>}
      */
@@ -694,9 +603,7 @@ export class LibraryEngine {
     }
 
     /**
-     * The names a character's links read as, in list order, a repeat (two links resolving as one book) dropped,
-     * the first kept. The first is its card's `extensions.world`, the rest upstream's `charLore` extra books.
-     * @param {StoredEntity} e Read with its list `LIST.links`.
+     * @param {StoredEntity} e
      * @returns {Promise<string[]>}
      */
     async linkNames(e) {
@@ -706,9 +613,8 @@ export class LibraryEngine {
     }
 
     /**
-     * The names a character's links after the first read as (upstream's `charLore` extra books for it).
      * @param {string} avatar
-     * @returns {Promise<string[]>} Empty for no such character.
+     * @returns {Promise<string[]>}
      */
     async extraBookNames(avatar) {
         const [id] = await this.ids(TYPE.character, [avatar]);
@@ -717,9 +623,6 @@ export class LibraryEngine {
     }
 
     /**
-     * Upstream's `world_info.charLore`, built from the characters with 2 or more links (`multiLinks`, in id order):
-     * `{ name: <avatar without its extension>, extraBooks: <the names of its links after the first> }`, a character
-     * whose links read as one name left out.
      * @returns {Promise<{ name: string, extraBooks: string[] }[]>}
      */
     async charLore() {
@@ -740,9 +643,6 @@ export class LibraryEngine {
     }
 
     /**
-     * Whether an upstream-shaped `charLore` (as a settings save may carry it) differs from the links of the
-     * characters it names: an entry that isn't `{ name: string, extraBooks: string[] }`, names no character
-     * (`<name>.png`), or lists other extra books than its links read as. Reads only the characters it names.
      * @param {unknown} charLore
      * @returns {Promise<boolean>}
      */
@@ -764,14 +664,10 @@ export class LibraryEngine {
     }
 
     /**
-     * Changes a character's links after the first (`/additional-books`): `add` appends the books not linked yet,
-     * `remove` removes the links reading as them, `set` makes them the links after the first (those already there
-     * kept); on a character with no links, the first book added is its first link. Repeats are dropped, the first
-     * kept. Each name is a world book's (the caller checks).
      * @param {string} avatar
      * @param {'add' | 'remove' | 'set'} op
      * @param {string[]} names
-     * @returns {Promise<string[] | null>} The names its links after the first read as (null: no such character).
+     * @returns {Promise<string[] | null>}
      */
     extraLinks(avatar, op, names) {
         return this.serialized(TYPE.character, avatar, async () => {
@@ -794,7 +690,6 @@ export class LibraryEngine {
                 const there = new Set([...(first ? [first.book] : []), ...kept].map(nameOf));
                 const added = keys.filter(k => !there.has(k)).map(k => /** @type {bigint} */ (byKey.get(k)));
                 if (op === 'set') {
-                    // In the order asked: each name's kept link, else its book.
                     const keptByName = new Map(kept.map(b => [nameOf(b), b]));
                     after = [...(first ? [first.book] : []), ...keys.filter(k => !(first && nameOf(first.book) === k)).map(k => keptByName.get(k) ?? /** @type {bigint} */ (byKey.get(k)))];
                 } else {
@@ -803,8 +698,6 @@ export class LibraryEngine {
             }
             after = [...new Set(after)];
             const records = linkListRecords(stored.id, before, after);
-            // A first link made here is what the card reads as `world`: an empty one stored goes, and the identity
-            // hash follows.
             if (!first && after.length > 0) {
                 if (stored.values.some(v => v.field === FIELD.world)) records.unshift({ kind: 'valueDelete', entity: stored.id, field: FIELD.world });
                 const key = (await this.bookNames([after[0]])).get(after[0]);
@@ -818,10 +711,9 @@ export class LibraryEngine {
     }
 
     /**
-     * Stores a group, writing only what differs from the stored one; its fav is the object's (normalizeFav()).
      * @param {Record<string, unknown> & { id: string }} group
      * @param {object} [options]
-     * @param {number} [options.dateAdded] For a new group.
+     * @param {number} [options.dateAdded]
      * @returns {Promise<{ id: bigint, records: number }>}
      */
     writeGroup(group, { dateAdded = Date.now() } = {}) {
@@ -838,11 +730,9 @@ export class LibraryEngine {
     }
 
     /**
-     * Changes a stored group: `change` edits its object (its own values, id and fav, as `groups()` answers it but
-     * its tag ids) in place, and what then differs is written, after every earlier write to the group.
      * @param {string} key
      * @param {(group: Record<string, any>) => void} change
-     * @returns {Promise<boolean>} Whether there is such a group.
+     * @returns {Promise<boolean>}
      */
     updateGroup(key, change) {
         return this.serialized(TYPE.group, key, async () => {
@@ -857,8 +747,6 @@ export class LibraryEngine {
     }
 
     /**
-     * A new character's or group's id: the id of the unowned tree kept under its owner key (its messages become
-     * its own; `records` gets that entity's delete first), else a new one.
      * @param {string} ownerKey
      * @param {object[]} records
      * @returns {Promise<bigint>}
@@ -871,7 +759,6 @@ export class LibraryEngine {
     }
 
     /**
-     * Each group as `/api/groups/batch` answers it (its own values, id, fav and tag ids), or null.
      * @param {string[]} keys
      * @returns {Promise<(Record<string, unknown> | null)[]>}
      */
@@ -883,11 +770,8 @@ export class LibraryEngine {
     }
 
     /**
-     * The characters changed after a change feed position, each once at its last change (`/api/characters/changes`'s
-     * answer): `seq` the position read up to, `changes` `{ id: avatar, op: 'upsert' | 'delete', fields: null }`.
-     * The feed holds one entry per entity, so it is never truncated.
      * @param {number} sinceSeq
-     * @param {number} limit Feed entries read (other entities' included).
+     * @param {number} limit
      * @returns {Promise<{ seq: number, changes: { id: string, op: 'upsert' | 'delete', fields?: null }[], truncated: false, hasMore: boolean }>}
      */
     async changes(sinceSeq, limit) {
@@ -910,7 +794,6 @@ export class LibraryEngine {
     }
 
     /**
-     * Where the characters' change feed (`changes()`) ends now.
      * @returns {Promise<number>}
      */
     async changesEnd() {
@@ -918,18 +801,13 @@ export class LibraryEngine {
     }
 
     /**
-     * The library-wide half of the page's `findChar()` (`/api/characters/find`): the characters it would match if
-     * every one were held. An avatar key (with or without `.png`) wins; else the name compares as
-     * `compareIgnoreCaseAndAccents()` (`insensitive`) or exactly; with `tags`, a character must carry a tag of each
-     * name, compared exactly. At most two avatars in avatar order, the first `findChar()`'s answer, a second meaning
-     * more than one matched; `capped` when `FIND_WORK_CAP` entities were read before two matched.
      * @param {{ name?: string | null, allowAvatar?: boolean, insensitive?: boolean, tags?: string[] | null }} q
      * @returns {Promise<{ ids: string[], capped: boolean }>}
      */
     async findCharacters({ name = null, allowAvatar = true, insensitive = true, tags = null }) {
         const hasName = typeof name === 'string' && name !== '';
         const tagNames = Array.isArray(tags) && tags.length > 0 ? tags.map(String) : null;
-        /** @type {string[]} The wanted tags' keys, a tag of each name. */
+        /** @type {string[]} */
         let tagKeys = [];
         /** @type {(bigint | null)[]} */
         let wanted = [];
@@ -975,8 +853,6 @@ export class LibraryEngine {
     }
 
     /**
-     * The groups whose name compares equal to `name` as `compareIgnoreCaseAndAccents()` does, at most two, in id
-     * order.
      * @param {string} name
      * @returns {Promise<string[]>}
      */
@@ -987,10 +863,7 @@ export class LibraryEngine {
         return groups.filter(g => g && tagNameKey(String(g.name)) === key).map(g => /** @type {any} */ (g).id).sort().slice(0, 2);
     }
 
-    // ---- the local import scan's bookkeeping (localImport.directories) ----
-
     /**
-     * The mtime each source path was last processed at, for the paths that have one.
      * @param {string[]} paths
      * @returns {Promise<Map<string, number>>}
      */
@@ -1006,11 +879,9 @@ export class LibraryEngine {
     }
 
     /**
-     * Records that a source path was processed at `mtimeMs` (and the character it duplicates, whose delete forgets
-     * it); nothing is written when that is what is recorded.
      * @param {string} path
      * @param {number} mtimeMs
-     * @param {string | null} [duplicateOf] The character's avatar.
+     * @param {string | null} [duplicateOf]
      */
     async setLocalImportMtime(path, mtimeMs, duplicateOf = null) {
         const dup = duplicateOf === null ? null : (await this.ids(TYPE.character, [duplicateOf]))[0];
@@ -1026,7 +897,6 @@ export class LibraryEngine {
     }
 
     /**
-     * Up to `limit` paths with a recorded mtime after `after` ('' : from the first), in path order.
      * @param {string} after
      * @param {number} limit
      * @returns {Promise<string[]>}
@@ -1045,7 +915,6 @@ export class LibraryEngine {
     }
 
     /**
-     * Records a source path that isn't a character, at its mtime; nothing is written when that is recorded.
      * @param {string} path
      * @param {number} mtimeMs
      * @param {string} reason
@@ -1062,8 +931,6 @@ export class LibraryEngine {
     }
 
     /**
-     * The chat stats list rows show of characters and groups (their trees are their ids): the newest message's time
-     * and the chat size, 0 for a tree with none.
      * @param {bigint[]} ids
      * @returns {Promise<Map<bigint, { date_last_chat: number, chat_size: number }>>}
      */
@@ -1079,7 +946,7 @@ export class LibraryEngine {
     /**
      * @param {string} avatar
      * @param {boolean} allowed
-     * @returns {Promise<boolean>} Whether there is such a character.
+     * @returns {Promise<boolean>}
      */
     setAllowGlobalStyles(avatar, allowed) {
         return this.serialized(TYPE.character, avatar, async () => {
@@ -1094,11 +961,10 @@ export class LibraryEngine {
     }
 
     /**
-     * Changes an entity's key (a character's avatar) or date added; the type stays.
      * @param {number} type
      * @param {string} key
      * @param {{ key?: string, dateAdded?: number }} change
-     * @returns {Promise<boolean>} Whether there is such an entity; false also when the new key is taken.
+     * @returns {Promise<boolean>}
      */
     updateEntity(type, key, change) {
         return this.serialized(type, key, async () => {
@@ -1113,7 +979,6 @@ export class LibraryEngine {
     }
 
     /**
-     * The first character a card hash finds (`HASH`), as import dedup looks one up.
      * @param {number} which
      * @param {string | null} hex
      * @returns {Promise<string | null>}
@@ -1125,7 +990,6 @@ export class LibraryEngine {
     }
 
     /**
-     * The first character both its content identity hash and its avatar identity hash find.
      * @param {string | null} contentIdentityHash
      * @param {string | null} avatarIdentityHash
      * @returns {Promise<string | null>}
@@ -1140,7 +1004,7 @@ export class LibraryEngine {
      * @param {number} type
      * @param {string} key
      * @param {boolean} fav
-     * @returns {Promise<boolean | null>} Whether it changed; null when there's no such entity.
+     * @returns {Promise<boolean | null>}
      */
     setFav(type, key, fav) {
         return this.serialized(type, key, async () => {
@@ -1153,11 +1017,9 @@ export class LibraryEngine {
     }
 
     /**
-     * Stores a tag's definition, writing only what differs from the stored one; a key only assignments named gets
-     * its definition.
      * @param {{ id: string, name?: string, folder_type?: string, [key: string]: unknown }} tag
      * @param {object} [options]
-     * @param {(id: bigint) => object[]} [options.extra] Records committed with the definition's, given the tag's id.
+     * @param {(id: bigint) => object[]} [options.extra]
      * @returns {Promise<bigint>}
      */
     writeTag(tag, { extra } = {}) {
@@ -1170,7 +1032,6 @@ export class LibraryEngine {
     }
 
     /**
-     * The records writeTag() commits for `tag`, read against what is stored now; a new tag's id is given out here.
      * @param {{ id: string, [key: string]: unknown }} tag
      * @returns {Promise<{ id: bigint, records: object[] }>}
      */
@@ -1184,7 +1045,6 @@ export class LibraryEngine {
             const field = k === 'name' ? FIELD.name : k === 'folder_type' ? FIELD.folder_type : `${TAG_KEY_PREFIX}${k}`;
             values.set(field, typeof v === 'string' && typeof field === 'number' ? { text: v } : { json: JSON.stringify(v) });
         }
-        // The marker is the last value, so the tag enters its orders once, with its name, folder type and order.
         values.set(FIELD.defined, { json: '' });
         const records = valueRecords(id, stored, { values, lists: new Map() });
         const marker = records.findIndex(r => /** @type {any} */ (r).field === FIELD.defined);
@@ -1201,7 +1061,7 @@ export class LibraryEngine {
      * @param {string} key
      * @param {string} tagKey
      * @param {boolean} assigned
-     * @returns {Promise<boolean>} Whether both exist.
+     * @returns {Promise<boolean>}
      */
     async assignTag(type, key, tagKey, assigned) {
         const [entity] = await this.ids(type, [key]);
@@ -1212,7 +1072,6 @@ export class LibraryEngine {
     }
 
     /**
-     * Deletes a tag, its carriers becoming `intoKey`'s (or carrying nothing).
      * @param {string} tagKey
      * @param {string | null} intoKey
      */
@@ -1228,8 +1087,6 @@ export class LibraryEngine {
     }
 
     /**
-     * Deletes an entity. A character's or group's chats stay with `keepChats` (upstream leaves chat files on disk): its
-     * tree becomes an unowned one under its owner key, which a character or group made with that key adopts.
      * @param {number} type
      * @param {string} key
      * @param {{ keepChats?: boolean }} [options]
@@ -1238,7 +1095,6 @@ export class LibraryEngine {
         return this.serialized(type, key, async () => {
             const [id] = await this.ids(type, [key]);
             if (id === null) return false;
-            // A character's own book goes with it.
             const book = type === TYPE.character ? await this.books.ownedRecords(id, SLOT.characterBook, undefined) : [];
             /** @type {object[]} */
             const records = [...book, { kind: 'entityDelete', entity: id }];
@@ -1251,7 +1107,6 @@ export class LibraryEngine {
     }
 
     /**
-     * Whether a tree holds a message or a bookmark.
      * @param {bigint} tree
      */
     async holdsChats(tree) {
@@ -1261,7 +1116,6 @@ export class LibraryEngine {
     }
 
     /**
-     * Each character's card as stored (with its favourite flag), or null.
      * @param {string[]} avatars
      * @returns {Promise<(unknown | null)[]>}
      */
@@ -1271,7 +1125,6 @@ export class LibraryEngine {
     }
 
     /**
-     * A stored character's card, its own book included.
      * @param {StoredEntity} e
      */
     async assembled(e) {
@@ -1282,14 +1135,11 @@ export class LibraryEngine {
     }
 
     /**
-     * The `cardHash` record keeping character `e`'s content identity hash current once its card's `world` reads as
-     * `world` (its first link renamed, or made), or null when it hashes the same.
      * @param {StoredEntity} e
      * @param {string} world
      * @returns {Promise<object | null>}
      */
     async identityRecord(e, world) {
-        // The card's own `world` text is kept only where it differs from the link's name: it goes with the link.
         const values = e.link ? e.values : e.values.filter(v => v.field !== FIELD.world);
         const card = await this.assembled({ ...e, values, link: { book: e.link?.book ?? 0n, version: e.link?.version ?? 0n, key: world } });
         const hex = computeContentIdentityHash(card);
@@ -1298,10 +1148,7 @@ export class LibraryEngine {
     }
 
     /**
-     * The `cardHash` records keeping characters' content identity hashes current when the name their first
-     * lorebook link reads as becomes `world` (a book renamed): for each one whose first link reads as one of
-     * `reading` now, and whose card then hashes differently.
-     * @param {bigint[]} ids Characters linking the book.
+     * @param {bigint[]} ids
      * @param {string} world
      * @param {string[]} reading
      * @returns {Promise<object[]>}
@@ -1320,7 +1167,6 @@ export class LibraryEngine {
     }
 
     /**
-     * Each entity's tag keys, in the order the app sorts tag ids.
      * @param {StoredEntity[]} entities
      * @returns {Promise<string[][]>}
      */
@@ -1332,8 +1178,7 @@ export class LibraryEngine {
     }
 
     /**
-     * Character list rows (toShallow()'s shape), as the old store's readListRowsSync() gives them.
-     * @param {StoredEntity[]} entities Characters, read whole or with `listRowValues()`.
+     * @param {StoredEntity[]} entities
      * @param {boolean} includeCreatorNotes
      */
     async listRows(entities, includeCreatorNotes) {
@@ -1363,8 +1208,6 @@ export class LibraryEngine {
     }
 
     /**
-     * A /query page as the old store's queryEntities() / queryCharacters() answer it: the same parameters and
-     * answer shape, keys for ids.
      * @param {object} params
      * @param {{ include?: string[], exclude?: string[], mode?: 'and' | 'or' }} [params.tags]
      * @param {boolean} [params.fav]
@@ -1375,31 +1218,27 @@ export class LibraryEngine {
      * @param {string} [params.sortField]
      * @param {'asc' | 'desc'} [params.sortOrder]
      * @param {number} [params.seed]
-     * @param {string} [params.tieSortField] With `sortField: 'search'`: the list sort the matches only tag names
-     *   match (all scoring alike) follow; by name if none.
+     * @param {string} [params.tieSortField]
      * @param {'asc' | 'desc'} [params.tieSortOrder]
      * @param {number} [params.tieSeed]
      * @param {number} [params.offset]
      * @param {number} [params.limit]
-     * @param {string} [params.cursor] A page's `cursor`; one made for another sort answers `'invalid-cursor'`.
+     * @param {string} [params.cursor]
      * @param {boolean} [params.wantRows]
      * @param {boolean} [params.wantTotal]
      * @param {boolean} [params.wantHashes]
      * @param {boolean} [params.groupsOnly]
      * @param {boolean} [params.includeGroups]
      * @param {boolean} [params.includeCreatorNotes]
-     * @param {boolean} [params.wantHidden] Also `hidden` and `approxHidden`, as `/query`'s `want: 'hidden'`.
-     * @param {{ characters: boolean, groups: boolean }} [params.hiddenKinds] What `hidden` counts every entity of; by
-     *   default the kinds this page may hold.
+     * @param {boolean} [params.wantHidden]
+     * @param {{ characters: boolean, groups: boolean }} [params.hiddenKinds]
      * @param {number} [params.cap]
-     * @param {string} [params.search] Only the characters and groups the search string matches (`searchClauses()`
-     *   with the library's labels); with `sortField: 'search'` best match first.
+     * @param {string} [params.search]
      */
     async query(params) {
         const { tags, fav, world, ranges, excludeIds, ids, sortField, sortOrder, seed, tieSortField, tieSortOrder, tieSeed, offset = 0, limit = 500, cursor, wantRows = true, wantTotal = true, wantHashes = false, wantHidden = false, groupsOnly = false, includeGroups = true, includeCreatorNotes = false, cap = 20_000, search } = params;
         const hiddenKinds = params.hiddenKinds ?? { characters: !groupsOnly, groups: groupsOnly || includeGroups };
         const clauses = typeof search === 'string' ? searchClauses(search, LIBRARY_LABELS) : [];
-        // Every entity of those kinds less the rows on this page.
         const hiddenOf = async (/** @type {number} */ shown) => {
             if (!wantHidden) return {};
             const all = await this.store.libraryPage({ ...hiddenKinds, count: true, limit: 0, cap, sort: { key: SORT_KEYS.name, desc: false } });
@@ -1409,7 +1248,6 @@ export class LibraryEngine {
         const exclude = (tags?.exclude ?? []).filter(Boolean).map(String);
         const tagIds = new Map();
         const tagKeys = [...new Set([...include, ...exclude, ...Object.keys(ranges ?? {}).filter(k => k.startsWith('tag:')).map(k => k.slice(4))])];
-        // A deleted tag filters as the live tag its merges lead to; one deleted with no merge as no tag.
         const statuses = /** @type {({ id: bigint, state: string, into?: string } | null)[]} */ (tagKeys.length > 0 ? await this.store.tagStatus(tagKeys) : []);
         const intoKeys = [...new Set(statuses.flatMap(s => (s?.state === 'gone' && s.into !== undefined ? [s.into] : [])))];
         const intoIds = new Map(/** @type {any[]} */ (intoKeys.length > 0 ? await this.store.tagStatus(intoKeys) : []).map((s, i) => [intoKeys[i], s?.id ?? null]));
@@ -1453,7 +1291,6 @@ export class LibraryEngine {
         }
         const relevance = clauses.length > 0 && sortField === 'search';
         q.sort = relevance ? listSort(tieSortField, tieSortOrder, tieSeed) : listSort(sortField, sortOrder, seed);
-        // A list cursor names the order it was made in (`e<order>.<place>`); one made in another is refused.
         const order = Buffer.from(JSON.stringify(q.sort)).toString('base64url');
         if (typeof cursor === 'string' && cursor.startsWith('e')) {
             const dot = cursor.indexOf('.');
@@ -1470,7 +1307,6 @@ export class LibraryEngine {
             try {
                 s = await this.store.librarySearch({ ...q, clauses, relevance, ...(after ? { after } : {}) });
             } catch (err) {
-                // A cursor whose weights don't fit the query's words.
                 if (after && /^invalid cursor/.test(String(/** @type {any} */ (err)?.message))) return 'invalid-cursor';
                 throw err;
             }
@@ -1479,7 +1315,6 @@ export class LibraryEngine {
         } else {
             page = await this.store.libraryPage(q);
         }
-        // A row reads only what the list draws; a group's object is all its own values.
         const read = wantRows && !wantHashes ? listRowValues(includeCreatorNotes) : NO_VALUES;
         const pageEntities = /** @type {StoredEntity[]} */ ((await this.entities(page.ids, read)).filter(e => e !== null));
         const out = {
@@ -1491,10 +1326,8 @@ export class LibraryEngine {
         };
         const groups = /** @type {StoredEntity[]} */ ((await this.entities(pageEntities.filter(e => e.type === TYPE.group).map(e => e.id))).filter(e => e !== null));
         const groupOf = new Map(groups.map(g => [g.id, g]));
-        // A group deleted between the two reads is gone, as one deleted before the first.
         const entities = pageEntities.filter(e => e.type !== TYPE.group || groupOf.has(e.id));
         const groupTags = new Map((await this.tagKeys(groups)).map((t, i) => [groups[i].id, t]));
-        // A character's version doesn't move when its tags do: its tags' digest goes with its rows too.
         const pageCharacters = entities.filter(e => e.type !== TYPE.group);
         const characterTags = wantHashes ? new Map((await this.tagKeys(pageCharacters)).map((t, i) => [pageCharacters[i].id, t])) : new Map();
         const stats = await this.chatStats(entities.map(e => e.id));
@@ -1520,10 +1353,8 @@ export class LibraryEngine {
     }
 
     /**
-     * A hash-mode row: a character's cache key is its version, the position of its latest record; a group's are
-     * the digests of what `groups()` answers for it.
      * @param {StoredEntity} e
-     * @param {string[]} tagKeys The tag keys the character or group carries.
+     * @param {string[]} tagKeys
      * @param {{ date_last_chat: number, chat_size: number }} stats
      */
     hashRow(e, tagKeys, stats) {
@@ -1536,7 +1367,6 @@ export class LibraryEngine {
             date_last_chat: stats.date_last_chat,
             chat_size: stats.chat_size,
             data_size: e.dataSize ?? 0,
-            // A renamed or deleted lorebook changes what the card reads as.
             version: e.type === TYPE.group ? null : Number(e.link && e.link.version > e.version ? e.link.version : e.version),
             favHash: 0,
             tagIdsHash: 0,
@@ -1548,7 +1378,6 @@ export class LibraryEngine {
             row.tagIdsHash = groupDigestTagIdsHash(group) >>> 0;
             row.contentHash = groupDigestContentHash(group) >>> 0;
         } else {
-            // Its version doesn't change with its tags, so a copy kept at the same version has to match these too.
             row.tagIdsHash = groupDigestTagIdsHash({ tag_ids: tagKeys }) >>> 0;
         }
         return row;

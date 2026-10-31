@@ -15,13 +15,6 @@ let baseUrl;
 let tempDir;
 let directories;
 
-/**
- * Mounts the real settings.js router, same shape as settings-save-conflict.test.js. Covers /api/settings/save-
- * partial: the per-key-file write endpoint (settings-store.js's writeSettingsKeys() - see that module's own
- * header for why storage is sharded one file per top-level key rather than a single settings.json), its per-key
- * conflict check, and (the point of this file) that concurrent partial updates racing each other never corrupt
- * the store or silently lose a write - see the "concurrent partial updates" describe block below.
- */
 beforeAll(async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-settings-save-partial-test-'));
     fs.mkdirSync(path.join(tempDir, 'backups'), { recursive: true });
@@ -63,10 +56,6 @@ async function postPartialSave(keys, expectedHashes) {
     });
 }
 
-/**
- * Resets the sharded store to exactly the given flat object (full replace, deleting any stray per-key files
- * from a previous test) - the test-side equivalent of what used to be a raw settings.json overwrite.
- */
 function writeSettingsFile(obj) {
     fs.rmSync(path.join(tempDir, 'settings'), { recursive: true, force: true });
     fs.rmSync(path.join(tempDir, 'settings.json'), { force: true });
@@ -140,7 +129,6 @@ describe('POST /api/settings/save-partial', () => {
 
     test('rejects with 409 and leaves the file untouched when the touched key has changed', async () => {
         writeSettingsFile({ power_user: { theme: 'dark' } });
-        // Client believes power_user is still what it saw a while ago, but someone else already changed it.
         const staleHashes = hashSettingsKeys({ power_user: { theme: 'stale belief' } }, ['power_user']);
         const actualContent = writeSettingsFile({ power_user: { theme: 'changed by another tab' } });
 
@@ -154,11 +142,8 @@ describe('POST /api/settings/save-partial', () => {
     });
 
     test('does NOT reject when the conflicting change is to a key this update never touched', async () => {
-        // This is the actual point of per-key (vs whole-file) conflict detection: a concurrent change to some
-        // unrelated key must not block an update to a different key.
         const original = writeSettingsFile({ power_user: { theme: 'dark' }, extension_settings: { foo: 1 } });
         const believedHashes = hashSettingsKeys(JSON.parse(original), ['power_user']);
-        // Someone else changes extension_settings (a key this call never mentions) in between.
         writeSettingsFile({ power_user: { theme: 'dark' }, extension_settings: { foo: 999 } });
 
         const response = await postPartialSave({ power_user: { theme: 'light' } }, believedHashes);
@@ -182,16 +167,12 @@ describe('POST /api/settings/save-partial concurrent updates', () => {
 
         expect(responseA.status).toBe(200);
         expect(responseB.status).toBe(200);
-        // Node serializes each synchronous handler body start-to-finish (see save-partial's own doc comment on
-        // this), so both requests' read-modify-write halves run one at a time - neither can silently overwrite
-        // the other's merge, regardless of what order they land in.
         expect(readSettingsFile()).toEqual({ power_user: { theme: 'light' }, extension_settings: { foo: 2 } });
     });
 
     test('two overlapping concurrent updates against the same baseline: exactly one succeeds, the other 409s, and the file is never corrupted or silently overwritten', async () => {
         const baseline = writeSettingsFile({ power_user: { theme: 'dark' } });
         const baselineObj = JSON.parse(baseline);
-        // Both requests believe the same starting state for the *same* key.
         const sharedExpectedHashes = hashSettingsKeys(baselineObj, ['power_user']);
 
         const [responseA, responseB] = await Promise.all([
@@ -200,11 +181,6 @@ describe('POST /api/settings/save-partial concurrent updates', () => {
         ]);
 
         const statuses = [responseA.status, responseB.status].sort();
-        // Whichever request's synchronous handler body ran first changes the on-disk hash before the second
-        // one's per-key check runs, so the second one's belief about power_user is now stale - the same
-        // mechanism that makes the "no lost update" guarantee hold. Never both succeed (one would silently
-        // clobber the other's write, exactly the original bug), and never both fail (that would mean nothing
-        // ever gets through under contention).
         expect(statuses).toEqual([200, 409]);
 
         const finalState = readSettingsFile();

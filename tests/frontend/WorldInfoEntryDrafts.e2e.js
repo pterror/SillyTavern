@@ -1,15 +1,12 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// Typing in a World Info entry writes only a draft; a finished edit commits as one write
-
 const SAVE_URL = /\/api\/worldinfo\/(entry\/edit|entries\/apply|create)$/;
 const STORED_CONTENT = 'stored content';
 
 /**
- * Records every save request the page sends from now on.
  * @param {import('@playwright/test').Page} page
- * @returns {{ url: string, body: any }[]} The live list, in request order
+ * @returns {{ url: string, body: any }[]}
  */
 function recordSaves(page) {
     const saves = [];
@@ -22,10 +19,9 @@ function recordSaves(page) {
 }
 
 /**
- * Creates a book with one entry.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @returns {Promise<number>} The entry's uid
+ * @returns {Promise<number>}
  */
 async function createBook(page, name) {
     return await page.evaluate(async ({ name, content }) => {
@@ -41,10 +37,9 @@ async function createBook(page, name) {
 }
 
 /**
- * Opens the editor on the book and opens its first entry. Keys use the picker (the plain text box is the default).
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @param {string} [shown] What the entry's content shows once open
+ * @param {string} [shown]
  */
 async function openEntry(page, name, shown = STORED_CONTENT) {
     await page.evaluate(async ({ name }) => {
@@ -62,10 +57,9 @@ async function openEntry(page, name, shown = STORED_CONTENT) {
 }
 
 /**
- * Reloads the page, then opens the book's first entry again.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @param {string} shown What the entry's content shows once open
+ * @param {string} shown
  */
 async function reopenEntry(page, name, shown) {
     await page.goto('/');
@@ -77,7 +71,7 @@ async function reopenEntry(page, name, shown) {
  * @param {import('@playwright/test').Page} page
  * @param {string} name
  * @param {number} uid
- * @returns {Promise<any>} The entry as the server has it
+ * @returns {Promise<any>}
  */
 async function storedEntry(page, name, uid) {
     return await page.evaluate(async ({ name, uid }) => {
@@ -89,7 +83,7 @@ async function storedEntry(page, name, uid) {
 
 /**
  * @param {import('@playwright/test').Page} page
- * @returns {Promise<string[]>} The keys of the entry drafts in browser storage
+ * @returns {Promise<string[]>}
  */
 async function draftKeys(page) {
     return await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('FieldDraft')));
@@ -106,7 +100,6 @@ async function deleteBook(page, name) {
     }, { name });
 }
 
-// Long enough for a delayed save to have gone out.
 const QUIET_MS = 2500;
 
 test.describe('World Info entry drafts', () => {
@@ -211,7 +204,6 @@ test.describe('World Info entry drafts', () => {
         try {
             const { entry, content } = await openEntry(page, name);
 
-            // A draft that stays: its commit fails, which keeps the draft.
             await page.route('**/api/worldinfo/entry/edit', route => route.fulfill({ status: 500, body: 'refused' }));
             await content.focus();
             await content.press('End');
@@ -242,8 +234,6 @@ test.describe('World Info entry drafts', () => {
         const OTHER_TEXT = 'stored by tab B';
 
         /**
-         * Tab A types a draft and reloads; tab B (its own browser context, so its own browser storage) stores the same
-         * field; tab A reloads again and shows the conflict.
          * @param {import('@playwright/test').Page} page
          * @param {import('@playwright/test').Browser} browser
          * @param {string} name

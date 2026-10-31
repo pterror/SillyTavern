@@ -1,6 +1,3 @@
-//! Search entries of the library's, books' and sessions' values against a store holding only the final state,
-//! and words found against a model of the values.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
@@ -104,18 +101,15 @@ const WORDS: &[&str] = &[
     "east",
 ];
 
-/// An entity's values: text by field code (list items by their item field), JSON by code.
 #[derive(Clone, Debug, Default)]
 struct Ent {
     kind: u64,
     key: String,
     texts: BTreeMap<u64, String>,
     jsons: BTreeMap<u64, String>,
-    /// An item's field → its position.
     items: BTreeMap<u64, u64>,
 }
 
-/// Which codes and lists an entity of each type is given.
 fn fields_of(kind: u64) -> (&'static [u64], &'static [u64]) {
     match kind {
         CHARACTER => (&[1, 2, 10, 11, 12, 13, 14, 15, 16], &[0, 1, 2]),
@@ -125,7 +119,6 @@ fn fields_of(kind: u64) -> (&'static [u64], &'static [u64]) {
     }
 }
 
-/// Live sessions' names.
 type Sessions = BTreeMap<u64, Option<String>>;
 
 struct Model {
@@ -160,7 +153,6 @@ impl Model {
         xs[(self.rand() % xs.len() as u64) as usize]
     }
 
-    /// The records creating entity `e` with some values.
     fn make(&mut self, e: u64, kind: u64, key: String) -> Vec<Record> {
         let mut ent = Ent {
             kind,
@@ -226,7 +218,6 @@ impl Model {
                 out
             }
             2..=4 if !ids.is_empty() => {
-                // A whole text value, or (at random) a list item's.
                 let e = self.pick(&ids);
                 let (codes, lists) = fields_of(self.ents[&e].kind);
                 let w = self.words();
@@ -248,7 +239,6 @@ impl Model {
                 vec![set(e, c, &w)]
             }
             5 | 6 if !ids.is_empty() => {
-                // An edit appending a word to a text the entity has.
                 let e = self.pick(&ids);
                 let fs: Vec<u64> = self.ents[&e].texts.keys().copied().collect();
                 if fs.is_empty() {
@@ -276,7 +266,6 @@ impl Model {
                 )]
             }
             7 if !ids.is_empty() => {
-                // A value or an item goes.
                 let e = self.pick(&ids);
                 let fs: Vec<u64> = self.ents[&e].texts.keys().copied().collect();
                 if fs.is_empty() {
@@ -297,7 +286,6 @@ impl Model {
                 vec![unset(e, f)]
             }
             8 if !ids.is_empty() => {
-                // An entry's uid, its no-uid marker, or a character book entry's id.
                 let e = self.pick(&ids);
                 if self.ents[&e].kind != ENTRY {
                     return Vec::new();
@@ -316,7 +304,6 @@ impl Model {
                 vec![json(e, c, &v)]
             }
             9 if !ids.is_empty() => {
-                // A group's id changes.
                 let e = self.pick(&ids);
                 if self.ents[&e].kind != GROUP {
                     return Vec::new();
@@ -337,7 +324,6 @@ impl Model {
                 )]
             }
             10 => {
-                // A session made, named or unnamed.
                 let ids: Vec<u64> = self.sessions.keys().copied().collect();
                 if ids.is_empty() || self.rand().is_multiple_of(3) {
                     let s = self.next_session;
@@ -372,7 +358,6 @@ impl Model {
         }
     }
 
-    /// Records making the model's state from nothing: the books, the entities, the sessions.
     fn records_of_state(&self) -> Vec<Record> {
         let mut out = books();
         for (&e, ent) in self.ents.iter().filter(|(e, _)| **e < WORLD) {
@@ -423,7 +408,6 @@ fn place(e: u64, list: u64, item: u64, position: u64) -> Record {
     )
 }
 
-/// A world book, a character's own book and a book's `originalData`.
 fn books() -> Vec<Record> {
     vec![
         json(WORLD, 41, ""),
@@ -433,8 +417,6 @@ fn books() -> Vec<Record> {
     ]
 }
 
-/// The search entries that follow from the current values alone (maxima, which only rise, and top lists, built
-/// by queries, are left out); zero counters and removed slots dropped.
 fn search_entries(s: &Store) -> Vec<(Vec<u8>, String)> {
     let mut out = Vec::new();
     for st in [
@@ -488,8 +470,6 @@ fn query(scope: Scope, word: &str, fields: Option<Vec<u32>>) -> Query {
     }
 }
 
-/// Whether a value holds `word` as a query's last clause: one token, whole, or in a prefix field a token's prefix of
-/// two characters or more; several (a phrase), adjacent in one value, its last a prefix in any field.
 fn holds(values: &[String], word: &str, prefix: bool) -> bool {
     let w = tokens(word.as_bytes());
     let n = w.len();
@@ -502,7 +482,6 @@ fn holds(values: &[String], word: &str, prefix: bool) -> bool {
 }
 
 impl Model {
-    /// The documents of `scope` whose field `field` holds `word`, from the model.
     fn expected(&self, scope: Scope, field: u32, word: &str) -> BTreeSet<u64> {
         let mut out = BTreeSet::new();
         if scope == Scope::SESSIONS {
@@ -631,7 +610,6 @@ fn a_tags_name_is_searched_only_while_it_has_its_definition_marker() {
 
 #[test]
 fn searched_values_follow_every_change_and_equal_a_fresh_store() {
-    // With word pairs written from the start (in the short fields), and without.
     for (seed, pairs) in [(0x9e37_79b9_7f4a_7c15, true), (7, false), (0x1234_5678, true)] {
         follow(seed, pairs);
     }
@@ -697,7 +675,6 @@ fn follow(seed: u64, pairs: bool) {
 
 fn check(s: &Store, m: &Model) {
     let scopes: Vec<(Scope, u32)> = [
-        // A clause restricted to the card tags field is a tag membership filter, not a text match.
         (0..LIBRARY_FIELDS.len() as u32)
             .filter(|f| *f != 8)
             .map(|f| (Scope::LIBRARY, f))

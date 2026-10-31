@@ -15,7 +15,6 @@ beforeAll(async () => {
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
     user = await (await import('./converted-user.fixture.js')).emptyUser('st-sse-compression-test-');
-    // `/changes/stream` writes browser-presence.json under DATA_ROOT.
     previousDataRoot = globalThis.DATA_ROOT;
     globalThis.DATA_ROOT = user.dataRoot;
 
@@ -52,7 +51,6 @@ test('a /changes/stream event reaches a gzip-accepting client within a second', 
         });
         expect(response.statusCode).toBe(200);
 
-        // Decode if the server did compress, so a failure here means the event never arrived, not that it was unreadable.
         const body = response.headers['content-encoding'] === 'gzip'
             ? response.pipe(zlib.createGunzip({ flush: zlib.constants.Z_SYNC_FLUSH }))
             : response;
@@ -66,7 +64,6 @@ test('a /changes/stream event reaches a gzip-accepting client within a second', 
             });
         });
 
-        // A commit to the store is what the stream reports.
         await user.store.lib.writeCard(user.directories, 'Sse.png', JSON.stringify({ name: 'Sse', data: { name: 'Sse' } }));
 
         const arrived = await Promise.race([

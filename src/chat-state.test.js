@@ -1,5 +1,3 @@
-// State layer 1 on the engine (build path 5b): `chat_metadata` merged per key and per variable, and the state
-// changes made while producing a reply recorded with it.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -41,19 +39,15 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
     test(`${kind}: two tabs changing different variables keep both`, async () => {
         const { chats, t, at, state } = await open(engine);
         await chats.mergeMetadata({ tree: t, at, set: { variables: { hp: 3 } }, unset: [], actor: tabA });
-        // Tab B last had no variables from the server, and sets its own.
         await chats.mergeMetadata({ tree: t, at, set: { variables: { mp: 1 } }, unset: [], actor: tabB });
         assert.deepEqual(await state(), { variables: { hp: 3, mp: 1 } });
-        // Per variable: set and removed by name, the others left; nothing written when nothing differs.
         await chats.mergeMetadata({ tree: t, at, set: {}, unset: [], variables: { set: { gold: 5 }, unset: ['hp'] }, actor: tabB });
         assert.deepEqual(await state(), { variables: { mp: 1, gold: 5 } });
         const head = await chats.store.chatRead('nextIds', {});
         await chats.mergeMetadata({ tree: t, at, set: { variables: { mp: 1 } }, unset: [], variables: { set: { gold: 5 }, unset: ['nobody'] }, actor: tabA });
         assert.deepEqual(await chats.store.chatRead('nextIds', {}), head);
-        // A variable set and removed in one merge is removed; the object stays.
         await chats.mergeMetadata({ tree: t, at, set: {}, unset: [], variables: { set: { mp: 2 }, unset: ['mp', 'gold'] }, actor: tabA });
         assert.deepEqual(await state(), { variables: {} });
-        // Setting a variable makes the object; removing `variables` removes every one.
         await chats.mergeMetadata({ tree: t, at, set: { note: 'x' }, unset: ['variables'], actor: tabA });
         await chats.mergeMetadata({ tree: t, at, set: {}, unset: [], variables: { set: { hp: 1 } }, actor: tabA });
         assert.deepEqual(await state(), { note: 'x', variables: { hp: 1 } });
@@ -72,18 +66,15 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
 
         const first = await append(gain, tabA, ['k1']);
         const [r1] = first.node_ids;
-        // The scene was already the road: only the gold is the reply's change.
         assert.deepEqual(await stateAt(r1), { scene: 'road', variables: { gold: 1 } });
         assert.deepEqual(await stateAt(at), { scene: 'road' });
 
-        // Generated again with the same text and changes: that reply, nothing recorded.
         await chats.changeState({ tree: t, at: r1, ops: [{ key: 'mood', value: 'glad' }], actor: tabA });
         const head = await chats.store.chatRead('nextIds', {});
         assert.deepEqual((await append(gain, tabB)).node_ids, [r1]);
         assert.equal((await chats.store.chatRead('nextIds', {})).change, head.change);
         assert.equal((await chats.store.chatRead('nextIds', {})).message, head.message);
 
-        // The same text with other changes, or none, is an alternative of its own with its own state.
         const [r2] = (await append([{ key: 'gold', variable: true, value: 2 }])).node_ids;
         const [r3] = (await append([])).node_ids;
         assert.equal(new Set([r1, r2, r3]).size, 3);
@@ -92,11 +83,9 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual((await append([])).node_ids, [r3]);
         assert.deepEqual((await append([{ key: 'gold', variable: true, value: 2 }])).node_ids, [r2]);
 
-        // A metadata key named like a variable is a change of its own.
         const [r4] = (await append([{ key: 'gold', value: 1 }])).node_ids;
         assert.notEqual(r4, r1);
 
-        // A re-sent message records nothing again; one sent after a stored one is filtered against its state.
         const head2 = await chats.store.chatRead('nextIds', {});
         const again = await append([{ key: 'gold', variable: true, value: 9 }], tabA, ['k1']);
         assert.deepEqual(again.already_stored, [r1]);
@@ -107,7 +96,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
             changes: [gain, [{ key: 'gold', variable: true, value: 1 }, { key: 'took', variable: true, value: true }]], actor: tabA,
         });
         assert.equal(chain.node_ids[0], r1);
-        // The gold was already 1 there (with the mood set on the reply since): only `took` is the message's change.
         assert.deepEqual(await stateAt(chain.node_ids[1]), { scene: 'road', variables: { gold: 1, took: true }, mood: 'glad' });
         assert.deepEqual(await chats.store.chatRead('produced', { messages: [(await chats.messageIds([chain.node_ids[1]]))[0]] }),
             [[{ key: 'took', variable: true, value: 'true' }]]);
@@ -118,7 +106,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const reply = { name: 'Cara', is_user: false, mes: 'You find a coin.', extra: {} };
         const append = (contents, changes, regenerated = false) => chats.appendMessages({ tree: t, treeSpeaker: cara, after: at, contents, changes, regenerated, actor: tabA });
         const [r1] = (await append([reply], [[{ key: 'gold', variable: true, value: 1 }]])).node_ids;
-        // Not a regenerated reply: the same speaker and text is that reply, whatever its changes.
         const head = await chats.store.chatRead('nextIds', {});
         assert.deepEqual((await append([reply], [[{ key: 'gold', variable: true, value: 2 }]])).node_ids, [r1]);
         assert.deepEqual(await chats.store.chatRead('nextIds', {}), head);
@@ -128,10 +115,8 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const [c2] = (await append([tools], [])).node_ids;
         const [c3] = (await append([tools], [], true)).node_ids;
         assert.equal(new Set([c1, c2, c3]).size, 3);
-        // A tool call's result written into its turn isn't refused for another turn holding the same text.
         const resolved = { ...tools, extra: { tool_invocations: [{ ...tools.extra.tool_invocations[0], result: '4' }] } };
         assert.deepEqual(await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: c2, content: resolved }], actor: tabA }), { ok: true, applied: 1, refused: [] });
-        // Any other message taking a sibling's text is still refused.
         const [r2] = (await append([{ ...reply, mes: 'Nothing here.' }], [])).node_ids;
         const edit = await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: r2, content: reply }], actor: tabA });
         assert.equal(edit.refused.length, 1);
@@ -148,7 +133,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual((await chats.stateAt({ tree: t, at: r })).state, { variables: { gold: 2 }, scene: 'road' });
         assert.deepEqual(await chats.store.chatRead('produced', { messages: [id] }),
             [[{ key: 'gold', variable: true, value: '1' }, { key: 'gold', variable: true, value: '2' }, { key: 'scene', variable: false, value: '"road"' }]]);
-        // A refused edit records none of its changes.
         const head = await chats.store.chatRead('nextIds', {});
         const refused = await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: r, content: { ...reply, mes: '' }, changes: [{ key: 'gold', variable: true, value: 3 }] }], actor: tabA });
         assert.equal(refused.refused.length, 1);
@@ -173,13 +157,11 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const b = await page();
         a.metadata.variables.hp = 4;
         delete a.metadata.variables.mp;
-        // Page B replaces the object wholesale, as an extension might.
         b.metadata.variables = { hp: 3, mp: 1, gold: 7 };
         b.metadata.note = 'm';
         await save(a, tabA);
         await save(b, tabB);
         assert.deepEqual(await state(), { note: 'm', variables: { hp: 4, gold: 7 } });
-        // Saved again unchanged, nothing is written.
         const head = await chats.store.chatRead('nextIds', {});
         await save(a, tabA);
         await save(b, tabB);

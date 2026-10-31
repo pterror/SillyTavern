@@ -12,7 +12,6 @@ let user;
 /** @type {typeof import('./converted-user.fixture.js')} */
 let fixture;
 
-/** A fresh user with an empty store. */
 async function makeUser() {
     const made = await fixture.emptyUser('st-saved-views-test-');
     return made;
@@ -50,7 +49,10 @@ afterEach(async () => {
     for (const each of made) await each.close();
 });
 
-/** @param {string} route @param {object} body */
+/**
+ * @param {string} route
+ * @param {object} body
+ */
 async function post(route, body) {
     const response = await fetch(`${baseUrl}/api/views/${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     return { status: response.status, body: await response.json() };
@@ -137,7 +139,6 @@ describe('/api/views', () => {
         await post('move', { id: ids.D, anchor: ids.B, side: 'after' });
         expect(await listNames()).toEqual(['A', 'B', 'D', 'C']);
         expect((await post('move', { id: ids.D, anchor: ids.B, side: 'after' })).body).toEqual({ result: 'unchanged' });
-        // Halving the same gap again and again runs out of room; the order still comes out right.
         for (let i = 0; i < 70; i++) {
             await post('move', { id: i % 2 ? ids.C : ids.D, anchor: ids.A, side: 'after' });
         }
@@ -182,7 +183,7 @@ describe('/api/views', () => {
         }
         expect(roots).toEqual([user.root, user.root, user.root]);
     });
-    /** The records of the next commits to the user's store while `act` runs. @param {() => Promise<unknown>} act */
+    /** @param {() => Promise<unknown>} act */
     async function commitsOf(act) {
         const commit = jest.spyOn(user.store.lib.store, 'commit');
         try {
@@ -247,7 +248,6 @@ describe('/api/views', () => {
             want = want.filter(n => n !== id);
             want.splice(want.indexOf(anchor) + (side === 'after' ? 1 : 0), 0, id);
         };
-        // Each move halves the same gap, so the gap runs out on either side.
         for (const [anchor, side] of /** @type {const} */ ([['B', 'before'], ['A', 'after']])) {
             let respaced = 0;
             for (let i = 0; i < 30; i++) {

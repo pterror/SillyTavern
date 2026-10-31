@@ -1,8 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// Tests for the deprecated MacrosParser shim: what it registers is in the macro engine's registry.
-
 test.describe('MacrosParser (legacy shim)', () => {
     test.beforeEach(testSetup.awaitST);
 

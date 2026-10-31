@@ -9,8 +9,6 @@ async function awaitAppReady(page) {
 }
 
 /**
- * Leaves the page on a fresh character's chat holding one message from that character (so it has a
- * clickable .mes .avatar), with every drawer closed.
  * @param {import('@playwright/test').Page} page
  */
 async function openChatWithCharacterMessage(page) {
@@ -19,17 +17,14 @@ async function openChatWithCharacterMessage(page) {
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button').evaluate(el => el.click());
-    // Creating a character opens it.
     await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
     await chatBox(page).fill(`/sendas name="${name}" hello`);
-    // Enter can go unhandled while the freshly selected chat loads; the text stays in the box until it is sent.
     await expect(async () => {
         if (await page.locator('#send_textarea').inputValue()) {
             await chatBox(page).press('Enter');
         }
         await expect(page.locator('#chat .mes .avatar').first()).toBeVisible({ timeout: 2000 });
     }).toPass();
-    // A click on the chat closes every unpinned drawer.
     await page.locator('#chat').click({ position: { x: 10, y: 10 } });
     await expect(page.locator('#right-nav-panel')).toBeHidden();
 }
@@ -68,7 +63,6 @@ test.describe('Zoomed avatar lightbox', () => {
     });
 
     test('the drag handle does not show the lightbox', async ({ page }) => {
-        // The handle is only displayed with Moving UI on; the click is dispatched on it directly.
         await page.locator('.zoomed_avatar[forChar] .drag-grabber').evaluate(el => el.click());
 
         await expect(page.locator('.zoomed_avatar[forChar]')).toHaveCount(1);

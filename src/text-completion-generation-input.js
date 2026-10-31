@@ -9,214 +9,11 @@ import { apiTokenLimits, generationMacroFacts, variablesBefore } from './macro-f
 import { storyStringWithAnchors } from '../public/scripts/story-string-anchors.js';
 import { persona_description_defaults, persona_description_positions } from '../public/scripts/constants.js';
 
-/**
- * Adapter/resolver layer between REAL on-disk state (settings.json - via settings-store.js's
- * sharded reader - and the chat store - via chat-engine.js) and
- * src/text-completion-prompt-orchestrator.js's `assembleTextCompletionPrompt(input)`, which has so
- * far only ever been fed hand-built test fixtures.
- *
- * This module does NOT implement any new prompt-assembly logic - every field below is either a
- * direct (documented) read of an existing settings/chat key, or a passthrough of a caller-supplied
- * identity/runtime value. Where a real value could not be confidently resolved without guessing,
- * that field is left to the caller (via `macroExtras`) instead of silently defaulting - see the
- * per-field notes below and the module's own report to the task for the full list.
- *
- * ============================================================================================
- * FIELD-MAPPING NOTES (read before trusting a value below - reflects what's REALLY in settings.json,
- * not what the orchestrator's own param names might suggest):
- * ============================================================================================
- *
- * - `world_info_*` settings (depth/budget/recursive/etc.) are NOT top-level keys in real
- *   settings.json - they live nested one level down, under the top-level key `world_info_settings`
- *   (verified against default/content/settings.json and public/scripts/world-info.js's
- *   `setWorldInfoSettings(settings, data)`, which is always called as
- *   `setWorldInfoSettings(settings.world_info_settings ?? settings, data)` - see public/script.js).
- *   So this resolver reads `world_info_settings.world_info_depth` etc, not `world_info_depth`.
- * - `extension_settings.note` and `extension_settings.cfg` (NOT top-level `note`/`cfg`) hold the
- *   author's-note and CFG settings, confirmed against default/content/settings.json and
- *   public/scripts/authors-note.js / public/scripts/cfg-scale.js.
- * - `extension_settings.note`'s shape (`default`, `defaultDepth`, `defaultInterval`,
- *   `defaultPosition`, `defaultRole`, `allowWIScan`, `chara`) matches
- *   src/authors-note.js's `AuthorsNoteSettings` typedef key-for-key, so it is passed straight
- *   through as `noteSettings` with NO renaming.
- * - `extension_settings.cfg.global`/`.chara[]` match src/cfg-prompt-resolve.js's `CfgSettings`
- *   shape (`guidance_scale`/`negative_prompt`/`positive_prompt`) key-for-key too.
- * - CFG's *chat-scoped* overrides (`chatGuidanceScale`, `groupchatIndividualChars`, `promptCombine`,
- *   `promptSeparator`, `promptInsertionDepth`, `chatMetadataPrompts`) are NOT settings.json fields at
- *   all - per public/scripts/cfg-scale.js's own `metadataKeys` map, they live on `chat_metadata`
- *   (`cfg_guidance_scale`, `cfg_groupchat_individual_chars`, `cfg_prompt_combine`,
- *   `cfg_prompt_separator`, `cfg_prompt_insertion_depth`, `cfg_negative_prompt`/`cfg_positive_prompt`
- *   respectively) - resolved from the caller-supplied/loaded `chatMetadata`, not from settings.
- * - `power_user.context.story_string_position/_depth/_role` are NOT present in
- *   default/content/settings.json at all (the client only persists them once a user actually
- *   changes the control) - confirmed against public/scripts/power-user.js's own
- *   `power_user_settings_defaults`/`context_presets`. This resolver falls back to the SAME code
- *   defaults the client itself uses (IN_PROMPT / 1 / SYSTEM) when absent, rather than treating
- *   their absence as "user configured nothing".
- * - `power_user.reasoning`, `power_user.single_line`, `power_user.request_token_probabilities`,
- *   `power_user.media_display` are likewise absent from the shipped default settings.json (only
- *   populated once touched) - defaults below mirror public/scripts/power-user.js's own
- *   `power_user_settings_defaults` object exactly (add_to_prompts:false/max_additions:1/
- *   prefix:'<think>'/separator:'\n'/suffix:'</think>'; single_line:false;
- *   request_token_probabilities:false). `media_display` has no corresponding orchestrator input at
- *   all (out of scope - see gap list below), so it is not read.
- * - `textgenerationwebui_settings.{banned_tokens,global_banned_tokens,send_banned_tokens,logit_bias}`
- *   are similarly absent from the shipped default (defaulted client-side in
- *   public/scripts/textgen-settings.js's own settings object: `''`, `''`, `true`, `[]`
- *   respectively) - mirrored here for the same reason.
- * - `main_api` in real settings.json defaults to `'koboldhorde'`, NOT `'textgenerationwebui'`. UPDATE
- *   (this task): this resolver now takes an explicit `mainApi` param (`'textgenerationwebui'` /
- *   `'kobold'` / `'novel'`, default `'textgenerationwebui'` - unchanged default, so every EXISTING
- *   caller keeps its exact prior behavior) instead of always hardcoding `'textgenerationwebui'`.
- *   `'koboldhorde'` is deliberately NOT one of the accepted values - Horde is a worker-routed backend
- *   with no single fixed server URL and its own, materially different dispatch semantics (no
- *   `api_server`, a worker pool picks which real Kobold instance actually serves the request), a
- *   genuinely different integration effort than "one more `mainApi` branch" - out of scope here, same
- *   as it was already out of scope for the orchestrator itself (see
- *   text-completion-prompt-orchestrator.js's own module doc comment). Passing `'koboldhorde'` throws.
- *   Per-`mainApi` settings-namespace mapping, verified against default/content/settings.json and the
- *   client's own settings modules:
- *   - `'textgenerationwebui'`: `textgenerationwebui_settings` (unchanged).
- *   - `'kobold'`: `kai_settings` (top-level settings.json key) - verified against
- *     public/scripts/kai-settings.js's own `kai_settings` shape (temp/rep_pen/top_p/.../sampler_order/
- *     grammar/api_server - `api_server` IS a real `kai_settings` field, confirmed by reading that
- *     module's own `loadKoboldSettings()`, even though it's ABSENT from the shipped
- *     default/content/settings.json until a user actually sets a Kobold URL - same "absent until
- *     touched" pattern already established above for several `power_user`/`textgenerationwebui_settings`
- *     fields). `kai_flags` (streaming/mirostat/grammar/etc. CAPABILITY flags) is NOT a settings.json
- *     field at all - it's a client-side, LIVE version-probe result against the connected Kobold
- *     server (kai-settings.js's `checkStatusKobold()`), the exact same "would trigger a live network
- *     call as a side effect of pure settings resolution" concern already established for
- *     countTokens/encodeTokens above - so `koboldFlags` is left to the caller (via `macroExtras`),
- *     defaulting (via the orchestrator's own default) to all-`false`, matching kai_flags' own
- *     pre-probe module-level default. This resolver does NOT attempt to merge a named Kobold preset
- *     (`koboldai_settings`/`koboldai_setting_names`) the way the client's own
- *     `getKoboldGenerationData(finalPrompt, presetSettings, ...)` call site does - `kai_settings`
- *     itself already carries every sampler field directly (unlike textgenerationwebui, which has no
- *     preset-merge step in this resolver either - see `settings: textgenSettings` below, a plain,
- *     unmerged read) - so `settings`/`koboldSettings` (Step 16's own "one object, two call-site
- *     roles" - see the orchestrator's own comment on this) both resolve to this same, unmerged
- *     `kai_settings` object. A caller that needs real named-preset merging can pre-merge before
- *     calling this resolver (same "caller resolves entities" contract as everything else here).
- *   - `'novel'`: `nai_settings` (top-level settings.json key) - verified against
- *     public/scripts/nai-settings.js's own `nai_settings` shape (temperature/repetition_penalty/.../
- *     model_novel/banned_tokens/logit_bias/order/preamble). `novel_data?.tier` (the NovelAI account's
- *     own LIVE subscription tier, from `/api/novelai/status`) is genuinely external, live, per-account
- *     data with no settings.json source at all - left to the caller via `macroExtras` as
- *     `novelDataTier`, same "external live data, caller resolves it" pattern as
- *     `worldInfoRandom`/`externalActivations`. `presetOrder` (a distinct named-preset's own `.order`
- *     fallback) is likewise not resolved here, for the identical "no preset-merge step in this
- *     resolver" reason as Kobold above - `nai_settings.order` itself already covers the common case.
- * - Regardless of `mainApi`, `textgenerationwebui_settings.{banned_tokens,logit_bias,...}` are still
- *   always read into `bannedTokensRaw`/`logitBiasEntries`/etc. below (harmless - `assembleTextCompletionPrompt()`'s
- *   own Step 16 dispatch simply never forwards them into `createKoboldGenerationData()`/
- *   `createNovelGenerationData()`'s inputs for the 'kobold'/'novel' cases, per that module's own Step
- *   15 comment) - not re-guarded per-`mainApi` here, since doing so would add branching for zero
- *   behavioral difference.
- * - `world_info_settings.world_info_case_sensitive` / `.world_info_match_whole_words` /
- *   `.world_info_character_strategy` / `.world_info_overflow_alert` are REAL settings that exist in
- *   settings.json, but `assembleTextCompletionPrompt`'s input typedef has NO corresponding
- *   parameter for any of them (not `entryFilterContext`'s shape either - that's
- *   `{trigger, characterFilename, characterTags}` per src/world-info/activation.js) - this is a
- *   pre-existing gap in the orchestrator itself (not introduced by this resolver), so they are
- *   read from settings but have nowhere to go and are simply not forwarded. Flagged, not guessed.
- *
- * ============================================================================================
- * FIELDS NOT RESOLVED HERE - LEFT TO THE CALLER (via `macroExtras`), AND WHY:
- * ============================================================================================
- *
- * - `countTokens`/`encodeTokens`: UPDATE - `src/token-bans-and-bias.js`'s `getCustomTokenBans()`/
- *   `calculateLogitBias()` now `await` their `encode` param (previously synchronous-only), so the
- *   original blocker recorded here - that a genuinely-async remote-backend tokenizer couldn't be
- *   bridged into a synchronous `encodeTokens` without desyncing it from `countTokens` - no longer
- *   applies at the type-signature level; both orchestrator params now accept an async function.
- *   This resolver STILL leaves both as required caller-supplied params, though, for a different
- *   reason: wiring `src/tokenizer-resolve.js`'s real `resolveTokenizer()`/`encodeWithTokenizer()`
- *   by default here would mean simply calling this settings-resolution function can trigger a LIVE
- *   NETWORK REQUEST to the user's configured backend server (the remote-tokenizer path) as a side
- *   effect - a meaningfully different risk/behavior profile than every other field this resolver
- *   computes (plain reads of local disk state). Whether/how to opt into that automatically is a
- *   separate decision this task does not make silently - so both tokenizer functions remain
- *   explicit, required inputs; a caller that wants the real local-tokenizer-only path can call
- *   `resolveTokenizer()`/`encodeWithTokenizer()` itself and pass the result in.
- * - `quiet_prompt`/`quietToLoud`/`quietName`/`generationTrigger`/`isDryRun`/`canUseTools`/
- *   `forceName2Override`/`preferCharacterPrompt`/`preferCharacterJailbreak`/`worldInfoRandom`/
- *   `entryFilterContext`/`externalActivations`/`ephemeralStoppingStrings`/`injectedIndices`/
- *   `beforeScenarioAnchor`/`afterScenarioAnchor`: none of these have a real, single-valued
- *   settings.json/chat-metadata source of truth (they're per-request generation-call options on
- *   the client, e.g. passed as `Generate()` options or resolved by subsystems explicitly out of
- *   scope per the orchestrator's own gap list) - left at the orchestrator's own defaults unless a
- *   caller supplies an override via `macroExtras`.
- * - `name2`/group member display names: resolved for real below via a real character-card / group
- *   read (src/macro-scope.js's `resolveSpeakers()`).
- *
- * ============================================================================================
- * UPDATE (this session): `worldInfoCandidates` IS NOW RESOLVED FOR REAL by default, via
- * `src/world-info/candidate-resolution.js`'s `resolveWorldInfoCandidates()` (this closes the
- * previously-documented passthrough-only gap). Field mapping, verified against
- * public/scripts/world-info.js:
- * - `selectedWorldInfo` <- `world_info_settings.world_info.globalSelect` (NOT a separate top-level
- *   `world_info` settings key - getWorldInfoSettings(), public/scripts/world-info.js, nests the
- *   user's global lorebook SELECTION under
- *   `world_info_settings.world_info`, alongside the numeric/boolean WI behavior knobs mapped above -
- *   a prior version of this comment claimed these were separate top-level keys; they are not, and
- *   that mistake meant the global lorebook selection was silently never applied). Not filtered against a
- *   "real lorebook names" list here (the client filters `globalSelect` against `world_names` at load
- *   time) - a stale/deleted lorebook name simply resolves to zero entries via `loadWorldEntries()`'s
- *   own `readWorldInfoFile(...) ?? {}` guard, so omitting the filter is behaviorally inert, not a gap.
- * - `character` <- the same parsed character-card object `resolveSpeakers()` already
- *   loads for `name2` (only `.data.extensions.world`/`.data.character_book` are read from it, per
- *   `getCharacterLore()`'s own contract) - reused, not re-read from disk a second time.
- * - `characterExtraBooks` <- the character's lorebook links after the first, read from its entity
- *   (`readExtraBooks()`); no settings file holds upstream's `world_info.charLore`.
- * - `chatWorldName` <- `chatMetadata[METADATA_KEY]`, `METADATA_KEY === 'world_info'` (verified
- *   against public/scripts/world-info.js's own `export const METADATA_KEY = 'world_info';`) - i.e.
- *   `chatMetadata.world_info`, a plain string chat-metadata field, unrelated to the
- *   `world_info_settings.world_info` settings key of a similar name.
- * - `personaWorldLorebook` <- the active persona's personaStore `lorebook` field.
- * - `worldInfoCharacterStrategy` <- `world_info_settings.world_info_character_strategy` (nested,
- *   same as `world_info` above - not a separate top-level settings key), defaulting to
- *   `world_info_insertion_strategy.character_first` (the client's own module-level default) when
- *   absent from a fresh settings.json.
- * A caller that already has its own resolved candidate list (or wants to bypass this resolution
- * entirely, e.g. for a test) may still pass `worldInfoCandidates` explicitly - an explicit array
- * (including `[]`) always wins over the auto-resolved one.
- *
- * UPDATE (this session): a new, OPTIONAL `userMessageText` param appends the actual raw user action
- * for this turn - "the user sent this text" - onto the resolved chat history as the newest message,
- * in the exact shape every other loaded message already uses (verified against
- * the chat store's loaded message shape:
- * `{node_id, mes, send_date, extra, name, is_user}`): `{is_user: true, name: name1, mes:
- * userMessageText, extra: {}, send_date: Date.now()}`. `node_id` is intentionally omitted (this
- * message doesn't exist in the tree DB yet - it's the pending user input for a generation that
- * hasn't been saved) - nothing this orchestrator's pipeline reads (`core-chat-build.js`,
- * `finalizeCoreChatMessage()`, world-info key-matching, etc, all re-checked) requires `node_id` to be
- * present. When `userMessageText` is omitted (e.g. a 'continue'/'swipe' generation that doesn't add a
- * new message), `chat` is exactly the loaded history, unchanged - matching this resolver's prior
- * behavior.
- *
- * UPDATE (this session): `extra` is no longer unconditionally `{}` - an OPTIONAL `userMessageExtra`
- * param, when given alongside `userMessageText`, becomes that message's `extra` instead (still
- * exactly `{}` when omitted, unchanged prior behavior). This is how a forwarded file/media
- * attachment REFERENCE (`.files[]`/`.media[]`/`.media_index`/`.inline_image` - the client already
- * uploaded the actual bytes before calling this generation, see public/scripts/chats.js's
- * `populateFileAttachment()`) reaches the ALREADY-GENERIC inlining machinery
- * (`file-attachment-inline.js`'s `appendFileAttachments()`, wired into
- * `text-completion-prompt-orchestrator.js`) that already reads `.extra` off whatever chat entry it's
- * given, tree-loaded or freshly in-memory alike - no change needed there. The caller (this module's
- * own consumer, `buildRawActionTextCompletionRequest()`) is responsible for having already run any
- * client-supplied value through `sanitizeUserMessageExtra()` (user-message-extra.js) - this resolver
- * does not itself re-validate `userMessageExtra`'s shape.
- */
-
 const DEFAULT_STORY_STRING_POSITION = extension_prompt_types.IN_PROMPT;
 const DEFAULT_STORY_STRING_DEPTH = 1;
 const DEFAULT_STORY_STRING_ROLE = extension_prompt_roles.SYSTEM;
 
 /**
- * Minimal shape this resolver reads off `power_user.reasoning` - see module doc comment's
- * FIELD-MAPPING NOTES (absent from a fresh settings.json; defaults mirror
- * public/scripts/power-user.js's own `power_user_settings_defaults.reasoning`).
  * @typedef {object} ReasoningSettings
  * @property {boolean} [add_to_prompts]
  * @property {number} [max_additions]
@@ -225,15 +22,14 @@ const DEFAULT_STORY_STRING_ROLE = extension_prompt_roles.SYSTEM;
  * @property {string} [suffix]
  */
 
-/** @typedef {object} SyspromptSettings
+/**
+ * @typedef {object} SyspromptSettings
  * @property {boolean} [enabled]
  * @property {string} [content]
  * @property {string} [post_history]
  */
 
 /**
- * Minimal shape this resolver reads off `power_user.context` - forwarded verbatim as
- * `contextSettings` too (the orchestrator's own param there is untyped `object`).
  * @typedef {object} PowerUserContextSettings
  * @property {string} [story_string]
  * @property {number} [story_string_position]
@@ -243,11 +39,8 @@ const DEFAULT_STORY_STRING_ROLE = extension_prompt_roles.SYSTEM;
  */
 
 /**
- * Minimal shape this resolver reads off top-level `power_user` - see module doc comment's
- * FIELD-MAPPING NOTES for which of these are absent from a fresh settings.json (populated only
- * once a user touches the corresponding control) and what this resolver falls back to then.
  * @typedef {object} PowerUserSettingsBundle
- * @property {Record<string, import('../public/scripts/power-user.js').PersonaRecord>} [persona_data] Keyed by persona avatar filename - the active persona's record (looked up by `user_avatar`) supplies `personaDescription`/`personaDescriptionPosition`/`personaWorldLorebook` below.
+ * @property {Record<string, import('../public/scripts/power-user.js').PersonaRecord>} [persona_data]
  * @property {string} [user_prompt_bias]
  * @property {boolean} [always_force_name2]
  * @property {number} [token_padding]
@@ -266,9 +59,6 @@ const DEFAULT_STORY_STRING_ROLE = extension_prompt_roles.SYSTEM;
  */
 
 /**
- * Minimal shape this resolver reads off top-level `world_info_settings` - see module doc comment's
- * FIELD-MAPPING NOTES (these ARE nested under `world_info_settings`, not top-level, despite the
- * orchestrator's own flat `worldInfo*` param names).
  * @typedef {object} WorldInfoSettingsBundle
  * @property {boolean} [world_info_include_names]
  * @property {number} [world_info_budget]
@@ -284,17 +74,11 @@ const DEFAULT_STORY_STRING_ROLE = extension_prompt_roles.SYSTEM;
  */
 
 /**
- * The user's global lorebook SELECTION - getWorldInfoSettings()
- * (public/scripts/world-info.js) nests this under `world_info_settings.world_info` on save; there is
- * no separate top-level `world_info` settings key.
  * @typedef {object} WorldInfoSelectionBundle
  * @property {string[]} [globalSelect]
  */
 
 /**
- * Minimal shape this resolver reads off `textgenerationwebui_settings` - see module doc comment's
- * FIELD-MAPPING NOTES (absent-until-touched defaults mirror public/scripts/textgen-settings.js's
- * own settings object).
  * @typedef {object} TextGenSettingsBundle
  * @property {string} [banned_tokens]
  * @property {string} [global_banned_tokens]
@@ -303,36 +87,23 @@ const DEFAULT_STORY_STRING_ROLE = extension_prompt_roles.SYSTEM;
  */
 
 /**
- * Minimal shape this resolver reads off top-level `kai_settings` - see module doc comment's
- * FIELD-MAPPING NOTES (`api_server` is a real field, absent until a user sets a Kobold URL).
  * @typedef {object} KoboldSettingsBundle
  * @property {string} [api_server]
  */
 
 /**
- * Minimal shape this resolver reads off `extension_settings.cfg` - mirrors
- * `extension_settings.cfg.global`/`.chara[]`'s real shape (see module doc comment's
- * FIELD-MAPPING NOTES) - one entry per `src/cfg-prompt-resolve.js`'s own `CfgSettings`, `chara[]`
- * additionally carrying the `name` (avatar) this override applies to.
  * @typedef {object} CfgSettingsBundle
  * @property {import('./cfg-prompt-resolve.js').CfgSettings} [global]
  * @property {(import('./cfg-prompt-resolve.js').CfgSettings & { name?: string })[]} [chara]
  */
 
 /**
- * Minimal shape this resolver reads off `extension_settings` - only the two sub-keys this resolver
- * actually reads (see module doc comment's FIELD-MAPPING NOTES).
  * @typedef {object} ExtensionSettingsBundle
  * @property {import('./authors-note.js').AuthorsNoteSettings} [note]
  * @property {CfgSettingsBundle} [cfg]
  */
 
 /**
- * The exact set of top-level settings.json paths this resolver reads via `readSettingsFor()`,
- * typed field-for-field per the module doc comment's FIELD-MAPPING NOTES - `readSettingsFor()`
- * itself returns a generic `Record<string, unknown>` (it has no way to know what its caller asked
- * for), so this resolver's own knowledge of what it requested is cast on here rather than left
- * `unknown` at every use site below.
  * @typedef {object} TextCompletionSettingsBundle
  * @property {PowerUserSettingsBundle} [power_user]
  * @property {WorldInfoSettingsBundle} [world_info_settings]
@@ -341,34 +112,28 @@ const DEFAULT_STORY_STRING_ROLE = extension_prompt_roles.SYSTEM;
  * @property {object} [nai_settings]
  * @property {ExtensionSettingsBundle} [extension_settings]
  * @property {string} [username]
- * @property {string} [user_avatar] The active persona's avatar filename - key into `power_user.persona_data`.
+ * @property {string} [user_avatar]
  * @property {number} [amount_gen]
  * @property {number} [max_context]
  */
 
 /**
- * How many tokens the prompt may take, as upstream's getMaxContextSize() works it out: the context less the reply's
- * length, a NovelAI model's context capped first. (NovelAI's subscription limit is the page's to know; it isn't
- * applied here.)
  * @param {string} mainApi
- * @param {number} maxContext The context size setting.
- * @param {number} maxResponse The reply's length.
- * @param {string} [novelModel] NovelAI's model.
+ * @param {number} maxContext
+ * @param {number} maxResponse
+ * @param {string} [novelModel]
  * @returns {number}
  */
 export function promptTokenBudget(mainApi, maxContext, maxResponse, novelModel = '') {
     let context = Number(maxContext);
     if (mainApi === 'novel') {
         if (/clio|kayra|erato/.test(novelModel)) context = Math.min(context, 8192);
-        // Erato's special tokens.
         if (novelModel.includes('erato')) context -= 10;
     }
     return context - maxResponse;
 }
 
 /**
- * The chat history a generation is built from (`loadChatHistory()`): the messages from the tree's root down to the
- * position it goes on from, in upstream's message shape, and the state there as `chat_metadata`.
  * @param {import('./chat-request.js').ChatContext | undefined} chat
  * @param {{ branchName?: string, nodeId?: string | null }} at
  */
@@ -377,60 +142,30 @@ async function resolveChatHistory(chat, { branchName, nodeId }) {
 }
 
 /**
- * Resolves the real `assembleTextCompletionPrompt(input)` input object from on-disk settings.json
- * (via src/settings-store.js) and the chat (via the chat engine, src/chat-request.js).
- *
- * See this module's doc comment above for the full list of field-mapping decisions and documented
- * gaps. `countTokens`/`encodeTokens` are still caller-supplied passthrough params (see doc comment
- * for exactly why). `worldInfoCandidates` is now auto-resolved for real by default (see the UPDATE
- * section in the doc comment above) unless the caller passes an explicit override.
- * `macroExtras`, when given, is shallow-merged OVER the resolved object (caller overrides win) -
- * use it to supply any of the orchestrator's other optional fields this resolver doesn't compute
- * (e.g. `quiet_prompt`, `isDryRun`, `canUseTools`, CFG's `worldInfoRandom`, etc).
- *
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {object} params
- * @param {string} [params.avatar] Character avatar filename.
- * @param {string} [params.groupId] Group id.
- * @param {string} [params.mainApi] One of 'textgenerationwebui' (default) / 'kobold' / 'novel'. See
- * module doc comment's FIELD-MAPPING NOTES for the exact per-value settings-namespace mapping.
- * 'koboldhorde' is NOT accepted (throws) - see module doc comment for why.
- * @param {import('./chat-request.js').ChatContext} [params.chatContext] The chat the history is read from.
- * @param {string} [params.branchName] A chat name (a bookmark's, or a session's name or UUID) to read history at.
- * @param {string|null} [params.nodeId] Read history up to this message; null or omitted: the tree's root (a new chat).
- * @param {string} [params.type] Generation type ('normal'/'impersonate'/'continue'/'swipe'/...).
+ * @param {string} [params.avatar]
+ * @param {string} [params.groupId]
+ * @param {string} [params.mainApi]
+ * @param {import('./chat-request.js').ChatContext} [params.chatContext]
+ * @param {string} [params.branchName]
+ * @param {string|null} [params.nodeId]
+ * @param {string} [params.type]
  * @param {boolean} [params.isImpersonate]
  * @param {boolean} [params.isContinue]
  * @param {boolean} [params.isSwipe]
  * @param {string} [params.textareaText]
- * @param {ChatMetadata} [params.chatMetadata] Overrides the loaded branch's own metadata when given.
- * @param {string} [params.userMessageText] The raw user action for this turn - "the user sent this
- * text". When given, appended onto the resolved chat history as the newest message (see doc comment
- * UPDATE section for the exact shape). Omit for generation types that don't add a new message
- * (e.g. 'continue'/'swipe').
- * @param {object} [params.userMessageExtra] Already-SERVER-VALIDATED `extra` for the newly-appended
- * user message (see `sanitizeUserMessageExtra()` in user-message-extra.js - the caller is responsible
- * for having already run any client-supplied value through that allowlist; this resolver trusts it
- * verbatim). Carries a forwarded file/media attachment REFERENCE (`.files`/`.media`/`.media_index`/
- * `.inline_image`) - the bytes were already uploaded by the client before this generation call (see
- * public/scripts/chats.js's `populateFileAttachment()`), so this is just metadata pointing at them.
- * Only meaningful together with `userMessageText`; ignored (the appended message's `extra` stays
- * `{}`) when `userMessageText` is omitted.
- * @param {import('./world-info/activation.js').WIEntry[]} [params.worldInfoCandidates] Explicit
- * override/bypass for the auto-resolved candidates (see doc comment UPDATE section) - when omitted
- * (left `undefined`), this resolver calls `resolveWorldInfoCandidates()` for real; passing an
- * explicit array (including `[]`) always wins.
- * @param {(text: string) => Promise<number>} [params.countTokens] REQUIRED at runtime (checked and
- * thrown on below) - typed optional here only so a caller omitting the whole `params` object
- * (`= {}`) still type-checks; the runtime check is the actual enforcement.
- * @param {(text: string) => number[]} [params.encodeTokens] REQUIRED at runtime - see `countTokens` above.
- * @param {(text: string) => Promise<number>} [params.countPromptTokens] Counts a text that begins the
- * prompt, as the backend counts that prompt. Defaults to `countTokens`.
- * @param {number} [params.amountGen] Overrides settings.amount_gen when given.
- * @param {object} [params.macroExtras] Shallow-merged over the resolved input object.
- * @param {import('./macro-facts.js').PageMacroFacts} [params.pageFacts] What only the page knows, for the macros.
- * @param {import('./extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections] What the page's extensions
- *   inject (src/page-injections.js).
+ * @param {ChatMetadata} [params.chatMetadata]
+ * @param {string} [params.userMessageText]
+ * @param {object} [params.userMessageExtra]
+ * @param {import('./world-info/activation.js').WIEntry[]} [params.worldInfoCandidates]
+ * @param {(text: string) => Promise<number>} [params.countTokens]
+ * @param {(text: string) => number[]} [params.encodeTokens]
+ * @param {(text: string) => Promise<number>} [params.countPromptTokens]
+ * @param {number} [params.amountGen]
+ * @param {object} [params.macroExtras]
+ * @param {import('./macro-facts.js').PageMacroFacts} [params.pageFacts]
+ * @param {import('./extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections]
  * @returns {Promise<import('./text-completion-prompt-orchestrator.js').AssembleTextCompletionPromptInput>}
  */
 export async function resolveTextCompletionGenerationInput(directories, {
@@ -467,27 +202,13 @@ export async function resolveTextCompletionGenerationInput(directories, {
         'textgenerationwebui_settings', 'kai_settings', 'nai_settings',
         'extension_settings', 'username', 'user_avatar', 'amount_gen', 'max_context',
     ]));
-    // The active persona's own record (personaStore's server-side shape, power_user.persona_data
-    // keyed by avatar filename) - supplies personaDescription/personaDescriptionPosition/
-    // personaWorldLorebook below. public/scripts/personas.js's getPersonaDescription() and its
-    // siblings are this resolver's client-side equivalent of this same lookup.
     const activePersona = powerUser.persona_data?.[userAvatar] ?? {};
-    // The client's getWorldInfoSettings() (public/scripts/world-info.js) nests the real selection
-    // object under world_info_settings.world_info, and world_info_character_strategy alongside it -
-    // there is no separate top-level `world_info`/`world_info_character_strategy` settings key on disk
-    // (the doc comments above describing them as separate top-level keys were wrong).
     const worldInfoSelection = worldInfoSettings.world_info ?? {};
     const worldInfoCharacterStrategySetting = worldInfoSettings.world_info_character_strategy;
 
-    // Per-mainApi backend-specific settings object - see module doc comment FIELD-MAPPING NOTES for
-    // the exact rationale (no preset-merge step for kobold/novel here, same as textgenerationwebui's
-    // own plain, unmerged `textgenSettings` read below).
     const backendSettings = mainApi === 'kobold' ? koboldSettings : mainApi === 'novel' ? novelSettings : textgenSettings;
 
     const backend = mainApi === 'textgenerationwebui' ? resolveTextGenBackend(directories, settingsContext) : null;
-    // Computed here (rather than inline in `resolved` below) so its type is tied to `backend`'s own
-    // null-check instead of a second, separate `mainApi === 'textgenerationwebui'` comparison the
-    // type checker can't relate back to this one.
     const model = backend ? backend.model : undefined;
 
     const isGroup = Boolean(groupId);
@@ -496,35 +217,19 @@ export async function resolveTextCompletionGenerationInput(directories, {
     const { chat: loadedChat, metadata: loadedChatMetadata, resolvedNodeId, ambiguous: chatResolutionAmbiguous } =
         await resolveChatHistory(chatContext, { branchName, nodeId });
     const chatMetadata = chatMetadataOverride ?? loadedChatMetadata;
-    // What it holds before any macro runs, to tell what the macros changed.
     const stateBefore = variablesBefore(chatMetadata, extensionSettings.variables?.global ?? {});
 
     const { name2, character, groupMembers: groupMemberNames, groupDisabledMembers } = await resolveSpeakers(directories, { avatar, groupId });
     const name1 = (username != null && username !== '') ? username : 'User';
 
-    // Appends the actual raw user action for this turn onto the loaded history, in the exact shape
-    // every other loaded message already uses - see this module's doc comment UPDATE section for
-    // why `node_id` is intentionally omitted. Left as exactly the loaded history when
-    // `userMessageText` isn't given (e.g. 'continue'/'swipe').
     const chat = typeof userMessageText === 'string'
         ? [...loadedChat, { is_user: true, name: name1, mes: userMessageText, extra: userMessageExtra && typeof userMessageExtra === 'object' ? userMessageExtra : {}, send_date: Date.now() }]
         : loadedChat;
 
-    // Real world-info candidate resolution (see doc comment UPDATE section for the full field
-    // mapping) - only attempted when the caller hasn't already supplied an explicit override/bypass.
-    // METADATA_KEY ('world_info') is mirrored inline rather than imported - it lives in
-    // public/scripts/world-info.js, a client-only module this server-side resolver otherwise never
-    // imports from.
     const WORLD_INFO_METADATA_KEY = 'world_info';
     let worldInfoCandidates = worldInfoCandidatesOverride;
     if (worldInfoCandidates === undefined) {
-        // The character's links after the first (its card's `world` is the first), read from its entity.
         const characterExtraBooks = avatar != null ? await readExtraBooks(directories, avatar) : [];
-        // resolveWorldInfoCandidates() (src/world-info/candidate-resolution.js, not owned by this
-        // task) is typed `Promise<Array<object>>` - genuinely looser than the real entries it returns
-        // (each one is `{...WIEntry, world, decorators, content, hash}` per that function's own doc
-        // comment) - cast to this resolver's own declared `WIEntry[]` output type rather than
-        // widening this file's contract to match the looser upstream type.
         worldInfoCandidates = /** @type {import('./world-info/activation.js').WIEntry[]} */ (await resolveWorldInfoCandidates({
             directories,
             selectedWorldInfo: worldInfoSelection.globalSelect ?? [],
@@ -537,10 +242,6 @@ export async function resolveTextCompletionGenerationInput(directories, {
     }
 
     const context = powerUser.context ?? {};
-    // `user_alignment_message` is a genuine `power_user.instruct` field (public/scripts/power-user.js's
-    // own `instruct` defaults, public/scripts/instruct-mode.js's settings binding) that
-    // src/instruct-template-format.js's `InstructSettings` typedef (not owned by this task) doesn't
-    // declare - widened locally rather than editing that file.
     const instruct = /** @type {import('./instruct-template-format.js').InstructSettings & { user_alignment_message?: string }} */ (powerUser.instruct ?? {});
     const reasoning = powerUser.reasoning ?? {};
     const sysprompt = powerUser.sysprompt ?? {};
@@ -550,7 +251,6 @@ export async function resolveTextCompletionGenerationInput(directories, {
     const charaCfg = Array.isArray(cfgSettings.chara) ? cfgSettings.chara.find(e => e.name === avatar) : undefined;
 
     const resolved = {
-        // --- Generation identity/mode ---
         type, isImpersonate, isContinue, isSwipe, isGroup,
         name1, name2,
         macroFacts: generationMacroFacts({
@@ -558,11 +258,8 @@ export async function resolveTextCompletionGenerationInput(directories, {
             ...apiTokenLimits({ max_context: settingsMaxContext, amount_gen: amountGen ?? settingsAmountGen }, mainApi),
         }),
 
-        // --- Character/persona/chat resolution ---
         directories, avatar, groupId,
-        // The message the history ends at (null: the tree's root), for the caller to generate from.
         resolvedNodeId,
-        // No message was named and the root isn't current (loadChatHistory()): the caller refuses, not guesses.
         chatResolutionAmbiguous: Boolean(chatResolutionAmbiguous),
         personaDescription: activePersona.description,
         chatMetadata, chat, textareaText,
@@ -570,17 +267,14 @@ export async function resolveTextCompletionGenerationInput(directories, {
         userPromptBias: powerUser.user_prompt_bias,
         alwaysForceName2: Boolean(powerUser.always_force_name2),
 
-        // --- Reasoning folding ---
         reasoningAddToPrompts: Boolean(reasoning.add_to_prompts ?? false),
         reasoningMaxAdditions: reasoning.max_additions ?? 1,
         reasoningPrefix: reasoning.prefix ?? '<think>',
         reasoningSeparator: reasoning.separator ?? '\n',
         reasoningSuffix: reasoning.suffix ?? '</think>',
 
-        // What the page's extensions inject.
         pageInjections,
 
-        // --- Context/token budget ---
         thisMaxContext: promptTokenBudget(mainApi, settingsMaxContext ?? 8192, amountGen ?? settingsAmountGen ?? 0, novelSettings.model_novel),
         maxContext: settingsMaxContext ?? 8192,
         tokenPadding: powerUser.token_padding ?? 0,
@@ -588,7 +282,6 @@ export async function resolveTextCompletionGenerationInput(directories, {
         amountGen: amountGen ?? settingsAmountGen ?? 0,
         requestTokenProbabilities: Boolean(powerUser.request_token_probabilities ?? false),
 
-        // --- CFG ---
         chatGuidanceScale: chatMetadata.cfg_guidance_scale,
         groupchatIndividualChars: Boolean(chatMetadata.cfg_groupchat_individual_chars ?? false),
         charaCfg, globalCfg,
@@ -600,7 +293,6 @@ export async function resolveTextCompletionGenerationInput(directories, {
             positivePrompt: chatMetadata.cfg_positive_prompt,
         },
 
-        // --- World info ---
         worldInfoCandidates,
         worldInfoIncludeNames: Boolean(worldInfoSettings.world_info_include_names ?? false),
         worldInfoBudgetPercent: worldInfoSettings.world_info_budget ?? 25,
@@ -612,11 +304,8 @@ export async function resolveTextCompletionGenerationInput(directories, {
         worldInfoMinActivationsDepthMax: worldInfoSettings.world_info_min_activations_depth_max ?? 0,
         worldInfoUseGroupScoring: Boolean(worldInfoSettings.world_info_use_group_scoring ?? false),
 
-        // --- Author's note ---
         noteSettings, hasCharacterOrGroup,
 
-        // --- Story string / instruct mode ---
-        // As the page uses it: an older template gets its injection anchors (power-user.js's loadContextSettings()).
         storyStringTemplate: storyStringWithAnchors(context),
         storyStringPosition: context.story_string_position ?? DEFAULT_STORY_STRING_POSITION,
         storyStringDepth: context.story_string_depth ?? DEFAULT_STORY_STRING_DEPTH,
@@ -634,21 +323,13 @@ export async function resolveTextCompletionGenerationInput(directories, {
         instructWrap: Boolean(instruct.wrap ?? false),
         pinExamples: Boolean(powerUser.pin_examples ?? false),
 
-        // --- Jailbreak / system prompt ---
         sysPromptPostHistory: sysprompt.post_history ?? '',
 
-        // --- Backend / API ---
-        // UPDATE (this task): `mainApi` is now the caller-supplied value (default
-        // 'textgenerationwebui', unchanged from before) instead of always hardcoded - see module doc
-        // comment for the accepted values and the 'koboldhorde' exclusion.
         mainApi,
         collapseNewlines: Boolean(powerUser.collapse_newlines ?? false),
-        // What starts the chat after the story string and examples (upstream's addChatsSeparator()), and NovelAI's
-        // preamble before the chat (addChatsPreamble()).
         chatStart: context.chat_start ?? '',
         naiPreamble: mainApi === 'novel' ? novelSettings.preamble ?? '' : '',
 
-        // --- Stopping strings / token bans / logit bias ---
         namesAsStopStrings: Boolean(context.names_as_stop_strings ?? false),
         singleLine: Boolean(powerUser.single_line ?? false),
         customStoppingStringsRaw: powerUser.custom_stopping_strings ?? '',
@@ -659,20 +340,9 @@ export async function resolveTextCompletionGenerationInput(directories, {
         sendBannedTokens: Boolean(textgenSettings.send_banned_tokens ?? true),
         logitBiasEntries: textgenSettings.logit_bias ?? [],
 
-        // --- Final generation-data wire payload ---
-        // `settings` is now the backend-specific (per-`mainApi`) settings object - see module doc
-        // comment FIELD-MAPPING NOTES. `model` is only meaningful for 'textgenerationwebui' (Kobold
-        // has no per-request model selector; NovelAI's model lives INSIDE `settings.model_novel`
-        // already, not as a separate top-level field) - `undefined` for the other two, matching
-        // text-completion-prompt-orchestrator.js's own Step 16 doc comment on this exact point.
         settings: backendSettings,
         model,
 
-        // --- Backend-specific generation-data (kobold/novel dispatch only) ---
-        // None of these have a real settings.json/chat-metadata source of truth without either a
-        // live capability/version probe (koboldFlags) or live external account data (novelDataTier) -
-        // see module doc comment FIELD-MAPPING NOTES for exactly why each is left at the
-        // orchestrator's own conservative default here, overridable via `macroExtras`.
         apiServer: mainApi === 'kobold' ? (koboldSettings.api_server ?? '') : undefined,
         consoleLogPrompts: Boolean(powerUser.console_log_prompts ?? false),
     };

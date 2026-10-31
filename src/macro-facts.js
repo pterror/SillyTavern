@@ -1,28 +1,24 @@
-/**
- * What the macros read when the server builds a prompt (src/macro-substitution.js's SubstituteParamsContext), besides
- * the names, the card and the chat each pipeline resolves itself: from the user's settings, and from the page, which
- * sends what only it knows (what is typed, what is shown, which extensions are on).
- */
-
 import { baselineOf, metadataChanges } from '../public/scripts/state-sync.js';
 import { recordStored } from './stored-messages.js';
 
 /**
- * @typedef {object} PageMacroFacts What only the page knows, sent with a generation (`macro_facts`).
- * @property {string} [chatId] The chat's id as the page has it, for {{pick}}'s seed.
- * @property {string} [input] What is typed in the message box.
- * @property {number|null} [firstDisplayedMessageId] The first message shown.
+ * @typedef {object} PageMacroFacts
+ * @property {string} [chatId]
+ * @property {string} [input]
+ * @property {number|null} [firstDisplayedMessageId]
  * @property {boolean} [isMobile]
- * @property {number} [utcOffset] The user's offset from UTC in minutes.
- * @property {string} [lastGenerationType] The type of the generation the page last started ('' for none).
- * @property {{ names: string[], disabled: string[] }} [extensions] The extensions there are, and those turned off.
+ * @property {number} [utcOffset]
+ * @property {string} [lastGenerationType]
+ * @property {{ names: string[], disabled: string[] }} [extensions]
  */
 
-/** @param {unknown} value @returns {value is string[]} */
+/**
+ * @param {unknown} value
+ * @returns {value is string[]}
+ */
 const isNameList = value => Array.isArray(value) && value.every(name => typeof name === 'string');
 
 /**
- * Reads what the page sent, keeping only what has the right shape.
  * @param {unknown} body
  * @returns {PageMacroFacts}
  */
@@ -42,14 +38,13 @@ export function readPageMacroFacts(body) {
 
 /**
  * @param {object} params
- * @param {Record<string, any>} params.powerUser The user's power_user settings.
- * @param {Record<string, any>} params.extensionSettings The user's extension_settings (the global variables).
+ * @param {Record<string, any>} params.powerUser
+ * @param {Record<string, any>} params.extensionSettings
  * @param {string} params.mainApi
- * @param {string} [params.type] The generation's type.
- * @param {string} [params.lastGenerationType] {{lastGenerationType}}, for macros filled in outside a generation;
- * a generation's is its own type.
- * @param {number} params.maxContext The context size.
- * @param {number} params.maxResponse The reply length.
+ * @param {string} [params.type]
+ * @param {string} [params.lastGenerationType]
+ * @param {number} params.maxContext
+ * @param {number} params.maxResponse
  * @param {PageMacroFacts} [params.pageFacts]
  * @returns {import('./macro-substitution.js').SubstituteParamsContext}
  */
@@ -63,7 +58,6 @@ export function generationMacroFacts({ powerUser, extensionSettings, mainApi, ty
         maxContextTokens: maxContext,
         maxResponseTokens: maxResponse,
         maxPromptTokens: maxContext - maxResponse,
-        // The page's GENERATION_STARTED: this generation's own type.
         lastGenerationType: lastGenerationType ?? (type || 'normal'),
         instruct: powerUser.instruct,
         sysprompt: powerUser.sysprompt,
@@ -78,8 +72,6 @@ export function generationMacroFacts({ powerUser, extensionSettings, mainApi, ty
 }
 
 /**
- * The context size and the reply length the macros give ({{maxContext}}, {{maxResponse}}), as the page reads them for
- * the API it generates with.
  * @param {{ max_context?: number, amount_gen?: number, oai_settings?: Record<string, any> }} settings
  * @param {string} mainApi
  * @returns {{ maxContext: number, maxResponse: number }}
@@ -91,13 +83,11 @@ export function apiTokenLimits({ max_context, amount_gen, oai_settings }, mainAp
 }
 
 /**
- * @typedef {{ set: Record<string, unknown>, unset: string[] }} VariableChanges Variables set and removed by name.
+ * @typedef {{ set: Record<string, unknown>, unset: string[] }} VariableChanges
  * @typedef {{ chat: Map<string, string>, global: Map<string, string> }} VariablesBefore
  */
 
 /**
- * The chat's state and the global variables before the prompt is built, to tell what its macros changed
- * ({{setvar}}, {{setglobalvar}} and their kin).
  * @param {Record<string, any>} chatMetadata
  * @param {Record<string, any>} globalVariables
  * @returns {VariablesBefore}
@@ -110,10 +100,9 @@ export function variablesBefore(chatMetadata, globalVariables) {
 const anyChange = changes => (changes && (Object.keys(changes.set).length || changes.unset.length) ? changes : null);
 
 /**
- * The chat variables and the global ones the prompt's macros set and removed.
- * @param {Record<string, any>} chatMetadata The chat's state, as the macros left it.
- * @param {Record<string, any>} globalVariables The global variables, as the macros left them.
- * @param {VariablesBefore} before variablesBefore()
+ * @param {Record<string, any>} chatMetadata
+ * @param {Record<string, any>} globalVariables
+ * @param {VariablesBefore} before
  * @returns {{ chat: VariableChanges | null, global: VariableChanges | null }}
  */
 export function macroVariableChanges(chatMetadata, globalVariables, before) {
@@ -124,14 +113,10 @@ export function macroVariableChanges(chatMetadata, globalVariables, before) {
 }
 
 /**
- * Keeps the variables a prompt's macros changed. The chat's are stored where the request's own chat metadata goes
- * (the message the send follows, applyPageWrites()); the global ones are the page's to save, with its settings. The
- * answer's `stored` list says so: it reaches the page whichever way it answers, and the changes stream's notice of
- * the chat's state may come before the page knows the messages this request stored.
- * @param {import('express').Response} response The generate request's, whose answer tells the page.
+ * @param {import('express').Response} response
  * @param {import('./chat-request.js').ChatContext} chat
- * @param {string|null|undefined} at The message the send follows (null: the tree's root).
- * @param {{ chat: VariableChanges | null, global: VariableChanges | null }} changes macroVariableChanges()
+ * @param {string|null|undefined} at
+ * @param {{ chat: VariableChanges | null, global: VariableChanges | null }} changes
  */
 export async function storeMacroVariables(response, chat, at, { chat: chatVariables, global }) {
     if (global) recordStored(response, { ref: 'macro-global-variables', node_id: '', global_variables: global });

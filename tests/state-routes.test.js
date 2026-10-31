@@ -34,7 +34,11 @@ afterAll(async () => {
     await user.close();
 });
 
-/** @param {string} url @param {object} body @param {Record<string, string>} [headers] */
+/**
+ * @param {string} url
+ * @param {object} body
+ * @param {Record<string, string>} [headers]
+ */
 async function post(url, body, headers = {}) {
     const res = await fetch(base + url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
     return { status: res.status, headers: res.headers, data: await res.json() };
@@ -62,7 +66,6 @@ describe('/api/state', () => {
         expect(stateOf(await post('/api/state/at', { ...owner, at: null }))).toEqual({ variables: { hp: 5 } });
         expect((await post('/api/state/revert', { change: reverted.data.change })).status).toBe(200);
         expect(stateOf(await post('/api/state/at', { ...owner, at: null }))).toEqual({ note_prompt: 'Hi.', variables: { hp: 5 } });
-        // Writing what is there records nothing.
         expect((await post('/api/state/change', { ...owner, at: null, ops: [{ key: 'note_prompt', value: 'Hi.' }] })).data.changes).toEqual([]);
     });
 

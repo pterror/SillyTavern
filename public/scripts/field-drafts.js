@@ -1,32 +1,19 @@
-/**
- * Unsaved edits of any editor's fields, per (thing, field), kept in browser storage so a reload doesn't lose them.
- * While the user types, the field's text is only a draft; the editor commits it as one action at its commit point,
- * and the draft is cleared once that commit is confirmed. A commit that fails leaves the draft as it was.
- *
- * A draft remembers the stored text it was started from (its base): when what is stored has changed since (another
- * tab or user), the draft is in conflict with it, and the user chooses between the two.
- *
- * Callers pass localStorage, not accountStorage: accountStorage's write is a debounced, network-dependent save that
- * isn't guaranteed to land before a reload that's about to happen.
- */
-
 import { jsonHash } from './hash-utils.js';
 
 const DRAFT_KEY_PREFIX = 'FieldDraft:';
-// Per thing, the fields that have a draft, so whether a thing has any is one read.
 const INDEX_KEY_PREFIX = 'FieldDraftIndex:';
 
 /**
  * @typedef {object} DraftRef
- * @property {string} kind What sort of thing the field belongs to, e.g. 'world-entry'.
- * @property {string} id Which thing of that sort, unique within its kind.
- * @property {string} field Which field of that thing.
+ * @property {string} kind
+ * @property {string} id
+ * @property {string} field
  */
 
 /**
  * @typedef {object} FieldDraft
- * @property {string} text What the user typed.
- * @property {string} base What was stored when the draft was started.
+ * @property {string} text
+ * @property {string} base
  */
 
 /**
@@ -45,7 +32,6 @@ function isCompleteRef(ref) {
 }
 
 /**
- * The storage key of a field's draft. The parts are JSON-encoded, so no id or field name can collide with another's.
  * @param {DraftRef} ref
  * @returns {string}
  */
@@ -53,12 +39,20 @@ export function buildFieldDraftKey(ref) {
     return DRAFT_KEY_PREFIX + JSON.stringify([ref.kind, ref.id, ref.field]);
 }
 
-/** @param {string} kind @param {string} id */
+/**
+ * @param {string} kind
+ * @param {string} id
+ */
 function indexKey(kind, id) {
     return INDEX_KEY_PREFIX + JSON.stringify([kind, id]);
 }
 
-/** @param {DraftStorage} storage @param {string} kind @param {string} id @returns {string[]} */
+/**
+ * @param {DraftStorage} storage
+ * @param {string} kind
+ * @param {string} id
+ * @returns {string[]}
+ */
 function readIndex(storage, kind, id) {
     try {
         const fields = JSON.parse(storage.getItem(indexKey(kind, id)) ?? '[]');
@@ -68,7 +62,11 @@ function readIndex(storage, kind, id) {
     }
 }
 
-/** @param {DraftStorage} storage @param {DraftRef} ref @param {boolean} present */
+/**
+ * @param {DraftStorage} storage
+ * @param {DraftRef} ref
+ * @param {boolean} present
+ */
 function updateIndex(storage, ref, present) {
     const fields = readIndex(storage, ref.kind, ref.id);
     const has = fields.includes(ref.field);
@@ -81,7 +79,7 @@ function updateIndex(storage, ref, present) {
 /**
  * @param {DraftStorage} storage
  * @param {DraftRef} ref
- * @returns {FieldDraft|null} The field's unsaved edit, or null when it has none.
+ * @returns {FieldDraft|null}
  */
 export function readFieldDraft(storage, ref) {
     if (!isCompleteRef(ref)) return null;
@@ -94,7 +92,6 @@ export function readFieldDraft(storage, ref) {
 }
 
 /**
- * Keeps `text` as the field's draft, started from `base`.
  * @param {DraftStorage} storage
  * @param {DraftRef} ref
  * @param {string} text
@@ -111,12 +108,10 @@ export function keepFieldDraft(storage, ref, text, base) {
 }
 
 /**
- * Keeps what the field holds as its draft, or forgets the draft once the field holds what is stored again. An empty
- * text is a draft like any other: emptying a field is an edit. A draft already started keeps its base.
  * @param {DraftStorage} storage
  * @param {DraftRef} ref
- * @param {string} text What the field holds.
- * @param {string} stored What is stored for the field.
+ * @param {string} text
+ * @param {string} stored
  */
 export function writeFieldDraft(storage, ref, text, stored) {
     if (!isCompleteRef(ref)) return;
@@ -142,7 +137,6 @@ export function clearFieldDraft(storage, ref) {
 }
 
 /**
- * Drops the drafts of every field of a thing: for a thing that is gone.
  * @param {DraftStorage} storage
  * @param {string} kind
  * @param {string} id
@@ -157,8 +151,6 @@ export function clearThingDrafts(storage, kind, id) {
 }
 
 /**
- * Drops the drafts of every thing of `kind` whose id starts with `prefix`: for things that went with what held them.
- * Goes over the storage's keys, which browser storage bounds.
  * @param {DraftStorage & { length: number, key: (index: number) => string|null }} storage
  * @param {string} kind
  * @param {string} prefix
@@ -189,23 +181,19 @@ export function clearDraftsUnder(storage, kind, prefix) {
  * @param {DraftStorage} storage
  * @param {string} kind
  * @param {string} id
- * @returns {boolean} Whether any field of the thing has a draft.
+ * @returns {boolean}
  */
 export function hasFieldDrafts(storage, kind, id) {
     return readIndex(storage, kind, id).length > 0;
 }
 
 /**
- * Commits a field's text as one action. The text is kept as the draft until the commit is confirmed; then the draft
- * is cleared, unless it has since become something else (typed while the commit was on its way), which then starts
- * from the committed text. A commit that resolves anything but true, or rejects, leaves the draft in place; showing
- * the error is the commit's job.
  * @param {DraftStorage} storage
  * @param {DraftRef} ref
  * @param {string} text
- * @param {string} stored What is stored for the field before the commit.
- * @param {(text: string) => Promise<boolean|void>} commit Sends the action; resolves true once it is stored.
- * @returns {Promise<boolean>} Whether the commit was confirmed.
+ * @param {string} stored
+ * @param {(text: string) => Promise<boolean|void>} commit
+ * @returns {Promise<boolean>}
  */
 export async function commitFieldDraft(storage, ref, text, stored, commit) {
     keepFieldDraft(storage, ref, text, readFieldDraft(storage, ref)?.base ?? stored);
@@ -221,23 +209,18 @@ export async function commitFieldDraft(storage, ref, text, stored, commit) {
     return confirmed;
 }
 
-/**
- * @typedef {'text'|'line'|'number'|'toggle'} FieldType `text`: multi-line text; `line`: single-line text; `number`:
- * a number input (its spinner steps are edits of their own); `toggle`: checkboxes, selects and pickers, where one
- * click is one edit.
- */
+/** @typedef {'text'|'line'|'number'|'toggle'} FieldType */
 
 /**
  * @typedef {object} FieldEvent
- * @property {'input'|'change'|'blur'|'keydown'|'close'} type `close`: the editor is closing or showing something else.
- * @property {boolean} [user] Whether the user made it (an `input` event code fired is a write of its own).
- * @property {string} [key] For `keydown`.
+ * @property {'input'|'change'|'blur'|'keydown'|'close'} type
+ * @property {boolean} [user]
+ * @property {string} [key]
  * @property {boolean} [shiftKey]
  * @property {boolean} [isComposing]
  */
 
 /**
- * What an editor does with an event on one of its fields: keep what the field holds as its draft, commit it, or both.
  * @param {FieldType} type
  * @param {FieldEvent} event
  * @returns {{ draft: boolean, commit: boolean }}
@@ -249,7 +232,6 @@ export function fieldEventAction(type, event) {
             return { draft: true, commit };
         }
         case 'change':
-            // A text field's own change comes with its blur or Enter; a number's also with each spinner step.
             return { draft: true, commit: true };
         case 'blur':
         case 'close':
@@ -263,30 +245,24 @@ export function fieldEventAction(type, event) {
 
 /**
  * @typedef {object} FieldDraftBinding
- * @property {() => 'none'|'restored'|'conflict'} restore Puts the field's draft back into it; a draft started from a
- * stored text that has changed since is held as a conflict instead, until {@link FieldDraftBinding.keep} or
- * {@link FieldDraftBinding.discard}.
- * @property {(event: FieldEvent) => Promise<boolean>} handle Acts on an event; resolves whether nothing is left
- * unsaved.
- * @property {() => void} keep In a conflict: the draft goes into the field, now started from what is stored.
- * @property {() => void} discard In a conflict: the draft is dropped and the field shows what is stored.
- * @property {() => FieldDraft|null} conflict The draft in conflict, if any.
+ * @property {() => 'none'|'restored'|'conflict'} restore
+ * @property {(event: FieldEvent) => Promise<boolean>} handle
+ * @property {() => void} keep
+ * @property {() => void} discard
+ * @property {() => FieldDraft|null} conflict
  * @property {() => 'clean'|'draft'|'conflict'} state
  */
 
 /**
- * Binds one field to its draft: typing keeps the draft, a commit point sends it as one action. Commit points while one
- * commit is on its way send one more commit after it, with what the field held at the last of them (not what it holds
- * when that commit goes: by then the field may be taken down, and read empty).
  * @param {object} options
  * @param {DraftStorage} options.storage
  * @param {DraftRef|null} options.ref
  * @param {FieldType} options.type
- * @param {() => string} options.stored What is stored for the field, as the field shows it.
- * @param {() => string} options.read What the field holds.
- * @param {(text: string) => void} options.show Puts a text into the field.
- * @param {(text: string) => Promise<boolean|void>} options.commit Sends the field's text; resolves true once stored.
- * @param {() => void} [options.changed] Called whenever the field's state may have changed.
+ * @param {() => string} options.stored
+ * @param {() => string} options.read
+ * @param {(text: string) => void} options.show
+ * @param {(text: string) => Promise<boolean|void>} options.commit
+ * @param {() => void} [options.changed]
  * @returns {FieldDraftBinding}
  */
 export function bindFieldDraft({ storage, ref, type, stored, read, show, commit, changed = () => {} }) {
@@ -294,11 +270,10 @@ export function bindFieldDraft({ storage, ref, type, stored, read, show, commit,
     let conflict = null;
     /** @type {Promise<boolean>|null} */
     let inFlight = null;
-    /** What the field held at the last commit point while a commit was on its way; null when there was none. */
     let again = /** @type {string|null} */ (null);
 
     /**
-     * @param {string} [held] What the field held when this commit was asked for; read now when not given.
+     * @param {string} [held]
      * @returns {Promise<boolean>}
      */
     async function commitNow(held) {
@@ -380,8 +355,6 @@ export function bindFieldDraft({ storage, ref, type, stored, read, show, commit,
 }
 
 /**
- * Sets back in `target` what went from `before` to `after`, except what has changed again since: what a commit that
- * failed had set in the page's copy of a thing.
  * @param {any} target
  * @param {any} before
  * @param {any} after

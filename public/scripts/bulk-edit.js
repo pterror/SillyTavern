@@ -72,7 +72,6 @@ function enableBulkSelect() {
 
     $('#rm_print_characters_block').addClass('bulk_select');
     // We also need to disable the default click event for the character_select divs
-    // Namespaced so that running this again for a newly drawn page doesn't stack another handler.
     $(document).off('click.bulkSelect').on('click.bulkSelect', '.bulk_select_checkbox', function (event) {
         event.stopImmediatePropagation();
     });
@@ -102,7 +101,6 @@ export function initBulkEdit() {
     $('#bulkDeleteButton').on('click', onDeleteButtonClick);
 
     const characterContextMenu = new CharacterContextMenu(characterGroupOverlay);
-    // Before the overlay's own handler, which marks the rows of a new page selected, checkboxes included.
     eventSource.on(event_types.CHARACTER_PAGE_LOADED, () => {
         if (is_bulk_edit) enableBulkSelect();
     });

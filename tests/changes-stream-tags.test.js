@@ -2,9 +2,6 @@ import { test, expect, beforeAll, afterAll } from '@jest/globals';
 import http from 'node:http';
 import path from 'node:path';
 
-// A tag definition written by any route reaches every open page's change stream as a `tags-changed` frame, so other
-// tabs ask `/api/tags/changes`.
-
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
@@ -17,7 +14,6 @@ beforeAll(async () => {
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
     user = await (await import('./converted-user.fixture.js')).emptyUser('st-changes-stream-tags-test-');
-    // `/changes/stream` writes browser-presence.json under DATA_ROOT.
     previousDataRoot = globalThis.DATA_ROOT;
     globalThis.DATA_ROOT = user.dataRoot;
 
@@ -42,7 +38,6 @@ afterAll(async () => {
 });
 
 /**
- * Opens the stream and collects its data frames.
  * @returns {Promise<{ frames: any[], close: () => void }>}
  */
 async function openStream() {
@@ -64,12 +59,14 @@ async function openStream() {
             if (event.startsWith('data: ')) frames.push(JSON.parse(event.slice('data: '.length)));
         }
     });
-    // The stream reads its feeds' ends before it listens; a write before then would be part of what it started from.
     await new Promise(resolve => setTimeout(resolve, 100));
     return { frames, close: () => request.destroy() };
 }
 
-/** @param {any[]} frames @param {(frame: any) => boolean} match */
+/**
+ * @param {any[]} frames
+ * @param {(frame: any) => boolean} match
+ */
 async function frameArrives(frames, match) {
     for (let waited = 0; waited < 4000; waited += 50) {
         if (frames.some(match)) return true;
@@ -115,7 +112,6 @@ test('a saved view write sends views-changed and no data: {}; a character write 
         await views.changeSavedView(user.directories, made.id, { view: { ...view, conditions: [{ field: 'name', op: 'not_contains', value: 'b' }] } });
         await views.deleteSavedView(user.directories, made.id);
         expect(await frameArrives(stream.frames, f => f?.type === 'views-changed')).toBe(true);
-        // Past the library frame's debounce.
         await new Promise(resolve => setTimeout(resolve, 1000));
         expect(stream.frames.some(f => Object.keys(f).length === 0)).toBe(false);
         await user.store.lib.writeCard(user.directories, 'AfterViews.png', JSON.stringify({ name: 'AfterViews', data: { name: 'AfterViews' } }));

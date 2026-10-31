@@ -9,11 +9,10 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 }
 
 /**
- * Creates a character whose greetings are `greetings`, in order, with the first one as the default.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
  * @param {string[]} greetings
- * @returns {Promise<string>} The new character's avatar filename.
+ * @returns {Promise<string>}
  */
 async function createCharacter(page, name, greetings) {
     return page.evaluate(async ({ name, greetings }) => {
@@ -30,7 +29,6 @@ async function createCharacter(page, name, greetings) {
 }
 
 /**
- * Opens the character (editor included) and waits for its chat's opening to be in place.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -51,7 +49,6 @@ async function openCharacter(page, avatar) {
 }
 
 /**
- * The character's greetings and default as the server stores them.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -67,7 +64,6 @@ async function storedModel(page, avatar) {
 }
 
 /**
- * The character's greetings and default as this page holds them.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -80,7 +76,6 @@ async function pageModel(page, avatar) {
 }
 
 /**
- * Runs a greeting op for `avatar` from outside this page, standing in for another session.
  * @param {import('@playwright/test').Page} page
  * @param {string} op
  * @param {object} body
@@ -101,8 +96,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
     test.beforeEach(testSetup.awaitST);
 
     /**
-     * Creates a character with greetings g0..g3, opens it (and the popup when `popup`), then deletes g3 from
-     * another session, so this page's copy still has g3.
      * @param {import('@playwright/test').Page} page
      * @param {string} name
      * @param {boolean} popup
@@ -290,7 +283,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
     });
 
     /**
-     * Creates a character with greetings g0, g1, g2 whose default is g1, and opens it.
      * @param {import('@playwright/test').Page} page
      * @param {string} name
      */
@@ -304,7 +296,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
     }
 
     /**
-     * Sets `#character_json_data` to hold `greetings` with no default greeting, and saves it.
      * @param {import('@playwright/test').Page} page
      * @param {string[]} greetings
      */
@@ -361,7 +352,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         const { g, avatar } = await withDefaultAtOne(page, 'DemoteAlreadyCleared');
         await openGreetingsList(page, 3);
         await otherSessionOp(page, 'default/unset', { avatar_url: avatar, expected_default_position: 1 });
-        // The list follows the card: no default now, so the star sets it.
         await expect(greetingRow(page, g[1]).locator('.alternative-default')).toHaveAttribute('aria-pressed', 'false', { timeout: 10000 });
         await listToggleDefault(page, g[1]);
         await listToggleDefault(page, g[1]);
@@ -511,9 +501,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
     });
 
     /**
-     * Opens a character with greetings `g`, shows greeting `shown` in the chat and opens the list, runs `otherSession`
-     * (another session's changes), then sets greeting `defaultRow` (of `g`) as the default from this page.
-     * Resolves to the chat's opening afterwards.
      * @param {import('@playwright/test').Page} page
      * @param {object} args
      * @param {string} args.name
@@ -521,7 +508,7 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
      * @param {number} args.shown
      * @param {(avatar: string) => Promise<void>} args.otherSession
      * @param {number} args.defaultRow
-     * @param {string} args.expected The text the chat should end up showing.
+     * @param {string} args.expected
      */
     async function chatAfterOtherSession(page, { name, g, shown, otherSession, defaultRow, expected }) {
         const avatar = await createCharacter(page, name, g);
@@ -552,7 +539,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
             name: `SlotStillThere-${s}`, g, shown: 2, defaultRow: 1, expected: g[2],
             otherSession: avatar => otherSessionOp(page, 'delete', { avatar_url: avatar, position: 0, expected_hash: hashGreetingText(g[0]) }),
         });
-        // Zero was never replied to, so it has no stored row and leaves the chat with the card.
         await expect.poll(() => page.evaluate(() => {
             // @ts-ignore
             const m = SillyTavern.getContext().chat[0];
@@ -614,7 +600,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
             // @ts-ignore
             const headers = SillyTavern.getContext().getRequestHeaders();
             const contents = texts.map(mes => ({ name, is_user: false, is_system: false, send_date: Date.now(), mes, extra: {} }));
-            // As the page stores a greeting shown without a row: the first selected, the others added beside it.
             const selected = await fetch('/api/chats/message/select', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, opening: { refs: ['opening'], messages: [contents[0]] } }) });
             if (!selected.ok) return false;
             const first = (await selected.json()).stored.find((/** @type {any} */ x) => x.ref === 'opening').node_id;
@@ -653,7 +638,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];
         await page.route('**/api/chats/openings/land', route => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: true }) }));
-        // The chat was switched to One, which is deleted: reopening shows the greeting now at One's card position.
         const opening = await chatAfterOtherSession(page, {
             name: `LandingFails-${s}`, g, shown: 1, defaultRow: 3, expected: g[2],
             otherSession: avatar => otherSessionOp(page, 'delete', { avatar_url: avatar, position: 1, expected_hash: hashGreetingText(g[1]) }),
@@ -663,7 +647,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
     });
 
     /**
-     * Runs `/char-update` on a non-greeting field, which refetches the card and replaces the pager's greetings.
      * @param {import('@playwright/test').Page} page
      * @param {string} personality
      */
@@ -719,7 +702,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         const typed = `${g[1]} and more`;
         await row.locator('textarea').fill(typed);
         await otherSessionOp(page, 'delete', { avatar_url: avatar, position: 0, expected_hash: hashGreetingText(g[0]) });
-        // One is the first row now, still being edited, with what was typed.
         await expect(greetingsList(page).locator('li.alternative')).toHaveCount(2, { timeout: 10000 });
         await expect(greetingRow(page, 0).locator('textarea')).toHaveValue(typed);
         const answer = page.waitForResponse(r => r.request().postDataJSON()?.type === 'alternatives.greeting');
@@ -730,7 +712,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
     });
 
     /**
-     * Edits the chat's opening message in place to `text`.
      * @param {import('@playwright/test').Page} page
      * @param {string} text
      */
@@ -743,7 +724,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
     }
 
     /**
-     * The chat's opening: its swipes, and the node id behind each.
      * @param {import('@playwright/test').Page} page
      */
     async function openingSwipes(page) {
@@ -788,7 +768,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         const y = `Shared ${s}`;
         await editOpeningInChat(page, y);
 
-        // Clicking into the chat closes the character's editor.
         await openCharacter(page, avatar);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(y, { timeout: 10000 });
         await openGreetingsList(page, 3);
@@ -812,7 +791,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await page.locator('#curEditTextarea').fill(y);
         await page.locator('#chat .mes[mesid="0"] .mes_edit_done').click();
         await expect(page.locator('#curEditTextarea')).toHaveCount(0);
-        // Stored as written, as a card greeting is; shown with its macros filled in.
         await expect.poll(async () => (await openingSwipes(page)).swipes[0], { timeout: 10000 }).toBe(y);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).not.toContainText('{{user}}');
 
@@ -838,7 +816,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await openGreetingsList(page, 3);
         await listEdit(page, g[1], y);
 
-        // The server's list as a fresh load lays it out: the stored opening, then the card's other greetings.
         await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([y, g[0], g[2]]);
         const opening = await openingSwipes(page);
         expect(opening.swipe_id).toBe(0);
@@ -871,7 +848,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
             avatar_url: avatar, source_position: 3, expected_hash: hashGreetingText(g[3]), side: 'before', target_position: 0, target_expected_hash: hashGreetingText(g[0]),
         });
 
-        // The list shows the new order before anything is picked from it.
         await expect(greetingRow(page, 0).locator('.alternative-text')).toHaveText(g[3], { timeout: 10000 });
         await listDelete(page, g[1]);
 

@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// /lib.js and /live-editor-lib.js, as the page and extensions import them (built by packages/serve-ui): each export
-// is the library itself, its default import resolved as the page's code expects, and works.
-
 test.describe('the libraries the page imports', () => {
     test.beforeEach(testSetup.awaitST);
 

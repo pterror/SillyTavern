@@ -5,7 +5,6 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-/** Every `charInfoTabs_tab` radio value, with the create-request key of the field its tab shows. */
 const TABS = [
     { tab: 'creatorNotes', key: 'creator_notes' },
     { tab: 'description', key: 'description' },
@@ -32,9 +31,8 @@ async function awaitAppReady(page) {
 }
 
 /**
- * Creates a character, opens it in the editor, runs `body`, then deletes the character.
  * @param {import('@playwright/test').Page} page
- * @param {Record<string, string>} values Create-request fields other than the name.
+ * @param {Record<string, string>} values
  * @param {() => Promise<void>} body
  */
 async function withCharacter(page, values, body) {
@@ -70,7 +68,7 @@ async function withCharacter(page, values, body) {
 
 /**
  * @param {import('@playwright/test').Page} page
- * @param {string} tab The tab's `charInfoTabs_tab` radio value.
+ * @param {string} tab
  */
 function heading(page, tab) {
     return page.locator(`#charInfoTabs > .tab-title:has(> input[value="${tab}"])`);
@@ -85,7 +83,6 @@ test.describe('character info tab dimming', () => {
             for (const { tab } of TABS) {
                 await expect(heading(page, tab), tab).toHaveClass(/\btab-empty\b/);
             }
-            // The selected tab is always shown at full opacity, so look at one that is not selected.
             await openInfoTab(page, 'description');
             await expect(heading(page, 'creatorNotes')).toHaveCSS('opacity', '0.5');
         });

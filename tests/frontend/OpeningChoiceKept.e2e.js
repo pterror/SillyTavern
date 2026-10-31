@@ -55,8 +55,6 @@ async function shownText(page) {
 }
 
 /**
- * Switches message 0 to the opening at `swipeId`, the way the swipe picker does, and waits for the server to have
- * heard about it.
  * @param {import('@playwright/test').Page} page
  * @param {number} swipeId
  * @param {string} text
@@ -87,7 +85,6 @@ async function swipeIndexOf(page, text) {
 }
 
 /**
- * The character's openings as the server lists them.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -101,7 +98,6 @@ async function openings(page, avatar) {
 }
 
 /**
- * The character's greetings list (the alternatives list), its row at `index`.
  * @param {import('@playwright/test').Page} page
  * @param {number} index
  */
@@ -126,7 +122,6 @@ test.describe('the opening a chat was switched to is kept', () => {
         await openCharacter(page, avatar);
         expect(await shownText(page)).toBe(g[2]);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(g[2]);
-        // Switching to a greeting doesn't give it a row.
         expect((await openings(page, avatar)).stored).toBe(0);
     });
 
@@ -156,7 +151,6 @@ test.describe('the opening a chat was switched to is kept', () => {
         const other = await createCharacter(page, `KeepE-${s}`, [`Other ${s}`]);
         await openCharacter(page, avatar);
         await showSwipe(page, 2, g[2]);
-        // Gives Two a row, the way sending a message does.
         await page.evaluate(async () => {
             const { ensureOpeningRow } = await import('/scripts/chat-store.js');
             await ensureOpeningRow(0);

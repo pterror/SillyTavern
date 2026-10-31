@@ -11,10 +11,6 @@ let baseUrl;
 let tempDir;
 let directories;
 
-/**
- * The client's full-save payload has no `tags`, `tag_map` or `accountStorage`, so /save must not remove the key
- * files a payload leaves out. A snapshot restore is an explicit "exactly that state", so it still does.
- */
 beforeAll(async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-settings-keeps-keys-test-'));
     fs.mkdirSync(path.join(tempDir, 'backups'), { recursive: true });
@@ -48,7 +44,10 @@ function keyFile(key) {
     return path.join(tempDir, 'settings', `${key}.json`);
 }
 
-/** @param {string} route @param {object} body */
+/**
+ * @param {string} route
+ * @param {object} body
+ */
 function post(route, body) {
     return fetch(`${baseUrl}/api/settings/${route}`, {
         method: 'POST',

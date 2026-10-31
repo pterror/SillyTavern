@@ -8,10 +8,10 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// A chat file in upstream's place (chats/<avatar>/<name>.jsonl) goes into the store through the upstream import: it
-// opens by its name with every swipe, and a second import adds nothing.
-
-/** @param {import('@playwright/test').Page} page @param {string} name */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ */
 function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore

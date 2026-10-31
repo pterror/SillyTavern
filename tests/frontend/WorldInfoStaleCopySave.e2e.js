@@ -1,10 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// An extension's saveWorldInfo(name, data) stores the changes it made to the copy it loaded, not the copy as a whole:
-// an entry another tab added since is kept, and a change to an entry someone else changed since is not stored but
-// named in a warning.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -28,12 +24,10 @@ test('saveWorldInfo() from a copy loaded before another tab\'s edits keeps them 
             const { loadWorldInfo, saveWorldInfo } = await import('./scripts/world-info.js');
             const data = await loadWorldInfo(name);
 
-            // Another tab: changes entry 1 and adds entry 5.
             const post = (path, body) => fetch(path, { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(body) });
             await post('/api/worldinfo/entry/edit', { name, uid: 1, data: elsewhereOne });
             await post('/api/worldinfo/entries/apply', { name, entries: [{ uid: 5, base_hash: null, data: elsewhereFive }] });
 
-            // This copy: changes entries 0 and 1, and deletes entry 2.
             data.entries[0].content = 'zero, here';
             data.entries[1].content = 'one, here';
             delete data.entries[2];

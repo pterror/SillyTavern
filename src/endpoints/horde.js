@@ -21,11 +21,6 @@ const HORDE_TEXT_MODEL_METADATA_URL = 'https://raw.githubusercontent.com/db0/AI-
 const cache = new Cache(60 * 1000);
 export const router = express.Router();
 
-// Real values ported verbatim from public/scripts/horde.js's own MAX_RETRIES/CHECK_INTERVAL (the
-// client-side poll loop these constants used to drive before polling moved server-side - see
-// streamHordeGeneration()'s own doc comment below). Overridable ONLY via
-// `_setHordePollingConfigForTests()`, so a real end-to-end test can exercise the real poll loop
-// without literally waiting up to 20 minutes.
 const HORDE_MAX_RETRIES_DEFAULT = 480;
 const HORDE_POLL_INTERVAL_MS_DEFAULT = 2500;
 let HORDE_MAX_RETRIES = HORDE_MAX_RETRIES_DEFAULT;
@@ -33,8 +28,6 @@ let HORDE_POLL_INTERVAL_MS = HORDE_POLL_INTERVAL_MS_DEFAULT;
 let HORDE_KEEPALIVE_INTERVAL_MS = KEEPALIVE_INTERVAL_MS;
 
 /**
- * Test-only hook to speed up streamHordeGeneration()'s poll loop and its keepalive cadence. Never
- * called outside a test.
  * @param {{pollIntervalMs?: number, maxRetries?: number, keepaliveIntervalMs?: number}} [overrides]
  */
 export function _setHordePollingConfigForTests({ pollIntervalMs, maxRetries, keepaliveIntervalMs } = {}) {
@@ -43,16 +36,7 @@ export function _setHordePollingConfigForTests({ pollIntervalMs, maxRetries, kee
     HORDE_KEEPALIVE_INTERVAL_MS = keepaliveIntervalMs ?? KEEPALIVE_INTERVAL_MS;
 }
 
-/**
- * One in-flight server-side Horde poll loop's cancellation handle, keyed by Horde's own job id -
- * the obvious shared key, since `/cancel-task` (below) only ever receives that same `taskId`. Mirrors
- * `llamacpp-compact-stream.js`'s own `metaCache`/`generationBuffers` maps: a plain `Map`, capped so a
- * flood of abandoned generations can't leak memory, with entries removed as soon as their own poll
- * loop actually finishes (success, fault, timeout, or cancellation) in `streamHordeGeneration()`'s own
- * `finally` block - there is no separate TTL sweep because every entry's lifetime is already bounded
- * by "however long one real Horde job's poll loop runs for."
- * @type {Map<string, {cancelled: boolean, cancel: () => void, cancelPromise: Promise<void>}>}
- */
+/** @type {Map<string, {cancelled: boolean, cancel: () => void, cancelPromise: Promise<void>}>} */
 const activeHordePolls = new Map();
 const ACTIVE_HORDE_POLLS_MAX = 200;
 
@@ -181,8 +165,6 @@ router.post('/text-models', async (request, response) => {
 
         let data = await fetchResult.json().catch(() => null);
 
-        // Horde answers an error object (rate limit, bad client agent, maintenance) instead of the model list.
-        // That is a failed fetch: say what Horde said, and don't cache it.
         if (!fetchResult.ok || !Array.isArray(data)) {
             const said = (data && typeof data === 'object' && typeof data.message === 'string') ? data.message : fetchResult.statusText;
             const message = `AI Horde did not send a model list (HTTP ${fetchResult.status}${said ? `: ${said}` : ''}).`;
@@ -229,8 +211,6 @@ router.post('/status', async (_, response) => {
 router.post('/cancel-task', async (request, response) => {
     try {
         const taskId = request.body.taskId;
-        // Stops the actual in-flight server-side poll loop for this job, if streamHordeGeneration()
-        // (below) is currently running one - see activeHordePolls' own doc comment above.
         activeHordePolls.get(taskId)?.cancel();
         const agent = await getClientAgent();
         const fetchResult = await fetch(`https://aihorde.net/api/v2/generate/text/status/${taskId}`, {
@@ -267,34 +247,8 @@ router.post('/task-status', async (request, response) => {
 });
 
 /**
- * Real raw-action cutover for Horde (main_api === 'koboldhorde') - mirrors
- * src/endpoints/backends/kobold.js's own raw-action `/generate` branch as closely as the real
- * architectural difference allows: resolves the real character/chat/branch identity, assembles the
- * real prompt via the SAME `buildRawActionKoboldRequest()` kobold.js's own raw-action branch uses
- * (passing `macroExtras: { isHorde: true }`, since createKoboldGenerationData()'s real `isHorde`
- * branch - src/kobold-generation-data.js - already produces the correct payload shape for Horde),
- * and persists the user's message immediately (same "persist regardless of outcome" principle as
- * every other raw-action backend, since a Horde job can still time out/fault/get cancelled).
- *
- * Unlike kobold.js's/novelai.js's own raw-action branches, this only builds the outgoing Horde
- * payload - it does not itself submit the job or wait for a result. `/generate-text` (below) submits
- * it, then hands the whole thing to `streamHordeGeneration()`, which polls Horde internally and
- * persists the ASSISTANT's reply server-side once the real final text is known, via the returned
- * `rawActionPersist` (`{chat, anchorNodeId, name2, isSwipe, isContinue, anchorContent}`, merged with
- * the request's warnings and stop entry by the caller before being passed to `persistAssistantReply()`) - `null`
- * whenever persistence should be skipped (impersonate/quiet types).
- *
- * MVP SCOPE BOUNDARY (real, narrow, deliberately deferred - NOT attempted here): live
- * worker-capacity auto-adjustment (public/scripts/horde.js's `adjustHordeGenerationParams()`, itself
- * just a client-side wrapper around the EXISTING `/api/horde/text-workers` endpoint, shrinking
- * `max_context_length`/`max_length` to whatever a currently-available worker can actually handle) is
- * not performed for a raw-action request. `createKoboldGenerationData()` still produces a valid
- * request using the user's own configured `kai_settings`/`amount_gen`/`max_context` values - a real
- * request still works, it may just be rejected/retried more often by Horde when no worker matches an
- * unadjusted size. This is an honest, narrow MVP boundary, not a disguised gap: nothing about basic
- * generation is broken or faked by this omission.
  * @param {import('express').Request} request
- * @param {import('express').Response} response The request's response, which records the stored user message.
+ * @param {import('express').Response} response
  * @returns {Promise<{ body: object, rawActionPersist: object|null }>}
  */
 async function buildRawActionHordePayload(request, response) {
@@ -302,8 +256,6 @@ async function buildRawActionHordePayload(request, response) {
         character_avatar: characterAvatar, group_id: groupId,
         type = 'normal', trusted_workers: trustedWorkers = false, models,
     } = request.body;
-    // is_impersonate/is_continue/is_swipe are NOT read from the wire - see kobold.js's own identical
-    // derivation/comment.
     const isImpersonate = type === 'impersonate';
     const isContinue = type === 'continue';
     const isSwipe = type === 'swipe' || type === 'regenerate';
@@ -322,11 +274,6 @@ async function buildRawActionHordePayload(request, response) {
         macroExtras: { isHorde: true, ...textCompletionQuietInput(quiet) },
     });
 
-    // Same three-mode persistence contract as kobold.js's own raw-action branch - see that file's
-    // own extensive comment on impersonate/quiet skipping, the swipe/regenerate sibling-vs-child
-    // distinction, and the continue/userMessageText tree-shape edge case. Not re-derived here;
-    // identical reasoning applies verbatim since both routes share the exact same
-    // resolveTextCompletionGenerationInput() and persistence primitives.
     const skipPersistence = isImpersonate || type === 'quiet';
     let replyAnchorNodeId = built.anchorNodeId;
     const userMessage = turn.userMessage;
@@ -338,29 +285,16 @@ async function buildRawActionHordePayload(request, response) {
         if (!userNodeId) return null;
         replyAnchorNodeId = userNodeId;
     }
-    // A continue sent with text in the box stores that text as the user's message first, and the page then
-    // continues that message, as upstream does: the reply is stored as an edit of it.
     const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
-    // The reply's write goes through the session; one made for it is in the headers, which the stream
-    // sends before the reply is stored.
     if (!skipPersistence) chat.session.actor();
     const rawActionPersist = !skipPersistence
         ? {
             chat, anchorNodeId: replyAnchorNodeId, name2: built.name2, isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
             itemization: itemizationOf(request.body.itemization, built.itemization),
-            // How the reply is finished (its reasoning split off, see src/reply-reasoning.js).
-            // `extra.model` and the title are the worker's, known once it answers.
             finish: await readReplyFinishSettings(directories, { mainApi: 'koboldhorde', avatar: characterAvatar, groupId, name1: built.name1, name2: built.name2 }),
         }
         : null;
 
-    // Horde's own real params shape: `prompt` is a SEPARATE top-level field (never inside `params`),
-    // matching generateHorde()'s own real transformation (public/scripts/horde.js) exactly - it
-    // `delete params.prompt`s then sets a handful of fixed fields ("No idea what these do", per that
-    // function's own comment, copied verbatim here for the identical real values). `api_server`
-    // (createKoboldGenerationData()'s Kobold-specific wire field, resolved from `kai_settings.api_server`)
-    // is meaningless for Horde - a worker pool picks the real backend, never a client-sent URL - so
-    // it is simply dropped here, never forwarded to the real Horde coordinator.
     const { prompt } = built.params;
     const params = { ...built.params };
     delete params.prompt;
@@ -378,8 +312,6 @@ async function buildRawActionHordePayload(request, response) {
 }
 
 /**
- * Fetches one Horde job's current status via the real, public `GET .../generate/text/status/:id`
- * endpoint - same URL and headers `/task-status` above already uses.
  * @param {string} jobId
  * @param {string} agent
  * @returns {Promise<any>}
@@ -395,39 +327,12 @@ async function fetchHordeJobStatus(jobId, agent) {
 }
 
 /**
- * Shims a Horde job (already submitted, real job id in hand) onto the same `compact-v1` wire protocol
- * every other backend now streams over - see this module's own header comment / the task this
- * implements for the full rationale. The client's connection to OUR server is held open exactly like
- * any other raw-action stream (`X-ST-Stream-Format`/`X-Generation-Id` headers,
- * `createResumableWriter()` for keepalive + resumability); the fact that Horde's own API is
- * submit-then-poll is an internal implementation detail of THIS function, invisible to the client.
- *
- * Cancellation has two independent triggers, exactly like every other raw-action streaming route:
- * - `/cancel-task` (above) looks up this job's `activeHordePolls` entry and calls `.cancel()` on it,
- *   which this loop notices (via `pollState.cancelled`/`pollState.cancelPromise`) and stops on.
- * - The client's own HTTP connection dropping does NOT cancel the poll - matching every other
- *   raw-action backend's now-established "a persisted generation survives a client disconnect and can
- *   still be resumed" behavior, the response writer is swapped for one that only buffers into the
- *   resumable generation record (`detachFromResponse()`), and the poll loop runs to completion
- *   regardless.
- *
- * On success, the generated text is written as a real content frame and, for a raw-action request
- * (`rawActionPersist` non-null), persisted server-side via `persistAssistantReply()` exactly like
- * every other backend - the resulting `assistant_node_id` frame is written last, per the wire
- * protocol's own contract. On a fault/unsatisfiable-request/timeout/status-check-error, nothing is
- * persisted and the stream simply ends without a content or node-id frame - the same convention
- * `forwardAndPersistCompactStream()`/`pipeLlamaCppCompactStream()` already use for a failed upstream
- * generation (no dedicated "failed" frame type exists yet - see llamacpp-compact-stream.js's own frame
- * type list).
  * @param {object} params
  * @param {import('express').Response} params.response
- * @param {string} params.jobId Horde's own job id - also used as the `X-Generation-Id`.
+ * @param {string} params.jobId
  * @param {string} params.agent
- * @param {object|null} params.rawActionPersist What `persistAssistantReply()` takes - or `null` to
- * skip persistence.
+ * @param {object|null} params.rawActionPersist
  * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [params.warnings]
- * The `/generate-text` route's per-request warnings - when non-empty, written as their own control
- * frame (`{control: {warnings: ...}}`) before any content.
  * @returns {Promise<void>}
  */
 async function streamHordeGeneration({ response, jobId, agent, rawActionPersist, warnings = null }) {
@@ -500,7 +405,6 @@ async function streamHordeGeneration({ response, jobId, agent, rawActionPersist,
             if (rawActionPersist) {
                 try {
                     if (workerInfo?.worker_name) {
-                        // As the page titles a Horde reply, and the model the worker ran (kobold_horde_model).
                         rawActionPersist.title = `Generated by Horde worker: ${workerInfo.worker_name} [${workerInfo.model}]`;
                         if (rawActionPersist.finish) rawActionPersist.finish.model = workerInfo.model ?? '';
                     }
@@ -522,13 +426,7 @@ async function streamHordeGeneration({ response, jobId, agent, rawActionPersist,
 router.get('/generate/resume/:id', handleGenerationResume);
 
 router.post('/generate-text', withGenerationStop(async (request, response) => {
-    // Real raw-action cutover - see buildRawActionHordePayload()'s own doc comment above for the
-    // full design. Same trigger condition kobold.js's own raw-action branch uses (owner_id plus
-    // character_avatar/group_id) - the existing dispatch code below (the actual POST to Horde's real
-    // coordinator) is completely unaware of which branch produced `request.body`, same pattern.
     let rawActionPersist = null;
-    // Per-request warnings for the screen - see text-completions.js's identical `warnings` for the
-    // full rationale. Covers every branch, not gated on persistence; sent only when non-empty.
     /** @type {Array<{kind: string, key: string, message: string, entries?: string[]}>} */
     const warnings = [];
     if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {

@@ -2,9 +2,6 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } fr
 import fs from 'node:fs';
 import path from 'node:path';
 
-// `/manifest` and `/batch` on a user's engine store: the library is the characters the store holds (not the files in
-// `characters/`), each listed by its avatar with its version as `mtime`.
-
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
 /** @type {typeof import('./converted-user.fixture.js')} */
@@ -14,7 +11,6 @@ let server;
 let baseUrl;
 
 beforeAll(async () => {
-    // characters.js transitively imports modules that read config.yaml at import time.
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
     fixture = await import('./converted-user.fixture.js');
@@ -49,7 +45,10 @@ async function postJson(urlPath, body) {
     });
 }
 
-/** Stores a character. @param {string} avatar @param {string} [description] */
+/**
+ * @param {string} avatar
+ * @param {string} [description]
+ */
 async function seedCharacter(avatar, description = 'd') {
     const name = avatar.replace(/\.png$/, '');
     await user.store.lib.writeCard(user.directories, avatar, JSON.stringify({ name, data: { name, description, extensions: {} } }));

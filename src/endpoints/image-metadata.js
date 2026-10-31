@@ -16,9 +16,7 @@ import express from 'express';
 import { Jimp } from '../jimp.js';
 import { getConfigValue, isPathUnderParent, uuidv4 } from '../util.js';
 
-/** Legacy single-file index name, kept only so ensureMigrated() can find and migrate old data. */
 const LEGACY_METADATA_FILE = 'image-metadata.json';
-/** Directory (under the user data root) holding the sharded metadata files described in the module header. */
 export const METADATA_DIR = 'image-metadata';
 const FOLDERS_FILENAME = 'folders.json';
 const INDEX_VERSION = 1;
@@ -165,10 +163,6 @@ export async function generateImageMetadata(filePath, type) {
     };
 }
 
-// ---------------------------------------------------------------------------------------------
-// Sharded storage primitives
-// ---------------------------------------------------------------------------------------------
-
 function getFoldersPath(userDataRoot) {
     return path.join(userDataRoot, METADATA_DIR, FOLDERS_FILENAME);
 }
@@ -216,7 +210,6 @@ async function writeFolders(userDataRoot, folders) {
     await writeFileAtomic(foldersPath, JSON.stringify(folders, null, 4), 'utf8');
 }
 
-/** A directory-shaped prefix (ends with '/') descends straight into that subdirectory instead of walking the whole tree. */
 async function walkImageMetaFiles(userDataRoot, prefix = '') {
     const imagesRoot = path.join(userDataRoot, METADATA_DIR, 'images');
     const startDir = prefix && prefix.endsWith('/')
@@ -247,10 +240,8 @@ async function walkImageMetaFiles(userDataRoot, prefix = '') {
     return results;
 }
 
-/** User data roots already checked (and migrated, if needed) this process. */
 const migratedRoots = new Set();
 
-/** One-time, idempotent migration of a legacy single-file index into the sharded per-image layout. */
 async function ensureMigrated(userDataRoot) {
     if (migratedRoots.has(userDataRoot)) {
         return;
@@ -262,7 +253,7 @@ async function ensureMigrated(userDataRoot) {
     try {
         legacyRaw = await fs.readFile(legacyPath, 'utf8');
     } catch {
-        return; // No legacy file for this user - nothing to migrate.
+        return;
     }
 
     try {
@@ -278,17 +269,12 @@ async function ensureMigrated(userDataRoot) {
             ));
         }
 
-        // Renamed rather than deleted, so a failed migration leaves the original data recoverable.
         await fs.rename(legacyPath, `${legacyPath}.migrated`);
         console.info(`[ImageMetadata] Migrated legacy ${LEGACY_METADATA_FILE} to per-image metadata files.`);
     } catch (error) {
         console.warn(`[ImageMetadata] Failed to migrate legacy ${LEGACY_METADATA_FILE}:`, error.message);
     }
 }
-
-// ---------------------------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------------------------
 
 /**
  * Reads the full metadata index for a user: every image's metadata plus all folders.
@@ -381,7 +367,6 @@ export async function removeMetadata(userDataRoot, relativePath) {
 
     await deleteImageMeta(userDataRoot, posixPath);
 
-    // Clear any folder thumbnailFile references that point to the deleted file
     const deletedFileName = path.posix.basename(posixPath);
     const folders = await readFolders(userDataRoot);
     let foldersChanged = false;
@@ -540,7 +525,6 @@ export async function deleteFolder(userDataRoot, folderId) {
     folders.splice(idx, 1);
     await writeFolders(userDataRoot, folders);
 
-    // Only images that actually referenced this folder get rewritten.
     const relPaths = await walkImageMetaFiles(userDataRoot);
     await Promise.all(relPaths.map(async (relativePath) => {
         const meta = await readImageMeta(userDataRoot, relativePath);
@@ -617,7 +601,6 @@ export async function unassignImagesFromFolder(userDataRoot, folderId, relativeP
 }
 
 /**
- * Sets the complete folder membership for a single image, replacing whatever it had before.
  * @param {string} userDataRoot
  * @param {string} relativePath
  * @param {string[]} folderIds
@@ -758,10 +741,6 @@ router.post('/folders/assign', async function (request, response) {
     }
 });
 
-/**
- * POST /api/image-metadata/folders/set-membership
- * Set the complete folder membership for a single image. Body: { path: string, folderIds: string[] }
- */
 router.post('/folders/set-membership', async function (request, response) {
     try {
         const { path: relativePath, folderIds } = request.body;

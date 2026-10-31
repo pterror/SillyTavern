@@ -1,39 +1,21 @@
 import { changeStreamRetryDelayMs } from './change-stream-backoff.js';
 
-// The session this tab has open: a pointer into the chats, per tab, sent with every request as `X-ST-Session`. No two
-// open tabs hold the same session. The tab's changes stream (`/api/characters/changes/stream`) holds it at the server
-// and tells the tab where it is; a Web Lock named after it holds it among this browser's tabs.
-// - A fresh tab (nothing in sessionStorage) is given one by the server when its stream opens: the user's most recent
-//   session no tab holds, else a new one at the most recent one's place. Its first requests wait for it.
-// - A reloaded or restored tab (its sessionStorage kept) goes on with its own, unless another tab holds it (a
-//   duplicated tab's copy, or a tab that took it while this one was closed): then it forks it from where this tab
-//   last was, its history up to there and its current chats as this tab last had them.
-// - Where the browser gives no Web Locks (plain http to a LAN address), tabs of the browser tell each other their token
-//   on a BroadcastChannel instead: of two live tabs with one token (a duplicate copied it), the later loaded forks.
-// - A stream that doesn't answer within STREAM_WAIT_MS doesn't hold the page: a tab with a stored session uses it, a
-//   fresh one goes on with none (requests send `none`) and takes the session its stream gives it when it connects.
-
 const TAB_KEY = 'st:tab-session';
 const TOKEN_KEY = 'st:tab-token';
 const PLACE_KEY = 'st:tab-place';
 const CHATS_KEY = 'st:tab-chats';
-/** What tabs kept before a tab's session was its own; read by nothing. */
 const OLD_DEVICE_KEY = 'st:device-session';
 
-/** @type {string | null} This tab's session when storage is unavailable. */
+/** @type {string | null} */
 let inMemory = null;
 /** @type {string | null} */
 let tokenInMemory = null;
-/** Whether the tab has its session (until then a fresh tab sends `none`), or has stopped waiting for the stream. */
 let ready = false;
-/** Whether the page went on without the stream's answer and has not had a session frame since. */
 let streamMissing = false;
-/** How long the page waits for the changes stream's first answer. It takes a few ms locally (2-5 in 15 loads), so
- * this leaves room for a slow network and a busy server, and a down stream costs the page no more than this. */
 export const STREAM_WAIT_MS = 3000;
 /** @type {Promise<void> | null} */
 let preparing = null;
-/** @type {() => Record<string, string>} The page's request headers (its CSRF token among them). */
+/** @type {() => Record<string, string>} */
 let requestHeaders = () => ({});
 
 /**
@@ -63,7 +45,6 @@ function write(storage, key, value) {
 }
 
 /**
- * This tab's session's UUID, or null when it has none yet.
  * @returns {string | null}
  */
 export function tabSession() {
@@ -76,10 +57,6 @@ export function tabSession() {
     return held === null || held === '' ? null : held;
 }
 
-/**
- * The token naming this tab to the server: kept through reloads, so the tab's own stream from before a reload isn't
- * taken for another tab's.
- */
 export function tabToken() {
     const held = read(globalThis.sessionStorage, TOKEN_KEY) ?? tokenInMemory;
     if (held) return held;
@@ -91,7 +68,6 @@ export function tabToken() {
     return made;
 }
 
-/** Gives the tab a new token (a duplicate's, when another tab has the one it copied). */
 function mintToken() {
     tokenInMemory = null;
     write(globalThis.sessionStorage, TOKEN_KEY, null);
@@ -99,7 +75,6 @@ function mintToken() {
 }
 
 /**
- * A UUID v7: the time in ms, then random bits.
  * @returns {string}
  */
 export function newSessionId() {
@@ -117,7 +92,6 @@ export function newSessionId() {
 }
 
 /**
- * Where the tab last was in its session's history: how many entries it had and the cursor's (0: none).
  * @returns {{ length: number, cursor: number }}
  */
 export function tabPlace() {
@@ -138,7 +112,6 @@ function setPlace(place) {
 }
 
 /**
- * The tab's current chat per tree, by `a:<avatar>` or `g:<group id>`: a bookmark's id.
  * @returns {Record<string, string>}
  */
 export function tabChats() {
@@ -159,7 +132,7 @@ function treeKey(tree) {
 
 /**
  * @param {{ tree: { avatar?: string, group?: string }, bookmark: string | null }[]} changes
- * @param {boolean} [replace] The tab's chats are these alone.
+ * @param {boolean} [replace]
  */
 function setChats(changes, replace = false) {
     const chats = replace ? {} : tabChats();
@@ -171,8 +144,6 @@ function setChats(changes, replace = false) {
     }
     write(globalThis.sessionStorage, CHATS_KEY, JSON.stringify(chats));
 }
-
-// ---- holding the session among this browser's tabs ----
 
 /** @type {(() => void) | null} */
 let releaseLock = null;
@@ -188,7 +159,6 @@ function locks() {
 }
 
 /**
- * Whether another tab of this browser holds the session.
  * @param {string} session
  */
 async function lockHeld(session) {
@@ -212,10 +182,8 @@ function holdLock(session) {
 }
 
 /**
- * The tab's session becomes `session`: held here, kept in sessionStorage, and its stream follows it.
  * @param {string | null} session
- * @param {{ keepPlace?: boolean, follow?: boolean }} [o] `keepPlace`: the place and chats stored are this session's too
- * (a fork's). `follow`: the stream reconnects to hold it (not when the stream itself was just given it).
+ * @param {{ keepPlace?: boolean, follow?: boolean }} [o]
  */
 function setSession(session, { keepPlace = false, follow = true } = {}) {
     const before = tabSession();
@@ -230,7 +198,6 @@ function setSession(session, { keepPlace = false, follow = true } = {}) {
     if (ready && follow && session !== null) reconnect();
 }
 
-/** The `X-ST-Session` header's value: the tab's session, made here when it has none; `none` until it has one. */
 export function sessionHeaderValue() {
     const held = tabSession();
     if (held !== null) return held;
@@ -241,28 +208,21 @@ export function sessionHeaderValue() {
 }
 
 /**
- * The tab's session moved (it may have just been made).
  * @param {string} session
  */
 export function sessionMoved(session) {
     setSession(session, { keepPlace: session === tabSession() });
 }
 
-/**
- * The server says the tab's session was deleted: the tab has none.
- */
 export function sessionGone() {
     setSession(null);
 }
 
-/** Response headers the server answers a request's session with: the session it moved (made on a tab's first
- * move), and that the session the request named was deleted. */
 export const SESSION_MOVED_HEADER = 'X-ST-Session-Moved';
 export const SESSION_GONE_HEADER = 'X-ST-Session-Gone';
 
 /**
- * Takes what an answer says of the tab's session.
- * @param {(name: string) => string | null | undefined} header Reads a response header.
+ * @param {(name: string) => string | null | undefined} header
  */
 export function takeSessionAnswer(header) {
     if (header(SESSION_GONE_HEADER)) sessionGone();
@@ -273,8 +233,6 @@ export function takeSessionAnswer(header) {
 let observing = false;
 
 /**
- * Reads every answer's session headers, whoever made the request (extensions and upstream code send the tab's
- * session through `getRequestHeaders()` too): `fetch` answers, and jQuery's when it is there.
  * @param {any} [scope]
  */
 export function observeSessionAnswers(scope = globalThis) {
@@ -298,10 +256,8 @@ export function observeSessionAnswers(scope = globalThis) {
 }
 
 /**
- * Forks `from` for this tab: a new session from where the tab last was in it, with its current chats. A session
- * the server doesn't have (never stored, or deleted) leaves the tab a new one of its own.
  * @param {string} from
- * @param {boolean} [newToken] The tab takes a new token with the fork (another tab has its old one).
+ * @param {boolean} [newToken]
  */
 async function forkFrom(from, newToken = false) {
     const { length, cursor } = tabPlace();
@@ -327,17 +283,11 @@ async function forkFrom(from, newToken = false) {
     setSession(session, { keepPlace: true });
 }
 
-// ---- telling tabs of this browser apart without Web Locks ----
-
 const CHANNEL_NAME = 'st-tab-token';
 /** @type {BroadcastChannel | null} */
 let channel = null;
 let leaving = false;
 
-/**
- * This tab shares its token with an earlier loaded live tab (a duplicate copied it): it takes a new token and forks
- * its session from where it is, and its stream follows with the new token.
- */
 async function leaveSharedToken() {
     if (leaving) return;
     leaving = true;
@@ -345,7 +295,6 @@ async function leaveSharedToken() {
         const session = tabSession();
         if (session === null) mintToken();
         else await forkFrom(session, true);
-        // setSession reconnects a tab that is ready and has a new session; any other stream still names the old token.
         if (!ready || session === null) reconnect();
     } catch (err) {
         console.error('Leaving a token shared with another tab failed:', err);
@@ -354,11 +303,6 @@ async function leaveSharedToken() {
     }
 }
 
-/**
- * Announces this tab's (session, token, load time) to the browser's other tabs, and answers theirs. A tab that hears
- * its own token from a tab loaded before it (ties: the larger random number) is the duplicate and leaves the token.
- * Only where there are no Web Locks, which cover this on their own.
- */
 function watchSharedToken() {
     if (locks() || typeof globalThis.BroadcastChannel === 'undefined') return;
     const loaded = Date.now();
@@ -378,11 +322,9 @@ function watchSharedToken() {
     say('hello');
 }
 
-// ---- the changes stream ----
-
 /**
  * @typedef {object} StreamHandlers
- * @property {(message: any) => void} message A frame not about the tab's session.
+ * @property {(message: any) => void} message
  * @property {() => void} open
  * @property {() => void} error
  */
@@ -414,13 +356,12 @@ function streamUrl() {
     const p = new URLSearchParams({ token: tabToken() });
     const session = tabSession();
     if (session !== null) p.set('session', session);
-    // Only a tab starting up is given a session; one left with none (its session deleted) makes its own.
     else if (!ready || streamMissing) p.set('claim', '1');
     return `/api/characters/changes/stream?${p}`;
 }
 
 /**
- * @param {boolean} [isRebuild] Not the tab's first stream, nor one following its session.
+ * @param {boolean} [isRebuild]
  */
 function connect(isRebuild = false) {
     const url = streamUrl();
@@ -446,8 +387,6 @@ function connect(isRebuild = false) {
     es.onerror = () => {
         if (source !== es) return;
         deliver('error');
-        // The browser reconnects to the same URL; one it gave up on (closed), or one not naming the session the tab
-        // holds now (a fresh tab's, given its session), is rebuilt here.
         if (named === tabSession() && es.readyState !== EventSource.CLOSED) return;
         es.close();
         if (isRebuild && !opened) failedTries++;
@@ -463,11 +402,7 @@ function reconnect() {
     connect();
 }
 
-/**
- * The new page's hold on this stream (public/scripts/new-ui.js attaches it when the new page starts): the views the
- * server pushes, and each (re)connect.
- * @type {{ views: (views: unknown[]) => void, connected: () => void } | null}
- */
+/** @type {{ views: (views: unknown[]) => void, connected: () => void } | null} */
 let newPage = null;
 
 /** @param {{ views: (views: unknown[]) => void, connected: () => void }} handlers */
@@ -476,7 +411,6 @@ export function attachNewPage(handlers) {
 }
 
 /**
- * Takes a frame about the tab's session; false for any other.
  * @param {any} message
  */
 function takeSessionFrame(message) {
@@ -495,7 +429,6 @@ function takeSessionFrame(message) {
             streamMissing = false;
             gotSession?.();
             gotSession = null;
-            // A (re)connected stream: the server may not know what the new page shows (it restarted).
             newPage?.connected();
             return true;
         }
@@ -517,8 +450,7 @@ function takeSessionFrame(message) {
 }
 
 /**
- * Gives the tab its session (see the top of this file), opening its changes stream. Requests wait for it.
- * @param {() => Record<string, string>} headers The page's request headers, for the fork's request.
+ * @param {() => Record<string, string>} headers
  * @returns {Promise<void>}
  */
 export function prepareTabSession(headers) {
@@ -549,7 +481,6 @@ export function prepareTabSession(headers) {
 }
 
 /**
- * Hands the changes stream's other frames, and its opens and errors, to `h` (those before it are handed now).
  * @param {StreamHandlers} h
  */
 export function onChangeStream(h) {

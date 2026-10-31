@@ -2,10 +2,9 @@ import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
 /**
- * Puts a textarea in the page, with listeners that record what reaches it and the document, and mounts an editor.
  * @param {import('@playwright/test').Page} page
  * @param {string} value
- * @param {string} [style] Inline style for the textarea.
+ * @param {string} [style]
  */
 async function mountOnTestTextarea(page, value, style = '') {
     await page.evaluate(async ({ value, style }) => {

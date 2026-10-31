@@ -4,13 +4,8 @@ import { FIELDS, VIEW, samplerSelectOf, zenOf } from '../protocol.ts';
 import type { Field, Level, Range, SamplerSelect, SettingsView } from '../protocol.ts';
 import { useUi } from '@st/page/context';
 
-// The AI response configuration panel's controls, each bound to a field's declaration (packages/protocol/src/
-// settings.ts) and its value in the server's settings view. The sections lay them out as the old markup did; an edit
-// is an action, and the view the server answers redraws the control.
-
 const byId = new Map(FIELDS.map((field) => [field.id, field]));
 
-/** Whether something shown for these text generation backends (or all but them) shows for this one. */
 export function forBackend(rule: Field['textgen'], backend: string): boolean {
     if (rule === undefined) return true;
     const types = 'only' in rule ? rule.only : rule.except;
@@ -18,19 +13,11 @@ export function forBackend(rule: Field['textgen'], backend: string): boolean {
     return 'only' in rule ? listed : !listed;
 }
 
-/**
- * What the sampler select says of something hidden by these sampler names: shown or not when the user chose the
- * samplers ("prioritize manual", with a list), else nothing (its backend decides).
- */
 export function bySamplerSelect(names: readonly string[] | undefined, select: SamplerSelect): boolean | undefined {
     if (names === undefined || !select.manual || select.shown.length === 0) return undefined;
     return names.some((name) => select.shown.includes(name));
 }
 
-/**
- * Whether a field shows for what the view's API, source and backend are now; the user's chosen samplers decide over
- * the backend, as the old page's sampler select did.
- */
 export function isShown(field: Field, api: SettingsView['api'], samplers?: SamplerSelect): boolean {
     if (field.api && !field.api.includes(api.main)) return false;
     if (field.family === 'cc' && field.sources && !field.sources.includes(api.source)) return false;
@@ -41,7 +28,6 @@ export function isShown(field: Field, api: SettingsView['api'], samplers?: Sampl
     return true;
 }
 
-/** A field's state as its controls show it, and its edits. */
 export function useField(id: string) {
     const field = byId.get(id);
     if (!field) throw new Error(`No settings field ${id}`);
@@ -53,12 +39,10 @@ export function useField(id: string) {
     return {
         field,
         value,
-        /** The value as a number (a control's), whatever it's stored as. */
         number: () => {
             const current = value();
             return typeof current === 'number' ? current : Number(current ?? 0);
         },
-        /** The value as a control's text (a select's numbers are its options' values as text). */
         text: () => {
             const current = value();
             return typeof current === 'string' ? current : typeof current === 'number' ? String(current) : '';
@@ -67,18 +51,14 @@ export function useField(id: string) {
             const shown = view();
             return !!shown && isShown(field, shown.api, samplerSelectOf(shown));
         },
-        /** Zen sliders on. */
         zen: () => view()?.zen === true,
-        /** The level the value comes from; 'unset' where a range above the defaults sets nothing. */
         level: (): Level | 'unset' | undefined => {
             const shown = view();
             if (!shown) return undefined;
             return shown.sources[field.path] ?? (shown.range.from === 'default' ? undefined : 'unset');
         },
         range,
-        /** Not editable: no view yet, or a range that ends at the defaults. */
         disabled: () => (view()?.range.to ?? 'default') === 'default',
-        /** A chat's level is edited, and it sets this field: its value can be taken away. */
         unsettable: () => {
             const shown = view();
             return (
@@ -88,7 +68,6 @@ export function useField(id: string) {
             );
         },
         refusal,
-        /** Sends an edit; refused, `restore` puts the control back to the server's value, and the refusal shows. */
         set: async (next: unknown, restore: () => void) => {
             setRefusal(null);
             const result = await client.send('settings.set', { path: field.path, value: next });
@@ -104,14 +83,9 @@ export function useField(id: string) {
 
 export type FieldState = ReturnType<typeof useField>;
 
-/**
- * A field's block: drawn only while the field shows, colored by the level its value comes from, with why an edit was
- * refused under it.
- */
 export function FieldBlock(props: {
     id: string;
     class?: string;
-    /** The block's own id, where the old markup had one (its CSS selects it). */
     blockId?: string;
     children: (field: FieldState) => JSX.Element;
 }) {
@@ -131,7 +105,6 @@ export function FieldBlock(props: {
     );
 }
 
-/** The button that takes a chat level's value of a field away (shown only where there's one to take). */
 export function UnsetButton(props: { field: FieldState }) {
     const { t } = useUi();
     return (
@@ -146,11 +119,6 @@ export function UnsetButton(props: { field: FieldState }) {
     );
 }
 
-/**
- * Keeps a number input on its field: its range, then its value, set together whenever either changes. Set apart
- * (attributes compared one by one), an input whose min rose past its value clamped it, and the same value wasn't set
- * again once the min came back down.
- */
 function numeric(field: FieldState) {
     return (input: HTMLInputElement) => {
         createRenderEffect(() => {
@@ -168,26 +136,18 @@ function numeric(field: FieldState) {
     };
 }
 
-/** A number input stepped by the mouse wheel while it's focused, as the old page's were (dom-handlers.js). */
 function wheelStep(field: FieldState, input: HTMLInputElement, event: WheelEvent) {
     if (document.activeElement !== input) return;
     event.preventDefault();
-    // A step of 'any' or none is 1, as the browser's own arrows take it.
     const step = input.step === '' || input.step === 'any' ? 1 : Number(input.step);
     const { min, max } = field.range();
     let next = Number(input.value) + (event.deltaY < 0 ? step : -step);
     if (min !== undefined) next = Math.max(min, next);
     if (max !== undefined) next = Math.min(max, next);
-    // As many decimals as the step has, so 0.1 + 0.2 doesn't send 0.30000000000000004.
     const decimals = (String(step).split('.')[1] ?? '').length;
     void field.set(Number(next.toFixed(decimals)), () => (input.value = String(field.number())));
 }
 
-/** A slider with its number box, as the old range blocks (the box's id is the old counter's). */
-/**
- * A slider with its number box, as the old range blocks (the box's id is the old counter's); a zen slider instead
- * with zen sliders on. `look` is the old markup's: a range block's, or text generation's neo-range classes.
- */
 export function Slider(props: {
     field: FieldState;
     counterId: string;
@@ -306,12 +266,10 @@ export function Checkbox(props: { field: FieldState }) {
     );
 }
 
-/** A select of the field's options; their labels are translated by key where the old markup had one. */
 export function Select(props: {
     field: FieldState;
     class?: string;
     keys?: Record<string, string>;
-    /** Off for a reason besides the field's own (another field's value). */
     disabled?: boolean;
 }) {
     const { t } = useUi();
@@ -339,7 +297,6 @@ export function Select(props: {
     );
 }
 
-/** A text area; an edit is sent when it's left (the maximized editor sends its own). */
 export function TextArea(props: {
     field: FieldState;
     class?: string;
@@ -365,7 +322,6 @@ export function TextArea(props: {
     );
 }
 
-/** One radio of a choice field, under its old id. */
 export function Radio(props: { field: FieldState; index: number; name: string }) {
     const field = () => props.field;
     const option = () => field().field.options?.[props.index];
@@ -385,17 +341,11 @@ export function Radio(props: { field: FieldState; index: number; name: string })
     );
 }
 
-/**
- * A zen slider (the old page's CreateZenSliders): a track whose handle shows the value (Off at the field's off
- * value), dragged across `steps` stops or through named values, or typed into. The field's old id stays on a hidden
- * range input holding the value, for extensions that read it.
- */
 function ZenSlider(props: { field: FieldState; unlocked: boolean }) {
     const { t } = useUi();
     const field = () => props.field;
     const zen = () => zenOf(field().field.id);
     const values = () => (props.unlocked ? zen().unlockedValues : undefined) ?? zen().values;
-    /** Where the handle is while it's dragged (the value isn't sent until it's let go). */
     const [dragged, setDragged] = createSignal<number | null>(null);
     const range = () => {
         const named = values();
@@ -403,7 +353,6 @@ function ZenSlider(props: { field: FieldState; unlocked: boolean }) {
         const { min = 0, max = 1 } = field().range();
         return { min, max, step: (max - min) / zen().steps };
     };
-    /** The handle's position for a value: its index among named values, else the value. */
     const positionOf = (value: number) => {
         const named = values();
         if (!named) return value;
@@ -487,10 +436,6 @@ function ZenSlider(props: { field: FieldState; unlocked: boolean }) {
     );
 }
 
-/**
- * A text area holding JSON: what's typed is sent parsed, when it's left (empty is nothing). Text that isn't JSON
- * isn't sent, and stays as typed with why.
- */
 export function JsonArea(props: { field: FieldState; class?: string; rows?: number; placeholder?: string }) {
     const { t } = useUi();
     const field = () => props.field;
@@ -520,7 +465,6 @@ export function JsonArea(props: { field: FieldState; class?: string; rows?: numb
                         }
                     }
                     setInvalid(false);
-                    // Refused, what was typed stays to be fixed: the refusal says why.
                     void field().set(parsed, () => {});
                 }}
             />

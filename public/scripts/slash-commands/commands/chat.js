@@ -100,7 +100,6 @@ export function registerChatCommands() {
                     return resolve('');
                 };
                 eventSource.once(event_types.CHAT_CHANGED, eventCallback);
-                // Not awaited: resolution comes from the CHAT_CHANGED listener above.
                 void closeCurrentChat();
                 setTimeout(() => {
                     reject(t`Failed to open temporary chat`);
@@ -115,8 +114,6 @@ export function registerChatCommands() {
         name: 'forcesave',
         callback: async function () {
             await saveSettings();
-            // What the page holds that differs from what is stored (an extension's change to `chat` in place, the
-            // chat's metadata) is stored, as upstream's /forcesave saves the whole chat.
             await storePageChatChanges();
             toastr.success(t`Chat and settings saved.`);
             return '';

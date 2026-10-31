@@ -1,76 +1,44 @@
 import * as v from 'valibot';
 import type { ActionSchemas } from '@st/protocol';
 
-// The settings the AI response configuration panel shows, as declarations: each field's control, label, range,
-// group and when it's shown come from here (the server validates a change against its field; the page draws the
-// panel from these). Taken from the old panel's markup and tables (public/index.html, chat-completion-defaults.js,
-// textgen-setting-names.js), which they replace.
-
-/** A field's control. `json`: a text area holding JSON (the value is what it parses to; empty is null). */
 export type FieldKind = 'range' | 'number' | 'checkbox' | 'select' | 'text' | 'choice' | 'json';
 
 export type Field = {
-    /** The old control's id: kept on the new one, as extensions select it by id. */
     id: string;
-    /** Where the value is, in upstream's settings shape. */
     path: string;
     kind: FieldKind;
-    /** The label's text in English (the translations' key). */
     label: string;
     tip?: string;
     min?: number;
     max?: number;
     step?: number;
-    /** A select's or a choice's values. */
     options?: { value: string | number; label: string }[];
-    /** A choice's radio inputs' ids, one per option (kept, as the field's id is). */
     inputs?: string[];
     family: 'cc' | 'textgen' | 'common';
-    /** The group it's drawn in (a heading over it). */
     group?: { id: string | null; label: string };
-    /** Chat completion: the sources it's shown for. */
     sources?: string[];
-    /** Text generation: the backends it's shown for, or all but these. */
     textgen?: { only: string[] } | { except: string[] };
-    /** Text generation: the sampler names the user can hide it by (the sampler select). */
     samplers?: string[];
-    /** The APIs it's shown for (shared fields). */
     api?: string[];
-    /** Its range follows the context or response limits (raised when the user unlocks them). */
     limits?: 'context' | 'response';
-    /** Lab mode (power_user.enableLabMode) takes its range's limits away (see labRangeOf()). */
     lab?: true;
 };
 
-/** A field's range in lab mode. */
 export const LAB_RANGE = { min: -99999, max: 99999, step: 0.001 } as const;
 
-/**
- * A field's range in lab mode, or none where lab mode leaves it alone. The old page freed every number of the
- * advanced settings (all of text generation's, and the fields marked `lab`), and the response length within whole
- * tokens (switchLabMode in power-user.js).
- */
 export function labRangeOf(field: Field): Range | undefined {
     if (field.id === 'amount_gen') return { min: 1, max: 99999, step: 1 };
     const numeric = field.kind === 'range' || field.kind === 'number';
     return numeric && (field.lab === true || field.family === 'textgen') ? { ...LAB_RANGE } : undefined;
 }
 
-/**
- * How a slider steps and shows its value with zen sliders on (power_user.enableZenSliders): `steps` across its range,
- * `decimals` shown, the value shown as Off, or named `values` to step through (their first is Off, `all` is All).
- * From the old page's CreateZenSliders (power-user.js).
- */
 export type Zen = {
     steps: number;
     decimals: number;
     off?: number;
     values?: readonly number[];
-    /** `values` when the context is unlocked (power_user.max_context_unlocked). */
     unlockedValues?: readonly number[];
-    /** The value shown as All (among `values`). */
     all?: number;
-    /** Among `values`, where the handle sits when the stored value isn't one of them. */
     standIn?: number;
 };
 
@@ -120,7 +88,6 @@ const ZEN_OFF: [number, string[]][] = [
     ],
 ];
 
-/** A slider's zen stepping, by its field's id. */
 export function zenOf(id: string): Zen {
     const rules = ZEN_RULES.filter(([ruleId]) => ruleId === id).map(([, rule]) => rule);
     const off = ZEN_OFF.find(([, ids]) => ids.some((name) => `${name}_textgenerationwebui` === id))?.[0];
@@ -129,22 +96,13 @@ export function zenOf(id: string): Zen {
 
 export type SamplerSelect = { manual: boolean; shown: readonly string[] };
 
-/**
- * The families the new page shows: their fields are the server's (only the actions below write them), and the old
- * page's controls for them are gone. A family joins when its old controls go.
- */
 export const SERVER_FAMILIES: readonly Field['family'][] = ['cc', 'textgen', 'common'];
 
-/** The context and response limits, by whether the user unlocked them (power_user.max_context_unlocked). */
 export const LIMITS = {
     context: { locked: { min: 512, max: 8192, step: 64 }, unlocked: { min: 512, max: 512 * 1024, step: 512 } },
     response: { locked: { min: 16, max: 2048, step: 1 }, unlocked: { min: 16, max: 64 * 1024, step: 1 } },
 } as const;
 
-/**
- * A field's range now. A context-limited field other than the context size itself keeps its own minimum and step
- * (a repetition range's 0 and -1 mean something) and takes only the maximum.
- */
 export type Range = { min: number | undefined; max: number | undefined; step: number | undefined };
 
 export function rangeOf(field: Field, unlocked: boolean): Range {
@@ -1665,10 +1623,6 @@ export const FIELDS: readonly Field[] = [
     },
 ];
 
-/**
- * The sampler select's names: what the user can show or hide (a field's samplers, and the old page's blocks it
- * hides: logit bias and the sampler orders).
- */
 export const SAMPLER_NAMES: readonly string[] = [
     ...new Set([
         ...FIELDS.flatMap((field) => (field.family === 'textgen' ? (field.samplers ?? []) : [])),
@@ -1680,39 +1634,26 @@ export const SAMPLER_NAMES: readonly string[] = [
     ]),
 ].sort();
 
-/** The sampler select for one text generation backend: with `manual` on, the samplers in `shown` show, the rest don't. */
-/** The settings a tab shows: its chat's, over a range of levels. */
 export const VIEW = 'settings';
 
-/** Where a value can come from, farthest first (the server's settings document: LEVEL_POSITIONS). */
 export const LEVELS = ['default', 'preset', 'user', 'group', 'character'] as const;
 export type Level = (typeof LEVELS)[number];
 export type LevelRange = { from: Level; to: Level };
 
-/** By default a tab shows and edits the user's own settings, as without levels. */
 export const DEFAULT_RANGE: LevelRange = { from: 'default', to: 'user' };
 
 export type SettingsView = {
-    /** The chat whose settings these are (its character's or group's levels), or none. */
     context: { avatar: string } | { group: string } | null;
     range: LevelRange;
-    /** Each field's value, by its path. */
     values: Record<string, unknown>;
-    /** The level each value comes from within the range, by path; a path not here has the default's. */
     sources: Record<string, Exclude<Level, 'default'>>;
-    /** How many fields each level sets in this chat, whatever the range (a level the range leaves out shows it). */
     counts: Partial<Record<Level, number>>;
-    /** The range now of each field whose range isn't its declaration's (limits, the model, lab mode), by its id. */
     ranges: Record<string, Range>;
-    /** What decides which fields are shown: the API, chat completion's source, text generation's backend. */
     api: { main: string; source: string; textgen: string };
-    /** Zen sliders on (power_user.enableZenSliders): sliders step as zenOf() says and show their value in the handle. */
     zen: boolean;
-    /** The user's sampler selects, by text generation backend (one there's none for shows its backend's own). */
     samplerSelects: Record<string, SamplerSelect>;
 };
 
-/** A backend's sampler select (its own samplers when the user has none); the backend now's by default. */
 export function samplerSelectOf(
     view: Pick<SettingsView, 'samplerSelects' | 'api'>,
     backend: string = view.api.textgen,
@@ -1721,45 +1662,25 @@ export function samplerSelectOf(
 }
 
 export const actions = {
-    /** Sets a field at the range's top level (the server routes it: a level's statement, a preset, the user's own). */
     'settings.set': v.object({ path: v.string(), value: v.unknown() }),
-    /** Takes a field's value away at the range's top level: what's under it shows again. */
     'settings.unset': v.object({ path: v.string() }),
-    /** Sets a field to its default (the default level's value) at the range's top level. */
     'settings.reset': v.object({ path: v.string() }),
-    /** Which levels the tab shows and edits. */
     'settings.range': v.object({ from: v.picklist(LEVELS), to: v.picklist(LEVELS) }),
-    /**
-     * The context size to a model's (what a text backend says its model takes), unlocking the context when it's past
-     * the locked limit, in one write.
-     */
     'settings.fitContext': v.object({ size: v.pipe(v.number(), v.integer(), v.minValue(1)) }),
-    /** Every text generation sampler to its neutral value, at the range's top level, in one write. */
     'settings.neutralize': v.object({}),
-    /**
-     * A text generation backend's sampler select (the backend now's, unless `backend` names another): what it shows,
-     * and whether that decides (`manual`).
-     */
     'settings.samplers': v.object({
         backend: v.optional(v.string()),
         manual: v.optional(v.boolean()),
         shown: v.optional(v.array(v.picklist(SAMPLER_NAMES))),
     }),
-    /** A backend's sampler select back to the backend's own (nothing chosen). */
     'settings.samplers.reset': v.object({ backend: v.optional(v.string()) }),
-    /**
-     * The sampler select as the old page kept it in the browser, by backend: taken for each backend the user has none
-     * for yet (once, after which the browser's copy goes).
-     */
     'settings.samplers.import': v.record(v.string(), v.object({ manual: v.boolean(), shown: v.array(v.string()) })),
 } satisfies ActionSchemas;
 
 const byPath = new Map(FIELDS.map((field) => [field.path, field]));
 
-/** The field at a path, if the panel has one there. */
 export const fieldAt = (path: string): Field | undefined => byPath.get(path);
 
-/** Why a value can't be a field's, or null when it can. `range` is the field's range now (rangeOf()). */
 export function refusalOf(field: Field, value: unknown, range: Range): string | null {
     switch (field.kind) {
         case 'range':

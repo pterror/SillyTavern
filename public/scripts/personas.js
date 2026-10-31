@@ -156,10 +156,6 @@ export async function setUserAvatar(imgfile, { toastPersonaNameChange = true, na
     await eventSource.emit(event_types.PERSONA_CHANGED, user_avatar);
 }
 
-/**
- * Retriggers the first message to reload it from the char definition (upstream's export). Macros in the opening are
- * substituted at draw time, and a greeting isn't stored until someone replies, so a redraw is all it takes.
- */
 export async function retriggerFirstMessageOnEmptyChat() {
     if (chat[0]) updateMessageBlock(0, chat[0]);
 }
@@ -238,9 +234,6 @@ function getUserAvatarBlock(avatarId) {
     template.attr('data-avatar-id', avatarId);
     template.find('.avatar').attr('data-avatar-id', avatarId).attr('title', avatarId);
     template.toggleClass('default_persona', avatarId === power_user.default_persona);
-    // No longer forcing a `t=` cache-bust for Firefox here: the thumbnail route now serves versioned,
-    // self-correcting URLs (src/endpoints/thumbnails.js), which fixes the "Firefox won't refresh a changed
-    // avatar" problem this used to work around at the source instead of per call site.
     const avatarUrl = getThumbnailUrl('persona', avatarId);
     template.find('img').attr('src', avatarUrl);
 
@@ -267,30 +260,6 @@ async function addMissingPersonas(avatarsList) {
     }
 }
 
-/**
- * Registers the personaStore.onChange subscriber that redraws the persona list after a title/name edit -
- * consumer-side half of the personas migration (mutation side landed in fffdc22da..d04552a8c), same pattern as
- * charactersStore's fuse-index subscriber (595d66e02) and groupsStore's member-list subscriber (cd6992095).
- *
- * Deliberately narrow: only fires on `updated` changes whose patch touches `title` or `name` - the two fields
- * edited by editPersonaTitle() and renamePersona(), the only two call sites among the ~17 getUserAvatars()
- * callers in this file that are a single personaStore mutation immediately followed by a single redraw, with
- * no other mutation or redraw in between. Everywhere else was left on its manual call:
- * - getUserAvatars() itself (via addMissingPersonas()) can call personaStore.create() mid-render for personas
- *   missing a settings record - a `created`-filtered subscriber would refire while the outer call is still
- *   running (addMissingPersonas() creates while getUserAvatars() is mid-fetch/render), a genuine re-entrant
- *   mess. That rules out every create-then-redraw site here (convertCharacterToPersona, duplicatePersona,
- *   createPersonaCallback, migrateNonPersonaUser, the ambiguous create-or-update branch in
- *   convertCharacterToPersona) - not just the ones that are unambiguously `created`.
- * - updatePersonaCallback (slash-command persona-update) and onPersonasRestoreInput (backup-restore import)
- *   each do several personaStore mutations - some of which do touch `title`/`name` - before their own single
- *   manual redraw at the end. This subscriber's field filter can't tell those mutations apart from
- *   editPersonaTitle's/renamePersona's, so it *will* also fire mid-sequence there, on top of their existing
- *   manual call. That's a known, accepted trade-off (a few redundant redraws, not incorrect data) rather than
- *   the reentrancy risk above - flagging it here since it's a real interaction, not a hypothetical one.
- * - toggleDefaultPersona's redraw follows a power_user.default_persona write, not a personaStore mutation, so
- *   no personaStore change ever fires for it - nothing to subscribe to.
- */
 function registerPersonaListRedraw() {
     personaStore.onChange((change) => {
         if (change.op !== 'updated') {
@@ -323,8 +292,6 @@ export async function getUserAvatars(doRender = true, openPageAt = '') {
             return [];
         }
 
-        // Hand the thumbnail route its `?v=` up front for every persona with a cached thumbnail already, so
-        // getThumbnailUrl() can skip its no-cache redirect hop.
         for (const [avatar, version] of Object.entries(data.thumbnailVersions ?? {})) {
             setThumbnailVersion('persona', avatar, version);
         }
@@ -605,7 +572,6 @@ export async function initPersona(avatarId, personaName, personaDescription, per
 export async function convertCharacterToPersona(characterId = null) {
     const ref = characterId === null ? getCurrentCharacter() : resolveCharacterRef(characterId);
     const avatar = ref?.avatar ?? (typeof characterId === 'string' ? characterId : undefined);
-    // The full card, since a held copy can be shallow and lack the description.
     const character = avatar ? await characterRepository.full(avatar) : undefined;
 
     const avatarUrl = character?.avatar;
@@ -667,10 +633,8 @@ export async function convertCharacterToPersona(characterId = null) {
 }
 
 /**
- * Asks about one character of a bulk conversion the way a file manager asks about a file that already exists: this
- * one, or every one like it from here on.
  * @param {string} title
- * @param {string} text Plain text; escaped here.
+ * @param {string} text
  * @param {string} yesText
  * @param {string} noText
  * @param {string} yesAllText
@@ -699,18 +663,14 @@ async function askForOneOfMany(title, text, yesText, noText, yesAllText, noAllTe
 }
 
 /**
- * Converts many characters to personas. Nothing is asked up front: a character whose persona already exists, or whose
- * description uses `{{char}}`/`{{user}}`, asks about itself when it comes up, with a choice that settles every later
- * one like it. Settings are saved once, at the end.
- * @param {AsyncIterable<string[]>} avatarBatches The characters, a batch of avatars at a time.
- * @param {(done: number) => void} [onProgress] Called after each batch with how many were looked at.
- * @returns {Promise<{ converted: number, skipped: number, failed: string[], cancelled: boolean }>} `failed` names
- *   each character that couldn't be converted (by avatar when its card couldn't be read).
+ * @param {AsyncIterable<string[]>} avatarBatches
+ * @param {(done: number) => void} [onProgress]
+ * @returns {Promise<{ converted: number, skipped: number, failed: string[], cancelled: boolean }>}
  */
 export async function convertCharactersToPersonas(avatarBatches, onProgress) {
-    /** @type {boolean|null} Overwrite every later existing persona (true), skip them all (false), or ask (null). */
+    /** @type {boolean|null} */
     let overwriteAll = null;
-    /** @type {boolean|null} The same for swapping macros. */
+    /** @type {boolean|null} */
     let swapAll = null;
     let converted = 0;
     let skipped = 0;
@@ -834,27 +794,27 @@ const countPersonaDescriptionTokens = debounce(async () => {
 /**
  * Updates the UI for the Persona Management page with the current persona values
  */
-/** Gets the description of the currently active persona. @returns {string} */
+/** @returns {string} */
 export function getPersonaDescription() {
     return personaStore.get(user_avatar)?.description ?? '';
 }
 
-/** Gets the prompt-injection position of the currently active persona's description. @returns {number} */
+/** @returns {number} */
 export function getPersonaDescriptionPosition() {
     return personaStore.get(user_avatar)?.position ?? persona_description_positions.IN_PROMPT;
 }
 
-/** Gets the at-depth injection depth of the currently active persona's description. @returns {number} */
+/** @returns {number} */
 export function getPersonaDescriptionDepth() {
     return personaStore.get(user_avatar)?.depth ?? DEFAULT_DEPTH;
 }
 
-/** Gets the at-depth injection role of the currently active persona's description. @returns {number} */
+/** @returns {number} */
 export function getPersonaDescriptionRole() {
     return personaStore.get(user_avatar)?.role ?? DEFAULT_ROLE;
 }
 
-/** Gets the lorebook bound to the currently active persona. @returns {string} */
+/** @returns {string} */
 export function getPersonaDescriptionLorebook() {
     return personaStore.get(user_avatar)?.lorebook ?? '';
 }
@@ -923,7 +883,6 @@ export function buildPersonaAvatarList(block, personas, { empty = true, interact
     buildAvatarList($(block), personaEntities, { empty: empty, interactable: interactable, highlightFavs: highlightFavs });
 }
 
-/** Counts draws of the persona connections list, so an older draw that waited on the server doesn't win. */
 let connectionsListDrawId = 0;
 
 /**
@@ -935,12 +894,10 @@ export function updatePersonaConnectionsAvatarList() {
     void drawPersonaConnectionsAvatarList();
 }
 
-/** {@link updatePersonaConnectionsAvatarList}'s draw. */
 async function drawPersonaConnectionsAvatarList() {
     const drawId = ++connectionsListDrawId;
     /** @type {PersonaConnection[]} */
     const connections = personaStore.get(user_avatar)?.connections ?? [];
-    // The page holds only some characters; the connected ones it doesn't hold are read in one request.
     const unheld = connections.filter(connection => connection.type === 'character' && !charactersStore.has(connection.id)).map(connection => connection.id);
     /** @type {Map<string, Character>} */
     let read = new Map();
@@ -1095,7 +1052,6 @@ async function editPersonaTitle(popup, avatarId, currentTitle) {
 
     if (!newTitle && currentTitle) {
         console.log(`Removed persona title for ${avatarId}`);
-        // List redraw is handled by the personaStore.onChange subscriber (see registerPersonaListRedraw()).
         personaStore.update(avatarId, { title: '' });
         saveSettingsDebounced('power_user.persona_data');
         await eventSource.emit(event_types.PERSONA_UPDATED, avatarId);
@@ -1103,7 +1059,6 @@ async function editPersonaTitle(popup, avatarId, currentTitle) {
     }
 
     if (newTitle !== currentTitle) {
-        // List redraw is handled by the personaStore.onChange subscriber (see registerPersonaListRedraw()).
         personaStore.update(avatarId, { title: newTitle });
         console.log(`Updated persona title for ${avatarId} to ${newTitle}`);
         saveSettingsDebounced('power_user.persona_data');
@@ -1135,7 +1090,6 @@ async function renamePersona(avatarId) {
         return false;
     }
 
-    // List redraw is handled by the personaStore.onChange subscriber (see registerPersonaListRedraw()).
     personaStore.update(avatarId, { name: newName });
     console.log(`Renamed persona ${avatarId} to ${newName}`);
 
@@ -1931,10 +1885,6 @@ export function getCurrentConnectionObj() {
 function onBackupPersonas() {
     const timestamp = new Date().toISOString().split('T')[0].replace(/-/g, '');
     const filename = `personas_${timestamp}.json`;
-    // Deliberately still reading power_user.personas/persona_descriptions (not personaStore) - this is the
-    // backup file's own external shape, which stays the old two-dict split on purpose (see power-user.js's
-    // compat-proxy comments) so a backup taken now can still be understood by onPersonasRestoreInput() (or a
-    // human reading the file) without needing to know about persona_data at all.
     const data = JSON.stringify({
         'personas': power_user.personas,
         'persona_descriptions': power_user.persona_descriptions,
@@ -1970,17 +1920,6 @@ async function onPersonasRestoreInput(e) {
     const avatarsList = await getUserAvatars(false);
     const warnings = [];
 
-    // The backup file's own shape is (deliberately) still the old two-dict split - `data.personas`/
-    // `data.persona_descriptions` - independent of how personas are stored internally now; a backup taken
-    // before this migration, or one taken after via onBackupPersonas() (which - being a read-only view over
-    // personaStore - still serializes to exactly this shape), both look the same here. What changed is *how*
-    // this merges them: originally this ran as two independent passes, each checking/writing its own separate
-    // dict. With personaStore merging both into one record, doing that as two passes would misfire - the first
-    // pass creating a persona (via just its name) would make the second pass's "does this id already exist"
-    // check for *descriptions* immediately true for that same id, so real description data from the backup
-    // would be silently skipped as "already exists" right after being created. So this now merges each
-    // backup id's name + description into one record in a single pass instead, against a snapshot of what
-    // existed *before* this restore started.
     const alreadyExisted = new Set(Object.keys(personaStore.getAll()));
 
     for (const [key, name] of Object.entries(data.personas)) {
@@ -2008,9 +1947,6 @@ async function onPersonasRestoreInput(e) {
         }
     }
 
-    // A persona_descriptions entry with no matching data.personas entry - same drift case
-    // migrateLegacyPersonaDicts() guards against on settings load - can't be imported (no name to import it
-    // under), same as the original two-pass version's behavior.
     for (const key of Object.keys(data.persona_descriptions)) {
         if (!(key in data.personas)) {
             warnings.push(`Persona for "${key}" does not exist, skipping`);
@@ -2074,7 +2010,6 @@ async function syncUserNameToPersona({ start = 0, end = chat.length - 1, quiet =
         }
     }
 
-    // Attributing a run of messages to a persona is one decision - one batched edit, not N.
     await chatOpEditMany(changed).catch(error =>
         console.error('Could not attribute those messages to this persona:', error));
     await reloadCurrentChat();
@@ -2116,9 +2051,6 @@ async function duplicatePersona(avatarId, { silent = false, select = false } = {
         role: descriptor?.role ?? DEFAULT_ROLE,
         lorebook: descriptor?.lorebook ?? '',
         title: descriptor?.title ?? '',
-        // Deliberately not copying `connections` - a duplicated persona isn't connected to whatever
-        // character/group the source persona was locked to, same as before this migration (the original
-        // object literal here never included a connections field either).
         connections: [],
     });
 
@@ -3094,11 +3026,6 @@ function registerPersonaSlashCommands() {
 export async function initPersonas() {
     registerPersonaListRedraw();
     registerPersonaSlashCommands();
-    // migrateNonPersonaUser() is a genuine write (creates + persists a persona record for the current user
-    // avatar) with no user gesture behind it if run unconditionally here on every boot. Defer it to the first
-    // time the user actually opens the Persona Management panel - virtually every persona interaction
-    // (rename, describe, delete, set image, sync name, switch avatar) lives inside that panel, so this is
-    // functionally "first real persona interaction" without needing to hook every mutator individually.
     $('#persona-management-button .drawer-toggle').one('click', () => {
         migrateNonPersonaUser().catch(err => console.error('Failed to migrate non-persona user on persona panel open:', err));
     });

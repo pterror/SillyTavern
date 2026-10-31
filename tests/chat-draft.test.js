@@ -9,7 +9,6 @@ import {
     releaseDraft,
 } from '../public/scripts/chat-draft.js';
 
-/** Minimal in-memory stand-in for localStorage's `{ getItem, setItem, removeItem }` surface. */
 function makeStorage(initial = {}) {
     const state = { ...initial };
     return {
@@ -27,8 +26,6 @@ describe('buildDraftStorageKey', () => {
     test('keys by the full type/id/chatId triple, not just chatId', () => {
         const key1 = buildDraftStorageKey(charContext);
         const key2 = buildDraftStorageKey(groupContext);
-        // Same chatId, different type/id - must not collide, since chat file names aren't
-        // guaranteed globally unique across characters/groups.
         expect(key1).not.toBe(key2);
     });
 

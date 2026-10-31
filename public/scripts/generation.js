@@ -60,14 +60,10 @@ import { pageMacroFacts, variablesCopy, withScratchVariables } from './macros/en
 /** @type {StreamingProcessor|null} */
 export let streamingProcessor = null;
 
-// Read directly by saveReply() (script.js) to stamp gen_started/gen_finished on the message it's
-// building - only ever assigned here (Generate()'s own start/continue-retiming logic).
 export let generation_started = new Date();
 
 export let abortController = new AbortController();
 
-// Read directly by getGeneratingModel() (script.js) for the 'koboldhorde' case - only ever assigned
-// here (Generate()'s own post-generation bookkeeping).
 export let kobold_horde_model = '';
 
 /** @param {AbortController} controller */
@@ -75,14 +71,10 @@ export function setAbortController(controller) {
     abortController = controller;
 }
 
-// Each stored message as the page last stored or loaded it, by its node_id: a frozen deep copy, so a change made to
-// the message in place (as upstream's code makes them, `chat[i].mes = ...`) or through updateMessage() shows against
-// it. The compat save (chat-compat-save.js) sends what differs from it, addressed by node id.
 /** @type {Map<string, ChatMessage>} */
 export const _messageSnapshots = new Map();
 
 /**
- * Records `message` as what is stored at `nodeId`.
  * @param {string} nodeId
  * @param {ChatMessage} message
  */
@@ -91,15 +83,12 @@ export function markStoredAs(nodeId, message) {
 }
 
 /**
- * Forgets what is stored at these nodes: the page no longer holds them (they left the chat, or the view let them go
- * while the tree keeps them), so the compat save never takes them for messages the page removed.
  * @param {(string|null|undefined)[]} nodeIds
  */
 export function forgetStored(nodeIds) {
     for (const id of nodeIds) if (typeof id === 'string') _messageSnapshots.delete(id);
 }
 
-/** The injections the page's own prompt build writes: the server's build writes them too, from the chat and settings. */
 const BUILD_INJECTIONS = new Set([inject_ids.AUTHORS_NOTE, inject_ids.PERSONA_DESCRIPTION, inject_ids.STORY_STRING, inject_ids.QUIET_PROMPT, inject_ids.DEPTH_PROMPT]);
 
 /** @param {string} key */
@@ -109,9 +98,6 @@ const isBuildInjection = key => BUILD_INJECTIONS.has(key)
     || key.startsWith(inject_ids.CUSTOM_WI_OUTLET(''));
 
 /**
- * What the page's extensions and scripts inject into the prompt now (`/inject`, an extension's setExtensionPrompt()),
- * sent with a generation the server builds (src/page-injections.js): they run here. One whose filter says no, now,
- * is left out, as the page's own build leaves it out.
  * @returns {Promise<Record<string, { value: string, position: number, depth: number, scan: boolean, role: number }>>}
  */
 async function pageInjections() {
@@ -126,7 +112,6 @@ async function pageInjections() {
 }
 
 /**
- * Whether `message` is as last stored at its node_id (nothing changed on the page since).
  * @param {ChatMessage|null|undefined} message
  */
 export function isAsStored(message) {
@@ -136,7 +121,6 @@ export function isAsStored(message) {
 }
 
 export function _snapshotMessages() {
-    // The reply being generated isn't stored as the page has it: its message keeps the snapshot it had.
     const pending = replyInFlightIndex();
     const pendingNode = pending >= 0 ? chat[pending]?.node_id : undefined;
     const kept = isStoredNodeId(pendingNode) ? _messageSnapshots.get(/** @type {string} */ (pendingNode)) : undefined;
@@ -148,19 +132,11 @@ export function _snapshotMessages() {
     if (kept !== undefined) _messageSnapshots.set(/** @type {string} */ (pendingNode), kept);
 }
 
-/**
- * The reply a generation is producing, from its request until the page takes the node the server stored it at
- * (`_stampAssistantNodeId()`) or learns it wasn't stored (`_markReplyNotSaved()`): where it is in `chat`, and the node
- * the message there named when the generation started (the alternative a swipe replaces, the message a continue
- * lengthens; null for a new reply). Until then the page's copy of that message isn't what is stored: the server
- * stores it, and the compat save leaves it alone.
- * @typedef {{ index: number, anchor: string | null }} ReplyInFlight
- */
+/** @typedef {{ index: number, anchor: string | null }} ReplyInFlight */
 /** @type {ReplyInFlight | null} */
 let replyInFlight = null;
 
 /**
- * Where the reply being generated is in `chat`, or -1 when none is (or its message is no longer the one it was).
  * @returns {number}
  */
 export function replyInFlightIndex() {
@@ -172,9 +148,6 @@ export function replyInFlightIndex() {
 }
 
 /**
- * Whether the message at `mesId` is a reply still being generated (its text still arriving, or not yet on the node the
- * server stores it at). Nothing edits it until it is: an edit would land on the node the message named before (the
- * alternative an overswipe replaces) or be overwritten by the reply.
  * @param {number} mesId
  */
 export function isReplyGenerating(mesId) {
@@ -182,16 +155,10 @@ export function isReplyGenerating(mesId) {
     return streamingProcessor !== null && streamingProcessor.messageId === mesId && !streamingProcessor.isFinished;
 }
 
-/**
- * The alternative an overswipe generates a reply beside, while its message shows the new slot: the message names no
- * node then (the slot has none yet), so the page never addresses the swiped-from alternative by mistake; the request
- * names it from here.
- * @type {{ index: number, nodeId: string } | null}
- */
+/** @type {{ index: number, nodeId: string } | null} */
 let swipeAnchor = null;
 
 /**
- * An overswipe at `mesId` begins: the reply goes beside `nodeId`, the alternative swiped from.
  * @param {number} mesId
  * @param {string} nodeId
  */
@@ -199,13 +166,9 @@ export function beginSwipeReply(mesId, nodeId) {
     swipeAnchor = { index: mesId, nodeId };
 }
 
-// Whether the last generation sent the server an itemization to store with its reply.
 let replyItemizationSent = false;
 
 /**
- * Puts the reply at `mesId` on the node the server stored it at (and marks it as stored, so the compat save sees
- * nothing to write again). Done as soon as the node is known, before the reply's events (MESSAGE_RECEIVED, ...) are
- * emitted, so whatever handles them addresses the reply's own node.
  * @param {number} mesId
  * @param {string} nodeId
  */
@@ -213,8 +176,6 @@ export function stampReplyNode(mesId, nodeId) {
     if (!nodeId) return;
     replyInFlight = null;
     swipeAnchor = null;
-    // `mesId` may be `-1` for an empty chat, and TS's array element type (no noUncheckedIndexedAccess) doesn't know
-    // that - cast explicitly so the out-of-bounds guard below is real.
     const msg = /** @type {ChatMessage | undefined} */ (chat[mesId]);
     if (msg == null || msg.is_user === true) return;
     const selected = msg.swipe_id ?? 0;
@@ -230,8 +191,6 @@ export function stampReplyNode(mesId, nodeId) {
         if (replyItemizationSent) newSwipeInfo[selected].extra = { ...newSwipeInfo[selected].extra, [ITEMIZED_PROMPT_FLAG]: true };
         updates.swipe_info = newSwipeInfo;
     }
-    // Stamped once already (before the reply's events): what is stored there was recorded then, and a change the
-    // reply's handlers made in place since is the page's to store (the compat save after the generation).
     const already = msg.node_id === nodeId;
     updateMessage(mesId, updates);
     const stamped = /** @type {ChatMessage | undefined} */ (chat[mesId]);
@@ -246,16 +205,12 @@ function _stampAssistantNodeId(nodeId) {
     stampReplyNode(chat.length - 1, nodeId);
 }
 
-// The generation whose reply the server just said it couldn't store, until the reply is marked.
 /** @type {string|null} */
 let notSavedGenerationId = null;
 window.addEventListener(REPLY_NOT_SAVED_EVENT, (/** @type {any} */ event) => {
     notSavedGenerationId = event.detail?.generationId ?? null;
 });
 
-// Marks the reply that just arrived as not stored (`extra.reply_not_saved` = its generation id), when
-// the server said so. Nothing on the page writes it (rawActionWritesFor() and a compat chat save stop at it), and a
-// send after it is refused until the server stores it (REPLY_STORED_EVENT below).
 function _markReplyNotSaved() {
     replyInFlight = null;
     swipeAnchor = null;
@@ -268,7 +223,6 @@ function _markReplyNotSaved() {
     updateMessage(mesId, { extra: { ...msg.extra, reply_not_saved: generationId } });
 }
 
-// The server stored a reply it couldn't store at first: the reply takes its node and loses the mark.
 window.addEventListener(REPLY_STORED_EVENT, (/** @type {any} */ event) => {
     const { generationId, node_id: nodeId, mes } = event.detail ?? {};
     const mesId = chat.findIndex(m => m.extra?.reply_not_saved === generationId);
@@ -294,13 +248,10 @@ window.addEventListener(REPLY_STORED_EVENT, (/** @type {any} */ event) => {
 });
 
 /**
- * Shows a generated reply as the server stored it, in place of the page's own copy: its text and the reasoning
- * fields of its `extra` (the server splits the reasoning off the text; the page doesn't). For a reply about to be
- * announced (MESSAGE_RECEIVED), `received` keeps the page's reasoning auto-parse off it.
  * @param {number} mesId
  * @param {{mes: string, extra?: Record<string, any>}|null|undefined} stored
  * @param {{received?: boolean}} [options]
- * @returns {ChatMessage|null} The message as now shown, or null when there was nothing to show.
+ * @returns {ChatMessage|null}
  */
 export function applyStoredReply(mesId, stored, { received = false } = {}) {
     if (!stored || typeof stored.mes !== 'string') return null;
@@ -310,7 +261,6 @@ export function applyStoredReply(mesId, stored, { received = false } = {}) {
     /** @param {Record<string, any>|undefined} base */
     const withStored = (base) => {
         const extra = { ...(base ?? {}), ...storedExtra };
-        // The page's copy may carry a type its own streaming display gave the reasoning; the stored reply's is the one.
         if (!('reasoning_type' in storedExtra)) delete extra.reasoning_type;
         return extra;
     };
@@ -334,7 +284,6 @@ export function applyStoredReply(mesId, stored, { received = false } = {}) {
 }
 
 /**
- * Shows a stopped reply as the server stored it (its text and reasoning) on the last message.
  * @param {string|null|undefined} mes
  * @param {Record<string, any>|null|undefined} extra
  */
@@ -345,18 +294,12 @@ function _showStoredReplyText(mes, extra) {
     if (updated) updateMessageBlock(mesId, updated);
 }
 
-// Extracted from StreamingProcessor.onFinishStreaming() (script.js), which still runs the rest of that
-// method (finalizeIntermediaryMessage(), the auto-swipe check, playMessageSound()) - this is just its
-// save/persist decision, so the DOM-coupled class can stay in script.js while this invariant-critical
-// branch is checked under strict null checks with the rest of this file.
 /** @param {{assistantNodeId?: string|null}} params */
 export async function finishStreamedReplyPersistence({ assistantNodeId }) {
     const stop = await takeStreamStopResult();
     if (isStoredNodeId(assistantNodeId)) {
         _stampAssistantNodeId(assistantNodeId);
     } else if (stop !== undefined) {
-        // A stopped reply: the server stored exactly what it streamed up to the stop, which can be a
-        // little more than arrived here, so the message takes the stored text.
         if (stop && isStoredNodeId(stop.node_id)) {
             _showStoredReplyText(stop.mes, stop.extra);
             _stampAssistantNodeId(stop.node_id);
@@ -367,49 +310,39 @@ export async function finishStreamedReplyPersistence({ assistantNodeId }) {
             _markReplyNotSaved();
         }
     } else {
-        // The server stores every reply that lands in the chat. No node id means it couldn't (and said
-        // so, which marks the reply), or the chat isn't stored at all (no character); the page doesn't
-        // write it either way.
         _markReplyNotSaved();
     }
 }
 
 /**
  * @typedef {object} JsonSchema
- * @property {string} name Name of the schema.
- * @property {object} value JSON schema value.
- * @property {string} [description] Description of the schema.
- * @property {boolean} [strict] If true, the schema will be used in strict mode, meaning that only the fields defined in the schema will be allowed.
- * @property {boolean} [returnInvalid] If true, a string that can't be parsed as a JSON will be returned as is, instead of an empty object.
- *
+ * @property {string} name
+ * @property {object} value
+ * @property {string} [description]
+ * @property {boolean} [strict]
+ * @property {boolean} [returnInvalid]
  * @typedef {object} GenerateOptions
- * @property {boolean} [automatic_trigger] If the generation was triggered automatically (e.g. group auto mode).
- * @property {boolean} [force_name2] If a char name should be forced to add to the prompt's last line (Text Completion, non-Instruct only).
- * @property {string} [quiet_prompt] A system instruction to use for the quiet prompt.
- * @property {boolean} [quietToLoud] Whether the system instruction should be sent in background (quiet) or a foreground (loud) mode.
- * @property {boolean} [skipWIAN] Skip adding World Info and Author's Note to the prompt.
- * @property {number} [force_chid] Force character (by index into `getContext().characters`) to use for the generation. Only works in groups.
- * @property {string} [force_avatar] Force character (by avatar) to use for the generation. Only works in groups. Ignored when `force_chid` is a number, unless it names a different character: then the generation throws, as for a `force_chid` that names none.
- * @property {AbortSignal} [signal] Abort signal to cancel the generation. If not provided, will create a new AbortController.
- * @property {string} [quietImage] Image URL to use for the quiet prompt (defaults to empty string)
- * @property {string} [quietName] Name to use for the quiet prompt (defaults to "System:")
- * @property {number} [depth] Recursion depth for the generation. Used to prevent infinite loops in tool calls.
- * @property {JsonSchema|null} [jsonSchema] JSON schema to use for the structured generation. Usually requires a special instruction.
+ * @property {boolean} [automatic_trigger]
+ * @property {boolean} [force_name2]
+ * @property {string} [quiet_prompt]
+ * @property {boolean} [quietToLoud]
+ * @property {boolean} [skipWIAN]
+ * @property {number} [force_chid]
+ * @property {string} [force_avatar]
+ * @property {AbortSignal} [signal]
+ * @property {string} [quietImage]
+ * @property {string} [quietName]
+ * @property {number} [depth]
+ * @property {JsonSchema|null} [jsonSchema]
  */
 
 /**
- * A user message a generate request asked the server to store, until that request has settled.
  * @typedef {object} PendingSend
- * @property {string} key The message's send key.
+ * @property {string} key
  * @property {ChatMessage} message
  */
 
 /**
- * Settles the sends a generate request carried. One the server didn't store (the request failed before it did, or
- * never went out: no model to generate with, a backend refusing it on the page) is stored as any sent message is:
- * a message sent is kept whether or not a reply can be made. By its send key, so a send the server did store after
- * all isn't stored twice. One that can't be stored either, or is no longer on the chat, is shown as a failed send
- * (failed-sends.js).
  * @param {PendingSend[]} pendingSends
  */
 async function settlePendingSends(pendingSends) {
@@ -425,22 +358,18 @@ async function settlePendingSends(pendingSends) {
 }
 
 /**
- * @typedef {object} RawActionWrites What a raw-action generate request generates from, and what it carries from the
- * page for the server to store first (src/page-writes.js).
+ * @typedef {object} RawActionWrites
  * @property {string|null} node_id
  * @property {string} type
- * @property {{ refs: string[], messages: object[] }} [opening] The chat's greetings, when none of the chat is stored.
- * @property {{ refs: string[], messages: object[] }} [page_messages] Messages after the last stored one that no
- * action stored: an extension can put a message on `chat` without storing it, and upstream's prompt has it.
- * @property {{ ref: string } & import('./state-sync.js').MetadataChanges} [page_metadata] The chat metadata keys and
- * variables changed since the page last had them from the server.
- * @property {{ key: string, variable?: true, value?: unknown }[]} [reply_changes] Those changed while producing the
- * reply, stored with it.
+ * @property {{ refs: string[], messages: object[] }} [opening]
+ * @property {{ refs: string[], messages: object[] }} [page_messages]
+ * @property {{ ref: string } & import('./state-sync.js').MetadataChanges} [page_metadata]
+ * @property {{ key: string, variable?: true, value?: unknown }[]} [reply_changes]
  */
 
 /**
  * @param {number} from
- * @param {number} to Exclusive.
+ * @param {number} to
  * @param {(message: ChatMessage) => object} contentOf
  * @returns {{ refs: string[], messages: object[] }}
  */
@@ -462,8 +391,6 @@ function messagesWithRefs(from, to, contentOf) {
 }
 
 /**
- * The user message a raw-action generate request carries: the one this generation sent, as it is on `chat` now
- * (a `MESSAGE_SENT` handler may have replaced it), without the page's own fields.
  * @param {ChatMessage|undefined} sent
  * @returns {object|undefined}
  */
@@ -486,9 +413,6 @@ function sentUserMessageForRequest(sent) {
 }
 
 /**
- * The quiet prompt a raw-action generate request carries (src/page-writes.js quietOf()): `Generate()`'s
- * `quiet_prompt` as it stands after its macros and NovelAI adjustment, with `quietToLoud`, `quietName` and
- * `quietImage`. Nothing when there is no quiet prompt.
  * @param {string|undefined} quietPrompt
  * @param {boolean|undefined} quietToLoud
  * @param {string|undefined} quietName
@@ -506,15 +430,10 @@ function quietPromptRequest(quietPrompt, quietToLoud, quietName, quietImage) {
 }
 
 /**
- * What a raw-action generate request generates from and carries from the page.
- * @param {string} type The generation type.
- * @param {ChatMessage|undefined} lastMessage The message the generation is for, as it was before this generation
- * changed `chat` (a regenerate takes it off).
- * @param {number} lastMessageIndex Its index then.
- * @param {import('./state-sync.js').MetadataChanges|null} atStart What `changedMetadata()` was when the generation
- * started: what changed since (the prompt's macros, extensions handling its events) was made while producing the reply,
- * and is stored with it (`reply_changes`); a quiet generation or an impersonation stores no reply, so its changes are
- * the chat's like any other.
+ * @param {string} type
+ * @param {ChatMessage|undefined} lastMessage
+ * @param {number} lastMessageIndex
+ * @param {import('./state-sync.js').MetadataChanges|null} atStart
  * @returns {RawActionWrites}
  */
 function rawActionWritesFor(type, lastMessage, lastMessageIndex, atStart) {
@@ -556,7 +475,6 @@ function rawActionWritesFor(type, lastMessage, lastMessageIndex, atStart) {
         toastr.warning(t`${end - stop} message(s) after an unsaved message weren't saved: save or discard that message first.`, t`Not saved`, { preventDuplicates: true });
     }
 
-    // An overswipe's message names no node while its new slot is shown: the reply goes beside the alternative swiped from.
     const swipedFrom = type === 'swipe' && swipeAnchor !== null && swipeAnchor.index === lastMessageIndex && !isStoredNodeId(lastMessage?.node_id)
         ? swipeAnchor.nodeId
         : null;
@@ -565,12 +483,10 @@ function rawActionWritesFor(type, lastMessage, lastMessageIndex, atStart) {
         delete writes.opening;
         delete writes.page_messages;
     } else if (isStoredNodeId(lastMessage?.node_id)) {
-        // What the generation is for is stored; nothing before it can be waiting to be.
         writes.node_id = lastMessage.node_id;
         delete writes.opening;
         delete writes.page_messages;
     } else if (type === 'regenerate' && lastMessage != null) {
-        // The reply being replaced was never stored, so there is nothing to add an alternative to: a new reply.
         writes.type = 'normal';
     }
 
@@ -584,19 +500,15 @@ function rawActionWritesFor(type, lastMessage, lastMessageIndex, atStart) {
         noteMetadataSent(ref, sent);
         writes.page_metadata = { ref, ...sent };
     }
-    // The page takes them as stored when the state where the reply landed comes back (the changes stream's
-    // `state-changed`); until then they count as unsaved, and saving them again where they are writes nothing.
     if (produced) writes.reply_changes = changeOps(produced);
     return writes;
 }
 
 /**
- * MARK:Generate()
- * Runs a generation using the current chat context.
- * @param {string} type Generation type
- * @param {GenerateOptions} options Generation options
- * @param {boolean} dryRun Whether to actually generate a message or just assemble the prompt
- * @returns {Promise<any>} Returns a promise that resolves when the text is done generating.
+ * @param {string} type
+ * @param {GenerateOptions} options
+ * @param {boolean} dryRun
+ * @returns {Promise<any>}
  */
 export async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage, quietName, jsonSchema = null, depth = 0 } = {}, dryRun = false) {
     /** @type {PendingSend[]} */
@@ -605,7 +517,6 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     try {
         return await generateOnce(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage, quietName, jsonSchema, depth }, dryRun, pendingSends);
     } finally {
-        // A generation that ended without its reply settling (an error, a stop with nothing stored) leaves nothing in flight.
         if (replyInFlight !== replyBefore) replyInFlight = null;
         swipeAnchor = null;
         await settlePendingSends(pendingSends);
@@ -613,31 +524,25 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 }
 
 /**
- * {@link Generate}, leaving the user message its request carries in `pendingSends` to be settled.
- * @param {string} type Generation type
- * @param {GenerateOptions} options Generation options
- * @param {boolean} dryRun Whether to actually generate a message or just assemble the prompt
+ * @param {string} type
+ * @param {GenerateOptions} options
+ * @param {boolean} dryRun
  * @param {PendingSend[]} pendingSends
  * @returns {Promise<any>}
  */
 async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage, quietName, jsonSchema = null, depth = 0 } = {}, dryRun = false, pendingSends = []) {
-    // What the chat's metadata changes from here to the request are made while producing the reply.
     const metadataAtStart = changedMetadata();
     setGenerationProgress(0);
     generation_started = new Date();
 
-    // Prevent generation from shallow characters
     await unshallowCharacter(getCurrentCharacter()?.avatar);
 
-    // Occurs every time, even if the generation is aborted due to slash commands execution
     await eventSource.emit(event_types.GENERATION_STARTED, type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage }, dryRun);
 
-    // Don't recreate abort controller if signal is passed
     if (signal == null) {
         abortController = new AbortController();
     }
 
-    // OpenAI doesn't need instruct mode. Use OAI main prompt instead.
     const isInstruct = power_user.instruct.enabled && main_api !== 'openai';
     const isImpersonate = type == 'impersonate';
 
@@ -645,13 +550,11 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         const interruptedByCommand = await processCommands(String($('#send_textarea').val()));
 
         if (interruptedByCommand) {
-            //$("#send_textarea").val('')[0].dispatchEvent(new Event('input', { bubbles:true }));
             unblockGeneration(type);
             return Promise.resolve();
         }
     }
 
-    // Occurs only if the generation is not aborted due to slash commands execution
     await eventSource.emit(event_types.GENERATION_AFTER_COMMANDS, type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage }, dryRun);
 
     if (main_api == 'kobold' && kai_settings.streaming_kobold && !kai_flags.can_use_streaming) {
@@ -660,8 +563,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         return Promise.resolve();
     }
 
-    // A reply the server couldn't store can't be built on: the next message would have nothing stored
-    // to follow. Storing it again is offered on its notice.
     const unsavedReply = /** @type {ChatMessage | undefined} */ (chat[chat.length - 1]);
     if (!dryRun && type !== 'quiet' && type !== 'impersonate' && typeof unsavedReply?.extra?.reply_not_saved === 'string') {
         toastr.error(t`The last reply isn't saved yet. Use "Save it again" on its notice first, or delete it.`, t`Reply not saved`, { preventDuplicates: true });
@@ -680,7 +581,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     }
 
     if (!dryRun) {
-        // Ping server to make sure it is still alive
         const pingResult = await pingServer();
 
         if (!pingResult) {
@@ -689,15 +589,12 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             throw new Error('Server unreachable');
         }
 
-        // Hide swipes if not in a dry run.
         hideSwipeButtons();
-        // If generated any message, set the flag to indicate it can't be recreated again.
         chat_metadata.tainted = true;
     }
 
     if (selected_group != null && !is_group_generating) {
         if (!dryRun) {
-            // Returns the promise that generateGroupWrapper returns; resolves when generation is done
             return generateGroupWrapper(false, type, { quiet_prompt, force_chid, force_avatar, signal: abortController.signal, quietImage, jsonSchema });
         }
 
@@ -722,8 +619,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         }
     }
 
-    //#########QUIET PROMPT STUFF##############
-    //this function just gives special care to novel quiet instruction prompts
     if (typeof quiet_prompt === 'string' && quiet_prompt !== '') {
         quiet_prompt = substituteParams(quiet_prompt);
         quiet_prompt = main_api == 'novel' && quietToLoud !== true ? adjustNovelInstructionPrompt(quiet_prompt) : quiet_prompt;
@@ -731,20 +626,12 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
 
     const hasBackendConnection = online_status !== 'no_connection';
 
-    // We can't do anything because we're not in a chat right now. (Unless it's a dry run, in which case we need to
-    // assemble the prompt so we can count its tokens regardless of whether a chat is active.)
     if (!dryRun && !hasBackendConnection) {
         setSendButtonState(false);
         return Promise.resolve();
     }
 
-    // `chat[chat.length - 1]` is `chat[-1]` (`undefined`) for a brand-new, empty chat - real at the
-    // raw-action gates below, which run regardless of chat length. TS's array element type (no
-    // noUncheckedIndexedAccess) doesn't reflect that, so cast explicitly rather than let the type
-    // checker treat the `lastMessage?.` guards downstream as dead code.
     let lastMessage = /** @type {ChatMessage | undefined} */ (chat[chat.length - 1]);
-    // By position, not chat.indexOf(lastMessage): a heal call below can replace this position's
-    // object via updateMessage(), which indexOf would then fail to find even though the position itself is fine.
     let lastMessageIndex = chat.length - 1;
 
     let textareaText;
@@ -753,7 +640,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     if (type !== 'regenerate' && type !== 'swipe' && type !== 'quiet' && !isImpersonate && !dryRun && !depth) {
         setSendButtonState(true);
         textareaText = String($('#send_textarea').val());
-        // The text stays this chat's draft until the message it is sent as has been recorded (failed-sends.js).
         sentDraftContext = getCurrentDraftContext();
         if (sentDraftContext) {
             holdDraft(localStorage, sentDraftContext, textareaText);
@@ -764,7 +650,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         if (chat.length && lastMessage?.is_user === true) {
             //do nothing? why does this check exist?
         } else if (type !== 'quiet' && type !== 'swipe' && !isImpersonate && !dryRun && !depth && chat.length) {
-            // The view lets go of the last reply; the tree keeps it.
             forgetStored([chat[chat.length - 1]?.node_id]);
             chat.length = chat.length - 1;
             await removeLastMessage();
@@ -773,33 +658,9 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     }
 
     const isContinue = type == 'continue';
-    // No pre-existing named local for this (every other call site inlines `type === 'swipe'`) - added
-    // here so the raw-action cutover below can name it like isImpersonate/isContinue. Deliberately
-    // covers `'regenerate'` too, NOT just `'swipe'` - verified (not assumed) that the two need
-    // IDENTICAL server-side treatment for this cutover's purposes: both target the same anchor (the
-    // branch leaf, i.e. the message being replaced - see getNextMessageId()'s own `type == 'swipe' ?
-    // chat.length - 1 : chat.length`, which resolves to the same real index for both once
-    // 'regenerate's own earlier "delete the last message" branch a few hundred lines above has run),
-    // and both need the server to persist the reply as a sibling ALTERNATIVE rather than a new child
-    // message (see the raw-action cutover's own JUDGMENT CALL #1 below). The two are NOT the same
-    // client-side in every respect (this variable's own two other real call sites - `coreChat.pop()` a
-    // few lines below and `getNextMessageId()` - intentionally still check `type === 'swipe'` alone,
-    // since 'regenerate' has already had its own message spliced out of `chat` by that earlier branch,
-    // making an ADDITIONAL pop wrong) - only for the raw-action payload's `is_swipe` field (which the
-    // server-side orchestrators use to decide whether to exclude the target message from ITS OWN
-    // freshly-loaded, never-locally-mutated copy of the chat - see prompt-line-formatting.js's
-    // getBiasStrings() and chat-completion-generation-input.js's `promptChat`, both of which now also
-    // treat 'swipe' and 'regenerate' identically for the identical reason) is the flag conflated.
     const isSwipe = type == 'swipe' || type == 'regenerate';
-    // UPDATE (this task): `isSwipe` is no longer forwarded on the wire as its own `is_swipe` field -
-    // the server now derives it from `type` alone (see the raw-action cutovers' own UPDATE comments
-    // below) - but the local is kept (mirroring `isImpersonate`/`isContinue` above) since it still
-    // documents the real "same anchor for 'swipe' and 'regenerate'" reasoning the comment above
-    // explains, and other, non-raw-action call sites reading `type === 'swipe'` directly may still
-    // want a byte-for-byte-identical named reference in the future.
     void isSwipe;
 
-    // Rewrite the generation timer to account for the time passed for all the continuations.
     if (isContinue && chat.length) {
         const prevFinished = lastMessage?.gen_finished;
         const prevStarted = lastMessage?.gen_started;
@@ -817,11 +678,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
 
     let { messageBias, promptBias, isUserPromptBias } = getBiasStrings(textareaText, type);
 
-    //*********************************
-    //PRE FORMATING STRING
-    //*********************************
 
-    // These generation types should not attach pending files to the chat
     const noAttachTypes = [
         'regenerate',
         'swipe',
@@ -829,23 +686,8 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         'quiet',
         'continue',
     ];
-    // Set only when this call actually appends a brand-new user message to `chat` via
-    // sendMessageAsUser() below (the ONLY place in this function that can - `lastMessage`, captured
-    // above, is deliberately the PRE-existing last message, e.g. for the raw-action addressing
-    // model's own anchorNodeId, so it does NOT refer to this new message; this local is the only real
-    // reference to it). Consumed by the raw-action cutovers below to forward this message's already-
-    // uploaded file/media attachment REFERENCE (`extra.files`/`extra.media`/etc, populated by
-    // populateFileAttachment() inside sendMessageAsUser() - see that function - BEFORE this Generate()
-    // call ever runs any backend request) - see JUDGMENT CALL on hasPendingFileAttachment() below.
     let sentUserMessage;
 
-    // Computed before sendMessageAsUser() runs, mirroring both raw-action gates' real preconditions
-    // below verbatim (keep in sync if either changes) - passed in as skipTreePersistence so
-    // sendMessageAsUser() doesn't append the user's message itself when a raw-action call is about
-    // to append it server-side. Needed because the two appends would hash to different identities
-    // (client sends `persona: avatar`, the server-side append falls back to a display name) and
-    // dedup would miss it, creating a duplicate node. Doesn't apply to the insertAt/graft path -
-    // only the `/send at=` slash command uses that, and it never triggers a raw-action send.
     const rawActionCharacterAvatar = getCurrentCharacter()?.avatar;
     const rawActionGroupId = selected_group != null ? selected_group : undefined;
     const rawActionOwnerId = rawActionGroupId != null
@@ -856,24 +698,17 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         && [undefined, 'normal', 'impersonate', 'quiet', 'swipe', 'regenerate', 'continue'].includes(type)
         && rawActionOwnerId != null && rawActionCharacterAvatar != null;
 
-    //for normal messages sent from user..
     if ((textareaText != '' || (hasPendingFileAttachment() && !noAttachTypes.includes(type))) && automatic_trigger !== true && type !== 'quiet' && !dryRun && !depth) {
-        // If user message contains no text other than bias - send as a system message
         if (messageBias && !removeMacros(textareaText)) {
             sendSystemMessage(system_message_types.GENERIC, ' ', { bias: messageBias });
         } else {
-            // Cross-file note: sendMessageAsUser()'s (script.js) own JSDoc types `insertAt` as
-            // `{number} [insertAt]`, but its default value and internal handling are `null`, not
-            // `undefined` - `null` here is the actual, intended "append, don't insert" argument.
             sentUserMessage = await sendMessageAsUser(textareaText, messageBias, /** @type {number} */ (/** @type {unknown} */ (null)), false, name1, user_avatar, willUseRawAction);
         }
     } else if (textareaText == '' && automatic_trigger !== true && !dryRun && [undefined, 'normal'].includes(type) && main_api == 'openai' && oai_settings.send_if_empty.trim().length > 0 && !depth) {
-        // Use send_if_empty if set and the user message is empty. Only when sending messages normally
         sentUserMessage = await sendMessageAsUser(oai_settings.send_if_empty.trim(), messageBias, /** @type {number} */ (/** @type {unknown} */ (null)), false, name1, user_avatar, willUseRawAction);
     }
 
     if (sentDraftContext && textareaText) {
-        // Recorded as a send (kept until the server has it), or not sent as a message at all (a command, a bias-only message).
         releaseDraft(localStorage, sentDraftContext, textareaText);
     }
     const sentKey = storeRefOf(sentUserMessage);
@@ -888,61 +723,8 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     const canUseTools = ToolManager.isToolCallingSupported();
     const canPerformToolCalls = !dryRun && ToolManager.canPerformToolCalls(type) && depth < ToolManager.RECURSE_LIMIT;
 
-    // Snapshot of `type` before any downstream mutation (e.g. saveReply()'s destructuring
-    // reassignment inside onSuccess()) - onSuccess() reads `originalType` unconditionally, for both
-    // the raw-action and legacy-assembly paths, so this cannot be deferred into the
-    // (possibly-skipped) assembly below. It has no dependency on that assembly either: `type` is
-    // never reassigned anywhere between this function's start and this point (verified by reading
-    // every line above this one) - so this is a plain, correctness-critical snapshot, not a
-    // best-effort default.
     const originalType = type;
 
-    // === Always-run: character card fields, depth prompts, coreChat construction, extension
-    // interceptors ===
-    // REGRESSION FIX / JUDGMENT CALL (character-card-fields/depth-prompt block, and
-    // coreChat+interceptors, both kept unconditional, i.e. NOT inside the skippable
-    // `if (!rawActionGenerateData && !rawActionChatCompletionData) { ... }` block below): this whole
-    // section used to be the very first thing the legacy assembly did. It is hoisted out here, ahead
-    // of the raw-action gates, so it runs identically to before this whole raw-action-cutover effort,
-    // regardless of whether this request ends up using a raw-action payload. Two independent reasons:
-    //   1. `runGenerationInterceptors(coreChat, this_max_context, type)`
-    //      (public/scripts/extensions.js) is a real, documented third-party extension API - any
-    //      installed extension with a `generate_interceptor` manifest field gets to inspect/mutate
-    //      `coreChat` and/or ABORT the generation outright
-    //      (`if (aborted) { unblockGeneration(type); return Promise.resolve(); }`). A prior version of
-    //      this cutover left this call inside the skippable block, which would have silently stopped
-    //      it from running for every cut-over raw-action request (the majority of real generations) -
-    //      any content-filter/validation/custom-guard extension would have silently stopped working.
-    //      This is not part of the "pure prompt-string-construction" work the raw-action cutover is
-    //      meant to eliminate; it is an externally-observable side effect (whether the generation
-    //      proceeds at all) that code outside this function depends on, so it must always run.
-    //   2. `getCharacterCardFields()`'s companion depth-prompt writes (`removeDepthPrompts()` /
-    //      `setExtensionPrompt(inject_ids.DEPTH_PROMPT[...], ...)`) write into the client's shared
-    //      `extension_prompts` table (public/scripts/extensions.js), which other code/extensions can
-    //      read via `getContext().extensionPrompts` independent of whether THIS request's own prompt
-    //      text ever gets used. The server now independently resolves character depth-prompt
-    //      injection for the raw-action case too (this session's earlier work ported
-    //      `getGroupCharacterDepthPrompts()`/`charDepthPromptDepth`/`charDepthPromptRole`
-    //      server-side), so keeping this client-side write running is NOT needed to make the
-    //      raw-action request itself correct - but it IS needed to keep that shared,
-    //      externally-observable table fresh for any other consumer. This write is also cheap (a
-    //      handful of object-property assignments), so per this task's own instructions the safer
-    //      choice - keeping it unconditional rather than letting it silently go stale whenever a
-    //      raw-action request is taken - was picked deliberately, not for lack of a cheaper option.
-    // `coreChat` (the filtered/regex-substituted/reasoning-folded message list) is kept unconditional
-    // purely so `runGenerationInterceptors()` always receives the SAME real value it always did - not
-    // a simplified substitute a third-party interceptor might misclassify or reject. `this_max_context`
-    // is computed here (unconditionally) because it is `runGenerationInterceptors()`'s second real
-    // argument; it is later further adjusted (Horde/CFG) inside the still-skippable block below for
-    // the non-raw-action case only, same as before.
-    // Everything from here through the `runGenerationInterceptors()` abort-handling below is therefore
-    // a byte-for-byte relocation of this function's original (pre-cutover) code, with no logic changes
-    // - only the declarations that used to be the first assignment of `coreChat`/`this_max_context`/
-    // `promptReasoning`/`description`/etc. now live here instead of a few hundred lines further down
-    // (see the "Hoisted locals for the prompt-assembly block below" comment for the smaller set that
-    // remains genuinely deferred).
-    // When the server builds the prompt, its macros are evaluated there: what this page evaluates for extensions
-    // (the depth prompts, the interceptors' chat) changes no variable, or {{setvar}}/{{incvar}} would run twice.
     const variables = willUseRawAction ? variablesCopy() : null;
     const evaluateHere = (/** @type {() => any} */ fn) => (variables ? withScratchVariables(variables, fn) : fn());
     let {
@@ -957,18 +739,8 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         creatorNotes,
     } = evaluateHere(() => getCharacterCardFields());
 
-    // Depth prompt (character-specific A/N)
     removeDepthPrompts();
-    // Cross-file note: selected_group (group-chats.js) is declared `let selected_group = null;` with
-    // no JSDoc type, so it's inferred as bare `null` here; getGroupDepthPrompts() (same file) types its
-    // first param as plain `{string}`. Both branches of that function's own `if (!groupId) return [];`
-    // guard already handle a falsy id correctly, so this is only a missing type on the variable, not a
-    // real null-safety gap.
     const groupDepthPrompts = evaluateHere(() => getGroupDepthPrompts(/** @type {string} */ (selected_group), /** @type {string} */ (getCurrentCharacter()?.avatar)));
-    // Cross-file note: extension_settings.note (extensions.js) is typed from its object-literal
-    // initializer, which never lists `allowWIScan` even though authors-note.js reads/writes it on the
-    // same object at runtime (`extension_settings.note.allowWIScan = ...`) - a real gap in that
-    // object's declared shape, not a local mistake.
     const allowWIScan = /** @type {{allowWIScan?: boolean}} */ (extension_settings.note).allowWIScan;
 
     if (selected_group != null && Array.isArray(groupDepthPrompts) && groupDepthPrompts.length > 0) {
@@ -978,20 +750,14 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         });
     } else {
         const depthPromptText = charDepthPrompt || '';
-        // v2CharDataExtensionInfos.depth_prompt (char-data.js) is declared as a required property with
-        // required `depth`/`role` sub-fields, but real character cards routinely omit this extension
-        // entirely - the declared type is optimistic, so the optional chain here is load-bearing even
-        // though the type checker considers it redundant. Cast rather than delete the check.
         const depthPromptExt = /** @type {{depth?: number, role?: "system"|"user"|"assistant"} | undefined} */ (getCurrentCharacter()?.data.extensions.depth_prompt);
         const depthPromptDepth = depthPromptExt?.depth ?? depth_prompt_depth_default;
         const depthPromptRole = getExtensionPromptRoleByName(depthPromptExt?.role ?? depth_prompt_role_default);
         setExtensionPrompt(inject_ids.DEPTH_PROMPT, depthPromptText, extension_prompt_types.IN_CHAT, depthPromptDepth, allowWIScan, depthPromptRole);
     }
 
-    // Kept local, not written back onto chat[0] - that would make the save path see an untouched greeting as user-edited.
     const substitutedFirstMessage = chat.length ? evaluateHere(() => substituteParams(chat[0].mes ?? '')) : null;
 
-    // Collect messages with usable content
     let coreChat = chat.filter(x => !isSystemChatItem(x) || (canUseTools && Array.isArray(x.extra?.tool_invocations)));
     if (type === 'swipe') {
         coreChat.pop();
@@ -1023,7 +789,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         const depth = coreChat.length - i - (isContinue ? 2 : 1);
         const isPrefix = isContinue && i === coreChat.length - 1;
 
-        // In group chats, only include reasoning from the currently generating character
         const isOtherGroupMember = selected_group != null && coreChat[i].name !== name2;
 
         coreChat[i] = {
@@ -1046,7 +811,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         }
     }
 
-    // Determine token limit
     let this_max_context = getMaxPromptTokens();
 
     if (!dryRun) {
@@ -1059,375 +823,14 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         }
     }
 
-    // === Raw-action text-completion cutover ===
-    // For a genuine plain "normal" send-and-reply turn over the textgenerationwebui backend, the
-    // server now resolves the ENTIRE prompt (character, chat history, world info, sampler settings)
-    // itself from its own stored state - see buildRawActionTextCompletionRequest() in
-    // src/endpoints/backends/text-completions.js. Instead of sending the client-assembled
-    // finalPrompt/sampler settings, this sends only which character/node and the literal text
-    // typed, matching that endpoint's real, tested contract (character_avatar/group_id/owner_id/
-    // node_id/type/user_message - there is no `branch_name` field anymore, and
-    // is_impersonate/is_continue/is_swipe are derived server-side from `type` alone - see this
-    // section's own UPDATE comment below).
-    //
-    // JUDGMENT CALL #1 (scope): `type === 'normal'`/undefined, `'impersonate'`, `'quiet'`, `'swipe'`,
-    // `'regenerate'`, `'continue'`, AND NOW GROUP CHATS are cut over here, for this backend
-    // (textgenerationwebui) only - see the chat-completion cutover's own JUDGMENT CALL #1 below for
-    // why groups stay OUT of that one. This is narrower than a full cutover, because reading the
-    // server's own persistence logic (commits ac42ce8c9, 6eaa7897d) turned up a real correctness bug
-    // for each previously-excluded case, not a hypothetical one - see below for each.
-    //
-    // GROUP CHATS (previously excluded, now included - investigated for real, not assumed): the
-    // original exclusion reasoned that `generateGroupWrapper()`'s (public/scripts/group-chats.js)
-    // activation-strategy-dependent member selection would need to be replicated/verified against
-    // this gate. Reading that function's full body end to end disproves that concern:
-    // `generateGroupWrapper()` is a separate orchestration layer ABOVE `Generate()` - it computes
-    // `activatedMembers` (an array of member avatars) via one of several strategies (natural/list/
-    // pooled/manual order, or `activateSwipe()`/`activateImpersonate()` for 'swipe'/'continue'/
-    // 'impersonate'/'quiet'), then, for EACH activated member, calls `setCharacterId(avatar)`
-    // (synchronously, before `await`ing) followed by exactly ONE `await Generate(generateType, ...)`
-    // call for that member - never more than one member per `Generate()` call, and the loop `await`s
-    // each call in turn before moving to the next, so there is no concurrent-iteration race. Crucially,
-    // this gate does NOT need `force_avatar` at all to know which member a given inner `Generate()`
-    // call is for: `setCharacterId(avatar)` sets `this_avatar` (this file's own source of truth for
-    // character selection - see `getCurrentCharacter()`'s doc comment), so `getCurrentCharacter()?.avatar`
-    // - the EXACT SAME expression the single-character case already used - already resolves to the
-    // correct responding member inside a group turn too, for every generation type this gate covers:
-    // verified by reading `generateGroupWrapper()`'s own member-selection for each of
-    // normal/impersonate/quiet/swipe/continue (see its `generateType` mapping, which maps every
-    // OTHER type - including a bare 'regenerate' - onto 'normal', and group regenerate never reaches
-    // here as a literal 'regenerate' type anyway - see `regenerateGroup()` in group-chats.js, which
-    // deletes the old message(s) first and then calls `generateGroupWrapper(false, 'normal', ...)`,
-    // not `'regenerate'`). `force_avatar` remains a real, separate mechanism (threaded through to let
-    // an external caller - e.g. a slash command - FORCE a specific member via
-    // `generateGroupWrapper()`'s own `params.force_avatar` check), it is simply not what THIS gate
-    // needs to read: by the time control reaches this point inside any inner `Generate()` call,
-    // `this_avatar` is already the real, resolved responding member regardless of how it got chosen.
-    // The one remaining gap between "just add `group_id`" and a working group gate was server-side,
-    // not client-side: `owner_id` for a group must be the group's own id (see below), not a character
-    // avatar - `selected_group` IS already that real id (assigned directly from `groupsStore`'s own
-    // `g.id`-keyed lookups - see `select_group_chats()`'s `groupsStore.get(openGroupId)` and the
-    // `selected_group = groupId` assignment a few hundred lines below in group-chats.js), so no
-    // client-side id-translation step was needed either.
-    //   - `buildRawActionTextCompletionRequest()`'s own existence check was re-read and confirmed to
-    //     already be `if (!characterAvatar && !groupId) throw` - an inclusive OR, not an "either but
-    //     not both" exclusivity check - so passing BOTH `character_avatar` (the responding member) AND
-    //     `group_id` (the group) together was already accepted with no server-side fix required.
-    //     `resolveTextCompletionGenerationInput()`'s own `resolveName2AndGroupMemberNames()` already
-    //     resolves `name2` from `avatar` while independently populating `groupMemberNames` from every
-    //     group member when `groupId` is ALSO given, and `getGroupCharacterDepthPrompts()`
-    //     (text-completion-prompt-orchestrator.js) already takes both `groupId` AND `avatar` together
-    //     - this combined shape was already a real, exercised code path for depth prompts before this
-    //     change, not a new invention.
-    //
-    // 'continue' was EXCLUDED for the same kind of reason as 'swipe'/'regenerate' below (a real
-    // tree-shape mismatch, not a hypothetical one): the client's saveReply({type:'appendFinal'}) EDITS
-    // the existing leaf node's text in place to (old text + new text) - see this file's saveReply(),
-    // the `mes: getMessage` assignment in its 'appendFinal' branch, where getMessage was built a few
-    // hundred lines above as `continue_mag + newlyGeneratedText`. The server used to always append a
-    // brand-new CHILD node containing only the raw continuation fragment (its appendMessages() call
-    // keyed off `anchorNodeId`, unconditionally on ANY successful generation) - two different
-    // operations on two different nodes that cannot dedupe via nodeIdentityKey() the way a plain
-    // new-message/new-reply turn does, and would have corrupted/duplicated the tree.
-    // Now fixed server-side: both route handlers (text-completions.js and chat-completions.js) persist
-    // the reply as an edit of the anchor (src/chat-engine.js) when `is_continue` is set - splicing
-    // `oldText + newText` into a full copy of the anchor's own current content and replacing the whole
-    // stored node in place, never creating a new node. `oldText` is the anchor's real, current `.mes`
-    // (see those files' own `anchorContent` doc comments) - investigated and confirmed FAITHFUL to what
-    // this file's own `continue_mag` resolves to at the point of concatenation, in BOTH the reasoning
-    // and non-reasoning case: `continue_mag` (assigned a few hundred lines above, then
-    // `promptReasoning.removePrefix(continue_mag)`'d immediately before use) only ever differs from the
-    // raw stored `.mes` MOMENTARILY, when the leaf has non-empty `extra.reasoning` - see
-    // `PromptReasoning.addToMessage()`/`removePrefix()` in public/scripts/reasoning.js: `addToMessage()`
-    // (called with `isPrefix: true` for exactly the continued leaf) prepends a formatted reasoning
-    // prefix onto that message's `.mes` for PROMPT-BUILDING purposes and records its exact length as
-    // `prefixLength`; `removePrefix()` then slices off EXACTLY that many characters before the
-    // concatenation this file's own `getMessage = continue_mag + getMessage` performs. The two are an
-    // exact round trip - `continue_mag` at the point of concatenation is always the leaf's original,
-    // unmodified `.mes`, reasoning or not - so the server's plain `oldText + newText` needs no separate
-    // reasoning-stripping step to match it. `newText` (the raw backend output, not run through this
-    // file's own `cleanUpMessage()`) is likewise held to the SAME already-accepted standard every other
-    // cut-over type's server-side persistence already uses (see those files' own `anchorContent`/edit
-    // doc comments for the full reasoning-round-trip and raw-text writeup) - not a new or continue-
-    // specific gap, and not the last word on the stored text either way, since this file's own
-    // `saveReply({type: 'appendFinal'})` still runs afterward and its own eventual sync to the server
-    // supersedes this route's belt-and-suspenders edit.
-    // A REAL edge case was found and guarded server-side while wiring this (not hypothetical): this
-    // file's own textareaText-read condition a few hundred lines above (`type !== 'regenerate' && type
-    // !== 'swipe' && type !== 'quiet' && !isImpersonate && !dryRun && !depth`) does NOT exclude
-    // 'continue' - so leftover text in the send box at the moment Continue is clicked IS sent as a real
-    // new user message, same as a normal turn (JUDGMENT CALL #3 below's claim that this "was already
-    // like the continue/swipe case" undersold this: swipe/regenerate truly are always `''` here, but
-    // continue is not exempted by name at all). The server's route handlers guard against this
-    // corrupting the wrong node - see their own `continueUserTextConflict` computation - by skipping the
-    // in-place edit (not persisting anything for that one request) whenever a user message was actually
-    // appended in the same request, since the anchor for the edit would otherwise be the just-appended
-    // USER node instead of the real assistant leaf. This loses nothing new: that combination was already
-    // a pre-existing, independent client-side oddity before this task (this file's own
-    // `saveReply({type: 'appendFinal'})` reads `chat[chat.length - 1]`, which by then is that SAME
-    // just-sent user message, not the real assistant leaf - the legacy path was never coherent for this
-    // combination either).
-    //
-    // 'impersonate'/'quiet' were EXCLUDED in the original version of this cutover (commit 80bdf420c)
-    // because the server's persistence was, at the time, unconditional: 'impersonate' generates what
-    // the user MIGHT say (written back into the send textarea a few hundred lines below via
-    // `$('#send_textarea').val(getMessage)`, never added to the chat client-side) and 'quiet'
-    // generations are meta/background - the server used to unconditionally persist the reply (and,
-    // defensively, any `user_message`) as a real tree message for both, which would have been wrong.
-    // That server-side bug is now fixed (see buildRawActionTextCompletionRequest()'s route handler in
-    // src/endpoints/backends/text-completions.js: `isImpersonate`/`type === 'quiet'` now skip BOTH the
-    // user-message and assistant-reply appendMessages() calls), so both are now included here.
-    // `user_message` is verified to always resolve to `undefined` for both types regardless - see
-    // JUDGMENT CALL #3 below - so there is nothing new for the server to spuriously persist even
-    // without that fix, but the fix was required for these two types to be safe to widen to.
-    //
-    // 'swipe'/'regenerate' were EXCLUDED for a DIFFERENT, genuinely-real correctness bug (not a
-    // persistence-unconditional-ness bug like impersonate/quiet's): the server's `anchorNodeId` for
-    // this raw action is always the branch leaf - i.e. the message BEING swiped/regenerated itself -
-    // so a plain `appendMessages()` call would have chained the new reply as a CHILD *after* that
-    // message, not as a SIBLING under its parent (an actual swipe/regenerate is a sibling
-    // alternative - see src/chat-engine.js). That's
-    // now fixed server-side too: both route handlers (text-completions.js and chat-completions.js) now
-    // persist the reply via `addAlternatives()` (creating the sibling alongside the swiped/regenerated
-    // node under ITS real parent, resolved internally) followed by `selectDefaultChild()` (making the
-    // new alternative the active one) whenever `is_swipe` is set - see those files' own comments on
-    // this branch for the full rationale, including the "swipe with no parent" edge case (verified
-    // unreachable here: an empty-chat swipe/regenerate is already rejected with a 400 by
-    // buildRawActionTextCompletionRequest()'s own pre-existing `orchestratorInput.chat.length === 0`
-    // check, before persistence is ever attempted, and every OTHER reachable target - including a
-    // chat's sole opening greeting - has a real parent by construction: either a prior message, or the
-    // character's own opening-alternatives anchor row).
-    // `'regenerate'` maps onto this SAME `is_swipe` flag as `'swipe'` (see the `isSwipe` local's own
-    // declaration a few hundred lines above for why the two need identical server-side treatment, and
-    // src/prompt-line-formatting.js's `getBiasStrings()`/src/chat-completion-generation-input.js's
-    // `promptChat` for the prompt-assembly-side fix this widening also required for
-    // chat-completion - the server always sees the full, un-mutated tree state regardless of which of
-    // the two literal `type` strings the client sent, unlike the client's own local `chat` array,
-    // which is already shortened for 'regenerate' by the time it matters client-side).
-    //
-    // JUDGMENT CALL #2 (assembly now REALLY skipped - NARROWED after a real regression was found and
-    // fixed): this DOES skip the remaining, genuinely pure-prompt-string-construction part of the
-    // client-side assembly (world info scan, author's note resolution, instruct formatting,
-    // finalPrompt construction - see the `if (!rawActionGenerateData && !rawActionChatCompletionData)
-    // { ... }` block a few hundred lines below) whenever either raw-action gate below resolves to
-    // non-null. It does NOT skip the earlier part of the assembly (character-card-fields/depth-prompt
-    // writes, `coreChat` construction, `runGenerationInterceptors()`) - that part was moved to run
-    // BEFORE this whole comment block, unconditionally, for real, externally-observable-side-effect
-    // reasons documented at its own new location above (search "Always-run: character card fields").
-    // A prior version of this comment claimed everything through `runGenerationInterceptors()` was
-    // also safely skippable; that was wrong - `runGenerationInterceptors()` is a real third-party
-    // extension abort hook, not inert prompt-formatting, and leaving it skippable would have silently
-    // disabled every installed `generate_interceptor` extension for the majority of real generations.
-    // This eligibility check itself (this gate and the chat-completion one below it) was deliberately
-    // moved to run BEFORE the (now smaller) remaining assembly, as early as its own dependencies
-    // (`dryRun`, `main_api`, `type`, `selected_group`, `hasPendingFileAttachment()`,
-    // `canPerformToolCalls`, and - for the chat-completion gate - `jsonSchema`) allow, precisely so the
-    // remaining assembly can be conditioned on its result instead of always running and being
-    // discarded.
-    // Every local the remaining (still-skippable) assembly declares that is read anywhere later in
-    // this function (inside the `switch (main_api)` below, finishGenerating(), onSuccess(), or
-    // getCombinedPrompt() when called from the textgenerationwebui switch case) - `cfgGuidanceScale`,
-    // `useCfgPrompt`, `mesExamplesArray`, `worldInfoString`, `worldInfoBefore`, `worldInfoAfter`,
-    // `beforeScenarioAnchor`, `afterScenarioAnchor`, `storyString`, `injectedIndices`, `continue_mag`,
-    // `oaiMessages`, `oaiMessageExamples`, `examplesString`, `cyclePrompt`, `pinExmString`, `arrMes`,
-    // `count_exm_add`, `mesSend`, `generatedPromptCache`, `mesSendString`, `getCombinedPrompt`,
-    // `finalPrompt`, `maxLength`, and `thisPromptBits` - is hoisted with a safe, correctly-typed
-    // default a few lines above (see the "Hoisted locals for the prompt-assembly block below" comment),
-    // declared with `let` BEFORE this smaller assembly block so skipping it cannot throw a
-    // temporal-dead-zone ReferenceError. `description`, `personality`, `persona`, `scenario`,
-    // `mesExamples`, `system`, `jailbreak`, `charDepthPrompt`, `creatorNotes`, `promptReasoning`, and
-    // `this_max_context` no longer need any such hoisted default at all: they are now computed for
-    // real, unconditionally, in the always-run section above (`this_max_context` is only FURTHER
-    // adjusted, for Horde/CFG, inside the still-skippable block below - its own first, real assignment
-    // already happened above, so no TDZ risk either way). `canPerformToolCalls` itself (also read
-    // downstream, e.g. in finishGenerating()'s streaming-tool-call branch and onSuccess()) needed no
-    // hoisting either - it was already computed, together with `canUseTools`, before all of this.
-    // (`adjustedParams` and `originalType` are handled the same way as before: `adjustedParams` is
-    // hoisted with an implicit `undefined` default - it is only ever read inside the kobold/koboldhorde
-    // switch case, which never coincides with a raw-action request; `originalType` is a plain,
-    // correctness-critical `type` snapshot with no assembly dependency at all, computed unconditionally
-    // right after `canUseTools`/`canPerformToolCalls` instead of defaulted.)
-    // Every one of the still-hoisted locals is confirmed safe against its own first downstream read for
-    // raw-action case - see this task's own verification report for the full enumerated audit (per
-    // local: declaration site, first read site, and why the default doesn't crash that read). The one
-    // remaining piece of the original "assembly still runs" behavior that is preserved on purpose: the
-    // `switch (main_api)` block below still contains its own `if (rawActionGenerateData) { generate_data
-    // = rawActionGenerateData; break; }` / `if (rawActionChatCompletionData) { generate_data = {
-    // rawAction: rawActionChatCompletionData }; break; }` checks, now effectively always true whenever
-    // reached with a non-null raw-action value (since the assembly that would otherwise run before the
-    // switch has already been skipped) - kept for defensiveness/clarity rather than removed.
-    //
-    // Side effects of the legacy assembly that this cutover intentionally leaves alone for the
-    // non-raw-action paths (kobold/novel/koboldhorde, dryRun, and any textgenerationwebui/openai request
-    // that fails one of the gates' own preconditions - e.g. a pending file attachment or an active tool
-    // call): those still run the full assembly exactly as before, including its world-info sticky/
-    // cooldown timers and itemized-prompt-bits UI - both pre-existing UI/state surfaces, unchanged by
-    // this patch for the cases that still reach them.
-    //
-    // JUDGMENT CALL #3 (user_message for impersonate/quiet, verified not assumed): `textareaText` (a
-    // few hundred lines above, at this function's very start) is only ever read from the send textarea
-    // when `type !== 'regenerate' && type !== 'swipe' && type !== 'quiet' && !isImpersonate && !dryRun
-    // && !depth` - for every 'impersonate'/'quiet' call, that condition is false, so `textareaText` is
-    // unconditionally `''` for both, so no user message is sent for these
-    // two types - there is no new-user-text case to worry about for them. CORRECTION to an earlier
-    // draft of this comment: 'continue' is NOT exempted by this same condition (only 'regenerate'/
-    // 'swipe'/'quiet' are named in it) - `textareaText`, and therefore a sent user message, CAN be
-    // non-empty for a continue call, if the user left text in the send box before clicking Continue.
-    // This is real, not hypothetical - see JUDGMENT CALL #1 above for the full investigation and the
-    // server-side `continueUserTextConflict` guard this required. Confirmed against the real call sites too: there is no dedicated
-    // `generateImpersonate()`-style wrapper - `Generate('impersonate', ...)` is called directly from
-    // the `option_impersonate` UI handler and from the `/impersonate` slash command
-    // (public/scripts/slash-commands.js), and `Generate('quiet', ...)` is called from
-    // generateQuietPrompt() (this file) - none of these three call sites writes new text into
-    // `#send_textarea` before calling Generate() (the slash command explicitly CLEARS it instead, to
-    // "prevent generate recursion"), so this isn't a coincidence of the current textarea state, it's
-    // guaranteed by type regardless.
-    //
-    // JUDGMENT CALL #4 (quiet does reach this gate, verified not assumed): a `type === 'quiet'` call
-    // does NOT short-circuit before this point for the ordinary (non-group, connected, non-dry-run)
-    // case - the only early `return`s between this function's start and here that could matter
-    // (`processCommands()`'s interrupt, the Kobold-streaming-unsupported/horde-not-allowed checks, the
-    // `!hasBackendConnection` bail, and the `selected_group` branch) are either explicitly skipped for
-    // `type == 'quiet'` already (the `processCommands()` call) or unrelated to `type` at all - verified
-    // by reading each one, not assumed. So a plain quiet generation (no pending group turn, a live
-    // backend connection) reaches this gate exactly like a normal turn does.
-    //
-    // JUDGMENT CALL #5 ('swipe'/'regenerate' do reach this gate too, verified not assumed): the SAME
-    // early-return trace as JUDGMENT CALL #4 above applies - `processCommands()`'s own skip condition
-    // already explicitly includes `type == 'regenerate' || type == 'swipe'` (not just 'quiet'), and
-    // none of the other early returns (`Kobold-streaming-unsupported`/`horde-not-allowed`/
-    // `!hasBackendConnection`/`selected_group`) depend on `type` at all. The one type-specific branch
-    // between this function's start and here that DOES treat 'regenerate' differently from every other
-    // type - the "delete the last message from `chat`" branch (`type !== 'quiet' && type !== 'swipe' &&
-    // !isImpersonate && !dryRun && !depth && chat.length`, which fires for 'regenerate' since it's not
-    // itself in that exclusion list) - only mutates the CLIENT's local `chat` array (so the legacy
-    // prompt assembly, when it still runs at all - i.e. whenever this gate is NOT satisfied - builds
-    // the right context for 'regenerate' per its own existing, unchanged logic - see JUDGMENT CALL #2)
-    // and has no bearing on whether this gate is reached, nor
-    // on the raw-action payload itself (`node_id`/`type` are unaffected by local `chat` array length -
-    // the raw-action `node_id` below is deliberately read off `lastMessage`, captured BEFORE this
-    // delete branch runs, not off `chat[chat.length - 1]` - and the server resolves its own chat state
-    // fresh from the persisted tree, independent of anything the client did to its own copy).
-    //
-    // ONE quiet-specific gap this scope restriction does NOT close (kept OUT of the raw-action path
-    // rather than silently breaking it): `generateQuietPrompt()` can pass a non-null `jsonSchema` (its
-    // own `jsonSchema` parameter, threaded through as `Generate()`'s own `jsonSchema` option) for
-    // structured/JSON-schema-constrained quiet generations. For 'textgenerationwebui' this is a real
-    // non-issue - `getTextGenGenerationData()` never reads a call-time `jsonSchema` argument at all
-    // (verified: its call below passes no such argument); the ONLY textgen json-schema knob is
-    // `textgenerationwebui_settings.json_schema`, a persisted preset setting `createTextGenGenerationData()`
-    // (used identically server-side inside `assembleTextCompletionPrompt()`) already reads from real,
-    // on-disk settings either way - nothing here depends on the per-call `jsonSchema` argument, so no
-    // extra gate is needed on this path. (The chat-completion cutover below, where `jsonSchema` IS a
-    // real per-call value the raw-action request shape cannot currently carry, gates on it explicitly -
-    // see that block's own comment.)
-    //
-    // JUDGMENT CALL #6 ('continue' does reach this gate too, verified not assumed): the SAME
-    // early-return trace as JUDGMENT CALL #4/#5 above applies - none of `processCommands()`'s skip
-    // condition, the Kobold-streaming-unsupported/horde-not-allowed checks, `!hasBackendConnection`, or
-    // `selected_group` excludes 'continue' by name, and none but `processCommands()`'s depend on `type`
-    // at all (and that one doesn't exclude 'continue' either - only 'regenerate'/'swipe'/'quiet'/
-    // dryRun/depth are named there, so a continue's send-textarea content, if any, still runs through
-    // slash-command interception exactly like a normal turn's does - unrelated to this gate, and
-    // unchanged by this cutover). So a plain continue reaches this gate exactly like a normal turn does.
-    //
-    // JUDGMENT CALL #7 (widened to 'kobold'/'novel'/'koboldhorde'): the server side of this cutover
-    // (resolveTextCompletionGenerationInput()/assembleTextCompletionPrompt(),
-    // src/text-completion-generation-input.js) now dispatches its own Step 16 on `mainApi` for
-    // 'kobold'/'novel' too (src/text-completion-prompt-orchestrator.js), and real raw-action `/generate`
-    // branches now exist for both (src/endpoints/backends/kobold.js's buildRawActionKoboldRequest(),
-    // src/endpoints/novelai.js's buildRawActionNovelRequest()) - built the SAME way as the
-    // textgenerationwebui one already wired here, reusing the exact same
-    // character_avatar/group_id/owner_id/node_id/type/user_message payload shape (verified: neither
-    // builder needs anything backend-specific in the
-    // REQUEST shape itself - Kobold's own `kai_settings.api_server`/NovelAI's own `nai_settings.model_novel`
-    // are both resolved SERVER-side from real, on-disk settings, not sent by the client). So this gate
-    // now covers `main_api === 'kobold'` and `main_api === 'novel'` too, unchanged otherwise (same
-    // dryRun/type/file-attachment/tool-calling restrictions).
-    // UPDATE (this task): `'koboldhorde'` is NOW REAL, real-verified support too - an earlier version
-    // of this comment excluded it "by name" on the assumption that Horde needs a fundamentally
-    // different architecture; that assumption was WRONG. `createKoboldGenerationData()`'s own real,
-    // already-tested `isHorde` flag (src/kobold-generation-data.js) already produces the correct
-    // payload shape for Horde (min_p/stop_sequence/mirostat/use_default_badwordsids/grammar all
-    // included regardless of `koboldFlags`) - buildRawActionKoboldRequest() just needed its
-    // `macroExtras` threaded through so src/endpoints/horde.js's own new raw-action
-    // `/api/horde/generate-text` branch could pass `{ isHorde: true }`. Horde has no single fixed
-    // `api_server` (a worker pool routes each request), but that was never actually a REQUEST-shape
-    // requirement - Horde's own `/generate-text` endpoint (public/scripts/horde.js's `generateHorde()`)
-    // never sent one either; it POSTs `{prompt, params, trusted_workers, models}` to Horde's own
-    // coordinator, which does worker selection itself.
-    // UPDATE (server-side streaming cutover): Horde generation is no longer client-polled at all -
-    // src/endpoints/horde.js's `/generate-text` route now submits the job to Horde AND polls it
-    // internally, streaming the result back over the same compact-v1 wire protocol every other
-    // backend uses (keepalive frames while waiting, a content frame once done, a real server-side
-    // `persistAssistantReply()` call for a raw-action request, then the `assistant_node_id` frame).
-    // This gate still only builds the RAW-ACTION IDENTITY payload (character/branch/user-message)
-    // here, same as every other backend - see sendGenerationRequest()'s own `main_api ===
-    // 'koboldhorde'` branch and public/scripts/horde.js's `generateHordeRawAction()` for how the
-    // request reaches the server and the resulting stream is consumed.
-    // REAL, NARROW, DELIBERATELY DEFERRED SCOPE BOUNDARY (not attempted by this task):
-    // `horde_settings.auto_adjust_response_length`/`auto_adjust_context_length` (live worker-capacity
-    // auto-adjustment, `adjustHordeGenerationParams()` below) is NOT applied to a raw-action Horde
-    // request - `adjustHordeGenerationParams()` is itself just a client-side wrapper around the
-    // EXISTING `/api/horde/text-workers` endpoint, so this is a real, addressable follow-up (the
-    // server could call it itself, or the client could still pre-adjust `amount_gen`/`max_context`
-    // before this gate runs), not a fundamental blocker - without it, `createKoboldGenerationData()`
-    // still produces a valid request from the user's own configured settings, just without shrinking
-    // it to fit whatever a currently-available worker can handle, so Horde may reject/retry more
-    // often on an unadjusted size. Basic raw-action Horde generation works correctly without it.
-    // UPDATE (this task - file/media attachment cutover): `!hasPendingFileAttachment()` REMOVED from
-    // this gate's own preconditions. That check was gating on the WRONG signal - whether a file input
-    // element still has a File object staged in the DOM - when what actually matters is whether the
-    // bytes have already reached the server, which they always have by this point for the one type
-    // that can ever have a fresh attachment here ('normal'): `populateFileAttachment()` (public/
-    // scripts/chats.js), called from `sendMessageAsUser()` a few hundred lines above (`sentUserMessage`
-    // local, captured there), already uploaded the file (`saveBase64AsFile()`/`/api/files/upload`) and
-    // attached the result onto that message's own `extra.files`/`extra.media` BEFORE this gate ever
-    // runs. Verified (not assumed) that server-side `resolveTextCompletionGenerationInput()`'s already-
-    // generic file-attachment inlining (`file-attachment-inline.js`, wired into
-    // `text-completion-prompt-orchestrator.js`) reads `.extra` off whatever chat entry it's given,
-    // tree-loaded or freshly in-memory alike - so forwarding just the REFERENCE (the sent message's
-    // `extra`, in `user_message` below) is sufficient; no re-upload, no client-side
-    // re-read of the file, needed. Media/image inlining is chat-completion-specific (no vision-style
-    // inlining exists for these four backends), so `.media`/`.media_index`/`.inline_image` are
-    // harmlessly forwarded-but-unused here - only `.files` is ever actually read for Kobold/NovelAI/
-    // Horde/textgenerationwebui. See buildRawActionKoboldRequest()'s/buildRawActionNovelRequest()'s
-    // own doc comments (src/endpoints/backends/kobold.js, src/endpoints/novelai.js) for the
-    // server-side confirmation this was extended to all three, not just textgenerationwebui.
     let rawActionGenerateData = null;
     if (!dryRun && (main_api === 'textgenerationwebui' || main_api === 'kobold' || main_api === 'novel' || main_api === 'koboldhorde')
         && [undefined, 'normal', 'impersonate', 'quiet', 'swipe', 'regenerate', 'continue'].includes(type)
-        // UPDATE (chunk (c) - client-proxy tool calling): `!canPerformToolCalls` REMOVED. This is a
-        // no-op for this particular gate in practice - `ToolManager.isToolCallingSupported()`
-        // unconditionally returns `false` whenever `main_api !== 'openai'` (public/scripts/
-        // tool-calling.js), and every `main_api` this gate covers is never 'openai' - but it's
-        // removed here too for consistency with the chat-completion gate below (see that gate's own,
-        // load-bearing removal comment) and so this precondition list doesn't misleadingly suggest
-        // tool-calling is a real concern for these four backends.
     ) {
-        // `getCurrentCharacter()?.avatar` is unchanged from the single-character case - see JUDGMENT
-        // CALL #1 above for why this SAME expression already resolves to the correct RESPONDING
-        // MEMBER inside a group turn too (generateGroupWrapper() calls setCharacterId(avatar) - this
-        // file's own this_avatar source of truth - synchronously before each per-member Generate()
-        // call). `groupId` is `selected_group` itself, already the group's real id (see JUDGMENT CALL
-        // #1 above) - not derived from characterAvatar the way `ownerId` is for a plain character chat.
         const characterAvatar = getCurrentCharacter()?.avatar;
         const groupId = selected_group != null ? selected_group : undefined;
-        // For a group turn, owner_id addresses the GROUP's own chat/branch storage (matching
-        // src/endpoints/chats.js's own `ownerId = group_id ? resolveGroupOwner(...).id : avatar...`
-        // pattern) - a character avatar would be the WRONG owner here, even though characterAvatar
-        // itself is still resolved and sent (as `character_avatar`) for the responding member's own
-        // card/prompt resolution. Falls back to the plain per-character ownerId when not in a group,
-        // unchanged from before.
         const ownerId = groupId != null ? String(groupId) : (characterAvatar != null ? String(characterAvatar).replace('.png', '') : undefined);
-        // The node to generate from is `lastMessage`, captured before a regenerate takes it off `chat`; the server
-        // stores what the page has that it doesn't first (rawActionWritesFor()).
         const rawActionWrites = rawActionWritesFor(type, lastMessage, lastMessageIndex, metadataAtStart);
-        // `characterAvatar` is required unconditionally, group turn or not: even with `groupId` set,
-        // a responding member's own avatar must resolve for real (defensively falls through to the
-        // legacy path instead of assuming this, for the unlikely case `getCurrentCharacter()` were
-        // ever unresolved mid-group-turn) - see JUDGMENT CALL #1 above for why this is verified to
-        // always be true in practice for every type this gate covers.
         if (ownerId != null && characterAvatar != null) {
             const sentMessage = sentUserMessageForRequest(sentUserMessage);
             rawActionGenerateData = {
@@ -1435,299 +838,30 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 group_id: groupId,
                 owner_id: ownerId,
                 ...rawActionWrites,
-                // The message as sent, once `MESSAGE_SENT`'s handlers have run; the server stores it as it is.
                 user_message: sentMessage,
-                // The server echoes this with the node it stores the user message at (`stored`).
                 user_message_ref: sentMessage !== undefined ? storeRefOf(sentUserMessage) : undefined,
-                // What only the page knows of what the macros read.
                 macro_facts: pageMacroFacts(),
                 response_length: requestedResponseLength(),
-                // What the page's extensions and scripts inject; the server builds the prompt.
                 extension_prompts: await pageInjections(),
-                // Kobold-only: mirrors the EXACT real condition getKoboldGenerationData() (public/
-                // scripts/kai-settings.js) and its server-side port createKoboldGenerationData()
-                // (src/kobold-generation-data.js) both use for their own `streaming` field -
-                // `kai_settings.streaming_kobold && kai_flags.can_use_streaming && type !== 'quiet'`
-                // (NOT a simplified two-term version - `type !== 'quiet'` is a real third term found
-                // by reading that computation in full). Without this, the raw-action payload built
-                // above never set `.streaming` at all, so generateKoboldWithStreaming() (kai-
-                // settings.js) - which, unlike generateNovelWithStreaming()'s unconditional
-                // `generate_data.streaming = nai_settings.streaming_novel;` overwrite, just fetches
-                // whatever `.streaming` already is - would send `streaming: undefined` even though
-                // isStreamingEnabled() (~line 4572 above) already decided to call the streaming send
-                // path. `kai_flags.can_use_streaming` is a live client-side connection probe result
-                // that has no server-side equivalent, so this must be computed here, client-side.
-                // Left `undefined` for 'novel'/'textgenerationwebui'/'koboldhorde' (this same object is
-                // shared by all four raw-action-eligible main_apis): NovelAI's own wrapper overwrites
-                // it unconditionally regardless of what's sent here, so it's a no-op there; Horde is
-                // never streamed at all (isStreamingEnabled() has no 'koboldhorde' branch - see that
-                // function, ~line 4572 - so this field is simply never read for it); textgen's
-                // equivalent asymmetry (if any) is out of scope for this fix.
                 streaming: main_api === 'kobold'
                     ? (kai_settings.streaming_kobold && kai_flags.can_use_streaming && type !== 'quiet')
                     : undefined,
-                // Kobold-only, same root cause as `streaming` above but a SIMPLER real condition -
-                // verified by reading getKoboldGenerationData() (kai-settings.js line ~187) and its
-                // server-side port createKoboldGenerationData() (src/kobold-generation-data.js line
-                // ~112): both compute `can_abort` as JUST `kai_flags.can_use_streaming` alone - no
-                // `kai_settings.streaming_kobold` term, no `type !== 'quiet'` term (unlike `streaming`
-                // above, which genuinely needs all three). Without this, the raw-action payload never
-                // set `.can_abort`, and built.params.can_abort (from createKoboldGenerationData(), see
-                // the route's own `koboldFlags` comment) is unconditionally `false` server-side for the
-                // same reason `streaming` was: buildRawActionKoboldRequest() never passes a real
-                // `koboldFlags` value through, so it defaults to `{}`. That falsy `can_abort` silently
-                // disables the socket-close abort-on-disconnect call in kobold.js's `/generate` route
-                // (`if (request.body.can_abort && !response_generate.writableEnded) { ... }`), so a
-                // raw-action stream whose client disconnects mid-generation would never tell the real
-                // Kobold backend to stop. Left `undefined` for 'novel'/'textgenerationwebui'/
-                // 'koboldhorde' for the same reason as `streaming` above - out of scope here (and,
-                // for 'koboldhorde' specifically, meaningless: Horde is never streamed at all).
                 can_abort: main_api === 'kobold' ? kai_flags.can_use_streaming : undefined,
                 ...quietPromptRequest(quiet_prompt, quietToLoud, quietName, quietImage),
             };
         }
-        // else: no resolvable ownerId/characterAvatar (other precondition) - fall through to the
-        // legacy client-assembled path below, unchanged.
     }
 
-    // === Raw-action chat-completion cutover ===
-    // Direct analog of the raw-action text-completion cutover immediately above, for main_api === 'openai'. The
-    // already-built, already-tested server-side pipeline (resolveChatCompletionGenerationInput() +
-    // prepareOpenAIMessages() [src/chat-completion-prepare-messages.js, NOT the client-side legacy function of the
-    // same name called a few lines below] + createGenerationParameters() [src/chat-completion-generation-data.js])
-    // is wired into a real raw-action branch of /api/backends/chat-completions/generate - see
-    // buildRawActionChatCompletionRequest() in src/endpoints/backends/chat-completions.js (commits de3696095,
-    // 6bd95de8e). Instead of the client-assembled oaiMessages/prompt, this sends only which character/node and the
-    // literal text typed, matching that endpoint's real, tested contract (character_avatar/group_id/owner_id/
-    // node_id/type/user_message - field names deliberately verbatim from the text-completion precedent,
-    // per this session's own task instructions; there is no `branch_name` field anymore, and
-    // is_impersonate/is_continue/is_swipe are derived server-side from `type` alone - see the
-    // text-completion cutover's own identical UPDATE comment above).
-    //
-    // JUDGMENT CALL #1 (scope): IDENTICAL restriction to the text-completion cutover above, for the IDENTICAL
-    // underlying reason - re-confirmed by reading the chat-completion side's OWN persistence code
-    // (buildRawActionChatCompletionRequest()'s appendMessages()/addAlternatives()/selectDefaultChild()/
-    // editMessage() calls in chat-completions.js), not copy-pasted blindly:
-    //   - group chats: NOW INCLUDED (this follow-up task) - same client-side mechanism as the text-completion
-    //     cutover above (the exact same getCurrentCharacter()/setCharacterId() mechanism applies here too, since
-    //     both cutovers live in this same Generate() function and share the identical selected_group/
-    //     getCurrentCharacter() primitives - see that block's own JUDGMENT CALL #1 for the full investigation).
-    //     Previously excluded because resolveChatCompletionGenerationInput() (src/chat-completion-generation-
-    //     input.js) had its own, separate, pre-existing, documented MVP scope boundary (`isGroup` hardcoded
-    //     `false`, `groupMemberNames` hardcoded `[]`, `void groupId`) - that resolver now has real group support
-    //     (real `isGroup`/`groupMemberNames`/combined group-card resolution via `getCharacterCardFields()`'s own
-    //     already-real `groupId` support - see that file's own doc comment GROUPS section), so this cutover is
-    //     widened the same way the text-completion one already was.
-    // 'continue' is now ALSO INCLUDED, same real tree-shape bug/fix as the text-completion cutover's own
-    // (identically-worded) JUDGMENT CALL #1 above: the client's saveReply({type:'appendFinal'}) edits the existing
-    // leaf node's text in place, but the server's appendMessages() call (keyed off `anchorNodeId`, which for
-    // chat-completion's raw action is ALSO just the branch leaf - see buildRawActionChatCompletionRequest()'s Step
-    // 2) used to always append a brand-new CHILD node instead. Now fixed identically: the chat store
-    // (src/chat-engine.js) splices `oldText + newText` into the anchor's own current content and replaces the
-    // whole stored node in place when `is_continue` is set - see that route handler's own comment on this branch,
-    // and the text-completion cutover's own JUDGMENT CALL #1 above for the full `continue_mag`/reasoning-round-trip/
-    // `continueUserTextConflict` investigation this is based on (identical for both backends - chat-completion's own
-    // `resolveChatCompletionGenerationInput()` never drops or alters the leaf's content for `isContinue` either,
-    // only for `isSwipe` - see that function's own `promptChat` doc comment - so `orchestratorInput.macroContext.chat`
-    // 's last entry is the real, current anchor content here too).
-    // 'impersonate'/'quiet' are now INCLUDED (previously excluded in commit 9d3091f41 for the identical reason as
-    // the text-completion cutover's own original exclusion - the server's persistence used to be unconditional).
-    // That's now fixed server-side (see buildRawActionChatCompletionRequest()'s route handler in
-    // src/endpoints/backends/chat-completions.js: `isImpersonate`/`type === 'quiet'` skip BOTH the user-message and
-    // assistant-reply appendMessages() calls), and `user_message` is verified to always resolve to `undefined` for
-    // both (identical reasoning to the text-completion cutover's own JUDGMENT CALL #3 above - `textareaText` is
-    // unconditionally `''` for both types), so there's nothing new for the server to spuriously persist regardless.
-    // See JUDGMENT CALL #3 below, however, for a real chat-completion-SPECIFIC gap this widening does not close.
-    //
-    // 'swipe'/'regenerate' are ALSO now INCLUDED, same real tree-shape bug/fix as the text-completion cutover's own
-    // (identically-worded) JUDGMENT CALL #1 above - `anchorNodeId` here is likewise just the branch leaf (the
-    // message being swiped/regenerated), so a plain appendMessages() call would have chained the reply as a CHILD
-    // after it instead of a SIBLING alongside it. Now fixed identically: `addAlternatives()` +
-    // `selectDefaultChild()` when `is_swipe` is set (see that route handler's own comment on this branch). A REAL,
-    // chat-completion-SPECIFIC gap was found and fixed alongside this, though, that the text-completion pipeline did
-    // NOT have: `resolveChatCompletionGenerationInput()` (src/chat-completion-generation-input.js) previously never
-    // excluded the message being swiped/regenerated from the `chat` array it builds `messages`/world-info-scanning
-    // input/`macroContext` from at all (it accepted an `isSwipe` parameter but never read it - `void isSwipe`) -
-    // unlike src/text-completion-prompt-orchestrator.js's own `buildCoreChat({isSwipe})`, which already correctly
-    // popped that message. Left as-is, a chat-completion swipe/regenerate would have fed the model its OWN
-    // about-to-be-replaced reply as the newest turn of its own context. Fixed there (now a real `promptChat` that
-    // drops the last entry when `isSwipe`), plus a matching fix to the shared `getBiasStrings()` (src/prompt-line-
-    // formatting.js, used by BOTH pipelines) to skip that same last entry for `type === 'regenerate'` too, not just
-    // `'swipe'` (its one-line-literal port of the client's own check only handled `'swipe'`, because client-side the
-    // array is already shortened for 'regenerate' by the time that function runs there - not true server-side, where
-    // `chat` is always freshly resolved from the persisted tree regardless of which literal `type` string was sent).
-    // No genuinely NEW chat-completion-specific correctness concern beyond THAT was found - specifically checked
-    // and ruled out:
-    //   - Claude's assistant-prefill continuation semantics (`oai_settings.continue_prefill`/`supportsAssistantPrefill`,
-    //     threaded through src/chat-completion-history.js/src/chat-completion-prepare-messages.js) are used ONLY for
-    //     `type === 'continue'` (verified: src/chat-completion-generation-data.js line ~325, `if (type !== 'quiet' &&
-    //     !(type === 'continue' && settings.continue_prefill))`) - already excluded from this narrow scope, so this
-    //     never interacts with a plain 'normal' turn.
-    //   - Tool-call reconstruction in chat history (src/chat-completion-history.js's `canUseTools &&
-    //     Array.isArray(chatPrompt.invocations)` branch) operates on tool invocations already recorded on PAST
-    //     messages in the loaded chat history - it is not affected by whether the CURRENT turn is allowed to call
-    //     tools. The `!canPerformToolCalls` gate below (same `canPerformToolCalls` local declared above, computed via
-    //     `ToolManager.canPerformToolCalls(type)` which itself defaults to `oai_settings`/`getChatCompletionModel(oai_settings)`
-    //     when not given explicit settings/model - i.e. it is not main_api-specific in a way that changes anything
-    //     here; it already reflects the chat-completion settings regardless of main_api) only prevents the CURRENT
-    //     turn from registering/using tools, exactly mirroring the client's own `!canMultiSwipe &&
-    //     ToolManager.canPerformToolCalls(type, settings, model)` gate before `registerFunctionToolsOpenAI()` in
-    //     createGenerationParameters() (public/scripts/chat-completion-settings.js) - so excluding
-    //     `canPerformToolCalls` here is, if anything, an even more directly-applicable precondition for chat
-    //     completion than it was for text completion.
-    //
-    // JUDGMENT CALL #2 (assembly now REALLY skipped - NARROWED after a real regression was found and fixed):
-    // IDENTICAL strategy to the text-completion cutover's own (identically-renumbered) JUDGMENT CALL #2 above - this
-    // DOES skip the remaining, genuinely pure-prompt-string-construction part of the client-side prompt-assembly
-    // (world info scan, the legacy client-side `prepareOpenAIMessages()`-feeding locals) whenever THIS gate (or the
-    // text-completion one above it) resolves to non-null, via the SAME
-    // `if (!rawActionGenerateData && !rawActionChatCompletionData) { ... }` wrapper. It does NOT skip
-    // character-card-fields/depth-prompt resolution, `coreChat` construction, or `runGenerationInterceptors()` -
-    // those were moved to run unconditionally, before either raw-action gate - see the text-completion cutover's own
-    // (identically-renumbered) JUDGMENT CALL #2 above for the full rationale (extension-interceptor abort hook +
-    // shared extension_prompts table writes), which applies identically here since it is the SAME code path (one
-    // `Generate()` function, one assembly, shared by both backends). `oaiMessages`, `oaiMessageExamples`,
-    // `worldInfoBefore`, `worldInfoAfter` (locals this cutover's own data flow depends on) are hoisted with safe
-    // defaults above that block for exactly the same temporal-dead-zone reason documented there. `system`,
-    // `jailbreak`, `description`, `personality`, `scenario` need no such hoisting any more - they are computed for
-    // real, unconditionally, by the always-run section above (`promptBias` likewise needed no such hoisting - it is
-    // resolved even earlier, before either gate, as part of this function's initial textarea/bias setup, so it
-    // already carries its real value regardless of whether the remaining assembly runs). What is ADDITIONALLY
-    // skipped for the
-    // raw-action case, beyond the assembly itself, is the actual CLIENT-SIDE `prepareOpenAIMessages()` CALL inside
-    // the `case 'openai':` block below (the "final generate_data builder" step - the direct analog of
-    // `getTextGenGenerationData()` for the textgen case) - its result (`prompt`/`counts`) is simply never computed
-    // for this one case, and `generate_data` is set directly from the raw action object instead. This remains safe
-    // (does not skip anything read via TDZ downstream): `counts`/`thisPromptBits` are used only to build
-    // `additionalPromptStuff` in `finishGenerating()` via `thisPromptBits[Number(thisPromptBits.length - 1)]` -
-    // spreading `thisPromptBits[-1]` (`undefined`) into an object literal is a no-op, not a TypeError - verified by
-    // reading `finishGenerating()`'s own `additionalPromptStuff` construction, and `thisPromptBits` itself is now
-    // hoisted to `[]` above the (skipped) assembly for the same reason every other local on this list is.
-    // `openai_messages_count` (set as a side effect of the skipped `prepareOpenAIMessages()` call) is likewise
-    // UI-only (an "N messages in context" display, via `setInContextMessages()`) - also skipped here rather than fed
-    // a stale prior value, to avoid displaying a wrong number; a pure UI cosmetic, not a correctness concern.
-    //
-    // JUDGMENT CALL #3 (jsonSchema, chat-completion-SPECIFIC - real, verified, and deliberately gated on): unlike
-    // 'textgenerationwebui' (see the text-completion cutover's own JUDGMENT CALL #4 above), a per-call `jsonSchema`
-    // (this function's own `jsonSchema` parameter) is a REAL input to chat-completion generation -
-    // createGenerationParameters() (public/scripts/chat-completion-settings.js) turns it into `generate_data.json_schema`
-    // (src/chat-completion-generation-data.js, mirrored server-side) and even changes `stream`/`isWorkersAIJsonMode`
-    // for some sources. `generateQuietPrompt()` (this file) is a REAL caller that can pass a non-null `jsonSchema`
-    // through to `Generate('quiet', {..., jsonSchema})` - e.g. any extension/slash-command asking for a
-    // schema-constrained quiet generation. `buildRawActionChatCompletionRequest()` (src/endpoints/backends/
-    // chat-completions.js) does NOT accept or forward a `jsonSchema` at all - its own doc comment lists `jsonSchema`
-    // explicitly as one of the fields "NOT resolved here" (an explicit MVP scope boundary, not an oversight). Routing
-    // a schema-bearing quiet call through the raw-action path would silently drop the schema requirement server-side
-    // and return an unconstrained completion instead - a real, silent behavior change, not a hypothetical one. So
-    // this gate explicitly excludes any call with a `jsonSchema` set, falling through to the legacy
-    // `createGenerationParameters()` path (which still honors it) instead. Every OTHER excluded field on that same
-    // doc-comment list (getStoppingStrings/groupNames/electronHubReasoningEfforts/toolsPayload/reverseProxyValidated)
-    // is either not something `Generate()` itself ever threads through to this call, or is already covered by an
-    // existing gate (`toolsPayload` <-> `canPerformToolCalls`, already excluded above) - `jsonSchema` was the one
-    // real gap specific to this narrow scope, verified by reading every consumer of this function's own `jsonSchema`
-    // parameter, not assumed absent.
-    // UPDATE (this task - jsonSchema threading, gap closed): the doc-comment-listed exclusion this JUDGMENT CALL
-    // relied on was checked again, not assumed still true - `buildRawActionChatCompletionRequest()`'s own doc
-    // comment previously listed `jsonSchema` under "NOT resolved here" alongside `getStoppingStrings`/`groupNames`/
-    // `electronHubReasoningEfforts`/`reverseProxyValidated`/`logitBias`, but unlike those (each a genuinely separate
-    // subsystem - live model lists, a reverse-proxy confirmation UI, etc.), `createGenerationParameters()`
-    // (src/chat-completion-generation-data.js) ALREADY accepted a `jsonSchema` param and turned it into
-    // `generate_data.json_schema` - every provider branch in chat-completions.js already reads
-    // `request.body.json_schema` off that. `buildRawActionChatCompletionRequest()` itself simply never accepted
-    // or forwarded the param - a small, mechanical gap, not missing subsystem design. Fixed by adding a
-    // `jsonSchema` param to `buildRawActionChatCompletionRequest()` (forwarded straight into its own
-    // `createGenerationParameters()` call) and a `json_schema` field on this function's own raw-action payload
-    // below (identical shape - `{name, value, description?, strict?, returnInvalid?}` - no new shape invented).
-    // The `!jsonSchema` exclusion on this gate is REMOVED accordingly - see that removal's own UPDATE comment
-    // above for the mechanical detail.
-    // JUDGMENT CALL #4 ('continue' does reach this gate too, verified not assumed): identical trace to the
-    // text-completion cutover's own JUDGMENT CALL #6 above - none of this function's early returns between its
-    // start and here exclude 'continue' by name (only 'regenerate'/'swipe'/'quiet'/dryRun/depth are named in
-    // processCommands()'s own skip condition), so a plain continue reaches this gate exactly like a normal turn
-    // does. Same real edge case applies too (see the text-completion cutover's own JUDGMENT CALL #1 above): a
-    // continue CAN send a user message (leftover send-box text), handled by the identical
-    // `continueUserTextConflict` guard in chat-completions.js's own route handler.
-    // UPDATE (this task - file/media attachment cutover): `!hasPendingFileAttachment()` REMOVED -
-    // identical rationale to the text-completion cutover's own removal above. Chat-completion is
-    // additionally the ONE backend family with real media/image inlining (`inlineMediaAttachment()`,
-    // src/chat-completion-history.js, backed by src/chat-completion-budget.js's `addImage`/`addVideo`/
-    // `addAudio`) - already generic over `.extra.media`/`.media_index`/`.inline_image` on whatever
-    // chat entry it's given (verified via `buildChatCompletionMessages()`, src/chat-completion-
-    // messages.js, which reads those straight off `chat[j].extra` for the in-memory injected turn
-    // exactly like a tree-loaded one) - so `.media` (image/video/audio) is fully inlined into this
-    // turn's own prompt. `.files` (text attachments) is forwarded and correctly PERSISTED here too,
-    // but NOT currently inlined into this turn's prompt - `file-attachment-inline.js` is wired only
-    // into the text-completion pipeline, not chat-completion's (verified by grep, not assumed) - a
-    // real, pre-existing gap versus the legacy client-assembled path (which DOES inline file text via
-    // `coreChat`'s own `appendFileContent()`), not something this task fixes. See the route-level
-    // test in chat-completions.test.js for the full accounting.
     let rawActionChatCompletionData = null;
     if (!dryRun && main_api === 'openai'
         && [undefined, 'normal', 'impersonate', 'quiet', 'swipe', 'regenerate', 'continue'].includes(type)
-        // UPDATE (this task - jsonSchema threading): `!jsonSchema` REMOVED - see JUDGMENT CALL #3
-        // above for the full history of why this was excluded, and the UPDATE note appended to it for
-        // why it no longer needs to be. `buildRawActionChatCompletionRequest()` (src/endpoints/backends/
-        // chat-completions.js) now accepts a `jsonSchema` param and forwards it verbatim into
-        // `createGenerationParameters()`'s existing `json_schema`/`response_format` support - the same
-        // support the legacy path already relied on. `jsonSchema` is sent below exactly as this
-        // function received it (its own `JsonSchema`-typedef shape - `name`/`value`/`description`/
-        // `strict`/`returnInvalid` - unchanged, no new schema shape invented).
-        // UPDATE (chunk (c) - client-proxy tool calling): `!canPerformToolCalls` REMOVED - this is
-        // the actual point of this chunk. A tool-calling-capable connection is no longer excluded
-        // from the raw-action cutover wholesale; `client_tools` (below) advertises the client's own
-        // registered tools to the server, and a `pending_tool_calls` hand-off response (see
-        // `sendOpenAIRequest()`'s own `rawAction` branch/`finishGenerating()`'s
-        // `resolveClientToolHandoffLoop()` below) is how the client still gets to execute them when
-        // the backend actually calls one - no fallback to legacy client-side prompt assembly.
     ) {
-        // `getCurrentCharacter()?.avatar`/`groupId`/`ownerId` derivation is IDENTICAL to the
-        // text-completion raw-action cutover's own (see that block's JUDGMENT CALL #1 above for the
-        // full investigation this is based on - same `Generate()` function, same
-        // `selected_group`/`getCurrentCharacter()`/`setCharacterId()` primitives, so the same
-        // reasoning applies verbatim here): `getCurrentCharacter()?.avatar` already resolves to the
-        // correct RESPONDING MEMBER inside a group turn too (generateGroupWrapper() calls
-        // setCharacterId(avatar) - this file's own this_avatar source of truth - synchronously before
-        // each per-member Generate() call), and `groupId` is `selected_group` itself, already the
-        // group's own real id.
         const characterAvatar = getCurrentCharacter()?.avatar;
         const groupId = selected_group != null ? selected_group : undefined;
-        // For a group turn, owner_id addresses the GROUP's own chat/branch storage (matching
-        // src/endpoints/chats.js's own `ownerId = group_id ? resolveGroupOwner(...).id : avatar...`
-        // pattern) - a character avatar would be the WRONG owner here, even though characterAvatar
-        // itself is still resolved and sent (as `character_avatar`) for the responding member's own
-        // card/prompt resolution. Falls back to the plain per-character ownerId when not in a group,
-        // unchanged from before.
         const ownerId = groupId != null ? String(groupId) : (characterAvatar != null ? String(characterAvatar).replace('.png', '') : undefined);
         const rawActionWrites = rawActionWritesFor(type, lastMessage, lastMessageIndex, metadataAtStart);
-        // `characterAvatar` is required unconditionally, group turn or not - see the text-completion
-        // cutover's own identical precondition/rationale above.
         if (ownerId != null && characterAvatar != null) {
             const sentMessage = sentUserMessageForRequest(sentUserMessage);
-            // Chunk (c): advertise the client's own ToolManager-registered tools (browser-extension
-            // tools that genuinely can't execute server-side - DOM access, extension state, etc.) via
-            // the NEW `client_tools` field, exactly `ToolManager.registerFunctionToolsOpenAI()`'s own
-            // computed `[{type:'function', function:{name, description, parameters}}, ...]` shape -
-            // read straight off a throwaway object rather than reinventing the schema-building logic
-            // (that method itself decides, per tool, whether to include it via each tool's own
-            // `shouldRegister()`). Gated on `canPerformToolCalls` (this function's own local, computed
-            // above from `ToolManager.canPerformToolCalls(type)` - real tool-calling support for this
-            // model/source/type/depth) so a connection/model/type that can't actually use tools never
-            // advertises any (`clientToolsPayload` stays `undefined`, so `client_tools` is omitted from
-            // the JSON body entirely - `JSON.stringify` drops `undefined` values). The server merges
-            // this with its own server-native tools (server wins on a name collision - see
-            // `buildRawActionChatCompletionRequest()`'s own doc comment, `clientToolSchemas` param) and,
-            // if the backend calls one of THESE names, hands off via `pending_tool_calls` instead of
-            // trying to execute it itself.
-            // THIS TASK (stealth-tool parity - see resolveClientToolHandoffLoop()'s own doc comment
-            // below for the full investigation/design): the server can't tell a stealth tool apart
-            // from a normal one just by name - `stealth` is a per-TOOL registration flag
-            // (`ToolManager.registerFunctionTool()`'s own `stealth` param), never sent to the server
-            // before this task. Advertise it as a SEPARATE `stealth_tool_names` list (not an extra key
-            // smuggled into `clientToolsPayload`'s own OpenAI-standard tool schema entries) - only
-            // ever the names ALREADY in `clientToolsPayload` (a tool that isn't registered at all, or
-            // whose `shouldRegister()` said no this turn, was never advertised in the first place, so
-            // it has nothing to be "stealth" about server-side). Omitted (`undefined`, dropped by
-            // `JSON.stringify`) when there are none, matching `clientToolsPayload` itself.
             /** @type {import('./tool-calling.js').ToolDefinitionOpenAI[]|undefined} */
             let clientToolsPayload;
             /** @type {string[]|undefined} */
@@ -1747,51 +881,19 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 group_id: groupId,
                 owner_id: ownerId,
                 ...rawActionWrites,
-                // The message as sent, once `MESSAGE_SENT`'s handlers have run; the server stores it as it is.
                 user_message: sentMessage,
-                // The server echoes this with the node it stores the user message at (`stored`).
                 user_message_ref: sentMessage !== undefined ? storeRefOf(sentUserMessage) : undefined,
-                // What only the page knows of what the macros read.
                 macro_facts: pageMacroFacts(),
                 response_length: requestedResponseLength(),
-                // What the page's extensions and scripts inject; the server builds the prompt.
                 extension_prompts: await pageInjections(),
-                // Chunk (c) - see this block's own comment on `clientToolsPayload` immediately above.
                 client_tools: clientToolsPayload,
-                // THIS TASK - see this block's own comment on `stealthToolNamesPayload` immediately above.
                 stealth_tool_names: stealthToolNamesPayload,
-                // See the removed `!jsonSchema` exclusion's own UPDATE comment above this gate - sent
-                // exactly as this function received it (`JsonSchema` typedef shape), `undefined` (thus
-                // dropped by `JSON.stringify`) when this call has no schema.
                 json_schema: jsonSchema,
                 ...quietPromptRequest(quiet_prompt, quietToLoud, quietName, quietImage),
             };
         }
-        // else: no resolvable ownerId/characterAvatar (other precondition) - fall through to the
-        // legacy client-assembled path below, unchanged.
     }
 
-    // === Hoisted locals for the (remaining, narrower) prompt-assembly block below ===
-    // The assembly below (world info scan, author's note resolution, instruct-mode formatting, the
-    // getCombinedPrompt()/prepareOpenAIMessages()-feeding pipeline) is skipped entirely when a
-    // raw-action request is going to be sent (see the `if` gate below) - the server resolves the
-    // whole prompt itself in that case. Every local this (now smaller) assembly declares that is READ
-    // ANYWHERE later in this function (the switch below, finishGenerating(), onSuccess(), or any other
-    // function nested in this closure) is hoisted here with a safe, correctly-typed default so
-    // skipping the assembly cannot throw a temporal-dead-zone ReferenceError. When the assembly DOES
-    // run (raw action not taken - i.e. kobold/novel/koboldhorde, a dryRun, or a legacy
-    // textgenerationwebui/openai request that didn't qualify for the raw-action gate), every one of
-    // these is overwritten with its real computed value inside the block below, exactly as before -
-    // the assembly's own internal logic is unchanged, only the `let`/`const` on its first assignment
-    // to each of these names was removed (the declaration now lives here instead).
-    // NOTE: `description`, `personality`, `persona`, `scenario`, `mesExamples`, `system`, `jailbreak`,
-    // `charDepthPrompt`, `creatorNotes`, `promptReasoning`, and `this_max_context` used to be hoisted
-    // here too, but no longer are: the regression fix that moved character-card-fields resolution,
-    // `coreChat` construction, and `runGenerationInterceptors()` to run unconditionally (see the
-    // "Always-run" section far above) means all of these are now computed for real, unconditionally,
-    // before either raw-action gate - there is no longer any TDZ gap for them to default across, so a
-    // hoisted placeholder here would be dead, misleading code (and `this_max_context` in particular
-    // would have masked the fact that it now always holds a real value even for the raw-action case).
     /** @type {{maxContextLength: number, maxLength: number}|undefined} */
     let adjustedParams;
     /** @type {{type: number, value: number}|null|undefined} */
@@ -1808,8 +910,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     /** @type {number[]} */
     let injectedIndices = [];
     let continue_mag = '';
-    /** @type {{content: string}[]} Shape from setOpenAIMessages() (chat-completion-settings.js), which
-     * types its own return as plain `object[]` - narrowed here to the one field this file reads. */
+    /** @type {{content: string}[]} */
     let oaiMessages = [];
     /** @type {object[]} */
     let oaiMessageExamples = [];
@@ -1817,9 +918,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     let cyclePrompt = '';
     /** @type {string|undefined} */
     let pinExmString;
-    // Built as a sparse array (`new Array(chat2.length)` below, filled by index in token-budget order,
-    // not sequentially) - `string[]` undersold that: real holes exist until the unsparsing loop below
-    // compacts it, and the `!== undefined` checks against those holes are load-bearing, not dead code.
     /** @type {(string|undefined)[]} */
     let arrMes = [];
     let count_exm_add = 0;
@@ -1827,21 +925,14 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     let mesSend = [];
     let generatedPromptCache = '';
     let mesSendString = '';
-    // Stub default - never actually invoked when raw action is taken: its one external call site
-    // (the textgenerationwebui switch case below) is only reached after the `if (rawActionGenerateData)
-    // {...; break;}` early-out, i.e. only once the real assembly (which reassigns this to the real
-    // function) has run.
     /** @type {(isNegative: boolean) => Promise<string|undefined>} */
     let getCombinedPrompt = async () => '';
     let finalPrompt = '';
     let maxLength = 0;
-    // Item shape is assembled by parseTokenCounts() (script.js), which never declares one - a real
-    // untyped/dynamic breakdown object built at that call site, not narrowable from here.
     /** @type {any[]} */
     let thisPromptBits = [];
 
     if (!rawActionGenerateData && !rawActionChatCompletionData) {
-        // Adjust token limit for Horde
         if (main_api == 'koboldhorde' && (horde_settings.auto_adjust_context_length || horde_settings.auto_adjust_response_length)) {
             try {
                 adjustedParams = await adjustHordeGenerationParams(max_context, responseLengthFor(main_api));
@@ -1854,11 +945,9 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             }
         }
 
-        // Fetches the combined prompt for both negative and positive prompts
         cfgGuidanceScale = getGuidanceScale();
         useCfgPrompt = !!(cfgGuidanceScale && cfgGuidanceScale.value !== 1);
 
-        // Adjust max context based on CFG prompt to prevent overfitting
         if (cfgGuidanceScale && useCfgPrompt) {
             const negativePrompt = getCfgPrompt(cfgGuidanceScale, true, true).value || '';
             const positivePrompt = getCfgPrompt(cfgGuidanceScale, false, true).value || '';
@@ -1881,11 +970,8 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
 
         mesExamplesArray = parseMesExamples(mesExamples, isInstruct);
 
-        // Set non-WI AN
         setFloatingPrompt();
 
-        // Add WI to prompt (and also inject WI to AN value via hijack)
-        // Make quiet prompt available for WIAN
         setExtensionPrompt(inject_ids.QUIET_PROMPT, quiet_prompt ?? '', extension_prompt_types.IN_PROMPT, 0, true);
         const chatForWI = coreChat.map(x => world_info_include_names ? `${x.name}: ${x.mes}` : (x.mes ?? '')).reverse();
         /** @type {import('./world-info.js').WIGlobalScanData} */
@@ -1902,7 +988,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         ({ worldInfoString, worldInfoBefore, worldInfoAfter, worldInfoExamples, worldInfoDepth, outletEntries } = await getWorldInfoPrompt(chatForWI, this_max_context, dryRun, globalScanData));
         setExtensionPrompt(inject_ids.QUIET_PROMPT, '', extension_prompt_types.IN_PROMPT, 0, true);
 
-        // Add message example WI
         for (const example of worldInfoExamples) {
             const exampleMessage = example.content;
 
@@ -1913,7 +998,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             const formattedExample = baseChatReplace(exampleMessage);
             const cleanedExample = parseMesExamples(formattedExample, isInstruct);
 
-            // Insert depending on before or after position
             if (example.position === wi_anchor_position.before) {
                 mesExamplesArray.unshift(...cleanedExample);
             } else {
@@ -1921,7 +1005,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             }
         }
 
-        // At this point, the raw message examples can be created
         const mesExamplesRawArray = [...mesExamplesArray];
 
         if (isInstruct) {
@@ -1929,7 +1012,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         }
 
         if (skipWIAN !== true) {
-            // Add all depth WI entries to prompt
             flushWIInjections();
             if (Array.isArray(worldInfoDepth)) {
                 worldInfoDepth.forEach((e) => {
@@ -1944,10 +1026,8 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             }
         }
 
-        // Add persona description to prompt
         addPersonaDescriptionExtensionPrompt();
 
-        // Prepare the system prompt for Text Completion APIs
         if (main_api !== 'openai') {
             if (power_user.sysprompt.enabled) {
                 system = power_user.prefer_character_prompt && system
@@ -1955,12 +1035,10 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                     : baseChatReplace(power_user.sysprompt.content);
                 system = isInstruct ? substituteParams(system, { original: power_user.sysprompt.content }) : system;
             } else {
-                // Nullify if it's not enabled
                 system = '';
             }
         }
 
-        // Collect before / after story string injections
         beforeScenarioAnchor = await getExtensionPrompt(extension_prompt_types.BEFORE_PROMPT);
         afterScenarioAnchor = await getExtensionPrompt(extension_prompt_types.IN_PROMPT);
 
@@ -1982,28 +1060,23 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             mesExamplesRaw: mesExamplesRawArray.join(''),
         };
 
-        // Render the story string and combine with injections
         storyString = renderStoryString(storyStringParams);
         let combinedStoryString = isInstruct ? formatInstructModeStoryString(storyString) : storyString;
 
-        // Inject the story string as in-chat prompt (if needed)
         const applyStoryStringInject = main_api !== 'openai' && power_user.context.story_string_position === extension_prompt_types.IN_CHAT;
         if (applyStoryStringInject) {
             const depth = power_user.context.story_string_depth;
             const role = power_user.context.story_string_role;
             setExtensionPrompt(inject_ids.STORY_STRING, combinedStoryString, extension_prompt_types.IN_CHAT, depth, false, role);
-            // Remove to prevent duplication
             combinedStoryString = '';
         } else {
             setExtensionPrompt(inject_ids.STORY_STRING, '', extension_prompt_types.IN_CHAT, 0);
         }
 
-        // Story string rendered, safe to remove
         if (power_user.strip_examples) {
             mesExamplesArray = [];
         }
 
-        // Inject all Depth prompts. Chat Completion does it separately
         injectedIndices = [];
         if (main_api !== 'openai') {
             injectedIndices = await doChatInject(coreChat, isContinue);
@@ -2014,15 +1087,11 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 ? substituteParams(jailbreak, { original: power_user.sysprompt.post_history })
                 : baseChatReplace(power_user.sysprompt.post_history);
 
-            // Only inject the jb if there is one
             if (jailbreak) {
-                // When continuing generation of previous output, last user message precedes the message to continue
                 if (isContinue) {
                     coreChat.splice(coreChat.length - 1, 0, { mes: jailbreak, is_user: true });
                 } else {
-                    // This operation will result in the injectedIndices indexes being off by one
                     coreChat.push({ mes: jailbreak, is_user: true });
-                    // Add +1 to the elements to correct for the new PHI/Jailbreak message.
                     injectedIndices.forEach(shiftUpByOne);
                 }
             }
@@ -2032,11 +1101,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         let chat2 = [];
         continue_mag = '';
         let userMessageIndices = [];
-        // Array.prototype.findLastIndex() needs an es2023+ lib target; tsconfig.precommit.json
-        // (extended by tsconfig.chat-strict.json) targets ES2022 - a real, already-supported runtime
-        // method (Node/browsers have shipped it since well before ES2023 was finalized as a lib name),
-        // just not one the configured lib list currently recognizes. Reimplemented inline rather than
-        // widening that shared, project-wide tsconfig from this one file.
         let lastUserMessageIndex = -1;
         for (let i = coreChat.length - 1; i >= 0; i--) {
             if (coreChat[i].is_user === true) {
@@ -2059,25 +1123,19 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             chat2[i] = formatMessageHistoryItem(coreChat[j], isInstruct, false);
 
             if (j === 0 && isInstruct) {
-                // Reformat with the first output sequence (if any)
                 chat2[i] = formatMessageHistoryItem(coreChat[j], isInstruct, force_output_sequence.FIRST);
             }
 
             if (lastUserMessageIndex >= 0 && j === lastUserMessageIndex && isInstruct && !isImpersonate) {
-                // Reformat with the last input sequence (if any)
                 chat2[i] = formatMessageHistoryItem(coreChat[j], isInstruct, force_output_sequence.LAST);
             }
 
-            // Do not suffix the message for continuation
             if (i === 0 && isContinue) {
-                // Pick something that's very unlikely to be in a message
                 const FORMAT_TOKEN = '\u0000\ufffc\u0000\ufffd';
 
                 if (isInstruct) {
                     const originalMessage = String(coreChat[j].mes ?? '');
-                    // Work on a temporary shallow copy so we don't mutate the (possibly frozen) original
                     const tempMsg = { ...coreChat[j], mes: originalMessage.replaceAll(FORMAT_TOKEN, '') + FORMAT_TOKEN };
-                    // Reformat with the last output sequence (if any)
                     chat2[i] = formatMessageHistoryItem(tempMsg, isInstruct, force_output_sequence.LAST);
                 }
 
@@ -2109,14 +1167,10 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         oaiMessageExamples = [];
 
         if (main_api === 'openai') {
-            // Cast: setOpenAIMessages() (chat-completion-settings.js) types its own return as plain
-            // `object[]` even though every element it builds has a `content` field - narrowed here to
-            // the shape this file actually reads.
             oaiMessages = /** @type {{content: string}[]} */ (setOpenAIMessages(coreChat));
             oaiMessageExamples = setOpenAIMessageExamples(mesExamplesArray);
         }
 
-        // hack for regeneration of the first message
         if (chat2.length == 0) {
             chat2.push('');
         }
@@ -2134,35 +1188,25 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 modifyLastPromptLine(''),
                 cyclePrompt,
             ].join('').replace(/\r/gm, '');
-            // Cross-file note: getTokenCountAsync() (tokenizers.js) declares no JSDoc @param for its
-            // `padding` argument, so TS infers the parameter's type from its `= undefined` default
-            // alone (plain `undefined`) rather than the `number` it actually accepts and uses at runtime.
             // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
             return getPromptTokenCountAsync(encodeString, /** @type {undefined} */ (/** @type {unknown} */ (power_user.token_padding)));
         }
 
-        // Force pinned examples into the context
         if (power_user.pin_examples) {
             pinExmString = examplesString = mesExamplesArray.join('');
         }
 
-        // Only add the chat in context if past the greeting message
         if (isContinue && (chat2.length > 1 || main_api === 'openai')) {
             cyclePrompt = chat2.shift() ?? '';
-            // Adjust indices to account for the shift
             injectedIndices = injectedIndices.map(shiftDownByOne).filter(x => x >= 0);
             userMessageIndices = userMessageIndices.map(shiftDownByOne).filter(x => x >= 0);
         }
 
-        // Collect enough messages to fill the context
         arrMes = new Array(chat2.length);
         let tokenCount = await getMessagesTokenCount();
         let lastAddedIndex = 0;
 
-        // Pre-allocate all injections first.
-        // If it doesn't fit - user shot himself in the foot
         for (const index of injectedIndices) {
-            // not needed for OAI prompting
             if (main_api == 'openai') {
                 break;
             }
@@ -2185,12 +1229,10 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         }
 
         for (let i = 0; i < chat2.length; i++) {
-            // not needed for OAI prompting
             if (main_api == 'openai') {
                 break;
             }
 
-            // Skip already injected messages
             if (arrMes[i] !== undefined) {
                 continue;
             }
@@ -2212,7 +1254,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             }
         }
 
-        // Add user alignment message if last message is not a user message
         const stoppedAtUser = userMessageIndices.includes(lastAddedIndex);
         if (addUserAlignment && !stoppedAtUser) {
             // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
@@ -2222,7 +1263,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             injectedIndices.push(arrMes.length - 1);
         }
 
-        // Unsparse the array. Adjust injected indices
         /** @type {string[]} */
         const newArrMes = [];
         const newInjectedIndices = [];
@@ -2243,7 +1283,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             setInContextMessages(arrMes.length - injectedIndices.length, type);
         }
 
-        // Estimate how many unpinned example messages fit in the context
         tokenCount = await getMessagesTokenCount();
         count_exm_add = 0;
         if (!power_user.pin_examples) {
@@ -2262,7 +1301,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         mesSend = [];
 
         if (isContinue) {
-            // Coping mechanism for OAI spacing
             if (main_api === 'openai' && !cyclePrompt.endsWith(' ')) {
                 cyclePrompt += oai_settings.continue_postfix;
                 continue_mag += oai_settings.continue_postfix;
@@ -2277,23 +1315,14 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         generatedPromptCache = cyclePrompt || '';
         if (generatedPromptCache.length == 0 || type === 'continue') {
             chatString = '';
-            // Past the unsparsing loop above, every slot is populated (holes were filtered out) -
-            // cast back to plain `string[]` here so the rest of this function doesn't need to
-            // re-guard against a sparseness that no longer exists. Bound to a separate `const` (not
-            // just reassigned to `arrMes`) because TS does not carry a `let` variable's narrowed
-            // type into a closure that captures it - a `const` keeps the narrower type stable there.
             /** @type {string[]} */
             const finalArrMes = /** @type {string[]} */ (arrMes.reverse());
             arrMes = finalArrMes;
             finalArrMes.forEach(function (item, i, arr) {
-                // OAI doesn't need all of this
                 if (main_api === 'openai') {
                     return;
                 }
 
-                // Cohee: This removes a newline from the end of the last message in the context
-                // Last prompt line will add a newline if it's not a continuation
-                // In instruct mode it only removes it if wrap is enabled and it's not a quiet generation
                 if (i === finalArrMes.length - 1 && type !== 'continue') {
                     if (!isInstruct || (power_user.instruct.wrap && type !== 'quiet')) {
                         item = item.replace(/\n?$/, '');
@@ -2323,44 +1352,29 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
          * @returns {string}
          */
         function modifyLastPromptLine(lastMesString) {
-            //#########QUIET PROMPT STUFF PT2##############
-
-            // Add quiet generation prompt at depth 0
             if (quiet_prompt != null && quiet_prompt.length > 0) {
-                // here name1 is forced for all quiet prompts..why?
                 const name = name1;
-                //checks if we are in instruct, if so, formats the chat as such, otherwise just adds the quiet prompt
                 const quietAppend = isInstruct ? formatInstructModeChat(name, quiet_prompt, false, true, '', name1, name2, false) : `\n${quiet_prompt}`;
 
-                //TODO: respect output_sequence vs last_output_sequence settings
-                //TODO: decide how to prompt this to clarify who is talking 'Narrator', 'System', etc.
                 if (isInstruct) {
-                    lastMesString += quietAppend; // + power_user.instruct.output_sequence + '\n';
+                    lastMesString += quietAppend;
                 } else {
                     lastMesString += quietAppend;
                 }
 
 
-                // Ross: bailing out early prevents quiet prompts from respecting other instruct prompt toggles
-                // for sysgen, SD, and summary this is desireable as it prevents the AI from responding as char..
-                // but for idle prompting, we want the flexibility of the other prompt toggles, and to respect them as per settings in the extension
-                // need a detection for what the quiet prompt is being asked for...
-
-                // Bail out early?
                 if (!isInstruct && quietToLoud !== true) {
                     return lastMesString;
                 }
             }
 
 
-            // Get instruct mode line
             if (isInstruct && !isContinue) {
                 const name = (quiet_prompt != null && quiet_prompt !== '' && quietToLoud !== true && !isImpersonate) ? (quietName ?? 'System') : (isImpersonate ? name1 : name2);
                 const isQuiet = quiet_prompt != null && quiet_prompt !== '' && type == 'quiet';
                 lastMesString += formatInstructModePrompt(name, isImpersonate, promptBias, name1, name2, isQuiet, quietToLoud === true);
             }
 
-            // Get non-instruct impersonation line
             if (!isInstruct && isImpersonate && !isContinue) {
                 const name = name1;
                 if (!lastMesString.endsWith('\n')) {
@@ -2369,8 +1383,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 lastMesString += name + ':';
             }
 
-            // Add character's name
-            // Force name append on continue (if not continuing on user message or first message)
             const isContinuingOnFirstMessage = chat.length === 1 && isContinue;
             if (!isInstruct && force_name2 === true && !isContinuingOnFirstMessage) {
                 if (!lastMesString.endsWith('\n')) {
@@ -2395,18 +1407,16 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 modifyLastPromptLine(''),
                 generatedPromptCache,
             ].join('').replace(/\r/gm, '');
-            // Cross-file note: see getMessagesTokenCount()'s own identical cast above - getTokenCountAsync()
-            // (tokenizers.js) infers its `padding` param as bare `undefined` from its default value alone.
             // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
             let thisPromptContextSize = await getPromptTokenCountAsync(prompt, /** @type {undefined} */ (/** @type {unknown} */ (power_user.token_padding)));
 
-            if (thisPromptContextSize > this_max_context) {        //if the prepared prompt is larger than the max context size...
-                if (count_exm_add > 0) {                            // ..and we have example messages..
-                    count_exm_add--;                            // remove the example messages...
-                    await checkPromptSize();                            // and try agin...
-                } else if (mesSend.length > 0) {                    // if the chat history is longer than 0
-                    mesSend.shift();                            // remove the first (oldest) chat entry..
-                    await checkPromptSize();                            // and check size again..
+            if (thisPromptContextSize > this_max_context) {
+                if (count_exm_add > 0) {
+                    count_exm_add--;
+                    await checkPromptSize();
+                } else if (mesSend.length > 0) {
+                    mesSend.shift();
+                    await checkPromptSize();
                 } else {
                     //end
                 }
@@ -2423,22 +1433,17 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             showTrimEstimateWarning();
         }
 
-        // For prompt bit itemization
         mesSendString = '';
 
         getCombinedPrompt = async function (isNegative) {
-            // Only return if the guidance scale doesn't exist or the value is 1
-            // Also don't return if constructing the neutral prompt
             if (isNegative && !useCfgPrompt) {
                 return;
             }
 
-            // OAI has its own prompt manager. No need to do anything here
             if (main_api === 'openai') {
                 return '';
             }
 
-            // Deep clone
             let finalMesSend = structuredClone(mesSend);
 
             if (useCfgPrompt && cfgGuidanceScale) {
@@ -2450,11 +1455,8 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                                 ? cfgPrompt.value
                                 : ` ${cfgPrompt.value}`;
                     } else {
-                        // TODO: Make all extension prompts use an array/splice method
                         const lengthDiff = mesSend.length - cfgPrompt.depth;
                         const cfgDepth = lengthDiff >= 0 ? lengthDiff : 0;
-                        // `cfgDepth` is only clamped to a lower bound of 0 above - it is not clamped to
-                        // `finalMesSend.length - 1`, so this index can genuinely be out of range.
                         const cfgMessage = /** @type {{message: string, extensionPrompts: string[]} | undefined} */ (finalMesSend[cfgDepth]);
                         if (cfgMessage != null) {
                             if (!Array.isArray(cfgMessage.extensionPrompts)) {
@@ -2466,8 +1468,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 }
             }
 
-            // Add prompt bias after everything else
-            // Always run with continue
             if (!isInstruct && !isImpersonate) {
                 if (promptBias.trim().length !== 0) {
                     finalMesSend[finalMesSend.length - 1].message +=
@@ -2477,15 +1477,11 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 }
             }
 
-            // Flattens the multiple prompt objects to a string.
             const combine = () => {
-                // Right now, everything is suffixed with a newline
                 mesSendString = finalMesSend.map((e) => `${e.extensionPrompts.join('')}${e.message}`).join('');
 
-                // add a custom dingus (if defined)
                 mesSendString = addChatsSeparator(mesSendString);
 
-                // add chat preamble
                 mesSendString = addChatsPreamble(mesSendString);
 
                 let combinedPrompt = [
@@ -2508,9 +1504,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
 
             let data = {
                 api: main_api,
-                // Subscribers to GENERATE_BEFORE_COMBINE_PROMPTS below may set this on the emitted
-                // object to override the combined prompt - `null` here is only the "no override"
-                // starting value, not the real type.
                 combinedPrompt: /** @type {string | null} */ (null),
                 description,
                 personality,
@@ -2532,10 +1525,8 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 naiPreamble: nai_settings.preamble,
             };
 
-            // Before returning the combined prompt, give available context related information to all subscribers.
             await eventSource.emit(event_types.GENERATE_BEFORE_COMBINE_PROMPTS, data);
 
-            // If one or multiple subscribers return a value, forfeit the responsibillity of flattening the context.
             return data.combinedPrompt == null ? combine() : data.combinedPrompt;
         };
 
@@ -2545,28 +1536,15 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         await eventSource.emit(event_types.GENERATE_AFTER_COMBINE_PROMPTS, eventData);
         finalPrompt = eventData.prompt;
 
-        maxLength = Number(responseLengthFor(main_api)); // how many tokens the AI will be requested to generate
+        maxLength = Number(responseLengthFor(main_api));
         thisPromptBits = [];
     }
 
-    // Shape varies by backend (getKoboldGenerationData()/getTextGenGenerationData()/
-    // getNovelGenerationData() each return their own backend-specific request body, and the raw-action/
-    // openai branches build their own ad-hoc shapes too) - genuinely a union of unrelated payloads with
-    // no common structural type, consumed downstream only by sendGenerationRequest()/StreamingProcessor,
-    // which themselves accept a plain `object`.
     /** @type {any} */
     let generate_data;
     switch (main_api) {
         case 'koboldhorde':
         case 'kobold':
-            // Real raw-action cutover (see JUDGMENT CALL #7 above `let rawActionGenerateData;`) - now
-            // set for `main_api === 'koboldhorde'` too, real and verified (not the previous "excluded
-            // by name" state). When set, this same object reaches sendGenerationRequest() below as
-            // `generate_data`, which dispatches 'koboldhorde' to generateHordeRawAction() instead of
-            // generateHorde() - see that function's own `main_api === 'koboldhorde'` branch. The
-            // `horde_settings.auto_adjust_response_length`/adjustedParams block just below is correctly
-            // skipped in this case (real MVP scope boundary - see JUDGMENT CALL #7's own note on this),
-            // since it's never reached once `break` fires here.
             if (rawActionGenerateData) {
                 generate_data = rawActionGenerateData;
                 break;
@@ -2574,7 +1552,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
 
             if (main_api == 'koboldhorde' && horde_settings.auto_adjust_response_length && adjustedParams) {
                 maxLength = Math.min(maxLength, adjustedParams.maxLength);
-                maxLength = Math.max(maxLength, MIN_LENGTH); // prevent validation errors
+                maxLength = Math.max(maxLength, MIN_LENGTH);
             }
 
             generate_data = {
@@ -2593,9 +1571,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             }
             break;
         case 'textgenerationwebui': {
-            // Real raw-action cutover (see the block above `let generate_data;`) - the server resolves
-            // the whole request itself for this case, so the just-computed finalPrompt/cfgValues are
-            // never sent and never even referenced here.
             if (rawActionGenerateData) {
                 generate_data = rawActionGenerateData;
                 break;
@@ -2605,9 +1580,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             break;
         }
         case 'novel': {
-            // Real raw-action cutover (see JUDGMENT CALL #7 above `let rawActionGenerateData;`) - the
-            // server resolves the whole request itself for this case, so the just-computed
-            // finalPrompt/cfgValues are never sent and never even referenced here.
             if (rawActionGenerateData) {
                 generate_data = rawActionGenerateData;
                 break;
@@ -2618,12 +1590,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             break;
         }
         case 'openai': {
-            // Real raw-action cutover (see the block above `let generate_data;`) - the server resolves the whole
-            // request itself for this case, so the client's own `prepareOpenAIMessages()` call (and the
-            // `prompt`/`counts` it would have produced) is skipped entirely; `generate_data.rawAction` is read by
-            // sendGenerationRequest()/sendStreamingRequest() and forwarded to sendOpenAIRequest(), which builds the
-            // actual request body from it instead of calling createGenerationParameters() (see that function's own
-            // "Raw-action chat-completion cutover" comment in chat-completion-settings.js).
             if (rawActionChatCompletionData) {
                 generate_data = { rawAction: rawActionChatCompletionData };
                 break;
@@ -2644,16 +1610,10 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 systemPromptOverride: system,
                 jailbreakPromptOverride: jailbreak,
                 messages: oaiMessages,
-                // Cross-file note: prepareOpenAIMessages() (chat-completion-settings.js) declares this
-                // field as `string[]`, but setOpenAIMessageExamples() (same file) actually returns an
-                // array of parsed example blocks (its own doc comment: "array of arrays") - an existing
-                // mismatch between that function's own producer and consumer, not introduced here.
                 messageExamples: /** @type {string[]} */ (/** @type {unknown} */ (oaiMessageExamples)),
             }, dryRun);
             generate_data = { prompt: prompt };
 
-            // TODO: move these side-effects somewhere else, so this switch-case solely sets generate_data
-            // counts will return false if the user has not enabled the token breakdown feature
             if (counts !== false) {
                 parseTokenCounts(counts, thisPromptBits);
             }
@@ -2672,9 +1632,8 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     }
 
     /**
-     * Saves itemized prompt bits and calls streaming or non-streaming generation API.
      * @returns {Promise<void|*|Awaited<*>|String|{fromStream}|string|undefined|Object>}
-     * @throws {Error|object} Error with message text, or Error with response JSON (OAI/Horde), or the actual response JSON (novel|textgenerationwebui|kobold)
+     * @throws {Error|object}
      */
     async function finishGenerating() {
         if (power_user.console_log_prompts) {
@@ -2684,11 +1643,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
 
         showStopButton();
 
-        // What the page put into this prompt, for the itemization the server stores with the reply.
         let currentArrayEntry = Number(thisPromptBits.length - 1);
-        // Cross-file note: main_api (script.js) is declared `let main_api;` with no JSDoc type, so it's
-        // `any` here - indexed via a Record<string, any> to avoid propagating that any-ness into an
-        // implicit-any element access.
         const samplerSettingsByApi = /** @type {Record<string, any>} */ ({
             kobold: kai_settings,
             koboldhorde: kai_settings,
@@ -2697,15 +1652,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             openai: oai_settings,
         });
         const activeSamplerSettings = samplerSettingsByApi[main_api];
-        // Cross-file note: extension_prompts (script.js) is declared `export let extension_prompts = {};`
-        // with no JSDoc type - setExtensionPrompt() (same file) is the only writer and always stores this
-        // exact shape, so that's what's cast here rather than the bare `{}` the declaration infers.
-        // Partial, not Record: a key only exists once the owning extension has actually called
-        // setExtensionPrompt() for it - most keys accessed below are absent whenever that extension
-        // isn't active this session.
         const extensionPromptsTable = /** @type {Partial<Record<string, {value: string, position: number, depth: number, scan: boolean, role: number, filter: (() => Promise<boolean>|boolean)|null}>>} */ (extension_prompts);
-        // getPresetManager()'s own JSDoc declares a non-nullable return type, but it has a real
-        // `return null;` path (unknown apiId) - the declared type is wrong, not this guard against it.
         const activePresetManager = /** @type {ReturnType<typeof getPresetManager> | null} */ (getPresetManager());
         let additionalPromptStuff = {
             ...thisPromptBits[currentArrayEntry],
@@ -2736,21 +1683,16 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             userPersona: (getPersonaDescriptionPosition() == persona_description_positions.IN_PROMPT ? (persona || '') : ''),
             tokenizer: getFriendlyTokenizerName(main_api).tokenizerName || '',
             presetName: activePresetManager?.getSelectedPresetName() ?? '',
-            // JSON-stringified so the existing pool-dedup (poolizeValue/poolDedupIncremental) can dedupe
-            // byte-identical configs across consecutive generations for free, no separate dedup logic needed.
             samplerConfigJson: JSON.stringify(activeSamplerSettings ?? {}),
             messagesCount: main_api !== 'openai' ? mesSend.length : oaiMessages.length,
             examplesCount: main_api !== 'openai' ? (pinExmString != null ? mesExamplesArray.length : count_exm_add) : oaiMessageExamples.length,
-            // Per-message content before injection, captured here rather than re-split from rawPrompt later.
             historyParts: main_api === 'openai' ? oaiMessages.map(m => m.content) : mesSend.map(e => e.message),
         };
 
-        // Sent only where the server stores the reply: a raw-action request that isn't quiet or an impersonation.
         const rawAction = rawActionGenerateData ?? rawActionChatCompletionData;
         replyItemizationSent = rawAction !== null && type !== 'quiet' && !isImpersonate;
         if (rawAction !== null && replyItemizationSent) {
             rawAction.itemization = additionalPromptStuff;
-            // The server stores this reply; until the page has its node, the page's copy isn't what is stored.
             const onMessage = type === 'swipe' || isContinue;
             const index = onMessage ? chat.length - 1 : chat.length;
             const named = onMessage ? chat[index]?.node_id : null;
@@ -2761,7 +1703,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             continue_mag = promptReasoning.removePrefix(continue_mag);
             streamingProcessor = new StreamingProcessor(type, force_name2 === true, generation_started, continue_mag, promptReasoning);
             if (isContinue) {
-                // Save reply does add cycle text to the prompt, so it's not needed here
                 streamingProcessor.firstMessageText = '';
             }
 
@@ -2781,17 +1722,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             }
 
             const isStreamFinished = !streamingProcessor.isStopped && streamingProcessor.isFinished;
-            // Streaming raw-action tool-calling cutover (chunk (b)/(c)'s streaming counterpart) - see
-            // forwardAndPersistCompactStreamWithServerTools()'s own doc comment (src/endpoints/backends/
-            // chat-completions.js) for the full mechanism. Only ever set for a raw-action request whose
-            // server-side loop hit a CLIENT-only tool call (`generate_data?.rawAction` truthy - the
-            // exact same field the non-streaming branch below reads for its own, non-streaming
-            // `pending_tool_calls` hand-off). Checked BEFORE the legacy `isStreamWithToolCalls` block:
-            // the server intentionally never forwards raw `tool_calls` deltas to the client for a
-            // request that reaches this hand-off (see that same doc comment, step 3), so
-            // `streamingProcessor.toolCalls` is naturally empty in this case and the legacy block below
-            // would not fire for it anyway - this check exists to actually resolve the hand-off, not
-            // merely to avoid a conflict with it.
             const isStreamWithToolCallHandoff = isStreamFinished && streamingProcessor.toolCallHandoff && generate_data?.rawAction;
             if (isStreamWithToolCallHandoff) {
                 const lastMessage = chat[chat.length - 1];
@@ -2803,20 +1733,8 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 }
                 const handoff = streamingProcessor.toolCallHandoff;
                 streamingProcessor = null;
-                // Reuses chunk (c)'s EXISTING resolveClientToolHandoffLoop() unchanged - see
-                // forwardAndPersistCompactStreamWithServerTools()'s own doc comment for why this is safe: the
-                // pending tree node was already persisted server-side before this trailer chunk was
-                // ever sent, so there is nothing left for the client to persist, only to resolve.
-                // `handoff` is guaranteed non-null here - `isStreamWithToolCallHandoff` above already
-                // required `streamingProcessor.toolCallHandoff` to be truthy - but re-reading it off
-                // `streamingProcessor` (now nulled out on the line above) doesn't let TS carry that
-                // narrowing across, hence the `?? []` fallback (never actually taken).
                 /** @type {any} */
                 const resolved = await resolveClientToolHandoffLoop({ pending_tool_calls: handoff?.pending_tool_calls ?? [] }, generate_data.rawAction);
-                // THIS TASK (stealth-tool parity) - a LATER round inside the resolve loop itself hit a
-                // stealth call (see resolveClientToolHandoffLoop()'s own `data.aborted` check) - unblock
-                // exactly like a first-round abort would (`isStreamWithToolCallAborted` above), no
-                // persisted reply.
                 if (resolved && resolved.aborted) {
                     unblockGeneration(type);
                     return;
@@ -2824,25 +1742,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 return resolved;
             }
 
-            // THIS TASK (stealth-tool parity) - the streaming counterpart of the non-streaming
-            // `data.aborted` check further below. See resolveClientToolHandoffLoop()'s own doc comment
-            // for the full legacy investigation this replicates: the legacy (non-raw-action) loop's
-            // `shouldStopGeneration` is true whenever ANY stealth tool call is present in a round
-            // (`invocationResult.stealthCalls.length`, unconditionally, via `||` - not merely "every
-            // call was stealth"), discarding the WHOLE round (even an already-succeeded non-stealth
-            // invocation in the same round) and stopping generation with nothing persisted -
-            // `unblockGeneration(type)` then a plain `return`, no toast, no error. The server (see
-            // `forwardAndPersistCompactStreamWithServerTools()`'s own `aborted` branch,
-            // src/endpoints/backends/chat-completions.js) already decided not to persist anything for
-            // this round and signaled that via the `tool_call_aborted` SSE trailer
-            // (`streamingProcessor.toolCallAborted`, stashed off `state` the same way
-            // `toolCallHandoff` is). Mirror the legacy branch's own UI-unblocking behavior exactly: no
-            // persisted reply, no error toast, and the in-progress placeholder message this streaming
-            // turn created (chat[]'s last entry) is removed unconditionally - not merely when
-            // empty/`shouldDeleteMessage`-eligible like the handoff branch above, since NOTHING from
-            // this round is meant to remain visible (see this task's own doc comment on the server's
-            // `aborted` branch for the documented narrowing this implies for text-alongside-a-stealth-
-            // call).
             const isStreamWithToolCallAborted = isStreamFinished && streamingProcessor.toolCallAborted && generate_data?.rawAction;
             if (isStreamWithToolCallAborted) {
                 await dropLastMessage();
@@ -2860,9 +1759,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 if (hasToolCalls && !shouldDeleteMessage) {
                     await streamingProcessor.finalizeIntermediaryMessage(streamingProcessor.messageId, getMessage, { unlockUI: false });
                 }
-                // Cross-file note: ToolManager.invokeFunctionTools() (tool-calling.js) declares no JSDoc
-                // @param for `reasoningText`, so TS infers its type from the `= null` default alone
-                // (plain `null`) rather than the `string` it actually accepts and uses at runtime.
                 const invocationResult = await ToolManager.invokeFunctionTools(streamingProcessor.toolCalls, {
                     reasoningText: /** @type {null} */ (/** @type {unknown} */ (streamingProcessor.reasoningHandler.reasoning)),
                 });
@@ -2894,37 +1790,18 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 });
             }
         } else {
-            // sendGenerationRequest() (script.js) declares its own return type as plain `object` -
-            // genuinely a dynamic, backend-shaped response (`pending_tool_calls`/`aborted` are only
-            // present for the raw-action tool-calling hand-off case; a normal response has neither).
             /** @type {any} */
             const data = await sendGenerationRequest(type, generate_data, { jsonSchema: jsonSchema ?? undefined });
             adoptStored(data?.stored);
-            // Chunk (c): the raw-action chat-completion route can now hand a tool call off to the
-            // client instead of returning a normal generation result (`{choices: [...]}`) - see
-            // `buildRawActionChatCompletionRequest()`'s own doc comment (server-tools.js/
-            // chat-completions.js). Only ever set for `generate_data.rawAction` (the raw-action
-            // cutover, see `sendOpenAIRequest()`'s own `rawAction` branch) - every other backend/path
-            // never produces this field, so this check is a no-op for them.
             if (data && Array.isArray(data.pending_tool_calls) && data.pending_tool_calls.length && generate_data?.rawAction) {
                 /** @type {any} */
                 const resolved = await resolveClientToolHandoffLoop(data, generate_data.rawAction);
-                // THIS TASK (stealth-tool parity) - see the streaming branch's own identical check
-                // above for the full rationale (a LATER round inside the resolve loop hit a stealth
-                // call).
                 if (resolved && resolved.aborted) {
                     unblockGeneration(type);
                     return;
                 }
                 return resolved;
             }
-            // THIS TASK (stealth-tool parity) - the non-streaming counterpart of
-            // `isStreamWithToolCallAborted` above; see that branch's own doc comment and
-            // resolveClientToolHandoffLoop()'s own doc comment for the full legacy investigation this
-            // replicates. No message was ever added to `chat[]` for this branch by the time this line
-            // runs (unlike streaming, which creates an in-progress placeholder as tokens arrive) - the
-            // non-streaming path only calls `saveReply()` further down in `onSuccess()`, which this
-            // early return never reaches - so there is nothing to delete here, only to skip.
             if (data && data.aborted && generate_data?.rawAction) {
                 unblockGeneration(type);
                 return;
@@ -2936,11 +1813,9 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     return finishGenerating().then(onSuccess, onError);
 
     /**
-     * Handles the successful response from the generation API.
-     * @param {any} data Response from finishGenerating() - see that function's own doc comment on why
-     * this is genuinely dynamic (backend-shaped response JSON, of a shape that varies by API/type).
+     * @param {any} data
      * @returns {Promise<String|{fromStream}|*|string|string|void|Awaited<*>|undefined>}
-     * @throws {Error} Throws an error if the response data contains an error message
+     * @throws {Error}
      */
     async function onSuccess(data) {
         if (!data) return;
@@ -2951,7 +1826,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
 
         let messageChunk = '';
 
-        // if an error was returned in data (textgenwebui), show it and throw it
         if (data.error) {
             unblockGeneration(type);
 
@@ -2968,7 +1842,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             return extractJsonFromData(data, { returnInvalidJson: jsonSchema.returnInvalid ?? false });
         }
 
-        //const getData = await response.json();
         let getMessage = extractMessageFromData(data);
         let title = extractTitleFromData(data);
         let reasoning = extractReasoningFromData(data);
@@ -2997,7 +1870,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             getMessage = continue_mag + getMessage;
         }
 
-        //Formating
         const displayIncomplete = type === 'quiet' && quietToLoud !== true;
         getMessage = cleanUpMessage({
             getMessage: getMessage,
@@ -3013,8 +1885,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             unblockGeneration(type);
             return getMessage;
         } else {
-            // Without streaming we'll be having a full message on continuation. Treat it as a last chunk.
-            // The reply as the server stored it (its reasoning split off), shown in place of the page's copy.
             const storedReply = data.assistant_message ?? takeStoredReply(data.assistant_node_id);
             const storedNodeId = isStoredNodeId(data.assistant_node_id) ? data.assistant_node_id : null;
             if (originalType !== 'continue') {
@@ -3023,7 +1893,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 ({ type, getMessage } = await saveReply({ type: 'appendFinal', getMessage, title, swipes, reasoning, imageUrls, reasoningSignature, storedReply, storedNodeId }));
             }
 
-            // This relies on `saveReply` having been called to add the message to the chat, so it must be last.
             parseAndSaveLogprobs(data, continue_mag);
             if (isStoredNodeId(data.assistant_node_id)) {
                 _stampAssistantNodeId(data.assistant_node_id);
@@ -3036,8 +1905,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             const hasToolCalls = ToolManager.hasToolCalls(data);
             const shouldDeleteMessage = type !== 'swipe' && ['', '...'].includes(getMessage) && !reasoning;
             hasToolCalls && shouldDeleteMessage && await dropLastMessage();
-            // Cross-file note: see the streaming branch's own identical cast above - invokeFunctionTools()'s
-            // `reasoningText` is inferred as bare `null` from its default value alone.
             const invocationResult = await ToolManager.invokeFunctionTools(data, { reasoningText: /** @type {null} */ (/** @type {unknown} */ (reasoning)) });
             const shouldStopGeneration = (!invocationResult.invocations.length && shouldDeleteMessage) || invocationResult.stealthCalls.length > 0;
             if (hasToolCalls) {
@@ -3062,14 +1929,9 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         const isAborted = abortController.signal.aborted;
         if (!isAborted && power_user.auto_swipe && generatedTextFiltered(getMessage)) {
             setSendButtonState(false);
-            // Cross-file note: swipe() (script.js) types `event` as the non-nullable `SwipeEvent` even
-            // though this programmatic auto-swipe call (no real jQuery event exists) has always passed
-            // `null` here - the function itself treats a missing event as the normal case.
             return await swipe(/** @type {SwipeEvent} */ (/** @type {unknown} */ (null)), SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.AUTO_SWIPE, repeated: true, forceMesId: chat.length - 1 });
         }
 
-        // Where upstream saved the chat after a reply: the reply is on its node and its handlers have run, so a change
-        // an extension made in place there (MESSAGE_RECEIVED, ...) is stored; nothing is sent when nothing differs.
         await storePageChatChanges();
         saveTokenCache();
         unblockGeneration(type);
@@ -3079,20 +1941,14 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             triggerAutoContinue(messageChunk, isImpersonate);
         }
 
-        // Don't break the API chain that expects a single string in return
         return Object.defineProperty(new String(getMessage), 'messageChunk', { value: messageChunk });
     }
 
     /**
-     * Exception handler for finishGenerating
-     * @param {Error|object} exception Error or response JSON
-     * @throws {Error|object} Re-throws the exception
+     * @param {Error|object} exception
+     * @throws {Error|object}
      */
     function onError(exception) {
-        // if the response JSON was thrown (novel|textgenerationwebui|kobold), show the error message -
-        // a real, dynamic backend-error shape distinct from the `Error` branch (see this function's own
-        // JSDoc @param), so genuinely not narrowable to a single static type here.
-        // The server's own refusal (`{ error: true, message }`, e.g. a request it couldn't build) is shown the same way.
         const errorResponse = /** @type {any} */ (exception);
         const message = typeof errorResponse?.error?.message === 'string'
             ? errorResponse.error.message
@@ -3108,9 +1964,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     }
 }
 
-/**
- * Stops the generation and any streaming if it is currently running.
- */
 export function stopGeneration() {
     let stopped = false;
     stopServerGenerations();

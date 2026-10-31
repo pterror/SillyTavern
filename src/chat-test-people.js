@@ -1,6 +1,4 @@
 /**
- * Tests only: `People.owners()` for a test's own `People`, from its speakers: a tree with a speaker is that character's
- * (named so, made at 0), any other a group's.
  * @param {{ speakers: (ids: bigint[]) => Promise<Map<bigint, { name: string }>> }} people
  * @returns {(ids: bigint[]) => Promise<Map<bigint, { group: boolean, name: string, created: number }>>}
  */

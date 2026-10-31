@@ -1,14 +1,9 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// Creating a tag, renaming it, recolouring it, changing its folder type, and putting it on or taking it off a
-// character: the page shows the change only if the server stored it. One that wasn't stored is said to the user and
-// the page shows what the server has. A name that wasn't stored stays in its field, marked, and survives a reload.
-
 /** @param {import('@playwright/test').Page} page */
 async function loadApp(page) {
     await testSetup.awaitST({ page });
-    // APP_READY is an auto-fire event: a listener added after it was emitted still runs.
     await page.evaluate(() => {
         window['__appReady'] = false;
         const { eventSource, eventTypes } = window['SillyTavern'].getContext();
@@ -32,7 +27,6 @@ async function api(page, path, body = {}) {
 }
 
 /**
- * Creates tags from a throwaway context, so the page under test learns of them only through its own boot.
  * @param {import('@playwright/test').Browser} browser
  * @param {{ id: string, name?: string, color?: string }[]} tags
  */
@@ -57,7 +51,7 @@ async function createTags(browser, tags) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} id
- * @returns {Promise<Record<string, any> | null>} the tag as the server stores it
+ * @returns {Promise<Record<string, any> | null>}
  */
 async function storedTag(page, id) {
     const { tags } = await api(page, '/api/tags/by-ids', { ids: [id] });
@@ -67,7 +61,7 @@ async function storedTag(page, id) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} id
- * @returns {Promise<Record<string, any> | null>} the tag as the page holds it
+ * @returns {Promise<Record<string, any> | null>}
  */
 function pageTag(page, id) {
     return page.evaluate(async id => {
@@ -86,7 +80,7 @@ async function openTagManagement(page) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} path
- * @returns {string[]} the body of every request the page sends to `path` from now on
+ * @returns {string[]}
  */
 function recordRequests(page, path) {
     /** @type {string[]} */
@@ -98,19 +92,16 @@ function recordRequests(page, path) {
 }
 
 /**
- * Creates and opens a throwaway character.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @returns {Promise<string>} its avatar key
+ * @returns {Promise<string>}
  */
 async function openNewCharacter(page, name) {
     await openCharacterManagementDrawer(page);
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button_label').click();
-    // Creating a character opens it.
     await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
-    // The create form has a tag input too: it is the clicked character that has to be open.
     await page.waitForFunction(name => {
         const context = window['SillyTavern'].getContext();
         return context.characters[context.characterId]?.name === name;
@@ -123,12 +114,10 @@ async function openNewCharacter(page, name) {
 }
 
 /**
- * Picks `tagName` in the open character's tag input.
  * @param {import('@playwright/test').Page} page
  * @param {string} tagName
  */
 async function pickInTagInput(page, tagName) {
-    // The chat that opens with the character takes the focus when it has loaded; text filled before that is lost.
     await expect(async () => {
         await page.locator('#tagInput').fill(tagName);
         await expect(page.locator('#tagInput')).toHaveValue(tagName, { timeout: 500 });
@@ -136,7 +125,11 @@ async function pickInTagInput(page, tagName) {
     await page.locator('.ui-autocomplete .ui-menu-item').getByText(tagName, { exact: true }).click();
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar @returns {Promise<string[]>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ * @returns {Promise<string[]>}
+ */
 function pageCharacterTagIds(page, avatar) {
     return page.evaluate(avatar => {
         const character = window['SillyTavern'].getContext().characters.find(c => c.avatar === avatar);
@@ -144,7 +137,11 @@ function pageCharacterTagIds(page, avatar) {
     }, avatar);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar @returns {Promise<string[]>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ * @returns {Promise<string[]>}
+ */
 async function storedCharacterTagIds(page, avatar) {
     return (await api(page, '/api/tags/for', { ids: [avatar] }))[avatar];
 }
@@ -191,7 +188,6 @@ test.describe('Tag edits show what the server stored', () => {
         await page.keyboard.press('End');
         await page.keyboard.type('-new');
         await expect(name).toHaveClass(/tag_view_name_unsaved/);
-        // Longer than any debounce between typing and a request.
         await page.waitForTimeout(1500);
         expect(edits).toEqual([]);
         expect((await pageTag(page, id)).name).toBe(id);
@@ -268,7 +264,6 @@ test.describe('Tag edits show what the server stored', () => {
         const id = `edit-folder-${Date.now()}`;
         await createTags(browser, [{ id }]);
         await loadApp(page);
-        // The folder button only shows with "Tags as Folders" on.
         await page.evaluate(() => { window['SillyTavern'].getContext().powerUserSettings.bogus_folders = true; });
         await openTagManagement(page);
 
@@ -313,10 +308,8 @@ test.describe('Tag edits show what the server stored', () => {
         expect(await storedCharacterTagIds(page, avatar)).toEqual([id]);
 
         await page.route('**/api/tags/unassign', route => route.fulfill(FAIL));
-        // The tag input reopens its list after a pick; it closes when the input is left.
         await page.locator('#tagInput').blur();
         await expect(page.locator('.ui-autocomplete:visible')).toHaveCount(0);
-        // Remove buttons are in the tags drawer, which starts collapsed.
         await page.locator('#tags_div > .inline-drawer-header .inline-drawer-icon').click();
         await pill.locator('.tag_remove').click();
         await expect(page.locator('.toast-error', { hasText: `'${id}' was not removed from TagEditsShowServerState-${stamp}` })).toBeVisible();

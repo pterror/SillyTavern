@@ -6,30 +6,13 @@ import { world_info_position } from './result-bucketing.js';
 import { world_info_logic } from './key-matching.js';
 import { extension_prompt_roles } from '../extension-prompt-table.js';
 
-/**
- * Sentinel "world name" the client uses to tag entries converted from a character's own embedded
- * `character_book` (public/scripts/world-info.js's `EMBEDDED_WORLD_NAME`, verified value
- * `'__embedded__'`). Mirrored here so `resolveWorldInfoCandidates()`'s embedded-lorebook fallback
- * (see `getCharacterLore()` below) tags its entries identically to the client.
- */
 export const EMBEDDED_WORLD_NAME = '__embedded__';
 
 const DEFAULT_DEPTH = 4;
 const DEFAULT_WEIGHT = 100;
 
 /**
- * Server-side port of public/scripts/world-info.js's `convertCharacterBook(characterBook)` -
- * reshapes a V2/V3 character card's embedded `character_book` (spec-shaped: `entries[]` with
- * `keys`/`secondary_keys`/`insertion_order`/`extensions`/etc.) into the same
- * world-info-entry-shaped object the rest of this pipeline expects. Pure data transformation, no
- * DOM/browser APIs involved - ported directly, not re-derived. Every field
- * `newWorldInfoEntryTemplate` (public/scripts/world-info.js ~4206) would otherwise contribute is
- * explicitly assigned below already (verified by reading `newWorldInfoEntryDefinition`'s full field
- * list, ~4161-4204: every non-`excludeFromTemplate` field the template supplies is set explicitly
- * here), so the template spread itself is redundant and intentionally not reproduced -
- * `characterFilterNames`/`characterFilterTags`/`characterFilterExclude` are excluded from the
- * template on the client too and are likewise absent here, matching real client output exactly.
- * @param {object} characterBook V2/V3 spec `character_book` object.
+ * @param {object} characterBook
  * @returns {{entries: Record<string|number, object>}}
  */
 function convertCharacterBook(characterBook) {
@@ -87,12 +70,6 @@ function convertCharacterBook(characterBook) {
     return { entries };
 }
 
-/**
- * Mirrors public/scripts/world-info.js's `world_info_insertion_strategy` enum (verified against the
- * real client source: `{ evenly: 0, character_first: 1, global_first: 2 }`). Not previously mirrored
- * anywhere server-side (grepped `world_info_insertion_strategy` across `src/` - no hits before this
- * file), so declared fresh here rather than reused from an existing port.
- */
 export const world_info_insertion_strategy = {
     evenly: 0,
     character_first: 1,
@@ -100,8 +77,6 @@ export const world_info_insertion_strategy = {
 };
 
 /**
- * Mirrors public/scripts/world-info.js's sortFn used throughout getSortedEntries(): descending by
- * `order` (higher order sorts first).
  * @param {object} a
  * @param {object} b
  * @returns {number}
@@ -111,16 +86,6 @@ function sortFn(a, b) {
 }
 
 /**
- * Reads one lorebook and reshapes its entries the way every one of the client's getXLore() helpers
- * does: `data.entries` is a map keyed by uid; each value is spread into `{ uid, world, ...rest }`
- * (uid destructured out and put back first only so `world` can be inserted before the rest of the
- * entry's own fields, matching client field ordering - not that field order is semantically
- * meaningful here, just faithfully mirrored).
- *
- * Uses `readWorldInfo(directories, worldName, true)` directly - the exact same function
- * `src/endpoints/worldinfo.js`'s `/api/worldinfo/get` endpoint calls - instead of the client's
- * `loadWorldInfo()`, which is only a fetch-and-cache wrapper around that same endpoint. No HTTP
- * round-trip needed server-side.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} worldName
  * @returns {Promise<Array<object>>}
@@ -136,8 +101,6 @@ async function loadWorldEntries(directories, worldName) {
 }
 
 /**
- * Port of getGlobalLore(): every entry from every globally-selected lorebook, in
- * `selectedWorldInfo` order.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string[]} selectedWorldInfo
  * @returns {Promise<Array<object>>}
@@ -154,36 +117,6 @@ async function getGlobalLore(directories, selectedWorldInfo) {
 }
 
 /**
- * Port of getCharacterLore(). Preserves the client's exact skip-precedence: a candidate world is
- * dropped if it's already covered by global lore, OR is the chat's own lorebook, OR is the
- * persona's lorebook - checked in that exact order (though since these are independent boolean
- * checks against the same worldName, order only matters for which debug message would have logged
- * client-side; the resulting skip/keep decision is identical either way).
- *
- * `characterExtraBooks` replaces the client's `world_info.charLore?.find((e) => e.name ===
- * fileName)?.extraBooks` lookup - the caller is expected to have already found the `charLore` entry
- * matching this character's on-disk filename (a `world_info_settings`-nested array of `{ name,
- * extraBooks }`, keyed by `getCharaFilename()`'s result) and pass just its `extraBooks` array (or
- * `[]`/`undefined` if the character has no such entry). This keeps the settings-array lookup - a
- * caller concern, same as `selectedWorldInfo`/`chatWorldName`/etc. - out of this module, rather than
- * resolving it here.
- *
- * ALSO ports the live client's embedded-`character_book` fallback (public/scripts/world-info.js
- * ~4592-4600, added after this port's original reference snippet was written - closed as a
- * follow-up rather than left as a real behavior gap): when `character.data.extensions.world` names
- * a World that does NOT actually exist (common on imported cards whose linked book never
- * got exported/renamed alongside them), and the character card carries its own embedded
- * `character_book` with at least one entry, that embedded book's entries are converted via
- * `convertCharacterBook()` (above) and appended, tagged with the `EMBEDDED_WORLD_NAME` sentinel -
- * exactly matching the client. Whether the linked World exists is answered by
- * `getCharacterWorldLink()` (src/endpoints/worldinfo.js), the same rule the client's
- * getCharacterWorldLink() applies to `world_names`: a book with zero entries still exists (the
- * book's presence, not an entry count). A linked name with no book, on a card that embeds a
- * `character_book`, is a link to that embedded book, whatever the book's own name: that name is
- * never read as a book, so it costs no book read and prints no "doesn't exist" line. The client's
- * `WORLDINFO_ENTRIES_LOADED` event emission is NOT ported - it exists purely for other client-side
- * subscribers (e.g. the WI editor UI) to react to a fresh load, which has no server-side analog to
- * be wired to yet; flagged as a real, narrow scope boundary, not an oversight.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {{data?: {extensions?: {world?: string}, character_book?: {entries?: any[]}}}|null} character
  * @param {string[]} characterExtraBooks
@@ -207,10 +140,10 @@ async function getCharacterLore(directories, character, characterExtraBooks, sel
 
     let entries = [];
     for (const worldName of worldsToSearch) {
-        if (selectedWorldInfo?.includes(worldName)) continue; // already in global
-        if (chatWorldName === worldName) continue; // already in chat lore
-        if (personaWorldLorebook === worldName) continue; // already in persona lore
-        if (worldName === baseWorldName && worldLink === character_world_link.EMBEDDED) continue; // no such file: the link is the embedded book, added below
+        if (selectedWorldInfo?.includes(worldName)) continue;
+        if (chatWorldName === worldName) continue;
+        if (personaWorldLorebook === worldName) continue;
+        if (worldName === baseWorldName && worldLink === character_world_link.EMBEDDED) continue;
         entries = entries.concat(await loadWorldEntries(directories, worldName));
     }
 
@@ -227,7 +160,6 @@ async function getCharacterLore(directories, character, characterExtraBooks, sel
 }
 
 /**
- * Port of getChatLore().
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string|null} chatWorldName
  * @param {string[]} selectedWorldInfo
@@ -240,7 +172,6 @@ async function getChatLore(directories, chatWorldName, selectedWorldInfo) {
 }
 
 /**
- * Port of getPersonaLore().
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string|null} chatWorldName
  * @param {string|null} personaWorldLorebook
@@ -255,40 +186,15 @@ async function getPersonaLore(directories, chatWorldName, personaWorldLorebook, 
 }
 
 /**
- * Server-side port of public/scripts/world-info.js's `getSortedEntries()` (plus its 4 private
- * helpers `getGlobalLore`/`getCharacterLore`/`getChatLore`/`getPersonaLore`) - resolves WHICH
- * lorebook entries are candidates for world-info activation in the first place. This is the missing
- * piece feeding `worldInfoCandidates` into `src/text-completion-prompt-orchestrator.js`,
- * `src/text-completion-generation-input.js`, and `src/regex-scripts-engine.js`, all of which take
- * that array as an already-resolved caller input.
- *
- * Every client global the original functions read is replaced with an explicit param:
- * `selected_world_info` -> `selectedWorldInfo`, `getCurrentCharacter()` -> `character`,
- * `world_info.charLore` lookup -> `characterExtraBooks` (see getCharacterLore's doc comment above
- * for why that lookup is left to the caller), `chat_metadata[METADATA_KEY]` -> `chatWorldName`,
- * the active persona's personaStore `lorebook` field -> `personaWorldLorebook`,
- * `world_info_character_strategy` -> `worldInfoCharacterStrategy`.
- *
- * `getStringHash` is reused as-is from `public/scripts/hash-utils.js` (already the canonical
- * server-side import used throughout `src/`, e.g. `src/macro-substitution.js`) rather than re-derived - it's the same file the client itself
- * imports it from, not a separate implementation to port.
- *
- * `structuredClone` at the end is kept for exact behavioral parity with the client, even though the
- * reasoning behind it there (avoid mutating cached `loadWorldInfo()` data that other client code
- * might hold a reference to) doesn't really apply here: `readWorldInfo()` assembles a fresh object
- * from the store on every call and nothing else on the server holds a reference to it, so the clone is
- * strictly redundant on this side. Keeping it anyway costs one cheap clone and removes any chance of
- * a future caller accidentally mutating a shared cache should one ever get added later.
- *
  * @param {object} options
- * @param {import('../users.js').UserDirectoryList} options.directories User directories, for `readWorldInfo`
- * @param {string[]} [options.selectedWorldInfo] Names of the globally-selected lorebooks (replaces `selected_world_info`)
- * @param {{data?: {extensions?: {world?: string}}}|null} [options.character] The active character card (only `.data.extensions.world` is read - replaces `getCurrentCharacter()`)
- * @param {string[]} [options.characterExtraBooks] Extra lorebook names for this character, from the caller's own `world_info.charLore`-equivalent lookup (replaces `world_info.charLore?.find(...)?.extraBooks`)
- * @param {string|null} [options.chatWorldName] The current chat's own lorebook name, if any (replaces `chat_metadata[METADATA_KEY]`)
- * @param {string|null} [options.personaWorldLorebook] The active persona's lorebook name, if any (replaces the active persona's personaStore `lorebook` field)
- * @param {number} [options.worldInfoCharacterStrategy] One of `world_info_insertion_strategy`'s values (replaces `world_info_character_strategy`)
- * @returns {Promise<Array<object>>} Entries shaped `{ ...entry, world, decorators, content, hash }`, highest priority first
+ * @param {import('../users.js').UserDirectoryList} options.directories
+ * @param {string[]} [options.selectedWorldInfo]
+ * @param {{data?: {extensions?: {world?: string}}}|null} [options.character]
+ * @param {string[]} [options.characterExtraBooks]
+ * @param {string|null} [options.chatWorldName]
+ * @param {string|null} [options.personaWorldLorebook]
+ * @param {number} [options.worldInfoCharacterStrategy]
+ * @returns {Promise<Array<object>>}
  */
 export async function resolveWorldInfoCandidates(options) {
     const {
@@ -323,7 +229,6 @@ export async function resolveWorldInfoCandidates(options) {
                 break;
         }
 
-        // Chat lore always goes first, then persona lore, then the rest - regardless of strategy.
         entries = [...chatLore.sort(sortFn), ...personaLore.sort(sortFn), ...entries];
 
         entries = entries.map((entry) => {

@@ -33,7 +33,7 @@ export const AUTOCOMPLETE_STATE = {
 export class AutoComplete {
     /**@type {HTMLTextAreaElement|HTMLInputElement}*/ textarea;
     /**@type {boolean}*/ isFloating = false;
-    /**@type {boolean} Suggests macros (an editor mounted on the textarea that suggests macros itself takes over)*/ isMacroAutoComplete = false;
+    /** @type {boolean} */ isMacroAutoComplete = false;
     /**@type {()=>boolean}*/ checkIfActivate;
     /**@type {(text:string, index:number) => Promise<AutoCompleteNameResult>}*/ getNameAt;
 
@@ -294,7 +294,6 @@ export class AutoComplete {
             return this.hide();
         }
         if (this.isMacroAutoComplete && getMountedEditor(this.textarea)?.macroSuggestions) {
-            // the editor on the textarea suggests macros itself
             return this.hide();
         }
         if (!this.checkIfActivate()) {
@@ -376,7 +375,6 @@ export class AutoComplete {
             } catch (error) {
                 console.warn('Autocomplete options could not be loaded:', error);
             }
-            // Typed further (or moved) while waiting: the newer show() answers for the text as it is now.
             if (this.textarea.value !== text || this.textarea.selectionStart !== cursor) return;
             const list = this.effectiveParserResult.optionList;
             for (const option of loaded) {
@@ -543,7 +541,7 @@ export class AutoComplete {
 
 
     /**
-     * @returns {DOMRect} The field's box on screen: the editor mounted on the textarea, or the textarea itself.
+     * @returns {DOMRect}
      */
     getFieldRect() {
         return (getMountedEditor(this.textarea)?.root ?? this.textarea).getBoundingClientRect();

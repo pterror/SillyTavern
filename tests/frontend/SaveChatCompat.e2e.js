@@ -5,10 +5,10 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// Upstream's saveChat(), as an extension calls it after changing `chat` directly: what changed goes to the server as
-// actions addressed by node id (never the chat itself to /api/chats/save), so a reload shows the same chat.
-
-/** @param {import('@playwright/test').Page} page @param {string} name */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
@@ -22,7 +22,10 @@ async function createCharacter(page, name) {
     }, name);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
 async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
@@ -49,7 +52,6 @@ test('an extension\'s changes to chat and chat metadata are stored by saveChat()
     const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
     const avatar = await createCharacter(page, `SaveCompat-${stamp}`);
     await openCharacter(page, avatar);
-    // The chat is stored (its greeting has a row).
     await page.evaluate(async () => {
         const { ensureOpeningRow } = await import('/scripts/chat-store.js');
         await ensureOpeningRow(0);

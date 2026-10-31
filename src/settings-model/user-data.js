@@ -1,22 +1,10 @@
 import { TYPE } from '../library-codes.js';
 import { draft, without } from './entity-draft.js';
 
-/**
- * Global variables and data bank files (§1.7, step 3e), made from upstream's settings and given back as them.
- *
- * - A global variable (`TYPE.globalVariable`, key its name): its `value`, so two tabs setting different variables
- *   don't collide.
- * - A data bank file (`TYPE.dataBankFile`, key its url): `size`, `name`, `created`, `text` and `disabled` (upstream's
- *   `disabled_attachments` list). Which files a level has is a statement of a combined list (§1.1): the user's
- *   (`attachments`) and each character's (`character_attachments`); a chat's live in its metadata.
- */
+/** @typedef {import('./entity-draft.js').EntityDraft} EntityDraft */
 
 /**
- * @typedef {import('./entity-draft.js').EntityDraft} EntityDraft
- */
-
-/**
- * @param {Record<string, unknown>} variables `extension_settings.variables.global`.
+ * @param {Record<string, unknown>} variables
  * @returns {EntityDraft[]}
  */
 export function globalVariablesFromUpstream(variables) {
@@ -35,9 +23,9 @@ export function globalVariablesToUpstream(variables) {
 /**
  * @typedef {object} DataBankFromUpstream
  * @property {EntityDraft[]} files
- * @property {string[]} user The user's files, by url.
- * @property {{ avatar: string, files: string[] }[]} characters Each character's.
- * @property {string[]} disabledElsewhere Turned-off urls no settings list holds (a chat's files), for the caller.
+ * @property {string[]} user
+ * @property {{ avatar: string, files: string[] }[]} characters
+ * @property {string[]} disabledElsewhere
  * @property {string[]} warnings
  */
 

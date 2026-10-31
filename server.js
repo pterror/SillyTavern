@@ -4,7 +4,6 @@ import { serverDirectory } from './src/server-directory.js';
 
 console.log(`Node version: ${process.version}. Running in ${process.env.NODE_ENV} environment. Server directory: ${serverDirectory}`);
 
-// The packages are TypeScript that Node runs as it is (type stripping, on by default since Node 22.18).
 if (!process.features.typescript) {
     console.error(`SillyTavern needs Node 22.18 or newer (this is ${process.version}).`);
     process.exit(1);

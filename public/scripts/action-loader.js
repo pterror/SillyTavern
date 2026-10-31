@@ -49,7 +49,6 @@ function hasBlockingLoaders() {
 }
 
 export class ActionLoaderHandle {
-    /** A disposed no-op handle, useful as a default value to avoid null checks. */
     static get EMPTY() {
         return new ActionLoaderHandle({ predisposed: true });
     }
@@ -148,7 +147,6 @@ export class ActionLoaderHandle {
             tapToDismiss: false,
             escapeHtml: false,
         });
-        // Only the title is HTML; the message is set as text above.
         if (this.#toast) addImageLightbox(this.#toast);
     }
 
@@ -187,7 +185,6 @@ export class ActionLoaderHandle {
         return this.#blocking;
     }
 
-    // Calls the custom onStop handler if provided, otherwise stopGeneration().
     async stop() {
         if (this.#disposed) return;
 
@@ -245,7 +242,6 @@ export const loader = {
     createOverlay: createDefaultLoaderOverlay,
 };
 
-// Multiple loaders can be stacked - the overlay stays single, but each gets its own toast.
 export function showActionLoader(options = {}) {
     return new ActionLoaderHandle(options);
 }
@@ -318,9 +314,7 @@ function isOverlayDisplayed() {
     return !!loaderPopup;
 }
 
-// Internal — use showActionLoader() instead.
 function showOverlay(customContent = null) {
-    // Don't await the old popup closing; overlay it while it closes.
     if (loaderPopup) loaderPopup.complete(POPUP_RESULT.CANCELLED);
 
     const content = getOverlayContent(customContent);
@@ -330,7 +324,6 @@ function showOverlay(customContent = null) {
         transparent: true,
         animation: 'none',
     });
-    // It covers the whole screen, as the preloader it takes over from does.
     loaderPopup.dlg.classList.add('loader_popup');
 
     // No close button, loaders are not closable
@@ -339,7 +332,6 @@ function showOverlay(customContent = null) {
     loaderPopup.show();
 }
 
-// Internal — use hideActionLoader() instead.
 async function hideOverlay() {
     if (!loaderPopup) {
         return Promise.resolve();

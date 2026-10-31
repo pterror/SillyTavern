@@ -1,16 +1,8 @@
-// Upstream's whole-form character save, exported from script.js only so third-party extensions keep working.
-// First-party code knows which field it changed and saves that field. Listed in every no-restricted-syntax
-// block covering first-party files outside script.js, since a later matching block replaces an earlier one's list.
 const noWholeFormCharacterSave = {
     selector: 'ImportSpecifier[imported.name=/^(saveCharacterDebounced|createOrEditCharacter)$/]',
     message: 'saveCharacterDebounced/createOrEditCharacter are upstream-compat exports for third-party extensions only - save the field you changed with saveCharacterField()/saveCharacterFieldDebounced() (script.js), or the greeting/chat/avatar path for it.',
 };
 
-// Upstream's whole-chat save (saveChat(), saveChatConditional(), saveChatDebounced(), getContext().saveChat()) is
-// kept only for third-party extensions, which change `chat[]` themselves and then ask for a save
-// (public/scripts/chat-compat-save.js turns that into node-addressed actions). App code knows what it changed and sends
-// that action itself. Listed in every no-restricted-syntax block covering app code (a later matching block replaces an
-// earlier one's list); only the module that defines them is exempt (the last override below).
 const noAppChatSave = [
     {
         selector: 'CallExpression[callee.name=/^saveChat(Conditional|Debounced)?$/]',
@@ -22,12 +14,6 @@ const noAppChatSave = [
     },
 ];
 
-// Token counts are the server's: it counts what it stores and builds, and sends counts with what they belong to; text
-// only the page has (being typed) is counted in one batched request (getTokenCountsAsyncBatch). These per-text counters
-// are upstream's API, kept for third-party extensions (getContext()); first-party page code doesn't call them. Listed in
-// every no-restricted-syntax block covering page code; only the module that defines them and st-context.js (which
-// exports them) are exempt (the last override below). The call sites left from before the ban are each marked with a
-// disable comment naming this (the thin-client audit's step 10, plan "28 page-side token-counting call sites").
 const pageTokenCounters = 'getTokenCountAsync|getPromptTokenCountAsync|getTokenCount|getTokenCountWithAnswer|countTokensOpenAI|countTokensOpenAIAsync|getTextTokens';
 const noPageTokenCounting = [
     {
@@ -56,7 +42,6 @@ module.exports = {
     },
     overrides: [
         {
-            // Server-side files, Node CLI scripts (plus this configuration file)
             files: ['src/**/*.js', './*.js', 'plugins/**/*.js', 'scripts/**/*.js', 'engine/**/*.js'],
             env: {
                 node: true,
@@ -108,8 +93,6 @@ module.exports = {
             },
         },
         {
-            // openai.js is a back-compat shim for third-party extensions only (see its own header comment) -
-            // internal code must import chat-completion-settings.js directly.
             files: ['public/**/*.js'],
             rules: {
                 'no-restricted-syntax': ['error',
@@ -128,10 +111,6 @@ module.exports = {
             },
         },
         {
-            // this_chid is a back-compat shim value (index into `characters`) kept only for third-party
-            // extensions and upstream parity - see its declaration site's own comment. Internal code must
-            // use this_avatar/getCurrentCharacter()/charactersStore instead. script.js and the module that
-            // actually defines this_chid are exempt: they're the shim's own plumbing.
             files: ['public/**/*.js'],
             excludedFiles: ['public/script.js', 'public/scripts/character-store.js'],
             rules: {
@@ -147,31 +126,24 @@ module.exports = {
             },
         },
         {
-            // script.js: the whole-chat saves, as for all app code (see noAppChatSave above).
             files: ['public/script.js'],
             rules: {
                 'no-restricted-syntax': ['error', ...noAppChatSave, ...noPageTokenCounting],
             },
         },
         {
-            // Bundled (first-party-maintained) extensions are app code too. Real third-party extensions are excluded
-            // from lint entirely (see ignorePatterns below).
             files: ['public/scripts/extensions/**/*.js'],
             rules: {
                 'no-restricted-syntax': ['error', noWholeFormCharacterSave, ...noAppChatSave, ...noPageTokenCounting],
             },
         },
         {
-            // Server code: no whole-chat save either (the engine's is gone; a route answering upstream's array stores
-            // only what it names by id).
             files: ['src/**/*.js'],
             rules: {
                 'no-restricted-syntax': ['error', ...noAppChatSave],
             },
         },
         {
-            // The modules that define the per-text token counters and export them to extensions (see
-            // noPageTokenCounting above).
             files: ['public/scripts/tokenizers.js', 'public/scripts/st-context.js'],
             rules: {
                 'no-restricted-syntax': ['error',
@@ -185,7 +157,6 @@ module.exports = {
             },
         },
         {
-            // The one module that defines the whole-chat saves (and so calls them, as upstream's call each other).
             files: ['public/scripts/chat-compat-save.js'],
             rules: {
                 'no-restricted-syntax': ['error',
@@ -198,14 +169,7 @@ module.exports = {
             },
         },
         {
-            // These files are driven to zero errors under tsconfig.chat-strict.json (strict
             // TypeScript via checkJs/JSDoc). Use @typescript-eslint's type-aware rules here to
-            // catch the "treating a nullable/string/number value as a plain boolean" bug class -
-            // e.g. `if (extra.reasoning)` silently treating a deliberate empty-string reasoning
-            // block the same as "no block at all" (fixed in f8a30070c). Scoped tightly to this
-            // list (not a broad glob) because the type-aware parser is slow and because the rest
-            // of the codebase does not yet typecheck cleanly enough for these rules to be useful
-            // signal rather than noise.
             files: [
                 'public/scripts/node-identity.js',
                 'public/scripts/metadata-store.js',
@@ -220,45 +184,15 @@ module.exports = {
             parserOptions: {
                 sourceType: 'module',
                 // Deliberately NOT `projectService` (typescript-eslint's newer auto-discovery
-                // mode): projectService finds a project by walking up from each file looking for
-                // a file literally named `tsconfig.json`, and this repo has no such file at the
-                // root (only tsconfig.chat-strict.json / tsconfig.precommit.json). Its escape
-                // hatch for a non-standard-named config (`defaultProject`) is meant for a handful
-                // of stray config files outside the real project (capped at 8 matches by default,
-                // with a scary "THIS_WILL_SLOW_DOWN_LINTING" override to raise it) - not for
-                // pointing a real batch of source files at a specific tsconfig. The classic
-                // `project` option is exactly the supported way to say "typecheck these files
-                // against this specific tsconfig", so we use that instead.
                 project: './tsconfig.chat-strict.json',
                 tsconfigRootDir: __dirname,
             },
             plugins: ['@typescript-eslint'],
             rules: {
-                // Empty string / 0 / NaN are meaningful, distinct values in this codebase (see
-                // the reasoning.js bug above) - so string/number are NOT allowed as implicit
-                // booleans (allowString/allowNumber default to false, i.e. omitted here). A
-                // nullable object/function truthy-check (`if (x)` where x: Foo | null) is left
-                // allowed: existence-checking an object has no "meaningful falsy" ambiguity the
-                // way an empty string or zero does, and disallowing it would just force busywork
-                // `!= null` churn with no bug-catching value. Nullable boolean/enum are NOT
-                // exempted: `true | false | null` collapsing null into false is the same
-                // three-state-collapsed-into-two shape as the reasoning.js bug, so it stays flagged.
                 '@typescript-eslint/strict-boolean-expressions': ['error', {
                     allowNullableObject: true,
-                    // `any` shows up at these files' boundaries with untyped libraries (jQuery,
-                    // JSON.parse, third-party callbacks) - flagging it here is a generic
-                    // "add more types" task, not an instance of the falsy-collapsing bug class
-                    // this rule exists to catch. Left un-widened for every other type (string,
-                    // number, nullable-*) because those are exactly where that bug hides.
                     allowAny: true,
                 }],
-                // Flags conditions that, given the real inferred type, can never be true or
-                // never be false - the more direct hit on tonight's bug class, since once
-                // `extra.reasoning` is properly typed as `string` (not `string | undefined`),
-                // `if (extra.reasoning)` is exactly a "this condition doesn't mean what the code
-                // assumes" case this rule targets. allowConstantLoopConditions: true so idiomatic
-                // `while (true)` server-loop patterns aren't flagged - that's a deliberate,
-                // self-documenting infinite loop, not a type-confusion bug.
                 '@typescript-eslint/no-unnecessary-condition': ['error', {
                     allowConstantLoopConditions: true,
                 }],

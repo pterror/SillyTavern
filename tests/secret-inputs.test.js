@@ -3,7 +3,6 @@ import fs from 'node:fs';
 
 const indexHtml = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 const openaiJs = fs.readFileSync(new URL('../public/scripts/chat-completion-settings.js', import.meta.url), 'utf8');
-// settingsToUpdate, which names each preset key's control, is the defaults module's.
 const defaultsJs = fs.readFileSync(new URL('../public/scripts/chat-completion-defaults.js', import.meta.url), 'utf8');
 const styleCss = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
 const inputTags = indexHtml.match(/<input\b[^>]*>/gi) ?? [];

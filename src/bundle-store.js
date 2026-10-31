@@ -11,12 +11,6 @@ import { userConnections } from './settings-model/settings-compat.js';
 import { keyOf } from './settings-model/keys.js';
 
 /**
- * The bundles (sampler presets, templates, themes, quick reply sets) as the routes read and write them: the
- * settings model's entities once the user's settings document is open (settings-document.js), else their files
- * (bundle-files.js). A name is the file name it was (sanitized), so a route answers the name it always did.
- */
-
-/**
  * @param {import('./users.js').UserDirectoryList} directories
  */
 async function modelOf(directories) {
@@ -34,7 +28,6 @@ function safeName(name) {
 }
 
 /**
- * A bundle's upstream file; null when there's none.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} group
  * @param {unknown} name
@@ -53,7 +46,7 @@ export async function readBundle(directories, group, name) {
  * @param {string} group
  * @param {unknown} name
  * @param {unknown} content
- * @returns {Promise<string | undefined>} The name it was written under, or undefined when it can't be.
+ * @returns {Promise<string | undefined>}
  */
 export async function writeBundle(directories, group, name, content) {
     const at = await modelOf(directories);
@@ -68,7 +61,6 @@ export async function writeBundle(directories, group, name, content) {
 }
 
 /**
- * The entity of a bundle and each of its parts, as stored.
  * @param {import('./library-engine.js').LibraryEngine} lib
  * @param {string} group
  * @param {string} name
@@ -92,7 +84,7 @@ async function storedWithParts(lib, group, name) {
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} group
  * @param {unknown} name
- * @returns {Promise<boolean>} Whether there was one.
+ * @returns {Promise<boolean>}
  */
 export async function deleteBundle(directories, group, name) {
     const at = await modelOf(directories);
@@ -109,7 +101,6 @@ export async function deleteBundle(directories, group, name) {
 }
 
 /**
- * Renames a bundle: its key and its parts' change, so what refers to it follows.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} group
  * @param {unknown} name
@@ -127,14 +118,12 @@ export async function renameBundle(directories, group, name, newName) {
     if (await readDraft(at.lib, to.type, to.key)) return 'taken';
     for (const e of all) {
         const key = e.key === from.key ? to.key : `${to.key}${e.key.slice(from.key.length)}`;
-        // The bundle first: a key taken (by a ref's placeholder) refuses it before any part moves.
         if (!(await at.lib.updateEntity(e.type, e.key, { key })) && e.key === from.key) return 'taken';
     }
     return 'renamed';
 }
 
 /**
- * Every bundle of a group, by name: its file's text (as it would be stored) and its parse.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} group
  * @param {{ order?: 'locale' | 'code' }} [options]

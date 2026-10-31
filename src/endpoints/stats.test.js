@@ -9,7 +9,6 @@ import express from 'express';
 import { setConfigFilePath } from '../util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// users.js (imported through stats.js) reads the config at import time.
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
 const { router: statsRouter, keepOldStatsFile, STATS_BACKUP_FILE } = await import('./stats.js');
@@ -18,7 +17,6 @@ const engineBinding = (await import('../../engine/load.js')).loadEngine().bindin
 stores.setStoreEngine(() => engineBinding);
 const { seedMessages } = await import('../../tests/converted-user.fixture.js');
 
-// A new user: the store is made in `root` on first use.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'stats-endpoint-test-'));
 const directories = { root };
 
@@ -56,17 +54,14 @@ const T0 = Date.parse('2026-09-01T10:00:00.000Z');
 async function seed() {
     const store = await stores.userStore(directories, 'default-user');
     await store.lib.writeCard(directories, 'rex.png', JSON.stringify({ name: 'Rex', spec: 'chara_card_v2', spec_version: '2.0', data: { name: 'Rex' } }));
-    // A character with no messages.
     await store.lib.writeCard(directories, 'nobody.png', JSON.stringify({ name: 'Nobody', spec: 'chara_card_v2', spec_version: '2.0', data: { name: 'Nobody' } }));
     await seedMessages(store, { avatar: 'rex.png' }, null, [
         { name: 'Rex', is_user: false, mes: 'Welcome back.', send_date: T0, extra: {} },
         { name: 'User', is_user: true, mes: 'Hi there Rex', send_date: T0 + 1000, extra: {} },
-        // A streamed reply as the server stores it: its whole text, and when it was generated.
         {
             name: 'Rex', is_user: false, mes: 'Good to see you, old friend', send_date: T0 + 5000, extra: {},
             gen_started: new Date(T0 + 1000).toISOString(), gen_finished: new Date(T0 + 4000).toISOString(),
         },
-        // A reply stored without its generation time.
         { name: 'User', is_user: true, mes: 'Same', send_date: T0 + 6000, extra: {} },
         { name: 'Rex', is_user: false, mes: 'Indeed', send_date: T0 + 7000, extra: {} },
     ]);
@@ -76,7 +71,6 @@ async function run() {
     await seed();
     const app = buildTestApp();
 
-    // Totals: counted from the stored messages at every write, greeting left out.
     {
         const { status, data } = await postJson(app, '/api/stats/totals', {});
         assert.equal(status, 200);
@@ -91,7 +85,6 @@ async function run() {
         assert.equal(data.backup, null);
     }
 
-    // /get: upstream's per-character shape, for the characters named and with none named.
     {
         const named = await postJson(app, '/api/stats/get', { avatars: ['rex.png', 'nobody.png'] });
         assert.equal(named.status, 200);
@@ -104,7 +97,6 @@ async function run() {
         assert.deepEqual(Object.keys(all.data).sort(), ['rex.png', 'timestamp']);
     }
 
-    // /increment and /update are accepted and change nothing: the stored messages are the only source.
     {
         const inc = await postJson(app, '/api/stats/increment', { avatar: 'rex.png', deltas: { user_msg_count: 50 }, wordCount: { is_user: true, text: 'a b c d e f' } });
         assert.equal(inc.status, 200);
@@ -115,7 +107,6 @@ async function run() {
         assert.equal(after.data['rex.png'].user_msg_count, 2);
     }
 
-    // The old stats file is kept once, and never written again.
     {
         fs.writeFileSync(path.join(root, 'stats.json'), '{"old":1}');
         keepOldStatsFile(root);

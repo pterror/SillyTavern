@@ -4,19 +4,6 @@ import express from 'express';
 
 import { canonicalStringify } from '../public/scripts/hash-utils.js';
 
-/**
- * One shape for every paged list route (the settings model §1.9): `POST /query`
- * `{ filter: { search?, ids? }, pageSize?, cursor?, ifHash? }` → `{ rows, cursor, more }`. A route adds its own filter
- * fields and sorts; the page and hash rules are these.
- *
- * - `pageSize` is clamped to the route's maximum, its default when missing or not a positive number.
- * - `cursor` is the one a previous page answered; null is the end. `more` means the server's work cap cut the page
- *   short and `cursor` carries on.
- * - `filter.ids` asks for those rows only, at most the route's `maxIds` distinct ones.
- * - With `ifHash` (a string, empty when the client holds no copy of the page) the answer also has `hash`, the sha256 of
- *   its canonical JSON, and is only `{ unchanged: true, hash }` when `ifHash` is the hash of what would be answered.
- */
-
 export const DEFAULT_PAGE_SIZE = 50;
 export const MAX_PAGE_SIZE = 500;
 export const MAX_IDS = 500;
@@ -32,7 +19,6 @@ export const MAX_IDS = 500;
  */
 
 /**
- * The page fields of a request body, or why they're refused (a 400 `reason`).
  * @param {Record<string, any>} body
  * @param {{ defaultPageSize?: number, maxPageSize?: number, maxIds?: number }} [limits]
  * @returns {{ request: PageRequest } | { reason: string, message?: string }}
@@ -70,7 +56,6 @@ export function pageHash(page) {
 }
 
 /**
- * The answer for a page: the page, with its hash when asked, or only the hash when the client's copy is current.
  * @param {Page} page
  * @param {string | undefined} ifHash
  */
@@ -86,9 +71,8 @@ export function pageAnswer(page, ifHash) {
  */
 
 /**
- * A router answering `POST /query` for a catalog.
  * @param {(request: import('express').Request) => Promise<CatalogSource>} sourceOf
- * @param {string} what For the log.
+ * @param {string} what
  */
 export function catalogRouter(sourceOf, what) {
     const router = express.Router();
@@ -108,8 +92,6 @@ export function catalogRouter(sourceOf, what) {
 }
 
 /**
- * A source over rows held in memory (a catalog read from files until the store holds it): ordered by key, `search` a
- * case- and accent-insensitive prefix of its name, the cursor the last key answered.
  * @template T
  * @param {T[]} rows
  * @param {(row: T) => string} keyOf

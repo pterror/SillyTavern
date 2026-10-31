@@ -1,8 +1,6 @@
 import { beforeAll, afterAll, beforeEach, afterEach, describe, test, expect } from '@jest/globals';
 import path from 'node:path';
 
-// The single-message edits of a chat (graft, cut, swap, swipe delete) through a tab's session, on an engine user.
-
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
 /** @type {typeof import('./converted-user.fixture.js')} */
@@ -10,7 +8,6 @@ let fixture;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
-/** The tab the requests come from. */
 let tab = '';
 
 beforeAll(async () => {
@@ -50,14 +47,12 @@ async function postJson(urlPath, body) {
     return { status: res.status, body: await res.json().catch(() => ({})) };
 }
 
-/** A minimal message-object body the tree store round-trips. */
 function makeMessage(mes) {
     return { name: 'Char', is_user: false, mes, extra: {} };
 }
 
 let counter = 0;
 
-/** A new character with a 3-message chain saved by the tab, returning its node ids in order. */
 async function seedChain() {
     counter += 1;
     const avatar = `owner-${counter}.png`;
@@ -68,7 +63,6 @@ async function seedChain() {
     return { avatar, ids: (await shown(avatar)).map(m => m.node_id) };
 }
 
-/** The messages the tab's session shows. */
 function shown(avatar) {
     return fixture.sessionPath(user.store, { avatar }, tab);
 }
@@ -111,8 +105,6 @@ describe('POST /api/chats/message/graft', () => {
     });
 });
 
-// `/message/cut` replaces `/message/degraft` (5f step 3): messages leave this chat's path; what other branches share
-// stays.
 describe('POST /api/chats/message/cut', () => {
     test('removes a single mid-chain message from the path', async () => {
         const { avatar, ids: [, n1] } = await seedChain();
@@ -254,7 +246,6 @@ describe('POST /api/chats/message/alternative/delete', () => {
         expect(messages.map(m => m.mes)).toEqual(['m0', 'm1', 'swipe-2']);
         expect(messages.map(m => m.node_id)).toContain(swipe2);
 
-        // swipe-3 is still there, off the path: adding the same content again is that message (speaker and text).
         const reAddRes = await postJson('/api/chats/message/alternative', { avatar_url: avatar, sibling_node_id: swipe2, contents: [makeMessage('swipe-3')] });
         expect(reAddRes.body.node_ids[0]).toBe(swipe3);
     });

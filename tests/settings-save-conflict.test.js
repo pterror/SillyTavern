@@ -15,12 +15,6 @@ let baseUrl;
 let tempDir;
 let directories;
 
-/**
- * Mounts the real settings.js router behind a fake auth middleware, same shape as avatars-get.test.js /
- * tags-endpoints.test.js. Covers /api/settings/save's optimistic-concurrency check (X-Settings-Hash) added to
- * close the silent-clobber gap where two tabs/devices saving around the same time would have the later POST
- * blindly overwrite the earlier one's change - see checkSettingsConflict() in src/endpoints/settings.js.
- */
 beforeAll(async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-settings-save-test-'));
     fs.mkdirSync(path.join(tempDir, 'backups'), { recursive: true });
@@ -66,7 +60,6 @@ async function postSave(body, expectedHash) {
     });
 }
 
-/** Full replace via the sharded store, deleting stray per-key files from a previous test. */
 function writeSettingsFile(obj) {
     settingsStore.writeAllSettings(directories, obj);
     return JSON.stringify(obj, null, 4);
@@ -89,7 +82,6 @@ describe('POST /api/settings/save conflict detection', () => {
         expect(saved.status).toBe(200);
         expect(readSettingsFile()).toEqual({ a: 2, background: { name: 'mine.png' } });
 
-        // The server changes the background (an action of the new page): the page's next save is no conflict.
         const { settingsHash } = await saved.json();
         settingsStore.writeNamedSettings(directories, { background: { name: 'other.png' } });
         const next = await postSave({ a: 3 }, String(settingsHash));
@@ -115,8 +107,6 @@ describe('POST /api/settings/save conflict detection', () => {
     });
 
     test('rejects with 409 and leaves the file untouched when the sent hash is stale', async () => {
-        // Simulates: this client last saw {a: 1} (from an earlier /get or /save), but some other tab/device has
-        // since written {a: 'changed by another tab'} - this client's belief about the current state is stale.
         const staleHash = String(getStringHash(JSON.stringify({ a: 1 }, null, 4)));
         writeSettingsFile({ a: 'changed by another tab' });
 
@@ -125,15 +115,11 @@ describe('POST /api/settings/save conflict detection', () => {
         expect(response.status).toBe(409);
         const body = await response.json();
         expect(body.result).toBe('conflict');
-        // The other tab's write must survive untouched - this is the actual bug the check exists to close.
         expect(readSettingsFile()).toEqual({ a: 'changed by another tab' });
     });
 
     test('treats a missing settings store as empty content for the conflict check', async () => {
         eraseSettings();
-        // The canonical "no settings yet" serialization is the empty object, `"{}"` - see
-        // readAllSettingsAsJson()'s own doc comment (settings-store.js) - not an empty string, since the
-        // sharded store's canonical content is always a JSON.stringify() of the reconstructed object.
         const emptyHash = String(getStringHash(settingsStore.readAllSettingsAsJson(directories)));
 
         const matchingResponse = await postSave({ a: 'first save ever' }, emptyHash);
@@ -148,7 +134,6 @@ describe('POST /api/settings/save conflict detection', () => {
         const response = await postSave({ a: 'clobber attempt' }, believedHash);
 
         expect(response.status).toBe(409);
-        // The rejected write must not have applied - settings are still whatever they were before (empty).
         expect(readSettingsFile()).toEqual({});
     });
 

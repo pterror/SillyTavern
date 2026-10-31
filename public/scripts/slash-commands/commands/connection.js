@@ -17,10 +17,8 @@ import { isTrueBoolean, onlyUnique, waitUntilCondition } from '../../utils.js';
 import { CONNECT_API_MAP, UNIQUE_APIS } from '../core.js';
 
 /**
- * Retrieves the available model options based on the currently selected main API and its subtype
- * @param {boolean} quiet - Whether to suppress toasts
- *
- * @returns {{control: HTMLSelectElement|HTMLInputElement, options: HTMLOptionElement[]}?} An array of objects representing the available model options, or null if not supported
+ * @param {boolean} quiet
+ * @returns {{control: HTMLSelectElement|HTMLInputElement, options: HTMLOptionElement[]}?}
  */
 function getModelOptions(quiet) {
     const nullResult = { control: null, options: null };
@@ -94,9 +92,8 @@ function getModelOptions(quiet) {
     }
 
     /**
-     * Get options from a HTMLSelectElement or HTMLInputElement with a list.
-     * @param {HTMLSelectElement | HTMLInputElement} control Control containing the options
-     * @returns {HTMLOptionElement[]} Array of options
+     * @param {HTMLSelectElement | HTMLInputElement} control
+     * @returns {HTMLOptionElement[]}
      */
     const getOptions = (control) => {
         if (control instanceof HTMLSelectElement) {
@@ -117,14 +114,13 @@ function getModelOptions(quiet) {
 }
 
 /**
- * @param {string} model New model name
- * @returns {string} New or existing model name
+ * @param {string} model
+ * @returns {string}
  */
 function modelCallback(args, model) {
     const quiet = isTrueBoolean(args?.quiet);
     const { control: modelSelectControl, options } = getModelOptions(quiet);
 
-    // Reason for no model found was already logged
     if (options === null) {
         return '';
     }
@@ -177,20 +173,17 @@ function modelCallback(args, model) {
 }
 
 /**
- * Sets the API URL and triggers the text generation web UI button click.
- *
- * @param {object} args - named args
- * @param {string?} [args.api=null] - the API name to set/get the URL for
- * @param {string?} [args.connect=true] - whether to connect to the API after setting
- * @param {string?} [args.quiet=false] - whether to suppress toasts
- * @param {string} url - the API URL to set
+ * @param {object} args
+ * @param {string?} [args.api=null]
+ * @param {string?} [args.connect=true]
+ * @param {string?} [args.quiet=false]
+ * @param {string} url
  * @returns {Promise<string>}
  */
 async function setApiUrlCallback({ api = null, connect = 'true', quiet = 'false' }, url) {
     const isQuiet = isTrueBoolean(quiet);
     const autoConnect = isTrueBoolean(connect);
 
-    // Chat Completion Custom (OpenAI-compatible) also supports API URL handling
     const isCurrentlyCustomOpenai = main_api === 'openai' && oai_settings.chat_completion_source === chat_completion_sources.CUSTOM;
     if (api === chat_completion_sources.CUSTOM || (!api && isCurrentlyCustomOpenai)) {
         if (!url) {
@@ -345,7 +338,6 @@ async function setApiUrlCallback({ api = null, connect = 'true', quiet = 'false'
         return oai_settings.pollinations_endpoint || POLLINATIONS_ENDPOINT.AUTHENTICATED;
     }
 
-    // Special handling for Kobold Classic API
     const isCurrentlyKoboldClassic = main_api === 'kobold';
     if (api === 'kobold' || (!api && isCurrentlyKoboldClassic)) {
         if (!url) {
@@ -358,7 +350,6 @@ async function setApiUrlCallback({ api = null, connect = 'true', quiet = 'false'
         }
 
         $('#api_url_text').val(url).trigger('input');
-        // trigger blur debounced, so we hide the autocomplete menu
         setTimeout(() => $('#api_url_text').trigger('blur'), 1);
 
         if (autoConnect) {
@@ -397,14 +388,12 @@ async function setApiUrlCallback({ api = null, connect = 'true', quiet = 'false'
     }
 
     $(inputSelector).val(url).trigger('input');
-    // trigger blur debounced, so we hide the autocomplete menu
     setTimeout(() => $(inputSelector).trigger('blur'), 1);
 
     if (autoConnect) {
         $('#api_button_textgenerationwebui').trigger('click');
     }
 
-    // Re-acquire the value since validation on connect may have modified it
     return textgenerationwebui_settings.server_urls[type] ?? '';
 }
 
@@ -823,7 +812,6 @@ export function registerConnectionCommands() {
                 throw new Error(t`Invalid value "${stringValue}". Valid values are: ${validValues.join(', ')}`);
             }
 
-            // 'none' value must be coerced to an empty string
             oai_settings.custom_prompt_post_processing = stringValue === 'none' ? '' : stringValue;
             $('#custom_prompt_post_processing').val(oai_settings.custom_prompt_post_processing);
             saveSettingsDebounced('oai_settings');

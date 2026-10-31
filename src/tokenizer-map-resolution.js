@@ -6,11 +6,6 @@ import { lookupOpenRouterHuggingFaceId } from './openrouter-models.js';
 import { lookupCustomLlamaCppModel, resolveCustomLlamaCppEndpoint } from './custom-llamacpp.js';
 import { llamaCppPropsModelName } from './llamacpp-props.js';
 
-// The parts of resolveTokenizer() (src/tokenizer-resolve.js) that need only the model map, kept
-// apart so src/endpoints/tokenizers.js can resolve chat-completion models without importing the
-// resolver, which imports it.
-
-/** The `#tokenizer` option labels, plus the client's names for the two API tokenizers. */
 export const TOKENIZER_NAMES = {
     [tokenizers.NONE]: 'None / Estimated',
     [tokenizers.GPT2]: 'GPT-2',
@@ -34,16 +29,15 @@ export const TOKENIZER_NAMES = {
 
 /**
  * @typedef {object} MapDeps
- * @property {typeof lookupModelTokenizer} [lookupModel] Replaces the model map, for tests
- * @property {readonly import('./tokenizer-sources.js').TokenizerSourceEntry[]} [registry] Replaces TOKENIZER_SOURCES, for tests
- * @property {() => Promise<any[]|null>} [fetchOpenRouterModels] Replaces the OpenRouter model list fetch, for tests
+ * @property {typeof lookupModelTokenizer} [lookupModel]
+ * @property {readonly import('./tokenizer-sources.js').TokenizerSourceEntry[]} [registry]
+ * @property {() => Promise<any[]|null>} [fetchOpenRouterModels]
  */
 
 /**
- * A registry entry as a local tokenizer: its `tokenizers` value, its id as `source`, and its name.
- * @param {string} source A registry entry id
+ * @param {string} source
  * @param {MapDeps['registry']} [registry]
- * @returns {import('./tokenizer-resolve.js').LocalTokenizer|null} null when there is no such entry
+ * @returns {import('./tokenizer-resolve.js').LocalTokenizer|null}
  */
 function describeRegistryEntry(source, registry) {
     const entry = findTokenizerSource(source, registry);
@@ -54,10 +48,6 @@ function describeRegistryEntry(source, registry) {
     return { id: Number(id), source, name: getTokenizerDisplayName(entry) };
 }
 
-/**
- * Textgen types where the model name is the weights the user loaded. `generic` and `huggingface`
- * are not among them: whether one is self-hosted is unknowable from the type.
- */
 const SELF_HOSTED_TEXTGEN_TYPES = [
     TEXTGEN_TYPES.OOBA,
     TEXTGEN_TYPES.VLLM,
@@ -68,11 +58,9 @@ const SELF_HOSTED_TEXTGEN_TYPES = [
     TEXTGEN_TYPES.OLLAMA,
 ];
 
-/** Ollama's cloud models (`deepseek-v4-pro:cloud`, `deepseek-v4-pro:0813-cloud`) run on Ollama's hosted service. */
 const OLLAMA_CLOUD_TAG = /:(?:[^:]*-)?cloud$/i;
 
 /**
- * Every chat-completion source, Horde, NovelAI and the hosted textgen types are hosted APIs.
  * @param {{ api: string, type?: string, model?: string }} state
  * @returns {boolean}
  */
@@ -87,22 +75,8 @@ function isSelfHostedBackend(state) {
 }
 
 /**
- * The map's result for this backend.
- *
- * DeepSeek's own API gets the estimate for every id: its `/models` `name` is a display name that
- * DeepSeek's own pages contradict, so which model an id serves can't be looked up.
- *
- * A model whose vendor's own files disagree gets its file only on the vendor's own API. Every other
- * backend gets none, so its remote tokenizer or the estimate, and no local copy, because the file it
- * uses is unknowable: a server can use either file, and a gguf's vocab is converted from either. The
- * `hf` file would be for a backend whose own docs say it tokenizes with the repo's `tokenizer.json`;
- * no backend here is documented as one.
- *
- * The `other` result applies only on a self-hosted backend, where the name is the weights the user
- * loaded. Every hosted API gets the estimate for it, unless there is a `rest` result, which applies on
- * every backend the other keys give none for.
  * @param {import('./tokenizer-model-map.js').MapResult|null} result
- * @param {{ api: string, type?: string, source?: string, model?: string }} state `model` is the name the result is for
+ * @param {{ api: string, type?: string, source?: string, model?: string }} state
  * @returns {import('./tokenizer-model-map.js').MapResult|null}
  */
 export function selectBackendResult(result, state) {
@@ -132,14 +106,6 @@ function isOpenRouter(state) {
 }
 
 /**
- * The model's result for this backend, after selectBackendResult().
- *
- * On OpenRouter, the `hugging_face_id` OpenRouter lists for the model comes first: a repo that ships a
- * registry entry's file names the model's exact tokenizer. OpenRouter forwards to third-party hosts, so
- * where the vendor's own files disagree (the repo ships several entries' files, or an entry only the
- * vendor's API is known to read), the repo gets what the map gives its name on such a host. A model
- * whose repo ships no entry's file goes through the map by its OpenRouter id. Without OpenRouter's
- * list, the model is unknown.
  * @param {string} api
  * @param {string} model
  * @param {{ api: string, type?: string, source?: string, model?: string }} state
@@ -168,8 +134,7 @@ export async function selectModelResult(api, model, state, deps = {}) {
 }
 
 /**
- * @param {import('./tokenizer-model-map.js').MapResult|null} entry A lookupModelTokenizer() answer,
- * after selectBackendResult().
+ * @param {import('./tokenizer-model-map.js').MapResult|null} entry
  * @param {string} api
  * @param {MapDeps['registry']} [registry]
  * @returns {import('./tokenizer-resolve.js').LocalTokenizer|null}
@@ -182,8 +147,6 @@ export function describeMapEntry(entry, api, registry = undefined) {
         return { id: tokenizers.OPENAI, name: entry, model: entry };
     }
     if (typeof entry === 'object') {
-        // A registry entry has no `model`: `/openai/*` take no name for it, and the chat-completion
-        // model name, which the browser sends instead, maps to the same entry.
         return 'source' in entry ? describeRegistryEntry(entry.source, registry) : null;
     }
     const described = { id: entry, name: TOKENIZER_NAMES[entry] };
@@ -191,7 +154,6 @@ export function describeMapEntry(entry, api, registry = undefined) {
 }
 
 /**
- * A `tokenizers` value as the local tokenizer an explicit pick of it names.
  * @param {number} id
  * @param {MapDeps['registry']} [registry]
  * @returns {import('./tokenizer-resolve.js').LocalTokenizer}
@@ -219,23 +181,16 @@ export function estimateResolution(basis) {
 
 /**
  * @typedef {object} ChatCompletionConnection
- * @property {string} [url] The custom source's URL
- * @property {import('./users.js').UserDirectoryList} [directories] For the custom key and saved custom headers
- * @property {string} [customIncludeHeaders] The custom headers with the send's own macros substituted;
- * without them the saved ones are used (see resolveCustomLlamaCppEndpoint())
- * @property {import('./llamacpp-props.js').LlamaCppPropsCheck} [llamaCppProps] Asks a custom URL that is
- * llama.cpp for its `/props`: for its identity, and for its model name when the model setting is empty
- * and the reply has `model_alias`. Without it, an empty model setting is looked up with `/v1/models`.
- * @property {import('./token-count-store.js').StoredEncoder} [storedEncoder] A createStoredEncoder() result:
- * wraps computeLogitBias()'s encoder with the request's stored ids.
+ * @property {string} [url]
+ * @property {import('./users.js').UserDirectoryList} [directories]
+ * @property {string} [customIncludeHeaders]
+ * @property {import('./llamacpp-props.js').LlamaCppPropsCheck} [llamaCppProps]
+ * @property {import('./token-count-store.js').StoredEncoder} [storedEncoder]
  */
 
 /**
- * Chat completion's resolution (resolveTokenizer() rule 5): the map on the model, for every
- * source; the tokenizer setting never applies. Unmapped gives the estimate. A custom URL that is
- * llama.cpp resolves as textgen llama.cpp does: its `/tokenize`, with the map's copy for its model.
  * @param {string|null|undefined} model
- * @param {string} [source] The chat-completion source
+ * @param {string} [source]
  * @param {MapDeps & ChatCompletionConnection} [deps]
  * @returns {Promise<import('./tokenizer-resolve.js').ResolvedTokenizer>}
  */
@@ -253,7 +208,7 @@ export async function resolveChatCompletionTokenizer(model, source = undefined, 
 
 /**
  * @param {import('./custom-llamacpp.js').CustomLlamaCppEndpoint} endpoint
- * @param {string} model The custom model setting; empty asks the URL
+ * @param {string} model
  * @param {MapDeps & ChatCompletionConnection} deps
  * @returns {Promise<import('./tokenizer-resolve.js').ResolvedTokenizer>}
  */
@@ -272,7 +227,6 @@ async function customLlamaCppResolution(endpoint, model, deps) {
         basis: /** @type {const} */ ('remote'),
         localCopy: local,
     };
-    // Not enumerable: it holds the custom key, and a resolution is logged and spread.
     Object.defineProperty(resolved, 'llamaCpp', { value: { ...endpoint, model }, enumerable: false });
     return resolved;
 }

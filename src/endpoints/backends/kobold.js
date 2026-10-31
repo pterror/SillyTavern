@@ -26,61 +26,23 @@ import { macroVariableChanges, storeMacroVariables } from '../../macro-facts.js'
 export const router = express.Router();
 
 /**
- * Real, tested raw-action request builder for the Kobold family (main_api === 'kobold' - NOT
- * 'koboldhorde', see src/text-completion-generation-input.js's own doc comment for why Horde is
- * excluded). Directly mirrors src/endpoints/backends/text-completions.js's own
- * `buildRawActionTextCompletionRequest()` (see `git show ac42ce8c9` for the original design this
- * follows) - same field names, same resolution pipeline
- * (resolveTextCompletionGenerationInput()+assembleTextCompletionPrompt(), now dispatching to
- * createKoboldGenerationData() for real per text-completion-prompt-orchestrator.js's own Step 16
- * update) - the two differences from the textgenerationwebui version are:
- * - No `resolveTextGenBackend()` call: Kobold's own backend URL (`kai_settings.api_server`) is
- *   already resolved BY the orchestrator itself (via `assembleTextCompletionPrompt()`'s own
- *   `apiServer` input, forwarded through resolveTextCompletionGenerationInput()) and lands directly
- *   on the returned `generate_data.api_server` field (createKoboldGenerationData()'s own
- *   `api_server` wire field) - there is no separate "backend" object to return here, unlike the
- *   textgenerationwebui/`api_type`+`api_server` pair.
- * - The tokenizer comes from resolveTokenizer(): for Kobold, from the backend at
- *   `kai_settings.api_server`; for Horde (`macroExtras.isHorde`), from the saved Horde model
- *   selection (`horde_settings.models`). It only counts for budget fitting:
- *   createKoboldGenerationData() never encodes entries, so a Kobold or Horde send has none to drop.
- *   A tokenizer that fails is answered by the model's local copy, else by the estimate; the
- *   returned `warnings` say which.
  * @param {import('../../users.js').UserDirectoryList} directories
  * @param {object} params
  * @param {import('express').Request} [params.request]
  * @param {string} [params.characterAvatar]
  * @param {string} [params.groupId]
- * @param {import('../../chat-request.js').ChatContext} params.chat The chat the request acts in.
- * @param {string|null} params.nodeId REQUIRED (`undefined` throws) - see
- * src/endpoints/backends/text-completions.js's `buildRawActionTextCompletionRequest()` own
- * ADDRESSING MODEL doc comment for the full rationale this mirrors verbatim: a real node id string
- * addresses that specific existing node; `null` goes on from the tree's root, and only succeeds
- * when that is current (checked via `resolveTextCompletionGenerationInput()`'s own
- * `chatResolutionAmbiguous`/`resolvedNodeId`, read back below). There is no `branchName`/`branch_name` field in this raw-action surface anymore.
+ * @param {import('../../chat-request.js').ChatContext} params.chat
+ * @param {string|null} params.nodeId
  * @param {string} [params.type]
  * @param {boolean} [params.isImpersonate]
  * @param {boolean} [params.isContinue]
  * @param {boolean} [params.isSwipe]
  * @param {string} [params.userMessageText]
- * @param {import('../../macro-facts.js').PageMacroFacts} [params.pageFacts] What only the page knows, for the macros.
- * @param {import('../../extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections] What the page's extensions inject (src/page-injections.js).
- * @param {object} [params.userMessageExtra] Already-SERVER-VALIDATED `extra` (see
- * `sanitizeUserMessageExtra()` in user-message-extra.js) for the new user message being appended -
- * identical contract to buildRawActionTextCompletionRequest()'s own equivalent param. Kobold has no
- * media/image inlining (that machinery is chat-completion-specific) - only `.files` is ever actually
- * read downstream (file-attachment-inline.js, via resolveTextCompletionGenerationInput()); `.media`
- * is harmlessly ignored if forwarded.
- * @param {object} [params.macroExtras] Forwarded verbatim to resolveTextCompletionGenerationInput()'s
- * own `macroExtras` (shallow-merged over its resolved input object, caller wins). Added so
- * src/endpoints/horde.js's own raw-action /generate-text branch can reuse this SAME builder for
- * Horde (main_api === 'koboldhorde') by passing `{ isHorde: true }` - createKoboldGenerationData()'s
- * real `isHorde` flag (src/kobold-generation-data.js) already produces the correct payload shape for
- * Horde too, it was just never threaded through here. Defaults to `{}` - existing callers/tests
- * (which never pass this) keep their exact prior behavior.
+ * @param {import('../../macro-facts.js').PageMacroFacts} [params.pageFacts]
+ * @param {import('../../extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections]
+ * @param {object} [params.userMessageExtra]
+ * @param {object} [params.macroExtras]
  * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, tokenCountRows: import('../../token-count-store.js').PendingTokenRows, name1: string, name2: string, warnings: object[], itemization: object }>}
- * `tokenCountRows` are the counts and ids this build read from or added to the token tables, for
- * writeBack() once the request is sent.
  */
 export async function buildRawActionKoboldRequest(directories, {
     request, characterAvatar, groupId, chat, nodeId,
@@ -90,9 +52,6 @@ export async function buildRawActionKoboldRequest(directories, {
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
     }
-    // See src/endpoints/backends/text-completions.js's `buildRawActionTextCompletionRequest()` own
-    // ADDRESSING MODEL doc comment - `undefined` means the request body never had the `node_id` key
-    // at all (JSON has no `undefined` literal, so this is distinguishable from an explicit `null`).
     if (nodeId === undefined) {
         throw new Error('node_id is required (pass null explicitly for a brand-new, empty conversation)');
     }
@@ -113,10 +72,6 @@ export async function buildRawActionKoboldRequest(directories, {
         }
     }
 
-    // Anchor resolution - a real given `nodeId` is verified directly; `nodeId === null` (going on
-    // from the tree's root) is left unresolved here and read back off
-    // `orchestratorInput.resolvedNodeId`/`chatResolutionAmbiguous` once resolved below - identical
-    // pattern to buildRawActionTextCompletionRequest()'s own Step 2.
     let anchorNodeId = null;
     if (nodeId !== null) {
         if (!await chat.store.chats.messageOf(chat.tree, nodeId)) {
@@ -146,8 +101,6 @@ export async function buildRawActionKoboldRequest(directories, {
         countTokens, encodeTokens, amountGen: responseLength, macroExtras,
     });
 
-    // `nodeId === null` goes on from the tree's root only when that is current - see
-    // buildRawActionTextCompletionRequest()'s identical handling.
     if (nodeId === null) {
         if (orchestratorInput.chatResolutionAmbiguous) {
             throw new Error('node_id is required: this chat is not at its start - pass the node_id of the message to generate from (null is only valid in a new chat)');
@@ -166,9 +119,7 @@ export async function buildRawActionKoboldRequest(directories, {
         params: assembled.generate_data, anchorNodeId, anchorContent, tokenCountRows: storedCounter.pending,
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
         warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
-        // The chat variables the prompt's macros changed, for the route to store (storeMacroVariables()).
         macroVariables: macroVariableChanges(orchestratorInput.chatMetadata, orchestratorInput.macroFacts.globalVariables, orchestratorInput.variablesBefore),
-        // The server's part of the reply's stored prompt itemization (itemizationOf()).
         itemization: buildItemizationBreakdown(assembled),
     };
 }
@@ -176,27 +127,15 @@ export async function buildRawActionKoboldRequest(directories, {
 router.post('/generate', withGenerationStop(async function (request, response_generate) {
     if (!request.body) return response_generate.sendStatus(400);
 
-    // Real raw-action cutover - "generate for this character/group's chat" - see
-    // buildRawActionKoboldRequest() above and src/endpoints/backends/text-completions.js's own
-    // identically-shaped branch for the full design precedent this mirrors. Same trigger condition,
-    // same field names (character_avatar/group_id/owner_id/node_id/type/is_impersonate/
-    // is_continue/is_swipe/user_message) - there is no `branch_name` field (see
-    // buildRawActionKoboldRequest()'s own ADDRESSING MODEL doc comment). `node_id` is destructured
-    // straight off the parsed body, not defaulted, so the "key absent" (`undefined`) vs. "explicit
-    // null" distinction survives intact.
     let pendingAssistantPersist = null;
-    // Per-request warnings for the screen - see text-completions.js's identical `warnings` for the
-    // full rationale. Covers every branch, not gated on persistence; sent only when non-empty.
     /** @type {Array<{kind: string, key: string, message: string, entries?: string[]}>} */
     const warnings = [];
 
-    // The raw-action build's counts and ids, stored once the backend has the request.
     /** @type {import('../../token-count-store.js').PendingTokenRows | null} */
     let tokenCountRows = null;
     const storeTokenCountRows = () => {
         if (!tokenCountRows) return;
         const rows = tokenCountRows;
-        // A retry after a returned request doesn't store the same rows again.
         tokenCountRows = null;
         writeBack(request.user.directories, rows)
             .catch(error => console.error('Failed to store token counts:', error));
@@ -208,11 +147,6 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
             type = 'normal', streaming: streamingRequested = false,
             can_abort: canAbortRequested = false,
         } = request.body;
-        // is_impersonate/is_continue/is_swipe are NOT read from the wire - each is 100% derivable
-        // from `type` alone - matching text-completions.js's/chat-completions.js's own identical
-        // derivation (commit 4a79e197e), extended here to Kobold since the client-side cleanup
-        // (job 2 of this task) removes these three redundant booleans for every raw-action backend,
-        // not just those two.
         const isImpersonate = type === 'impersonate';
         const isContinue = type === 'continue';
         const isSwipe = type === 'swipe' || type === 'regenerate';
@@ -241,11 +175,6 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
         warnings.push(...built.warnings);
         tokenCountRows = built.tokenCountRows;
 
-        // Same three-mode persistence contract as text-completions.js's own raw-action branch - see
-        // that file's own extensive comment on impersonate/quiet skipping, the swipe/regenerate
-        // sibling-vs-child distinction, and the continue/userMessageText tree-shape edge case. Not
-        // re-derived here; identical reasoning applies verbatim since both routes share the exact
-        // same resolveTextCompletionGenerationInput() and persistence primitives.
         const skipPersistence = isImpersonate || type === 'quiet';
         let replyAnchorNodeId = built.anchorNodeId;
         const userMessage = turn.userMessage;
@@ -257,10 +186,7 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
             if (!userNodeId) return;
             replyAnchorNodeId = userNodeId;
         }
-        // What the prompt's macros changed of the chat's variables, kept with the page's own chat metadata.
         await storeMacroVariables(response_generate, chat, nodeId, built.macroVariables);
-        // A continue sent with text in the box stores that text as the user's message first, and the page then
-        // continues that message, as upstream does: the reply is stored as an edit of it.
         const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
         if (!skipPersistence) {
             pendingAssistantPersist = {
@@ -268,56 +194,14 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
                 isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
                 warnings, generationStop: response_generate.locals.generationStop,
                 itemization: itemizationOf(request.body.itemization, built.itemization),
-                // How the reply is finished (its reasoning split off, see src/reply-reasoning.js).
                 finish: await readReplyFinishSettings(directories, {
                     mainApi: 'kobold', avatar: characterAvatar, groupId, name1: built.name1, name2: built.name2,
-                    // The model the reply records (`extra.model`), looked up meanwhile.
                     model: lookupBackendModel({ api: 'kobold', url: built.params?.api_server ?? '' }),
                 }),
             };
-            // The reply's write goes through the session; one made for it is in the headers, which a
-            // stream sends before the reply is stored.
             chat.session.actor();
         }
 
-        // Replace the body entirely - `built.params` already carries `api_server`
-        // (createKoboldGenerationData()'s own wire field, sourced from the orchestrator's real
-        // `kai_settings.api_server` resolution) - the existing dispatch code below is completely
-        // unaware of which branch produced request.body, same as text-completions.js's own pattern.
-        //
-        // `streaming` is overridden here from the CLIENT's own originally-requested value
-        // (`streamingRequested`, captured above BEFORE this reassignment discards the rest of the
-        // original request.body) - same "trust the client's own streaming preference" pattern
-        // text-completions.js's own raw-action branch already uses for `stream: !!request.body.stream`
-        // (see `const stream = !!request.body.stream; request.body = { ...built.params, stream, ... }`
-        // there). This is REQUIRED, not just belt-and-suspenders: `built.params.streaming` (from
-        // createKoboldGenerationData(), src/kobold-generation-data.js) computes
-        // `koboldSettings.streaming_kobold && koboldFlags.can_use_streaming && type !== 'quiet'`, but
-        // buildRawActionKoboldRequest() above never passes a `koboldFlags` argument through to
-        // resolveTextCompletionGenerationInput()/assembleTextCompletionPrompt() at all, so it defaults
-        // to `{}` - meaning `built.params.streaming` is ALWAYS `false` server-side, regardless of the
-        // client's real setting (there is no live "can this Kobold backend stream" probe result
-        // available server-side to compute this correctly - it only exists client-side, as
-        // `kai_flags.can_use_streaming`, from the client's own connection-time version probe). Without
-        // this override, the dispatch check a few lines below (`request.body.streaming ? '.../stream'
-        // : '.../v1/generate'`) would ALWAYS pick the non-streaming endpoint for every raw-action
-        // request, even one whose client-computed `streaming` field (see public/script.js's
-        // `rawActionGenerateData` construction) correctly said `true`.
-        //
-        // `can_abort` is overridden here for the identical reason and via the identical pattern -
-        // captured from the client's real requested value (`canAbortRequested`, destructured above
-        // alongside `streamingRequested`) BEFORE this same reassignment would otherwise discard it.
-        // built.params.can_abort (from createKoboldGenerationData()) is computed as JUST
-        // `koboldFlags.can_use_streaming` (verified by reading that file - a SIMPLER real condition
-        // than `streaming`'s three terms, with no `koboldSettings.streaming_kobold` or `type !==
-        // 'quiet'` term), but since buildRawActionKoboldRequest() never passes a real `koboldFlags`
-        // value through (same as for `streaming`), it defaults to `{}` and built.params.can_abort is
-        // unconditionally `false`. Without this override, the socket-close handler a few lines below
-        // (`if (request.body.can_abort && !response_generate.writableEnded) { ... }`) would never fire
-        // its abort-on-disconnect call to the real Kobold backend for ANY raw-action request, even one
-        // whose client-computed `can_abort` (see public/script.js's `rawActionGenerateData`
-        // construction) correctly said `true` - leaving the backend generating uselessly after the
-        // client has already gone away.
         request.body = { ...built.params, streaming: !!streamingRequested, can_abort: !!canAbortRequested };
     }
 
@@ -407,11 +291,6 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
             storeTokenCountRows();
 
             if (request.body.streaming) {
-                // Re-encode Kobold's own SSE data payload shape (`{"token": "..."}`, verified against
-                // generateKoboldWithStreaming() in public/scripts/kai-settings.js) into the same
-                // compact binary wire format every streaming path uses, raw-action or not (see
-                // text-completions.js's forwardAndPersistCompactStream() doc comment) -
-                // `pendingAssistantPersist` only gates whether the final text also gets persisted.
                 await forwardAndPersistCompactStream(response, response_generate, pendingAssistantPersist, json => json?.token, null, warnings);
                 return;
             } else {
@@ -430,11 +309,6 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
 
                 const data = await response.json();
 
-                // Persist the ASSISTANT's reply for the raw-action branch (see
-                // `pendingAssistantPersist`'s declaration above) - only reached for a real,
-                // successful (response.ok) NON-STREAMING generation. `/v1/generate`'s real
-                // response shape is `{results: [{text: "..."}]}` (verified against
-                // public/script.js's own `data.results[0].text` read of this exact endpoint).
                 if (pendingAssistantPersist) {
                     const generatedText = data?.results?.[0]?.text ?? '';
                     const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText, { data });

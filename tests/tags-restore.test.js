@@ -2,9 +2,6 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } fr
 import path from 'node:path';
 import { storedTagDefinitions } from './tag-store-reads.js';
 
-// Restoring a tag backup: the server creates or updates the backup's tag definitions, then adds its assignments to
-// what each character or group already has.
-
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
 /** @type {typeof import('./converted-user.fixture.js')} */
@@ -78,7 +75,7 @@ async function seedGroup(id) {
     await user.store.lib.writeGroup({ id, name: `Group ${id}`, members: [], fav: false });
 }
 
-/** @param {object[]} tags Stored as they are. */
+/** @param {object[]} tags */
 async function seedTags(tags) {
     for (const tag of tags) {
         expect((await user.store.lib.tags.create({ ...tag })).refused).toEqual([]);
@@ -99,12 +96,15 @@ async function tagsFor(ids) {
     return (await post('/api/tags/for', { ids })).body;
 }
 
-/** @param {string} id @returns {Promise<any>} The stored definition, or undefined. */
+/**
+ * @param {string} id
+ * @returns {Promise<any>}
+ */
 async function storedTag(id) {
     return (await post('/api/tags/by-ids', { ids: [id] })).body.tags.find(tag => tag.id === id);
 }
 
-/** @returns {Promise<string[]>} Every stored tag's id. */
+/** @returns {Promise<string[]>} */
 async function storedTagIds() {
     return (await storedTagDefinitions(user.store.lib)).map(tag => tag.id).sort();
 }

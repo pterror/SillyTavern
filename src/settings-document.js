@@ -22,31 +22,15 @@ import { LIMITS } from '@st/settings/protocol';
 import { presetLengthKeys } from '../public/scripts/preset-file-keys.js';
 import { modelListOf, modelListsVersion } from './model-lists.js';
 
-/**
- * A user's settings as the model holds them (the settings model's step 10): opened once per user, they are what
- * settings-store.js reads and writes. The model is read from the store, or made from the user's settings files the
- * first time (the conversion, settings-model/), and the files then moved aside (`settings.before-model/`), so
- * nothing reads a stale copy.
- *
- * The settings are held as upstream's shape, so every reader stays synchronous. A write is that shape anew: shown
- * at once, then imported into the model and the entities that changed written, one write after another.
- */
-
 
 /** @type {Map<string, Promise<void>>} */
 const opening = new Map();
 
-/**
- * The levels a context's settings are shown and edited over, farthest first (the settings model §1.1, closest
- * first there): the app's default, the user's preset, the user's own, a group, the speaking character.
- */
 export const LEVEL_POSITIONS = Object.freeze(['default', 'preset', 'user', 'group', 'character']);
 
-/** Every level. */
 const FULL_RANGE = Object.freeze({ from: 'default', to: 'character' });
 
 /**
- * The levels from `range.from` to `range.to`.
  * @param {{ from: string, to: string }} range
  */
 function levelsIn(range) {
@@ -64,7 +48,6 @@ function filesAside(directories) {
 }
 
 /**
- * Whether a user's settings are the model's (their files moved aside).
  * @param {import('./users.js').UserDirectoryList} directories
  */
 export function settingsAreModels(directories) {
@@ -72,7 +55,6 @@ export function settingsAreModels(directories) {
 }
 
 /**
- * Opens a user's settings document, converting the user's settings files the first time; at most once per user.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} handle
  * @returns {Promise<void>}
@@ -89,21 +71,16 @@ export function openSettingsDocument(directories, handle) {
 }
 
 /**
- * The bundles settings select, read from the store.
  * @param {import('./library-engine.js').LibraryEngine} lib
  * @param {Record<string, any>} settings
  * @param {import('./settings-model/entity-draft.js').EntityDraft[]} connections
  * @returns {Promise<import('./settings-model/settings-compat.js').BundleFiles>}
  */
 /**
- * The fields of a bundle the server owns (packages/areas/settings/protocol.ts SERVER_FAMILIES): each one's settings path,
- * its key in the bundle's file, and its field id in the model.
  * @param {string} group
  * @param {Record<string, unknown>} file
  */
 function ownedFieldsOf(group, file) {
-    // A text preset's lengths, by its file's keys for them; a text family's own settings object, by key (as the old
-    // page applied a kobold preset's streaming_kobold).
     const lengths = group.startsWith('preset.') && group !== 'preset.openai' ? presetLengthKeys(group, file) : {};
     const object = PRESET_OBJECTS[group];
     return SERVER_OWNED_PATHS.flatMap(path => {
@@ -116,7 +93,6 @@ function ownedFieldsOf(group, file) {
     });
 }
 
-/** The settings object a text preset's own keys are of (the old page's preset loaders). */
 const PRESET_OBJECTS = Object.freeze({ 'preset.kobold': 'kai_settings', 'preset.novel': 'nai_settings' });
 
 async function bundlesOf(lib, settings, connections) {
@@ -137,11 +113,9 @@ async function open(directories, handle) {
     const newKey = (/** @type {string} */ hint) => keyOf(handle, hint);
     let model = await readUserModel(lib, handle);
     if (!model) {
-        // The conversion: the settings files (a new user has the shipped ones) and every bundle file.
         const upstream = fs.existsSync(settingsDirPath(directories)) || fs.existsSync(legacySettingsPath(directories))
             ? readAllSettings(directories)
             : JSON.parse(fs.readFileSync(path.join(serverDirectory, 'default/content/settings.json'), 'utf8'));
-        // The tags in the files are the tag store's: imported (once) before the files go.
         await lib.tags.importSettingsTags(directories);
         const made = importUpstream(upstream, { bundles: bundleFilesOf(directories), newKey });
         const imported = bundleDraftsFromFiles(directories, made.entities.filter(e => e.type === TYPE.connection), newKey);
@@ -155,13 +129,10 @@ async function open(directories, handle) {
         model = await readUserModel(lib, handle);
         if (!model) throw new Error(`the settings of ${handle} weren't there after their conversion`);
     }
-    // Bundle files in the folders (the conversion's, or new content the content manager copied in since): one the
-    // store has no bundle of is imported, never over one it has (a bundle deleted stays deleted); then all go aside.
     /** @type {import('./settings-model/entity-draft.js').EntityDraft[]} */
     const arrived = [];
     for (const group of Object.keys(BUNDLE_FOLDERS)) {
         for (const listed of listBundleFiles(directories, group, { skipped: () => {} })) {
-            // A quick reply set is named by its own name, as the conversion names it.
             const name = group === 'quickReplies' && typeof listed.file?.name === 'string' ? listed.file.name : listed.name;
             const file = listed.file;
             const entity = bundleEntityOf(group, name);
@@ -182,8 +153,6 @@ async function open(directories, handle) {
         }
     }
 
-    // The files go aside, every time some are there (a reset or new content may have put one back): one moved
-    // before keeps its place, a later one gets the time beside it.
     fs.mkdirSync(filesAside(directories), { recursive: true });
     for (const [from, name] of [[settingsDirPath(directories), 'settings'], [legacySettingsPath(directories), 'settings.json']]) {
         if (!fs.existsSync(from)) continue;
@@ -194,7 +163,6 @@ async function open(directories, handle) {
     let current = model;
     const extrasKey = () => readSecret(directories, SECRET_KEYS.EXTRAS) ?? undefined;
 
-    // The bundles the characters' and groups' levels state, loaded with the model, so a context resolves at once.
     /** @type {Map<string, Record<string, unknown> | undefined>} */
     let levelBundles = new Map();
     const loadLevelBundles = async () => {
@@ -209,10 +177,8 @@ async function open(directories, handle) {
         levelBundles = loaded;
         contexts.clear();
     };
-    /** The settings of each context asked, until the model changes. */
     /** @type {Map<string, Record<string, any>>} */
     const contexts = new Map();
-    /** The user's own bundles, then the levels'. */
     /** @type {import('./settings-model/settings-compat.js').BundleFiles} */
     let userBundles = await statedBundleFiles(lib, current);
     /** @type {import('./settings-model/settings-compat.js').BundleFiles} */
@@ -224,8 +190,6 @@ async function open(directories, handle) {
     const userSources = () => (userSourcesMemo ??= assemble(current, { bundles: userBundles, extrasApiKey: extrasKey() }).sources);
 
     /**
-     * A save made while the page shows a context's settings over a range of levels: each change the save makes to
-     * what was shown is the range's top level's (a bundle's field or selection), or the user's (anything else).
      * @param {{ avatar?: string | null, groupId?: string | null }} context
      * @param {{ from: string, to: string }} range
      * @param {Record<string, any>} saved
@@ -251,7 +215,6 @@ async function open(directories, handle) {
             }
         };
         walk(shown, saved, []);
-        // Each change where its route says; the user's own ones in one write.
         const user = structuredClone(document.settings);
         let userChanged = false;
         for (const [path] of units) {
@@ -263,8 +226,6 @@ async function open(directories, handle) {
                 await writeAt(context, range, path, value);
             }
         }
-        // A bundle a chat's level selects: that level's own values of the fields the server owns go, so the bundle's
-        // show (the user's selections do the same in replace()).
         for (const [path, unit] of units) {
             const route = routeOf(context, range, path);
             if (unit.kind !== 'selection' || route.to !== 'level') continue;
@@ -277,9 +238,6 @@ async function open(directories, handle) {
     };
 
     /**
-     * Where an edit of one path goes, for a page showing a context over a range: the range's top level when the path
-     * is a bundle's field or selection (a character's or group's statement, or the user's preset's field), else the
-     * user's own settings.
      * @param {{ avatar?: string | null, groupId?: string | null }} context
      * @param {{ from: string, to: string }} range
      * @param {string} path
@@ -298,8 +256,6 @@ async function open(directories, handle) {
     };
 
     /**
-     * Writes paths where routeOf() says, all in one write each place: a level's statement once, a preset's file
-     * once, the user's own settings once. A value of `undefined` takes its path away (back to what's under it).
      * @param {{ avatar?: string | null, groupId?: string | null }} context
      * @param {{ from: string, to: string }} range
      * @param {[string, unknown][]} entries
@@ -346,7 +302,6 @@ async function open(directories, handle) {
     const writeAt = (/** @type {{ avatar?: string | null, groupId?: string | null }} */ context, /** @type {{ from: string, to: string }} */ range, /** @type {string} */ path, /** @type {unknown} */ value) => writeAll(context, range, [[path, value]]);
 
     /**
-     * A context's settings over a range as the levels state them, and the level each bundle field's value comes from.
      * @param {{ avatar?: string | null, groupId?: string | null }} context
      * @param {{ from: string, to: string }} range
      * @returns {{ settings: Record<string, any>, sources: Record<string, string> }}
@@ -364,7 +319,6 @@ async function open(directories, handle) {
         const key = `${context.avatar ?? ''}\u0000${context.groupId ?? ''}\u0000${range.from}\u0000${range.to}`;
         let found = contexts.get(key);
         if (!found) {
-            // The user's level as far as the range goes: its preset (bundles), its own (overrides), or both.
             const user = {
                 level: /** @type {'user'} */ ('user'),
                 bundles: shown.has('preset') ? current.user.bundles : {},
@@ -376,7 +330,6 @@ async function open(directories, handle) {
         }
         return found;
     };
-    /** Each assembled settings object within its limits, for the model lists' version it was bounded at. */
     /** @type {WeakMap<object, { version: number, settings: Record<string, any> }>} */
     const bounded = new WeakMap();
 
@@ -390,7 +343,6 @@ async function open(directories, handle) {
         },
         view(context, range = FULL_RANGE) {
             const assembled = assembledView(context, range);
-            // Within what the chat completion model and the text backend allow, as everything reads them; stored as stated.
             const version = modelListsVersion(directories);
             let memo = bounded.get(assembled.settings);
             if (memo?.version !== version) {
@@ -438,8 +390,6 @@ async function open(directories, handle) {
             const mine = ++latest;
             const run = writing.then(async () => {
                 const bundles = await bundlesOf(lib, shown, userConnections(current));
-                // A bundle the write selects: the fields of it the server owns take its values, as the old page wrote
-                // them with the selection (only settings.set writes them now).
                 const was = new Map(selectedBundles(before).map(({ group, name }) => [group, name]));
                 const lengthsSet = new Set();
                 for (const { group, name } of selectedBundles(shown)) {
@@ -449,14 +399,11 @@ async function open(directories, handle) {
                         lengthsSet.add(path);
                     }
                 }
-                // A selected preset's lengths past the locked limits unlock them, as the old page did when one needed it.
                 const needsUnlock = (lengthsSet.has('amount_gen') && Number(shown.amount_gen) > LIMITS.response.locked.max)
                     || (lengthsSet.has('max_context') && Number(shown.max_context) > LIMITS.context.locked.max);
                 if (needsUnlock) setAtPath(shown, 'power_user.max_context_unlocked', true);
                 const nextModel = importUpstream(structuredClone(shown), { bundles, newKey });
-                // The characters' and groups' statements are the model's own: upstream's settings don't carry them.
                 nextModel.statements.levels = current.statements.levels;
-                // The Extras key stays in secrets.json, its connection naming it.
                 for (const { connection, value } of nextModel.secrets) {
                     const entity = nextModel.entities.find(e => e.key === connection);
                     if (!entity) continue;
@@ -466,12 +413,10 @@ async function open(directories, handle) {
                 }
                 const written = await writeUserModel(lib, handle, nextModel, { previous: current });
                 for (const warning of written.warnings) console.warn(`[settings] ${handle}: ${warning}`);
-                // What was written is the model now: the store isn't read back.
                 current = { ...nextModel, elsewhere: {}, kept: written.kept };
                 userBundles = bundles;
                 userSourcesMemo = null;
                 contexts.clear();
-                // The settings as the model gives them, unless a later write is showing its own already.
                 if (mine === latest) document.settings = assemble(current, { bundles, extrasApiKey: extrasKey() }).settings;
             });
             writing = run.catch(() => {});
@@ -485,10 +430,7 @@ async function open(directories, handle) {
     setSettingsDocument(directories, document);
 }
 
-/**
- * Express middleware: the user's settings document open before a route reads or writes settings.
- * @type {import('express').RequestHandler}
- */
+/** @type {import('express').RequestHandler} */
 export async function settingsDocumentMiddleware(request, response, next) {
     try {
         if (request.user?.directories && request.user?.profile?.handle) {

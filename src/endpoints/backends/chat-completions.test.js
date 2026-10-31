@@ -10,72 +10,26 @@ import express from 'express';
 import { write as writeCard } from '../../character-card-parser.js';
 import '../../fetch-patch.js';
 import { Jimp, JimpMime } from '../../jimp.js';
-// chat-completions.js -> chat-completion-generation-input.js pulls in src/endpoints/characters.js
-// (via readCardContent) and src/endpoints/tokenizers.js, both of which read process-wide config at
-// import time - the config path must be set before that import chain runs, same as
-// chat-completion-generation-input.test.js/text-completions.test.js.
 import { setConfigFilePath } from '../../util.js';
 import { CompactStreamDecoder } from '../../../public/scripts/llamacpp-compact-stream.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 
-// JUDGMENT CALL: sendAI21Request/sendCohereRequest/sendAimlapiRequest/sendChutesRequest/
-// sendMinimaxRequest/sendElectronHubRequest (chat-completions.js) are the SIX of the twelve provider
-// functions with NO override for their target host at all - verified by reading each function's full
-// body: AI21 always calls `fetch(API_AI21 + '/chat/completions', options)` (hardcoded
-// `https://api.ai21.com/studio/v1`); Cohere always calls `fetch(API_COHERE_V2 + '/chat', config)`
-// (hardcoded `https://api.cohere.ai/v2`); AI/ML API always calls
-// `fetch(API_AIMLAPI + '/chat/completions', config)` (hardcoded `https://api.aimlapi.com/v1`); Chutes
-// always calls `fetch(API_CHUTES + '/chat/completions', config)` (hardcoded `https://llm.chutes.ai/v1`);
-// MiniMax always calls `fetch(apiUrl + '/chat/completions', config)` where `apiUrl` is one of the two
-// hardcoded `API_MINIMAX`/`API_MINIMAX_CN` hosts (selected only by `minimax_endpoint`, never a
-// caller-supplied URL); Electron Hub always calls `fetch(API_ELECTRONHUB + '/chat/completions', config)`
-// (hardcoded `https://api.electronhub.ai/v1`) - completely unlike sendClaudeRequest/
-// sendMakerSuiteRequest/sendMistralAIRequest/sendDeepSeekRequest/sendXaiRequest (all of which honor
-// `request.body.reverse_proxy`) and sendAzureOpenAIRequest (whose `azure_base_url` IS itself a
-// caller-supplied endpoint override, so it needs no such mock - see `pointAzureOpenAIBackendAt()`
-// below), and all six are confirmed absent from chat-completion-generation-data.js's own
-// `proxySupportedSources` list too (which DOES list DEEPSEEK and XAI, confirming those two really do
-// support a raw-action reverse-proxy override end-to-end). So there is no way, via any
-// REQUEST-BUILDING field, to route a real raw-action AI21/Cohere/AI-ML-API/Chutes/MiniMax/Electron-Hub
-// call at this route to a local fake backend - the only two options are (a) add reverse-proxy support
-// to these functions, which is explicitly out of scope (touches request-building logic, not just
-// persistence), or (b) intercept the `node-fetch` module itself for the duration of these
-// provider-specific tests, using Node's built-in (currently experimental) `node:test` `mock.module()`
-// - real network is never touched: the mock rewrites ONLY requests whose origin is
-// `https://api.ai21.com`/`https://api.cohere.ai`/`https://api.aimlapi.com`/`https://llm.chutes.ai`/
-// `https://api.minimax.io`/`https://api.minimaxi.com`/`https://api.electronhub.ai` to instead hit this
-// session's own local fake HTTP backend (a REAL `node-fetch` call still runs against that local server
-// - the mock is a thin reroute, not a hand-built fake Response, so
-// `.ok`/`.status`/`.json()`/`.text()`/`.body` streaming semantics are all genuinely real), and passes
-// every other URL straight through to the real, unmodified `node-fetch` (captured via its own file
-// path below, bypassing the mock) - which is exactly what every other test in this file already relies
-// on (the 'custom'/'claude'/'makersuite'/'mistralai'/'deepseek'/'xai'/'azure_openai' fake-backend tests
-// all still go through this same indirection, unaffected, since none of their URLs are ever those seven
-// origins).
-//
-// `mock.module()` only exists when Node is launched with `--experimental-test-module-mocks` (not
-// otherwise enabled anywhere in this repo's tooling) - feature-detected below so this file still runs
-// to completion under a plain `node chat-completions.test.js` invocation exactly as before; the
-// AI21/Cohere/AI-ML-API/Chutes/MiniMax/Electron-Hub-specific tests further down skip themselves (with a
-// clear console.log, not a silent no-op) when the feature isn't available, and only then. Must run
-// before `chat-completions.js` is first imported below (its own top-level `import fetch from
-// 'node-fetch'` needs to resolve to the mock).
 const canMockAi21Backend = typeof mock.module === 'function';
-/** @type {string|null} Set by pointAI21BackendAt() below; read by the node-fetch reroute mock. */
+/** @type {string|null} */
 let ai21FakeBackendUrl = null;
-/** @type {string|null} Set by pointCohereBackendAt() below; read by the node-fetch reroute mock. */
+/** @type {string|null} */
 let cohereFakeBackendUrl = null;
-/** @type {string|null} Set by pointAimlapiBackendAt() below; read by the node-fetch reroute mock. */
+/** @type {string|null} */
 let aimlapiFakeBackendUrl = null;
-/** @type {string|null} Set by pointChutesBackendAt() below; read by the node-fetch reroute mock. */
+/** @type {string|null} */
 let chutesFakeBackendUrl = null;
-/** @type {string|null} Set by pointMinimaxBackendAt() below; read by the node-fetch reroute mock. */
+/** @type {string|null} */
 let minimaxFakeBackendUrl = null;
-/** @type {string|null} Set by pointElectronHubBackendAt() below; read by the node-fetch reroute mock. */
+/** @type {string|null} */
 let electronhubFakeBackendUrl = null;
-/** @type {string[]} Downloadable-tokenizer URLs asked for; the mock answers each with 503. */
+/** @type {string[]} */
 const tokenizerDownloadRequests = [];
 if (canMockAi21Backend) {
     const realNodeFetch = (await import(path.join(__dirname, '..', '..', '..', 'node_modules', 'node-fetch', 'src', 'index.js'))).default;
@@ -109,23 +63,6 @@ if (canMockAi21Backend) {
     });
 }
 
-// This route handler (src/endpoints/backends/chat-completions.js) mirrors
-// src/endpoints/backends/text-completions.js's own precedent (commits ac42ce8c9/6eaa7897d) - no
-// existing route-level Express-integration-test convention elsewhere either, so the REQUEST-BUILDING
-// portion of the new raw-action /generate branch was extracted into a small, Express-independent,
-// directly-testable function - buildRawActionChatCompletionRequest() - exercised here directly with
-// real on-disk fixtures, the same way chat-completion-generation-input.test.js and
-// text-completions.test.js test their own real logic.
-//
-// The assistant-reply-persistence addition (wired into the single shared non-streaming response
-// point of the default/legacy inline OpenAI/custom dispatch block) DOES need a real route-level
-// exercise - there is no way to observe `pendingAssistantPersist` being read from outside the route
-// handler otherwise. A minimal harness is built here, identical in spirit to
-// text-completions.test.js's own: mount the real `router` on a real `express` app (with a tiny
-// middleware standing in for auth middleware's `request.user.directories`), listen on an ephemeral
-// port, and point a SECOND real `http` server (standing in for the chat-completion backend) at it via
-// `oai_settings.chat_completion_source: 'custom'` + `custom_url` in the settings fixture below - both
-// real network I/O, no mocking framework.
 const { router, buildRawActionChatCompletionRequest } = await import('./chat-completions.js');
 const { writeAllSettings } = await import('../../settings-store.js');
 const { writeSecret, SECRET_KEYS } = await import('../secrets.js');
@@ -144,7 +81,6 @@ globalThis.DATA_ROOT = user.dataRoot;
 const { newSessionKey } = await import('../../chat-engine.js');
 
 /**
- * The chat context a request naming `nodeId` acts in: the session of the branch holding it, else a new one.
  * @param {string} avatar
  * @param {unknown} nodeId
  */
@@ -153,7 +89,6 @@ async function chatOf(avatar, nodeId) {
 }
 
 /**
- * Messages appended after `after` (null: opening the tree) through the session of the branch holding it.
  * @param {string} avatar
  * @param {string | null} after
  * @param {Record<string, any>[]} contents
@@ -199,7 +134,6 @@ async function writeCharacter(avatar, overrides = {}) {
     return avatar;
 }
 
-/** Real settings.json fixture - only the keys resolveChatCompletionGenerationInput()/createGenerationParameters() actually read. */
 function buildSettingsFixture() {
     return {
         username: 'Tester',
@@ -246,10 +180,6 @@ async function run() {
     });
 
     const ownerId = avatar;
-    // `branchName` here is ONLY the chat store's own label/bookmark concept - a real, still-
-    // supported, unrelated primitive. It is NOT a raw-action request field anymore (see
-    // buildRawActionChatCompletionRequest()'s own ADDRESSING MODEL doc comment) - every raw-action
-    // call below resolves and passes the real `node_id` (a leaf id from `loadBranch()`) instead.
     const branchName = 'main-chat';
     await saveBranch(user.store, { avatar: ownerId }, branchName, [
         { chat_metadata: {} },
@@ -260,7 +190,6 @@ async function run() {
     const mainBranchInfo = await loadBranch(user.store, { avatar: ownerId }, branchName);
     const mainLeafId = mainBranchInfo.branch.leaf_id;
 
-    // --- happy path: a new user message on an existing conversation, addressed by its real node_id ---
     const built = await buildRawActionChatCompletionRequest(directories, {
         characterAvatar: avatar, ownerId, chat: await chatOf(avatar, mainLeafId), nodeId: mainLeafId,
         type: 'normal', userMessageText: 'What happens next, Rex?',
@@ -283,7 +212,6 @@ async function run() {
     assert.ok(joined.includes('Hello there, traveler.'), 'the real loaded chat history made it into the prepared messages');
     assert.ok(joined.includes('What happens next, Rex?'), 'the raw user_message made it into the prepared messages');
 
-    // --- persistence: the anchorNodeId this function resolves is really appendable-after ---
     const appendResult = await appendThrough(ownerId, built.anchorNodeId, [
         { name: built.name1, is_user: true, mes: 'What happens next, Rex?', extra: {}, send_date: Date.now() },
     ]);
@@ -292,8 +220,6 @@ async function run() {
     assert.equal(branchAfterAppend.messages.length, 4, 'the persisted user message is now part of the real loaded branch');
     assert.equal(branchAfterAppend.messages[3].mes, 'What happens next, Rex?');
 
-    // --- continue: no userMessageText, still resolves and assembles from the real history,
-    // addressed by the real current leaf's node_id ---
     const continued = await buildRawActionChatCompletionRequest(directories, {
         characterAvatar: avatar, ownerId, chat: await chatOf(avatar, branchAfterAppend.branch.leaf_id), nodeId: branchAfterAppend.branch.leaf_id, type: 'continue', isContinue: true,
     });
@@ -302,8 +228,6 @@ async function run() {
     assert.equal(continued.anchorNodeId, branchAfterAppend.branch.leaf_id, 'the continue anchor is the real current leaf');
     assert.equal(continued.anchorContent?.mes, 'What happens next, Rex?', 'anchorContent is the anchor\'s real, current, unmodified content (the real leaf at this point in the test, appended above) - exactly what the route\'s is_continue edit needs as "oldText"');
 
-    // --- quiet prompt: a quiet generation's instruction (`/sysgen`, generateQuietPrompt()) is the prompt's last
-    // message, a system message, as upstream's populateChatCompletion() adds its `quietPrompt` control prompt ---
     const quietLeafId = branchAfterAppend.branch.leaf_id;
     const quiet = await buildRawActionChatCompletionRequest(directories, {
         characterAvatar: avatar, ownerId, chat: await chatOf(avatar, quietLeafId), nodeId: quietLeafId, type: 'quiet',
@@ -312,7 +236,6 @@ async function run() {
     const quietLast = quiet.params.messages[quiet.params.messages.length - 1];
     assert.deepEqual([quietLast?.role, quietLast?.content], ['system', 'Summarize the scene in one line.'], 'the quiet prompt is the last message, from the system');
 
-    // --- error handling: missing owner_id ---
     await assert.rejects(
         () => buildRawActionChatCompletionRequest(directories, {
             characterAvatar: avatar, nodeId: mainLeafId,
@@ -320,7 +243,6 @@ async function run() {
         /owner_id is required/,
     );
 
-    // --- error handling: unknown character ---
     await assert.rejects(
         async () => buildRawActionChatCompletionRequest(directories, {
             characterAvatar: 'NoSuchCharacter.png', ownerId, chat: await chatOf(avatar, mainLeafId), nodeId: mainLeafId,
@@ -328,7 +250,6 @@ async function run() {
         /Character not found/,
     );
 
-    // --- error handling: unknown node ---
     await assert.rejects(
         async () => buildRawActionChatCompletionRequest(directories, {
             characterAvatar: avatar, ownerId, chat: await chatOf(avatar, 'no-such-node-id'), nodeId: 'no-such-node-id',
@@ -336,9 +257,6 @@ async function run() {
         /Chat node not found/,
     );
 
-    // --- error handling: node_id key entirely absent (not even explicit null) - loud failure
-    // instead of a silent wrong-guess (see buildRawActionChatCompletionRequest()'s own ADDRESSING
-    // MODEL doc comment). ---
     await assert.rejects(
         async () => buildRawActionChatCompletionRequest(directories, {
             characterAvatar: avatar, ownerId, chat: await chatOf(avatar, undefined),
@@ -346,8 +264,6 @@ async function run() {
         /node_id is required \(pass null explicitly for a brand-new, empty conversation\)/,
     );
 
-    // --- error handling: node_id: null on an owner that ALREADY has real history - must be a real,
-    // reportable error, never a silent guess at "the current leaf". ---
     await assert.rejects(
         async () => buildRawActionChatCompletionRequest(directories, {
             characterAvatar: avatar, ownerId, chat: await chatOf(avatar, null), nodeId: null,
@@ -355,9 +271,6 @@ async function run() {
         /node_id is required: this chat is not at its start/,
     );
 
-    // --- happy path: node_id: null on a GENUINELY BRAND-NEW character with zero prior messages -
-    // the ONLY case where omitting a real node id is safe. Resolves via the owner's own anchor to an
-    // empty chat, and still produces a real, appendable anchorNodeId. ---
     const freshAvatar = await writeCharacter('Fresh.png', {
         name: 'Fresh',
         description: 'Fresh is a brand-new character with no chat history yet.',
@@ -376,8 +289,6 @@ async function run() {
     ]);
     assert.equal(freshAppendResult.ok, true, 'the anchor-resolved node id for a brand-new conversation is a real, appendable node');
 
-    // --- error handling: missing character/group (nodeId irrelevant - the character/group check
-    // runs first) ---
     await assert.rejects(
         () => buildRawActionChatCompletionRequest(directories, {
             ownerId, nodeId: mainLeafId,
@@ -385,9 +296,6 @@ async function run() {
         /character_avatar or group_id is required/,
     );
 
-    // --- route-level: non-streaming raw-action /generate persists the assistant reply for real ---
-    // A fake is an OpenAI-compatible server that is not llama.cpp: its `/props` answers 404, so a
-    // custom URL pointed at it keeps the model map. With `answersProps`, its handler answers `/props`.
     async function startFakeBackend(handler, { answersProps = false } = {}) {
         const server = http.createServer((req, res) => {
             if (req.method === 'GET' && req.url === '/props' && !answersProps) {
@@ -431,23 +339,11 @@ async function run() {
             const data = await res.json();
             return { status: res.status, data };
         } finally {
-            // Without forcing idle keep-alive sockets closed, server.close() only resolves once the
-            // client's persistent HTTP/1.1 connection times out on its own (Node's default
-            // keepAliveTimeout) - which would otherwise stall every subsequent test in this same
-            // process for several seconds each, for no reason relevant to what's under test here.
             server.closeAllConnections?.();
             await new Promise(resolve => server.close(resolve));
         }
     }
 
-    /**
-     * Like postGenerate(), but for a streaming request: returns the raw response status/body,
-     * unparsed - so the test can assert on the literal bytes the client received. `bodyBytes` (a
-     * `Buffer`) is for the compact binary stream format (raw-action requests -
-     * forwardAndPersistCompactStream() in chat-completions.js) - `res.text()` would corrupt it, since
-     * control-frame bytes like a bare 0xFF are not valid UTF-8 on their own. `bodyText` is kept for
-     * the non-raw-action legacy path, which still forwards real SSE-JSON text unchanged.
-     */
     async function postGenerateStream(app, body) {
         const server = app.listen(0, '127.0.0.1');
         await new Promise(resolve => server.once('listening', resolve));
@@ -466,7 +362,6 @@ async function run() {
         }
     }
 
-    /** Polls `check()` until it returns truthy or `timeoutMs` elapses - streaming persistence completes asynchronously, after the HTTP response to the client has already fully ended, so tests observe it by polling rather than assuming a fixed ordering. */
     async function waitFor(check, { timeoutMs = 2000, intervalMs = 10 } = {}) {
         const deadline = Date.now() + timeoutMs;
         for (; ;) {
@@ -479,7 +374,6 @@ async function run() {
         }
     }
 
-    /** Starts a fake backend that emits a real OpenAI-Chat-Completions-shaped SSE stream (`choices[0].delta.content` chunks), ending with `data: [DONE]\n\n`. */
     async function startFakeSseBackend(textChunks) {
         const sseBody = textChunks.map(text => `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`).join('') + 'data: [DONE]\n\n';
         return { ...await startFakeBackend((_req, res) => {
@@ -488,14 +382,6 @@ async function run() {
         }), expectedBody: sseBody, expectedText: textChunks.join('') };
     }
 
-    /**
-     * Decodes a raw-action stream's compact binary bytes (`forwardAndPersistCompactStream()`'s own
-     * doc comment in chat-completions.js) and asserts: every real content frame reassembles to
-     * `expectedText`, in order; any reasoning frames reassemble to `options.expectedReasoning` when
-     * given; and an `assistantNodeId` frame is present and is the LAST decoded event (persistence
-     * only completes once the full text is known, so it can only ever be written last). Returns the
-     * captured node id.
-     */
     function assertStreamCarriesAssistantNodeId(bodyBytes, expectedText, { expectedReasoning } = {}) {
         const decoder = new CompactStreamDecoder();
         const events = [...decoder.push(new Uint8Array(bodyBytes)), ...decoder.flush()];
@@ -514,13 +400,6 @@ async function run() {
         return events[nodeIdEventIndex].assistantNodeId;
     }
 
-    /**
-     * Decodes a raw-action tool-calling stream's compact binary bytes
-     * (`forwardAndPersistCompactStreamWithServerTools()`'s own doc comment in chat-completions.js)
-     * into `{content, toolCallDeltas, control, assistantNodeId}` - `toolCallDeltas` is every decoded
-     * `0x05` frame's JSON payload, in order; `control` is the LAST decoded `0x08` frame's JSON payload
-     * (there is at most one per stream - the trailer that ends the round), or `null` if none was sent.
-     */
     function decodeCompactToolStream(bodyBytes) {
         const decoder = new CompactStreamDecoder();
         const events = [...decoder.push(new Uint8Array(bodyBytes)), ...decoder.flush()];
@@ -535,18 +414,6 @@ async function run() {
         };
     }
 
-    /**
-     * Like pointBackendAt(), but also flips on `oai_settings.function_calling` (and a real, allowed
-     * `custom_prompt_post_processing` value) so `isToolCallingSupported()`
-     * (src/chat-completion-tool-capabilities.js) - and therefore `canUseTools` inside
-     * `prepareOpenAIMessages()`/`populateChatHistory()` - resolves true for these requests. Without
-     * this, a persisted `extra.tool_invocations` turn would NOT be replayed as a real tool-call/
-     * tool-result turn on the next round (it would instead fall through to the plain-assistant-text
-     * path in `populateChatHistory()`), which would break the server-tool-calling round-trip tests
-     * below. Kept as its own helper (not folded into `pointBackendAt()`) so every OTHER existing test
-     * in this file keeps exercising the (much more common) `function_calling: false` default,
-     * unaffected by this addition.
-     */
     function pointBackendAtWithToolsEnabled(url) {
         const settings = buildSettingsFixture();
         settings.oai_settings.custom_url = url;
@@ -561,7 +428,6 @@ async function run() {
         writeAllSettings(directories, settings);
     }
 
-    /** Routes a raw-action request to sendClaudeRequest() via a real `reverse_proxy` override - the exact same mechanism a real self-hosted Claude-compatible proxy would use. */
     function pointClaudeBackendAt(url) {
         const settings = buildSettingsFixture();
         settings.oai_settings.chat_completion_source = 'claude';
@@ -571,7 +437,6 @@ async function run() {
         writeAllSettings(directories, settings);
     }
 
-    /** Routes a raw-action request to sendMakerSuiteRequest() via a real `reverse_proxy` override. */
     function pointMakerSuiteBackendAt(url) {
         const settings = buildSettingsFixture();
         settings.oai_settings.chat_completion_source = 'makersuite';
@@ -581,7 +446,6 @@ async function run() {
         writeAllSettings(directories, settings);
     }
 
-    /** Routes a raw-action request to sendMistralAIRequest() via a real `reverse_proxy` override. */
     function pointMistralBackendAt(url) {
         const settings = buildSettingsFixture();
         settings.oai_settings.chat_completion_source = 'mistralai';
@@ -591,14 +455,6 @@ async function run() {
         writeAllSettings(directories, settings);
     }
 
-    /**
-     * Routes a raw-action request to sendAI21Request() - sendAI21Request has NO reverse-proxy support
-     * at all (see the `canMockAi21Backend` comment near the top of this file), so this instead (a)
-     * writes a real secret (sendAI21Request reads it via readSecret(), unlike the other three, which
-     * accept `proxy_password` instead) and (b) points the module-level `ai21FakeBackendUrl` the
-     * node-fetch reroute mock reads. Only meaningful when `canMockAi21Backend` is true - callers must
-     * check that themselves and skip the AI21 test(s) otherwise.
-     */
     function pointAI21BackendAt(url) {
         const settings = buildSettingsFixture();
         settings.oai_settings.chat_completion_source = 'ai21';
@@ -608,7 +464,6 @@ async function run() {
         ai21FakeBackendUrl = url;
     }
 
-    /** Routes a raw-action request to sendDeepSeekRequest() via a real `reverse_proxy` override - DeepSeek IS in chat-completion-generation-data.js's own `proxySupportedSources`, confirmed by reading that file, and sendDeepSeekRequest itself reads `request.body.reverse_proxy`/`proxy_password`. */
     function pointDeepSeekBackendAt(url) {
         const settings = buildSettingsFixture();
         settings.oai_settings.chat_completion_source = 'deepseek';
@@ -618,7 +473,6 @@ async function run() {
         writeAllSettings(directories, settings);
     }
 
-    /** Routes a raw-action request to sendXaiRequest() via a real `reverse_proxy` override - xAI IS in `proxySupportedSources` too, and sendXaiRequest itself reads `request.body.reverse_proxy`/`proxy_password`. */
     function pointXaiBackendAt(url) {
         const settings = buildSettingsFixture();
         settings.oai_settings.chat_completion_source = 'xai';
@@ -628,14 +482,6 @@ async function run() {
         writeAllSettings(directories, settings);
     }
 
-    /**
-     * Routes a raw-action request to sendCohereRequest() - sendCohereRequest has NO reverse-proxy
-     * support at all (see the `canMockAi21Backend` comment near the top of this file), so this instead
-     * (a) writes a real secret (sendCohereRequest reads it via readSecret()) and (b) points the
-     * module-level `cohereFakeBackendUrl` the node-fetch reroute mock reads. Only meaningful when
-     * `canMockAi21Backend` is true - callers must check that themselves and skip the Cohere test(s)
-     * otherwise.
-     */
     function pointCohereBackendAt(url) {
         const settings = buildSettingsFixture();
         settings.oai_settings.chat_completion_source = 'cohere';
@@ -645,14 +491,6 @@ async function run() {
         cohereFakeBackendUrl = url;
     }
 
-    /**
-     * Routes a raw-action request to sendAimlapiRequest() - sendAimlapiRequest has NO reverse-proxy
-     * support at all (same situation as sendCohereRequest/sendAI21Request above), so this instead (a)
-     * writes a real secret (sendAimlapiRequest reads it via readSecret()) and (b) points the
-     * module-level `aimlapiFakeBackendUrl` the node-fetch reroute mock reads. Only meaningful when
-     * `canMockAi21Backend` is true - callers must check that themselves and skip the AI/ML API test(s)
-     * otherwise.
-     */
     function pointAimlapiBackendAt(url) {
         const settings = buildSettingsFixture();
         settings.oai_settings.chat_completion_source = 'aimlapi';
@@ -662,14 +500,6 @@ async function run() {
         aimlapiFakeBackendUrl = url;
     }
 
-    /**
-     * Routes a raw-action request to sendChutesRequest() - sendChutesRequest has NO reverse-proxy
-     * support at all (same situation as sendCohereRequest/sendAI21Request/sendAimlapiRequest above), so
-     * this instead (a) writes a real secret (sendChutesRequest reads it via readSecret()) and (b)
-     * points the module-level `chutesFakeBackendUrl` the node-fetch reroute mock reads. Only
-     * meaningful when `canMockAi21Backend` is true - callers must check that themselves and skip the
-     * Chutes test(s) otherwise.
-     */
     function pointChutesBackendAt(url) {
         const settings = buildSettingsFixture();
         settings.oai_settings.chat_completion_source = 'chutes';
@@ -679,15 +509,6 @@ async function run() {
         chutesFakeBackendUrl = url;
     }
 
-    /**
-     * Routes a raw-action request to sendMinimaxRequest() - sendMinimaxRequest has NO reverse-proxy
-     * support at all (same situation as the other no-override providers above), so this instead (a)
-     * writes a real secret (sendMinimaxRequest reads it via readSecret()) and (b) points the
-     * module-level `minimaxFakeBackendUrl` the node-fetch reroute mock reads (the mock reroutes BOTH
-     * the global `API_MINIMAX` and CN `API_MINIMAX_CN` origins - this leaves `minimax_endpoint` at its
-     * default, targeting the global host). Only meaningful when `canMockAi21Backend` is true - callers
-     * must check that themselves and skip the MiniMax test(s) otherwise.
-     */
     function pointMinimaxBackendAt(url) {
         const settings = buildSettingsFixture();
         settings.oai_settings.chat_completion_source = 'minimax';
@@ -697,14 +518,6 @@ async function run() {
         minimaxFakeBackendUrl = url;
     }
 
-    /**
-     * Routes a raw-action request to sendElectronHubRequest() - sendElectronHubRequest has NO
-     * reverse-proxy support at all (same situation as the other no-override providers above), so this
-     * instead (a) writes a real secret (sendElectronHubRequest reads it via readSecret()) and (b)
-     * points the module-level `electronhubFakeBackendUrl` the node-fetch reroute mock reads. Only
-     * meaningful when `canMockAi21Backend` is true - callers must check that themselves and skip the
-     * Electron Hub test(s) otherwise.
-     */
     function pointElectronHubBackendAt(url) {
         const settings = buildSettingsFixture();
         settings.oai_settings.chat_completion_source = 'electronhub';
@@ -714,13 +527,6 @@ async function run() {
         electronhubFakeBackendUrl = url;
     }
 
-    /**
-     * Routes a raw-action request to sendAzureOpenAIRequest() via a real `azure_base_url` override -
-     * UNLIKE the six providers above, sendAzureOpenAIRequest's own request-building already targets a
-     * fully caller-supplied endpoint (`azure_base_url`/`azure_deployment_name`/`azure_api_version` -
-     * see sendAzureOpenAIRequest's own `url`/`config` construction), so no `mock.module()` reroute is
-     * needed here at all - this works identically whether or not `canMockAi21Backend` is true.
-     */
     function pointAzureOpenAIBackendAt(url) {
         const settings = buildSettingsFixture();
         settings.oai_settings.chat_completion_source = 'azure_openai';
@@ -732,8 +538,6 @@ async function run() {
         writeSecret(directories, SECRET_KEYS.AZURE_OPENAI, 'test-azure-openai-key');
     }
 
-    // (a) a real non-streaming generation appends the assistant's reply onto the tree, chained after
-    // the just-persisted user message, with the correct name/is_user.
     {
         const fakeBackend = await startFakeBackend((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -765,9 +569,6 @@ async function run() {
         assert.equal(assistantMsg.name, 'Rex', 'the assistant message uses name2 (the character\'s display name), not name1');
     }
 
-    // (a-1) OpenAI with a text-completion model (TEXT_COMPLETION_MODELS) is sent to `/completions`, whose
-    // non-streaming answer carries the reply at `choices[0].text`: by the time the answer returns, both
-    // the user message and the reply are stored and the answer names the reply's node.
     {
         const requestedPaths = [];
         const fakeBackend = await startFakeBackend((req, res) => {
@@ -810,8 +611,6 @@ async function run() {
         }
     }
 
-    // (a-1b) an answer with no readable reply: nothing but the user message is stored, the answer carries
-    // the unreadable-reply warning, and the answer's keys are logged without its content.
     {
         const fakeBackend = await startFakeBackend((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -859,9 +658,6 @@ async function run() {
         );
     }
 
-    // (a-2) a model no tokenizer is known for: bias entries needing ids are left out of the sent
-    // logit_bias and listed in a `dropped` warning, on raw-action and profile sends alike; raw-id
-    // entries still go through.
     {
         const backendBodies = [];
         const fakeBackend = await startFakeBackend((_req, res, body) => {
@@ -903,10 +699,6 @@ async function run() {
         assert.deepEqual(backendBodies.map(body => body.logit_bias), [{ 11: 2, 12: 2 }, { 11: 2, 12: 2 }], 'raw-id entries still go through');
     }
 
-    // (a-2b) a model mapped to a downloadable tokenizer whose download fails: the same as a model
-    // with no tokenizer, but the reason is that tokenizer failing. The raw-action send's prompt
-    // budget fell to the estimate, so it also carries `trim-estimate`; the profile send counts
-    // nothing. The failed download isn't tried again for 60 s, so the two sends make one request.
     if (canMockAi21Backend) {
         const backendBodies = [];
         const fakeBackend = await startFakeBackend((_req, res, body) => {
@@ -957,9 +749,6 @@ async function run() {
         console.log('chat-completions.test.js: skipping the downloadable-tokenizer failure case - run with `node --experimental-test-module-mocks`, which it needs to stub the download');
     }
 
-    // (a-3) POST /bias without an `X-ST-Connection-State` header keeps upstream's encoding and
-    // response: a name its tokenizer guess doesn't know is encoded with gpt-3.5-turbo, a mistral name
-    // with mistral, and claude gets no bias.
     {
         const app = buildTestApp();
         const server = app.listen(0, '127.0.0.1');
@@ -989,9 +778,6 @@ async function run() {
         }
     }
 
-    // (a-4) POST /bias with an `X-ST-Connection-State` header resolves from that state, like a
-    // server-built send, and lists the entries it left out in `X-ST-Tokenizer-Dropped`. The body
-    // stays the bare map and the `?model=` query is ignored.
     {
         const app = buildTestApp();
         const server = app.listen(0, '127.0.0.1');
@@ -1004,7 +790,6 @@ async function run() {
             });
             return { status: res.status, headers: res.headers, text: await res.text() };
         };
-        // Non-ASCII escaped as \uXXXX, as the browser sends it: a header value can't carry UTF-8 text.
         const asciiJson = value => JSON.stringify(value).replace(/[\u007f-￿]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
         const entries = [{ text: 'hello', value: -5 }, { text: '[11, 12]', value: 2 }, { text: 'こんにちは', value: 1 }];
         try {
@@ -1029,16 +814,12 @@ async function run() {
         }
     }
 
-    // (a-5) a custom URL that is llama.cpp (its `/props` has llama.cpp's shape): a server-built send
-    // counts and encodes its bias through that URL's `/tokenize`, with the custom key and the custom
-    // headers substituted with the send's own macros; `/bias` with a state header does the same.
     {
         const requests = [];
         const fakeLlamaCpp = await startFakeBackend((req, res, body) => {
             requests.push({ method: req.method, path: req.url, headers: req.headers, body: body ? JSON.parse(body) : undefined });
             res.writeHead(200, { 'Content-Type': 'application/json' });
             if (req.url.split('?')[0] === '/props') {
-                // llama.cpp's own `/props` shape (llama.cpp server README, "GET `/props`").
                 return res.end(JSON.stringify({ default_generation_settings: { n_ctx: 4096 }, total_slots: 1, build_info: 'b1-abc' }));
             }
             if (req.url === '/tokenize') {
@@ -1109,8 +890,6 @@ async function run() {
         assert.deepEqual(biasWithPlainHeaders, { body: { 1104: 3, 1105: 3 }, dropped: [] }, '/bias, plain saved headers: /tokenize ids');
     }
 
-    // (a-6) a raw-action send at a custom llama.cpp URL whose `/props` carries `model_path` and
-    // `build_info`, with a bias preset: one `tokenCountRows` holds its message counts and the bias entry's ids.
     {
         const tokenizes = [];
         const fakeLlamaCpp = await startFakeBackend((req, res, body) => {
@@ -1157,8 +936,6 @@ async function run() {
         );
     }
 
-    // --- write-back: /generate stores its counts and ids once the backend has the request ---
-    /** Per tokenizer identity, the keys (`[table, hex hash]`) the user's token cache was given to store. */
     const written = new Map();
     const realWriteBack = user.store.tokens.writeBack.bind(user.store.tokens);
     user.store.tokens.writeBack = async (pending, now) => {
@@ -1170,9 +947,12 @@ async function run() {
         }
         return realWriteBack(pending, now);
     };
-    /** @param {number} table @param {string} identity @param {string} hash */
+    /**
+     * @param {number} table
+     * @param {string} identity
+     * @param {string} hash
+     */
     const cached = (table, identity, hash) => user.store.chats.store.chatRead('tokenCache', { table, identity, hash: Buffer.from(hash, 'hex') });
-    /** Rows stored under `identity` in token_counts and token_ids together, and their newest `last_used`. */
     async function storedRowsUnder(identity) {
         let rows = 0;
         let newest = 0;
@@ -1184,25 +964,18 @@ async function run() {
         }
         return { rows, newest };
     }
-    /** Every stored row under `identity` last used at 0 (its value as it was). */
     async function clearLastUsed(identity) {
         const store = user.store.chats.store;
         for (const [table, hash] of written.get(identity)?.values() ?? []) {
             const found = await cached(table, identity, hash);
             if (!found) continue;
             const key = { table, identity, hash: Buffer.from(hash, 'hex') };
-            // A replacing put sets the time only with another value: one with another, then the value again.
             await store.tokenCachePut([{ ...key, value: Buffer.concat([found.value, Buffer.from([0])]), replace: true }], 0, 0);
             await store.tokenCachePut([{ ...key, value: found.value, replace: true }], 0, 0);
         }
     }
 
     let writeBackChats = 0;
-    /**
-     * A new chat and a custom llama.cpp URL whose `/props` names a model file of its own, so its identity has no
-     * rows yet. `onChat(req, res, body)` answers `/chat/completions`. Returns the backend, the identity and the
-     * request body.
-     */
     async function setUpLlamaCppWriteBack(onChat, { tools = false } = {}) {
         const n = ++writeBackChats;
         const modelPath = `/models/write-back-${n}.gguf`;
@@ -1239,8 +1012,6 @@ async function run() {
         };
     }
 
-    // (a-7) the shared dispatch block: nothing is stored when the backend receives the request, and the counts
-    // and the bias ids are stored after.
     {
         let whenReceived = null;
         let identityForCase = null;
@@ -1263,7 +1034,6 @@ async function run() {
         }
     }
 
-    // (a-8) the backend request throws before it is sent: the generation fails and nothing is stored.
     {
         let received = 0;
         const { backend, identity, body } = await setUpLlamaCppWriteBack((_req, res) => {
@@ -1294,9 +1064,6 @@ async function run() {
         }
     }
 
-    // (a-9) a server tool round: the rebuilt request's rows are stored after its backend request too. The tool
-    // waits for the first request's rows, then clears their `last_used`; the second request finds them still
-    // cleared and they are marked used after it.
     {
         let chats = 0;
         let whenSecondReceived = null;
@@ -1339,9 +1106,6 @@ async function run() {
         }
     }
 
-    // (a-10) a provider function (Claude, through its reverse proxy): nothing stored when the backend receives
-    // the request, the counts stored after. The model is gpt-4o because it maps to a local tokenizer (tiktoken)
-    // without a tokenizer map in the test data; a Claude model counts by the estimate and stores nothing.
     {
         const claudeChat = 'write-back-claude-chat';
         await saveBranch(user.store, { avatar: ownerId }, claudeChat, [
@@ -1376,8 +1140,6 @@ async function run() {
         }
     }
 
-    // (a-11) the token tables failing to read: the generation succeeds with the same request as counted fresh,
-    // because upstream's /generate never reads them.
     {
         const sent = [];
         const { backend, body } = await setUpLlamaCppWriteBack((_req, res, requestBody) => {
@@ -1407,8 +1169,6 @@ async function run() {
         }
     }
 
-    // (b) a failed backend response (non-2xx) does NOT append an assistant reply (the user message,
-    // already committed as "the user really sent this" before dispatch, is unaffected either way).
     {
         const fakeBackend = await startFakeBackend((_req, res) => {
             res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -1434,9 +1194,6 @@ async function run() {
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].is_user, true);
     }
 
-    // (c) is_impersonate: true - NEITHER the (spuriously passed) user_message NOR the generated reply
-    // may ever land on the tree, even though the backend call succeeds and returns real text. The
-    // generated text must still reach the client unchanged.
     {
         const fakeBackend = await startFakeBackend((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1452,8 +1209,6 @@ async function run() {
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'impersonate', is_impersonate: true,
-            // Deliberately included even though a real client never sends this for impersonate - the
-            // route must defensively ignore it regardless.
             user_message: { is_user: true, name: 'User', mes: 'This should never be persisted.' },
             stream: false,
         });
@@ -1467,8 +1222,6 @@ async function run() {
         assert.equal(branchAfter.branch.leaf_id, leafBefore, 'the branch leaf/ancestor path is completely unchanged');
     }
 
-    // (d) type: 'quiet' - same assertion as (c): no tree mutation on either side, response still
-    // forwarded to the client unchanged.
     {
         const fakeBackend = await startFakeBackend((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1484,8 +1237,6 @@ async function run() {
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'quiet',
-            // Also deliberately included to verify the defensive skip - a real quiet call has no
-            // fresh user text to send either.
             user_message: { is_user: true, name: 'User', mes: 'This should never be persisted.' },
             stream: false,
         });
@@ -1499,10 +1250,6 @@ async function run() {
         assert.equal(branchAfter.branch.leaf_id, leafBefore, 'the branch leaf/ancestor path is completely unchanged');
     }
 
-    // (e) is_swipe: true - the reply must land as a real SIBLING alongside the swiped message (under
-    // ITS real parent), not a CHILD chained after it, and the new sibling must become the active path
-    // (selectDefaultChild()). Uses its own small, dedicated branch so it isn't coupled to the mutating
-    // shared `branchName` state above.
     {
         const swipeBranch = 'swipe-chat';
         await saveBranch(user.store, { avatar: ownerId }, swipeBranch, [
@@ -1537,7 +1284,6 @@ async function run() {
         assert.notEqual(branchAfter.branch.leaf_id, swipedNodeId, 'the branch is now positioned on a DIFFERENT node - the new alternative');
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'Greetings, traveler!', 'the new alternative is now the active/default path');
 
-        // (a) a new SIBLING was added under the correct parent - not a child of the swiped message.
         const newNodeId = branchAfter.branch.leaf_id;
         const newAncestry = (await user.store.chats.load({ tree: await treeOf(user.store, { avatar: ownerId }), at: newNodeId })).messages;
         assert.equal(newAncestry.length, swipedAncestry.length, 'the new alternative sits at the SAME depth as the swiped message (a sibling), not one deeper (a child)');
@@ -1548,15 +1294,10 @@ async function run() {
         assert.ok(alternatives.alternatives.some(a => a.node_id === swipedNodeId && a.mes === 'Hello there!'), '(b) the swiped message\'s own original content is completely unchanged');
         assert.ok(alternatives.alternatives.some(a => a.node_id === newNodeId && a.mes === 'Greetings, traveler!'));
 
-        // (c) selectDefaultChild() really was called - the new alternative is the one reported as
-        // currently selected.
         const parentAlternatives = await user.store.chats.alternatives({ node_id: newNodeId });
         assert.equal(parentAlternatives.selected, parentAlternatives.alternatives.findIndex(a => a.node_id === newNodeId), 'the new alternative is the one getAlternatives() reports as currently selected');
     }
 
-    // (f) type: 'regenerate' maps onto the SAME is_swipe-driven persistence as 'swipe' - a real client
-    // sends `is_swipe: true` for both (see public/script.js's own `isSwipe` local), so the route never
-    // distinguishes between the two literal `type` strings for persistence purposes.
     {
         const regenBranch = 'regenerate-chat';
         await saveBranch(user.store, { avatar: ownerId }, regenBranch, [
@@ -1588,8 +1329,6 @@ async function run() {
         assert.equal(alternatives.total, 2, 'regenerate did not chain a child - the original message still has exactly one real sibling');
     }
 
-    // (g) is_continue: true - the reply must EDIT the existing leaf node's text in place (oldText +
-    // newText), on the SAME node id, at the SAME position in the tree - never a new node.
     {
         const continueBranch = 'continue-chat';
         await saveBranch(user.store, { avatar: ownerId }, continueBranch, [
@@ -1627,8 +1366,6 @@ async function run() {
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].is_user, false);
     }
 
-    // (h) Continue clicked with text left in the box: the text is stored as the user's message, and the
-    // page continues that message (as upstream does), so the reply is stored once, as an edit of it.
     {
         const continueWithUserTextBranch = 'continue-with-user-text-chat';
         await saveBranch(user.store, { avatar: ownerId }, continueWithUserTextBranch, [
@@ -1669,14 +1406,6 @@ async function run() {
         assert.equal(originalNode.mes, 'Once upon a time,', 'the assistant message before it is unchanged');
     }
 
-    // (j) GROUP CHAT support (this follow-up task): `character_avatar` (the specific responding member)
-    // AND `group_id` (the group's own addressing) given TOGETHER - the shape public/script.js's widened
-    // chat-completion raw-action gate now sends for a group turn, mirroring text-completions.test.js's
-    // own group test (case (j) there) with the identical real on-disk fixture conventions: a real
-    // group.json (matching the exact shape src/endpoints/groups.js's own `/create` route writes), a
-    // real chat branch OWNED BY THE GROUP'S id (not either member's avatar), and two real member
-    // character cards with deliberately distinct `description`s so a wrong-member/uncombined-card
-    // mixup would be detectable.
     {
         const nova = await writeCharacter('Nova.png', {
             name: 'Nova',
@@ -1691,9 +1420,6 @@ async function run() {
 
         const groupId = 'test-group-1';
         const groupChatId = 'test-group-1-chat';
-        /** Exact shape src/endpoints/groups.js's own POST /create route writes to <id>.json.
-         * generation_mode: 1 (group_generation_mode.APPEND) so computeGroupCards() actually produces
-         * COMBINED cards - see chat-completion-generation-input.test.js's own identical fixture note. */
         const groupMetadata = {
             id: groupId,
             name: 'Adventuring Party',
@@ -1712,8 +1438,6 @@ async function run() {
         };
         await user.store.lib.writeGroup(groupMetadata);
 
-        // A chat branch owned by the GROUP's own id - not either member's avatar - with one message
-        // from each member already in history, matching a real multi-member group conversation.
         await saveBranch(user.store, { group: groupId }, groupChatId, [
             { chat_metadata: {} },
             { name: 'Tester', is_user: true, mes: 'Hello, party!', send_date: 1, extra: {} },
@@ -1722,9 +1446,6 @@ async function run() {
 
         const groupLeafId = (await loadBranch(user.store, { group: groupId }, groupChatId)).branch.leaf_id;
 
-        // --- assembly: buildRawActionChatCompletionRequest() with BOTH characterAvatar (Nova, the
-        // member actually responding this turn) AND groupId (the group) set together, addressed by
-        // the group chat's real node_id. ---
         const builtGroup = await buildRawActionChatCompletionRequest(directories, {
             characterAvatar: nova, groupId, ownerId: groupId, chat: await chatContextOf(user.store, { group: groupId }, await sessionAt(user.store, groupLeafId)), nodeId: groupLeafId,
             type: 'normal', userMessageText: 'Nova, status report?',
@@ -1738,8 +1459,6 @@ async function run() {
         assert.ok(groupJoined.includes('Zephyr: Winds are shifting!'), 'the real group chat HISTORY is name-prefixed for the non-responding member, per real isGroup-driven name-prefixing');
         assert.ok(groupJoined.includes('Nova, status report?'), 'the raw user_message made it into the prepared messages');
 
-        // --- persistence: a real, route-level raw-action /generate call persists BOTH sides against
-        // the GROUP's own owner_id, chained under the group's real chat branch. ---
         const branchBeforeGroup = await loadBranch(user.store, { group: groupId }, groupChatId);
         const messageCountBeforeGroup = branchBeforeGroup.messages.length;
 
@@ -1769,18 +1488,10 @@ async function run() {
         assert.equal(assistantMsg.is_user, false);
         assert.equal(assistantMsg.name, 'Nova', 'the persisted assistant message is attributed to the SPECIFIC RESPONDING MEMBER (name2/Nova), not the group\'s own name or the other member (Zephyr)');
 
-        // Sanity: none of this leaked into the single-character owner namespace used elsewhere in this file.
         const rexBranchUnaffected = await loadBranch(user.store, { avatar: ownerId }, branchName);
         assert.ok(rexBranchUnaffected.messages.every(m => m.mes !== 'All systems nominal, Captain.'), 'the group turn did not leak into an unrelated single-character owner namespace');
     }
 
-    // (i) STREAMING raw-action, plain reply: a real OpenAI-Chat-Completions-shaped SSE stream
-    // (`data: {"choices":[{"delta":{"content":"..."}}]}`, ending `data: [DONE]`) is teed - the
-    // client-facing bytes must be byte-for-byte identical to what the fake backend sent, AND the
-    // full concatenated text must land on the tree afterward (persistence happens asynchronously,
-    // after the HTTP response to the client has already ended - see forwardAndPersistCompactStream()'s own
-    // doc comment in chat-completions.js - so this polls via waitFor() rather than asserting
-    // immediately after the fetch resolves).
     {
         const streamBranch = 'stream-plain-chat';
         await saveBranch(user.store, { avatar: ownerId }, streamBranch, [
@@ -1816,9 +1527,6 @@ async function run() {
         assert.equal(assistantMsg.name, 'Rex');
     }
 
-    // (i-1b) STREAMING raw-action, OpenAI with a text-completion model (TEXT_COMPLETION_MODELS): it is sent
-    // to `/completions`, whose stream carries `choices[0].text` chunks. The reply reaches the page, is
-    // stored, and its node id is the stream's last frame.
     {
         const chatName = 'stream-instruct-model-chat';
         await saveBranch(user.store, { avatar: ownerId }, chatName, [
@@ -1862,12 +1570,6 @@ async function run() {
         }
     }
 
-    // (i-2) STREAMING raw-action, is_swipe: true - same SSE teeing, but must land as a real SIBLING
-    // alternative (addAlternatives() + selectDefaultChild()), exactly like the non-streaming swipe
-    // case (e) above - proving persistAssistantReply() drives the streaming path through the exact
-    // same shared branching, not a re-implementation of it. Uses its own DISTINCT preceding message
-    // text - see (e)'s/(f)'s own reasoning for why (the chat store structurally shares nodes
-    // across branches for the same owner whenever their preceding content is byte-identical).
     {
         const streamSwipeBranch = 'stream-swipe-chat';
         await saveBranch(user.store, { avatar: ownerId }, streamSwipeBranch, [
@@ -1902,11 +1604,6 @@ async function run() {
         assert.ok(alternatives.alternatives.some(a => a.mes === 'Hello there, streaming swipe test!'), 'the original swiped message is unchanged');
     }
 
-    // (i-3) STREAMING raw-action, is_continue: true - same SSE teeing, but must EDIT the existing
-    // leaf in place (oldText + newText) via editMessage(), exactly like the non-streaming continue
-    // case (g) above. Uses its own DISTINCT preceding text - continue's editMessage() mutates a
-    // potentially-SHARED leaf node in place, so reusing (g)/(h)'s exact text here would edit THEIR
-    // fixture's node instead of a clean one of this test's own.
     {
         const streamContinueBranch = 'stream-continue-chat';
         await saveBranch(user.store, { avatar: ownerId }, streamContinueBranch, [
@@ -1941,11 +1638,6 @@ async function run() {
         assert.equal(branchAfter.branch.leaf_id, leafBefore, 'the SAME node is still the leaf');
     }
 
-    // (i-4) A NON-raw-action streaming request (a connection_profile_id-less, owner_id-less legacy
-    // request) still goes through forwardAndPersistCompactStream()'s compact-v1 re-encoding - only
-    // persistence is skipped, per this session's gap-1 conversion. Verified here by decoding the
-    // client-facing bytes as a compact stream and asserting the reconstructed text matches the fake
-    // backend's SSE chunks exactly, with no assistantNodeId frame and nothing persisted anywhere.
     {
         const fakeBackend = await startFakeSseBackend(['This ', 'is ', 'a ', 'plain ', 'legacy ', 'stream.']);
         pointBackendAt(fakeBackend.url);
@@ -1955,9 +1647,6 @@ async function run() {
 
         const app = buildTestApp();
         const { status, bodyBytes } = await postGenerateStream(app, {
-            // No owner_id/character_avatar/group_id/connection_profile_id - falls through to the
-            // legacy/default branch, which only dispatches request.body through the shared block
-            // completely unchanged.
             messages: [{ role: 'user', content: 'Legacy raw prompt, no raw-action fields.' }],
             model: 'test-model', chat_completion_source: 'custom', custom_url: fakeBackend.url, stream: true,
         });
@@ -1974,12 +1663,6 @@ async function run() {
         assert.equal(branchAfter.messages.length, messageCountBefore, 'nothing was persisted onto any tree for a non-raw-action stream');
     }
 
-    // (j) sendClaudeRequest, non-streaming: a real Messages-API-shaped response whose `content` array
-    // deliberately carries a `type: 'thinking'` block BEFORE the real `type: 'text'` block - proving
-    // persistence extracts only the real text block, never the thinking content (the existing,
-    // untouched client-facing `responseText` still only reads `content[0]` - a pre-existing quirk,
-    // unrelated to this task, left completely alone here; its own value is asserted below as evidence
-    // that the client-visible reply is unaffected by this task's change).
     {
         const claudeBranch = 'claude-plain-chat';
         await saveBranch(user.store, { avatar: ownerId }, claudeBranch, [
@@ -2027,10 +1710,6 @@ async function run() {
         assert.equal(assistantMsg.name, 'Rex');
     }
 
-    // (j-2) sendClaudeRequest, streaming: a real Messages-API SSE event sequence
-    // (message_start/content_block_start/ping/content_block_delta.../content_block_stop/message_delta/
-    // message_stop), including a `thinking_delta` event that must be excluded from the persisted text,
-    // alongside the real `text_delta` events that must be included.
     {
         const claudeStreamBranch = 'claude-stream-chat';
         await saveBranch(user.store, { avatar: ownerId }, claudeStreamBranch, [
@@ -2069,13 +1748,6 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        // Claude's own stream has no [DONE] sentinel to hold back (it ends on message_stop, then the
-        // connection just closes) - the injected frame lands as a trailing write instead, still ahead
-        // of the connection actually closing.
-        // Claude's own stream has no [DONE] sentinel - the trailing-write case (see
-        // forwardAndPersistCompactStream()'s own doc comment); its content is the concatenated
-        // text_delta chunks, and its reasoning is the thinking_delta chunk, neither reaches the
-        // client mixed with the other.
         assertStreamCarriesAssistantNodeId(bodyBytes, 'Rex says hi, streamed via Claude.', { expectedReasoning: 'Thinking about a greeting...' });
 
         const branchAfter = await waitFor(async () => {
@@ -2087,10 +1759,6 @@ async function run() {
         assert.equal(assistantMsg.name, 'Rex');
     }
 
-    // (k) sendMakerSuiteRequest, non-streaming: a real GenerateContentResponse-shaped body whose
-    // `candidates[0].content.parts` deliberately carries a `thought: true` part BEFORE the real text
-    // part - proving persistence reuses this function's own existing `!part.thought` filter (already
-    // applied, unmodified, to the client-facing `responseText` too - both are asserted equal below).
     {
         const makerSuiteBranch = 'makersuite-plain-chat';
         await saveBranch(user.store, { avatar: ownerId }, makerSuiteBranch, [
@@ -2129,10 +1797,6 @@ async function run() {
         assert.equal(assistantMsg.name, 'Rex');
     }
 
-    // (k-2) sendMakerSuiteRequest, streaming: real `alt=sse` chunks - each a FULL
-    // GenerateContentResponse-shaped JSON payload carrying that chunk's own incremental
-    // `candidates[0].content.parts` (verified against this function's own non-streaming parsing
-    // above, which this reuses) - including one thought-only chunk that must be excluded.
     {
         const makerSuiteStreamBranch = 'makersuite-stream-chat';
         await saveBranch(user.store, { avatar: ownerId }, makerSuiteStreamBranch, [
@@ -2163,8 +1827,6 @@ async function run() {
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        // Gemini's own stream has no [DONE] sentinel either - same trailing-write case as Claude.
-        // The thought-only chunk contributes to reasoning, never to content.
         assertStreamCarriesAssistantNodeId(bodyBytes, 'Rex says hi, streamed via Gemini.', { expectedReasoning: 'Thinking about a greeting...' });
 
         const branchAfter = await waitFor(async () => {
@@ -2176,9 +1838,6 @@ async function run() {
         assert.equal(assistantMsg.name, 'Rex');
     }
 
-    // (l) sendMistralAIRequest, non-streaming: a standard OpenAI-Chat-Completions-shaped body, sent
-    // to the client completely unmodified (response.send(generateResponseJson) as-is, pre-existing
-    // behavior) - asserted structurally identical, alongside the persisted reply.
     {
         const mistralBranch = 'mistral-plain-chat';
         await saveBranch(user.store, { avatar: ownerId }, mistralBranch, [
@@ -2205,7 +1864,6 @@ async function run() {
 
         assert.equal(status, 200);
         {
-            // The reply as stored rides along (assistant_message), for the page to show in place of its own copy.
             const { assistant_node_id, assistant_message, ...rest } = data;
             assert.equal(typeof assistant_message?.mes, 'string', 'the stored reply is sent with the answer');
             assert.deepEqual(rest, mistralBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
@@ -2220,7 +1878,6 @@ async function run() {
         assert.equal(assistantMsg.name, 'Rex');
     }
 
-    // (l-2) sendMistralAIRequest, streaming: standard OpenAI Chat-Completions delta SSE chunks.
     {
         const mistralStreamBranch = 'mistral-stream-chat';
         await saveBranch(user.store, { avatar: ownerId }, mistralStreamBranch, [
@@ -2252,10 +1909,6 @@ async function run() {
         assert.equal(assistantMsg.name, 'Rex');
     }
 
-    // (n) sendDeepSeekRequest, non-streaming: a standard OpenAI-Chat-Completions-shaped body, sent to
-    // the client completely unmodified (response.send(generateResponseJson) as-is, pre-existing
-    // behavior) - deliberately including a `reasoning_content` field alongside `content`, proving
-    // persistence reads only the real `content` and never the separate reasoning field.
     {
         const deepseekBranch = 'deepseek-plain-chat';
         await saveBranch(user.store, { avatar: ownerId }, deepseekBranch, [
@@ -2282,7 +1935,6 @@ async function run() {
 
         assert.equal(status, 200);
         {
-            // The reply as stored rides along (assistant_message), for the page to show in place of its own copy.
             const { assistant_node_id, assistant_message, ...rest } = data;
             assert.equal(typeof assistant_message?.mes, 'string', 'the stored reply is sent with the answer');
             assert.deepEqual(rest, deepseekBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
@@ -2297,8 +1949,6 @@ async function run() {
         assert.equal(assistantMsg.name, 'Rex');
     }
 
-    // (n-2) sendDeepSeekRequest, streaming: standard OpenAI Chat-Completions delta SSE chunks,
-    // deliberately including a `delta.reasoning_content`-only chunk that must be excluded.
     {
         const deepseekStreamBranch = 'deepseek-stream-chat';
         await saveBranch(user.store, { avatar: ownerId }, deepseekStreamBranch, [
@@ -2340,8 +1990,6 @@ async function run() {
         assert.equal(assistantMsg.name, 'Rex');
     }
 
-    // (o) sendXaiRequest, non-streaming: a standard OpenAI-Chat-Completions-shaped body, sent to the
-    // client completely unmodified.
     {
         const xaiBranch = 'xai-plain-chat';
         await saveBranch(user.store, { avatar: ownerId }, xaiBranch, [
@@ -2368,7 +2016,6 @@ async function run() {
 
         assert.equal(status, 200);
         {
-            // The reply as stored rides along (assistant_message), for the page to show in place of its own copy.
             const { assistant_node_id, assistant_message, ...rest } = data;
             assert.equal(typeof assistant_message?.mes, 'string', 'the stored reply is sent with the answer');
             assert.deepEqual(rest, xaiBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
@@ -2383,7 +2030,6 @@ async function run() {
         assert.equal(assistantMsg.name, 'Rex');
     }
 
-    // (o-2) sendXaiRequest, streaming: standard OpenAI Chat-Completions delta SSE chunks.
     {
         const xaiStreamBranch = 'xai-stream-chat';
         await saveBranch(user.store, { avatar: ownerId }, xaiStreamBranch, [
@@ -2415,18 +2061,9 @@ async function run() {
         assert.equal(assistantMsg.name, 'Rex');
     }
 
-    // (m)/(m-2)/(p)/(p-2)/(q)/(q-2) sendAI21Request/sendCohereRequest/sendAimlapiRequest,
-    // non-streaming AND streaming - see the `canMockAi21Backend` comment near the top of this file for
-    // exactly why this needs `node:test`'s `mock.module()` (unlike sendDeepSeekRequest/sendXaiRequest
-    // above, none of these three have a reverse-proxy override at all) and why these tests skip
-    // themselves, loudly, when that (currently experimental, opt-in-flag-gated) capability isn't
-    // available in the running Node process - every other test in this file (including the four
-    // provider tests directly above) runs identically either way.
     if (!canMockAi21Backend) {
         console.log('chat-completions.test.js: skipping sendAI21Request/sendCohereRequest/sendAimlapiRequest persistence tests - run with `node --experimental-test-module-mocks` to include them (see the canMockAi21Backend comment near the top of this file)');
     } else {
-        // (m) non-streaming: a standard OpenAI-Chat-Completions-shaped body, sent to the client
-        // completely unmodified (response.send(generateResponseJson) as-is, pre-existing behavior).
         {
             const ai21Branch = 'ai21-plain-chat';
             await saveBranch(user.store, { avatar: ownerId }, ai21Branch, [
@@ -2454,7 +2091,6 @@ async function run() {
 
             assert.equal(status, 200);
             {
-                // The reply as stored rides along (assistant_message), for the page to show in place of its own copy.
                 const { assistant_node_id, assistant_message, ...rest } = data;
                 assert.equal(typeof assistant_message?.mes, 'string', 'the stored reply is sent with the answer');
                 assert.deepEqual(rest, ai21Body, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
@@ -2469,7 +2105,6 @@ async function run() {
             assert.equal(assistantMsg.name, 'Rex');
         }
 
-        // (m-2) streaming: standard OpenAI Chat-Completions delta SSE chunks.
         {
             const ai21StreamBranch = 'ai21-stream-chat';
             await saveBranch(user.store, { avatar: ownerId }, ai21StreamBranch, [
@@ -2502,12 +2137,6 @@ async function run() {
             assert.equal(assistantMsg.name, 'Rex');
         }
 
-        // (m-3) streaming, TOKEN COALESCING: many single-character SSE chunks (well under the ~256
-        // byte/~40ms coalescing thresholds in forwardAndPersistCompactStream()) must still reassemble,
-        // in order, with nothing dropped or duplicated - proving the coalescing buffer doesn't corrupt
-        // ordering under a real burst of many small writes, and that the persisted tree message
-        // (accumulated server-side from the SAME per-chunk text, independent of how it was coalesced
-        // into frames) matches the reassembled client-visible stream exactly.
         {
             const ai21CoalesceBranch = 'ai21-coalesce-stream-chat';
             await saveBranch(user.store, { avatar: ownerId }, ai21CoalesceBranch, [
@@ -2541,13 +2170,6 @@ async function run() {
             assert.equal(assistantMsg.name, 'Rex');
         }
 
-        // (p) sendCohereRequest, non-streaming: a real Cohere v2 chat-shaped response whose
-        // `message.content` array deliberately carries a non-`text` block type alongside the real
-        // `type: 'text'` block, plus a `tool_plan` field - proving persistence extracts only the real
-        // text block(s), never falling back to `tool_plan` when real text content is present (this
-        // function's own existing, unmodified client-facing `response.send(generateResponseJson)`
-        // forwards the whole body as-is - asserted below as evidence the client-visible reply is
-        // unaffected).
         {
             const cohereBranch = 'cohere-plain-chat';
             await saveBranch(user.store, { avatar: ownerId }, cohereBranch, [
@@ -2575,7 +2197,6 @@ async function run() {
 
             assert.equal(status, 200);
             {
-                // The reply as stored rides along (assistant_message), for the page to show in place of its own copy.
                 const { assistant_node_id, assistant_message, ...rest } = data;
                 assert.equal(typeof assistant_message?.mes, 'string', 'the stored reply is sent with the answer');
                 assert.deepEqual(rest, cohereBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
@@ -2590,10 +2211,6 @@ async function run() {
             assert.equal(assistantMsg.name, 'Rex');
         }
 
-        // (p-2) sendCohereRequest, streaming: real Cohere v2 SSE events - a `tool-plan-delta` event
-        // followed by `content-delta` events, each carrying `delta.message.content.text`, matching the
-        // exact shape this codebase's own public/scripts/sse-stream.js `parseStreamData()` already
-        // parses for Cohere.
         {
             const cohereStreamBranch = 'cohere-stream-chat';
             await saveBranch(user.store, { avatar: ownerId }, cohereStreamBranch, [
@@ -2628,7 +2245,6 @@ async function run() {
             cohereFakeBackendUrl = null;
 
             assert.equal(status, 200);
-            // Cohere's own stream has no [DONE] sentinel either - same trailing-write case as Claude/Gemini.
             assertStreamCarriesAssistantNodeId(bodyBytes, 'Rex says hi, streamed via Cohere.');
 
             const branchAfter = await waitFor(async () => {
@@ -2640,8 +2256,6 @@ async function run() {
             assert.equal(assistantMsg.name, 'Rex');
         }
 
-        // (q) sendAimlapiRequest, non-streaming: a standard OpenAI-Chat-Completions-shaped body, sent
-        // to the client completely unmodified.
         {
             const aimlapiBranch = 'aimlapi-plain-chat';
             await saveBranch(user.store, { avatar: ownerId }, aimlapiBranch, [
@@ -2669,7 +2283,6 @@ async function run() {
 
             assert.equal(status, 200);
             {
-                // The reply as stored rides along (assistant_message), for the page to show in place of its own copy.
                 const { assistant_node_id, assistant_message, ...rest } = data;
                 assert.equal(typeof assistant_message?.mes, 'string', 'the stored reply is sent with the answer');
                 assert.deepEqual(rest, aimlapiBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
@@ -2684,7 +2297,6 @@ async function run() {
             assert.equal(assistantMsg.name, 'Rex');
         }
 
-        // (q-2) sendAimlapiRequest, streaming: standard OpenAI Chat-Completions delta SSE chunks.
         {
             const aimlapiStreamBranch = 'aimlapi-stream-chat';
             await saveBranch(user.store, { avatar: ownerId }, aimlapiStreamBranch, [
@@ -2717,8 +2329,6 @@ async function run() {
             assert.equal(assistantMsg.name, 'Rex');
         }
 
-        // (r) sendChutesRequest, non-streaming: a standard OpenAI-Chat-Completions-shaped body, sent to
-        // the client completely unmodified.
         {
             const chutesBranch = 'chutes-plain-chat';
             await saveBranch(user.store, { avatar: ownerId }, chutesBranch, [
@@ -2746,7 +2356,6 @@ async function run() {
 
             assert.equal(status, 200);
             {
-                // The reply as stored rides along (assistant_message), for the page to show in place of its own copy.
                 const { assistant_node_id, assistant_message, ...rest } = data;
                 assert.equal(typeof assistant_message?.mes, 'string', 'the stored reply is sent with the answer');
                 assert.deepEqual(rest, chutesBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
@@ -2761,7 +2370,6 @@ async function run() {
             assert.equal(assistantMsg.name, 'Rex');
         }
 
-        // (r-2) sendChutesRequest, streaming: standard OpenAI Chat-Completions delta SSE chunks.
         {
             const chutesStreamBranch = 'chutes-stream-chat';
             await saveBranch(user.store, { avatar: ownerId }, chutesStreamBranch, [
@@ -2794,9 +2402,6 @@ async function run() {
             assert.equal(assistantMsg.name, 'Rex');
         }
 
-        // (s) sendMinimaxRequest, non-streaming: a standard OpenAI-Chat-Completions-shaped body, sent to
-        // the client completely unmodified (MiniMax's own request-building - message merging via
-        // postProcessPrompt() - is untouched; only the already-standard response shape is read here).
         {
             const minimaxBranch = 'minimax-plain-chat';
             await saveBranch(user.store, { avatar: ownerId }, minimaxBranch, [
@@ -2824,7 +2429,6 @@ async function run() {
 
             assert.equal(status, 200);
             {
-                // The reply as stored rides along (assistant_message), for the page to show in place of its own copy.
                 const { assistant_node_id, assistant_message, ...rest } = data;
                 assert.equal(typeof assistant_message?.mes, 'string', 'the stored reply is sent with the answer');
                 assert.deepEqual(rest, minimaxBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
@@ -2839,7 +2443,6 @@ async function run() {
             assert.equal(assistantMsg.name, 'Rex');
         }
 
-        // (s-2) sendMinimaxRequest, streaming: standard OpenAI Chat-Completions delta SSE chunks.
         {
             const minimaxStreamBranch = 'minimax-stream-chat';
             await saveBranch(user.store, { avatar: ownerId }, minimaxStreamBranch, [
@@ -2872,8 +2475,6 @@ async function run() {
             assert.equal(assistantMsg.name, 'Rex');
         }
 
-        // (t) sendElectronHubRequest, non-streaming: a standard OpenAI-Chat-Completions-shaped body,
-        // sent to the client completely unmodified.
         {
             const electronhubBranch = 'electronhub-plain-chat';
             await saveBranch(user.store, { avatar: ownerId }, electronhubBranch, [
@@ -2901,7 +2502,6 @@ async function run() {
 
             assert.equal(status, 200);
             {
-                // The reply as stored rides along (assistant_message), for the page to show in place of its own copy.
                 const { assistant_node_id, assistant_message, ...rest } = data;
                 assert.equal(typeof assistant_message?.mes, 'string', 'the stored reply is sent with the answer');
                 assert.deepEqual(rest, electronhubBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
@@ -2916,7 +2516,6 @@ async function run() {
             assert.equal(assistantMsg.name, 'Rex');
         }
 
-        // (t-2) sendElectronHubRequest, streaming: standard OpenAI Chat-Completions delta SSE chunks.
         {
             const electronhubStreamBranch = 'electronhub-stream-chat';
             await saveBranch(user.store, { avatar: ownerId }, electronhubStreamBranch, [
@@ -2950,12 +2549,6 @@ async function run() {
         }
     }
 
-    // (u) sendAzureOpenAIRequest, non-streaming: a standard OpenAI-Chat-Completions-shaped body, sent
-    // to the client completely unmodified. UNLIKE the six providers directly above, this needs no
-    // `canMockAi21Backend`/`mock.module()` gate at all - sendAzureOpenAIRequest's own request-building
-    // already targets a fully caller-supplied `azure_base_url`, so `pointAzureOpenAIBackendAt()` routes
-    // it at the real local fake backend with zero mocking, exactly like the plain reverse-proxy-backed
-    // providers (Claude/MakerSuite/MistralAI/DeepSeek/xAI) above.
     {
         const azureBranch = 'azure-openai-plain-chat';
         await saveBranch(user.store, { avatar: ownerId }, azureBranch, [
@@ -2982,7 +2575,6 @@ async function run() {
 
         assert.equal(status, 200);
         {
-            // The reply as stored rides along (assistant_message), for the page to show in place of its own copy.
             const { assistant_node_id, assistant_message, ...rest } = data;
             assert.equal(typeof assistant_message?.mes, 'string', 'the stored reply is sent with the answer');
             assert.deepEqual(rest, azureBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
@@ -2997,7 +2589,6 @@ async function run() {
         assert.equal(assistantMsg.name, 'Rex');
     }
 
-    // (u-2) sendAzureOpenAIRequest, streaming: standard OpenAI Chat-Completions delta SSE chunks.
     {
         const azureStreamBranch = 'azure-openai-stream-chat';
         await saveBranch(user.store, { avatar: ownerId }, azureStreamBranch, [
@@ -3029,23 +2620,6 @@ async function run() {
         assert.equal(assistantMsg.name, 'Rex');
     }
 
-    // This completes coverage of ALL 12 provider-`switch` cases in this file - every one of them now
-    // has a real, route-level non-streaming AND streaming persistence test: six gated behind
-    // `canMockAi21Backend` (AI21/Cohere/AI-ML-API/Chutes/MiniMax/Electron-Hub - matching
-    // chat-completions.js's own real absence of a reverse-proxy override for exactly those six
-    // providers), and six ungated, with real reverse-proxy/caller-supplied-endpoint support
-    // (Claude/MakerSuite/MistralAI/DeepSeek/xAI further above, and AzureOpenAI directly above).
-
-    // --- error handling (route-level): missing owner_id falls through as an ordinary (non-raw-action)
-    // request - it is NOT gated into the raw-action branch at all (the gate itself requires owner_id),
-    // so it reaches the default dispatch code below with whatever fields the client actually sent.
-    // Not asserted further here - this is the same "not a raw action" byte-for-byte-unchanged path the
-    // connection_profile_id branch and legacy default path already exercise elsewhere.
-
-    // --- CORRECTED ADDRESSING MODEL (this task), route-level: a raw-action body whose `node_id` key
-    // is entirely absent gets a real 400, distinct from an explicit `node_id: null` - proving the
-    // "absent key" vs. "explicit null" distinction survives through Express's own JSON body-parser,
-    // not just when calling buildRawActionChatCompletionRequest() directly. ---
     {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
@@ -3056,9 +2630,6 @@ async function run() {
         assert.match(data.message, /node_id is required/, 'the error names the real, specific problem');
     }
 
-    // --- CORRECTED ADDRESSING MODEL (this task), route-level: `node_id: null` on a character that
-    // already has real history is a real 400 - the server does not silently pick "the current leaf"
-    // once real, possibly-stale history exists. ---
     {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
@@ -3069,17 +2640,6 @@ async function run() {
         assert.match(data.message, /is not at its start/, 'the error explains why null was rejected here');
     }
 
-    // --- file attachment reference, route-level: PERSISTENCE *and* INLINING. Chat-completion's
-    // raw-action pipeline now reuses `file-attachment-inline.js`'s `appendFileAttachments()` - the
-    // exact same function `text-completion-prompt-orchestrator.js` already wires in - from
-    // `resolveChatCompletionGenerationInput()` (src/chat-completion-generation-input.js), applied to
-    // `promptChat` (which already includes the just-appended in-memory turn) BEFORE
-    // `buildChatCompletionMessages()` converts it to `{role, content}`. This closes the real,
-    // previously-documented gap versus the legacy CLIENT-assembled chat-completion path, which already
-    // inlined file text via `coreChat`'s own `appendFileContent()` call in public/script.js. Both the
-    // persisted-node shape (unaffected - `.extra` is stored verbatim, the inlining only affects the
-    // outgoing prompt) AND the actual outgoing request body (asserted below, mirroring the media/image
-    // test just below it) are verified.
     {
         fs.writeFileSync(path.join(directories.files, 'raw-action-attach.txt'), 'The password is hunter2.');
 
@@ -3124,9 +2684,6 @@ async function run() {
         );
     }
 
-    // --- media (image) attachment, route-level: requires the real `oai_settings.media_inlining`
-    // toggle to be on (see buildRawActionChatCompletionRequest()'s own JUDGMENT CALL comment on why
-    // this is a real, narrower-than-the-client capability check, not a fabricated one). ---
     {
         const jpeg = await (async () => {
             const image = new Jimp({ width: 8, height: 8, color: 0xffffffff });
@@ -3153,7 +2710,7 @@ async function run() {
             user_message: { is_user: true, name: 'User', mes: 'Look at this.', extra: { media: [{ url: dataUrl, type: 'image', source: 'upload' }], media_index: 0 } },
         });
         fakeBackend.server.close();
-        pointBackendAt(fakeBackend.url); // restore the plain (non-media) fixture for anything after this block
+        pointBackendAt(fakeBackend.url);
 
         assert.equal(status, 200);
         assert.ok(capturedRequestBody, 'the fake backend actually received a request');
@@ -3171,9 +2728,6 @@ async function run() {
         assert.deepEqual(persistedUserMsg.extra, { media: [{ url: dataUrl, type: 'image', source: 'upload' }], media_index: 0 });
     }
 
-    // --- route-level: a garbage-shaped user message `extra` doesn't crash the request: the prompt
-    // reads it through sanitizeUserMessageExtra()'s allowlist (user-message-extra.js), and the message
-    // is stored as sent. ---
     {
         const fakeBackend = await startFakeBackend((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -3203,12 +2757,6 @@ async function run() {
         assert.equal(persistedUserMsg.extra.evil_script, '<script>alert(1)</script>', 'the message is stored as the page sent it; only the prompt reads its attachments, through the allowlist');
     }
 
-    // --- server-native tool calling (chunk (b): wiring src/server-tools.js's registry into this
-    // route's non-streaming raw-action path) ---
-
-    // (a) No server tools registered at all: a real regression guard - the raw-action request must
-    // behave EXACTLY as before (no `tools`/`tool_choice` sent to the backend, response handled as
-    // plain text), even with `oai_settings.function_calling` turned on.
     {
         let capturedBody = null;
         const fakeBackend = await startFakeBackend((_req, res, body) => {
@@ -3244,11 +2792,6 @@ async function run() {
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'No tools here.', 'plain-text persistence, unaffected by the (empty) tool registry');
     }
 
-    // (b) One server tool registered: backend's first response calls it, backend's SECOND response
-    // (after the tool result is fed back) is plain text. Full round-trip verification: the tool was
-    // actually advertised, actually invoked with the right args/ctx, the persisted tree has the
-    // correct shape, and the SECOND backend request actually carries the reconstructed tool-call/
-    // result history (proving the loop really re-resolved history, not just that two requests fired).
     {
         const toolBranch = 'tool-branch-happy-path';
         await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
@@ -3339,15 +2882,11 @@ async function run() {
         assert.equal(finalMsg.mes, 'It is sunny in Booktown.');
         assert.equal(finalMsg.name, 'Rex', 'the final reply uses name2, same as any other real assistant reply');
 
-        // Prove the loop actually re-resolved history for the second call (not just that two
-        // requests happened): the SECOND request's own messages carry the tool call and its result.
         const secondRequestDump = JSON.stringify(requestBodies[1].messages);
         assert.ok(secondRequestDump.includes('get_weather'), 'second request history includes the tool call by name');
         assert.ok(secondRequestDump.includes('Sunny in Booktown'), 'second request history includes the tool result text');
     }
 
-    // (c) A registered tool's invoke() throws: the loop must continue (the backend gets a follow-up
-    // call with the error result visible in its request body), not crash the request.
     {
         const toolBranch = 'tool-branch-invoke-throws';
         await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
@@ -3412,9 +2951,6 @@ async function run() {
         assert.equal(toolMsg.extra.tool_invocations[0].result, 'boom', 'the error message became the (string) result, so the model can see the failure');
     }
 
-    // (d) Backend calls a tool name that is NOT in the registry: a real, sane error response (not a
-    // 500 crash, not a silently-dropped/empty response) - and the recognized/unrelated registered
-    // tool is never even invoked for this round.
     {
         const toolBranch = 'tool-branch-unrecognized';
         await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
@@ -3471,9 +3007,6 @@ async function run() {
         assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'only the user message was appended - no tool-call turn or assistant reply for an unrecognized-tool round');
     }
 
-    // (e) Round-limit exceeded: a tool that always asks to be called again must trip the real error
-    // path at SERVER_TOOL_ROUND_LIMIT, not loop forever. The test's OWN fake backend has a hard
-    // sanity bound on its own call counter, so a bug in the implementation can't hang the suite.
     {
         const toolBranch = 'tool-branch-round-limit';
         await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
@@ -3492,7 +3025,7 @@ async function run() {
             invoke: async () => 'called again',
         });
 
-        const TEST_SANITY_BOUND = 20; // independent of SERVER_TOOL_ROUND_LIMIT - just a hard stop so a real infinite loop can't hang this test suite
+        const TEST_SANITY_BOUND = 20;
         let callCount = 0;
         const fakeBackend = await startFakeBackend((_req, res) => {
             callCount++;
@@ -3530,20 +3063,10 @@ async function run() {
         assert.equal(data.error, true);
         assert.ok(typeof data.message === 'string' && /round/i.test(data.message), 'the error explains the round-limit failure');
 
-        // The tool-call/result turns already persisted along the way stay on the tree - they're real
-        // facts that happened, even though the overall request ultimately failed.
         const branchAfter = await loadBranch(user.store, { avatar: ownerId }, toolBranch);
         assert.ok(branchAfter.messages.length > messageCountBefore + 1, 'the tool-call turns persisted up to the limit remain on the tree even though the request errored');
     }
 
-    // --- client-proxy tool calling (chunk (c): client_tools / pending_tool_calls / type:
-    // 'tool_result') --- a "client-only" tool below just means a name advertised via `client_tools`
-    // on the request that is NOT registered via registerServerTool() - exactly what a real browser
-    // ToolManager tool looks like from this route's point of view.
-
-    // (f) Backend calls a tool that's ONLY in `client_tools` (no server registration at all): the
-    // route must hand off via `pending_tool_calls`, not 422, and must persist an in-flight
-    // (`result: null`) invocation node.
     {
         const toolBranch = 'tool-branch-client-only-pending';
         await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
@@ -3607,9 +3130,6 @@ async function run() {
         assert.equal(toolMsg.extra.tool_invocations[0].error, null);
     }
 
-    // (g) The type: 'tool_result' follow-up: resolves the exact pending node IN PLACE (no new node for
-    // the edit itself), then resumes the loop - the SECOND backend response (plain text) is persisted
-    // as a NEW node after the tool node.
     {
         const toolBranch = 'tool-branch-tool-result-followup';
         await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
@@ -3675,8 +3195,6 @@ async function run() {
         assert.equal(data2.choices?.[0]?.message?.content, 'It is currently 3pm where you are.');
         assert.equal(typeof data2.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
 
-        // The SECOND backend request's own history must carry the real, submitted result - proving
-        // the loop really re-resolved the tree, not just that two requests happened.
         const secondRequestDump = JSON.stringify(requestBodies[1].messages);
         assert.ok(secondRequestDump.includes('get_local_time'), 'second request history includes the tool call by name');
         assert.ok(secondRequestDump.includes('15:00'), 'second request history includes the submitted result text');
@@ -3691,11 +3209,6 @@ async function run() {
         assert.equal(finalMsg.is_user, false);
     }
 
-    // (h) A mixed round: one server-native call and one client-only call in the SAME backend
-    // response. The server-native one executes immediately; the client-only one comes back via
-    // pending_tool_calls; both invocations persist on the SAME tree node (this task's chosen
-    // single-node-per-round shape - see runServerToolRounds()'s own doc comment for the rationale).
-    // The mixed node then round-trips correctly once the client's result is submitted.
     {
         const toolBranch = 'tool-branch-mixed-round';
         await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
@@ -3791,8 +3304,6 @@ async function run() {
         assert.equal(finalMsg.mes, 'Combined both results, thanks.');
     }
 
-    // (i) A tool name matching NEITHER a server tool NOR a client-advertised tool: still a clean 422,
-    // unchanged from chunk (b) - even when `client_tools` was sent (naming a DIFFERENT tool).
     {
         const toolBranch = 'tool-branch-neither-known';
         await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
@@ -3845,10 +3356,6 @@ async function run() {
         assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'only the user message was appended - no tool-call turn for a wholly-unrecognized round');
     }
 
-    // (j) Name collision between a server tool and a client-advertised tool: server-native wins (this
-    // task's chosen policy - server tools are operator-configured, the client cannot be trusted to
-    // not accidentally collide) - the client's colliding schema is dropped, and calling that name
-    // invokes the SERVER tool for real rather than being treated as a client hand-off.
     {
         const toolBranch = 'tool-branch-name-collision';
         await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
@@ -3915,15 +3422,6 @@ async function run() {
         assert.equal(data.pending_tool_calls, undefined, 'never a hand-off for a name the server tool registry owns');
     }
 
-    // --- STREAMING tool calling (this task's own scope: extends chunk (b)/(c) to the streaming branch) ---
-
-    // (j) STREAMING, server-native tool call: the fake backend's FIRST response streams `tool_calls`
-    // deltas split across several chunks (including a mid-argument-string split); the server must
-    // accumulate them faithfully, execute the registered tool, persist the round, and re-call the
-    // backend (non-streamingly, per the established round-2+ precedent) for the final reply - which
-    // must reach the client as an ordinary-looking SSE content chunk (no client-side special-casing
-    // needed for this case), AND be persisted on the tree, exactly like the non-streaming happy-path
-    // test (b) above.
     {
         const toolBranch = 'stream-tool-branch-server-native';
         await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
@@ -3948,8 +3446,6 @@ async function run() {
             callCount++;
             requestBodies.push(JSON.parse(body));
             if (callCount === 1) {
-                // First round: a real SSE stream, tool-call arguments split mid-token across chunks -
-                // '{"ci' + 'ty": "Bo' + 'oktown"}' must reassemble to '{"city": "Booktown"}'.
                 const deltaChunks = [
                     { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_stream_1', type: 'function', function: { name: 'get_weather', arguments: '' } }] } }] },
                     { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"ci' } }] } }] },
@@ -3960,8 +3456,6 @@ async function run() {
                 res.writeHead(200, { 'Content-Type': 'text/event-stream' });
                 res.end(sseBody);
             } else {
-                // Round 2+: the established precedent (point 3) - always a plain, non-streaming JSON
-                // reply, regardless of the original request's own `stream: true`.
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'It is sunny in Booktown, streamed.' } }] }));
             }
@@ -4010,11 +3504,6 @@ async function run() {
         assert.equal(finalMsg.node_id, decoded.assistantNodeId, 'the node id sent to the client in the compact stream\'s assistant_node_id frame is the exact node the final reply actually landed on');
     }
 
-    // (k) STREAMING, client-only tool call: the fake backend streams a `tool_calls` delta for a name
-    // the server does NOT recognize (only advertised via this request's own `client_tools`) - the
-    // server must hand off via the `tool_call_handoff` SSE trailer instead of corrupting the stream,
-    // AND must have already persisted the pending node server-side (a real, addressable `node_id`)
-    // before that trailer is even sent - mirroring non-streaming test (f)'s own invariants.
     {
         const toolBranch = 'stream-tool-branch-client-only';
         await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
@@ -4066,17 +3555,11 @@ async function run() {
         assert.deepEqual(handoffPayload.tool_call_handoff.pending_tool_calls[0].arguments, { side: 'left' });
         assert.equal(handoffPayload.tool_call_handoff.node_id, handoffPayload.tool_call_handoff.pending_tool_calls[0].node_id);
 
-        // The pending node was ALREADY persisted server-side before the trailer was sent - not
-        // something the client still needs to create.
         const branchAfterHandoff = await loadBranch(user.store, { avatar: ownerId }, toolBranch);
         const toolMsg = branchAfterHandoff.messages[branchAfterHandoff.messages.length - 1];
         assert.equal(toolMsg.node_id, handoffPayload.tool_call_handoff.node_id);
         assert.equal(toolMsg.extra.tool_invocations[0].result, null, 'in-flight: not yet resolved by a tool_result follow-up');
 
-        // (k-2) Mixed round-trip: resolve the streaming hand-off via the SAME non-streaming
-        // `type: 'tool_result'` follow-up chunk (b)/(c) already uses - proving persisted shape/replay
-        // is identical regardless of whether the round that CREATED the pending node was itself
-        // streaming or not.
         const app2 = buildTestApp();
         const { status: status2, data: data2 } = await postGenerate(app2, {
             owner_id: ownerId, character_avatar: avatar, node_id: handoffPayload.tool_call_handoff.node_id, type: 'tool_result',
@@ -4090,15 +3573,6 @@ async function run() {
         assert.equal(resolvedToolMsg.extra.tool_invocations[0].result, 'Curtains opened on the left.', 'the in-place edit resolving the pending node still happened even though the follow-up round\'s own backend call then failed');
     }
 
-    // --- stealth-tool parity (this task) --- see runServerToolRounds()'s own doc comment, step 2b,
-    // for the full legacy-verified semantics this replicates: ANY client-only call in a round whose
-    // name is in `stealth_tool_names` aborts the WHOLE round (unconditionally - not merely "every call
-    // was stealth"), with NOTHING invoked or persisted for that round at all.
-
-    // (m) NON-STREAMING, an all-client-stealth round: the one call in the round is both client-only
-    // AND named in `stealth_tool_names` - the route must return the distinct `{aborted: true}` outcome
-    // (not `pending_tool_calls`, not a normal generation result), and NOTHING beyond the user's own
-    // message may be persisted - no tool-invocation node, no assistant reply.
     {
         const toolBranch = 'tool-branch-all-stealth-abort';
         await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
@@ -4153,14 +3627,6 @@ async function run() {
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'Think something.');
     }
 
-    // (n) NON-STREAMING, a MIXED round: one stealth client-only call and one non-stealth client-only
-    // call in the SAME backend response. This task's investigation (see runServerToolRounds()'s own
-    // doc comment, step 2b) found legacy's real mechanics - not the narrower "every call was stealth"
-    // reading the old doc comment implied - abort the WHOLE round whenever ANY call is stealth, even
-    // discarding an already-succeeded non-stealth invocation from the same round
-    // (`ToolManager.invokeFunctionTools()`'s `shouldStopGeneration` is a plain `||` on
-    // `stealthCalls.length`, unconditional). So this mixed round must ALSO abort entirely - it must
-    // NOT partially hand off the non-stealth call - matching that verified behavior exactly.
     {
         const toolBranch = 'tool-branch-mixed-stealth-abort';
         await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
@@ -4216,10 +3682,6 @@ async function run() {
         assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'only the user\'s own message was persisted - the non-stealth call\'s own in-flight node was never created either');
     }
 
-    // (o) STREAMING, an all-client-stealth round: the fake backend streams a `tool_calls` delta for a
-    // stealth-only name - the server must send the `tool_call_aborted` SSE trailer (not
-    // `tool_call_handoff`) and end the stream with no further content chunk, and must NOT have
-    // persisted anything beyond the user's own message.
     {
         const toolBranch = 'stream-tool-branch-all-stealth-abort';
         await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
@@ -4270,15 +3732,6 @@ async function run() {
         assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'only the user\'s own message was persisted - no tool-invocation node, no assistant reply');
     }
 
-    // --- isSwipe/isContinue interleaved with a server tool-call round (this task: fixes the
-    // previously-documented, out-of-scope limitation on runServerToolRounds()'s own doc comment -
-    // see that function's "FORMERLY-DOCUMENTED LIMITATION, NOW FIXED" section for the full design) ---
-
-    // (l) type: 'swipe' where the FIRST backend response is a tool call, not text: the tool-call turn
-    // must claim the sibling-alternative slot alongside the ORIGINAL swiped message (not be buried as
-    // a plain child of it), and the SECOND backend response's final text must land as the terminal
-    // node of that same new alternative branch - proving a swipe-with-a-tool-call still produces "a
-    // new alternative at the same tree position as the message being swiped", not a nested append.
     {
         const swipeToolBranch = 'swipe-tool-branch';
         await saveBranch(user.store, { avatar: ownerId }, swipeToolBranch, [
@@ -4338,8 +3791,6 @@ async function run() {
         assert.equal(callCount, 2, 'backend called twice: once producing the tool call, once with the final swipe text');
         assert.ok(JSON.stringify(requestBodies[1].messages).includes('Sunny in Swiptown'), 'the second request\'s history really was re-resolved through the tool-call turn');
 
-        // (a) the tool-call turn claimed the SIBLING-ALTERNATIVE slot alongside the swiped message -
-        // not a plain child buried one level under it.
         const alternatives = await user.store.chats.alternatives({ node_id: swipedNodeId });
         assert.equal(alternatives.total, 2, 'the swiped message and the tool-call turn are real siblings under the same parent');
         const toolAlt = alternatives.alternatives.find(a => a.node_id !== swipedNodeId);
@@ -4347,18 +3798,9 @@ async function run() {
         assert.ok(Array.isArray(toolAlt.extra?.tool_invocations), 'that second alternative IS the tool-call turn, not the final text');
         assert.equal(toolAlt.extra.tool_invocations[0].name, 'get_weather');
         assert.equal(toolAlt.extra.tool_invocations[0].result, 'Sunny in Swiptown');
-        // Proof that the tool-call turn (not the original message) is now selected as current comes
-        // from the branch's own leaf path below (`loadBranch()` follows `default_child_id`) -
-        // `getAlternatives()`'s own `selected` field only ever reports the index of whichever
-        // node_id was passed in, it does not read `default_child_id` itself.
 
-        // (b) the original swiped message is completely unchanged.
         assert.ok(alternatives.alternatives.some(a => a.node_id === swipedNodeId && a.mes === 'Hello there, swipe-with-tool branch!'), 'the swiped message\'s own original content is untouched');
 
-        // (c) the final swipe text is the TERMINAL node of that same new alternative branch (a child
-        // of the tool-call turn), one level deeper than the tool-call turn itself - NOT a second
-        // sibling under the tool-call turn's own parent (which would be the swiped message's parent,
-        // already asserted to hold exactly 2 alternatives above).
         const branchAfter = await loadBranch(user.store, { avatar: ownerId }, swipeToolBranch);
         const finalNodeId = branchAfter.branch.leaf_id;
         assert.notEqual(finalNodeId, toolAlt.node_id, 'the final text is its own node, not stored on the tool-call turn itself');
@@ -4369,12 +3811,6 @@ async function run() {
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'General Kenobi! (checked: sunny in Swiptown)');
     }
 
-    // (m) type: 'continue' where the FIRST backend response is a tool call: continuing "in place"
-    // across a genuine intervening tool-call node isn't structurally meaningful (a real new tree node
-    // now exists between "before" and "after"), so this degrades to a plain append - the ORIGINAL
-    // message's own text must stay byte-for-byte unedited, the tool-call turn must persist as a real
-    // child of it, and the final generated text must land as ITS OWN new node after the tool-call turn
-    // (not merged/concatenated into any other node's text).
     {
         const continueToolBranch = 'continue-tool-branch';
         await saveBranch(user.store, { avatar: ownerId }, continueToolBranch, [
@@ -4445,14 +3881,6 @@ async function run() {
         assert.equal(finalMsg.name, 'Rex');
     }
 
-    // --- json_schema threading (this task): a raw-action `type: 'quiet'` request carrying a
-    // `json_schema` field must actually reach the backend as a real `response_format`/`json_schema`
-    // constraint, exactly like the legacy client-assembled path already produces via
-    // `createGenerationParameters()`'s own `jsonSchema` support (src/chat-completion-generation-data.js) -
-    // see `buildRawActionChatCompletionRequest()`'s own `jsonSchema` param doc comment. Default fixture
-    // settings use `chat_completion_source: 'custom'` (buildSettingsFixture() above), which is served by
-    // the generic/default dispatch branch (chat-completions.js, the `request.body.json_schema` handling
-    // right before `requestBody` is assembled) - not one of the ~12 provider-`switch` cases.
     {
         const jsonSchemaBranch = 'json-schema-branch';
         await saveBranch(user.store, { avatar: ownerId }, jsonSchemaBranch, [
@@ -4493,14 +3921,10 @@ async function run() {
         assert.equal(sentBody.response_format.json_schema.strict, true);
         assert.deepEqual(sentBody.response_format.json_schema.schema, { type: 'object', properties: { mood: { type: 'string' } }, required: ['mood'] }, 'the schema value forwarded is the exact object the client sent, not a re-derived one');
 
-        // quiet generations never touch the visible tree on either side (see the route handler's own
-        // `skipPersistence` comment) - confirm the json_schema plumbing didn't accidentally change that.
         const branchAfter = await loadBranch(user.store, { avatar: ownerId }, jsonSchemaBranch);
         assert.equal(branchAfter.messages.length, branchBefore.messages.length, 'a quiet generation persists neither the user nor the assistant side, json_schema or not');
     }
 
-    // `stored`: the node the user message was stored at, under the `user_message_ref` the page sent - a
-    // field on a non-streaming answer, the first control frame of a stream.
     {
         const failures = [];
         const chatSse = (text) => (_req, res) => {
@@ -4575,9 +3999,6 @@ async function run() {
         assert.deepEqual(failures, [], 'stored ref cases');
     }
 
-    // An error answer after the user message was stored still reports it: a body the route builds
-    // carries `stored`, and every error answer carries the X-ST-Stored header. A backend's own error
-    // passed on from a stream keeps its status and body exactly.
     {
         const failures = [];
         const backendError = (_req, res) => {

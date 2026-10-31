@@ -499,10 +499,6 @@ function setMoveButtonsVisibility() {
     $('#bulk_regex_move_to_preset').toggle(hasGlobalScripts || hasScopedScripts);
 }
 
-/**
- * Draws the open chat's messages again with the scripts as they are now: display-only scripts apply as a message is
- * drawn, so nothing is read from the server and the chat isn't opened again.
- */
 async function redrawChat() {
     if (getCurrentChatId()) await redisplayChat();
 }
@@ -652,7 +648,6 @@ async function loadRegexScripts() {
         scriptHtml.find('.disable_regex').prop('checked', script.disabled ?? false)
             .on('input', async function () {
                 script.disabled = !!$(this).prop('checked');
-                // The row already shows the change: the list isn't drawn again, only the chat.
                 await saveRegexScript(script, index, scriptType, true, { redrawList: false });
             });
         scriptHtml.find('.regex-toggle-on').on('click', function () {
@@ -931,7 +926,6 @@ function buildReplacementHtml(match, pattern) {
         container.appendChild(mark);
     }
 
-    // DocumentFragment has no innerHTML; wrap it in an element to serialize
     const tempDiv = document.createElement('div');
     tempDiv.appendChild(container);
     return tempDiv.innerHTML;

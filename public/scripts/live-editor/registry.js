@@ -1,25 +1,19 @@
-// Importable without loading CodeMirror: what the rest of the app needs to know about mounted editors.
-
-/**
- * What, open inside an editor, takes Escape before anything else does: the suggestion list, the find and presets
- * panels, and the paste picker.
- */
 export const EDITOR_ESCAPE_TAKERS = '.cm-tooltip-autocomplete, .cm-panels .cm-search, .cm-panels .live-presets, .live-paste-picker';
 
-/** @type {WeakMap<Element, HTMLTextAreaElement>} An editor's root element to the textarea it's mounted on. */
+/** @type {WeakMap<Element, HTMLTextAreaElement>} */
 const mounted = new WeakMap();
 
 /**
  * @typedef {object} MountedEditorInfo
- * @property {Element} root The editor's root element: the field's box on screen while the editor is mounted.
- * @property {() => DOMRect | null} caretRect Where the cursor is on screen.
- * @property {boolean} macroSuggestions Whether the editor suggests macros itself.
+ * @property {Element} root
+ * @property {() => DOMRect | null} caretRect
+ * @property {boolean} macroSuggestions
  */
 
-/** @type {WeakMap<HTMLTextAreaElement, MountedEditorInfo>} A textarea to the editor mounted on it. */
+/** @type {WeakMap<HTMLTextAreaElement, MountedEditorInfo>} */
 const byTextarea = new WeakMap();
 
-/** @type {WeakSet<Event>} Events the editor dispatched on its textarea on behalf of the user. */
+/** @type {WeakSet<Event>} */
 const editorEvents = new WeakSet();
 
 /**
@@ -41,15 +35,13 @@ export function unregisterMountedEditor(editorRoot) {
 
 /**
  * @param {Element | null | undefined} textarea
- * @returns {MountedEditorInfo | null} The editor mounted on this textarea, if any.
+ * @returns {MountedEditorInfo | null}
  */
 export function getMountedEditor(textarea) {
     return textarea instanceof HTMLTextAreaElement ? byTextarea.get(textarea) ?? null : null;
 }
 
 /**
- * Marks an event the editor dispatched on its textarea: a copy of what the user did in the editor (typing, keys,
- * clicks, focus), so code that tells the user's input from writes by other code can count it as the user's.
  * @param {Event} event
  */
 export function markEditorEvent(event) {
@@ -58,7 +50,7 @@ export function markEditorEvent(event) {
 
 /**
  * @param {Event} event
- * @returns {boolean} Whether a mounted editor dispatched this event on its textarea, as the user's own input.
+ * @returns {boolean}
  */
 export function isEditorEvent(event) {
     return editorEvents.has(event);
@@ -66,7 +58,7 @@ export function isEditorEvent(event) {
 
 /**
  * @param {Event} event
- * @returns {boolean} Whether the user did this: a trusted event, or the editor's copy of one.
+ * @returns {boolean}
  */
 export function isUserEvent(event) {
     return Boolean(event?.isTrusted) || isEditorEvent(event);
@@ -74,7 +66,7 @@ export function isUserEvent(event) {
 
 /**
  * @param {Element | null} element
- * @returns {HTMLTextAreaElement | null} The textarea of the mounted editor `element` is in, if any.
+ * @returns {HTMLTextAreaElement | null}
  */
 export function getMountedTextarea(element) {
     const root = element?.closest?.('.cm-editor');
@@ -82,8 +74,6 @@ export function getMountedTextarea(element) {
 }
 
 /**
- * The text field that has focus: the focused textarea itself, or, when focus is in a mounted editor, the textarea
- * that editor is mounted on.
  * @returns {HTMLTextAreaElement | HTMLInputElement | null}
  */
 export function getFocusedField() {
@@ -95,7 +85,6 @@ export function getFocusedField() {
 }
 
 /**
- * Mounts a live editor on a textarea, loading the editor's code the first time.
  * @param {HTMLTextAreaElement} textarea
  * @param {import('./mount.js').LiveEditorOptions} [options]
  * @returns {Promise<import('./mount.js').LiveEditor>}
@@ -106,7 +95,6 @@ export async function mountLiveEditor(textarea, options = {}) {
 }
 
 /**
- * Loads the editor's code, so a caller can mount it at a moment it picks, in the same task as a check.
  * @returns {Promise<typeof import('./mount.js')>}
  */
 export function loadLiveEditor() {

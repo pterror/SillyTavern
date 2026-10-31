@@ -1,20 +1,5 @@
 #!/usr/bin/env node
 /* eslint-env node */
-/**
- * The library search as the app runs it (`LibraryEngine.query({ search })`, build path 5d) on a synthetic library:
- * each query's median time over 7 runs after one warm-up, in relevance order and by name, with its total; then
- * edits through `writeCard()`, each looked for by the next search.
- *
- * The library is the engine's search bench's (`engine/examples/search.rs` with `--real`: `scripts/`' old text
- * generator, 30,000-word Zipf vocabulary, the bench's words at the live library's shares, fixed numbers for its
- * samples), written there and opened here. Nothing outside the store directory is read or written.
- *
- * Usage:
- *   cargo run --release --features measure --example search -- <store dir> synth <cards> --real --bulk --no-check
- *   node scripts/bench-search-synth.mjs --store <store dir> [--edits 50] [--pairs]
- * `--pairs` turns pair postings on first and times their build. Prints one JSON object per query, one for the
- * edits, and one for the build.
- */
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -24,7 +9,6 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-/** The engine bench's query set, as typed. */
 export const QUERIES = [
     'girl', 'the', 'love', 'dragon', 'vampire', 'detective', 'saxophone', 'quokka', 'dr', 'dra',
     'dark knight', 'the girl', 'vampire love', 'the dark knight', 'girl love dragon',
@@ -33,7 +17,7 @@ export const QUERIES = [
 
 /**
  * @param {() => Promise<unknown>} run
- * @returns {Promise<number>} The median of 7 runs, in ms, after one warm-up.
+ * @returns {Promise<number>}
  */
 async function median(run) {
     await run();
@@ -72,7 +56,6 @@ async function main() {
                 console.log(JSON.stringify({ phase: 'query', q: search, order: sortField, median_ms: Number(ms.toFixed(3)), rows: out.rows.length, total: out.total, approx: out.approxTotal }));
             }
         }
-        // Edits through the app's write path, each looked for by the next search.
         const page = /** @type {any} */ (await lib.query({ sortField: 'name', limit: Number(values.edits) }));
         let found = 0;
         const write = [];

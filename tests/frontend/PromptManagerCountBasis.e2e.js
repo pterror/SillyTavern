@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// NixOS host: the Playwright-managed Chromium download is missing system libs, so fall back
-// to the system-provided Chrome (only when explicitly pointed at it) rather than requiring a
-// FHS-compatible browser install.
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -16,13 +13,7 @@ if (process.env.PLAYWRIGHT_BASIC_AUTH_USER) {
     });
 }
 
-// The prompt manager's per-prompt tokens mark their basis like the other on-screen counts: a wrapper
-// span takes the tokens span's place as the grid child and holds the `~` and marker spans, so the
-// tokens span's text and data-pm-tokens stay what upstream writes.
-
 /**
- * Makes the server's /current/count and /current/tokenizer answers say the model is unknown to the map
- * (basis `unknown`, an estimate), keeping every count a plain number.
  * @param {import('@playwright/test').Page} page
  */
 async function answerUnknownTokenizer(page) {
@@ -44,8 +35,6 @@ async function answerUnknownTokenizer(page) {
 }
 
 /**
- * Creates and selects a character, switches to Chat Completion and opens the prompt manager, whose dry
- * run fills the per-prompt counts.
  * @param {import('@playwright/test').Page} page
  */
 async function openPromptManagerWithCounts(page) {
@@ -54,11 +43,9 @@ async function openPromptManagerWithCounts(page) {
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button').evaluate(el => el.click());
-    // Creating a character opens it.
     await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
 
     await page.locator('#leftNavDrawerIcon').click();
-    // #main_api is select2-enhanced; force sets the hidden native <select>, which select2 listens to.
     await page.selectOption('#main_api', 'openai', { force: true });
     await expect(page.locator('#completion_prompt_manager_list li[data-pm-identifier="main"] .prompt_manager_prompt_tokens'))
         .toHaveAttribute('data-pm-tokens', /^\d+$/, { timeout: 15000 });
@@ -88,7 +75,6 @@ test.describe('prompt manager per-prompt count basis', () => {
         expect(pmTokens).toMatch(/^\d+$/);
         expect(await tokens.evaluate(el => el.textContent)).toBe(' ' + pmTokens);
 
-        // The grid keeps upstream's children: drag handle, name, controls and the tokens column.
         expect(await row.evaluate(el => el.children.length)).toBe(4);
     });
 
@@ -117,8 +103,6 @@ test.describe('prompt manager per-prompt count basis', () => {
         expect(Math.abs((countedBox.x + countedBox.width) - (headerBox.x + headerBox.width))).toBeLessThanOrEqual(1.5);
         expect(Math.abs((emptyBox.x + emptyBox.width) - (headerBox.x + headerBox.width))).toBeLessThanOrEqual(1.5);
 
-        // Upstream's tokens span is a direct grid child. Put a copy of it there and compare its warning
-        // span with the real one, both as the empty span every row has and as the chat history warning.
         const styles = await page.evaluate(() => {
             const row = document.querySelector('#completion_prompt_manager_list li[data-pm-identifier="main"]');
             const real = row.querySelector('.prompt_manager_prompt_tokens > span');

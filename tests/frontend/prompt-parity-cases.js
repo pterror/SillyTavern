@@ -1,19 +1,13 @@
-// The chats the prompt parity test builds a prompt for (PromptParity.e2e.js), and that upstream's page built its
-// prompt for (prompt-goldens.mjs, kept in prompt-goldens/): upstream's prompt is the reference for every one.
-
 /**
  * @typedef {object} ParityCase
- * @property {string} name The case's file name in prompt-goldens/.
- * @property {Record<string, string>} card Create form fields; `ch_name` is the character's name as is.
- * @property {Record<string, unknown>} [powerUser] power_user values set over the defaults, by dotted path
- *   (`context.chat_start`).
- * @property {string[]} steps Slash commands run in the chat before the prompt is built.
- * @property {Record<string, unknown>} [chatMetadata] Chat metadata set after the steps (an author's note: `note_prompt`, …).
- * @property {{ description: string, position: number, depth?: number, role?: number }} [persona] The user's persona's
- *   description and where it goes (persona_description_positions), set as typed in the persona panel.
- * @property {{ name: string, entries: Record<string, unknown>[] }} [lorebook] A lorebook made before the chat opens, the
- *   chat's own (`chatMetadata.world_info` names it).
- * @property {string} [type] The generation's type.
+ * @property {string} name
+ * @property {Record<string, string>} card
+ * @property {Record<string, unknown>} [powerUser]
+ * @property {string[]} steps
+ * @property {Record<string, unknown>} [chatMetadata]
+ * @property {{ description: string, position: number, depth?: number, role?: number }} [persona]
+ * @property {{ name: string, entries: Record<string, unknown>[] }} [lorebook]
+ * @property {string} [type]
  */
 
 /** @type {ParityCase[]} */
@@ -84,7 +78,6 @@ export const PARITY_CASES = [
         name: 'tc-authors-note',
         card: { ch_name: 'Parity Sailor', first_mes: 'The sea is calm.', description: 'An old sailor.' },
         steps: ['/send What do you see?', '/sendas name="Parity Sailor" Clouds, far off.', '/send Should we turn back?'],
-        // In the chat, one message deep, after every message.
         chatMetadata: { note_prompt: '{{char}} senses a storm coming.', note_interval: 1, note_position: 1, note_depth: 1, note_role: 0 },
     },
     {
@@ -151,18 +144,15 @@ export const PARITY_CASES = [
     },
 ];
 
-/** Text completion only: instruct mode and the system prompt. */
 const TEXT_COMPLETION_ONLY = new Set(['tc-instruct-chatml', 'tc-system-prompt']);
 
-// The same chats over chat completion: the messages the server sends.
 PARITY_CASES.push(...PARITY_CASES
     .filter(c => c.name.startsWith('tc-') && !TEXT_COMPLETION_ONLY.has(c.name))
     .map(c => ({ ...c, name: `cc-${c.name.slice(3)}` })));
 
 /**
- * Sets power_user values by dotted path, in the page. Run with page.evaluate().
  * @param {Record<string, unknown>} values
- * @returns {Promise<Record<string, unknown>>} The values they replaced, to put back.
+ * @returns {Promise<Record<string, unknown>>}
  */
 export async function applyPowerUser(values) {
     // @ts-ignore - the page's own module
@@ -180,7 +170,6 @@ export async function applyPowerUser(values) {
 }
 
 /**
- * Sets the open chat's metadata and saves it, in the page. Run with page.evaluate().
  * @param {Record<string, unknown>} values
  */
 export async function applyChatMetadata(values) {
@@ -188,12 +177,10 @@ export async function applyChatMetadata(values) {
     const context = SillyTavern.getContext();
     Object.assign(context.chatMetadata, values);
     await context.saveMetadata();
-    // The page's Author's Note reads its text from its panel's field, filled from the metadata when a chat opens.
     if (typeof values.note_prompt === 'string') $('#extension_floating_prompt').val(values.note_prompt);
 }
 
 /**
- * Makes a lorebook of constant entries (each always on), in the page. Run with page.evaluate().
  * @param {{ name: string, entries: Record<string, unknown>[] }} book
  */
 export async function createLorebook(book) {
@@ -213,12 +200,9 @@ export async function createLorebook(book) {
 }
 
 /**
- * Sets the user's persona's description and its place, as typed in the persona panel, in the page. Run with
- * page.evaluate().
  * @param {{ description: string, position: number, depth?: number, role?: number }} persona
  */
 export async function applyPersona(persona) {
-    // Native events: whichever jQuery the page bound its handlers with gets them.
     const type = (/** @type {string} */ id, /** @type {string} */ value) => {
         const element = /** @type {HTMLInputElement} */ (document.getElementById(id));
         element.value = value;

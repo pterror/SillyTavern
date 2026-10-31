@@ -492,14 +492,12 @@
     display: none !important;
 }
 
-/* The new page's drawer (packages/ui/src/areas/backgrounds): why the last action did nothing, or what it's doing. */
 .bg_notice {
     padding: 4px 8px;
     font-size: 0.9em;
     color: var(--SmartThemeBodyColor);
 }
 
-/* An animated background's first frame, in place of its thumbnail while animation is off. */
 .thumbnail-clipper > .thumbnail-still {
     width: 100%;
     height: 100%;
@@ -507,7 +505,6 @@
     display: block;
 }
 
-/* The notice floats over the drawer's bottom edge: showing one moves nothing. */
 #Backgrounds .bg_notice {
     position: absolute;
     left: 10px;
@@ -520,7 +517,6 @@
     pointer-events: none;
 }
 
-/* A still's image, until it's drawn: loading, but not shown. */
 .thumbnail-clipper > .thumbnail-loading {
     position: absolute;
     inset: 0;

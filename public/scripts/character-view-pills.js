@@ -1,9 +1,7 @@
 import { RANGE_FIELDS, SEARCH_FIELDS, canonicalSearchField, cleanRanges } from './character-view.js';
 
-/** Translates a tagged template; the caller passes i18n's `t`, so this module stays a leaf. */
 let t = (/** @type {TemplateStringsArray} */ strings, /** @type {any[]} */ ...values) => String.raw({ raw: strings }, ...values);
 
-/** Plain-language names for the condition fields, in the order the field list shows them. */
 const FIELD_NAMES = () => ({
     name: t`Name`,
     tag: t`Tag name`,
@@ -29,7 +27,6 @@ function opName(op) {
     return op === 'not_contains' ? t`doesn't contain` : t`contains`;
 }
 
-// A typed token turns into a condition when it ends: `label:value` or `-label:value`.
 const TYPED_CONDITION = /(?:^|\s)(-)?([A-Za-z][A-Za-z0-9_]*):("[^"]*"|\S+)$/;
 
 /** @type {HTMLElement|null} */
@@ -41,7 +38,6 @@ function closePopover() {
 }
 
 /**
- * Pill kinds that aren't text fields: a tag the row carries, and favorite. They come first in the field list.
  * @returns {Record<string, string>}
  */
 const SPECIAL_FIELDS = () => ({
@@ -50,7 +46,6 @@ const SPECIAL_FIELDS = () => ({
     ...Object.fromEntries(Object.keys(RANGE_FIELDS).map(field => [`@range:${field}`, rangeName(field)])),
 });
 
-/** Plain-language names for the range fields. */
 const RANGE_NAMES = () => ({
     create_date: t`Created`,
     date_last_chat: t`Last chat`,
@@ -64,7 +59,6 @@ function rangeName(field) {
 }
 
 /**
- * A range end as the pill shows it: a date, kilobytes, or a count of characters.
  * @param {string} field
  * @param {number} value
  */
@@ -76,7 +70,6 @@ function formatRangeValue(field, value) {
 }
 
 /**
- * What a range pill says about its bounds.
  * @param {string} field
  * @param {{ min?: number, max?: number }} bound
  */
@@ -90,7 +83,6 @@ function describeRange(field, bound) {
     return t`any`;
 }
 
-/** A local date (yyyy-mm-dd) as epoch ms: its first millisecond, or with `end` its last. */
 function dateInputToMs(/** @type {string} */ value, /** @type {boolean} */ end) {
     const [y, m, d] = value.split('-').map(Number);
     return end ? new Date(y, m - 1, d, 23, 59, 59, 999).getTime() : new Date(y, m - 1, d).getTime();
@@ -103,7 +95,6 @@ function msToDateInput(ms) {
 }
 
 /**
- * Opens the From / To boxes of a range under `anchor`. An empty box is an open end.
  * @param {HTMLElement} anchor
  * @param {string} field
  * @param {{ min?: number, max?: number }} bound
@@ -114,7 +105,11 @@ function openRangeEditor(anchor, field, bound, onApply) {
     const unit = RANGE_FIELDS[field]?.unit;
     const popover = document.createElement('div');
     popover.className = 'view_pill_popover view_range_editor';
-    /** @param {string} label @param {number|undefined} value @param {boolean} end */
+    /**
+     * @param {string} label
+     * @param {number|undefined} value
+     * @param {boolean} end
+     */
     const box = (label, value, end) => {
         const row = document.createElement('label');
         row.className = 'view_range_row';
@@ -142,7 +137,10 @@ function openRangeEditor(anchor, field, bound, onApply) {
     apply.textContent = t`Apply`;
     popover.append(min.row, max.row, apply);
 
-    /** @param {HTMLInputElement} input @param {boolean} end */
+    /**
+     * @param {HTMLInputElement} input
+     * @param {boolean} end
+     */
     const read = (input, end) => {
         if (input.value === '') return undefined;
         if (unit === 'date') return dateInputToMs(input.value, end);
@@ -177,10 +175,9 @@ function openRangeEditor(anchor, field, bound, onApply) {
 }
 
 /**
- * Opens a list of fields under `anchor`, with a box to narrow it; `onPick` gets the chosen field.
  * @param {HTMLElement} anchor
  * @param {(field: string) => void} onPick
- * @param {{ special?: boolean }} [options] `special`: also offer the tag and favorite pills.
+ * @param {{ special?: boolean }} [options]
  */
 function openFieldPicker(anchor, onPick, { special = false } = {}) {
     closePopover();
@@ -245,7 +242,6 @@ function showPopover(popover, anchor, focus) {
 }
 
 /**
- * Opens a search over the server's tags under `anchor`; `onPick` gets the chosen tag.
  * @param {HTMLElement} anchor
  * @param {(term: string) => Promise<{ id: string, name: string }[] | null>} searchTags
  * @param {(tag: { id: string, name: string }) => void} onPick
@@ -308,19 +304,15 @@ function openTagPicker(anchor, searchTags, onPick) {
 }
 
 /**
- * Wires the search box and its condition pills to the character list's view.
  * @param {object} options
- * @param {JQuery<HTMLElement>} options.container Where the pills go.
- * @param {JQuery<HTMLElement>} options.input The free-text box.
+ * @param {JQuery<HTMLElement>} options.container
+ * @param {JQuery<HTMLElement>} options.input
  * @param {() => import('./character-view.js').CharacterView} options.getView
  * @param {(view: Partial<import('./character-view.js').CharacterView>, fromSearchBox: boolean) => void} options.setView
- * @param {typeof t} options.translate i18n's `t`.
- * @param {(term: string) => Promise<{ id: string, name: string }[] | null>} options.searchTags Tags whose names hold
- *   `term`, from the server; null if the read failed.
+ * @param {typeof t} options.translate
+ * @param {(term: string) => Promise<{ id: string, name: string }[] | null>} options.searchTags
  * @param {(ids: string[]) => Promise<{ names: Map<string, string>, gone: Set<string>, shownAs: Map<string, string> } | null>} options.tagNames
- *   The names of `ids`; `gone` holds ids no tag has; `shownAs` maps an id merged into another tag to that tag's id.
- *   null if the read failed.
- * @returns {() => void} Redraws the pills and the box from the current view.
+ * @returns {() => void}
  */
 export function initViewPills({ container, input, getView, setView, translate, searchTags, tagNames }) {
     document.addEventListener('pointerdown', event => {
@@ -335,13 +327,12 @@ export function initViewPills({ container, input, getView, setView, translate, s
     let fav;
     /** @type {Record<string, { min?: number, max?: number }>} */
     let ranges = {};
-    /** The condition whose value is being typed, or -1. */
     let editing = -1;
-    /** Tag names already read, by id; null for a tag that no longer exists. @type {Map<string, string|null>} */
+    /** @type {Map<string, string|null>} */
     const names = new Map();
-    /** A merged tag's id, to the tag it shows as. @type {Map<string, string>} */
+    /** @type {Map<string, string>} */
     const shownAs = new Map();
-    /** Ids being read. @type {Set<string>} */
+    /** @type {Set<string>} */
     const reading = new Set();
 
     const send = (fromSearchBox = false) => setView({
@@ -352,7 +343,6 @@ export function initViewPills({ container, input, getView, setView, translate, s
         ranges: cleanRanges(ranges),
     }, fromSearchBox);
 
-    /** Reads the names of tags pills show and doesn't know yet, then draws again. */
     function readMissingNames() {
         const missing = [...tags.include, ...tags.exclude].filter(id => !names.has(id) && !reading.has(id));
         if (missing.length === 0) return;
@@ -470,7 +460,6 @@ export function initViewPills({ container, input, getView, setView, translate, s
 
     function render() {
         container.empty();
-        // A merged tag shows as its target, once: a second id showing as the same tag gets no pill of its own.
         /** @type {Set<string>} */
         const shown = new Set();
         const firstShowing = (/** @type {string} */ id) => {
@@ -540,7 +529,6 @@ export function initViewPills({ container, input, getView, setView, translate, s
         const field = $('<span class="search_pill_label view_pill_part" tabindex="0" role="button">')
             .text(fieldName(condition.field)).attr('title', t`Change the field`);
         field.on('click', () => openFieldPicker(field.get(0), picked => {
-            // The pills may have been drawn again from the view since: change the condition at this place.
             if (conditions[index]) conditions[index] = { ...conditions[index], field: picked };
             render();
             send();
@@ -604,7 +592,6 @@ export function initViewPills({ container, input, getView, setView, translate, s
 
     input.on('input', function () {
         const raw = String(input.val());
-        // A space ends the token before it; a field condition becomes a pill.
         if (raw.endsWith(' ')) {
             const trimmed = raw.slice(0, -1);
             const match = trimmed.match(TYPED_CONDITION);
@@ -618,7 +605,6 @@ export function initViewPills({ container, input, getView, setView, translate, s
         send(true);
     });
 
-    // Backspace in an empty box takes the last pill back into the box to edit.
     input.on('keydown', event => {
         if (event.key === 'Backspace' && input.val() === '' && conditions.length > 0) {
             event.preventDefault();
@@ -629,7 +615,6 @@ export function initViewPills({ container, input, getView, setView, translate, s
         }
     });
 
-    // Redrawing while a pill's value is being typed would lose it, and the box keeps what is typed in it.
     return () => {
         if (editing !== -1) return;
         const view = getView();
@@ -643,7 +628,6 @@ export function initViewPills({ container, input, getView, setView, translate, s
 }
 
 /**
- * The (i) next to the search box: how to write filters, in plain words.
  * @returns {JQuery<HTMLElement>}
  */
 export function makeSearchGuide() {

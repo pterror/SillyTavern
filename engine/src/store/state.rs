@@ -1,8 +1,3 @@
-//! State layer 1 (`.plans/2026-10-03-state-layer-1.md`, build path 5b): changes hang on a tree's root or on a
-//! message, so the state at a message is every change on the path from the root down to it, in path order and, on
-//! one message, in id order, skipping reverted ones. `chat_metadata` is that state: a key is a top-level metadata
-//! key, or (the variable bit) a chat variable's name.
-
 use super::StoreError;
 use super::chat::{opt_id, require_message};
 use super::derive::{Deriver, Loc, Out, View};
@@ -16,28 +11,17 @@ pub const AUTHOR_SCRIPT: u64 = 1;
 pub const AUTHOR_MODEL: u64 = 2;
 pub const AUTHOR_RULE: u64 = 3;
 pub const AUTHOR_MIGRATION: u64 = 4;
-/// `stateChange`'s `author` bit: the key is a variable's name.
 pub const VARIABLE: u64 = 8;
-/// `stateChange`'s `author` bit: made while producing the message it hangs on (recorded with its append), so part
-/// of that reply's identity when a regenerated reply is matched against the stored ones.
 pub const PRODUCED: u64 = 16;
 
-/// Per change id: its `stateChange` or `stateRevert` record.
 pub const CHANGE: u64 = 150;
-/// Per (where it hangs, change id): a change hangs there.
 pub const STATE_AT: u64 = 151;
-/// Per (change, revert): the revert reverts the change.
 pub const REVERTED_BY: u64 = 152;
-/// One more than the highest change id given (a maximum).
 pub const NEXT_CHANGE: u64 = 153;
-/// Per tree: a pending `rootStateClear`, `[upto, record position, record length]`: the changes at the tree's root
-/// with ids below `upto` go, a slice at a time, and read as gone meanwhile.
 pub const ROOT_CLEAR: u64 = 155;
 
-/// Changes a root clear's slice removes.
 pub const CLEAR_SLICE: usize = 256;
 
-/// Where a change hangs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hang {
     Tree(u64),
@@ -112,7 +96,6 @@ fn new_id(view: &View, c: u64) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// `stateChange`: a key set or deleted where the change hangs.
 pub struct StateChange;
 
 impl Deriver for StateChange {
@@ -159,7 +142,6 @@ impl Deriver for StateChange {
     }
 }
 
-/// `stateRevert`: a change (or a revert) is reverted.
 pub struct StateRevert;
 
 impl Deriver for StateRevert {
@@ -204,7 +186,6 @@ impl Deriver for StateRevert {
     }
 }
 
-/// The changes hanging on a message go with it.
 pub fn message_gone(view: &View, out: &mut Out, m: u64) -> Result<(), StoreError> {
     let p = Hang::Message(m).prefix();
     for (k, _) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
@@ -217,7 +198,6 @@ pub fn message_gone(view: &View, out: &mut Out, m: u64) -> Result<(), StoreError
     Ok(())
 }
 
-/// Change (or revert) `c` goes, and every revert of it with it.
 fn change_gone(view: &View, out: &mut Out, c: u64) -> Result<(), StoreError> {
     if let Some(l) = change_loc(view, c)? {
         dead(out, l);
@@ -234,14 +214,12 @@ fn change_gone(view: &View, out: &mut Out, c: u64) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// The pending root clear of `tree`: `[upto, record position, record length]`.
 fn root_clear(view: &View, tree: u64) -> Result<Option<[u64; 3]>, StoreError> {
     view.get(&key::id(ROOT_CLEAR, tree))?
         .map(|b| parse_varints::<3>(&b))
         .transpose()
 }
 
-/// Whether change `c` hangs at a tree's root that a pending clear is removing it from.
 fn clearing(view: &View, c: u64) -> Result<bool, StoreError> {
     let Some(l) = change_loc(view, c)? else {
         return Ok(false);
@@ -256,8 +234,6 @@ fn clearing(view: &View, c: u64) -> Result<bool, StoreError> {
     }
 }
 
-/// `rootStateClear`: every change hanging at the tree's root when it commits goes (a tree deleted whole), in
-/// slices (`clear_step`); they read as gone from the commit on.
 pub struct RootStateClear;
 
 impl Deriver for RootStateClear {
@@ -296,14 +272,11 @@ impl Deriver for RootStateClear {
     }
 }
 
-/// Whether a root clear is pending anywhere (for a store opening with one left).
 pub fn any_clear_pending(view: &View) -> Result<bool, StoreError> {
     let p = key::of(ROOT_CLEAR);
     Ok(!view.scan(&p, &key::prefix_end(&p), 1)?.is_empty())
 }
 
-/// One slice of the first pending root clear: up to `CLEAR_SLICE` of its changes go; the clear ends when none
-/// below its bound is left. Returns whether one was found.
 pub fn clear_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
     let cp = key::of(ROOT_CLEAR);
     let Some((ck, v)) = view.scan(&cp, &key::prefix_end(&cp), 1)?.into_iter().next() else {
@@ -340,14 +313,12 @@ pub fn clear_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
     Ok(true)
 }
 
-/// Whether change `c` counts: no revert of it counts (a revert of a revert restores what it reverted).
 pub fn active(view: &View, c: u64) -> Result<bool, StoreError> {
     let p = key::id(REVERTED_BY, c);
     for (k, _) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
         let mut at = p.len();
         let r = get_u64(&k, &mut at)
             .ok_or_else(|| StoreError::Entry("a revert key doesn't decode".into()))?;
-        // A revert is newer than what it reverts, so this ends.
         if active(view, r)? {
             return Ok(false);
         }
@@ -355,7 +326,6 @@ pub fn active(view: &View, c: u64) -> Result<bool, StoreError> {
     Ok(true)
 }
 
-/// One key of the state: whether it is a variable's name, the key, and its value as JSON.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
     pub variable: bool,
@@ -363,11 +333,8 @@ pub struct Entry {
     pub json: Vec<u8>,
 }
 
-/// The state at a message of tree `tree` (None: at the tree's root), its keys in the order a JavaScript object
-/// would hold them after the changes in turn: a key set keeps its place, a key deleted and set again goes last.
 pub fn state_at(view: &View, tree: u64, at: Option<u64>) -> Result<Vec<Entry>, StoreError> {
     let path = super::chat::path_to(view, at)?;
-    // Only messages whose shape counts something besides their append can hold a change.
     let shapes = super::chat::shapes(view, &path)?;
     let mut out: Vec<Entry> = Vec::new();
     let held = path
@@ -415,8 +382,6 @@ pub fn state_at(view: &View, tree: u64, at: Option<u64>) -> Result<Vec<Entry>, S
     Ok(out)
 }
 
-/// The changes hanging at one place, in order: (id, active). A tree root's changes a pending clear is removing are
-/// left out.
 pub fn changes_at(view: &View, hang: Hang) -> Result<Vec<(u64, bool)>, StoreError> {
     let cleared = match hang {
         Hang::Tree(t) => root_clear(view, t)?.map_or(0, |[upto, _, _]| upto),

@@ -3,13 +3,10 @@ import { describe, test, expect, jest } from '@jest/globals';
 import path from 'node:path';
 import { setConfigFilePath } from '../src/util.js';
 
-// character-card-normalize.js reaches modules that read config at load (through endpoints/worldinfo.js and the engine
-// store), so the config path is set before it is imported.
 setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 const { getCharaCardV2 } = await import('../src/character-card-normalize.js');
 import { splitCard, assembleCard, canonicalCardHash, canonicalJson, cardWithStoredFav, nameText } from '../src/character-card-storage.js';
 
-/** Splits `card` and assembles it back with `fav` as the stored favourite flag. */
 function roundTrip(card, fav = false) {
     const parts = JSON.parse(JSON.stringify(splitCard(card)));
     return assembleCard({ ...parts, columns: { ...parts.columns, fav } });
@@ -135,20 +132,17 @@ describe('character card storage', () => {
     });
 
     test('the name is stored from the key getCharaCardV2() reads it from, and goes back there', () => {
-        // spec and data.name: data.name is the name; an equal top-level name is a mirror, a different one itself.
         const fromData = { spec: 'chara_card_v2', name: 'Old', data: { name: 'New' } };
         expect(splitCard(fromData).columns.name).toBe('New');
         expect(splitCard(fromData).extra.map(r => r.path)).toEqual(expect.arrayContaining(['name:data', 'top:name']));
         expect(roundTrip(fromData)).toEqual(fromData);
         expect(splitCard(v2Card).extra.map(r => r.path)).toEqual(expect.arrayContaining(['name:data', 'mirror:name']));
 
-        // spec without data.name: the top-level name.
         const noDataName = { spec: 'chara_card_v2', name: 'Top', data: { description: 'd' } };
         expect(splitCard(noDataName).columns.name).toBe('Top');
         expect(splitCard(noDataName).extra.some(r => r.path === 'name:top')).toBe(true);
         expect(roundTrip(noDataName)).toEqual(noDataName);
 
-        // no spec: the top-level name, whatever data.name is.
         const v1Drifted = { name: 'V1', data: { name: 'V2' } };
         expect(splitCard(v1Drifted).columns.name).toBe('V1');
         expect(splitCard(v1Drifted).extra).toEqual(expect.arrayContaining([{ path: 'name:top', value: null }, { path: 'data:name', value: '"V2"' }]));
@@ -157,8 +151,6 @@ describe('character card storage', () => {
         expect(splitCard(v1Mirrored).extra.some(r => r.path === 'mirror:name')).toBe(true);
         expect(roundTrip(v1Mirrored)).toEqual(v1Mirrored);
 
-        // A non-string name stays where it is, as itself, and the column holds upstream's text of it; no name at all
-        // stores nothing.
         const oddName = { spec: 'chara_card_v2', data: { name: 5 } };
         expect(splitCard(oddName).columns.name).toBe('5');
         expect(roundTrip(oddName)).toEqual(oddName);
@@ -199,7 +191,6 @@ describe('character card storage', () => {
     });
 
     test('random cards round-trip exactly, the name column holding getCharaCardV2()\'s name', () => {
-        // getCharaCardV2() warns about every card missing V2 fields.
         const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
         let seed = 12345;
         const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
@@ -230,7 +221,6 @@ describe('character card storage', () => {
                 const data = {};
                 for (let k = Math.floor(rand() * 10); k > 0; k--) data[pick(keys)] = value(1);
                 card.data = data;
-                // Make some V1 keys true mirrors.
                 for (const k of ['name', 'description', 'tags']) if (rand() < 0.5 && k in data) card[k] = JSON.parse(JSON.stringify(data[k]));
             }
             if (isPlainObject(card.data) && isPlainObject(card.data.extensions) && rand() < 0.5) card.data.extensions.fav = rand() < 0.5;

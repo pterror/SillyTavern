@@ -156,14 +156,13 @@ export class StreamingDisplay {
         this.#textSection.style.display = 'none';
 
         this.#textContent = document.createElement('div');
-        this.#textContent.classList.add(`${CSS_PREFIX}-text-content`, 'mes_text'); // reuses chat message formatting styles
+        this.#textContent.classList.add(`${CSS_PREFIX}-text-content`, 'mes_text');
         addImageLightbox(this.#textContent);
         this.#textSection.appendChild(this.#textContent);
 
         contentContainer.appendChild(this.#textSection);
         this.#element.appendChild(contentContainer);
 
-        // Modal <dialog> elements live in the browser's top layer, so z-index alone can't render above them.
         const target = Array.from(document.querySelectorAll('dialog[open]:not([closing])')).pop() ?? document.body;
         target.appendChild(this.#element);
 

@@ -8,7 +8,6 @@ import { color, getConfigValue, uuidv4 } from '../util.js';
 export const SECRETS_FILE = 'secrets.json';
 export const SECRET_KEYS = {
     _MIGRATED: '_migrated',
-    // SillyTavern-Extras' key, its connection's (the settings model); upstream keeps it as extension_settings.apiKey.
     EXTRAS: 'api_key_extras',
     HORDE: 'api_key_horde',
     MANCER: 'api_key_mancer',

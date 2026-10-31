@@ -2,14 +2,6 @@ import { describe, test, expect, jest, beforeAll } from '@jest/globals';
 import { Marked } from 'marked';
 import showdown from 'showdown';
 
-// Image sizes: `![alt](url =WxH)` renders an img with width/height, as upstream's showdown `parseImgDimensions` does.
-// Each side is a number plus an optional CSS unit (px, %, em, rem, vw, vh, ch, ex, pt, pc, cm, mm, in), or `*` for
-// auto. `=W` and `=Wx` are width-only, `=xH` height-only; an `x` is the separator only when it isn't part of a unit.
-// Anything else after ` =` leaves the whole thing as text. Reference definitions take a size too.
-// Checked on both marked processors and through messageFormatting (the chat render path). messageFormatting's
-// DOM-bound and app-wide imports are replaced; DOMPurify needs a window, so sanitize is the identity here.
-// Titles are single-quoted: messageFormatting wraps double-quoted text in <q> before markdown runs, as upstream does.
-
 jest.unstable_mockModule('../public/lib.js', () => ({
     Marked,
     showdown,

@@ -4,11 +4,6 @@ import path from 'node:path';
 import process from 'node:process';
 import lodash from 'lodash';
 
-// A sort the server doesn't know falls back to name order, or relevance with a search term, with a one-time warning
-// (queryWithSortFallback, character-list.js), and the import/create flash finds its page through /query
-// (findCharacterListPage). Real client modules against the real server route; only what can't load in node is
-// replaced: IndexedDB (localforage) by an in-memory store, and the DOM-bound modules character-list.js imports.
-
 const originalCwd = process.cwd();
 const USER_HANDLE = 'sort-fallback-test-user';
 const noop = () => {};
@@ -99,7 +94,6 @@ jest.unstable_mockModule('../public/script.js', () => ({
 }));
 
 globalThis.toastr = { error: noop, warning: noop, info: noop, success: noop };
-/** Whether the sort dropdown's "Search" option is selected; the only thing `$` is asked here. */
 let searchOptionSelected = false;
 globalThis.$ = () => ({ is: () => searchOptionSelected });
 
@@ -122,9 +116,7 @@ let server;
 let baseUrl;
 /** @type {any} */
 let directories;
-/** Bodies of the /query requests the client sent, in order. */
 let queryRequests;
-/** The title and message of each warning toast, in order. */
 let warnings;
 
 beforeAll(async () => {
@@ -164,7 +156,6 @@ beforeEach(async () => {
     searchOptionSelected = false;
     const { FILTER_TYPES } = filters;
     const filter = characterList.entitiesFilter;
-    // Suppressed: a change would reprint the list, which needs the DOM.
     filter.setFilterData(FILTER_TYPES.SEARCH, '', true);
     filter.setFilterData(FILTER_TYPES.FAV, false, true);
     filter.setFilterData(FILTER_TYPES.GROUP, false, true);
@@ -189,7 +180,7 @@ afterEach(async () => {
 
 /**
  * @param {string} avatar
- * @param {{ name?: string, fav?: boolean, file?: boolean }} [options] file: also write the PNG, which search indexes.
+ * @param {{ name?: string, fav?: boolean, file?: boolean }} [options]
  */
 async function seedCharacter(avatar, { name = avatar.replace(/\.png$/, ''), fav = false, file = false } = {}) {
     const card = JSON.stringify({
@@ -207,7 +198,10 @@ async function seedCharacter(avatar, { name = avatar.replace(/\.png$/, ''), fav 
     await user.store.lib.writeCard(directories, avatar, card);
 }
 
-/** @param {string} id @param {string} name */
+/**
+ * @param {string} id
+ * @param {string} name
+ */
 async function seedGroup(id, name) {
     const group = { id, name, members: [], chats: [], fav: false };
     await user.store.lib.writeGroup(group);
@@ -222,7 +216,6 @@ const rowKey = row => {
 };
 
 /**
- * queryWithSortFallback() running one /query page of `pageSize` rows.
  * @param {object} filter
  * @param {object|undefined} sort
  */
@@ -245,14 +238,12 @@ describe('queryWithSortFallback', () => {
         expect(warnings).toHaveLength(1);
         expect(warnings[0][1]).toContain('"nonsense-a"');
 
-        // Asked again, the server is asked again, and there is no second warning for the same sort.
         queryRequests.length = 0;
         const again = await queryPage(filter, { field: 'nonsense-a', order: 'asc' });
         expect(again.sort).toEqual(NAME_ASC);
         expect(queryRequests.map(body => body.sort)).toEqual([{ field: 'nonsense-a', order: 'asc' }, NAME_ASC]);
         expect(warnings).toHaveLength(1);
 
-        // Another unknown sort gets its own warning.
         await queryPage(filter, { field: 'nonsense-b', order: 'asc' });
         expect(warnings).toHaveLength(2);
         expect(warnings[1][1]).toContain('"nonsense-b"');
@@ -297,7 +288,6 @@ describe('queryWithSortFallback', () => {
         await seedCharacter('Human.png', { name: 'Human', file: true });
 
         const filter = { search: 'vampire', includeGroups: true };
-        // Repeats until the search index has caught up.
         let answer;
         const deadline = Date.now() + 10000;
         do {
@@ -318,17 +308,14 @@ describe('findCharacterListPage', () => {
 
     test('gives the page an entity is on, in the list\'s sort, or -1', async () => {
         for (let i = 0; i < 25; i++) await seedCharacter(`c${String(i).padStart(2, '0')}.png`);
-        // Sorts between c12 and c13 by name.
         await seedGroup('g1', 'c12x');
 
         expect(await characterList.findCharacterListPage(byAvatar('c00.png'), 10)).toBe(1);
         expect(await characterList.findCharacterListPage(byAvatar('c09.png'), 10)).toBe(1);
         expect(await characterList.findCharacterListPage(byAvatar('c10.png'), 10)).toBe(2);
         expect(await characterList.findCharacterListPage(entity => entity.type === 'group' && entity.item.id === 'g1', 10)).toBe(2);
-        // The group pushes c19 to index 20.
         expect(await characterList.findCharacterListPage(byAvatar('c19.png'), 10)).toBe(3);
         expect(await characterList.findCharacterListPage(byAvatar('nobody.png'), 10)).toBe(-1);
-        // The list's filters, sort and groups go with every request.
         expect(queryRequests.every(body => body.sort?.field === 'name' && body.sort.order === 'asc' && body.filter.includeGroups === true)).toBe(true);
 
         powerUser.sort_order = 'desc';

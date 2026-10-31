@@ -8,44 +8,22 @@ import { newSessionKey } from './chat-engine.js';
 import { normalizeGroupRecord, storedGroup } from './group-id.js';
 import { TYPE } from './library-engine.js';
 
-/**
- * Upstream SillyTavern's data a user directory holds that this store keeps in the engine: its groups (`groups/`),
- * World Info books (`worlds/`), characters' chats (`chats/<avatar>/`) and groups' chats (`group chats/`). The
- * characters themselves come from `characters/`'s rescan, the rest of a user directory (settings, presets, themes,
- * Quick Replies, backgrounds, files) is read where upstream keeps it.
- *
- * A store made for a user directory imports them once (UPSTREAM_META, after the characters' rescan); a user asks for
- * it again through POST /api/upstream-import. Whatever is in the store already is left as it is and named: a group by
- * its id, a book by its name, a chat by its owner's bookmark labelled as the chat was named. Nothing is left out
- * silently: what isn't imported is listed, in the log and in the answer, with why.
- *
- * Each chat goes in as one commit of all its messages, every message with its swipes (`ChatEngine.importChat()`).
- * The work runs in batches with a pause between them, so requests aren't held up.
- *
- * `upstream-import.json` in the user directory keeps each imported chat file's bookmark (`b<id>`), by its path in
- * the user directory, for the import of upstream's itemized prompts, which name chats by file name; and the last
- * run's lists of what wasn't imported.
- */
-
-/** A new store's import of the user directory's upstream data, still to run. */
 export const UPSTREAM_META = 'upstream_import_pending';
 export const MAP_FILE = 'upstream-import.json';
-/** Files between pauses. */
 const BATCH = 20;
 const PAUSE_MS = 10;
 
 /**
  * @typedef {object} UpstreamImportReport
  * @property {{ groups: number, worlds: number, chats: number, groupChats: number, messages: number }} imported
- * @property {{ file: string, why: string }[]} present Files whose data the store already has, left as they are.
- * @property {{ file: string, why: string }[]} notImported Files that couldn't be imported, with why.
+ * @property {{ file: string, why: string }[]} present
+ * @property {{ file: string, why: string }[]} notImported
  */
 
-/** Imports run one at a time per user directory. @type {Map<string, Promise<UpstreamImportReport>>} */
+/** @type {Map<string, Promise<UpstreamImportReport>>} */
 const running = new Map();
 
 /**
- * Marks a new store's import of the user directory's upstream data as still to run.
  * @param {import('./library-engine.js').LibraryEngine} lib
  */
 export async function markUpstreamImportPending(lib) {
@@ -53,7 +31,6 @@ export async function markUpstreamImportPending(lib) {
 }
 
 /**
- * Runs the import a new store marked still to run, then clears the mark; nothing when there is none.
  * @param {import('./user-stores.js').UserStore} store
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<UpstreamImportReport | null>}
@@ -67,7 +44,6 @@ export async function resumeUpstreamImport(store, directories) {
 }
 
 /**
- * Imports the user directory's upstream groups, books and chats into its store (see the module's comment).
  * @param {import('./user-stores.js').UserStore} store
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<UpstreamImportReport>}
@@ -99,8 +75,7 @@ async function runImport(store, directories) {
         if (++done % BATCH === 0) await new Promise(resolve => setTimeout(resolve, PAUSE_MS));
     };
 
-    // ---- groups, before their chats ----
-    /** @type {Map<string, string[]>} Each imported or present group's chat ids. */
+    /** @type {Map<string, string[]>} */
     const groupChats = new Map();
     for (const file of jsonFiles(directories.groups)) {
         const where = rel(file);
@@ -126,7 +101,6 @@ async function runImport(store, directories) {
         await paced();
     }
 
-    // ---- World Info books ----
     for (const file of jsonFiles(directories.worlds)) {
         const where = rel(file);
         const name = path.parse(file).name;
@@ -146,12 +120,11 @@ async function runImport(store, directories) {
         await paced();
     }
 
-    // ---- chats ----
     /**
      * @param {string} file
      * @param {bigint} tree
      * @param {import('./chat-codec.js').Speaker | null} treeSpeaker
-     * @param {string} name The bookmark's label: upstream's chat name.
+     * @param {string} name
      * @param {'chats' | 'groupChats'} kind
      */
     const importChatFile = async (file, tree, treeSpeaker, name, kind) => {
@@ -178,17 +151,12 @@ async function runImport(store, directories) {
             report.notImported.push({ file: where, why: `the chat couldn't be stored (${imported.reason})` });
             return;
         }
-        // Internal: read back by the itemization import (`importedBookmarkOf()`), so the bookmark's id, not its chat
-        // id; `b<id>`, as maps written before have it.
         map.chats[where] = `b${imported.bookmark}`;
         report.imported[kind]++;
         report.imported.messages += parsed.messages.length;
-        // The map is kept as it grows, so a stop loses no file's bookmark; a chat stored before a stop that left it
-        // out is found by its bookmark's label.
         if (done % BATCH === 0) await writeMap(mapPath, map, report);
     };
 
-    // A character's chats are in chats/<its avatar's file name without .png>/.
     for (const folder of directoriesIn(directories.chats)) {
         const files = chatFiles(path.join(directories.chats, folder));
         if (!files.length) continue;
@@ -209,8 +177,7 @@ async function runImport(store, directories) {
         }
     }
 
-    // A group's chats are group chats/<chat id>.jsonl, listed in its file's `chats`.
-    /** @type {Map<string, string>} Each chat id's group. */
+    /** @type {Map<string, string>} */
     const chatGroup = new Map();
     for (const [group, ids] of groupChats) for (const id of ids) chatGroup.set(id, group);
     for (const file of chatFiles(directories.groupChats)) {
@@ -241,10 +208,7 @@ async function runImport(store, directories) {
 }
 
 /**
- * The bookmarks of the chat files the import stored, by upstream's chat id for them (the file's name without
- * `.jsonl`, as `getCurrentChatId()` named the chat): one or more `b<id>`, more when files in different folders share
- * a name.
- * @param {string} root The user directory.
+ * @param {string} root
  * @returns {Map<string, string[]>}
  */
 export function importedChatBookmarks(root) {

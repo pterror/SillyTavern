@@ -194,8 +194,6 @@ export class SlashCommandAutoCompleteNameResult extends AutoCompleteNameResult {
     }
 
     /**
-     * The loader for options an argument's enum provider has to ask for with the typed text (an `enumSearchProvider`
-     * attached to the provider function), or null when it has none.
      * @param {import('./SlashCommandArgument.js').SlashCommandArgument} cmdArg
      * @returns {((typed: string) => Promise<SlashCommandEnumAutoCompleteOption[]>)?}
      */

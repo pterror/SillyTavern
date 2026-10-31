@@ -3,12 +3,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-/**
- * The library's `/query` search on the engine (src/library-engine.js `query({ search })`) against a model of the
- * cards and groups written: which entities match, every page through cursors in relevance and list orders, labels,
- * closed and unclosed quotes, tag names, and a write found by the next query.
- */
-
 /** @type {typeof import('../src/library-engine.js')} */
 let lib;
 /** @type {any} */
@@ -48,7 +42,6 @@ function rng(seed) {
 const WORDS = ['dark', 'knight', 'dragon', 'drab', 'love', 'quokka', 'east', 'the'];
 const tokens = (/** @type {string} */ s) => s.toLowerCase().match(/[a-z0-9]+/g) ?? [];
 
-/** Whether `value` holds the phrase's tokens adjacent, the last a prefix of 2 characters or more when `prefix`. */
 function holds(value, phrase, prefix) {
     const v = tokens(value);
     const p = tokens(phrase);
@@ -59,7 +52,6 @@ function holds(value, phrase, prefix) {
 }
 
 /**
- * Writes `n` cards and groups; answers the model of each by key.
  * @param {number} n
  */
 async function build(n) {
@@ -91,7 +83,6 @@ async function build(n) {
     return model;
 }
 
-/** The keys a query's every page holds, read through cursors (or page offsets where none is given). */
 async function allPages(params) {
     const keys = [];
     let cursor;
@@ -109,11 +100,9 @@ async function allPages(params) {
 describe('library search on the engine', () => {
     test('pages hold every match once, in relevance and in the list orders', async () => {
         const model = await build(150);
-        // A word in any field: the name (a prefix field), a card's description, a group's members.
         const body = (/** @type {any} */ x, /** @type {string} */ w, /** @type {boolean} */ prefix) => holds(x.description, w, prefix) || x.members.some((/** @type {string} */ m) => holds(m, w, prefix));
         const cases = [
             { search: 'dark', match: (/** @type {any} */ x) => holds(x.name, 'dark', true) || body(x, 'dark', false) },
-            // "dragon riders" is a tag's name: its carriers match too ("love" has none).
             { search: 'dr', match: (/** @type {any} */ x) => holds(x.name, 'dr', true) || body(x, 'dr', false) || x.riders },
             { search: 'name:dark', match: (/** @type {any} */ x) => holds(x.name, 'dark', true) },
             { search: 'love -name:the', match: (/** @type {any} */ x) => (holds(x.name, 'love', true) || body(x, 'love', false)) && !holds(x.name, 'the', false) },
@@ -127,7 +116,6 @@ describe('library search on the engine', () => {
             const relevance = await allPages({ search: c.search, sortField: 'search', limit: 7, includeGroups: true });
             expect([...relevance.keys].sort()).toEqual(want);
             expect(relevance.keys.length).toBe(want.length);
-            // The list orders: the same pages as the list's own for the matches as ids.
             for (const sort of [{ sortField: 'name' }, { sortField: 'name', sortOrder: 'desc' }, { sortField: 'fav', sortOrder: 'desc' }, { sortField: 'date_added', sortOrder: 'desc' }]) {
                 const searched = await allPages({ search: c.search, ...sort, limit: 7, includeGroups: true });
                 const listed = want.length === 0 ? { keys: [] } : await allPages({ ids: want, ...sort, limit: 7, includeGroups: true });
@@ -141,11 +129,9 @@ describe('library search on the engine', () => {
         const textMatch = (/** @type {any} */ x) => holds(x.name, 'dr', true) || holds(x.description, 'dr', false) || x.members.some((/** @type {string} */ m) => holds(m, 'dr', false));
         for (const sort of [{ tieSortField: 'name' }, { tieSortField: 'name', tieSortOrder: 'desc' }, { tieSortField: 'date_added', tieSortOrder: 'desc' }]) {
             const listed = async (/** @type {string[]} */ ids) => (await allPages({ ids, sortField: sort.tieSortField, sortOrder: sort.tieSortOrder, limit: 7, includeGroups: true })).keys;
-            // No text holds "riders": every match is a carrier, in the list's order.
             const riders = [...model.keys()].filter(k => model.get(k)?.riders);
             const searched = await allPages({ search: 'riders', sortField: 'search', ...sort, limit: 7, includeGroups: true });
             expect(searched.keys).toEqual(await listed(riders));
-            // With text matches: the tied carriers are one run in the list's order.
             const tied = riders.filter(k => !textMatch(model.get(k)));
             const dr = (await allPages({ search: 'dr', sortField: 'search', ...sort, limit: 7, includeGroups: true })).keys;
             const at = Math.min(...tied.map(k => dr.indexOf(k)));

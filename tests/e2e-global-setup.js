@@ -1,7 +1,3 @@
-// Builds the seed data root once per run: the default user's store converted from the synthetic old user
-// (e2e-seed-store.js), then a server on it (which takes the page's build for this checkout, packages/serve-ui), and a
-// browser goes through the first-run dialog with the default name. Workers copy the seed into their own data roots
-// (see frontend/fixtures.js), so their servers boot into an account that has already been through the dialog.
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';

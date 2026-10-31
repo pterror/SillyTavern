@@ -3,12 +3,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-/**
- * A book's entries searched on the engine (`WorldInfoEngine.search`): upstream's `fuzzySearchWorldInfo` fields and
- * weights, prefixes only in `key` and `comment`, `uid` and `automationId` whole, characters' own books searched and
- * `originalData` not, pages through cursors, and a write found by the next search.
- */
-
 /** @type {typeof import('../src/library-engine.js')} */
 let lib;
 /** @type {any} */
@@ -58,12 +52,9 @@ describe('world-info search on the engine', () => {
             },
             originalData: { entries: [{ keys: ['dragon'], content: 'original dragon' }] },
         });
-        // Key 20 outranks comment and keysecondary 10, which outrank content 3; the last word is a prefix in the
-        // comment ("Dragons").
         const ranked = await uids({ name: 'Lore', search: 'dragon' });
         expect([ranked[0], [...ranked.slice(1, 3)].sort(), ranked[3], ranked.length]).toEqual(['0', ['1', '3'], '2', 4]);
         expect(await uids({ name: 'Lore', search: '"dragon"' })).toEqual(['0', '3', '2']);
-        // A prefix in `key` and `comment` only.
         expect(await uids({ name: 'Lore', search: 'drag' })).toEqual(['0', '1']);
         expect(await uids({ name: 'Lore', search: 'beasts' })).toEqual(['3']);
         expect(await uids({ name: 'Lore', search: '17' })).toEqual(['17']);
@@ -78,8 +69,6 @@ describe('world-info search on the engine', () => {
         const { id } = await library.writeCard({}, 'c.png', JSON.stringify(card), { dateAdded: 1 });
         expect(await uids({ character: id, search: 'wyv' })).toEqual(['0']);
         expect(await uids({ character: id, search: '3' })).toEqual(['0']);
-        // Its `extensions`' `group` and `automation_id` (upstream's `group` and `automationId`) are searched, the id
-        // whole; the card reads back as written, extension keys in their order.
         const ext = { foo: 'bar', automation_id: 'auto-9', group: 'drakes', position: 1 };
         const card2 = structuredClone(card);
         card2.data.character_book.entries.push({ id: 4, keys: [], secondary_keys: [], comment: '', content: 'x', extensions: ext });
@@ -88,7 +77,6 @@ describe('world-info search on the engine', () => {
         expect(await uids({ character: id, search: 'auto-9' })).toEqual(['1']);
         expect(await uids({ character: id, search: 'drake' })).toEqual([], 'group is no prefix field');
         expect(JSON.stringify((await library.cards(['c.png']))[0].data.character_book)).toBe(JSON.stringify(card2.data.character_book));
-        // A changed group writes that value alone, and the search follows it.
         const card3 = structuredClone(card2);
         card3.data.character_book.entries[1].extensions.group = 'wyrms';
         const { records } = await library.writeCard({}, 'c.png', JSON.stringify(card3), { dateAdded: 1 });
@@ -114,7 +102,6 @@ describe('world-info search on the engine', () => {
         await books.editEntry('Big', 5, entry(5, { content: 'the castle' }));
         expect(await uids({ name: 'Big', search: 'castle' })).toEqual(['5']);
         expect((await uids({ name: 'Big', search: 'tower' })).length).toBe(29);
-        // Moved to another book: found there under its new key, and no longer in the first.
         await books.write('Other', { entries: {} });
         await books.transplant({ source: 'Big', target: 'Other', uid: 5, deleteOriginal: true });
         expect(await uids({ name: 'Big', search: 'castle' })).toEqual([]);
@@ -136,7 +123,6 @@ describe('world-info search on the engine', () => {
         }
         expect(new Set(seen).size).toBe(seen.length);
         expect(seen.length).toBe(first.total);
-        // One word takes no weights: a weighted cursor is no cursor, the first page again.
         const one = /** @type {any} */ (await books.search({ name: 'Weighted', search: 'tower', limit: 4 }));
         expect(one.cursor).toMatch(/^s[^:]+:\d+$/);
         const reread = /** @type {any} */ (await books.search({ name: 'Weighted', search: 'tower', limit: 4, cursor: first.cursor }));

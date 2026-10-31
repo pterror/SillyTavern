@@ -4,21 +4,6 @@ import path from 'node:path';
 import process from 'node:process';
 import { Buffer } from 'node:buffer';
 
-// Regression coverage for a real bug (2026-09 investigation): the periodic scan and the (optional) directory
-// watcher each have their own independent trigger for calling processFile() on a given filename, and nothing
-// about WHEN either fires prevents them from both landing on the SAME filename at once - most simply, the
-// mandatory very-first scan pass on every server boot always runs concurrently with a watcher that's already
-// live by the time that pass starts (see initializeLocalImportScan()). withPerHashLock() does NOT close this:
-// it only serializes the dedup-check-then-import DECISION within a single call - a file already recognized as
-// a duplicate of something previously imported takes the identical short-circuit branch on every call
-// regardless, so two genuinely concurrent processFile() calls for the same filename each independently ran the
-// whole processFileImpl() pass. Fixed by a per-filename in-flight guard in local-import-scan.js's processFile():
-// a second concurrent call for a filename already being processed just joins the first call's own promise
-// instead of running its own redundant pass.
-//
-// The library's findByHash() is counted because processFileImpl() calls it exactly once per run on the
-// duplicate path, so its call count is the number of processFileImpl() runs. The stall makes the race
-// deterministic: the second pass's dispatch for the same filename lands while the first is still in flight.
 let findCharacterIdByContentHashCallCount = 0;
 /** @type {number} */
 let findCharacterIdByContentHashStallMs = 0;
@@ -26,7 +11,6 @@ let findCharacterIdByContentHashStallMs = 0;
 const originalCwd = process.cwd();
 afterAll(() => process.chdir(originalCwd));
 
-// A minimal valid 1x1 transparent PNG - same fixture local-import-scan.test.js/character-card-parser.test.js use.
 const BLANK_PNG = Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
     'base64',
@@ -44,7 +28,6 @@ let cardParser;
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(originalCwd, '..', 'default', 'config.yaml'));
-    // importFromPng() reads DEFAULT_AVATAR_PATH relative to cwd - same fix local-import-scan.test.js needed.
     process.chdir(path.resolve(originalCwd, '..'));
 
     fixture = await import('./converted-user.fixture.js');
@@ -80,7 +63,6 @@ describe('local-import-scan: concurrent processFile() calls for the SAME filenam
 
     afterEach(() => user.close());
 
-    /** How many characters the library has. */
     async function characterCount() {
         return (await user.store.lib.query({ wantRows: false, wantTotal: true, includeGroups: false })).total;
     }
@@ -105,20 +87,13 @@ describe('local-import-scan: concurrent processFile() calls for the SAME filenam
         fs.writeFileSync(path.join(sourceDir, 'ghost-copy.png'), cardBuffer);
         findCharacterIdByContentHashStallMs = 50;
 
-        // Same shared `state` object for both - this is what makes it "the same filename, two concurrent
-        // triggers", exactly like a periodic-scan pass and a watcher-triggered call sharing one DirectoryScanState
-        // in the real module. Neither call is awaited before the other starts.
         await Promise.all([
             localImportScan.scanDirectory(state, directories),
             localImportScan.scanDirectory(state, directories),
         ]);
 
-        // Still only one character on disk (dedup itself was never in question - see the other dedup tests in
-        // local-import-scan.test.js) - what THIS test is actually about is below.
         expect(await characterCount()).toBe(1);
 
-        // Without the in-flight guard, both passes run processFileImpl() for ghost-copy.png, each calling
-        // findCharacterIdByContentHash() once (ghost.png is skipped by its unchanged mtime).
         expect(findCharacterIdByContentHashCallCount).toBe(1);
     });
 });

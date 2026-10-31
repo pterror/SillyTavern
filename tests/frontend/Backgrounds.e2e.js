@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// The backgrounds drawer, from the new page (packages/areas/backgrounds/page): the page shows the server's view
-// and sends actions; another tab of the user sees a change without reloading; a chat's lock follows the chat.
-
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 
 /** @param {import('@playwright/test').Page} page */
@@ -12,7 +9,6 @@ async function openDrawer(page) {
     if (!(await drawer.evaluate(el => el.classList.contains('openDrawer')))) await page.locator('#backgrounds-drawer-toggle').click();
     await expect(drawer).toHaveClass(/openDrawer/);
     await expect(page.locator('#bg_menu_content .bg_example').first()).toBeVisible();
-    // Done sliding in: a thumbnail hovered while it moves slips out from under the pointer.
     await expect.poll(() => drawer.evaluate(el => el.getAnimations({ subtree: true }).length)).toBe(0);
 }
 
@@ -26,7 +22,6 @@ const systemThumb = (page, file) => page.locator(`#bg_menu_content .bg_example[b
 const shownBackground = page => page.locator('#bg1').evaluate(el => decodeURIComponent(el.style.backgroundImage));
 
 /**
- * A system background that isn't the one shown now.
  * @param {import('@playwright/test').Page} page
  */
 async function anotherBackground(page) {
@@ -37,7 +32,6 @@ async function anotherBackground(page) {
 }
 
 /**
- * Clicks one of a thumbnail's buttons (they show on hover).
  * @param {import('@playwright/test').Locator} thumb
  * @param {string} action
  */
@@ -95,7 +89,6 @@ test.describe('backgrounds', () => {
         await testSetup.awaitST({ page: other });
         await expect.poll(() => shownBackground(other)).toContain(`backgrounds/${file}`);
 
-        // A change in one tab reaches the other on its own.
         const next = await anotherBackground(page);
         await systemThumb(page, next).click();
         await expect.poll(() => shownBackground(other), { timeout: 10000 }).toContain(`backgrounds/${next}`);
@@ -142,7 +135,6 @@ test.describe('backgrounds', () => {
         await thumbAction(systemThumb(page, `${name}-renamed.png`), 'delete');
         await dialog(page).locator('.popup-button-ok').click();
         await expect(systemThumb(page, `${name}-renamed.png`)).toHaveCount(0);
-        // The one after it in the list took its place.
         await expect(page.locator('#bg_menu_content .bg_example.selected-background')).toHaveCount(1);
     });
 

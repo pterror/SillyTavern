@@ -5,10 +5,10 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// A reply's reasoning stays its reasoning, in the page and as stored, through redraws: a chat reopened, a user
-// message before it duplicated into an alternative and switched back from, and the page reloaded.
-
-/** @param {import('@playwright/test').Page} page @param {string} name */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ */
 function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
@@ -22,7 +22,10 @@ function createCharacter(page, name) {
     }, name);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
 async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
@@ -43,7 +46,6 @@ async function reopenChat(page) {
     });
 }
 
-/** The bot reply's state: in the page's chat, drawn, and as the server holds the shown path. */
 async function replyState(page, avatar) {
     return page.evaluate(async (avatar) => {
         // @ts-ignore
@@ -101,7 +103,6 @@ for (const autoParse of [false, true]) {
         await expect(page.locator('#chat .mes')).toHaveCount(3);
         expect(await replyState(page, avatar)).toEqual(WANT);
 
-        // Redrawn in place.
         await page.evaluate(async () => {
             // @ts-ignore
             const context = SillyTavern.getContext();
@@ -112,14 +113,12 @@ for (const autoParse of [false, true]) {
         });
         await expect.poll(() => replyState(page, avatar)).toEqual(WANT);
 
-        // The user message duplicated into an alternative with another text, then switched back from.
         const user = page.locator('#chat .mes[mesid="1"]');
         await user.hover();
         await user.locator('.mes_edit').click({ force: true });
         await user.locator('.edit_textarea').fill('How far is the city?');
         await user.locator('.mes_edit_duplicate').click({ force: true });
         await expect(page.locator('#chat .mes')).toHaveCount(2, { timeout: 10000 });
-        // The duplicate has settled once the page is on the new alternative's row.
         await expect.poll(() => page.evaluate(() => {
             // @ts-ignore
             const m = SillyTavern.getContext().chat[1];
@@ -132,7 +131,6 @@ for (const autoParse of [false, true]) {
         await expect(page.locator('#chat .mes')).toHaveCount(3, { timeout: 10000 });
         await expect.poll(() => replyState(page, avatar)).toEqual(WANT);
 
-        // The page reloaded and the chat opened again.
         await page.reload();
         await testSetup.awaitST({ page });
         await openCharacter(page, avatar);

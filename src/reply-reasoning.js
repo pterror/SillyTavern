@@ -4,60 +4,35 @@ import { cleanUpReply } from './reply-cleanup.js';
 import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
 import { readSettingsFor, settingsContextOf } from './settings-reads.js';
 
-/**
- * The finished form of a generated reply: what the server stores and sends the page. The page's own reasoning code
- * (public/scripts/reasoning.js) only displays it.
- *
- * Matches what upstream's page stores for a reply (saveReply(), ReasoningHandler, and the MESSAGE_RECEIVED auto-parse
- * in upstream public/scripts/reasoning.js):
- * - `extra.reasoning` is always a string ('' when there is none), `extra.reasoning_duration` a number of ms or null,
- *   `extra.reasoning_signature` the signature or null.
- * - Reasoning the backend sends apart from the text (native reasoning) is kept as is: `reasoning_type` 'model' when
- *   streamed, no type when not (as upstream's saveReply() stores it).
- * - With auto-parse on, a reasoning block at the start of the text (the user's prefix ... suffix) is moved out of
- *   `mes` into `extra.reasoning`, type 'parsed'. A streamed reply that starts with the prefix but never closes it
- *   is all reasoning, as upstream's streaming parse leaves it.
- * - Reasoning passes through the REASONING regex scripts.
- * - A new reply starts with the user's "Start Reply With" (`user_prompt_bias`), as upstream's cleanUpMessage() adds it.
- */
-
-/** Mirrors public/scripts/reasoning.js ReasoningType. */
 export const ReasoningType = {
     Model: 'model',
     Parsed: 'parsed',
 };
 
-/** Zero-width space: the legacy "no reasoning" placeholder (PromptReasoning.REASONING_PLACEHOLDER). */
 const REASONING_PLACEHOLDER = '​';
 
-/** Models that think without sending the reasoning back (public/scripts/reasoning.js isHiddenReasoningModel()). */
 const HIDDEN_REASONING_MODELS = ['gpt-4.5', 'o1', 'o3', 'gemini-2.0-flash-thinking-exp', 'gemini-2.0-pro-exp'];
 
 /**
- * @typedef {object} ReplyFinishBase What finishing a reply needs from the user's settings, read when the
- * generation starts.
- * @property {string} mainApi 'openai' | 'textgenerationwebui' | 'kobold' | 'koboldhorde' | 'novel'
- * @property {string|null} source The chat completion source (openai) or text completion type (textgenerationwebui).
- * @property {boolean} showThoughts `oai_settings.show_thoughts`: chat completion reasoning is kept only when on.
- * @property {boolean} hiddenReasoningModel The model thinks without sending its reasoning.
- * @property {boolean} autoParse `power_user.reasoning.auto_parse`
- * @property {string} prefix `power_user.reasoning.prefix`, as typed (the parse matches it literally, as upstream's does)
- * @property {string} suffix `power_user.reasoning.suffix`
- * @property {string} promptPrefix The prefix with macros substituted, as it is put in a prompt.
- * @property {boolean} trimSpaces `power_user.trim_spaces`
- * @property {string} replyBias `power_user.user_prompt_bias` with macros substituted.
- * @property {object[]} regexScripts The regex scripts that apply (global, the character's if allowed, the preset's if allowed).
- * @property {boolean} regexEnabled The regex extension isn't disabled.
+ * @typedef {object} ReplyFinishBase
+ * @property {string} mainApi
+ * @property {string|null} source
+ * @property {boolean} showThoughts
+ * @property {boolean} hiddenReasoningModel
+ * @property {boolean} autoParse
+ * @property {string} prefix
+ * @property {string} suffix
+ * @property {string} promptPrefix
+ * @property {boolean} trimSpaces
+ * @property {string} replyBias
+ * @property {object[]} regexScripts
+ * @property {boolean} regexEnabled
  * @property {{name1: string, name2: string}} macroContext
- * @property {string} api The reply's `extra.api`, as upstream's getGeneratingApi() names it.
- * @property {string|null|Promise<string|null>} model The reply's `extra.model` (getGeneratingModel()), or the lookup of it.
- *
- * And what cleaning the reply up needs (src/reply-cleanup.js): name1, name2, stoppingStringsParams, collapseNewlines,
- * allowName1Display, allowName2Display, instruct, isGroup, groupMemberNames, disableGroupTrimming, trimSentences.
+ * @property {string} api
+ * @property {string|null|Promise<string|null>} model
  * @typedef {ReplyFinishBase & import('./reply-cleanup.js').ReplyCleanupSettings} ReplyFinishSettings
  */
 
-/** Settings key and selected-preset field of each API's preset (public/scripts/preset-manager.js getPresetList()). */
 const PRESET_SETTINGS = {
     openai: { key: 'oai_settings', name: 'preset_settings_openai' },
     textgenerationwebui: { key: 'textgenerationwebui_settings', name: 'preset' },
@@ -67,15 +42,13 @@ const PRESET_SETTINGS = {
 };
 
 /**
- * Reads what finishing a reply needs from the user's settings. Server-side port of the regex extension's
- * getRegexScripts({ allowedOnly: true }) (public/scripts/extensions/regex/engine.js) for the scripts.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {object} params
  * @param {string} params.mainApi
  * @param {string|null} [params.source]
- * @param {string|null|Promise<string|null>} [params.model] The model generating (a lookup of it may still be running).
- * @param {string|null} [params.avatar] The responding character's avatar.
- * @param {string|null} [params.groupId] The group, for a group's reply.
+ * @param {string|null|Promise<string|null>} [params.model]
+ * @param {string|null} [params.avatar]
+ * @param {string|null} [params.groupId]
  * @param {string} [params.name1]
  * @param {string} [params.name2]
  * @returns {Promise<ReplyFinishSettings>}
@@ -97,7 +70,6 @@ export async function readReplyFinishSettings(directories, { mainApi, source = n
         if (Array.isArray(extensionSettings.regex)) regexScripts.push(...extensionSettings.regex);
         if (avatar && Array.isArray(extensionSettings.character_allowed_regex) && extensionSettings.character_allowed_regex.includes(avatar)) {
             try {
-                // Imported when needed: the characters endpoint needs the server's config loaded.
                 const { readCardContent } = await import('./endpoints/characters.js');
                 const raw = await readCardContent(directories, avatar);
                 const scoped = raw === undefined ? null : JSON.parse(raw)?.data?.extensions?.regex_scripts;
@@ -152,7 +124,6 @@ export async function readReplyFinishSettings(directories, { mainApi, source = n
         macroContext,
         api: mainApi === 'openai' ? (source || 'openai') : mainApi === 'textgenerationwebui' ? (source === 'ooba' ? 'textgenerationwebui' : String(source ?? '')) : mainApi,
         model,
-        // Cleaning the reply up (src/reply-cleanup.js); defaults are the page's (public/scripts/power-user.js).
         name1, name2,
         stoppingStringsParams: {
             namesAsStopStrings: context.names_as_stop_strings !== false,
@@ -178,8 +149,6 @@ export async function readReplyFinishSettings(directories, { mainApi, source = n
 }
 
 /**
- * The reasoning a non-streamed answer carries apart from its text. Server-side port of
- * extractReasoningFromData() (public/scripts/reasoning.js), reading the answer the page is sent.
  * @param {any} data
  * @param {ReplyFinishSettings} settings
  * @returns {string}
@@ -229,8 +198,6 @@ export function extractReasoningFromData(data, { mainApi, source, showThoughts }
 }
 
 /**
- * The reasoning signature of a non-streamed answer. Server-side port of extractReasoningSignatureFromData()
- * (public/scripts/reasoning.js), which only finds one in OpenRouter's `reasoning_details`.
  * @param {any} data
  * @param {ReplyFinishSettings} settings
  * @returns {string|null}
@@ -259,13 +226,10 @@ function trimIf(text, trimSpaces) {
 }
 
 /**
- * Splits a reasoning block off the start of a text, as upstream's page does: `streamed`, the streaming parse (the
- * text starts with the prefix exactly; with no suffix yet, everything is reasoning); otherwise
- * parseReasoningFromString() (whitespace may come first; a block that isn't closed isn't one).
  * @param {string} text
  * @param {{prefix: string, suffix: string, trimSpaces: boolean}} settings
  * @param {boolean} streamed
- * @returns {{reasoning: string, content: string}|null} null when there's no block.
+ * @returns {{reasoning: string, content: string}|null}
  */
 export function splitReasoningBlock(text, { prefix, suffix, trimSpaces }, streamed) {
     if (!prefix || !suffix || typeof text !== 'string') return null;
@@ -286,18 +250,16 @@ export function splitReasoningBlock(text, { prefix, suffix, trimSpaces }, stream
 }
 
 /**
- * @typedef {object} ReplyStream What a streamed reply's pipe noted while it streamed.
- * @property {string} reasoning The reasoning the backend sent apart from the text.
- * @property {number|null} reasoningEndedAt When the text after the reasoning started.
+ * @typedef {object} ReplyStream
+ * @property {string} reasoning
+ * @property {number|null} reasoningEndedAt
  * @property {string|null} signature
- * @property {boolean} parseOff The text doesn't start with the reasoning prefix, so no block is being streamed.
- * @property {number} suffixFrom Where the search for the reasoning suffix resumes.
+ * @property {boolean} parseOff
+ * @property {number} suffixFrom
  */
 
 /**
- * For a stream: notes a piece of reasoning the backend sent apart from the text. Chat completion reasoning counts
- * only with "show thoughts" on, as the page counts it.
- * @param {object|null|undefined} pending The generation's `pendingAssistantPersist`.
+ * @param {object|null|undefined} pending
  * @param {string} text
  */
 export function noteReplyReasoning(pending, text) {
@@ -309,10 +271,8 @@ export function noteReplyReasoning(pending, text) {
 }
 
 /**
- * For a stream: notes the text so far, so the reasoning's duration ends when the text after it starts, as upstream's
- * streaming reasoning measures it. Called with every piece of text; cheap once the reasoning has ended.
  * @param {object|null|undefined} pending
- * @param {string} text The whole text so far.
+ * @param {string} text
  */
 export function noteReplyText(pending, text) {
     if (!pending) return;
@@ -324,12 +284,10 @@ export function noteReplyText(pending, text) {
         return;
     }
     if (!settings?.autoParse || !settings.prefix || !settings.suffix || stream.parseOff) return;
-    // Each piece searches only past what was searched before, so a long reasoning block costs its length once.
     const { prefix, suffix } = settings;
     const target = parseTarget(pending, text);
     if (target.length <= prefix.length) return;
     if (!target.startsWith(prefix)) {
-        // The streaming parse never starts on this reply.
         stream.parseOff = true;
         return;
     }
@@ -348,9 +306,6 @@ function replyStreamOf(pending) {
 }
 
 /**
- * The reply's whole text before its reasoning is split off: the "Start Reply With" text and the generated text for a
- * new reply; for a continue, the reasoning being continued (when the prompt ended inside it), the message's text and
- * the generated text.
  * @param {object} pending
  * @param {string} generatedText
  */
@@ -363,8 +318,6 @@ function parseTarget(pending, generatedText) {
 }
 
 /**
- * For a continue of a message with reasoning and no text yet: the prompt ended inside its reasoning block
- * (PromptReasoning's `prefixIncomplete`), so the reply continues the reasoning.
  * @param {object} pending
  * @returns {string}
  */
@@ -387,10 +340,9 @@ function regexed(reasoning, settings) {
 }
 
 /**
- * The reply as it is stored: its text and the reasoning fields of its `extra`.
- * @param {object} pending The generation's `pendingAssistantPersist` (with `finish`, and `replyStream` for a stream).
- * @param {string} generatedText The text the backend generated.
- * @param {{data?: any}} [answer] A non-streamed answer, as sent to the page, to read native reasoning from.
+ * @param {object} pending
+ * @param {string} generatedText
+ * @param {{data?: any}} [answer]
  * @returns {{mes: string, extra: {reasoning: string, reasoning_duration: number|null, reasoning_signature: string|null, reasoning_type?: string, api?: string, model?: string}}}
  */
 export function finishReply(pending, generatedText, answer = {}) {
@@ -413,7 +365,6 @@ export function finishReply(pending, generatedText, answer = {}) {
     const continuedPrefix = pending.isContinue ? continuedReasoningPrefix(pending) : '';
     let mes;
     if (pending.finish) {
-        // Cleaned up first (cleanUpMessage()), then the reasoning split off, as upstream's page did.
         const oldText = pending.isContinue && typeof pending.anchorContent?.mes === 'string' ? pending.anchorContent.mes : '';
         mes = continuedPrefix + cleanUpReply(oldText + generatedText, settings, {
             isContinue: Boolean(pending.isContinue),
@@ -432,7 +383,6 @@ export function finishReply(pending, generatedText, answer = {}) {
     if (anchorExtra.reasoning_type) extra.reasoning_type = anchorExtra.reasoning_type;
 
     if (native) {
-        // Streamed: trimmed, then regexed (ReasoningHandler.updateReasoning()); not streamed: regexed, then trimmed.
         const reasoning = streamed ? regexed(trimIf(native, settings.trimSpaces), settings) : trimIf(regexed(native, settings), settings.trimSpaces);
         if (pending.isContinue && extra.reasoning && !continuedPrefix) {
             extra.reasoning += reasoning;
@@ -459,7 +409,6 @@ export function finishReply(pending, generatedText, answer = {}) {
     }
 
     if (!native && streamed && settings.hiddenReasoningModel && !pending.isContinue && !extra.reasoning) {
-        // A model that thinks without sending its reasoning: the time it thought is still shown.
         extra.reasoning_duration = measured;
         extra.reasoning_type = ReasoningType.Model;
     }

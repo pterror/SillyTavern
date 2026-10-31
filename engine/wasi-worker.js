@@ -1,5 +1,3 @@
-// One wasm thread of the engine's wasm build (see wasm.js).
-
 import { createRequire } from 'node:module';
 import { parentPort, Worker } from 'node:worker_threads';
 import fs from 'node:fs';
@@ -8,7 +6,6 @@ import { instantiateNapiModuleSync, MessageHandler, getDefaultContext } from '@n
 
 import { createWasi } from './wasm.js';
 
-// emnapi's thread code is written for web workers.
 parentPort.on('message', data => globalThis.onmessage({ data }));
 Object.assign(globalThis, {
     self: globalThis,

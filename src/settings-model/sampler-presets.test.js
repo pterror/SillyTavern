@@ -17,7 +17,6 @@ const FOLDERS = { openai: 'openai', textgenerationwebui: 'textgen', novel: 'nove
  */
 function roundTrip(api, name, file) {
     const { preset, connection, warnings } = presetFromUpstream(api, name, structuredClone(file));
-    // Through JSON, as the store holds it.
     const stored = JSON.parse(JSON.stringify({ preset, connection }));
     return { back: presetToUpstream(stored.preset, stored.connection), preset, connection, warnings };
 }

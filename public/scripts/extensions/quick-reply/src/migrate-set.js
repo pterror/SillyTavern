@@ -1,7 +1,4 @@
 /**
- * Brings a quick reply set saved by the first version of the extension to version 2, in place: its options under
- * their new names and its slots as replies. Must stay importable outside a browser DOM (the server's settings model
- * reads old sets with it).
  * @param {Record<string, any>} set
  */
 export function migrateQuickReplySet(set) {

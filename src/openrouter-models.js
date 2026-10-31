@@ -4,12 +4,10 @@ import { clearDownloadFailure, isDownloadBackedOff, recordDownloadFailure } from
 
 export const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
 
-/** How long a fetched model list answers before the next lookup fetches it again. */
 export const OPENROUTER_MODELS_MAX_AGE_MS = 60 * 60 * 1000;
 
 /**
- * OpenRouter's public model list, without a key.
- * @returns {Promise<any[]|null>} null when OpenRouter answers with an error or an unexpected shape
+ * @returns {Promise<any[]|null>}
  */
 export async function fetchOpenRouterModels() {
     const response = await fetch(OPENROUTER_MODELS_URL, {
@@ -34,22 +32,16 @@ export async function fetchOpenRouterModels() {
     return data.data;
 }
 
-/**
- * OpenRouter model id -> its `hugging_face_id`, for the models that name one. One entry per model in
- * OpenRouter's catalog at most (177 of its 458 models named one on 2026-09-28), whatever the user's data.
- * @type {Map<string, string>|null} null until a list has been fetched
- */
+/** @type {Map<string, string>|null} */
 let huggingFaceIds = null;
 
-/** `performance.now()` when `huggingFaceIds` was filled. */
 let fetchedAt = 0;
 
 /** @type {Promise<boolean>|null} */
 let inFlight = null;
 
 /**
- * Keeps the `hugging_face_id` of every model in a fetched list, replacing what was kept before.
- * @param {unknown} models The `data` array of OpenRouter's `/models` reply
+ * @param {unknown} models
  */
 export function rememberOpenRouterModels(models) {
     if (!Array.isArray(models)) {
@@ -66,7 +58,6 @@ export function rememberOpenRouterModels(models) {
     clearDownloadFailure(OPENROUTER_MODELS_URL);
 }
 
-/** Forgets the kept list, for tests. */
 export function forgetOpenRouterModels() {
     huggingFaceIds = null;
     fetchedAt = 0;
@@ -76,7 +67,7 @@ export function forgetOpenRouterModels() {
 
 /**
  * @param {() => Promise<any[]|null>} fetchModels
- * @returns {Promise<boolean>} whether the list was fetched
+ * @returns {Promise<boolean>}
  */
 async function refresh(fetchModels) {
     try {
@@ -93,9 +84,6 @@ async function refresh(fetchModels) {
 }
 
 /**
- * The `hugging_face_id` OpenRouter lists for a model. A list older than an hour is fetched again; a
- * failed fetch is not retried for a minute, and answers `{ ok: false }` meanwhile. An id with a variant
- * suffix that isn't listed itself (`:nitro`) is looked up without it.
  * @param {string} modelId
  * @param {{ fetchModels?: () => Promise<any[]|null> }} [options]
  * @returns {Promise<{ ok: false } | { ok: true, huggingFaceId: string|null }>}

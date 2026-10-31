@@ -1,6 +1,3 @@
-// The editor's built-in find-and-replace presets: markdown-aware text cleanup, and the line processors of
-// desloppify (~/git/silliest/src/slices/chatbot-tools/desloppify.ts, by the same author) for character definitions.
-
 import { chatMarkdownParser } from './grammar.js';
 import { t } from '../i18n.js';
 
@@ -8,9 +5,8 @@ import { t } from '../i18n.js';
 /** @typedef {import('./search.js').PresetContext} PresetContext */
 
 /**
- * Applies edits (ranges replaced with text) to a string, all at once.
  * @param {string} text
- * @param {{ from: number, to: number, insert: string }[]} edits Non-overlapping.
+ * @param {{ from: number, to: number, insert: string }[]} edits
  */
 function applyEdits(text, edits) {
     let out = '';
@@ -23,9 +19,6 @@ function applyEdits(text, edits) {
 }
 
 /**
- * Removes italics, reading the text as chat's markdown does: every emphasis loses its markers, bold stays, and bold
- * italics (`***x***`, `*__x__*`) stay whole. Where italics and bold only partly overlap, the italics go and the bold
- * part stays bold. Code, URLs and HTML aren't touched, since emphasis isn't read there.
  * @param {string} text
  * @returns {string}
  */
@@ -65,8 +58,6 @@ const typographyRegex = new RegExp(`[${Object.keys(TYPOGRAPHY).join('')}]`, 'g')
 const UNTOUCHED_NODES = new Set(['InlineCode', 'FencedCode', 'CodeBlock', 'URL', 'HTMLTag', 'HTMLBlock']);
 
 /**
- * Typography to plain ASCII: curly and angle quotes and the other dialogue quote styles to `"` or `'`, every dash to
- * `-`, `…` to `...`. Code, URLs and HTML are left as they are.
  * @param {string} text
  * @returns {string}
  */
@@ -89,8 +80,6 @@ export function typographyToAscii(text) {
     }
     return out + text.slice(at).replace(typographyRegex, c => TYPOGRAPHY[c]);
 }
-
-// ---- desloppify's line processors. Each takes a line and returns it changed, or undefined to drop it. ----
 
 const SMART_QUOTE_REPLACEMENTS = { '‘': '\'', '’': '\'', '“': '"', '”': '"', '«': '"', '»': '"' };
 const FIELD_NAME_REPLACEMENTS = { tall: 'Height', 'nick name': 'Nickname', character: 'Name' };
@@ -140,7 +129,6 @@ const LINE_PROCESSORS = {
     'Strip Trailing Semicolon': line => line.replace(/\s*;\s*$/, ''),
     'Remove Bold and Italics Around Dialogue': line => line.replace(/([*]+)"(.+?)"\1$/, '"$2"'),
     'Replace Character Field Name With Name': line => line.replace(/^\s*{{char}}'?s?\s*:/, 'Name:'),
-    // desloppify's `/[’]g/` only matched `’g`: every smart quote it lists is meant.
     'Replace Smart Quotes': line => line.replace(/[‘’“”«»]/g, match => SMART_QUOTE_REPLACEMENTS[match] ?? match),
     'Replace Hyphens': line => line.replace(/[–—−―‑‒⁃]/g, '-'),
     'Replace Bullet Points': line => line.replace(/^(\s*)[•]\s*/, '$1- '),
@@ -153,14 +141,12 @@ const LINE_PROCESSORS = {
     'Remove Species: Human': line => (/^\s*species:\s*human(?:[/\w]*)\s*$/i.test(line) ? undefined : line),
 };
 
-/** desloppify's passes over the whole text rather than single lines. */
 const WHOLE_TEXT = {
     'Inject Newlines Between Fields': text => text.replace(/(?<=[)]) (Name|Personality|Description|Body|Clothes|Clothing|Outfit|Likes|Dislikes|Way|Sexuality)/gi, '\n$1'),
     'Strip Surrounding Whitespace': text => text.replace(/^\s+|\s+$/g, ''),
     'Collapse Adjacent Newlines': text => text.replace(/\s*\n\s*\n\s*\n\s*/g, '\n\n'),
 };
 
-/** Processors that rely on a card's structure: `Name:`-style fields, W++, `{{char}}`, instructions to the model. */
 const CHARACTER_DEFINITION = new Set([
     'Remove Preset Instructions', 'Remove W++', 'Normalize Field Names', 'Strip {{char}} Field Prefix',
     'Strip \'Character\' Field Prefix', 'Capitalize Field Names', 'Use Sentence Case', 'Remove Narration Instructions',
@@ -168,7 +154,6 @@ const CHARACTER_DEFINITION = new Set([
     'Remove Species: Human', 'Inject Newlines Between Fields',
 ]);
 
-/** desloppify's default order. */
 const DEFAULT_ORDER = [
     'Remove W++', 'Normalize Field Names', 'Replace Character Field Name With Name', 'Human Readable Field Name',
     'Strip {{char}} Field Prefix', 'Strip \'Character\' Field Prefix', 'Capitalize Field Names', 'Use Sentence Case',
@@ -196,8 +181,6 @@ function processorRun(name) {
 }
 
 /**
- * The same as running desloppify with its defaults: the line processors run line by line, each line through all of
- * them in order, then the whole-text passes.
  * @param {string} text
  * @param {PresetContext} context
  */

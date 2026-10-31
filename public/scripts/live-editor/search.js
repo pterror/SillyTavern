@@ -1,6 +1,3 @@
-// Find and replace in the editor, and named presets and preset lists of regex replacements, saved per user on the
-// server (separate from the Regex extension's scripts).
-
 import { state as cmState, view as cmView, search as cmSearch } from '../../live-editor-lib.js';
 import { getRequestHeaders } from '../../script.js';
 import { t } from '../i18n.js';
@@ -19,16 +16,15 @@ const { search, searchKeymap, getSearchQuery } = cmSearch;
 
 /**
  * @typedef {object} SearchOptions
- * @property {BuiltinPreset[]} [builtins] Presets that come with the app (ids start with `builtin:`); the app's own by
- *   default.
- * @property {() => PresetContext} [context] What code presets may need, such as the character's name.
+ * @property {BuiltinPreset[]} [builtins]
+ * @property {() => PresetContext} [context]
  */
 
 const searchOptions = Facet.define({
     combine: values => values[0] ?? {},
 });
 
-/** @type {{ hash: string | null, presets: RegexPreset[], lists: PresetList[] }} The user's presets, as last read. */
+/** @type {{ hash: string | null, presets: RegexPreset[], lists: PresetList[] }} */
 const cache = { hash: null, presets: [], lists: [] };
 
 /**
@@ -46,7 +42,6 @@ async function request(action, body) {
     return data;
 }
 
-/** Reads the user's presets, downloading them only when they changed since the copy held. */
 async function loadPresets() {
     const data = await request('get', { hash: cache.hash });
     if (!data.unchanged) {
@@ -58,7 +53,6 @@ async function loadPresets() {
 }
 
 /**
- * The smallest change that turns `from` into `to`, so a run keeps the cursor and undo history where nothing changed.
  * @param {string} from
  * @param {string} to
  */
@@ -86,10 +80,9 @@ function regexRun(preset) {
 }
 
 /**
- * Runs transforms over the editor's text as one change (one undo). Nothing changes, nothing is written.
  * @param {import('@codemirror/view').EditorView} view
  * @param {((text: string) => string)[]} runs
- * @returns {boolean} Whether the text changed.
+ * @returns {boolean}
  */
 function applyRuns(view, runs) {
     const before = view.state.doc.toString();
@@ -159,7 +152,6 @@ function presetsPanel(view) {
         }
     };
 
-    /** Presets ticked for a new list, in the order ticked. */
     const ticked = [];
     const tick = (/** @type {string} */ id) => {
         const box = document.createElement('input');
@@ -325,7 +317,7 @@ export function liveSearch(options = {}) {
 
 /**
  * @param {import('@codemirror/state').EditorState} state
- * @returns {boolean} Whether this editor has the presets panel.
+ * @returns {boolean}
  */
 export function hasPresets(state) {
     return state.field(presetsOpen, false) !== undefined;

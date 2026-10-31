@@ -2,9 +2,6 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jes
 import path from 'node:path';
 import { Buffer } from 'node:buffer';
 
-// Which characters and groups may have had their tags changed past a client's cursors (/api/tags/assignment-changes),
-// what /api/tags/assign answers, and the event a groups version row raises.
-
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
 /** @type {typeof import('./converted-user.fixture.js')} */
@@ -20,7 +17,6 @@ let baseUrl;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
-// A minimal valid 1x1 transparent PNG, enough for a card to be written into and read back from.
 const BLANK_PNG = Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
     'base64',
@@ -80,7 +76,7 @@ function cardJson(avatar) {
     });
 }
 
-/** @param {string} avatar Written as a card file and a row, as a created character is. */
+/** @param {string} avatar */
 async function seedCharacter(avatar) {
     await fixture.writeCardWithImage(user, avatar, cardJson(avatar), writeCard(BLANK_PNG, cardJson(avatar)));
 }
@@ -97,7 +93,7 @@ async function createTags(ids) {
     }
 }
 
-/** @returns {Promise<{ sinceSeq: number, sinceGroupsVersion: number }>} The cursors a client that is about to read its entities asks from. */
+/** @returns {Promise<{ sinceSeq: number, sinceGroupsVersion: number }>} */
 async function cursors() {
     const { status, body } = await post('/api/tags/manifest');
     expect(status).toBe(200);
@@ -184,14 +180,12 @@ describe('POST /api/tags/assignment-changes', () => {
     });
 
     test('pages at 500 entities, each listed once at its last change, and the cursors reach the end', async () => {
-        // The feed holds one entry per character or group, at its last tag change.
         const characters = Array.from({ length: 550 }, (_, i) => `C${String(i).padStart(3, '0')}.png`);
         for (const id of characters) await seedCharacter(id);
         await seedGroup('1001');
         const since = await cursors();
 
         for (const id of characters) expect((await user.store.lib.tags.assign(id, 't')).result).toBe('ok');
-        // 300 changes of one group: one entry.
         for (let i = 0; i < 150; i++) {
             expect((await user.store.lib.tags.assign('1001', 't')).result).toBe('ok');
             expect(await user.store.lib.tags.unassign('1001', 't')).toBe('ok');
@@ -241,10 +235,8 @@ describe('POST /api/tags/assign answers what it assigned', () => {
         await seedGroup('1001');
         expect((await post('/api/tags/assign', { id: 'Alice.png', tagId: 'a' })).body).toEqual({ result: 'ok', assigned: 'a', reason: null, defined: true });
         expect((await post('/api/tags/assign', { id: '1001', tagId: 'a' })).body).toEqual({ result: 'ok', assigned: 'a', reason: null, defined: true });
-        // Already assigned: still what the entity has.
         expect((await post('/api/tags/assign', { id: 'Alice.png', tagId: 'a' })).body).toEqual({ result: 'ok', assigned: 'a', reason: null, defined: true });
 
-        // An id no stored tag has is assigned all the same.
         expect((await post('/api/tags/assign', { id: 'Alice.png', tagId: 'nobody' })).body).toEqual({ result: 'ok', assigned: 'nobody', reason: null, defined: false });
         expect((await post('/api/tags/for', { ids: ['Alice.png'] })).body).toEqual({ 'Alice.png': ['a', 'nobody'] });
     });

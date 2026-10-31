@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// Bulk favorite is one server action over the selection, not a write from the page's copies: a selected
-// character the page doesn't hold is flipped too, from what the server has stored.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -20,10 +17,9 @@ async function loadApp(page) {
 }
 
 /**
- * Creates a character the page doesn't hold.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @returns {Promise<string>} its avatar key
+ * @returns {Promise<string>}
  */
 async function createUnheldCharacter(page, name) {
     const avatar = await page.evaluate(async (name) => {
@@ -45,7 +41,7 @@ async function createUnheldCharacter(page, name) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
- * @returns {Promise<boolean>} the fav value the server has stored
+ * @returns {Promise<boolean>}
  */
 async function storedFav(page, avatar) {
     return page.evaluate(async (avatar) => {
@@ -57,10 +53,9 @@ async function storedFav(page, avatar) {
 }
 
 /**
- * Runs the bulk favorite action on the given avatars, as the context menu does.
  * @param {import('@playwright/test').Page} page
  * @param {string[]} avatars
- * @returns {Promise<{ url: string, body: any }[]>} the requests sent to /api/characters/fav and /api/characters/bulk/run
+ * @returns {Promise<{ url: string, body: any }[]>}
  */
 async function bulkFavorite(page, avatars) {
     const sent = [];

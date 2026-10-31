@@ -1,18 +1,5 @@
 import { describe, test, expect, jest, beforeEach, beforeAll, afterEach } from '@jest/globals';
 
-// Client callers of the group-writing routes show an error toast when the route fails. The module mocks below are
-// the same ones tests/group-chats-residency.test.js uses to import group-chats.js in node.
-
-// group-chats.js (public/scripts/) pulls in script.js and a wide chunk of the client UI stack, none of which is
-// safely importable in a plain node test env (jQuery/DOM assumptions throughout) - same problem
-// character-repository.test.js solves by mocking at the module boundary. Everything below is mocked the same
-// way: real behavior only where a test needs it (characterRepository, `characters`/`charactersStore`,
-// `onlyUnique`, `power_user`, FILTER_TYPES), inert stand-ins everywhere else.
-
-// group-chats.js has a top-level `jQuery(() => { ... })` DOM-wiring block (pre-existing, not introduced by
-// this change) that runs at module import time regardless of what's mocked above - it needs `jQuery`/`$`/`CSS`
-// globals to exist so the import itself doesn't throw. A Proxy-based infinite-chainable stands in for jQuery's
-// chaining API ($(...).on(...).fadeIn(...) etc.) since nothing under test here depends on it doing anything.
 function makeChainable() {
     const target = () => makeChainable();
     return new Proxy(target, {
@@ -28,11 +15,6 @@ if (typeof global.document === 'undefined') global.document = {};
 const existsMock = jest.fn();
 const getManyMock = jest.fn();
 
-// `characters` is a single stable array reference, mutated in place (never reassigned) - jest's ESM module
-// mocking snapshots a plain exported property's value at mock-factory-eval time rather than exposing a true
-// live getter, so reassigning this binding (`characters = []`) in beforeEach would silently orphan
-// group-chats.js's already-bound reference to the old (now-stale, forever-empty) array. Mutating in place keeps
-// both sides pointing at the same object.
 /** @type {{avatar: string, name: string}[]} */
 const characters = [];
 /** @type {Map<string, {avatar: string, name: string}>} */
@@ -69,9 +51,6 @@ jest.unstable_mockModule('../public/scripts/random-sort.js', () => ({
     compareByRandomSeed: () => 0,
 }));
 
-// buildCharacterQuery/isServerQueryableSort/CharacterQueryError/isInvalidSortFieldError are re-implemented
-// minimally here (they're pure, and the real versions live in character-repository.js which itself depends on
-// script.js).
 const queryAllMock = jest.fn();
 
 class CharacterQueryError extends Error {
@@ -96,14 +75,11 @@ jest.unstable_mockModule('../public/scripts/character-repository.js', () => ({
         else if (sortField) sort = { field: sortField, order: sortOrder };
         return { filter, sort };
     },
-    // Mirrors the real function's current contract (character-repository.js): true for everything except
-    // 'search' - the client no longer pre-validates individual column names against a hand-maintained list.
     isServerQueryableSort: (sortField) => sortField !== 'search',
     CharacterQueryError,
     isInvalidSortFieldError: (error) => error instanceof CharacterQueryError && error.reason === 'invalid-sort-field',
 }));
 
-// group-chats.js re-exports upstream's saveGroupChat() from the compat save, whose own imports aren't mocked here.
 jest.unstable_mockModule('../public/scripts/chat-compat-save.js', () => ({ saveGroupChat: jest.fn() }));
 jest.unstable_mockModule('../public/script.js', () => ({
     _snapshotMessages: jest.fn(),
@@ -193,7 +169,6 @@ jest.unstable_mockModule('../public/scripts/request-headers.js', () => ({
 }));
 
 jest.unstable_mockModule('../public/scripts/character-store.js', () => {
-    // The real resolveCharacterRef, resolveCharacterRefPair and CHARACTER_REF_MISMATCH over this mock's stores.
     const CHARACTER_REF_MISMATCH = Symbol('CHARACTER_REF_MISMATCH');
     const resolveCharacterRef = (ref) => {
         const upstreamHit = characters[ref];

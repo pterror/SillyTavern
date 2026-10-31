@@ -56,7 +56,6 @@ test.describe('deleting assistant messages with tool calls', () => {
             await newAssistantChat({ temporary: true });
             await addMessages();
             document.querySelector('#option_delete_mes').click();
-            // Delete mode opens after the menu animation; a message click only selects once its checkbox shows.
             const lastMessage = window['$'](`.mes[mesid="${chat.length - 1}"]`);
             while (!lastMessage.children('.del_checkbox').is(':visible')) {
                 await new Promise(resolve => setTimeout(resolve, 10));

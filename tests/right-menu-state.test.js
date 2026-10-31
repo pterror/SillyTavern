@@ -36,8 +36,6 @@ describe('openRightMenu / isRightMenuOpen', () => {
 
 describe('decoupling from visibility (the actual point of this module)', () => {
     test('opening one menu does not close another that was already open', () => {
-        // This is the behavior selectRightMenuWithAnimation() relies on: switching which menu is
-        // *visible* must not implicitly close whichever menu was open before.
         openRightMenu('rm_ch_create_block');
         openRightMenu('rm_characters_block');
         expect(isRightMenuOpen('rm_ch_create_block')).toBe(true);

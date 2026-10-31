@@ -6,14 +6,9 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// A generated reply that opens with a reasoning block (auto-parse on) is stored by the server with the block split
-// off: `mes` is the answer and `extra.reasoning` the reasoning. The page shows what was stored, so the chat reopened
-// still shows the reasoning as a reasoning block, not as raw text in the message.
-
 const MODEL = 'reasoning-stored-model';
 
 /**
- * A mock llama.cpp server answering every completion with `reply`, streamed in small pieces or whole.
  * @param {() => string} reply
  */
 function startLlamaCpp(reply) {
@@ -39,7 +34,6 @@ function startLlamaCpp(reply) {
                 }
                 res.writeHead(200, { 'Content-Type': 'text/event-stream' });
                 (async () => {
-                    // Pieces that cut through the prefix and suffix, as a real stream does.
                     for (let i = 0; i < text.length; i += 5) {
                         res.write(`data: ${JSON.stringify({ content: text.slice(i, i + 5), stop: false })}\n\n`);
                         await new Promise(resolve => setTimeout(resolve, 5));
@@ -112,7 +106,6 @@ async function connectLlamaCpp(page, url) {
 }
 
 /**
- * Turns reasoning auto-parse on with this prefix and suffix, through the settings' own fields (which save them).
  * @param {import('@playwright/test').Page} page
  * @param {{prefix: string, suffix: string}} format
  */
@@ -130,7 +123,6 @@ async function setReasoningFormat(page, { prefix, suffix }) {
 }
 
 /**
- * The last reply as the page has it, as it is drawn, and as the server stored it.
  * @param {import('@playwright/test').Page} page
  */
 function lastReply(page) {
@@ -179,7 +171,6 @@ for (const streaming of [true, false]) {
                 await setReasoningFormat(page, format);
                 // @ts-ignore
                 await page.evaluate((streaming) => { SillyTavern.getContext().textCompletionSettings.streaming = streaming; }, streaming);
-                // The server reads the backend and the reasoning format from the saved settings; give the saves time to land.
                 await page.waitForTimeout(2500);
 
                 await chatBox(page).fill(`How far is it ${stamp}?`);
@@ -202,7 +193,6 @@ for (const streaming of [true, false]) {
                 };
                 await expect.poll(() => lastReply(page), { timeout: 10000 }).toEqual(want);
 
-                // Away to another character and back: the chat is drawn from what the server stored.
                 const other = await createCharacter(page, `Other-${stamp}`);
                 await openCharacter(page, other);
                 await openCharacter(page, avatar);

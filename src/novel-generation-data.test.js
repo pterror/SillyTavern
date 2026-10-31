@@ -2,11 +2,6 @@ import assert from 'node:assert';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// novel-generation-data.js imports src/tokenizer-resolve.js, which statically imports
-// src/endpoints/tokenizers.js - that module pulls in code (e.g. src/endpoints/secrets.js) that
-// reads process-wide config at MODULE IMPORT time. The config path must be set before that import
-// chain runs, so both modules are imported dynamically here, after setConfigFilePath() - same
-// approach as src/tokenizer-resolve.test.js.
 import { setConfigFilePath } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -22,8 +17,6 @@ const {
     createNovelGenerationData,
 } = await import('./novel-generation-data.js');
 
-/** Simple fake encoder: maps each character to its char code. Synchronous, on purpose - see the
- * module doc comment's note that encodeTokens tolerates either sync or async encoders. */
 function fakeEncodeTokens(tokenizerType, text) {
     return Array.from(text).map(c => c.charCodeAt(0));
 }
@@ -49,8 +42,6 @@ function test(name, fn) {
     tests.push(() => run(name, fn));
 }
 
-// --- selectPrefix ---
-
 test('selectPrefix: new model (clio) without } in tail -> selectedPrefix', () => {
     const finalPrompt = 'Just a normal prompt with no brackets at all.';
     assert.strictEqual(selectPrefix('my_prefix', finalPrompt, 'clio-v1'), 'my_prefix');
@@ -73,15 +64,11 @@ test('selectPrefix: older/non-new model always -> vanilla, regardless of } or pr
     assert.strictEqual(selectPrefix('my_prefix', finalPromptWithoutBrace, 'sigurd-v1'), 'vanilla');
 });
 
-// --- getBadWordPermutations ---
-
 test('getBadWordPermutations: generates case/leading-space variants', () => {
     const result = getBadWordPermutations('foo');
     const expected = ['foo', ' foo', 'Foo', ' Foo', 'foo', ' foo', 'FOO', ' FOO', 'foo', ' foo'].filter((v, i, a) => a.indexOf(v) === i);
     assert.deepStrictEqual(result, expected);
 });
-
-// --- getBadWordIds ---
 
 test('getBadWordIds: {verbatim} format tokenizes the inner text as-is', async () => {
     const result = await getBadWordIds('{abc}', tokenizers.NERD, fakeEncodeTokens);
@@ -106,8 +93,6 @@ test('getBadWordIds: tokenizerType NONE keeps raw ids and lists the lines needin
     assert.deepStrictEqual(result, [[1, 2, 3]]);
     assert.deepStrictEqual(dropped, ['{abc}', 'ab']);
 });
-
-// --- calculateNovelLogitBias ---
 
 test('calculateNovelLogitBias: empty/missing entries -> []', async () => {
     assert.deepStrictEqual(await calculateNovelLogitBias([], tokenizers.NERD, fakeEncodeTokens), []);
@@ -142,8 +127,6 @@ test('calculateNovelLogitBias: tokenizerType NONE keeps raw ids and lists the en
     assert.deepStrictEqual(dropped, ['{ab}', 'ab']);
 });
 
-// --- getNovelMaxResponseTokens ---
-
 test('getNovelMaxResponseTokens: tier 1 -> 150', () => {
     assert.strictEqual(getNovelMaxResponseTokens(1), 150);
 });
@@ -161,8 +144,6 @@ test('getNovelMaxResponseTokens: unset/unrecognized tier -> maximum_output_lengt
     assert.strictEqual(getNovelMaxResponseTokens(99), 150);
 });
 
-// --- createNovelGenerationData: Erato stop-string expansion ---
-
 test('createNovelGenerationData: erato expands \\n-prefixed stop strings into 12 variants', async () => {
     const data = await create({
         finalPrompt: 'hello',
@@ -174,7 +155,7 @@ test('createNovelGenerationData: erato expands \\n-prefixed stop strings into 12
     });
 
     const expectedVariants = [
-        '\nBob:', // original, kept
+        '\nBob:',
         '.\nBob:', '!\nBob:', '?\nBob:', '*\nBob:', '"\nBob:', '_\nBob:',
         '...\nBob:', '."\nBob:', '?"\nBob:', '!"\nBob:', '.*\nBob:', ')\nBob:',
     ];
@@ -198,8 +179,6 @@ test('createNovelGenerationData: erato does not expand non-\\n-prefixed stop str
     assert.deepStrictEqual(decodedStopSequences, ['Bob:']);
 });
 
-// --- createNovelGenerationData: Erato prompt-prefix hack ---
-
 test('createNovelGenerationData: erato prepends the startoftext/reserved-token prefix to the prompt', async () => {
     const data = await create({
         finalPrompt: 'hello world',
@@ -222,14 +201,12 @@ test('createNovelGenerationData: non-erato model does not get the prefix hack', 
     assert.strictEqual(data.input, 'hello world');
 });
 
-// --- createNovelGenerationData: max_length clamping ---
-
 test('createNovelGenerationData: kayra/erato clamp using getNovelMaxResponseTokens (tier-based)', async () => {
     const dataUnderCap = await create({
         finalPrompt: 'hello',
         settings: baseSettings({ model_novel: 'kayra-v1' }),
         maxLength: 100,
-        novelDataTier: 3, // adjustedMaxLength = 250
+        novelDataTier: 3,
         tokenizerType: tokenizers.NERD2,
         encodeTokens: fakeEncodeTokens,
     });
@@ -239,7 +216,7 @@ test('createNovelGenerationData: kayra/erato clamp using getNovelMaxResponseToke
         finalPrompt: 'hello',
         settings: baseSettings({ model_novel: 'kayra-v1' }),
         maxLength: 300,
-        novelDataTier: 3, // adjustedMaxLength = 250
+        novelDataTier: 3,
         tokenizerType: tokenizers.NERD2,
         encodeTokens: fakeEncodeTokens,
     });
@@ -249,7 +226,7 @@ test('createNovelGenerationData: kayra/erato clamp using getNovelMaxResponseToke
         finalPrompt: 'hello',
         settings: baseSettings({ model_novel: 'llama-3-erato-v1' }),
         maxLength: 300,
-        novelDataTier: 1, // adjustedMaxLength = 150
+        novelDataTier: 1,
         tokenizerType: tokenizers.LLAMA3,
         encodeTokens: fakeEncodeTokens,
     });
@@ -261,7 +238,7 @@ test('createNovelGenerationData: clio/other clamp using the static maximum_outpu
         finalPrompt: 'hello',
         settings: baseSettings({ model_novel: 'clio-v1' }),
         maxLength: 100,
-        novelDataTier: 3, // irrelevant for clio - static cap applies
+        novelDataTier: 3,
         tokenizerType: tokenizers.NERD,
         encodeTokens: fakeEncodeTokens,
     });
@@ -277,8 +254,6 @@ test('createNovelGenerationData: clio/other clamp using the static maximum_outpu
     });
     assert.strictEqual(dataOverCap.max_length, 150);
 });
-
-// --- createNovelGenerationData: tokenizerType NONE ---
 
 test('createNovelGenerationData: stop_sequences/bad_words_ids/logit_bias_exp are undefined for tokenizerType NONE, and every entry is listed', async () => {
     const dropped = [];
@@ -334,14 +309,6 @@ test('createNovelGenerationData: stop_sequences/bad_words_ids/logit_bias_exp are
     assert.ok(Array.isArray(data.logit_bias_exp));
 });
 
-/**
- * createNovelGenerationData() always calls getStoppingStrings(), whose instruct-mode branch
- * (src/instruct-template-format.js's getInstructStoppingSequences()) unconditionally reads
- * `instructPreset.enabled` - so every real caller must supply a resolved instructPreset object
- * (same requirement src/kobold-generation-data.js's identical getStoppingStrings() call site has).
- * This helper supplies an empty-but-defined one by default so tests that aren't specifically about
- * stopping strings don't have to repeat that boilerplate.
- */
 function create(params) {
     return createNovelGenerationData({
         ...params,

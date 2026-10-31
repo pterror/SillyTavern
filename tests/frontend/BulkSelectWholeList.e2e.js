@@ -1,11 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// Bulk edit selects over the whole list, not the drawn page: "select all" means every character the list's filter
-// and search match, a shift-click range spans pages, the selection carries over to other pages and is cleared by
-// another search, and each action is one server action over the selection. Bulk convert to persona asks only when a
-// persona already exists, about that character, with a choice for all of them.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -25,7 +20,7 @@ async function loadApp(page) {
  * @param {import('@playwright/test').Page} page
  * @param {string} prefix
  * @param {number} n
- * @returns {Promise<string[]>} the avatars, in name order
+ * @returns {Promise<string[]>}
  */
 async function createCharacters(page, prefix, n) {
     return page.evaluate(async ({ prefix, n }) => {
@@ -43,7 +38,6 @@ async function createCharacters(page, prefix, n) {
 }
 
 /**
- * Shows only these characters (a tag only they carry, as the list's tag filter), five rows a page, in bulk edit mode.
  * @param {import('@playwright/test').Page} page
  * @param {string[]} avatars
  */
@@ -73,7 +67,11 @@ async function showInBulkMode(page, avatars) {
 /** @param {import('@playwright/test').Page} page */
 const selectedRows = page => page.locator('#rm_print_characters_block .character_select.character_selected');
 
-/** @param {import('@playwright/test').Page} page @param {string[]} avatars @returns {Promise<Record<string, boolean>>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string[]} avatars
+ * @returns {Promise<Record<string, boolean>>}
+ */
 async function existing(page, avatars) {
     return page.evaluate(async (avatars) => {
         const { getRequestHeaders } = await import('./script.js');
@@ -82,7 +80,10 @@ async function existing(page, avatars) {
     }, avatars);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
 async function storedFav(page, avatar) {
     return page.evaluate(async (avatar) => {
         const { getRequestHeaders } = await import('./script.js');
@@ -134,7 +135,6 @@ test.describe('bulk edit over the whole list', () => {
         await page.locator(`#rm_print_characters_block .character_select[data-avatar="${end[0]}"]`).click({ modifiers: ['Shift'] });
         await expect(page.locator('#bulkSelectedCount')).toHaveText('~10');
 
-        // The list's own order decides the range, so read which characters sit at positions 1..10 from it.
         const inRange = await page.evaluate(async () => {
             const { characterRepository } = await import('./scripts/character-repository.js');
             const { getCharacterListPageContext } = await import('./scripts/character-list.js');
@@ -171,7 +171,6 @@ test.describe('bulk edit over the whole list', () => {
         const stamp = `BulkPersona${Date.now()}`;
         const avatars = await createCharacters(page, stamp, 5);
         await showInBulkMode(page, avatars);
-        // Two of them are personas already, with a description that must be overwritten.
         await page.evaluate(async (stamp) => {
             const { personaStore } = await import('./scripts/power-user.js');
             for (const i of ['01', '03']) {

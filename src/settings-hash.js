@@ -1,14 +1,9 @@
 import { FIELDS, SERVER_FAMILIES } from '@st/settings/protocol';
 import { getAtPath, getStringHash, setAtPath } from '../public/scripts/hash-utils.js';
 
-/**
- * Settings the server owns now (the new page's), as dotted paths: the background, and the fields of the panel families
- * the new page shows (SERVER_FAMILIES). The old page neither saves them nor counts them in its hash.
- */
 export const SERVER_OWNED_PATHS = ['background', ...FIELDS.filter(field => SERVER_FAMILIES.includes(field.family)).map(field => field.path)];
 
 /**
- * Takes a path away from settings (nothing when it isn't there).
  * @param {Record<string, any>} settings
  * @param {string} path
  */
@@ -24,8 +19,6 @@ function deleteAtPath(settings, path) {
 }
 
 /**
- * A page's write of `value` at `path` with what the server owns under it as the server has it (`current`, the
- * settings it's written over), or null when the path itself is the server's.
  * @param {string} path
  * @param {unknown} value
  * @param {Record<string, unknown>} current
@@ -46,7 +39,6 @@ export function pageWrite(path, value, current) {
 }
 
 /**
- * A page's whole save with what the server owns as the server has it, whatever the page sent for it.
  * @param {Record<string, unknown>} saved
  * @param {Record<string, unknown>} current
  */
@@ -61,9 +53,6 @@ export function withServerOwned(saved, current) {
 }
 
 /**
- * The settings' hash as the page knows them: without what the server owns, which the page neither keeps current nor
- * saves, so a change to it is never a conflict for the page's save. Every route that answers the page a settings hash
- * answers this one.
  * @param {Record<string, unknown>} settings
  */
 export function pageSettingsHash(settings) {
@@ -71,8 +60,6 @@ export function pageSettingsHash(settings) {
 }
 
 /**
- * Settings as the page knows them: without what the server owns. Every hash the page checks a save against (the
- * whole settings' and each key's) is of these.
  * @param {Record<string, unknown>} settings
  */
 export function pageSettings(settings) {

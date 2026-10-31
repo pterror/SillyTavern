@@ -6,15 +6,10 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// Pressing stop on a streaming reply stops the backend too (the server keeps a generation running when the
-// page merely disconnects), and the page ends up showing exactly the reply the server stored.
-
 const MODEL = 'generation-stop-model';
 const PIECES = 40;
 
 /**
- * A mock llama.cpp server whose streamed reply is `pieces` pieces, each followed by a delayMs pause, recording whether its connection
- * was closed before the reply finished.
  * @param {{ delayMs?: number, pieces?: number }} [options]
  */
 function startSlowLlamaCpp({ delayMs = 100, pieces = PIECES } = {}) {
@@ -133,7 +128,6 @@ test.describe('stopping a generation', () => {
             await connectLlamaCpp(page, mock.url);
             // @ts-ignore
             await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = true; });
-            // The server reads the backend from the saved settings; give the save time to land.
             await page.waitForTimeout(2500);
 
             const stopRequests = [];
@@ -153,8 +147,6 @@ test.describe('stopping a generation', () => {
             expect(stopRequests).toHaveLength(1);
             await expect(page.locator('#send_but')).toBeVisible({ timeout: 15000 });
 
-            // The page's reply carries the stored node, its text is the stored text, and the stored path
-            // holds the user message and this one reply: the stopped reply wasn't stored a second time.
             await expect.poll(() => page.evaluate(() => {
                 // @ts-ignore
                 const chat = SillyTavern.getContext().chat;
@@ -194,7 +186,6 @@ test.describe('stopping a generation', () => {
             const avatar = await createCharacter(page, `StopNS-${stamp}`);
             await openCharacter(page, avatar);
             await connectLlamaCpp(page, mock.url);
-            // Stored, not just set on the page: the server builds the request from what's stored.
             await page.evaluate(async () => {
                 // @ts-ignore
                 SillyTavern.getContext().textCompletionSettings.streaming = false;
@@ -202,7 +193,6 @@ test.describe('stopping a generation', () => {
                 await saveSettings('textgenerationwebui_settings');
             });
 
-            // The server answers in full, but the answer is held back from the page until after stop is pressed.
             let serverAnswered = false;
             await page.route('**/api/backends/text-completions/generate', async (route) => {
                 const response = await route.fetch();
@@ -231,7 +221,6 @@ test.describe('stopping a generation', () => {
 
 test.describe('streaming display', () => {
     test('the latest streamed text shows even when no further chunk follows it', async ({ page }) => {
-        // One piece, then a long pause before the stream ends: nothing else arrives to trigger a draw.
         const mock = await startSlowLlamaCpp({ pieces: 1, delayMs: 4000 });
         try {
             await testSetup.awaitST({ page });

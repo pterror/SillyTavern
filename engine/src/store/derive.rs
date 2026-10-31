@@ -1,6 +1,3 @@
-//! The derivation framework: one deriver per record kind, run at commit and at replay by the same code, so
-//! both produce the same entries.
-
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -13,32 +10,23 @@ use crate::keyspace::{Entries, Keyspace, Snapshot};
 use crate::log::Log;
 use crate::log::format::{Kind, Record, Value};
 
-/// Where a record is in the log, and its encoded length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Loc {
     pub pos: u64,
     pub len: u64,
 }
 
-/// Records not yet durable, by position, with their lengths.
 pub type Pending = HashMap<u64, (Record, u64)>;
 
-/// A bulk load's unpublished state below a worker's buffer: the runs it spilled (newest first), and the log
-/// files it laid out from `staged_from` on, kept in `staged_dir` until the load is installed.
 pub struct Staged {
     pub runs: Vec<Arc<Run>>,
     pub cache: Cache,
     pub counts: ReadCounts,
     pub staged_dir: PathBuf,
     pub staged_from: u64,
-    /// Staged records already in hand (`StagedRecords`).
     pub records: Arc<StagedRecords>,
 }
 
-/// A load worker's staged records by position, with their lengths: the ones it derived and the ones it read. A
-/// record's derivation reads the records of its entity before it (a tag assignment its card's name and keys, a
-/// create every text it indexes) and the tags it names; a staged read opens its file and decodes its block from the
-/// start. Up to `budget` encoded bytes are kept, then all are let go at once.
 #[derive(Default)]
 pub struct StagedRecords {
     held: std::sync::Mutex<(Pending, u64)>,
@@ -72,8 +60,6 @@ impl StagedRecords {
     }
 }
 
-/// Unpublished entries, sorted or not. A hashed layer holds keys of the structures listed only, so a scan of
-/// other structures passes it by; one of those reads all of it.
 #[derive(Clone, Copy)]
 pub enum Layer<'a> {
     Sorted(&'a BTreeMap<Vec<u8>, Val>),
@@ -82,17 +68,14 @@ pub enum Layer<'a> {
 
 #[cfg(test)]
 thread_local! {
-    /// Unpublished entries scans on this thread have read from their layers, for the tests.
     pub(super) static LAYER_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// Counts one unpublished entry read from a layer (`LAYER_READS`).
 fn layer_read() {
     #[cfg(test)]
     LAYER_READS.with(|c| c.set(c.get() + 1));
 }
 
-/// The structure a key starts with, or None for a key too short to name one.
 fn structure_of(k: &[u8]) -> Option<u64> {
     let mut at = 0;
     crate::keyspace::val::get_u64(k, &mut at)
@@ -106,7 +89,6 @@ impl<'a> Layer<'a> {
         }
     }
 
-    /// The entries in `[start, end)`, in order, all of them read.
     fn range(&self, start: &[u8], end: &[u8]) -> Vec<(&'a Vec<u8>, &'a Val)> {
         let found = self.entries_in(start, end);
         found.iter().for_each(|_| layer_read());
@@ -121,7 +103,6 @@ impl<'a> Layer<'a> {
                     std::ops::Bound::Excluded(end),
                 ))
                 .collect(),
-            // `[start, end)` spans the structures from start's to end's (any, where a bound names none).
             Layer::Hashed(_, held)
                 if !held.iter().any(|s| {
                     (structure_of(start).unwrap_or(0)..=structure_of(end).unwrap_or(u64::MAX))
@@ -142,42 +123,27 @@ impl<'a> Layer<'a> {
     }
 }
 
-/// What a deriver sees: entries not yet published (newest first: the layers, then a bulk load's spilled runs)
-/// over the keyspace, and records not yet durable over the log.
 pub struct View<'a> {
     pub(super) layers: Vec<Layer<'a>>,
     pub(super) pending: Vec<&'a Pending>,
     pub(super) staged: Option<&'a Staged>,
-    /// A bulk load's: entries shared across partitions that a write would read and rewrite are left alone.
     pub(super) bulk: bool,
     pub(super) ks: &'a Keyspace,
-    /// Reads of published entries go through this snapshot, when there is one (`View::with_snapshot`).
     pub(super) snap: Option<&'a Snapshot<'a>>,
     pub(super) log: &'a Log,
-    /// A commit's reads of published entries and of the log, kept for the rest of its job (`Memo`).
     pub(super) memo: Option<&'a Memo>,
 }
 
-/// Reverse pages by range: the limit read, and what it found (all of the range if fewer).
 type RevPages = HashMap<(Vec<u8>, Vec<u8>), (usize, Vec<(Vec<u8>, Val)>)>;
 
-/// What one job's derivers have read of the published entries and the log, so each is read once per job: a
-/// record's `prepare` and its `derive`, and every record of an entity, read the same entries (its version, its
-/// book, its deletion). The published entries don't change while a job derives (it publishes after its sync) and a
-/// record never changes at its position, so nothing held here goes stale within the job; the job's own writes are
-/// in the layers, which are read first. Holds what the job read, so it is bounded by the job.
 #[derive(Default)]
 pub struct Memo {
-    /// Published values by key (None: no value).
     vals: Mutex<HashMap<Vec<u8>, Option<Val>>>,
-    /// Published reverse pages.
     rev: Mutex<RevPages>,
-    /// Log records by position, with their lengths.
     records: Mutex<HashMap<u64, (Record, u64)>>,
 }
 
 impl View<'_> {
-    /// The unpublished values of `key`, newest first, down to the first that hides the older ones.
     fn unpublished(&self, key: &[u8]) -> Result<Vec<Val>, StoreError> {
         let mut vals = Vec::new();
         for l in &self.layers {
@@ -207,7 +173,6 @@ impl View<'_> {
         Ok(self.get_val(key)?.map(|v| v.into_bytes(key)))
     }
 
-    /// `get`, the value settled (`Val::settled`): a map as its pairs.
     pub fn get_val(&self, key: &[u8]) -> Result<Option<Val>, StoreError> {
         let vals = self.unpublished(key)?;
         let newer = fold(key, vals);
@@ -222,7 +187,6 @@ impl View<'_> {
         Ok(newer.and_then(|v| v.settled(key)))
     }
 
-    /// The published value of `key`, read once per job.
     fn published_val(&self, key: &[u8]) -> Result<Option<Val>, StoreError> {
         if let Some(m) = self.memo
             && let Some(v) = m.vals.lock().unwrap().get(key)
@@ -239,8 +203,6 @@ impl View<'_> {
         Ok(v)
     }
 
-    /// The published reverse page of up to `limit` keys in `[start, end)`, read once per job: a page read before
-    /// serves a smaller limit, or any limit once it held all of the range.
     fn published_rev(
         &self,
         start: &[u8],
@@ -264,8 +226,6 @@ impl View<'_> {
         Ok(found)
     }
 
-    /// The pairs of the map at `key` whose slots are in `[lo, hi)`, removals dropped; with `published` false,
-    /// as if nothing were published. Reads only those slots of maps still being built.
     pub fn map_range(
         &self,
         key: &[u8],
@@ -274,12 +234,9 @@ impl View<'_> {
         published: bool,
     ) -> Result<Vec<(u32, u32)>, StoreError> {
         let mut acc: Vec<(u32, u32)> = Vec::new();
-        // An added map's deltas, summed.
         let mut adds: Vec<(u32, i64)> = Vec::new();
-        // A maxima map's raises, their maximum.
         let mut maxes: Vec<(u32, u32)> = Vec::new();
         let mut base: Option<Option<Vec<u8>>> = None;
-        // Folds one value (newest first) into `acc`; true once it hides everything older.
         let mut take = |v: &Val, acc: &mut Vec<(u32, u32)>| -> bool {
             match v {
                 Val::Map(p) => {
@@ -356,7 +313,6 @@ impl View<'_> {
         Ok(acc)
     }
 
-    /// This view with `layer` over its unpublished entries.
     pub fn with_layer<'b>(&'b self, layer: &'b BTreeMap<Vec<u8>, Val>) -> View<'b> {
         let mut layers = vec![Layer::Sorted(layer)];
         layers.extend(self.layers.iter().copied());
@@ -372,22 +328,18 @@ impl View<'_> {
         }
     }
 
-    /// Whether a bulk load derives through this view (see `bulk`).
     pub fn is_bulk(&self) -> bool {
         self.bulk
     }
 
-    /// A number that changes whenever the published entries may have.
     pub fn published_version(&self) -> u64 {
         self.ks.inserted()
     }
 
-    /// The published value only.
     pub fn get_published(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
         Ok(self.ks.get(key)?)
     }
 
-    /// Up to `limit` keys in `[start, end)` that have values, in order.
     pub fn scan(&self, start: &[u8], end: &[u8], limit: usize) -> Result<Entries, StoreError> {
         Ok(self
             .scan_vals(start, end, limit)?
@@ -399,7 +351,6 @@ impl View<'_> {
             .collect())
     }
 
-    /// `scan`, the values settled (`Val::settled`).
     pub fn scan_vals(
         &self,
         start: &[u8],
@@ -409,9 +360,6 @@ impl View<'_> {
         self.merged(start, end, limit, false)
     }
 
-    /// Each unpublished source's entries in `[start, end)` in scan order (last first when `rev`), newest source
-    /// first: the layers, then a bulk load's spilled runs. A sorted layer is walked in place, so a scan reads only
-    /// as far into a commit's own entries as its page goes.
     #[allow(clippy::type_complexity)]
     fn unpublished_sources<'s>(
         &'s self,
@@ -435,7 +383,6 @@ impl View<'_> {
                         });
                     if rev { Box::new(r.rev()) } else { Box::new(r) }
                 }
-                // A bulk load's search layer: its keys aren't ordered, so its range is sorted here.
                 Layer::Hashed(..) => {
                     let mut v: Vec<_> = layer
                         .range(start, end)
@@ -469,10 +416,6 @@ impl View<'_> {
         Ok(out.into_iter().map(Iterator::peekable).collect())
     }
 
-    /// Up to `limit` keys in `[start, end)` with values (last first when `rev`), the unpublished entries over the
-    /// published. Every source is read only as far as the page needs: the unpublished ones walked in order, the
-    /// published read in pages past the last key taken, so a scan costs its page, not the commit's entries in the
-    /// range.
     fn merged(
         &self,
         start: &[u8],
@@ -481,7 +424,6 @@ impl View<'_> {
         rev: bool,
     ) -> Result<Vec<(Vec<u8>, Val)>, StoreError> {
         let mut sources = self.unpublished_sources(start, end, rev)?;
-        // The published entries not yet taken lie in `[from, to)`.
         let (mut from, mut to) = (start.to_vec(), end.to_vec());
         let mut published: std::collections::VecDeque<(Vec<u8>, Val)> = Default::default();
         let mut published_done = false;
@@ -509,7 +451,6 @@ impl View<'_> {
                 }
                 published.extend(got);
             }
-            // The next unpublished key in scan order.
             let mut next: Option<Vec<u8>> = None;
             for s in sources.iter_mut() {
                 if let Some((k, _)) = s.peek()
@@ -525,7 +466,6 @@ impl View<'_> {
                     published.pop_front().map(|(k, v)| (k, Some(v)))
                 }
                 (_, Some(k)) => {
-                    // Its values, newest first, folded oldest first.
                     let mut vals = Vec::new();
                     for s in sources.iter_mut() {
                         if let Some((_, v)) = s.next_if(|(sk, _)| *sk == k) {
@@ -556,7 +496,6 @@ impl View<'_> {
         Ok(out)
     }
 
-    /// `get` for each of `keys`, reading the published entries' run blocks once for the keys they hold.
     pub fn get_many(&self, keys: &[Vec<u8>]) -> Result<Vec<Option<Vec<u8>>>, StoreError> {
         let mut vals: Vec<Vec<Val>> = Vec::with_capacity(keys.len());
         let mut published: Vec<usize> = Vec::new();
@@ -594,7 +533,6 @@ impl View<'_> {
             .collect())
     }
 
-    /// About how many keys `[start, end)` holds (`Keyspace::estimate`), the unpublished entries counted.
     pub fn estimate(&self, start: &[u8], end: &[u8]) -> Result<f64, StoreError> {
         let mut n = 0.0;
         for layer in &self.layers {
@@ -610,7 +548,6 @@ impl View<'_> {
         })
     }
 
-    /// `scan_vals` last first: up to `limit` keys in `[start, end)` from the last down.
     pub fn scan_vals_rev(
         &self,
         start: &[u8],
@@ -620,8 +557,6 @@ impl View<'_> {
         self.merged(start, end, limit, true)
     }
 
-    /// The records at `positions` (durable or not), in the order given; a log block is decoded once for the ones
-    /// it holds.
     pub fn records(&self, positions: &[u64]) -> Result<Vec<Record>, StoreError> {
         let mut out: Vec<Option<Record>> = vec![None; positions.len()];
         let mut from_log = Vec::new();
@@ -647,7 +582,6 @@ impl View<'_> {
             .collect())
     }
 
-    /// The record at `pos`, durable or not.
     pub fn record(&self, pos: u64) -> Result<(Record, u64), StoreError> {
         for p in &self.pending {
             if let Some((r, len)) = p.get(&pos) {
@@ -677,8 +611,6 @@ impl View<'_> {
     }
 }
 
-/// A structure whose values are only ever `Val::AddMap`s: no other map is written at its keys, which only its
-/// `AddMapKey`s name.
 #[derive(Clone, Copy)]
 pub struct AddMapKind(u64);
 
@@ -691,12 +623,10 @@ impl AddMapKind {
         self.0
     }
 
-    /// The prefix of every key of this structure.
     pub fn prefix(self) -> Vec<u8> {
         super::kinds::key::of(self.0)
     }
 
-    /// The key of this structure with `parts` (its components) after the structure's id.
     pub fn key(self, parts: impl FnOnce(&mut Vec<u8>)) -> AddMapKey {
         let mut k = super::kinds::key::of(self.0);
         parts(&mut k);
@@ -704,7 +634,6 @@ impl AddMapKind {
     }
 }
 
-/// A key of an `AddMapKind`: `Out::add_map` and `Out::del` take it, the other writers don't.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AddMapKey(Vec<u8>);
 
@@ -716,7 +645,6 @@ impl AddMapKey {
 }
 
 impl AddMapKey {
-    /// The key's bytes, for a bulk load's sink, which writes only `Val::AddMap`s at them.
     pub(super) fn into_raw(self) -> Vec<u8> {
         self.0
     }
@@ -728,7 +656,6 @@ mod sealed {
     }
 }
 
-/// A key `Out::del` takes: any key, an `AddMapKey` included.
 pub trait DelKey: sealed::Key {}
 
 impl sealed::Key for Vec<u8> {
@@ -745,13 +672,11 @@ impl sealed::Key for AddMapKey {
 }
 impl DelKey for AddMapKey {}
 
-/// The entries a deriver produces, in order.
 #[derive(Default)]
 pub struct Out {
     pub entries: Vec<(Vec<u8>, Val)>,
 }
 
-/// Entries derivers have produced, by the structure their key is in (the key's first `u64`, below 256).
 #[cfg(feature = "measure")]
 pub static PRODUCED: [std::sync::atomic::AtomicU64; 256] =
     [const { std::sync::atomic::AtomicU64::new(0) }; 256];
@@ -783,29 +708,24 @@ impl Out {
         self.push(key, Val::Max(n));
     }
 
-    /// Raises slots of the key's map (`Val::MaxMap`).
     pub fn max_map(&mut self, key: Vec<u8>, pairs: Vec<(u32, u32)>) {
         self.push(key, Val::MaxMap(pairs));
     }
 
-    /// Sets slots of the key's map (`Val::Map`).
     pub fn map(&mut self, key: Vec<u8>, pairs: Vec<(u32, u32)>) {
         self.push(key, Val::Map(pairs));
     }
 
-    /// Adds to slots of the key's map (`Val::AddMap`): (slot, delta) pairs sorted by slot, no delta 0.
     pub fn add_map(&mut self, key: AddMapKey, pairs: Vec<(u32, i64)>) {
         self.push(key.0, Val::AddMap(pairs));
     }
 
-    /// Applies the entries over `layer`.
     pub fn apply(self, layer: &mut BTreeMap<Vec<u8>, Val>) {
         for (k, v) in self.entries {
             apply(layer, k, v);
         }
     }
 
-    /// Applies the entries over `sorted`, or over `hashed` for the keys `hashed_key` picks.
     pub fn apply_split(
         self,
         sorted: &mut BTreeMap<Vec<u8>, Val>,
@@ -830,9 +750,6 @@ impl Out {
     }
 }
 
-/// Applies `v` over `layer`'s entry for `k`. A key of a structure whose keys are put at most once
-/// (`key::written_once`) that is put and deleted within the same layer never existed outside it, so the delete
-/// removes the entry rather than leaving a deletion to be flushed.
 pub fn apply(layer: &mut BTreeMap<Vec<u8>, Val>, k: Vec<u8>, v: Val) {
     match layer.get_mut(&k) {
         Some(Val::Put(_)) if matches!(v, Val::Del) && super::kinds::key::written_once(&k) => {
@@ -848,29 +765,19 @@ pub fn apply(layer: &mut BTreeMap<Vec<u8>, Val>, k: Vec<u8>, v: Val) {
     }
 }
 
-/// What a record kind derives. Every method sees the state as of just before the record (at commit and at
-/// replay alike), so it must depend on nothing else.
 pub trait Deriver: Sync {
-    /// At commit only, before the record is logged: the record to log for it, or a refusal.
     fn prepare(&self, rec: Record, _view: &View) -> Result<Record, StoreError> {
         Ok(rec)
     }
 
-    /// At commit only, in place of `prepare`: the records to log for this one, in order, each derived after the one
-    /// before (by default `prepare`'s one).
     fn expand(&self, rec: Record, view: &View) -> Result<Vec<Record>, StoreError> {
         Ok(vec![self.prepare(rec, view)?])
     }
 
-    /// Whether `prepare` (or `expand`) may change the record. A bulk load lays its records out before deriving any,
-    /// so it takes only kinds that it can't.
     fn prepares(&self) -> bool {
         false
     }
 
-    /// The record's partition: every entry `derive` reads, and every entry it writes that isn't a counter, a
-    /// maximum or a map slot of its own partition's, belongs to records of the same partition. So a bulk load
-    /// derives each partition's records in order on one thread, and partitions in parallel.
     fn partition(&self, rec: &Record) -> u64 {
         match rec.values.first() {
             Some(Value::Id(v) | Value::UInt(v)) => *v,
@@ -878,13 +785,10 @@ pub trait Deriver: Sync {
         }
     }
 
-    /// The entries for the record at `at`.
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError>;
 
-    /// Whether an entry points at the record at `pos`; a record nothing points at is dropped by cleaning.
     fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError>;
 
-    /// The entries that point the record's entries at its copy at `to` instead of at `from`.
     fn repoint(
         &self,
         rec: &Record,
@@ -895,7 +799,6 @@ pub trait Deriver: Sync {
     ) -> Result<(), StoreError>;
 }
 
-/// A kind with no deriver yet: it derives nothing and is kept by cleaning.
 struct Kept;
 
 impl Deriver for Kept {

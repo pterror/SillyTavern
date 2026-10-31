@@ -6,7 +6,6 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 }
 
 /**
- * APP_READY auto-fires, so this listener runs even when added after the emit.
  * @param {import('@playwright/test').Page} page
  */
 async function markAppReady(page) {
@@ -34,9 +33,7 @@ test.describe('character residency failure at boot', () => {
     });
 
     test('a /changes request that never answers still reaches APP_READY, with the toast shown', async ({ page }) => {
-        // Faked, so the per-request timeouts and retry delays can be run through instead of waited out.
         await page.clock.install();
-        // Never fulfilled, aborted or continued: the request is held open.
         await page.route('**/api/characters/changes', () => {});
         await testSetup.awaitST({ page });
         await markAppReady(page);

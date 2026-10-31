@@ -1,17 +1,9 @@
 import process from 'node:process';
 
-/**
- * Native directory watching plus overflow/drop detection, so callers can trigger an immediate reconcile instead
- * of waiting for the next backstop pass. Linux uses inotify-remastered-plus as the primary event source with a
- * real IN_Q_OVERFLOW signal; Windows detects overflow via `filename === null` on the ordinary fs.watch()
- * callback; macOS isn't implemented (no native binding dispatched, callers get `null`).
- */
-
 /** @type {Promise<null | { Inotify: any }> | null} */
 let inotifyModulePromise = null;
 
 /**
- * Loaded dynamically (not a static import) since the native binding isn't installed on non-Linux platforms.
  * @returns {Promise<null | { Inotify: any }>}
  */
 function loadInotifyModule() {
@@ -25,11 +17,9 @@ function loadInotifyModule() {
 }
 
 /**
- * Attaches inotify-remastered-plus on `dir` as the primary event source: `onEvent` fires per raw event
- * (unfiltered, like fs.watch()), `onOverflow` fires on the kernel's IN_Q_OVERFLOW signal.
  * @param {string} dir
  * @param {{ onEvent: (filename: string) => void, onOverflow: () => void }} handlers
- * @returns {Promise<{ close: () => void } | null>} `null` if unavailable — caller should fall back to fs.watch().
+ * @returns {Promise<{ close: () => void } | null>}
  */
 export async function attachLinuxDirectoryWatch(dir, { onEvent, onOverflow }) {
     if (process.platform !== 'linux') return null;
@@ -53,7 +43,6 @@ export async function attachLinuxDirectoryWatch(dir, { onEvent, onOverflow }) {
             path: dir,
             watch_for: watchFor,
             callback: (event) => {
-                // No `name` means a self-watch event (e.g. IN_IGNORED on teardown), not a file change.
                 if (!event || !event.name) return;
                 try {
                     onEvent(event.name);
@@ -75,7 +64,6 @@ export async function attachLinuxDirectoryWatch(dir, { onEvent, onOverflow }) {
 }
 
 /**
- * Windows ReadDirectoryChangesW overflow surfaces as `filename === null` on the ordinary fs.watch() callback.
  * @param {string | null} filename
  * @returns {boolean}
  */

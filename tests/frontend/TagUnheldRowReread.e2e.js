@@ -1,10 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// A character row on screen whose character the page doesn't hold takes in tag changes made elsewhere: an
-// assignment, and a tag deleted with a merge. The test makes the character after the page has loaded and keeps the
-// page from hearing of it, so only its row has it.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -35,10 +31,9 @@ async function api(page, path, body = {}) {
 }
 
 /**
- * Creates a character the page doesn't hold.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @returns {Promise<string>} its avatar key
+ * @returns {Promise<string>}
  */
 async function createUnheldCharacter(page, name) {
     return page.evaluate(async (name) => {
@@ -51,12 +46,15 @@ async function createUnheldCharacter(page, name) {
     }, name);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} id @param {string} name */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} id
+ * @param {string} name
+ */
 async function createTag(page, id, name) {
     await api(page, '/api/tags/create', { tag: { id, name, folder_type: 'NONE', is_hidden_on_character_card: false, color: '', color2: '', create_date: 1 } });
 }
 
-/** What a character change message on the changes stream runs. */
 async function takeInEntityTagChanges(page) {
     await page.evaluate(async () => {
         const { onEntityTagsChanged } = await import('./scripts/tags.js');
@@ -95,7 +93,6 @@ test.describe('a tag drawn without its definition', () => {
 test.describe('a row on screen the page does not hold', () => {
     test('shows a tag put on it elsewhere, and the merge target of a tag deleted elsewhere', async ({ page }) => {
         await loadApp(page);
-        // The page doesn't hear of the character itself, only of tag changes.
         await page.route('**/api/characters/changes', route => route.fulfill({ status: 500 }));
         const stamp = `${Date.now()}`;
         const name = `0000 TagRowUnheld ${stamp}`;

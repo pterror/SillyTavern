@@ -1,14 +1,11 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, setStackedDrawers } from './frontent-test-utils.js';
 
-// NixOS host: the Playwright-managed Chromium download is missing system libs.
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
 /**
- * Creates and opens a throwaway character with enough tags that the collapsed preview row has
- * real height.
  * @param {import('@playwright/test').Page} page
  */
 async function openCharacterWithTags(page) {
@@ -17,10 +14,7 @@ async function openCharacterWithTags(page) {
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button_label').click();
-    // Creating a character opens it.
     await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
-    // #tagInput counts as visible even in a closed panel, so wait for the selection itself: typing sooner is undone
-    // when the form is filled with the selected character.
     await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
     await expect(page.locator('#char-info-panel')).toHaveClass(/openDrawer/);
     await page.locator('#tagInput').waitFor({ state: 'visible', timeout: 10000 });
@@ -29,7 +23,6 @@ async function openCharacterWithTags(page) {
     for (const tag of tags) {
         await page.locator('#tagInput').fill('');
         await page.locator('#tagInput').pressSequentially(tag);
-        // Exact text: once an earlier test made these tags, 'eta' also suggests 'theta'.
         await page.locator('.ui-autocomplete .ui-menu-item', { hasText: new RegExp(`^\\s*${tag}\\s*$`) }).first().click();
     }
     await page.locator('#tagInput').fill('');
@@ -62,10 +55,8 @@ async function measure(page) {
 }
 
 /**
- * Hit-tests the middle of the area where the open panel overlaps #creatorInfoWrapper, with the
- * panel itself taken out of hit-testing, so only the clip on what lies underneath decides.
  * @param {import('@playwright/test').Page} page
- * @returns {Promise<boolean>} Whether #creatorInfoWrapper is hit there.
+ * @returns {Promise<boolean>}
  */
 async function underlayHitUnderPanel(page) {
     return page.evaluate(() => {
@@ -129,8 +120,6 @@ test.describe('tags drawer overlay', () => {
                 document.documentElement.style.setProperty('--SmartThemeBlurTintColor', 'rgba(23, 30, 33, 0.01)');
             });
 
-            // Per frame: the panel's visible bottom (from its own clip-path) vs the bottom of the
-            // hole cut into #creatorInfoWrapper, both in viewport coordinates.
             const sampleTransition = () => page.evaluate(() => new Promise(resolve => {
                 const panel = /** @type {HTMLElement} */ (document.querySelector('#tags_div > .inline-drawer-content'));
                 const under = document.getElementById('creatorInfoWrapper');
@@ -162,7 +151,6 @@ test.describe('tags drawer overlay', () => {
 
             for (const samples of [opening, closing]) {
                 const covering = samples.filter(s => s.covering);
-                // The transition must actually have been sampled mid-way, not just its end states.
                 expect(new Set(covering.map(s => Math.round(s.visibleBottom))).size).toBeGreaterThan(2);
                 for (const s of covering) {
                     expect(s.holeBottom).not.toBeNull();
@@ -202,12 +190,8 @@ test.describe('tags drawer overlay, stacked drawers off', () => {
 });
 
 /**
- * Whether character info, the layer under the open suggestion list, has exactly the part the list covers cut out of
- * it. (Read from the cut itself: the list is on top, so hit-testing would find the list either way.)
- * The stack cuts in the animation frame after the list shows, before that frame paints; reading sooner (a script
- * task can run between the list showing and that frame) would see the cut not made yet.
  * @param {import('@playwright/test').Page} page
- * @returns {Promise<boolean | null>} true if cut, false if nothing is cut, null if cut wrongly
+ * @returns {Promise<boolean | null>}
  */
 async function rowCutUnderSuggestions(page) {
     return page.evaluate(async () => {
@@ -229,8 +213,6 @@ async function rowCutUnderSuggestions(page) {
         if (!clip) {
             return false;
         }
-        // After the outer square, each hole (or rounded corner given back) is its points, then back to 0 0. Others can be
-        // there too: whatever else covers character info (a toast).
         const points = clip.replace(/^polygon\(evenodd,\s*/, '').replace(/\)$/, '').split(',').slice(5)
             .map(p => p.trim().split(/\s+/).map(parseFloat));
         const holes = [];
@@ -248,7 +230,6 @@ async function rowCutUnderSuggestions(page) {
 }
 
 /**
- * Opens the suggestion list of #tagInput.
  * @param {import('@playwright/test').Page} page
  */
 async function openSuggestions(page) {
@@ -259,7 +240,6 @@ async function openSuggestions(page) {
 }
 
 /**
- * Closes #tagInput's suggestion list. Not with Escape: that also closes the character info drawer.
  * @param {import('@playwright/test').Page} page
  */
 async function closeSuggestions(page) {

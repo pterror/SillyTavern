@@ -1,8 +1,3 @@
-//! Faults injected into the store's I/O (`crate::faults`) under deterministic simulation (`Executor::simulated`):
-//! a failed or torn write or sync, a full disk, and a crash at every single operation of a workload that commits,
-//! flushes, merges and cleans the log. Every run is a function of its seed and fault point, so a failure replays
-//! exactly (`ST_SIM_SEED`, `ST_FAULT_AT`).
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
@@ -22,7 +17,6 @@ fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
-/// Small enough that a short workload flushes, merges and cleans: every kind of operation gets a fault.
 const SMALL: StoreConfig = StoreConfig {
     log: log::Config {
         block_size: 256,
@@ -48,7 +42,6 @@ fn text(s: &str) -> Vec<u8> {
     wtf8_from_utf16(&s.encode_utf16().collect::<Vec<_>>())
 }
 
-/// What the workload's entities hold: fav and text per entity.
 type State = Vec<(Option<bool>, Option<Vec<u8>>)>;
 
 fn read_state(s: &Store) -> StoreResult<State> {
@@ -69,22 +62,16 @@ impl Rng {
     }
 }
 
-/// How a run under a fault went.
 struct Run {
-    /// The state after each commit issued, from before the first: `states[k]` is the state after k commits.
     states: Vec<State>,
-    /// Commits acknowledged (they come first; once one fails, none later is).
     acked: usize,
 }
 
-/// Commits, flushes, merges and cleaning in `dir` until `commits` commits or the first refused one; reads are
-/// checked against the acknowledged state as they go. The store is left as a crash would leave it.
 fn workload(dir: &Path, seed: u64, commits: usize) -> Run {
     let mut run = Run {
         states: vec![vec![(None, None); ENTITIES as usize]],
         acked: 0,
     };
-    // A crash unwinds out of the engine (its steps run here, simulated); the store is left unclosed.
     crate::faults::catch_crash(|| drive(dir, seed, commits, &mut run));
     run
 }
@@ -93,7 +80,6 @@ fn drive(dir: &Path, seed: u64, commits: usize, run: &mut Run) {
     let pool = Pool::simulated(16 << 10, 64 << 10, 2, 2, seed);
     let mut rng = Rng(seed);
     let mut state = run.states[0].clone();
-    // A fault while opening: nothing was committed. Never closed: as the process would leave it.
     let Ok(s) = Store::open_in(dir, SMALL, pool) else {
         return;
     };
@@ -125,7 +111,6 @@ fn drive(dir: &Path, seed: u64, commits: usize, run: &mut Run) {
         match s.commit_wait(recs) {
             Ok(_) => run.acked = i + 1,
             Err(_) => {
-                // G3: nothing later is acknowledged either.
                 let probe = rec("fav", vec![Value::Id(0), Value::Bit(true)]);
                 assert!(
                     s.commit_wait(vec![probe]).is_err(),
@@ -134,7 +119,6 @@ fn drive(dir: &Path, seed: u64, commits: usize, run: &mut Run) {
                 break;
             }
         }
-        // Reads see exactly what was acknowledged, whatever failed underneath.
         if let Ok(now) = read_state(&s) {
             assert!(
                 now == run.states[run.acked],
@@ -157,8 +141,6 @@ fn drive(dir: &Path, seed: u64, commits: usize, run: &mut Run) {
     s.abandon();
 }
 
-/// Reopens `dir` with no faults: it opens, and holds exactly the state after some k commits, k at least the
-/// acknowledged ones and at most the issued ones (whole commits, in order: nothing lost, nothing invented).
 fn check_reopened(dir: &Path, seed: u64, run: &Run, at: &str) {
     let s = Store::open_in(dir, SMALL, Pool::simulated(16 << 10, 64 << 10, 2, 2, seed))
         .unwrap_or_else(|e| panic!("{at}: doesn't reopen: {e}"));
@@ -178,8 +160,6 @@ fn commits() -> usize {
         .unwrap_or(60)
 }
 
-/// The fault points to try out of `ops`: `ST_FAULT_AT` alone, else every one (a long run) up to
-/// `ST_FAULT_POINTS` (default 40) spread evenly.
 fn points(ops: u64) -> Vec<u64> {
     if let Some(n) = std::env::var("ST_FAULT_AT")
         .ok()
@@ -197,7 +177,6 @@ fn points(ops: u64) -> Vec<u64> {
     (0..want).map(|i| 1 + i * ops / want).collect()
 }
 
-/// The operations a fault-free run of `seed` does (the same every time: the run is simulated).
 fn count_ops(seed: u64) -> u64 {
     let dir = temp_dir("count");
     let faults = Faults::install(&dir, None, seed);
@@ -210,7 +189,6 @@ fn count_ops(seed: u64) -> u64 {
     ops
 }
 
-/// Names the fault point a panic happened at (replay it with `ST_SIM_SEED` and `ST_FAULT_AT`).
 struct Named<'a>(&'a str);
 
 impl Drop for Named<'_> {
@@ -242,9 +220,6 @@ fn each_point(fault: Fault, cut: bool) {
     }
 }
 
-/// A store stopped by a failed log write stops cleaning too: each relocation it handed the commit path failed at
-/// once and started the file over, a step loop without end (an engine thread spinning, a log line each time).
-/// Found at seed 2, the 187th operation failing (a log write while a file was being cleaned).
 #[test]
 fn cleaning_stops_with_a_store_stopped_by_a_failed_write() {
     let (seed, n) = (2, 187);
@@ -257,10 +232,6 @@ fn cleaning_stops_with_a_store_stopped_by_a_failed_write() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// G13 measured: opening after a crash that left a full log tail (`LOG_BYTES`, 64 MB, written since the last
-/// flush) to replay. The default configuration, with a buffer budget large enough that only L freezes the buffer,
-/// so the tail reaches its bound. Text values of 10k entities, about 250 bytes each. Prints the time; run by hand:
-/// `cargo test --release --lib -- --ignored opening_after_a_crash_with_a_full_log_tail --nocapture`.
 #[test]
 #[ignore]
 fn opening_after_a_crash_with_a_full_log_tail() {
@@ -312,14 +283,11 @@ fn opening_after_a_crash_with_a_full_log_tail() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// A crash at any operation: then nothing more reaches the disk, and what wasn't synced may be cut anywhere.
 #[test]
 fn a_crash_at_any_operation_loses_no_acknowledged_commit_and_invents_nothing() {
     each_point(Fault::Crash, true);
 }
 
-/// A failed write or sync (G3): the commit isn't acknowledged, no later one is, reads keep showing what was;
-/// reopened, the store holds whole commits with every acknowledged one.
 #[test]
 fn a_failed_write_or_sync_stops_commits_and_keeps_what_was_acknowledged() {
     each_point(Fault::Eio, false);
@@ -330,7 +298,6 @@ fn a_full_disk_stops_commits_and_keeps_what_was_acknowledged() {
     each_point(Fault::Enospc, false);
 }
 
-/// A write torn part way, then a crash cutting what wasn't synced.
 #[test]
 fn a_torn_write_then_a_crash_loses_no_acknowledged_commit() {
     each_point(Fault::Torn, true);

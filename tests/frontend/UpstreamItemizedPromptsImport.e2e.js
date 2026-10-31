@@ -8,11 +8,10 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// Upstream's itemized prompts, kept in this browser's SillyTavern_Prompts store by chat id, go onto the messages of
-// the chat the upstream import made for that chat file. A chat's copy here goes once its entries are stored; what
-// can't be placed stays here and is named in a warning.
-
-/** @param {import('@playwright/test').Page} page @param {string} name */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ */
 function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore

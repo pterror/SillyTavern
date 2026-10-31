@@ -47,14 +47,12 @@ afterEach(() => user.close());
 
 const post = (route, body) => fetch(`${baseUrl}${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
-// Tags: two closed folders, one open folder, one plain tag.
 const TAGS = [
     { id: 'closedA', name: 'Closed A', folder_type: 'CLOSED' },
     { id: 'closedB', name: 'Closed B', folder_type: 'CLOSED' },
     { id: 'openC', name: 'Open C', folder_type: 'OPEN' },
     { id: 'plain', name: 'Plain' },
 ];
-// Which tags each character carries; c3 is in both closed folders.
 const CARRIES = {
     'c0.png': [],
     'c1.png': ['closedA'],
@@ -79,7 +77,10 @@ async function seed() {
     }
 }
 
-/** @param {object} filter @param {object} [sort] */
+/**
+ * @param {object} filter
+ * @param {object} [sort]
+ */
 async function listed(filter, sort = { field: 'name', order: 'asc' }) {
     const res = await post('/api/characters/query', { filter: { includeGroups: true, ...filter }, sort, pageSize: 100 });
     expect(res.status).toBe(200);

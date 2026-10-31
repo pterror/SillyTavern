@@ -51,7 +51,6 @@ fn key(i: u64) -> Vec<u8> {
     k
 }
 
-/// As a store's sync step does: publish only once the pool has room.
 fn wait_for_room(pool: &Pool) {
     loop {
         let (active, frozen) = pool.buffered();
@@ -63,14 +62,11 @@ fn wait_for_room(pool: &Pool) {
     }
 }
 
-/// A deterministic stream of puts, deletes and counter adds over 2000 keys; returns the model of what every
-/// key holds after it.
 fn load(ks: &Keyspace, n: u64, model: &mut BTreeMap<Vec<u8>, Vec<u8>>, end: &mut u64) {
     for i in 0..n {
         let k = key(i * 7919 % 2000);
         let (v, m) = match i % 5 {
             0 => (Val::Del, None),
-            // An add only onto a counter or nothing.
             1 => match model.get(&k) {
                 Some(b) if val::counter_value(b).is_none() => {
                     let b = i.to_le_bytes().to_vec();
@@ -107,7 +103,6 @@ fn check(ks: &Keyspace, model: &BTreeMap<Vec<u8>, Vec<u8>>) {
     let all = ks.scan(&key(0), &[8], usize::MAX).unwrap();
     let expect: Vec<(Vec<u8>, Vec<u8>)> = model.clone().into_iter().collect();
     assert_eq!(all, expect);
-    // Pages from every 97th key.
     for i in (0..2000).step_by(97) {
         let page = ks.scan(&key(i), &[8], 10).unwrap();
         let expect: Vec<_> = model
@@ -183,7 +178,6 @@ fn reads_merge_buffers_and_runs_through_flushes_and_merges() {
     assert_eq!(ks.covered(), end);
     ks.stop();
     drop(ks);
-    // Reopened, every value is read back from the runs alone.
     let ks = open(&dir);
     assert_eq!(ks.covered(), end);
     check(&ks, &model);
@@ -197,7 +191,6 @@ fn a_merge_runs_as_many_steps_reads_see_through_it_and_a_stop_part_way_leaves_no
     let ks = open(&dir);
     let mut model = BTreeMap::new();
     let mut end = 0;
-    // Until a merge is seen part way, everything flushed: its entries hold several 4 KB steps.
     let mut seen = false;
     for _ in 0..40 {
         load(&ks, 1500, &mut model, &mut end);
@@ -224,7 +217,6 @@ fn a_merge_runs_as_many_steps_reads_see_through_it_and_a_stop_part_way_leaves_no
         })
         .count();
     assert_eq!(tmps, 0, "a stopped merge left its partial run");
-    // Reopened, the abandoned merge's inputs hold everything; the merge is started again and finishes.
     let ks = open(&dir);
     assert_eq!(ks.covered(), end);
     check(&ks, &model);
@@ -248,7 +240,6 @@ fn runs_left_over_from_a_merge_and_unfinished_runs_are_removed_on_open() {
     ks.stop();
     drop(ks);
     let (lo, hi) = *runs.iter().find(|(lo, hi)| hi > lo).unwrap();
-    // As if the merge's inputs hadn't been removed yet, and a write was cut off.
     for i in lo..=hi {
         fs::write(dir.join(run_name(i, i)), b"anything").unwrap();
     }
@@ -257,7 +248,6 @@ fn runs_left_over_from_a_merge_and_unfinished_runs_are_removed_on_open() {
         b"half",
     )
     .unwrap();
-    // Merges off: tiers are reckoned again after a reopen, so a merge could otherwise follow.
     let ks = open_with(
         &dir,
         KsConfig {
@@ -281,7 +271,6 @@ fn runs_left_over_from_a_merge_and_unfinished_runs_are_removed_on_open() {
 #[test]
 fn a_missing_or_damaged_run_refuses_to_open() {
     let dir = temp_dir("damaged");
-    // Nothing merges: the runs stay one per flush.
     let unmerged = KsConfig {
         fan_in: 1000,
         ..SMALL
@@ -300,7 +289,6 @@ fn a_missing_or_damaged_run_refuses_to_open() {
         .collect();
     names.sort();
     assert!(names.len() >= 3);
-    // Damage in a footer or top block is found on open; in another block, by the read that fetches it.
     let original = fs::read(&names[0]).unwrap();
     for i in [original.len() - 10, original.len() - 70] {
         let mut d = original.clone();
@@ -345,7 +333,6 @@ fn keyspaces_sharing_a_pool_stay_within_its_budget_together() {
     let mut peak = 0;
     for round in 0..40 {
         for (i, ks) in all.iter().enumerate() {
-            // Uneven load: some keyspaces take far more than others.
             load(
                 ks,
                 20 + (i as u64 * 37 + round) % 200,
@@ -356,7 +343,6 @@ fn keyspaces_sharing_a_pool_stay_within_its_budget_together() {
             peak = peak.max(active + frozen);
         }
     }
-    // A batch of inserts may pass 2B by its own entries (in a new chunk) before the next waits.
     assert!(peak <= 2 * (16 << 10) + 64 * 1024, "peak {peak}");
     for (ks, model) in all.iter().zip(&models) {
         check(ks, model);
@@ -384,7 +370,6 @@ fn a_range_estimate_reads_few_blocks_and_comes_near_the_count() {
     );
     let n = 40_000u64;
     let mut end = 0;
-    // Keys in a scattered order, so runs of every flush overlap; a buffer left unflushed holds some too.
     for i in 0..n {
         end += 1;
         wait_for_room(ks.pool());
@@ -431,7 +416,6 @@ fn a_narrow_page_down_reads_few_blocks_in_each_run() {
             ..SMALL
         },
     );
-    // Even keys only, in a scattered order so every run spans the whole range: odd keys are gaps.
     let n = 20_000u64;
     let mut model = BTreeMap::new();
     let mut end = 0;
@@ -466,7 +450,6 @@ fn a_narrow_page_down_reads_few_blocks_in_each_run() {
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
             assert_eq!(got, expect, "[{lo}, {hi})");
-            // Each run: its index levels below the top and the data blocks the range touches.
             assert!(read <= 4 * runs, "[{lo}, {hi}): {read} blocks over {runs} runs");
         }
     }
@@ -521,7 +504,6 @@ fn an_older_buffers_page_reaches_past_the_entries_a_newer_buffer_hides() {
     newer.insert(&key(2), Val::Del, 2, &mem::Readers(&[]));
     let mems = vec![Arc::new(RwLock::new(newer)), Arc::new(RwLock::new(older))];
     let (start, end) = (key(0), key(9));
-    // The newest key is deleted: one live entry of the older buffer must still be in its page, in both directions.
     let rev = buffer_pages(&mems, &start, &end, 1, None, |m, n| {
         m.page_rev(&start, &end, n, None)
     });
@@ -550,7 +532,6 @@ fn a_seek_ahead_lands_where_a_fresh_iterator_starts() {
     let dir = temp_dir("seek");
     fs::create_dir_all(&dir).unwrap();
     let key = |i: u32| format!("k{i:06}").into_bytes();
-    // Two runs, every third key in both: blocks of 256 bytes give each several index levels.
     let mut runs = Vec::new();
     for (r, keep) in [|i: u32| i % 3 != 1, |i: u32| i % 3 != 2].into_iter().enumerate() {
         let path = dir.join(format!("{r}.run"));
@@ -626,7 +607,6 @@ fn added_maps_survive_flushes_merges_and_a_reopen() {
                 Val::Del
             } else {
                 let have = m.get(&slot).copied().unwrap_or(0);
-                // Down by 1 or to 0 when there is something to take, else up.
                 let d: i32 = match (have, n % 3) {
                     (0, _) => (n % 4 + 1) as i32,
                     (h, 0) => -(h as i32),
@@ -655,15 +635,12 @@ fn added_maps_survive_flushes_merges_and_a_reopen() {
     check(&ks, &model);
     ks.stop();
     drop(ks);
-    // Reopened, every map is read back from the runs alone.
     let ks = open(&dir);
     check(&ks, &model);
     drop(ks);
     fs::remove_dir_all(&dir).unwrap();
 }
 
-/// A buffer's map entries that remove every slot fill its page without giving a scan anything: the scan reads on
-/// past the page, and never shows a run's map those entries removed.
 #[test]
 fn removed_maps_in_a_buffer_hide_a_runs_maps_past_a_page_in_every_scan() {
     let dir = temp_dir("removed-maps");
@@ -689,7 +666,6 @@ fn removed_maps_in_a_buffer_hide_a_runs_maps_past_a_page_in_every_scan() {
             names(snap.scan_vals_rev(from, to, n).unwrap()),
         )
     };
-    // Every map removed: nothing, at any page size.
     for i in 0..40u64 {
         end += 1;
         ks.insert([(key(i), Val::Map(vec![(1, 0), (2, 0)]))], Some((end, 1)));
@@ -701,7 +677,6 @@ fn removed_maps_in_a_buffer_hide_a_runs_maps_past_a_page_in_every_scan() {
             "{n}"
         );
     }
-    // Every fifth one back: exactly those, a page at a time, both ways and through a snapshot.
     for i in (0..40u64).step_by(5) {
         end += 1;
         ks.insert([(key(i), Val::Map(vec![(2, 3)]))], Some((end, 1)));
@@ -735,14 +710,8 @@ fn removed_maps_in_a_buffer_hide_a_runs_maps_past_a_page_in_every_scan() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// A buffer's entries that settle to nothing (maps removing slots they never had, as a carrier move's added maps
-/// cancelling out leave) fill its page without giving a scan anything, so the page is cut short of the scan's
-/// limit. Past the page's last key its buffer is unread: the scan reads it again from there whatever the runs hold
-/// beyond that key, whether nothing in either direction or only keys outside the range. A scan gives fewer than its
-/// limit only when the range holds no more.
 #[test]
 fn a_scan_reads_on_past_a_buffers_cut_page_whatever_the_runs_hold_beyond_it() {
-    // The run's keys, all outside the ranges scanned: past their ends, below their starts, or both.
     for outside in [&[100u64][..], &[0, 1], &[0, 1, 100]] {
         let dir = temp_dir("short-page");
         let ks = open(&dir);
@@ -753,7 +722,6 @@ fn a_scan_reads_on_past_a_buffers_cut_page_whatever_the_runs_hold_beyond_it() {
         }
         ks.freeze_at(end);
         ks.wait_flushed().unwrap();
-        // In the buffer: from key 10 on, a map that settles to nothing before each live one.
         let mut live = Vec::new();
         for i in 10..50u64 {
             end += 1;

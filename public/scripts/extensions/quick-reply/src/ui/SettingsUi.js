@@ -189,10 +189,6 @@ export class SettingsUi {
             const qrs = this.currentQrSet;
             // @ts-ignore
             const rgb = evt.detail.rgb;
-            // The picker re-fires 'change' from its own connectedCallback every time this settings
-            // panel is (re)connected to the document - e.g. once when it's first inserted, and again
-            // when moveExtensionContainerIntoTab() relocates it into its tab - echoing the value it
-            // was just set to rather than a user edit. Only a real value change is worth a save.
             if (rgb === qrs.color) return;
             qrs.color = rgb;
             qrs.saveSetProp('color', qrs.color);
@@ -308,7 +304,6 @@ export class SettingsUi {
     }
     async doDeleteQrSet(qrs) {
         await qrs.delete();
-        // QuickReplySet.delete() doesn't remove it from these setLists, so prune manually.
         for (let i = this.settings.config.setList.length - 1; i >= 0; i--) {
             if (this.settings.config.setList[i].set == qrs) {
                 this.settings.config.setList.splice(i, 1);
@@ -360,7 +355,6 @@ export class SettingsUi {
             });
             this.settings.save();
 
-            // Other dropdowns are refreshed via the prepare calls below.
             /** @type {HTMLOptionElement} */
             const option = this.currentSet.querySelector(`#qr--set option[value="${oldName}"]`);
             option.value = newName;
@@ -385,9 +379,6 @@ export class SettingsUi {
                     await this.doDeleteQrSet(oldQrs);
                     const qrs = new QuickReplySet();
                     qrs.name = name;
-                    // Create the (empty) set on the server first, then mint the first entry's id
-                    // remotely against that now-real set, instead of asserting a client-picked id
-                    // and bundling it into the full save. See addQuickReply()'s doc comment.
                     await qrs.performFullSave();
                     await qrs.addQuickReplyRemote();
                     QuickReplySet.list.splice(idx, 0, qrs);
@@ -401,9 +392,6 @@ export class SettingsUi {
             } else {
                 const qrs = new QuickReplySet();
                 qrs.name = name;
-                // Create the (empty) set on the server first, then mint the first entry's id
-                // remotely against that now-real set, instead of asserting a client-picked id
-                // and bundling it into the full save. See addQuickReply()'s doc comment.
                 await qrs.performFullSave();
                 await qrs.addQuickReplyRemote();
                 const idx = QuickReplySet.list.findIndex(it => it.name.toLowerCase().localeCompare(name.toLowerCase()) == 1);

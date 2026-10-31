@@ -1,7 +1,3 @@
-// Paste: what's copied comes in as plain text, as a text box pastes it. After a paste that could have gone in more
-// than one way, a small button at its end shows how it went in and switches it to another way: copied HTML as markdown
-// where markdown can say it and as HTML where it can't, or kept as HTML; a bare URL as an autolink.
-
 import { state as cmState, view as cmView, commands as cmCommands } from '../../live-editor-lib.js';
 import { DOMPurify } from '../../lib.js';
 import { renderMarkdown } from '../marked-processor.js';
@@ -12,7 +8,6 @@ const { EditorView, showTooltip, keymap } = cmView;
 const { invertedEffects } = cmCommands;
 
 const BLOCK_TAGS = new Set(['P', 'DIV', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'UL', 'OL', 'LI', 'BLOCKQUOTE', 'PRE', 'HR', 'TABLE', 'SECTION', 'ARTICLE', 'HEADER', 'FOOTER']);
-/** Inline elements that add nothing markdown would lose; their content is kept. */
 const TRANSPARENT_INLINE = new Set(['SPAN', 'FONT', 'ABBR', 'TIME', 'LABEL']);
 
 /** @param {string} text */
@@ -21,7 +16,6 @@ function escapeInline(text) {
 }
 
 /**
- * Markdown for an element's inline content.
  * @param {Node} node
  * @returns {string}
  */
@@ -66,7 +60,6 @@ function inlineNode(node) {
 }
 
 /**
- * Emphasis around text, with its leading and trailing spaces outside the markers (markdown needs them there).
  * @param {string} marker
  * @param {string} text
  */
@@ -77,7 +70,6 @@ function wrapInline(marker, text) {
 }
 
 /**
- * Markdown for one block element, or null when markdown can't say it.
  * @param {HTMLElement} el
  * @returns {string | null}
  */
@@ -114,8 +106,6 @@ function blockMarkdown(el) {
 }
 
 /**
- * Markdown for a container's children: inline runs become paragraphs, block elements their own markdown, and any
- * block markdown can't say is kept as its HTML.
  * @param {Node} container
  * @returns {string}
  */
@@ -144,13 +134,10 @@ function blocksMarkdown(container) {
 const visibleText = (html) => {
     const div = document.createElement('div');
     div.innerHTML = html;
-    // Whitespace isn't compared: HTML's between elements is invisible, the render's isn't the same whitespace.
     return (div.textContent ?? '').replace(/\s+/g, '');
 };
 
 /**
- * Pasted HTML as text for the field: each block as markdown when rendering that markdown (as chat's markdown does)
- * shows the same text as the HTML did, otherwise as the HTML itself, sanitized as chat sanitizes it.
  * @param {string} html
  * @param {(text: string) => string} render
  * @returns {string}
@@ -194,7 +181,6 @@ const bareUrl = /^(?:https?:\/\/|www\.)\S+$/i;
 
 /** @typedef {'markdown' | 'html' | 'plain'} PasteMode */
 
-/** The ways a paste can go in, in the order the picker lists and the key cycles them; the first is how it goes in. */
 const PASTE_MODES = /** @type {PasteMode[]} */ (['plain', 'markdown', 'html']);
 
 /** @param {PasteMode} mode */
@@ -205,17 +191,15 @@ const modeLabel = (mode) => ({
 })[mode];
 
 /**
- * The paste the picker is for: where it is now, how it went in, and its text in each way it can go in.
  * @typedef {object} PasteChoice
  * @property {number} from
  * @property {number} to
  * @property {PasteMode} mode
- * @property {PasteMode[]} modes The ways this paste can go in, each with its own text.
+ * @property {PasteMode[]} modes
  * @property {Partial<Record<PasteMode, string>>} texts
- * @property {boolean} menu Whether the list of ways is open.
+ * @property {boolean} menu
  */
 
-/** Sets (or, with null, clears) the paste the picker is for. Positions are in the document after the transaction. */
 const setPasteChoice = StateEffect.define({
     map: (/** @type {PasteChoice | null} */ value, mapping) => value && { ...value, from: mapping.mapPos(value.from, -1), to: mapping.mapPos(value.to, 1) },
 });
@@ -227,7 +211,6 @@ const pasteChoiceField = StateField.define({
         for (const effect of tr.effects) {
             if (effect.is(setPasteChoice)) return effect.value;
         }
-        // Any other edit, here or anywhere else, ends the choice: the pasted text may no longer be what was pasted.
         if (tr.docChanged) return null;
         return value;
     },
@@ -249,7 +232,6 @@ function pickerTooltip(choice) {
 }
 
 /**
- * The picker: a small button showing how the paste went in, and, when opened, the ways it can go in.
  * @param {EditorView} view
  * @param {PasteChoice} choice
  * @returns {HTMLElement}
@@ -257,7 +239,6 @@ function pickerTooltip(choice) {
 function pickerDom(view, choice) {
     const dom = document.createElement('div');
     dom.className = 'live-paste-picker';
-    // Clicks here mustn't take focus out of the editor, so typing goes on where it was.
     dom.addEventListener('mousedown', event => event.preventDefault());
 
     const toggle = document.createElement('button');
@@ -295,10 +276,9 @@ function pickerDom(view, choice) {
 }
 
 /**
- * Replaces the pasted text with its text for another way it can go in, as one change (one undo).
  * @param {EditorView} view
  * @param {PasteMode} mode
- * @returns {boolean} Whether there was a paste to switch.
+ * @returns {boolean}
  */
 function switchPasteMode(view, mode) {
     const choice = view.state.field(pasteChoiceField, false);
@@ -328,7 +308,6 @@ function cyclePasteMode(view) {
 }
 
 /**
- * Escape closes the list of ways if it's open, and otherwise puts the picker away (the paste stays as it is).
  * @param {EditorView} view
  * @returns {boolean}
  */
@@ -345,7 +324,7 @@ function dismissPasteChoice(view) {
 /**
  * @param {EditorView} view
  * @param {string} text
- * @param {PasteChoice | null} [choice] The ways this paste could go in, when there's more than one.
+ * @param {PasteChoice | null} [choice]
  */
 function insert(view, text, choice = null) {
     const range = view.state.selection.main;
@@ -359,9 +338,8 @@ function insert(view, text, choice = null) {
 }
 
 /**
- * The picker for a paste, or null when it could only have gone in one way.
  * @param {Partial<Record<PasteMode, string>>} texts
- * @param {PasteMode} mode How it goes in.
+ * @param {PasteMode} mode
  * @returns {PasteChoice | null}
  */
 function choiceFor(texts, mode) {
@@ -377,7 +355,6 @@ function choiceFor(texts, mode) {
 export function livePaste() {
     return [
         pasteChoiceField,
-        // Undo and redo bring back how the paste went in along with its text.
         invertedEffects.of((tr) => {
             /** @type {import('@codemirror/state').StateEffect<PasteChoice | null>[]} */
             const inverted = [];
@@ -413,8 +390,6 @@ export function livePaste() {
                 if (!text) return false;
                 event.preventDefault();
                 const sanitized = DOMPurify.sanitize(html, { WHOLE_DOCUMENT: false }).trim();
-                // As text, as a text box pastes (as markdown only when nothing came as text); the picker puts the
-                // formatting in instead.
                 const mode = plain ? 'plain' : 'markdown';
                 const texts = { markdown: text, html: sanitized, plain };
                 insert(view, texts[mode], choiceFor(texts, mode));

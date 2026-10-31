@@ -1,30 +1,3 @@
-//! A store: the record log (P1) and the derived keyspace (P2) kept in step (design
-//! `.plans/2026-10-03-storage-from-needs.md` 3, 4.1–4.4).
-//!
-//! A store owns no threads: its work runs as activities on the process's engine threads (`keyspace::exec`), one
-//! bounded step per task, so stores take turns. Commits go through two activities. The prepare activity takes
-//! commits in arrival order and, for each, runs its records' derivers against everything before it (published
-//! entries, plus the entries of groups not yet synced), lays the records out in the open group and keeps their
-//! entries with it. The sync activity takes the open group whenever no sync is running, writes and syncs it,
-//! then publishes its entries to the keyspace's buffer and resolves its commits. So derivation of one group
-//! overlaps the sync of the one before, and nothing reads an entry whose record isn't durable.
-//!
-//! Layout: the log's files in the store's directory, the runs in `runs/`.
-//!
-//! Memory: every store opened with `Store::open` shares one `Pool`, so the threads, the buffers (B) and the block
-//! cache (C) are bounded for the process, not per store; `open_in` takes a pool of its own.
-//!
-//! Opening never reads more than the runs' footers and top blocks and the log after the newest run's covered
-//! position: it probes the log's files upward from that position's file, since cleaning removes only files
-//! below it. The prepare activity's first step replays the records after that position into the buffer before taking
-//! any commit; reads of derived data wait for it.
-//!
-//! Cleaning: a log file whose records' dead bytes pass `1 - u` of its size is queued when a flush finds it
-//! there. The clean activity copies its live records (each after a `moved` marker naming where it was) to the log's
-//! end through the commit path, so the copies' entries are repointed in log order like any commit, then
-//! removes the file once the runs cover the log past the copies, so replay never meets a record pointing into
-//! it.
-
 pub mod books;
 pub mod bulk;
 pub mod carriers;
@@ -62,31 +35,23 @@ use crate::keyspace::{Hooks, Keyspace, KsConfig, KsError, Mem};
 use crate::log::format::{FieldRef, Record, Value, kind_by_name};
 use crate::log::{self, Cursor, Layout, Log, LogError, Opened, Start, TailFile, max_commit};
 
-/// An entity's type and key.
 pub type EntityKey = (u64, Vec<u8>);
 
-/// Entities with their tags, and the id to go on from.
 pub type AssignmentsPage = (Vec<(u64, Vec<u64>)>, Option<u64>);
 
-/// A tag's key and status.
 pub type KeyedStatus = (Vec<u8>, TagStatus);
 
-/// A tag's key as a reader names it: the live tag with that key, or the deleted one and where it leads.
 #[derive(Debug, Clone)]
 pub struct TagStatus {
     pub id: u64,
     pub state: TagState,
-    /// A deleted tag's: the key of the live tag its merges lead to.
     pub into: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TagState {
-    /// A defined tag.
     Live,
-    /// A key only assignments name (`tags::DEFINED`).
     Undefined,
-    /// Deleted.
     Gone,
 }
 
@@ -119,16 +84,11 @@ fn tag_status(v: &View, k: &[u8]) -> StoreResult<Option<TagStatus>> {
 
 #[derive(Debug)]
 pub enum StoreError {
-    /// A commit that can't be applied, or a read asked what it can't answer (a search cursor that doesn't fit its
-    /// query); nothing was written.
     Refused(String),
     Log(LogError),
     Ks(KsError),
-    /// A derived entry that doesn't hold what its structure says.
     Entry(String),
-    /// Replay failed; the store serves nothing until reopened.
     Replay(String),
-    /// A write or sync failed; commits fail until the store is reopened.
     Failed(String),
     Closed,
 }
@@ -176,9 +136,7 @@ pub type StoreResult<T> = Result<T, StoreError>;
 pub struct StoreConfig {
     pub log: log::Config,
     pub ks: KsConfig,
-    /// u: a log file is cleaned once less than this fraction of its bytes is live.
     pub live_fraction: f64,
-    /// Bytes of records the cleaner hands the commit path at a time.
     pub relocate_bytes: u64,
 }
 
@@ -198,27 +156,18 @@ impl Default for StoreConfig {
     }
 }
 
-// Provisional, set from measurements at 10^6–10^8 entries: the plan's stage 3 records them and the reasons.
-/// B, shared by every store in the process (`Pool`).
 pub const BUFFER_BYTES: usize = 64 << 20;
-/// L.
 pub const LOG_BYTES: u64 = 64 << 20;
-/// δ.
 pub const FAN_IN: usize = 4;
-/// C, shared by every store in the process.
 pub const CACHE_BYTES: usize = 64 << 20;
 pub const RUN_BLOCK_SIZE: usize = 16 << 10;
-/// u.
 pub const LIVE_FRACTION: f64 = 0.5;
 
-/// The engine's threads for the whole process; how many take only short steps (a lone commit is never stuck behind
-/// busy stores); and how many flushes and merges may hold at once: the rest are always free for commits.
 pub const THREADS: usize = 10;
 pub const FRONT_THREADS: usize = 2;
 pub const FLUSH_SLOTS: usize = 2;
 pub const MERGE_SLOTS: usize = 2;
 
-/// The pool every store opened by `Store::open` shares.
 pub fn global_pool() -> Arc<Pool> {
     static POOL: std::sync::OnceLock<Arc<Pool>> = std::sync::OnceLock::new();
     POOL.get_or_init(|| {
@@ -237,13 +186,10 @@ pub fn global_pool() -> Arc<Pool> {
 pub type CommitDone = Box<dyn FnOnce(StoreResult<Vec<u64>>) + Send>;
 type JobDone = Box<dyn FnOnce(StoreResult<()>) + Send>;
 
-/// Derived entries written in the commit queue without a record, from what every commit before them left;
-/// lost in a crash, as nothing in the log holds them.
 type Derive = Box<dyn FnOnce(&View, &mut Out) -> StoreResult<()> + Send>;
 
 enum Job {
     Commit(Vec<Record>, CommitDone),
-    /// Records of a file being cleaned, with their positions: the live ones are copied to the log's end.
     Relocate(Vec<(u64, Record)>, JobDone),
     Derive(Derive, JobDone),
 }
@@ -269,7 +215,6 @@ impl Done {
     }
 }
 
-/// Commits laid out for one sync, with their entries and records.
 #[derive(Default)]
 struct Group {
     layout: Option<Layout>,
@@ -278,31 +223,23 @@ struct Group {
     records: Pending,
 }
 
-/// The jobs waiting to be prepared, and whether the store takes more.
 struct Jobs {
     queue: VecDeque<Job>,
     closed: bool,
 }
 
 struct Pipe {
-    /// Where the next group starts.
     cursor: Cursor,
     open: Group,
-    /// The group being synced: its entries and records are seen by the prepare activity until published.
     syncing: Option<Group>,
     failed: Option<String>,
-    /// A bulk load holds the log files after the cursor's: groups stay in the cursor's file.
     loading: Option<Loading>,
 }
 
-/// What the commit path keeps while a bulk load runs.
 #[derive(Default)]
 struct Loading {
-    /// Partitions of the records committed meanwhile, checked against the load's when it is installed.
     touched: HashSet<u64>,
-    /// No job is taken while the load is installed.
     installing: bool,
-    /// Entries were derived without a record meanwhile (`Job::Derive`).
     derived: bool,
 }
 
@@ -323,7 +260,6 @@ struct Counters {
     removed_bytes: AtomicU64,
 }
 
-/// Counts kept for measurement.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct StoreStats {
     pub log_rounds: u64,
@@ -335,58 +271,40 @@ pub struct StoreStats {
     pub cleaned_files: u64,
     pub relocated_records: u64,
     pub relocated_bytes: u64,
-    /// Bytes of log files removed after cleaning.
     pub removed_bytes: u64,
 }
 
 struct Inner {
     me: Weak<Inner>,
-    /// The store's directory.
     dir: std::path::PathBuf,
     cfg: StoreConfig,
     log: Log,
     ks: Arc<Keyspace>,
     pipe: Mutex<Pipe>,
-    /// Lock order: `pipe`, then `jobs`, never the other way. Nothing holds `jobs` across a derive, so a submit
-    /// never waits on one.
     jobs: Mutex<Jobs>,
-    /// The tail file's write handle, used by the sync activity only.
     tail: Mutex<TailFile>,
-    /// Replays first, then lays out one job per step.
     prepare_act: Arc<Activity>,
-    /// Writes, syncs and publishes one group per step.
     sync_act: Arc<Activity>,
     clean_act: Arc<Activity>,
-    /// Where replay starts; `replayed` once it has run.
     replay_from: u64,
     replayed: AtomicBool,
     ready: Mutex<Replay>,
     ready_cv: Condvar,
-    /// Held for reading across an entry lookup and the log read it leads to; for writing to remove a file.
     gate: RwLock<()>,
     clean: Mutex<CleanState>,
-    /// Signalled when cleaning's state changes (for `Store::clean`).
     clean_cv: Condvar,
     counters: Counters,
-    /// Search statistics per scope, kept between queries while nothing is published.
     search_stats: crate::search::query::StatsCache,
-    /// Blocks whose maxima a query found too high, each queued once until its job ends (`Inner::tighten`).
     tightening: Mutex<HashSet<crate::search::query::Tighten>>,
-    /// Tests: tightening jobs that wrote something.
     #[cfg(test)]
     tightened: AtomicU64,
-    /// Tag folds (`library::fold_step`): one step queued at a time; `.1` asks for another pass once it ends.
     folding: Mutex<(bool, bool)>,
-    /// Depth rewrites after message moves (`sessions::depth_step`), queued as folds are.
     depthing: Mutex<(bool, bool)>,
     pruning: Mutex<(bool, bool)>,
-    /// Tag carrier moves (`carriers::move_step`) and re-siding (`carriers::reside_step`), queued as folds are.
     moving: Mutex<(bool, bool)>,
     residing: Mutex<(bool, bool)>,
-    /// Tests: carrier moves and re-siding wait while set (`Store::hold_carriers`).
     #[cfg(test)]
     carriers_held: AtomicBool,
-    /// Tests: folds wait while set (`Store::hold_folds`).
     #[cfg(test)]
     folds_held: AtomicBool,
 }
@@ -394,9 +312,7 @@ struct Inner {
 #[derive(Default)]
 struct CleanState {
     stop: bool,
-    /// The file being cleaned and where its next unread record is.
     file: Option<(u64, u64)>,
-    /// A batch of its records is in the commit path.
     relocating: bool,
 }
 
@@ -406,13 +322,10 @@ pub struct Store {
 }
 
 impl Store {
-    /// Opens the store in `dir` (created if missing). Returns before replay; reads wait for it, and commits
-    /// are taken after it.
     pub fn open(dir: &Path, cfg: StoreConfig) -> StoreResult<Store> {
         Store::open_in(dir, cfg, global_pool())
     }
 
-    /// Opens the store in `dir` sharing `pool`'s buffer budget, block cache and flush and merge slots.
     pub fn open_in(dir: &Path, cfg: StoreConfig, pool: Arc<Pool>) -> StoreResult<Store> {
         bulk::recover(dir, &cfg.log)?;
         let ks = Keyspace::open(&dir.join("runs"), cfg.ks, pool)?;
@@ -507,8 +420,6 @@ impl Store {
         })
     }
 
-    /// Commits `records` together: `done` gets each record's position once all are durable and their entries
-    /// published, or the reason none was written.
     pub fn commit(&self, records: Vec<Record>, done: CommitDone) {
         if let Some(r) = records.iter().find(|r| r.kind.internal) {
             return done(Err(StoreError::Refused(format!(
@@ -549,8 +460,6 @@ impl Store {
         self.inner.ks.pool().exec.recv(&rx).unwrap_or(Err(StoreError::Closed))
     }
 
-    /// While replay runs, keeps `f` to run on the replaying engine thread once it ends (however it ends) and
-    /// returns None; after, hands `f` back. `f` must not wait for the engine (a commit, a flush).
     pub fn after_replay(&self, f: Box<dyn FnOnce() + Send>) -> Option<Box<dyn FnOnce() + Send>> {
         match &mut *self.inner.ready.lock().unwrap() {
             Replay::Running(waiting) => {
@@ -561,12 +470,10 @@ impl Store {
         }
     }
 
-    /// Whether the store is closed (`close`).
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
     }
 
-    /// Whether replay is done, without waiting.
     pub fn is_ready(&self) -> StoreResult<bool> {
         match &*self.inner.ready.lock().unwrap() {
             Replay::Running(_) => Ok(false),
@@ -575,7 +482,6 @@ impl Store {
         }
     }
 
-    /// Waits for replay.
     pub fn wait_ready(&self) -> StoreResult<()> {
         self.inner.wait_ready()
     }
@@ -588,12 +494,9 @@ impl Store {
         &self.inner.log
     }
 
-    /// A derived value read: waits for replay, and holds off file removal between finding a position and
-    /// reading it.
     pub(crate) fn derived<T>(&self, f: impl FnOnce(&View) -> StoreResult<T>) -> StoreResult<T> {
         self.inner.wait_ready()?;
         let _g = self.inner.gate.read().unwrap();
-        // Every read of one request sees one state of the keyspace.
         let snap = self.inner.ks.snapshot();
         let view = View {
             layers: Vec::new(),
@@ -618,12 +521,10 @@ impl Store {
         })
     }
 
-    /// A text field's value, WTF-8.
     pub fn text(&self, entity: u64, field: &FieldRef) -> StoreResult<Option<Vec<u8>>> {
         self.derived(|v| kinds::text_value(v, entity, field))
     }
 
-    /// The position of the entity's latest record.
     pub fn version(&self, entity: u64) -> StoreResult<Option<u64>> {
         self.derived(|v| {
             v.get(&key::id(key::VERSION, entity))?
@@ -632,12 +533,10 @@ impl Store {
         })
     }
 
-    /// A page of the library list.
     pub fn library_page(&self, q: &library_read::Query) -> StoreResult<library_read::Page> {
         self.derived(|v| library_read::page(v, q))
     }
 
-    /// A tree's messages searched (`chat_search::messages`).
     pub fn chat_search_messages(
         &self,
         tree: u64,
@@ -661,7 +560,6 @@ impl Store {
         Ok(found)
     }
 
-    /// A tree's chat list searched (`chat_search::chat_list`).
     pub fn chat_search_list(
         &self,
         tree: u64,
@@ -685,16 +583,12 @@ impl Store {
         })
     }
 
-    /// A page of the library list searched (`library_search`).
     pub fn library_search(
         &self,
         q: &library_read::Query,
         clauses: &[crate::search::query::Clause],
         ordered: library_search::Ordered,
     ) -> StoreResult<library_search::Searched> {
-        // A relevance walk that stops at the work limit goes on in a read of its own, from where it stopped, until
-        // the page is known: the limit costs time, never matches. The rest of the walk ranks by the first read's
-        // idfs.
         let mut ordered = ordered;
         let mut partial = None;
         loop {
@@ -721,12 +615,10 @@ impl Store {
         }
     }
 
-    /// Each entity with its values, or None where there is none, in the order asked.
     pub fn library_entities(&self, ids: &[u64]) -> StoreResult<Vec<Option<library_read::Entity>>> {
         self.library_entities_with(ids, None)
     }
 
-    /// Each entity as `library_read::entity_with` reads it, or None where there is none, in the order asked.
     pub fn library_entities_with(
         &self,
         ids: &[u64],
@@ -738,17 +630,14 @@ impl Store {
         })
     }
 
-    /// The defined world book keyed `k`, whole, from one state of the keyspace (`books::world_book`).
     pub fn world_book(&self, k: &[u8]) -> StoreResult<Option<books::BookRead>> {
         self.derived(|v| books::world_book(v, k))
     }
 
-    /// Whether a defined world book is keyed `k` (`books::world_book_exists`).
     pub fn world_book_exists(&self, k: &[u8]) -> StoreResult<bool> {
         self.derived(|v| books::world_book_exists(v, k))
     }
 
-    /// The entity of each (type, key), or None.
     pub fn library_ids(&self, keys: &[(u64, Vec<u8>)]) -> StoreResult<Vec<Option<u64>>> {
         self.derived(|v| {
             keys.iter()
@@ -757,8 +646,6 @@ impl Store {
         })
     }
 
-    /// Entities of a type in key order after `after`, at most `limit`, deleted ones left out
-    /// (`library::entities_of_type`).
     pub fn library_of_type(
         &self,
         kind: u64,
@@ -768,7 +655,6 @@ impl Store {
         self.derived(|v| library::entities_of_type(v, kind, after.as_deref(), limit))
     }
 
-    /// One more than the highest entity id ever created.
     pub fn library_next_id(&self) -> StoreResult<u64> {
         self.derived(|v| {
             Ok(v.get(&key::of(key::NEXT_ENTITY))?
@@ -777,12 +663,10 @@ impl Store {
         })
     }
 
-    /// The entities a card hash finds.
     pub fn library_by_hash(&self, which: u64, hash: &[u8], limit: usize) -> StoreResult<Vec<u64>> {
         self.derived(|v| library_read::by_hash(v, which, hash, limit))
     }
 
-    /// The entities two card hashes both find.
     pub fn library_by_hashes(
         &self,
         a: (u64, &[u8]),
@@ -792,32 +676,26 @@ impl Store {
         self.derived(|v| library_read::by_hashes(v, a, b, limit))
     }
 
-    /// A page of the tag manager's list.
     pub fn tag_page(&self, q: &tags::Query) -> StoreResult<tags::Page> {
         self.derived(|v| tags::page(v, q))
     }
 
-    /// Each tag's carriers and whether the count may be too high (`tags::counts`).
     pub fn tag_counts(&self, ids: &[u64]) -> StoreResult<Vec<(i64, bool)>> {
         self.derived(|v| tags::counts(v, ids))
     }
 
-    /// How many tags are unused, and up to `limit` of them.
     pub fn tag_unused(&self, limit: usize) -> StoreResult<(u64, Vec<u64>)> {
         self.derived(|v| Ok((tags::unused_count(v)?, tags::unused_page(v, limit)?)))
     }
 
-    /// The live tag each name stands for.
     pub fn tag_by_names(&self, names: &[Vec<u8>]) -> StoreResult<Vec<Option<u64>>> {
         self.derived(|v| names.iter().map(|n| tags::by_name(v, n)).collect())
     }
 
-    /// The tag deleted last with each name (as names fold), for a name no live tag has.
     pub fn tag_gone_by_names(&self, names: &[Vec<u8>]) -> StoreResult<Vec<Option<u64>>> {
         self.derived(|v| names.iter().map(|n| tags::gone_by_name(v, n)).collect())
     }
 
-    /// Each tag's cursor in a sort's order (`tags::positions`).
     pub fn tag_positions(
         &self,
         sort: u64,
@@ -826,23 +704,18 @@ impl Store {
         self.derived(|v| tags::positions(v, sort, items))
     }
 
-    /// Queued moves of the manual order after `after`.
     pub fn tag_queue(&self, after: u64, limit: usize) -> StoreResult<(Vec<tags::Queued>, bool)> {
         self.derived(|v| tags::queue(v, after, limit))
     }
 
-    /// Each name's `metaValue` JSON, or None.
     pub fn meta(&self, names: &[Vec<u8>]) -> StoreResult<Vec<Option<Vec<u8>>>> {
         self.derived(|v| kinds::meta(v, names))
     }
 
-    /// A chat read (`chat_read`), against one state of the keyspace.
     pub fn chat_read<T>(&self, f: impl FnOnce(&View) -> StoreResult<T>) -> StoreResult<T> {
         self.derived(f)
     }
 
-    /// Keeps tokenizing results in the cache (`token_cache::put`), in the commit queue after every job before
-    /// them; `done` once they are published.
     pub fn token_cache_put(
         &self,
         puts: Vec<token_cache::Put>,
@@ -856,8 +729,6 @@ impl Store {
         ));
     }
 
-    /// Evicts one slice of a cache table's least recently used entries over `cap`; `done` with whether it is still
-    /// over.
     pub fn token_cache_evict(
         &self,
         table: u64,
@@ -879,8 +750,6 @@ impl Store {
         ));
     }
 
-    /// One slice of the pair postings' pass (`search::pairs::step`), in the commit queue; `done` with whether more
-    /// follow.
     pub fn pairs_step(&self, done: Box<dyn FnOnce(StoreResult<bool>) + Send>) {
         let more = Arc::new(AtomicBool::new(false));
         let found = more.clone();
@@ -893,33 +762,26 @@ impl Store {
         ));
     }
 
-    /// The pair postings' mode (`search::pairs`: 0 off, building, on, deleting).
     pub fn pairs_mode(&self) -> StoreResult<u64> {
         self.derived(|v| Ok(crate::search::pairs::state(v)?.0))
     }
 
-    /// The reorder pass's record and counts.
     pub fn tag_pass(&self) -> StoreResult<tags::PassStatus> {
         self.derived(tags::pass_status)
     }
 
-    /// The highest manual sort order of a live tag.
     pub fn tag_max_order(&self) -> StoreResult<Option<f64>> {
         self.derived(tags::max_order)
     }
 
-    /// Each entity's type and key, or None.
     pub fn library_keys(&self, ids: &[u64]) -> StoreResult<Vec<Option<EntityKey>>> {
         self.derived(|v| library_read::keys_many(v, ids))
     }
 
-    /// The tags each entity carries as they are now (merged tags as their targets), in id order.
     pub fn library_tag_ids(&self, ids: &[u64]) -> StoreResult<Vec<Vec<u64>>> {
         self.derived(|v| ids.iter().map(|e| library_read::tags_now(v, *e)).collect())
     }
 
-    /// Entities from id `from` on that carry tags, with their tags as they are now, up to `limit` entities;
-    /// and the id to go on from, None at the end.
     pub fn tag_assignments(&self, from: u64, limit: usize) -> StoreResult<AssignmentsPage> {
         self.derived(|v| {
             let p = key::of(key::MEMBER_OF);
@@ -942,7 +804,6 @@ impl Store {
         })
     }
 
-    /// For each tag id: its key and state, as `tag_status` gives them.
     pub fn tag_keys(&self, ids: &[u64]) -> StoreResult<Vec<Option<KeyedStatus>>> {
         self.derived(|v| {
             ids.iter()
@@ -954,13 +815,10 @@ impl Store {
         })
     }
 
-    /// For each key: the live tag, or the deleted one and the key of the live tag its merges lead to.
     pub fn tag_status(&self, keys: &[Vec<u8>]) -> StoreResult<Vec<Option<TagStatus>>> {
         self.derived(|v| keys.iter().map(|k| tag_status(v, k)).collect())
     }
 
-    /// Up to `limit` entries of a tag change feed after `after`: (position, id), and whether more follow; with
-    /// the feed's end.
     pub fn tag_feed(
         &self,
         structure: u64,
@@ -973,7 +831,6 @@ impl Store {
         })
     }
 
-    /// A page of search results (`crate::search::query`).
     pub fn search(
         &self,
         q: &crate::search::query::Query,
@@ -985,7 +842,6 @@ impl Store {
         Ok(found)
     }
 
-    /// Tests: `search` without queueing its reports' jobs.
     #[cfg(test)]
     pub(crate) fn search_unqueued(
         &self,
@@ -996,7 +852,6 @@ impl Store {
         })
     }
 
-    /// Tests: a read of the derived state, as a request reads it.
     #[cfg(test)]
     pub(crate) fn derived_read<T>(
         &self,
@@ -1005,19 +860,16 @@ impl Store {
         self.derived(f)
     }
 
-    /// Tests: queues the jobs for these reports.
     #[cfg(test)]
     pub(crate) fn tighten_queue(&self, reports: &[crate::search::query::Tighten]) {
         self.inner.tighten(reports);
     }
 
-    /// Tests: the jobs lowering maxima that wrote something.
     #[cfg(test)]
     pub(crate) fn tightened(&self) -> u64 {
         self.inner.tightened.load(Ordering::SeqCst)
     }
 
-    /// Tests: waits until every job queued before it has ended.
     #[cfg(test)]
     pub(crate) fn jobs_wait(&self) {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1030,7 +882,6 @@ impl Store {
         self.inner.ks.pool().exec.recv(&rx).unwrap().unwrap();
     }
 
-    /// Tests: holds carrier moves and re-siding (a step under way still ends), or lets them go on.
     #[cfg(test)]
     pub(crate) fn hold_carriers(&self, held: bool) {
         self.inner.carriers_held.store(held, Ordering::SeqCst);
@@ -1040,7 +891,6 @@ impl Store {
         }
     }
 
-    /// Tests: holds folds of merged tags' carriers (a step under way still ends), or lets them go on.
     #[cfg(test)]
     pub(crate) fn hold_folds(&self, held: bool) {
         self.inner.folds_held.store(held, Ordering::SeqCst);
@@ -1049,12 +899,10 @@ impl Store {
         }
     }
 
-    /// A derived entry's value.
     pub fn get(&self, key: &[u8]) -> StoreResult<Option<Vec<u8>>> {
         self.derived(|v| v.get(key))
     }
 
-    /// Up to `limit` derived entries in `[start, end)`.
     pub fn scan(
         &self,
         start: &[u8],
@@ -1068,13 +916,9 @@ impl Store {
         Ok(self.inner.log.read(pos)?)
     }
 
-    /// The change feed: up to `limit` records committed from `from` (0 or a `next` returned here) on, and the
-    /// position to continue from. Cleaning's copies aren't changes and are left out; a position in a file
-    /// cleaning removed is `LogError::Gone`.
     pub fn feed(&self, from: u64, limit: usize) -> StoreResult<(Vec<(u64, Record)>, u64)> {
         let mut out = Vec::new();
         let mut next = from;
-        // The record after a `moved` marker is its copy.
         let mut copy = false;
         loop {
             let (batch, batch_next) = self.inner.log.iterate(next, limit.clamp(1, 4096) + 1)?;
@@ -1119,13 +963,10 @@ impl Store {
         }
     }
 
-    /// Runs the cleaner now, without waiting for a flush to wake it.
     pub fn wake_cleaner(&self) {
         self.inner.clean_act.kick();
     }
 
-    /// Cleans until nothing queued is left to clean: removes cleaned files the runs now cover past, and cleans
-    /// every file queued that they cover. Not from an engine thread.
     pub fn clean(&self) -> StoreResult<()> {
         self.inner.wait_ready()?;
         self.inner.clean_act.kick();
@@ -1146,8 +987,6 @@ impl Store {
         }
     }
 
-    /// Finishes queued commits and stops: later commits fail with `Closed`. With `flush`, the buffer is flushed
-    /// so the next open replays nothing. Not from an engine thread.
     fn shut(&self, flush: bool) {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
@@ -1171,25 +1010,20 @@ impl Store {
                 break;
             }
             drop(p);
-            // The sync step may be waiting for room that another store's flush frees.
             i.ks.pool().exec.pause(std::time::Duration::from_millis(1));
         }
         i.clean_act.wait_idle();
         if flush && i.is_ready() {
             i.ks.freeze_at(i.log.durable_end());
-            // If the flush fails, the next open replays what it held.
             let _ = i.ks.wait_flushed();
         }
         i.ks.stop();
     }
 
-    /// Finishes queued commits, flushes the buffer so the next open replays nothing, and stops. Later commits
-    /// fail with `Closed`.
     pub fn close(&self) {
         self.shut(true);
     }
 
-    /// Stops as a crash would, with nothing flushed (for tests of replay).
     #[cfg(test)]
     fn abandon(&self) {
         self.shut(false);
@@ -1265,7 +1099,6 @@ impl Inner {
         }
     }
 
-    /// Queues a job lowering each reported block's maxima (`search::index::tighten`), unless one is queued for it.
     fn tighten(&self, reports: &[crate::search::query::Tighten]) {
         for r in reports {
             if !self.tightening.lock().unwrap().insert(r.clone()) {
@@ -1297,7 +1130,6 @@ impl Inner {
         }
     }
 
-    /// Moves merged tags' carriers, a bounded step at a time between commits, until none waits.
     pub(crate) fn kick_folds(&self) {
         #[cfg(test)]
         if self.folds_held.load(Ordering::SeqCst) {
@@ -1342,7 +1174,6 @@ impl Inner {
         ));
     }
 
-    /// Rewrites moved messages' depths, a bounded step at a time between commits, until none waits.
     pub(crate) fn kick_depths(&self) {
         {
             let mut f = self.depthing.lock().unwrap();
@@ -1355,8 +1186,6 @@ impl Inner {
         self.queue_depth();
     }
 
-    /// Deletes pending subtrees' messages, then pending root clears' changes, then pending forgets' changes, a
-    /// bounded step at a time between commits, until none waits.
     pub(crate) fn kick_prunes(&self) {
         {
             let mut f = self.pruning.lock().unwrap();
@@ -1420,8 +1249,6 @@ impl Inner {
         ));
     }
 
-    /// Moves tags' carriers in their maps (`moves`) or re-sides tags (else), a bounded step at a time between
-    /// commits, until none waits.
     fn kick_carriers(&self, moves: bool) {
         #[cfg(test)]
         if self.carriers_held.load(Ordering::SeqCst) {
@@ -1475,7 +1302,6 @@ impl Inner {
         ));
     }
 
-    /// A done that, once the entries are published, queues the carrier steps they wake (`carriers::wakes`).
     fn carrier_wake(&self, (moves, resides): (bool, bool)) -> Option<Done> {
         if !moves && !resides {
             return None;
@@ -1495,9 +1321,6 @@ impl Inner {
         })))
     }
 
-    // ---- replay ----
-
-    /// Derives the records after `from` into the buffer, as at their commits.
     fn replay(&self, from: u64) -> StoreResult<()> {
         let started = std::time::Instant::now();
         let end = self.log.durable_end();
@@ -1546,7 +1369,6 @@ impl Inner {
         Ok(())
     }
 
-    /// Bytes of log from `from` to `end`.
     fn log_bytes_between(&self, from: u64, end: u64) -> StoreResult<u64> {
         let offset = |p: u64| p & ((1 << log::FILE_SHIFT) - 1);
         let mut bytes = 0;
@@ -1561,9 +1383,6 @@ impl Inner {
         Ok(bytes)
     }
 
-    // ---- the prepare activity ----
-
-    /// Replays (first step only), then lays out the next queued job.
     fn prepare_step(&self) -> bool {
         if !self.replayed.load(Ordering::Acquire) {
             let replayed = self.replay(self.replay_from).map_err(|e| e.to_string());
@@ -1574,7 +1393,6 @@ impl Inner {
             self.set_ready(replayed);
             self.clean_act.kick();
             let fold = key::of(key::FOLD);
-            // A failed read queues the step, which reports it.
             if !matches!(self.ks.scan(&fold, &key::prefix_end(&fold), 1), Ok(f) if f.is_empty()) {
                 self.kick_folds();
             }
@@ -1608,8 +1426,6 @@ impl Inner {
             return true;
         }
         let mut p = self.pipe.lock().unwrap();
-        // A full open group waits for the sync step to take it; with no room in the pool, nothing more is
-        // prepared either, so entries waiting to be published stay within what the pool's flushes can free.
         let full = p.loading.is_none()
             && p.open
                 .layout
@@ -1620,7 +1436,6 @@ impl Inner {
         if full || installing || empty || !self.ks.pool().room_or_wait(&self.prepare_act) {
             return false;
         }
-        // Popped under `pipe`, so a job is always in the queue or in a group (`shut` counts on it).
         let Some(job) = self.jobs.lock().unwrap().queue.pop_front() else {
             return false;
         };
@@ -1637,7 +1452,6 @@ impl Inner {
         more
     }
 
-    /// Lays out one job in the open group with its entries, or fails it, writing nothing of it.
     fn prepare(&self, p: &mut Pipe, job: Job) {
         let Pipe {
             cursor,
@@ -1696,7 +1510,6 @@ impl Inner {
             layers_below.push(&s.entries);
             pending_below.push(&s.records);
         }
-        // The job's reads of published entries and of the log, each read once (`Memo`).
         let memo = Memo::default();
         let result = (|| -> StoreResult<Vec<u64>> {
             let mut positions = Vec::new();
@@ -1826,9 +1639,6 @@ impl Inner {
         }
     }
 
-    // ---- the sync activity ----
-
-    /// Writes, syncs and publishes the open group, once the pool has room for its entries.
     fn sync_step(&self) -> bool {
         let mut p = self.pipe.lock().unwrap();
         if p.open.dones.is_empty() || !self.ks.pool().room_or_wait(&self.sync_act) {
@@ -1836,10 +1646,7 @@ impl Inner {
         }
         let mut group = std::mem::take(&mut p.open);
         let dones = std::mem::take(&mut group.dones);
-        // A group of jobs that wrote nothing (an empty commit, a relocation whose records had all died) still
-        // resolves in its turn: after every group before it has published.
         let Some(layout) = group.layout.as_mut() else {
-            // Entries derived without a record are published in their turn, covering no more of the log.
             if !group.entries.is_empty() {
                 self.ks.insert(std::mem::take(&mut group.entries), None);
             }
@@ -1854,7 +1661,6 @@ impl Inner {
         let (file, runs) = (layout.file, std::mem::take(&mut layout.runs));
         p.syncing = Some(group);
         drop(p);
-        // A full open group may now take more.
         self.prepare_act.kick();
         let written = self.tail.lock().unwrap().write(&self.log, file, &runs);
         let mut p = self.pipe.lock().unwrap();
@@ -1870,8 +1676,6 @@ impl Inner {
                 }
             }
             Err(e) => {
-                // What reached the file is unknown, so nothing more is appended; reopening recovers to the
-                // last group whose checksum holds. Groups prepared on top of this one fail with it.
                 let why = e.to_string();
                 p.failed = Some(why.clone());
                 let open = std::mem::take(&mut p.open);
@@ -1888,13 +1692,7 @@ impl Inner {
         true
     }
 
-    // ---- cleaning ----
-
-    /// One step of cleaning: hands the next batch of the file being cleaned to the commit path (and waits, by
-    /// returning, for it to come back), finishes the file, or picks the next one.
     fn clean_step(&self) -> bool {
-        // A bulk load reads the log as it stands: nothing is moved meanwhile. A store stopped by a failed write
-        // moves nothing either: each relocation would fail at once and start cleaning over, without end.
         if !self.is_ready() || {
             let p = self.pipe.lock().unwrap();
             p.loading.is_some() || p.failed.is_some()
@@ -1962,8 +1760,6 @@ impl Inner {
         Ok(false)
     }
 
-    /// What a relocation batch does when it comes back: lets cleaning go on (from the file's start again, if
-    /// the batch failed).
     fn relocated(&self) -> JobDone {
         let me = self.me.clone();
         Box::new(move |r| {
@@ -1981,7 +1777,6 @@ impl Inner {
         })
     }
 
-    /// Removes cleaned files the runs now cover past.
     fn remove_cleaned(&self) -> StoreResult<()> {
         let covered = self.ks.covered();
         let gone = key::of(key::GONE);
@@ -2002,8 +1797,6 @@ impl Inner {
         Ok(())
     }
 
-    /// The next queued file to clean: one the runs cover entirely (opening finds the log's files from the
-    /// newest run's file up) and still under u live. Queued files back above u are dequeued.
     fn next_to_clean(&self) -> StoreResult<Option<u64>> {
         let covered = self.ks.covered();
         let queued = key::of(key::CLEAN);
@@ -2049,7 +1842,6 @@ fn fail_job(job: Job, e: StoreError) {
     }
 }
 
-/// Queues log files for cleaning when a flush finds their live fraction under u; wakes the cleaner after it.
 struct StoreHooks(Weak<Inner>);
 
 impl Hooks for StoreHooks {

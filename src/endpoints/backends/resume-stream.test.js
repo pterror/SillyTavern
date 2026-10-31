@@ -7,22 +7,11 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 
 import { write as writeCard } from '../../character-card-parser.js';
-// Same process-wide config-path requirement as text-completions.test.js/kobold.test.js (the import
-// chain through text-completion-generation-input.js -> characters.js -> character-shallow.js reads
-// config at import time).
 import { setConfigFilePath } from '../../util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 
-// Real end-to-end resumability test: a real client (fetch + AbortController) genuinely disconnects
-// mid-stream from a real Express app (the real router, listening on a real ephemeral TCP port),
-// while a real `http` fake backend (standing in for the actual text-completion server) is still
-// mid-generation, then reconnects via the real GET /generate/resume/:id route and is served the
-// live continuation. This exercises the SAME real-socket-disconnect mechanism as kobold.test.js's
-// own "abort-on-disconnect" test (a real AbortController.abort() closing the real client socket,
-// firing the route's real `response.socket.on('close', ...)` handler) - not a mocked function call
-// standing in for a drop.
 const { router } = await import('./text-completions.js');
 const { writeAllSettings } = await import('../../settings-store.js');
 const { CompactStreamDecoder } = await import('../../../public/scripts/llamacpp-compact-stream.js');
@@ -37,8 +26,6 @@ globalThis.DATA_ROOT = user.dataRoot;
 let branches = 0;
 
 /**
- * A new conversation of `avatar`'s, its greeting stored through a session of its own (a greeting of its own: one
- * with the same text would be the stored one).
  * @param {string} avatar
  */
 async function newBranch(avatar) {
@@ -108,13 +95,6 @@ async function startFakeBackend(handler) {
     return { server, url: `http://127.0.0.1:${server.address().port}` };
 }
 
-/**
- * Fake OpenAI-text-completions-shaped SSE backend that writes `chunks` with a real delay between
- * each `res.write()` - so there is a genuine window, after the first chunk, during which the client
- * can disconnect while the backend is still actively producing more content the server has not sent
- * yet. Resolves `done` once the backend has finished writing everything (for the test to assert the
- * eventual persisted state without racing it).
- */
 function startFakeSseBackendPaced(chunks, delayMs = 40) {
     let resolveDone;
     let handlerStarted = false;
@@ -191,7 +171,6 @@ async function run() {
     }
 
     try {
-        // --- Phase 1: start the real stream, read exactly one real chunk, then genuinely disconnect ---
         const res = await fetch(`http://127.0.0.1:${port}/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', [SESSION_HEADER]: branchBefore.session },
@@ -215,17 +194,9 @@ async function run() {
         assert.ok(text.length > 0 && expectedText.startsWith(text), 'the first real chunk decoded to a real prefix of the expected text');
         assert.ok(text.length < expectedText.length, 'the backend has more content still to send - the drop below is genuinely mid-generation, not after the fact');
 
-        // Real socket-level disconnect: closes the actual TCP connection to the server, firing the
-        // route's real `response.socket.on('close', ...)` handler (same mechanism as kobold.test.js's
-        // own real-disconnect test).
         controller.abort();
         await assert.rejects(() => reader.read(), 'the original connection is genuinely dead after abort()');
 
-        // --- Phase 2: reconnect via the real resume endpoint WHILE the backend is still actively
-        // streaming further chunks the server has never sent to any client yet (see the delay in
-        // startFakeSseBackendPaced) - this exercises the live-continuation path (case (a) in
-        // llamacpp-compact-stream.js's streamGenerationResume() doc comment), not just a replay of a
-        // finished buffer. ---
         const resumeRes = await fetch(`http://127.0.0.1:${port}/generate/resume/${encodeURIComponent(generationId)}?from=${bytesReceived}`);
         assert.equal(resumeRes.status, 200, 'the resume endpoint accepted the real generation id and byte offset');
         assert.equal(resumeRes.headers.get('X-ST-Stream-Format'), 'compact-v1');
@@ -247,9 +218,6 @@ async function run() {
         await new Promise(resolve => server.close(resolve));
     }
 
-    // --- The central assertion: the SAME CompactStreamDecoder, fed the pre-drop bytes and then the
-    // resumed bytes, reconstructs the complete, correct text exactly once - no loss, no duplication
-    // across the resume boundary. ---
     assert.equal(text, expectedText, 'the resumed stream, spliced into the same decoder, reconstructs the exact complete text with nothing lost or duplicated across the disconnect/resume boundary');
     assert.ok(assistantNodeId, 'the assistant_node_id frame was received via the resume response - the generation completed and persisted for real, and the client learned about it through the resumed connection');
 
@@ -261,9 +229,6 @@ async function run() {
     assert.equal(assistantMsg.mes, expectedText, 'the real persisted tree message matches the resumed text exactly - the dropped connection did not truncate what got saved, because the upstream generation kept running/buffering in the background after the client disconnected');
     assert.equal(assistantMsg.node_id, assistantNodeId, 'the node id learned via resume is the exact node the reply actually landed on');
 
-    // --- A second resume attempt for the same (now-finished) generation id, asking for bytes already
-    // delivered, must NOT re-deliver or duplicate anything already seen - it should simply serve
-    // whatever remains from that (earlier) offset, which by now is nothing, and close. ---
     {
         const server2 = app.listen(0, '127.0.0.1');
         await new Promise(resolve => server2.once('listening', resolve));
@@ -279,7 +244,6 @@ async function run() {
         }
     }
 
-    // --- An unknown generation id must fail clearly, so the client can give up rather than hang. ---
     {
         const server3 = app.listen(0, '127.0.0.1');
         await new Promise(resolve => server3.once('listening', resolve));

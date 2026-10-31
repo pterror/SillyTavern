@@ -1,6 +1,5 @@
 const REVERSE_MIGRATED_MARKER = '__reverseMigrated';
 
-// Purely local UI state; stored in localStorage instead of synced to the server.
 class AccountStorage {
     #ready = false;
 
@@ -13,7 +12,6 @@ class AccountStorage {
             && globalThis.localStorage.getItem(REVERSE_MIGRATED_MARKER) !== '1') {
             for (const [key, value] of Object.entries(serverState)) {
                 if (key.startsWith('__')) continue;
-                // Local values are more recent than the old server-side ones; don't clobber them
                 if (globalThis.localStorage.getItem(key) === null) {
                     globalThis.localStorage.setItem(key, String(value));
                 }
@@ -55,7 +53,7 @@ class AccountStorage {
 
     /**
      * @param {string} prefix
-     * @returns {string[]} The keys getItem() can read that start with `prefix`.
+     * @returns {string[]}
      */
     keysWithPrefix(prefix) {
         const keys = [];

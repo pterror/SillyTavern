@@ -1,10 +1,6 @@
 import { For, Show, createSignal, onMount } from 'solid-js';
 import { render } from 'solid-js/web';
 
-// A question to the user, answered in a modal <dialog> (the top layer: drawers and the chat are cut by it like by
-// any overlay, see the drawer stack). It looks like the old page's popups (their classes), and resolves with the
-// answer, or null when dismissed.
-
 export type Question =
     | { kind: 'input'; message: string; value: string }
     | { kind: 'confirm'; message: string; detail?: string; checkbox?: { label: string; checked: boolean } }
@@ -32,7 +28,6 @@ export function ask<Q extends Question>(question: Q, t: (text: string) => string
     });
 }
 
-/** One question's dialog (built once per question: nothing about the question changes while it's asked). */
 function dialog(
     question: Question,
     t: (text: string) => string,

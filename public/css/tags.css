@@ -28,13 +28,9 @@
 }
 
 #tags_div:has(.inline-drawer-icon.up) .tags_div_preview {
-    /* visibility, not display: must keep reserving height or #tags_div's
-       own box shrinks and reflows the sidebar below it. */
     visibility: hidden;
 }
 
-/* The preview row and the open panel share grid row 2, so the panel starts
-   exactly where the collapsed row is instead of below its reserved space. */
 #tags_div {
     position: relative;
     display: grid;

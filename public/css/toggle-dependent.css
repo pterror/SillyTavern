@@ -8,15 +8,10 @@
     padding: 5px;
 }
 
-/* Stacked drawers (power_user.stacked_drawers): the drawer fronted last is on top, and what an open drawer covers
-   under it is cut away (drawer-stack.js), so translucent themes never blend two layers. A layer cut everywhere is
-   hidden. */
 body.stackedDrawers #top-settings-holder > .drawer > .drawer-content {
     z-index: calc(3000 + var(--drawerOrder, 0));
 }
 
-/* The chat's own icon in the drawer bar: only with stacked drawers on, the only way to bring forward a chat that a
-   drawer covers entirely. Lit while nothing covers any part of the chat, as an open drawer's icon is lit. */
 #chat-button {
     display: none;
 }
@@ -35,18 +30,12 @@ body.stackedDrawers #chat-button {
     opacity: 1;
 }
 
-/* Hidden whole: a descendant transitioning its own visibility (anything with `transition: all`) would stay visible
-   while it does, so nothing is painted or clicked outside an empty clip either. */
 body.stackedDrawers .stackCovered {
     visibility: hidden;
     clip-path: inset(50%) !important;
     transition: visibility 0s !important;
 }
 
-/* Drawer Bar (power_user.drawer_bar_position): where the drawer bar is; not in the mobile layout.
-   Bottom: at the bottom screen edge, still #sheld's width. The chat and the drawers take the top strip and end at the
-   bar.
-   The --drawerBar* edge insets are set on :root so that variables computed there from them see them too. */
 @media not screen and (max-width: 1000px) {
     :root:has(> body.drawerBarBottom:not(.forceMobileView)) {
         --drawerBarTop: 0px;
@@ -71,8 +60,6 @@ body.stackedDrawers .stackCovered {
         right: 0;
     }
 
-    /* The holder is the containing block of its absolutely positioned drawers; the fixed ones measure from the
-       screen as they do with the bar at the top. */
     body.drawerBarBottom:not(.forceMobileView) #top-settings-holder > .drawer > .drawer-content:not(.fillLeft, .fillRight, #WorldInfo) {
         --drawerContainerTop: calc(100dvh - var(--topBarBlockSize));
     }
@@ -81,8 +68,6 @@ body.stackedDrawers .stackCovered {
         max-height: min(90dvh, calc(100dvh - var(--drawerBarBottom)));
     }
 
-    /* The bar at the left or right screen edge, the full window height, with its icons spread over no more than
-       #sheld's width, centered. The desktop layout takes the rest of the screen, from the top edge. */
     :root:has(> body.drawerBarLeft:not(.forceMobileView)) {
         --drawerBarTop: 0px;
         --drawerBarLeft: var(--topBarBlockSize);
@@ -143,8 +128,6 @@ body.stackedDrawers .stackCovered {
         min-height: 0;
     }
 
-    /* A fixed-width icon's box is wider than the bar, though its glyph fits. Left to overflow at the right edge, it
-       would make the page scrollable sideways. */
     body:is(.drawerBarLeft, .drawerBarRight):not(.forceMobileView) #top-settings-holder > .drawer > .drawer-toggle {
         display: flex;
         justify-content: center;
@@ -152,8 +135,6 @@ body.stackedDrawers .stackCovered {
         overflow: hidden;
     }
 
-    /* The holder, the containing block of its absolutely positioned drawers, is only the bar's width; they are placed
-       from the screen's edges as the fixed ones are. */
     body.drawerBarLeft:not(.forceMobileView) #top-settings-holder > .drawer > .drawer-content:not(.fillLeft, .fillRight, #WorldInfo) {
         --drawerContainerRight: calc(100dvw - var(--topBarBlockSize));
     }
@@ -224,7 +205,6 @@ body.rounded-avatars .avatar img {
     border-radius: var(--avatar-base-border-radius-rounded) !important;
 }
 
-/* Sidebar-mode grid; the gallery's own grid rules override these at higher specificity in fullscreen mode. */
 
 body.charListGrid #rm_print_characters_block {
     display: flex;
@@ -325,12 +305,6 @@ body.charListGrid #rm_print_characters_block .ch_additional_info {
     display: none;
 }
 
-/* Fullscreen chub.ai-style character grid, reusing the sidebar list's own DOM (layout-only, no second render
-   path). Scoped to data-active-menu="rm_characters_block" so switching to the single-character edit view
-   drops back to the normal sidebar layout instead of applying to a view it wasn't designed for.
-   Its place and width hold while it closes too: dropping to sidebar width as the close starts would reflow the grid
-   into one column and move the list's scroll position, so reopening wouldn't come back where it was. Only the height
-   depends on being open, for the slide. */
 body.charGalleryView #right-nav-panel.galleryFullscreen[data-active-menu="rm_characters_block"].fillRight {
     left: var(--drawerBarLeft);
     right: var(--drawerBarRight);
@@ -346,19 +320,15 @@ body.charGalleryView #right-nav-panel.galleryFullscreen[data-active-menu="rm_cha
     max-height: calc(100vh - var(--drawerBarTop) - var(--drawerBarBottom));
     max-height: calc(100dvh - var(--drawerBarTop) - var(--drawerBarBottom));
 
-    /* This rule's height outranks .fillRight.openDrawer's starting style, so the opening slide needs its own. */
     @starting-style {
         height: 0;
     }
 }
 
-/* Hidden in fullscreen gallery view since the tile grid already shows every character with full card art. */
 body.charGalleryView #right-nav-panel.galleryFullscreen[data-active-menu="rm_characters_block"] #HotSwapWrapper {
     display: none;
 }
 
-/* Same fullscreen pattern as the character list above, but for #char-info-panel (a separate .fillRight
-   drawer) - capped at Chat Width Max. Like it, it keeps its place and width while closing. */
 #char-info-panel.charInfoFullscreen[data-active-menu="rm_ch_create_block"].fillRight {
     left: var(--drawerBarLeft);
     right: var(--drawerBarRight);
@@ -379,8 +349,6 @@ body.charGalleryView #right-nav-panel.galleryFullscreen[data-active-menu="rm_cha
     }
 }
 
-/* Pins the search row to nowrap so a growing search-pill row concedes width, not height, and wastes no
-   vertical space. Fullscreen gallery mode only - sidebar mode stays stacked for lack of horizontal room. */
 body.charGalleryView #right-nav-panel.galleryFullscreen #form_character_search_form {
     flex-wrap: nowrap;
     align-items: center;
@@ -423,18 +391,15 @@ body.charGalleryView #right-nav-panel.galleryFullscreen #rm_print_characters_pag
     padding: 0 15px 5px;
 }
 
-/* Fullscreen-only: at sidebar width, a 320px min column width would otherwise produce zero grid columns. */
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-    /* Rows as tall as their cards: a few results don't stretch to fill the list. */
     align-content: start;
     align-items: stretch;
     gap: 12px;
     padding: 10px 15px 15px;
 }
 
-/* Side-by-side thumbnail + text column, not stacked - avoids the avatar reading oversized next to the text. */
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .bogus_folder_select,
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .character_select,
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .group_select {
@@ -452,7 +417,6 @@ body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_blo
     position: relative;
 }
 
-/* Matches the gallery card's own specificity - otherwise the base .character_select:hover rule is outranked. */
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .bogus_folder_select:hover,
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .character_select:hover,
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .group_select:hover {
@@ -475,9 +439,6 @@ body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_blo
     object-fit: cover;
 }
 
-/* These containers are position:relative unconditionally (style.css), which wrongly anchors the favorite
-   badge's absolute positioning to the text column instead of the card - force static so it resolves
-   against .character_select/.group_select instead. */
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .character_select_container,
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .group_select_container {
     position: static;
@@ -503,7 +464,6 @@ body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_blo
     overflow-wrap: anywhere;
 }
 
-/* Already renders here unmodified; just drop the narrow-sidebar max-width now that the card has room. */
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .character_version,
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .ch_avatar_url {
     max-width: 100%;
@@ -533,8 +493,6 @@ body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_blo
     overflow-y: auto;
 }
 
-/* Base template hides this inline and relies on the .is_fav outline instead; gallery cards have room to show it:
-   in the top-right corner, inside the card's padding (clear of its rounded border and the avatar). */
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .character_select.is_fav .ch_fav_icon,
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .group_select.is_fav .ch_fav_icon {
     display: inline-block !important;
@@ -548,7 +506,6 @@ body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_blo
     order: unset;
 }
 
-/* The name doesn't run under the star. */
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .character_select.is_fav .character_name_block,
 body.charGalleryGrid #right-nav-panel.galleryFullscreen #rm_print_characters_block .group_select.is_fav .group_name_block {
     padding-right: 22px;

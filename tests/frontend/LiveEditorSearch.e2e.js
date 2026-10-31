@@ -74,7 +74,6 @@ test.describe('live editor find and replace', () => {
         await search.locator('input[name="search"]').fill('[—–]');
         await search.locator('input[name="re"]').check();
         await search.locator('input[name="replace"]').fill('-');
-        // The panel takes a typed query on keyup, as when typing it.
         await search.locator('input[name="replace"]').press('End');
         await page.locator('#liveEditorTestHost .live-toolbar-button.fa-wand-magic-sparkles').click();
         await expect(panel(page)).toBeVisible();

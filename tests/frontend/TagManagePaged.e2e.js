@@ -1,15 +1,11 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// Manage Tags lists the server's tags a page at a time: rows, counts and search come from /api/tags/query, more
-// rows load when the list is scrolled, and rows scrolled far away are let go.
-
 const MAX_ROWS = 300;
 
 /** @param {import('@playwright/test').Page} page */
 async function loadApp(page) {
     await testSetup.awaitST({ page });
-    // APP_READY is an auto-fire event: a listener added after it was emitted still runs.
     await page.evaluate(() => {
         window['__appReady'] = false;
         const { eventSource, eventTypes } = window['SillyTavern'].getContext();
@@ -33,7 +29,6 @@ async function api(page, path, body = {}) {
 }
 
 /**
- * Runs `work` on a page of its own context, so the page under test learns of what it does only from the server.
  * @param {import('@playwright/test').Browser} browser
  * @param {(page: import('@playwright/test').Page) => Promise<T>} work
  * @returns {Promise<T>}
@@ -51,7 +46,6 @@ async function elsewhere(browser, work) {
 }
 
 /**
- * Creates tags named like their ids, in the manual order given by their place in `ids`.
  * @param {import('@playwright/test').Page} page
  * @param {string[]} ids
  * @param {number} firstSortOrder
@@ -72,7 +66,11 @@ async function createTags(page, ids, firstSortOrder) {
     }, { ids, firstSortOrder });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<string>} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
@@ -85,8 +83,6 @@ async function createCharacter(page, name) {
 }
 
 /**
- * Types `term` into Manage Tags' search box and waits until the list has asked the server for it and drawn the
- * answer.
  * @param {import('@playwright/test').Page} page
  * @param {string} term
  */
@@ -99,7 +95,6 @@ async function search(page, term) {
 }
 
 /**
- * Opens Manage Tags in `mode`, showing only the tags whose name has `term`.
  * @param {import('@playwright/test').Page} page
  * @param {'manual' | 'alphabetical' | 'by_entries'} mode
  * @param {string} term
@@ -112,19 +107,23 @@ async function openTagManagement(page, mode, term) {
     await search(page, term);
 }
 
-/** @param {import('@playwright/test').Page} page @returns {Promise<string[]>} the ids of the rows drawn, in order */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @returns {Promise<string[]>}
+ */
 function shownOrder(page) {
     return page.locator('#tag_view_list .tag_view_item').evaluateAll(rows => rows.map(row => row.id));
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} id */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} id
+ */
 function row(page, id) {
     return page.locator(`#tag_view_list .tag_view_item[id="${id}"]`);
 }
 
 /**
- * Scrolls Manage Tags to one end, again and again, until row `id` is drawn. Checks the rows drawn never exceed
- * MAX_ROWS on the way.
  * @param {import('@playwright/test').Page} page
  * @param {string} id
  * @param {'end' | 'start'} toward
@@ -134,7 +133,6 @@ async function scrollUntilDrawn(page, id, toward) {
         const count = await page.locator('#tag_view_list .tag_view_item').count();
         expect(count).toBeLessThanOrEqual(MAX_ROWS);
         if (await row(page, id).count()) return true;
-        // Not a locator action: the rows are replaced while the list loads, which a locator would wait out.
         await page.evaluate((toward) => {
             const rows = document.querySelectorAll('#tag_view_list .tag_view_item');
             rows[toward === 'end' ? rows.length - 1 : 0]?.scrollIntoView();
@@ -143,7 +141,10 @@ async function scrollUntilDrawn(page, id, toward) {
     }, { timeout: 60000, intervals: [200] }).toBe(true);
 }
 
-/** @param {number} n @returns {string} */
+/**
+ * @param {number} n
+ * @returns {string}
+ */
 const pad = n => String(n).padStart(3, '0');
 
 test.describe('Manage Tags reads pages of tags from the server', () => {
@@ -157,16 +158,13 @@ test.describe('Manage Tags reads pages of tags from the server', () => {
 
         await openTagManagement(page, 'manual', stamp);
         await expect(row(page, ids[0])).toBeVisible();
-        // One request's worth to start with, not every tag.
         expect((await shownOrder(page)).length).toBeLessThanOrEqual(MAX_ROWS);
         await expect(row(page, ids[349])).toHaveCount(0);
 
         await scrollUntilDrawn(page, ids[349], 'end');
         const atEnd = await shownOrder(page);
         expect(atEnd.length).toBeLessThanOrEqual(MAX_ROWS);
-        // A run of the server's order with nothing left out or repeated, ending at the list's last tag.
         expect(atEnd).toEqual(ids.slice(350 - atEnd.length));
-        // The rows at the start were let go.
         await expect(row(page, ids[0])).toHaveCount(0);
 
         await scrollUntilDrawn(page, ids[0], 'start');
@@ -178,7 +176,6 @@ test.describe('Manage Tags reads pages of tags from the server', () => {
     test('search finds a tag far past the first page, and each sort mode shows the server\'s order', async ({ browser, page }) => {
         const stamp = `pages${Date.now()}`;
         const ids = Array.from({ length: 230 }, (_, i) => `${stamp}-${pad(i)}`);
-        // A manual order unlike the alphabetical one.
         const manual = [...ids].reverse();
         const fixture = await elsewhere(browser, async (other) => {
             await createTags(other, manual, 30000);
@@ -193,7 +190,6 @@ test.describe('Manage Tags reads pages of tags from the server', () => {
         await expect.poll(() => shownOrder(page)).toEqual([ids[217]]);
 
         for (const mode of /** @type {const} */ (['manual', 'alphabetical', 'by_entries'])) {
-            // Whichever of the two changes something makes the list ask again.
             const answered = page.waitForResponse(response => new URL(response.url()).pathname === '/api/tags/query'
                 && response.request().postDataJSON()?.filter?.contains === stamp && response.request().postDataJSON()?.sort?.field === mode);
             await page.locator('#tag_sort_mode_select').selectOption(mode);
@@ -204,7 +200,6 @@ test.describe('Manage Tags reads pages of tags from the server', () => {
             expect(wanted.length).toBe(100);
             await expect.poll(async () => (await shownOrder(page)).slice(0, 100), { message: mode }).toEqual(wanted);
         }
-        // Most used first: the one tag a character carries leads.
         expect((await shownOrder(page))[0]).toBe(ids[200]);
     });
 
@@ -215,7 +210,6 @@ test.describe('Manage Tags reads pages of tags from the server', () => {
         await loadApp(page);
         const counter = (/** @type {string} */ id) => row(page, id).locator('.tag_view_counter_value');
 
-        // The page never learns of this assignment: it can't count it from the characters it holds.
         await page.route('**/api/tags/assignment-changes', route => route.fulfill({ status: 500 }));
         const card = await elsewhere(browser, async (other) => {
             const card = await createCharacter(other, `TagManagePagedCount-${stamp}`);
@@ -227,7 +221,6 @@ test.describe('Manage Tags reads pages of tags from the server', () => {
         await expect(counter(a)).toHaveText('1');
         await expect(counter(b)).toHaveText('0');
 
-        // With the popup open, another tab's assignment shows in the count.
         await page.unroute('**/api/tags/assignment-changes');
         await elsewhere(browser, other => api(other, '/api/tags/assign', { id: card, tagId: b }));
         await expect(counter(b)).toHaveText('1', { timeout: 30000 });
@@ -267,21 +260,18 @@ test.describe('Manage Tags reads pages of tags from the server', () => {
             const kept = page.locator('#tag_view_list .tag_view_item_kept').nth(i);
             newNames.push(await kept.locator('.tag_view_name').innerText());
         }
-        // Asked of the server as a base name with no place in the order; the server gave two different free names.
         expect(creates.map(body => ({ name: body.tag.name, freeName: body.freeName, hasOrder: 'sort_order' in body.tag })))
             .toEqual([{ name: 'New Tag', freeName: true, hasOrder: false }, { name: 'New Tag', freeName: true, hasOrder: false }]);
         expect(newNames[0]).toMatch(/^New Tag( #\d+)?$/);
         expect(newNames[1]).toMatch(/^New Tag #\d+$/);
         expect(newNames[1]).not.toBe(newNames[0]);
 
-        // Kept above the rows the search matches, which are still there.
         const order = await shownOrder(page);
         expect(order.slice(2)).toEqual([a, b]);
         const stored = (await api(page, '/api/tags/by-ids', { ids: order.slice(0, 2) })).tags;
         expect(stored.map(tag => tag.name).sort()).toEqual([...newNames].sort());
         expect(stored.every(tag => typeof tag.sort_order === 'number')).toBe(true);
 
-        // A new search is a new list: the kept rows go.
         await page.locator('#tag_view_search').fill(`${stamp}-a`);
         await expect.poll(() => shownOrder(page)).toEqual([a]);
     });
@@ -297,7 +287,6 @@ test.describe('Manage Tags reads pages of tags from the server', () => {
         await expect(status).toHaveText('No tags match the search.');
         await expect.poll(() => shownOrder(page)).toEqual([]);
 
-        // A read the server fails: the list says so and offers to try again.
         await page.route('**/api/tags/query', route => route.fulfill({ status: 500 }));
         await page.locator('#tag_view_search').fill(stamp);
         await expect(status).toContainText('The tags could not be loaded.');
@@ -305,8 +294,6 @@ test.describe('Manage Tags reads pages of tags from the server', () => {
         await status.locator('.menu_button').click();
         await expect.poll(() => shownOrder(page)).toEqual([a, b]);
 
-        // Reads the server's work cap cuts short with nothing found: the list stops asking after a few and offers
-        // to go on.
         let cutShort = 0;
         await page.route('**/api/tags/query', (route) => {
             cutShort++;
@@ -317,7 +304,6 @@ test.describe('Manage Tags reads pages of tags from the server', () => {
         expect(cutShort).toBe(6);
         await page.waitForTimeout(1500);
         expect(cutShort).toBe(6);
-        // Asked to go on, with a cursor the server refuses: the list starts over and shows the tags.
         await page.unroute('**/api/tags/query');
         await status.locator('.menu_button').click();
         await expect.poll(() => shownOrder(page), { timeout: 30000 }).toEqual([a, b]);
@@ -333,7 +319,6 @@ test.describe('Manage Tags reads pages of tags from the server', () => {
         await expect(row(page, ids[0])).toBeVisible();
         await expect(row(page, ids[129])).toHaveCount(0);
 
-        // Renamed past the end of the alphabet, and out of what the search matches.
         const name = row(page, ids[0]).locator('.tag_view_name');
         await name.click();
         await name.fill(`zzzz renamed ${stamp.slice(0, 3)}`);

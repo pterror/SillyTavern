@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// The chat's overrides (More... > Character Settings Overrides): OK keeps the edits; Escape discards them (it saved
-// them anyway).
-
 test('the chat\'s overrides are kept on OK and discarded on Escape', async ({ page }) => {
     await testSetup.awaitST({ page });
     await page.evaluate(async () => {

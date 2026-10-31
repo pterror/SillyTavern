@@ -1,16 +1,15 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// Opening a character or group is one request (POST /api/chats/open): the server resolves which conversation,
-// records what was opened, and answers what the screen draws. Viewing writes nothing else: no chat name is
-// minted, no chat pointer or settings are saved from the page, no itemized prompts are read or saved, and a group chat
-// with no messages yet shows its members' greetings without storing them until a message follows them.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @param {string} greeting */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @param {string} greeting
+ */
 async function createCharacter(page, name, greeting) {
     return page.evaluate(async ({ name, greeting }) => {
         // @ts-ignore
@@ -25,7 +24,6 @@ async function createCharacter(page, name, greeting) {
 }
 
 /**
- * Every request the page makes to a chat, character-pointer, settings or itemized-prompt route while `run` runs.
  * @param {import('@playwright/test').Page} page
  * @param {() => Promise<void>} run
  */
@@ -35,7 +33,6 @@ async function requestsDuring(page, run) {
     const listener = (/** @type {import('@playwright/test').Request} */ request) => {
         const path = new URL(request.url()).pathname;
         if (/^\/api\/(chats|itemized-prompts|settings|groups)\//.test(path) || path === '/api/characters/chat' || path === '/api/characters/chats') {
-            // A keyed settings save of something else (a drawer, a panel) isn't the open's doing.
             if (path === '/api/settings/save-partial' && !/active_(character|group)/.test(request.postData() ?? '')) return;
             seen.push(path);
         }
@@ -77,7 +74,6 @@ test('opening a character is one request and writes nothing but what was opened'
         const { tabSession } = await import('/scripts/tab-session.js');
         return { chat: context.characters.find(c => c.avatar === avatar)?.chat ?? null, session: tabSession(), active: parsed.active_character };
     }, avatar);
-    // No current chat: the tab's own conversation with this character, `s<session>.<tree>`.
     expect(state).toEqual({ chat: expect.stringMatching(new RegExp(`^s${state.session}\\.\\d+$`)), session: expect.stringMatching(/^[0-9a-f-]{36}$/), active: avatar });
 });
 
@@ -109,7 +105,6 @@ test('a group chat with no messages shows its greetings unsaved, and stores them
     });
     expect(seen.filter(path => path !== '/api/groups/members')).toEqual(['/api/chats/open']);
 
-    // The first message stores the greetings, then itself after them.
     const stored = await page.evaluate(async () => {
         const { sendMessageAsUser } = await import('/script.js');
         await sendMessageAsUser('Hello both.', '');

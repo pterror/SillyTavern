@@ -2,29 +2,9 @@ import { test, expect, jest, beforeEach, beforeAll } from '@jest/globals';
 
 global.toastr = { warning: jest.fn(), error: jest.fn(), info: jest.fn(), success: jest.fn() };
 
-// convertSoloToGroupChat() shows an error toast when POST /api/groups/create fails. The module mocks below are
-// tests/create-branch.test.js's.
-// bookmarks.js pulls in script.js and a wide swath of UI modules (jQuery/DOM assumptions
-// throughout), none of which are safely importable in a plain node test env - so, same pattern as
-// tests/character-repository.test.js uses for script.js, the whole import surface is mocked at the
-// module boundary. Every name bookmarks.js actually imports has to be present on these mocks (ESM
-// named imports are resolved eagerly at link time), even the ones these tests never touch.
-// `chat`/`chat_metadata` are real, unmocked scripts/chat-state.js - importing the real module (rather
-// than a synthetic mock of it) means these tests exercise the same live bindings bookmarks.js does,
-// so there's no separate mock surface to drift out of sync with it. They're exported as stable
-// references and mutated *in place* between tests (never reassigned), which is what makes sharing
-// them this way work: reassigning `chatState.chat = [...]` would only rebind this file's local
-// variable, not what bookmarks.js sees.
 const chatState = await import('../public/scripts/chat-state.js');
 const openCharacterChatMock = jest.fn(async () => {});
 const openGroupChatMock = jest.fn(async () => {});
-/**
- * Real saveChat() (generation.js, since a8bdcc599) sends the plain proposed name with `unique: true`
- * and returns whatever unique name the server actually saved under - naming is no longer computed
- * client-side. Mirrored here against the same existing-chats listing bookmarks.js's own
- * getExistingChatNames() fetches (these tests already drive that fetch per-case), so the mock produces
- * the same "<name> - Branch #N" result the server would.
- */
 const saveChatMock = jest.fn(async ({ chatName, unique = false } = {}) => {
     if (!unique) return chatName;
     const response = await fetch('/api/characters/chats', { method: 'POST', headers: {}, body: '{}' });
@@ -41,13 +21,6 @@ const saveChatMock = jest.fn(async ({ chatName, unique = false } = {}) => {
 const getCurrentCharacterMock = jest.fn(() => ({ avatar: 'char.png', name: 'Char', chat: 'current-chat' }));
 const getCurrentChatDetailsMock = jest.fn(() => ({ sessionName: 'current-chat' }));
 const groupsStoreMock = { get: jest.fn() };
-/**
- * Real updateMessage() (chat-store.js) shallow-merges into chat[mesId] and replaces the array slot
- * (it doesn't mutate the old object in place) - createBranch()/createNewBookmark() rely on exactly
- * that to land `extra.branches`/`extra.bookmark_link` where these tests read them back from
- * chatState.chat[0]. Deep-freezing the result is chat-store.js's own hygiene, not behavior any test
- * here depends on, so it's left out.
- */
 const updateMessageMock = jest.fn((mesId, updates) => {
     const old = chatState.chat[mesId];
     if (!old) return old;
@@ -55,12 +28,6 @@ const updateMessageMock = jest.fn((mesId, updates) => {
     chatState.chat[mesId] = result;
     return result;
 });
-/**
- * Real hydrateSwipes() (script.js) only does anything when the requested swipe is a `null` hole;
- * every message these tests build has fully-populated string swipes, so the real fast path always
- * applies (return true, no fetch). Mirrors just that predicate rather than the fetch-and-fill branch,
- * which nothing here constructs a hole to exercise.
- */
 const hydrateSwipesMock = jest.fn(async (mesId, { index = null, all = false } = {}) => {
     const message = chatState.chat[mesId];
     if (!message || !Array.isArray(message.swipes)) return false;
@@ -70,25 +37,15 @@ const hydrateSwipesMock = jest.fn(async (mesId, { index = null, all = false } = 
         : (index !== null && index >= 0 && index < message.swipes.length && isHole(index));
     return !wanted;
 });
-/**
- * Real ensureOpeningRow() (chat-store.js) returns null for any message without a stored/provisional
- * node_id - true of every fixture here (isTreeStored() is always false in this file, so its return
- * value never actually gates anything below it either way).
- */
 const ensureOpeningRowMock = jest.fn(async () => null);
-/** switchToNode() is only wired to the .select_chat_block click handler, which these tests never trigger. */
 const switchToNodeMock = jest.fn(async () => false);
-/** Real, pure predicate (node-identity.js) - re-implemented here rather than imported so the mocked
- * utils.js (which node-identity.js itself imports getStringHash from) doesn't need widening for it. */
 const isStoredNodeIdMock = jest.fn((nodeId) => typeof nodeId === 'string' && nodeId.length > 0 && !nodeId.startsWith('card:'));
 
-/** Replaces the real chat array's contents in place, keeping its identity stable across tests. */
 function setChat(messages) {
     chatState.chat.length = 0;
     chatState.chat.push(...messages);
 }
 
-/** Replaces the real chat_metadata object's contents in place, keeping its identity stable. */
 function setChatMetadata(metadata) {
     for (const key of Object.keys(chatState.chat_metadata)) {
         delete chatState.chat_metadata[key];
@@ -192,10 +149,6 @@ jest.unstable_mockModule('../public/scripts/i18n.js', () => ({
     t: (strings, ...values) => strings.reduce((acc, s, i) => acc + s + (values[i] ?? ''), ''),
 }));
 
-// utils.js is real code, but importing it for real drags in power-user.js/world-info.js/etc (the
-// whole app's module graph, DOM assumptions and all) just for uuidv4()/getUniqueName(). Stubbed with
-// the same pure logic instead, since bookmarks.js only uses these two plus isTrueBoolean (unused by
-// the createBranch() paths these tests cover).
 jest.unstable_mockModule('../public/scripts/utils.js', () => ({
     getUniqueName: (baseName, exists, { nameBuilder = null, maxTries = 1000, startIndex = 0 } = {}) => {
         const build = nameBuilder ?? ((name, i) => (i === 0 ? name : `${name} (${i})`));

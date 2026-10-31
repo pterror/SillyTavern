@@ -1,8 +1,3 @@
-/**
- * The help panel: every help topic in one place, with a topic list (a sidebar on wide screens, behind a menu button
- * on narrow ones) and a search box that searches all topics at once. It is a layer, not a modal: the chat and the
- * drawers stay usable while it's open.
- */
 import { openEditorLayer } from './editor-layer.js';
 import { raiseDrawer, drawerStackChanged } from './drawer-stack.js';
 import { renderHotkeys } from './help-hotkeys.js';
@@ -15,7 +10,6 @@ import { debounce } from './utils.js';
 
 export const DEFAULT_HELP_TOPIC = 'overview';
 
-/** Upstream's `/help` names and numbers, kept so every `/help <name>` that worked there opens the same topic. */
 const BUILT_IN_TOPICS = [
     { id: 'overview', title: () => t`Overview`, aliases: ['help'], order: 10, render: templateTopic('help') },
     { id: 'slash', title: () => t`Slash Commands`, aliases: ['commands', 'slashes', 'slash commands', '1'], order: 20, render: renderSlashCommands },
@@ -39,10 +33,9 @@ function templateTopic(templateId) {
 }
 
 /**
- * Leaves only the lines of a help page that contain `query` (ignoring case), plus the headings above them.
  * @param {HTMLElement} container
  * @param {string} query
- * @returns {number} How many lines matched.
+ * @returns {number}
  */
 function keepMatchingLines(container, query) {
     const needle = query.toLowerCase();
@@ -95,8 +88,7 @@ function renderMacros(container, query) {
 let open = null;
 
 /**
- * Opens the help panel at a topic, or shows that topic in the one already open and brings it forward.
- * @param {string} [name] A topic id or alias; anything unknown opens the overview.
+ * @param {string} [name]
  */
 export function openHelp(name) {
     const topic = findHelpTopic(name) ?? findHelpTopic(DEFAULT_HELP_TOPIC);
@@ -109,7 +101,7 @@ export function openHelp(name) {
     open = buildPanel(topic.id);
 }
 
-/** @returns {boolean} Whether the help panel is open. */
+/** @returns {boolean} */
 export function isHelpOpen() {
     return open !== null;
 }
@@ -142,7 +134,6 @@ function buildPanel(firstTopicId) {
     search.setAttribute('aria-label', t`Search all help`);
 
     let currentTopicId = firstTopicId;
-    // Each draw gets a number; a draw that finishes after a newer one started drops its result.
     let drawNumber = 0;
 
     const setMenuOpen = (value) => panel.classList.toggle('helpNavOpen', value);
@@ -155,7 +146,7 @@ function buildPanel(firstTopicId) {
     });
 
     /**
-     * @param {Map<string, number>} [counts] Matches per topic while searching.
+     * @param {Map<string, number>} [counts]
      */
     const drawTopicList = (counts) => {
         topicList.replaceChildren();
@@ -242,8 +233,6 @@ function buildPanel(firstTopicId) {
             heading.textContent = topic.title;
             const body = document.createElement('div');
             section.append(heading, body);
-            // Topics draw into the page, so search results can use the topics' own matching (the slash command
-            // and macro browsers filter their own items).
             results.appendChild(section);
             let count = 0;
             try {

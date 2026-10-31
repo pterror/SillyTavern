@@ -33,7 +33,6 @@ test('a provider that is a text completion backend names the connection text gen
     const { from, back } = roundTrip(settings, [llama]);
     assert.deepEqual(from.capabilities, { captioning: 'c-llama', embeddings: 'c-llama' });
     assert.deepEqual(from.connections, []);
-    // The provider fields leave the extensions' settings.
     assert.deepEqual(from.settings.caption, { multimodal_model: 'llamacpp_current', prompt: 'Describe' });
     assert.deepEqual(from.settings.vectors, { chunk_size: 500 });
     assert.deepEqual(back, { settings, warnings: [] });

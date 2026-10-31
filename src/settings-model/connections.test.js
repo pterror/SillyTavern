@@ -16,7 +16,6 @@ function keys() {
 }
 
 /**
- * Upstream's settings with every connection key its page would hold.
  * @param {Record<string, any>} settings
  */
 function filled(settings) {
@@ -32,7 +31,6 @@ function filled(settings) {
 }
 
 /**
- * The connection keys of upstream's settings, to compare.
  * @param {Record<string, any>} settings
  */
 function connectionKeys(settings) {
@@ -66,9 +64,7 @@ test('the shipped settings\' connections come back as they came', () => {
     const settings = filled(SHIPPED);
     const { from, back } = roundTrip(settings);
     assert.deepEqual(connectionKeys(back), connectionKeys(settings));
-    // Horde is the shipped API: its connection is text generation's.
     assert.equal(from.connections.find(c => c.key === from.textGeneration)?.values.type, 'horde');
-    // Only the selected chat completion source, the rest being defaults.
     assert.deepEqual(from.connections.filter(c => String(c.values.type).startsWith('openai:')).map(c => c.values.type), ['openai:openai']);
     assert.ok(from.connections.every(c => c.type === TYPE.connection));
 });
@@ -102,7 +98,6 @@ test('the other families\' selected connections are remembered, and switching ba
     assert.equal(from.remembered.textgenerationwebui, undefined);
     assert.deepEqual(from.connections.filter(c => c.values.type === 'textgenerationwebui:koboldcpp').map(c => c.values.url), ['http://127.0.0.1:5001']);
     assert.deepEqual(connectionKeys(back), connectionKeys(settings));
-    // Text generation on the remembered chat completion connection: main_api and the source follow it.
     const switched = connectionsToUpstream(from.connections, { textGeneration: from.remembered.openai, remembered: { textgenerationwebui: from.textGeneration } });
     assert.equal(switched.main_api, 'openai');
     assert.equal(switched.oai_settings.chat_completion_source, 'openrouter');

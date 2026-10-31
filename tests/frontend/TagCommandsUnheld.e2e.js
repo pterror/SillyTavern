@@ -1,10 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// The tag slash commands work on a character the page doesn't hold: they find it through the server, read its tags
-// from the server and write through the server's assign and unassign. Each test makes its characters after the page
-// has loaded and keeps the page from hearing of them.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -21,11 +17,10 @@ async function loadApp(page) {
 }
 
 /**
- * Creates a character the page doesn't hold.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @param {string} [cardTags] - the card's own tags, comma-separated
- * @returns {Promise<string>} its avatar key
+ * @param {string} [cardTags]
+ * @returns {Promise<string>}
  */
 async function createUnheldCharacter(page, name, cardTags = '') {
     const avatar = await page.evaluate(async ({ name, cardTags }) => {
@@ -48,14 +43,13 @@ async function createUnheldCharacter(page, name, cardTags = '') {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} command
- * @returns {Promise<string>} the command's result
+ * @returns {Promise<string>}
  */
 async function run(page, command) {
     return page.evaluate(async (command) => (await window['SillyTavern'].getContext().executeSlashCommandsWithOptions(command)).pipe, command);
 }
 
 /**
- * The names of the tags the server stores for `key`.
  * @param {import('@playwright/test').Page} page
  * @param {string} key
  * @returns {Promise<string[]>}
@@ -92,7 +86,6 @@ test.describe('tag slash commands on a character the page does not hold', () => 
         expect(await run(page, `/tag-add name="${avatar}" "${tagB}"`)).toBe('true');
         expect(await serverTagNames(page, avatar)).toEqual([tagA, tagB].sort());
 
-        // Already there: nothing to add.
         expect(await run(page, `/tag-add name="${name}" "${tagA}"`)).toBe('false');
 
         expect(await run(page, `/tag-exists name="${name}" "${tagA}"`)).toBe('true');
@@ -103,7 +96,6 @@ test.describe('tag slash commands on a character the page does not hold', () => 
         expect(await run(page, `/tag-exists name="${name}" "${tagA}"`)).toBe('false');
         expect(await run(page, `/tag-remove name="${name}" "${tagA}"`)).toBe('false');
 
-        // Still not held: none of this needed the page to hold the character.
         const held = await page.evaluate(async (avatar) => {
             const { charactersStore } = await import('./scripts/character-store.js');
             return charactersStore.has(avatar);
@@ -120,7 +112,6 @@ test.describe('tag slash commands on a character the page does not hold', () => 
         expect(await run(page, `/tag-import name="${name}" mode=all`)).toBe('true');
         expect(await serverTagNames(page, avatar)).toEqual([...cardTags].sort());
 
-        // Every card tag is on it already: nothing more to import.
         expect(await run(page, `/tag-import name="${name}" mode=all`)).toBe('false');
     });
 

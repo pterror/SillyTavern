@@ -346,7 +346,6 @@ export function getRegexedString(rawString, placement, { characterOverride, isMa
         if (
             (script.markdownOnly && isMarkdown) ||
             (script.promptOnly && isPrompt) ||
-            // Unrestricted scripts skip isMarkdown, since the chat-history source they'd act on is already regexed by then.
             (!script.markdownOnly && !script.promptOnly && !isMarkdown && !isPrompt)
         ) {
             if (isEdit && !script.runOnEdit) {

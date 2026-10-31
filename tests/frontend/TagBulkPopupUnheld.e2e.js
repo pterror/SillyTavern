@@ -1,10 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, holdCharacters } from './frontent-test-utils.js';
 
-// The bulk tag popup reads the selected characters' tags from the server and writes through it, so it shows and
-// changes the tags of characters the page doesn't hold. Each test makes its characters and tags after the page has
-// loaded and keeps the page from hearing of them.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -35,10 +31,9 @@ async function api(page, path, body = {}) {
 }
 
 /**
- * Creates a character the page doesn't hold.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @returns {Promise<string>} its avatar key
+ * @returns {Promise<string>}
  */
 async function createUnheldCharacter(page, name) {
     const avatar = await page.evaluate(async (name) => {
@@ -58,7 +53,6 @@ async function createUnheldCharacter(page, name) {
 }
 
 /**
- * Creates a tag the page doesn't hold.
  * @param {import('@playwright/test').Page} page
  * @param {string} id
  * @param {string} name
@@ -67,12 +61,19 @@ async function createUnheldTag(page, id, name) {
     await api(page, '/api/tags/create', { tag: { id, name, folder_type: 'NONE', is_hidden_on_character_card: false, color: '', color2: '', create_date: 1 } });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} key @returns {Promise<string[]>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} key
+ * @returns {Promise<string[]>}
+ */
 async function serverTagsOf(page, key) {
     return ((await api(page, '/api/tags/for', { ids: [key] }))[key] ?? []).slice().sort();
 }
 
-/** @param {import('@playwright/test').Page} page @param {string[]} avatars */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string[]} avatars
+ */
 async function openBulkTagPopup(page, avatars) {
     await page.evaluate(async (avatars) => {
         const { characterGroupOverlay } = await import('./script.js');

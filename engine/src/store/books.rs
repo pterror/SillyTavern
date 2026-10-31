@@ -1,21 +1,3 @@
-//! World info (build path 5c): books, their entries, and the lorebook links naming them.
-//!
-//! A book is an entity: a world book of type `BOOK`, keyed by its file stem (what every route's `name` finds), or a
-//! book a character or another book owns (`OWNED`: a card's `character_book`, a book's `originalData`), keyed by its
-//! owner. A `BOOK` entity without its definition marker (`DEFINED`) is an unresolved book: a name a link holds that
-//! no book has (now, or since the book was deleted). An entry is an entity of type `ENTRY`, keyed by its book and its
-//! key in the book (`entry_key`). Book and entry values are the entity's values; an entry's place in its book is the
-//! item `entry` of the book's list `ENTRIES`.
-//!
-//! Derived here: the defined world books by key (`BOOKS`); per book, its entries by `displayIndex` (`ENTRY_INDEX`,
-//! whose last is the book's highest) and the integer keys no entry has (`FREE`, as intervals); each book's linkers
-//! (`LINKED`) and the characters with more than one link (`MULTI_LINK`); forwards from an unresolved book to the book
-//! it resolves as (`FORWARD`, `FORWARDED`).
-//!
-//! A character's lorebook links are its list `LINKS`: one ordered list of equal links, each a placed item whose text
-//! is a book's id in decimal, no book twice. The first is the card's `extensions.world`. A character is in the
-//! lorebook scope (`library::Scope::World`) of each book it links, numbered there in its `LINKED` entry.
-
 use super::StoreError;
 use super::derive::{Deriver, Loc, Out, View};
 use super::kinds::{dead, id, key, loc_bytes, parse_loc, text_value, version, whole_json};
@@ -24,48 +6,30 @@ use super::library_read;
 use crate::keyspace::val::{get_u64, put_bytes, put_u64};
 use crate::log::format::{FieldRef, Record, Value, get_uvarint, put_uvarint};
 
-/// Entity types.
 pub const BOOK: u64 = 3;
 pub const OWNED: u64 = 4;
 pub const ENTRY: u64 = 5;
 
-/// A book's list of its entries (item = the entry's id).
 pub const ENTRIES: u64 = 0;
-/// A character's list of its lorebook links (item text = the book's id in decimal).
 pub const LINKS: u64 = 4;
 
-/// A world book's definition marker (empty JSON): without it, the book is an unresolved name.
 pub const DEFINED: u64 = 41;
 
-/// Structures.
-/// Per defined world book's key: the book.
 pub const BOOKS: u64 = 190;
-/// Per (book, index, entry): the entry's `displayIndex` as JavaScript's `Number()` reads it.
 pub const ENTRY_INDEX: u64 = 191;
-/// Per entry: its `entryIndex` record.
 pub const ENTRY_INDEX_AT: u64 = 192;
-/// Per (book, character): the character links the book. The link's item, then the character's number in the book's
-/// numbering (`library::rank_host`).
 pub const LINKED: u64 = 194;
-/// Per unresolved book: the book it resolves as, and its `bookForward` record.
 pub const FORWARD: u64 = 195;
-/// Per (book, unresolved book): the unresolved book resolves as the book.
 pub const FORWARDED: u64 = 196;
-/// Per character with 2 or more placed links: nothing.
 pub const MULTI_LINK: u64 = 209;
-/// Per (book, end): integer entry keys from the value up to `end` (exclusive; `u64::MAX`: no end) are free. A book
-/// with none has every integer key free. Keyed by the end, which taking the lowest free key leaves as it is: entries
-/// created one after another rewrite one entry, not a delete and a new key each.
 pub const FREE: u64 = 218;
 
-/// The largest integer entry key: JavaScript's safe integers.
 pub const MAX_INT_KEY: u64 = (1 << 53) - 1;
 
 fn err(why: &str) -> StoreError {
     StoreError::Entry(format!("books: {why}"))
 }
 
-/// An entry's key in its book: an integer (a canonical decimal string up to `MAX_INT_KEY`) or other text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntryKey {
     Int(u64),
@@ -73,7 +37,6 @@ pub enum EntryKey {
 }
 
 impl EntryKey {
-    /// The key a book's `entries` object holds the entry under (WTF-8).
     pub fn parse(text: &[u8]) -> EntryKey {
         let canonical = !text.is_empty()
             && text.iter().all(u8::is_ascii_digit)
@@ -96,7 +59,6 @@ impl EntryKey {
     }
 }
 
-/// An entry entity's key: its book's id in decimal, `:`, then its key in the book.
 pub fn entry_key(book: u64, k: &EntryKey) -> Vec<u8> {
     let mut out = format!("{book}:").into_bytes();
     out.extend_from_slice(&k.text());
@@ -124,7 +86,6 @@ fn books_key(k: &[u8]) -> Vec<u8> {
     out
 }
 
-/// A value of entity `e` was written (`on`) or removed: a world book's marker defines it or makes it unresolved.
 pub fn field_written(
     view: &View,
     out: &mut Out,
@@ -146,7 +107,6 @@ pub fn field_written(
     Ok(())
 }
 
-/// A world book comes to be, its values (the marker among them) already in `view`.
 pub fn created(view: &View, out: &mut Out, e: u64, k: &[u8]) -> Result<(), StoreError> {
     if is_defined(view, e)? {
         out.put(books_key(k), uvarint(e));
@@ -154,7 +114,6 @@ pub fn created(view: &View, out: &mut Out, e: u64, k: &[u8]) -> Result<(), Store
     Ok(())
 }
 
-/// A world book's key changes.
 pub fn rekeyed(
     view: &View,
     out: &mut Out,
@@ -169,7 +128,6 @@ pub fn rekeyed(
     Ok(())
 }
 
-/// An entry comes to be: its integer key is no longer free. Refused when its book isn't a book.
 pub fn entry_created(view: &View, out: &mut Out, k: &[u8]) -> Result<(), StoreError> {
     let (book, ek) = parse_entry_key(k)?;
     if !matches!(entity_info(view, book)?, Some((BOOK | OWNED, _, _))) {
@@ -184,7 +142,6 @@ pub fn entry_created(view: &View, out: &mut Out, k: &[u8]) -> Result<(), StoreEr
     Ok(())
 }
 
-/// An entry goes: its place in its book, its index and its integer key.
 pub fn entry_gone(view: &View, out: &mut Out, e: u64, k: &[u8]) -> Result<(), StoreError> {
     let (book, ek) = parse_entry_key(k)?;
     let ak = item_at_key(book, e);
@@ -210,9 +167,6 @@ fn item_at_key(book: u64, entry: u64) -> Vec<u8> {
     k
 }
 
-/// A record at `at` changed entity `e`: when it is an entry or an owned book, the book holding it, and that book's
-/// owner, changed too (their versions follow, so a page's copy of a book or card is known stale); when it is a saved
-/// view's condition or range, its view.
 pub fn touched(view: &View, out: &mut Out, e: u64, at: Loc) -> Result<(), StoreError> {
     match entity_info(view, e)? {
         Some((kind, k, _)) => container_touched(view, out, kind, &k, at),
@@ -220,7 +174,6 @@ pub fn touched(view: &View, out: &mut Out, e: u64, at: Loc) -> Result<(), StoreE
     }
 }
 
-/// An entity of type `kind` and key `k` changed (or is being created) at `at`: `touched` for what holds it.
 pub fn container_touched(
     view: &View,
     out: &mut Out,
@@ -244,7 +197,6 @@ pub fn container_touched(
     touched(view, out, up, at)
 }
 
-/// An owned book's owner, from its key `<owner id>:<slot>`.
 pub fn owner_of(k: &[u8]) -> Result<u64, StoreError> {
     let colon = k.iter().position(|c| *c == b':');
     colon
@@ -255,13 +207,10 @@ pub fn owner_of(k: &[u8]) -> Result<u64, StoreError> {
         })
 }
 
-// ---- free integer keys ----
-
 fn free_key(book: u64, end: u64) -> Vec<u8> {
     key::ids(FREE, book, end)
 }
 
-/// A free interval's (start, end).
 fn parse_free(k: &[u8], v: &[u8], book: u64) -> Result<(u64, u64), StoreError> {
     let mut at = key::id(FREE, book).len();
     let end = get_u64(k, &mut at).ok_or_else(|| err("a free key doesn't decode"))?;
@@ -270,7 +219,6 @@ fn parse_free(k: &[u8], v: &[u8], book: u64) -> Result<(u64, u64), StoreError> {
     Ok((start, end))
 }
 
-/// The first free interval ending after `n`.
 fn free_after(view: &View, book: u64, n: u64) -> Result<Option<(u64, u64)>, StoreError> {
     let from = free_key(book, n.saturating_add(1));
     let found = view.scan(&from, &key::prefix_end(&key::id(FREE, book)), 1)?;
@@ -281,7 +229,6 @@ fn free_after(view: &View, book: u64, n: u64) -> Result<Option<(u64, u64)>, Stor
         .transpose()
 }
 
-/// The free interval holding `n`, if any.
 fn free_holding(view: &View, book: u64, n: u64) -> Result<Option<(u64, u64)>, StoreError> {
     Ok(free_after(view, book, n)?.filter(|&(s, _)| s <= n))
 }
@@ -308,7 +255,6 @@ fn take_free(view: &View, out: &mut Out, book: u64, n: u64) -> Result<(), StoreE
     } else {
         (0, u64::MAX)
     };
-    // What is left above `n` keeps the interval's key; below it, a new one ends at `n`.
     if n + 1 < e {
         put_free(out, book, n + 1, e);
     } else if any {
@@ -327,7 +273,6 @@ fn give_free(view: &View, out: &mut Out, book: u64, n: u64) -> Result<(), StoreE
         s = get_uvarint(&v, &mut at).map_err(|_| err("a free start doesn't decode"))?;
         out.del(free_key(book, n));
     }
-    // The interval starting right after `n` takes it in, keeping its key.
     match free_after(view, book, n)? {
         Some((ns, ne)) if ns == n + 1 => put_free(out, book, s, ne),
         _ => put_free(out, book, s, n + 1),
@@ -335,7 +280,6 @@ fn give_free(view: &View, out: &mut Out, book: u64, n: u64) -> Result<(), StoreE
     Ok(())
 }
 
-/// The lowest integer key no entry of `book` has.
 pub fn lowest_free(view: &View, book: u64) -> Result<u64, StoreError> {
     let start = key::id(FREE, book);
     Ok(
@@ -350,8 +294,6 @@ pub fn lowest_free(view: &View, book: u64) -> Result<u64, StoreError> {
     )
 }
 
-// ---- display index ----
-
 fn index_key(book: u64, index: f64, entry: u64) -> Vec<u8> {
     let mut k = key::id(ENTRY_INDEX, book);
     library::num_key(&mut k, Some(canonical(index)));
@@ -359,7 +301,6 @@ fn index_key(book: u64, index: f64, entry: u64) -> Vec<u8> {
     k
 }
 
-/// NaN as one value (positive, so it sorts above every number, as `Math.max` lets it win).
 fn canonical(x: f64) -> f64 {
     if x.is_nan() { f64::NAN } else { x }
 }
@@ -378,7 +319,6 @@ fn drop_index(view: &View, out: &mut Out, entry: u64) -> Result<(), StoreError> 
     Ok(())
 }
 
-/// An entry's recorded `displayIndex`.
 pub fn entry_index(view: &View, entry: u64) -> Result<Option<f64>, StoreError> {
     let Some(b) = view.get(&key::id(ENTRY_INDEX_AT, entry))? else {
         return Ok(None);
@@ -390,7 +330,6 @@ pub fn entry_index(view: &View, entry: u64) -> Result<Option<f64>, StoreError> {
     })
 }
 
-/// The highest `displayIndex` of `book`'s entries (NaN when one is NaN), or None when none has one.
 pub fn max_index(view: &View, book: u64) -> Result<Option<f64>, StoreError> {
     let start = key::id(ENTRY_INDEX, book);
     let found = view.scan_vals_rev(&start, &key::prefix_end(&start), 1)?;
@@ -465,14 +404,10 @@ fn repoint_at(view: &View, out: &mut Out, k: &[u8], from: u64, to: Loc) -> Resul
     Ok(())
 }
 
-// ---- links ----
-
-/// The book a link names in a character's scope (`library::Scope::World`).
 pub fn scope_bytes(book: u64) -> Vec<u8> {
     uvarint(book)
 }
 
-/// The item of list `LINKS` whose text is field `f`.
 pub fn link_item(f: &FieldRef) -> Option<u64> {
     match f {
         FieldRef::Code(c)
@@ -484,7 +419,6 @@ pub fn link_item(f: &FieldRef) -> Option<u64> {
     }
 }
 
-/// The book a link's text names: a book's id in canonical decimal.
 fn link_book(text: &[u8]) -> Result<u64, StoreError> {
     let bad = || StoreError::Refused("a lorebook link's text is a book's id in decimal".into());
     if text.is_empty()
@@ -499,7 +433,6 @@ fn link_book(text: &[u8]) -> Result<u64, StoreError> {
         .ok_or_else(bad)
 }
 
-/// A `LINKED` entry for the link of item `item`, numbered `n` in its book's numbering.
 pub fn linked_bytes(item: u64, n: Option<u64>) -> Vec<u8> {
     let mut b = uvarint(item);
     if let Some(n) = n {
@@ -508,7 +441,6 @@ pub fn linked_bytes(item: u64, n: Option<u64>) -> Vec<u8> {
     b
 }
 
-/// A `LINKED` entry's item and number.
 pub fn parse_linked(b: &[u8]) -> Result<(u64, Option<u64>), StoreError> {
     let bad = || err("a linked entry doesn't decode");
     let mut at = 0;
@@ -543,8 +475,6 @@ fn link_text(view: &View, e: u64, item: u64) -> Result<Option<u64>, StoreError> 
         .transpose()
 }
 
-/// Each of character `e`'s links in list order: its item and the book it names. A placed item without its text
-/// yet is no link.
 pub fn links_of(view: &View, e: u64) -> Result<Vec<(u64, u64)>, StoreError> {
     let prefix = key::ids(key::ITEM, e, LINKS);
     let mut out = Vec::new();
@@ -557,7 +487,6 @@ pub fn links_of(view: &View, e: u64) -> Result<Vec<(u64, u64)>, StoreError> {
     Ok(out)
 }
 
-/// The book character `e`'s first link names.
 pub fn first_link(view: &View, e: u64) -> Result<Option<u64>, StoreError> {
     let prefix = key::ids(key::ITEM, e, LINKS);
     let end = key::prefix_end(&prefix);
@@ -574,7 +503,6 @@ pub fn first_link(view: &View, e: u64) -> Result<Option<u64>, StoreError> {
     }
 }
 
-/// The scopes of the books character `e` links.
 pub fn worlds(view: &View, e: u64) -> Result<Vec<Vec<u8>>, StoreError> {
     let mut w: Vec<Vec<u8>> = links_of(view, e)?
         .into_iter()
@@ -585,7 +513,6 @@ pub fn worlds(view: &View, e: u64) -> Result<Vec<Vec<u8>>, StoreError> {
     Ok(w)
 }
 
-/// Whether character `e` links one of the books of these scopes (`library::Scope::World`'s bytes).
 pub fn links_any(view: &View, e: u64, scopes: &[Vec<u8>]) -> Result<bool, StoreError> {
     for s in scopes {
         if view
@@ -598,7 +525,6 @@ pub fn links_any(view: &View, e: u64, scopes: &[Vec<u8>]) -> Result<bool, StoreE
     Ok(false)
 }
 
-/// Character `e`'s number in book `b`'s numbering, in its `LINKED` entry.
 pub fn world_rank(view: &View, b: u64, e: u64) -> Result<Option<u64>, StoreError> {
     Ok(match view.get(&key::ids(LINKED, b, e))? {
         Some(v) => parse_linked(&v)?.1,
@@ -606,8 +532,6 @@ pub fn world_rank(view: &View, b: u64, e: u64) -> Result<Option<u64>, StoreError
     })
 }
 
-/// Sets character `e`'s number in book `b`'s numbering (None: takes it out). A number for a pair with no link is an
-/// error; taking it out of a gone one does nothing.
 pub fn set_world_rank(
     view: &View,
     out: &mut Out,
@@ -631,8 +555,6 @@ pub fn set_world_rank(
     }
 }
 
-/// Character `e`'s link of item `item` goes from naming `old` to naming `new` (None: no link): its `LINKED` entry,
-/// and its place in the books' scopes. A book it links already is refused.
 fn link_changed(
     view: &View,
     out: &mut Out,
@@ -652,7 +574,6 @@ fn link_changed(
         after.worlds.retain(|w| *w != scope_bytes(b));
     }
     if let Some(b) = new {
-        // A bulk load derives the book in another partition, so it can't be read here.
         if !view.is_bulk() && !matches!(entity_info(view, b)?, Some((BOOK, _, _))) {
             return Err(StoreError::Refused(format!("no book {b}")));
         }
@@ -674,8 +595,6 @@ fn link_changed(
     Ok(())
 }
 
-/// The text of item `item` of entity `e`'s list `LINKS` becomes `new` (None: goes). A character's placed item's
-/// link follows; any other item's text is no link (yet).
 pub fn link_text_changed(
     view: &View,
     out: &mut Out,
@@ -691,7 +610,6 @@ pub fn link_text_changed(
     link_changed(view, out, e, item, old, new)
 }
 
-/// Keeps `MULTI_LINK` as character `e`'s placed links go from as many as `view` holds to `d` more.
 fn multi_link(view: &View, out: &mut Out, e: u64, d: i64) -> Result<(), StoreError> {
     let prefix = key::ids(key::ITEM, e, LINKS);
     let n = view.scan(&prefix, &key::prefix_end(&prefix), 3)?.len() as i64;
@@ -703,8 +621,6 @@ fn multi_link(view: &View, out: &mut Out, e: u64, d: i64) -> Result<(), StoreErr
     Ok(())
 }
 
-/// Item `item` of entity `e`'s list `LINKS` is placed (`was`: it had a place already). A character's newly placed
-/// item with a text is a link from now on.
 pub fn link_placed(
     view: &View,
     out: &mut Out,
@@ -721,7 +637,6 @@ pub fn link_placed(
     multi_link(view, out, e, 1)
 }
 
-/// Item `item` of entity `e`'s list `LINKS` goes: a character's link goes with it.
 pub fn link_deleted(view: &View, out: &mut Out, e: u64, item: u64) -> Result<(), StoreError> {
     if !is_character(view, e)? || !link_placed_now(view, e, item)? {
         return Ok(());
@@ -732,8 +647,6 @@ pub fn link_deleted(view: &View, out: &mut Out, e: u64, item: u64) -> Result<(),
     multi_link(view, out, e, -1)
 }
 
-/// A character comes to be with its links placed already (values committed before its create, in the same
-/// commit): their `LINKED` entries, before it is placed in their scopes.
 pub fn linker_created(view: &View, out: &mut Out, e: u64) -> Result<(), StoreError> {
     let links = links_of(view, e)?;
     for (i, (item, b)) in links.iter().enumerate() {
@@ -754,7 +667,6 @@ pub fn linker_created(view: &View, out: &mut Out, e: u64) -> Result<(), StoreErr
     Ok(())
 }
 
-/// A character goes: its links go.
 pub fn linker_gone(view: &View, out: &mut Out, e: u64) -> Result<(), StoreError> {
     for (_, b) in links_of(view, e)? {
         out.del(key::ids(LINKED, b, e));
@@ -763,9 +675,6 @@ pub fn linker_gone(view: &View, out: &mut Out, e: u64) -> Result<(), StoreError>
     Ok(())
 }
 
-/// `bookLink`, a reserved kind: a character's one lorebook link from before a character's links were its list
-/// `LINKS`. The log's format keeps an old kind decodable, so cleaning can read its records and drop them: every one
-/// is dead, and a new one is refused.
 pub struct BookLink;
 
 impl Deriver for BookLink {
@@ -796,7 +705,6 @@ fn parse_forward(b: &[u8]) -> Result<(u64, Loc), StoreError> {
     Ok((into, parse_loc(&b[at..])?))
 }
 
-/// The book `book` resolves as: itself, or where its forwards lead.
 pub fn resolve(view: &View, mut book: u64) -> Result<u64, StoreError> {
     while let Some(b) = view.get(&key::id(FORWARD, book))? {
         book = parse_forward(&b)?.0;
@@ -804,7 +712,6 @@ pub fn resolve(view: &View, mut book: u64) -> Result<u64, StoreError> {
     Ok(book)
 }
 
-/// `book` and every unresolved book resolving as it: the scopes a filter on it reads.
 pub fn resolving_as(view: &View, book: u64) -> Result<Vec<u64>, StoreError> {
     let mut out = vec![book];
     let mut i = 0;
@@ -867,8 +774,6 @@ impl Deriver for BookForward {
     }
 }
 
-/// Whether a book entity may go (`entityDelete`): only an unresolved one forwarded elsewhere, so every link naming
-/// it still resolves.
 pub fn may_delete(view: &View, e: u64) -> Result<bool, StoreError> {
     Ok(view.get(&key::id(FORWARD, e))?.is_some())
 }
@@ -882,11 +787,8 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
     })
 }
 
-// ---- reads (`Store.worldRead`) ----
-
 use super::chat_read::Js;
 
-/// Up to `limit` defined world books after the key `after`, in key order: `{ books: [{ id, key }], more }`.
 pub fn books_page(view: &View, after: Option<&[u8]>, limit: usize) -> Result<Js, StoreError> {
     let prefix = key::of(BOOKS);
     let start = match after {
@@ -915,8 +817,6 @@ pub fn books_page(view: &View, after: Option<&[u8]>, limit: usize) -> Result<Js,
     ]))
 }
 
-/// Up to `limit` of a book's entries in their places, after the place `after`, or before the place `before`
-/// (nearest first): `{ entries: [{ id, position }], more }`.
 pub fn entries_page(
     view: &View,
     book: u64,
@@ -966,7 +866,6 @@ pub fn entries_page(
     ]))
 }
 
-/// Each item's place in `entity`'s list `list`, or null where the item isn't in it.
 pub fn item_places(view: &View, entity: u64, list: u64, items: &[u64]) -> Result<Js, StoreError> {
     let mut out = Vec::with_capacity(items.len());
     for item in items {
@@ -985,8 +884,6 @@ pub fn item_places(view: &View, entity: u64, list: u64, items: &[u64]) -> Result
     Ok(Js::Arr(out))
 }
 
-/// Each book as it resolves: `{ id, key, defined }` of the book its forwards lead to (`key` the book's key; null
-/// for an owned book), or null for no book.
 pub fn resolved(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
     let mut out = Vec::new();
     for b in ids {
@@ -1003,7 +900,6 @@ pub fn resolved(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
     Ok(Js::Arr(out))
 }
 
-/// Up to `limit` characters with 2 or more links (`MULTI_LINK`) after the id `after`, in id order: `{ ids, more }`.
 pub fn multi_links_page(view: &View, after: Option<u64>, limit: usize) -> Result<Js, StoreError> {
     let prefix = key::of(MULTI_LINK);
     let start = match after {
@@ -1025,8 +921,6 @@ pub fn multi_links_page(view: &View, after: Option<u64>, limit: usize) -> Result
     ]))
 }
 
-/// A book's last entry place (null: none), its lowest free integer entry key and its highest `displayIndex` (null:
-/// no entry has one).
 pub fn book_numbers(view: &View, book: u64) -> Result<Js, StoreError> {
     let prefix = key::ids(key::ITEM, book, ENTRIES);
     let last = match view
@@ -1049,7 +943,6 @@ pub fn book_numbers(view: &View, book: u64) -> Result<Js, StoreError> {
     ]))
 }
 
-/// Up to `limit` characters linking `book` itself (not through forwards) after the id `after`: `{ ids, more }`.
 pub fn linkers_page(
     view: &View,
     book: u64,
@@ -1076,27 +969,21 @@ pub fn linkers_page(
     ]))
 }
 
-/// `book` and every unresolved book resolving as it.
 pub fn resolving_page(view: &View, book: u64) -> Result<Js, StoreError> {
     Ok(Js::Arr(
         resolving_as(view, book)?.into_iter().map(Js::Big).collect(),
     ))
 }
 
-/// A book as one read finds it (`world_book`): its entity, its entries in their places, and (a world book's) the
-/// book it owns as its `originalData`.
 pub struct BookRead {
     pub id: u64,
     pub entity: Option<library_read::Entity>,
-    /// Each entry with its place, in place order.
     pub entries: Vec<(library_read::Entity, u64)>,
     pub original: Option<Box<BookRead>>,
 }
 
-/// Entries read per scan of a book's places.
 const PLACES_PAGE: usize = 1000;
 
-/// The book `book` whole, from one view; with `world`, the book it owns as its `originalData` too.
 fn book_read(view: &View, book: u64, world: bool) -> Result<BookRead, StoreError> {
     let prefix = key::ids(key::ITEM, book, ENTRIES);
     let end = key::prefix_end(&prefix);
@@ -1139,9 +1026,6 @@ fn book_read(view: &View, book: u64, world: bool) -> Result<BookRead, StoreError
     })
 }
 
-/// The defined world book keyed `k`, whole, from one view (what a book read by name finds), or None when no world
-/// book has the key.
-/// Whether a defined world book is keyed `k` (what `world_book` would find), reading only its entity.
 pub fn world_book_exists(view: &View, k: &[u8]) -> Result<bool, StoreError> {
     let Some(id) = library::entity_by_key(view, BOOK, k)? else {
         return Ok(false);

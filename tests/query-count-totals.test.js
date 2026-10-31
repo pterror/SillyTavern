@@ -2,10 +2,6 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } fr
 import fs from 'node:fs';
 import path from 'node:path';
 
-// POST /api/characters/query's total, for the filter shapes the page asks: no filter, fav alone, tags included and
-// excluded, a world, an id list, and a search; with and without groups; in JSON and in the binary hash header. Each is
-// compared with the count of the entities of a small library that match it.
-
 /** @type {import('express').Router} */
 let router;
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
@@ -54,7 +50,10 @@ beforeEach(async () => {
 
 afterEach(() => user.close());
 
-/** @param {string} name @param {boolean} fav */
+/**
+ * @param {string} name
+ * @param {boolean} fav
+ */
 function cardFor(name, fav) {
     return {
         name, fav, spec: 'chara_card_v2', spec_version: '2.0',
@@ -85,7 +84,6 @@ async function assign(id, tagId) {
     expect((await user.store.lib.tags.assign(id, tagId)).result).toBe('ok');
 }
 
-/** The library the totals are of: each entity with its fav, tags and world. */
 const LIBRARY = [
     { id: 'a.png', group: false, fav: true, tags: ['t1', 't2'] },
     { id: 'b.png', group: false, fav: false, tags: ['t1'] },
@@ -98,10 +96,6 @@ const LIBRARY = [
     { id: 'gc', group: true, fav: false, tags: [] },
 ];
 
-/**
- * Characters: a (fav; t1, t2), b (t1), c (fav), d (t2), e (t1), w (world 'lore'; t1).
- * Groups: ga (fav; t1), gb (t2), gc.
- */
 async function seedLibrary() {
     await saveTags(['t1', 't2', 't3']);
     await seedCharacter('a.png', true);
@@ -123,14 +117,12 @@ async function postJson(body) {
     return fetch(`${baseUrl}/api/characters/query`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 }
 
-/** The JSON total of one request. */
 async function jsonTotal(filter) {
     const response = await postJson({ filter, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 2, want: ['rows', 'total'] });
     expect(response.status).toBe(200);
     return (await response.json()).total;
 }
 
-/** The binary hash-mode header of one request: its total, and whether it's flagged approximate. */
 async function binaryTotal(filter) {
     const response = await postJson({ filter, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 2, want: ['hashes', 'total'] });
     expect(response.status).toBe(200);
@@ -141,7 +133,6 @@ async function binaryTotal(filter) {
 }
 
 /**
- * How many entities of LIBRARY a filter matches.
  * @param {{ tags?: { include?: string[], exclude?: string[], mode?: string }, fav?: boolean, includeGroups?: boolean, world?: string, excludeIds?: string[] }} filter
  */
 function modelTotal(filter) {
@@ -204,7 +195,6 @@ describe('/query totals', () => {
 
     test.each([
         ['two included tags', { tags: { include: ['t1', 't2'] } }, 1, 1],
-        // As upstream's tag filter: each included tag must be carried, so a repeated one is that tag.
         ['a repeated included tag', { tags: { include: ['t1', 't1'] } }, 4, 5],
         ['an included and an excluded tag', { tags: { include: ['t1'], exclude: ['t2'] } }, 3, 4],
         ['two excluded tags', { tags: { exclude: ['t1', 't2'] } }, 1, 2],
@@ -233,7 +223,6 @@ describe('/query totals', () => {
 });
 
 describe('/query search totals on a small set', () => {
-    /** The total of a search request, as JSON (a number, or `~<number>` when approximate) or from the binary header. */
     async function searchTotal(body, binary) {
         const response = await postJson({ ...body, want: [binary ? 'hashes' : 'rows', 'total'] });
         expect(response.status).toBe(200);

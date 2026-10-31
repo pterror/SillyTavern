@@ -1,10 +1,4 @@
-// The story string as an older context template is used: it gets the before and after anchors (where injections at
-// those places go) when it has neither place for them. A leaf module: the server uses it too.
-
 /**
- * The story string of a context template, the anchors added where a template from before they existed lacks them:
- * `{{anchorBefore}}` before its first field, `{{anchorAfter}}` after its last. A template that has the story string's
- * position setting is already of the anchors' time, and is used as it is.
  * @param {{ story_string?: string, story_string_position?: number } | null | undefined} contextSettings
  * @returns {string}
  */
@@ -15,8 +9,8 @@ export function storyStringWithAnchors(contextSettings) {
     }
 
     /**
-     * @param {string} field Missing field name
-     * @param {'start'|'end'} position Position of auto-fix
+     * @param {string} field
+     * @param {'start'|'end'} position
      */
     function autoFixMissingField(field, position) {
         if (storyString.includes(`{{${field}}}`)) {

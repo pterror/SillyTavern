@@ -1,13 +1,3 @@
-//! Measures chats on a synthetic set: per action, the record and derived bytes and the device bytes of an
-//! isolated commit; and the reads a session list page, a bookmark list page and opening a position make.
-//!
-//!   cargo run --release --example chat -- <dir> <trees>
-//!
-//! Each tree has 200 messages in a chain (every fifth with a second alternative), sent through 8 of 64 sessions,
-//! and 3 bookmarks; one more tree is a chain of 10,000. `dir` is created and removed. Device bytes are
-//! `/proc/diskstats` sector deltas of the device holding `dir` (`ST_DISK`, e.g. nvme0n1p5), less an idle window of
-//! the same length taken just before.
-
 use std::path::Path;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -76,7 +66,6 @@ fn append(
 struct Load {
     next_message: u64,
     next_position: u64,
-    /// The last message of each tree's chain, by tree (1-based), and the long tree's.
     ends: Vec<u64>,
     long_tree: u64,
     long_end: u64,
@@ -190,7 +179,6 @@ fn load(s: &Store, trees: u64) -> Load {
         }
     }
     batches.push(recs);
-    // In order: each batch's first message replies to the batch before's last.
     for b in batches {
         s.commit_wait(b).unwrap();
     }
@@ -218,8 +206,6 @@ fn disk_sectors(dev: &str) -> u64 {
     panic!("no device {dev}");
 }
 
-/// Commits `n` single actions one at a time; per action: record bytes, entries, entry bytes, device bytes (idle
-/// window subtracted), ms.
 fn isolated(s: &Store, dev: &str, n: u64, mut action: impl FnMut(u64) -> Vec<Record>) -> [f64; 5] {
     let probe = Instant::now();
     for i in 0..5 {
@@ -293,7 +279,6 @@ fn actions(s: &Store, l: &mut Load, trees: u64, dev: &str) {
     rows.push((
         "fork choice",
         isolated(s, dev, n, |i| {
-            // The alternative stored beside every fifth message of tree 1 + i.
             let t = 1 + i % trees;
             let first = 1 + (t - 1) * (PER_TREE + PER_TREE / 5);
             let alt = first + 5;
@@ -373,7 +358,6 @@ fn median_ms(mut f: impl FnMut()) -> f64 {
     t[15]
 }
 
-/// The `replies` of each message `chat_read::messages` answers.
 fn replies(js: &chat_read::Js) -> Vec<u64> {
     let chat_read::Js::Arr(list) = js else {
         unreachable!()
@@ -391,8 +375,6 @@ fn replies(js: &chat_read::Js) -> Vec<u64> {
         .collect()
 }
 
-/// The alternatives `ChatEngine.load` reads: the openings, and the replies of each message on the path with more
-/// than one.
 fn alternatives(
     v: &st_engine::store::derive::View,
     tree: u64,
@@ -408,7 +390,6 @@ fn alternatives(
     Ok(())
 }
 
-/// Opening a position as `ChatEngine.load` reads it: the path, its messages, their alternatives, the state there.
 fn open_position(s: &Store, tree: u64, at: u64) -> usize {
     s.chat_read(|v| {
         let ids = st_engine::store::chat::path_to(v, Some(at))?;
@@ -445,7 +426,6 @@ fn reads(s: &Store, l: &Load) {
     for (name, ms) in rows {
         println!("| {name} | {ms:.3} |");
     }
-    // Where opening the longest position spends its time.
     let at = l.long_end;
     let tree = l.long_tree;
     let ids: Vec<u64> = s
@@ -567,7 +547,6 @@ fn main() {
     s.wait_ready().unwrap();
     let mut l = load(&s, trees);
     actions(&s, &mut l, trees, &dev);
-    // Reads on a reopened store (everything flushed).
     s.close();
     drop(s);
     let s = Store::open(dir, StoreConfig::default()).unwrap();

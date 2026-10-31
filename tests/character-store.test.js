@@ -15,7 +15,6 @@ const digitStem = { avatar: '3.png', name: 'Digit stem' };
 const gamma = { avatar: 'gamma.png', name: 'Gamma' };
 const delta = { avatar: 'delta.png', name: 'Delta' };
 
-/** A group whose members are the four characters, open by default, so upstream's indices 0-3 name them in order. */
 const party = { id: 'party', name: 'Party', members: ['alpha.png', '3.png', 'gamma.png', 'delta.png'] };
 
 /** @param {object[]} groupList */

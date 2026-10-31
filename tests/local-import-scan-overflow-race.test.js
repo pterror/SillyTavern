@@ -4,28 +4,11 @@ import path from 'node:path';
 import os from 'node:os';
 import process from 'node:process';
 
-// Regression coverage for a real bug: triggerImmediateRescan() (local-import-scan.js) used to gate on
-// `scanTimeout` being non-null as its own "nothing is running, safe to trigger now" check. That's wrong -
-// scheduleNext()'s setTimeout callback never nulls `scanTimeout` when it actually fires, only
-// triggerImmediateRescan() itself (and disposeLocalImportScan()) ever did. So for the entire duration of a
-// NORMALLY-scheduled pass, `scanTimeout` still held the old, already-fired Timeout object - truthy,
-// indistinguishable from "still waiting". A watcher-overflow signal (watch-overflow.js) landing during that
-// window - exactly what a sustained burst of writes into a watched directory produces - would pass that stale
-// check and launch a SECOND, fully concurrent pass on top of the one already running. This test simulates that
-// exact signal arriving mid-pass and asserts no second pass gets started.
-//
-// The overflow-watch native binding is mocked at the module boundary (rather than relying on the real Linux
-// inotify addon) so this test can trigger the signal deterministically instead of needing a real queue overflow.
 /** @type {(() => void) | null} */
 let capturedOnOverflow = null;
 jest.unstable_mockModule('../src/watch-overflow.js', () => ({
     attachLinuxDirectoryWatch: jest.fn((_dir, { onOverflow }) => {
         capturedOnOverflow = onOverflow;
-        // Resolve null (as if the native watch never confirmed attached) so allOverflowConfirmed() stays
-        // false and local-import-scan.js keeps scheduling ordinary periodic passes (scanIntervalMs) instead of
-        // switching into heartbeat mode - this test is specifically about the periodic-pass reentrancy guard.
-        // startWatcherFor() falls back to plain fs.watch() for event delivery when this resolves null, same as
-        // it always has for a failed/unavailable native attach.
         return Promise.resolve(null);
     }),
     isWindowsOverflowSignal: () => false,
@@ -63,7 +46,6 @@ describe('local-import-scan: watcher-overflow signal during an in-flight periodi
     let user;
 
     beforeAll(async () => {
-        // The default user's store, in a data root of its own.
         user = await fixture.emptyUser('st-local-import-scan-overflow-test-');
         dataRoot = user.dataRoot;
         globalThis.DATA_ROOT = dataRoot;
@@ -103,7 +85,6 @@ describe('local-import-scan: watcher-overflow signal during an in-flight periodi
     });
 
     test('an overflow signal arriving while a normally-scheduled pass is still running does not start a second, overlapping pass', async () => {
-        // setImmediate stays real: a pass reads the store before it lists the directory, which takes the event loop.
         jest.useFakeTimers({ doNotFake: ['setImmediate'] });
         const settle = async () => { for (let i = 0; i < 50; i++) await new Promise(resolve => setImmediate(resolve)); };
         const realOpendir = fs.promises.opendir.bind(fs.promises);
@@ -113,9 +94,6 @@ describe('local-import-scan: watcher-overflow signal during an in-flight periodi
         const opendirSpy = jest.spyOn(fs.promises, 'opendir').mockImplementation(async (...args) => {
             opendirCallCount++;
             if (opendirCallCount === 2) {
-                // Stall the SECOND pass - the one started by a real, already-fired scheduled timer, i.e. exactly
-                // the condition under which `scanTimeout` used to still look truthy despite this pass being
-                // genuinely in flight - until this test explicitly releases it below.
                 await new Promise(resolve => { releaseSecondCall = resolve; });
             }
             return realOpendir(...args);
@@ -123,20 +101,16 @@ describe('local-import-scan: watcher-overflow signal during an in-flight periodi
 
         try {
             await localImportScan.initializeLocalImportScan();
-            await localImportScan.waitForCurrentScanPass(); // first pass (opendir call #1) - fast, empty dir
+            await localImportScan.waitForCurrentScanPass();
             expect(typeof capturedOnOverflow).toBe('function');
 
-            // Fire the real scheduled timer for the SECOND pass (opendir call #2, stalled by the mock above).
             await jest.advanceTimersByTimeAsync(1000);
             await settle();
             expect(opendirCallCount).toBe(2);
 
-            // Simulate a watcher-overflow signal arriving WHILE that second pass is still stalled inside its own
-            // opendir() call - the exact window the historical bug launched an overlapping third pass in.
             capturedOnOverflow();
             await settle();
 
-            // Fixed behavior: passInFlight blocks the overflow-triggered rescan outright - no third opendir call.
             expect(opendirCallCount).toBe(2);
         } finally {
             releaseSecondCall();
@@ -144,7 +118,6 @@ describe('local-import-scan: watcher-overflow signal during an in-flight periodi
             jest.useRealTimers();
         }
 
-        // Let the now-released second pass actually finish before teardown.
         await localImportScan.waitForCurrentScanPass();
     });
 });

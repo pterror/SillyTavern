@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// Toggling a regex script in its list saves it and draws the open chat's messages again from what the page holds:
-// the chat isn't opened again (no request for it, no CHAT_CHANGED) and the script list isn't drawn again.
-
 test('toggling a regex script redraws the chat in place, not reopening it, and keeps the list as drawn', async ({ page }) => {
     await testSetup.awaitST({ page });
     await page.evaluate(async () => {
@@ -20,7 +17,6 @@ test('toggling a regex script redraws the chat in place, not reopening it, and k
     const text = page.locator(`#chat .mes[mesid="${id}"] .mes_text`);
     await expect(text).toHaveText('the cat sat');
 
-    // A display-only script turning cat into dog, enabled through /regex-toggle (which draws the list).
     await page.evaluate(async () => {
         const { extension_settings } = await import('/scripts/extensions.js');
         extension_settings.regex.push({

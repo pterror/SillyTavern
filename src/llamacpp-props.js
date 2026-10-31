@@ -5,27 +5,18 @@ import { setAdditionalHeadersByType } from './additional-headers.js';
 import { trimV1 } from './util.js';
 import { logBackendFailure } from './backend-unreachable.js';
 
-/**
- * llama.cpp's `GET /props` (llama.cpp server README, "GET `/props`: Get server global properties"),
- * asked for what stored llama.cpp counts are trusted against (`model_path` and `build_info`, see
- * tokenizerIdentity() in tokenizer-resolve.js) and for the model name the map reads when the model
- * setting is empty. llama.cpp says nothing when its model changes, so a generation asks afresh; a
- * `/api/tokenizers/current/*` request reuses a recent answer for the same backend.
- */
-
-/** How long a `/current/*` request reuses a `/props` answer for the same backend. */
 export const PROPS_REUSE_MS = 5000;
 
 /**
  * @typedef {object} LlamaCppPropsBackend
- * @property {string} api `textgenerationwebui`, or `openai` for a chat-completion custom URL.
- * @property {string} type The textgen type, or the chat-completion source.
- * @property {string} url The backend URL.
- * @property {string} model The model setting; non-empty asks with `?model=` (router mode).
- * @property {Record<string, string>} headers The backend's headers.
+ * @property {string} api
+ * @property {string} type
+ * @property {string} url
+ * @property {string} model
+ * @property {Record<string, string>} headers
  */
 
-/** @type {Map<string, { props: object, at: number }>} Recent answers, one per backend. */
+/** @type {Map<string, { props: object, at: number }>} */
 const recent = new Map();
 
 /**
@@ -37,8 +28,6 @@ function backendKey({ api, type, url, model }) {
 }
 
 /**
- * Removes the answers too old to reuse, so what is held is bounded by the backends asked within
- * PROPS_REUSE_MS.
  * @param {number} now
  */
 function forgetStaleAnswers(now) {
@@ -54,13 +43,10 @@ export function clearLlamaCppPropsMemory() {
 }
 
 /**
- * Asks the backend for its `/props`, built as the `/props` route builds it: the URL less a trailing
- * `/v1`, and `?model=` when there is a model setting. Never throws.
  * @param {LlamaCppPropsBackend} backend
- * @returns {Promise<object|null>} The parsed reply; null for a failed request or a reply that isn't a JSON object.
+ * @returns {Promise<object|null>}
  */
 export async function fetchLlamaCppProps(backend) {
-    // No URL set: there is no backend to ask, which isn't a failure.
     if (!backend.url) return null;
     let url = `${trimV1(backend.url)}/props`;
     if (backend.model) {
@@ -81,14 +67,9 @@ export async function fetchLlamaCppProps(backend) {
 }
 
 /**
- * The `/props` answers one request uses: each backend is asked at most once per check. A
- * generation's check (`reuse: false`) always asks afresh; a `/current/*` request's (`reuse: true`)
- * takes an answer for the same backend given less than PROPS_REUSE_MS ago. Every answer a check gets
- * becomes the one reused.
  * @typedef {object} LlamaCppPropsCheck
  * @property {(backend: LlamaCppPropsBackend) => Promise<object|null>} ask
- * @property {object|null|undefined} props The last answer asked for: undefined before any, null
- * when the request failed.
+ * @property {object|null|undefined} props
  */
 
 /**
@@ -136,7 +117,6 @@ async function askProps(backend, key, reuse) {
 }
 
 /**
- * A textgen llama.cpp backend, with the headers its other requests get.
  * @param {string} url
  * @param {string} model
  * @param {import('./users.js').UserDirectoryList|undefined} directories
@@ -151,10 +131,6 @@ export function textgenLlamaCppBackend(url, model, directories) {
 }
 
 /**
- * The model name the map reads, from a `/props` reply: a non-empty `model_alias` that differs from
- * `model_path` is a set alias and is the name; otherwise the file name after the last `/` of
- * `model_path`. undefined when the reply carries no `model_alias` field (or there is no reply), so
- * the alias can't be known from it; null when there is no name.
  * @param {any} props
  * @returns {string|null|undefined}
  */

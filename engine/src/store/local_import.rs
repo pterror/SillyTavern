@@ -1,17 +1,11 @@
-//! The local import scan's bookkeeping (`localImport.directories`): per source file, the mtime it was processed at
-//! (with the character it duplicated, whose delete forgets it) and the skips of files that aren't characters.
-
 use super::StoreError;
 use super::derive::{Deriver, Loc, Out, View};
 use super::kinds::{bytes, dead, key, loc_bytes, parse_loc};
 use crate::keyspace::val::{get_bytes, put_bytes};
 use crate::log::format::{Record, Value};
 
-/// Per source path: its `localImportMtime` record.
 pub const MTIME: u64 = 86;
-/// Per (character, source path): the path's mtime record names the character as what it duplicated.
 pub const DUPLICATE_OF: u64 = 87;
-/// Per source path: its `localImportSkip` record.
 pub const SKIP: u64 = 88;
 
 fn path_key(structure: u64, path: &[u8]) -> Vec<u8> {
@@ -33,7 +27,6 @@ fn opt_entity(rec: &Record, i: usize) -> Option<u64> {
     }
 }
 
-/// The record a path's entry points at, if any.
 fn current(view: &View, k: &[u8]) -> Result<Option<(Loc, Record)>, StoreError> {
     match view.get(k)? {
         Some(b) => {
@@ -44,7 +37,6 @@ fn current(view: &View, k: &[u8]) -> Result<Option<(Loc, Record)>, StoreError> {
     }
 }
 
-/// `localImportMtime` and `localImportSkip`: the last record of a path is its value; one with no `mtime` forgets it.
 pub struct PathValue {
     structure: u64,
 }
@@ -101,7 +93,6 @@ impl Deriver for PathValue {
     }
 }
 
-/// A character is deleted: the paths recorded as its duplicates are forgotten, so the scan reads them again.
 pub fn entity_gone(view: &View, out: &mut Out, entity: u64) -> Result<(), StoreError> {
     let p = key::id(DUPLICATE_OF, entity);
     for (k, _) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
@@ -118,7 +109,6 @@ pub fn entity_gone(view: &View, out: &mut Out, entity: u64) -> Result<(), StoreE
     Ok(())
 }
 
-/// A path's mtime record: `(mtime, duplicate of)`, or None.
 pub fn mtime(view: &View, path: &[u8]) -> Result<Option<(f64, Option<u64>)>, StoreError> {
     Ok(current(view, &path_key(MTIME, path))?.map(|(_, r)| {
         let m = match r.values[1] {
@@ -129,7 +119,6 @@ pub fn mtime(view: &View, path: &[u8]) -> Result<Option<(f64, Option<u64>)>, Sto
     }))
 }
 
-/// A path's skip: `(mtime, reason)`, or None.
 pub fn skip(view: &View, path: &[u8]) -> Result<Option<(f64, Vec<u8>)>, StoreError> {
     Ok(current(view, &path_key(SKIP, path))?.map(|(_, r)| {
         let m = match r.values[1] {
@@ -144,7 +133,6 @@ pub fn skip(view: &View, path: &[u8]) -> Result<Option<(f64, Vec<u8>)>, StoreErr
     }))
 }
 
-/// Up to `limit` paths holding an mtime record after `after` (none: from the first), in path order.
 pub fn mtime_paths_after(
     view: &View,
     after: Option<&[u8]>,

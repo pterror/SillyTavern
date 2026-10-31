@@ -1,49 +1,4 @@
 #!/usr/bin/env node
-// Export parity for public/script.js and every public/scripts module against upstream/staging.
-//
-// Third-party extensions import from public/script.js, so every name upstream/staging's script.js
-// exports must stay importable from ours. The checked-in list `.upstream-script-exports` (repo root)
-// holds those names: its first line is the upstream/staging commit the list was taken from, then one
-// export name per line, sorted.
-//
-// They import from the modules under public/scripts too (extensions.js, world-info.js, utils.js, ...), so
-// `.upstream-module-signatures` records every export of every public/scripts/**.js module at the same
-// commit, one `<module> <name> <signature>` per line (the notation of scripts/script-signatures.mjs),
-// sorted by module then name. A module's names follow `export * from` into the module it names, and
-// `export default` is recorded as `default` (presence only). `check` fails on a module that is gone, a
-// name a module no longer exports, and a signature that no longer matches, as for script.js.
-//
-// `check` compares public/script.js against the checked-in records only and reads no git history, so
-// it runs the same in every clone and has nothing to skip. It does not check that the records are up
-// to date with upstream: refreshing them is a step of merging upstream/staging.
-//
-// Merging upstream/staging: use `npm run merge:upstream`, which refreshes and stages the records in
-// the merge itself. After any other merge of upstream/staging, run `npm run script-exports:refresh`
-// (or `refresh REF`) and commit the records.
-//
-//   node scripts/script-exports.mjs check [--root DIR]
-//       Fails unless every name in DIR/.upstream-script-exports is an export of DIR/public/script.js
-//       (extra exports in ours are fine) with a signature compatible with the one recorded in
-//       DIR/.upstream-script-signatures, and every export in DIR/.upstream-module-signatures is an
-//       export of that module in DIR with a compatible signature. --root defaults to the current directory.
-//
-//   node scripts/script-exports.mjs refresh [REF]
-//       Rewrites the records from REF's public/script.js and public/scripts (default: the merge-base of upstream/staging
-//       with HEAD, and with MERGE_HEAD while a merge is in progress; it asks for a REF when there is
-//       no such single commit).
-//
-//   node scripts/script-exports.mjs merge-upstream
-//       `git merge --no-commit --no-ff upstream/staging`, then, if a merge is in progress, refreshes
-//       and stages the list. Exits with the merge's status.
-//
-//   node scripts/script-exports.mjs post-merge
-//       Reminds to refresh when the merge just made moved the merge-base with upstream/staging but
-//       the committed records weren't refreshed. Never fails: git ignores post-merge's exit status.
-//
-// There is no allowlist, exception list or inline disable. Export forms other than
-// `export <function|class|var|let|const declaration>` and `export { ... }` (with or without `from`)
-// fail, `export *` and `export default` included. A list that can't be read or a script.js that
-// can't be parsed fails with its own message - never a silent pass.
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -77,10 +32,6 @@ function hasModifier(ts, node, kind) {
     return (ts.canHaveModifiers(node) ? ts.getModifiers(node) ?? [] : []).some(m => m.kind === kind);
 }
 
-/**
- * Returns the sorted, de-duplicated export names of a module's source text.
- * Throws CheckError on a parse error or on any export form it doesn't handle.
- */
 function exportNames(ts, sourceText, label) {
     const sourceFile = ts.createSourceFile(label, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
     const parseDiagnostics = sourceFile.parseDiagnostics;
@@ -136,12 +87,6 @@ function compareNames(a, b) {
     return a < b ? -1 : a > b ? 1 : 0;
 }
 
-/**
- * Returns the sorted export names of module `rel` (read through `read`), for the public/scripts
- * modules. Unlike script.js's list it also takes `export default` (as `default`), `export * as ns`
- * and `export * from` (the target module's names but `default`, followed through further stars).
- * Throws CheckError on a parse error or on any other export form.
- */
 function moduleExportNames(ts, read, rel, seen = new Set()) {
     if (seen.has(rel)) return [];
     seen.add(rel);
@@ -200,14 +145,12 @@ function moduleExportNames(ts, read, rel, seen = new Set()) {
     return [...names].sort(compareNames);
 }
 
-/** The public/scripts modules of `commit`. */
 function upstreamModules(repo, commit) {
     return git(repo, ['ls-tree', '-r', '--name-only', commit, '--', MODULE_DIR]).split('\n')
         .filter(rel => rel.endsWith('.js'))
         .sort(compareNames);
 }
 
-/** The module record `refresh` writes for `commit`: every export of every public/scripts module. */
 function upstreamModuleSignatures(ts, repo, commit) {
     const read = gitReader(repo, commit);
     const analyzer = createAnalyzer(ts, read, commit.slice(0, 12));
@@ -216,7 +159,6 @@ function upstreamModuleSignatures(ts, repo, commit) {
     return formatModuleSignatures(commit, entries);
 }
 
-/** Problems with our public/scripts modules against the module record. */
 function moduleProblems(ts, root, modules, source) {
     const read = fsReader(root);
     const analyzer = createAnalyzer(ts, read, 'ours', { ours: true });
@@ -340,7 +282,6 @@ function fsReader(root) {
     };
 }
 
-/** The signatures record `refresh` writes for `commit`. */
 function upstreamSignatures(ts, repo, commit) {
     const analyzer = createAnalyzer(ts, gitReader(repo, commit), commit.slice(0, 12));
     return formatSignatures(commit, upstreamNames(ts, repo, commit).map(name => [name, analyzer.signature(name)]));
@@ -356,7 +297,6 @@ function readSignatures(signaturesPath) {
     return parseSignatures(text, signaturesPath);
 }
 
-/** Problems with our signatures (`oursSignature(name)`) against upstream's `entries`, for names ours exports. */
 function signatureProblems(entries, ours, oursSignature, source) {
     const problems = entries
         .filter(([name]) => ours.has(name))
@@ -379,18 +319,10 @@ function mergeHeads(repo) {
     return text.split('\n').map(line => line.trim()).filter(Boolean);
 }
 
-/**
- * The newest upstream/staging commits contained in `commits` (for several, in a merge of them):
- * `{ bases }`, the independent merge-bases (one unless the history is criss-crossed), or
- * `{ skipped }`, the reason they can't be computed here (no local ref, or no merge-base, as in a
- * shallow fetch).
- */
 function upstreamBasesIn(repo, commits) {
     if (!gitSucceeds(repo, ['rev-parse', '--verify', '--quiet', `${UPSTREAM_REF}^{commit}`])) {
         return { skipped: `${UPSTREAM_REF} does not resolve here` };
     }
-    // With more than two arguments, merge-base computes the base of the first with a hypothetical
-    // merge of the rest.
     let all;
     try {
         all = git(repo, ['merge-base', '--all', UPSTREAM_REF, ...commits]).split('\n').filter(Boolean);

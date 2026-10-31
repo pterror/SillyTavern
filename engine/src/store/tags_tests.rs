@@ -1,6 +1,3 @@
-//! The tag manager's orders, counts, lookups and change feeds against a model of the tags, through flushes,
-//! merges, folds, prunes and reopening.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
@@ -113,7 +110,6 @@ fn assign(e: u64, t: u64, on: bool) -> Record {
     )
 }
 
-/// A deterministic stream of numbers.
 struct Rng(u64);
 
 impl Rng {
@@ -166,7 +162,6 @@ fn ord_cmp(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
     a.unwrap().partial_cmp(&b.unwrap()).unwrap()
 }
 
-/// The model's tags matching `q`, in its sort's order.
 fn model_page(m: &BTreeMap<u64, T>, q: &Query) -> Vec<u64> {
     let fold = |s: Option<&Vec<u8>>| s.map(|b| tags::name_key(b));
     let (exact, prefix, contains) = (
@@ -264,14 +259,12 @@ fn check(s: &Store, m: &BTreeMap<u64, T>) {
                     }
                     let want = model_page(m, &q);
                     assert_eq!(read_all(s, &q), want, "{q:?}");
-                    // Last first, through cursors.
                     let rq = Query {
                         reverse: true,
                         ..q.clone()
                     };
                     let rev: Vec<u64> = want.iter().rev().copied().collect();
                     assert_eq!(read_all(s, &rq), rev, "reverse {q:?}");
-                    // Each tag's position is its place in the order.
                     let items: Vec<(u64, Option<Option<f64>>)> =
                         want.iter().map(|t| (*t, None)).collect();
                     let pos = s.tag_positions(sort, &items).unwrap();
@@ -290,7 +283,6 @@ fn check(s: &Store, m: &BTreeMap<u64, T>) {
                             assert_eq!(read_all(s, &oq), ow, "ordered {ordered} {q:?}");
                         }
                     }
-                    // The same read through ids, from a cursor in the middle.
                     let all: Vec<u64> = m.keys().copied().collect();
                     let iq = Query {
                         ids: Some(all.clone()),
@@ -307,7 +299,6 @@ fn check(s: &Store, m: &BTreeMap<u64, T>) {
                 }
             }
         }
-        // A cap of 1 examines one tag per page, and the walk still ends with every match.
         let q = Query {
             sort,
             search: Some(b"b".to_vec()),
@@ -355,8 +346,6 @@ fn tag_pages_counts_and_lookups_follow_every_change() {
     tag_pages_counts_and_lookups_follow_every_change_in(&pool);
 }
 
-/// `tag_pages_counts_and_lookups_follow_every_change` simulated: background steps run as the seed picks them (`Executor::simulated`), so an interleaving
-/// that fails replays exactly with `ST_SIM_SEED`; `ST_SIM_SEEDS` sets how many seeds run (default 8).
 #[test]
 fn tag_pages_counts_and_lookups_follow_every_change_simulated() {
     for seed in crate::keyspace::exec::sim_seeds(8) {
@@ -367,7 +356,6 @@ fn tag_pages_counts_and_lookups_follow_every_change_simulated() {
 fn tag_pages_counts_and_lookups_follow_every_change_in(mk: &dyn Fn() -> Arc<Pool>) {
     let dir = temp_dir("model");
     let mut s = Store::open_in(&dir, SMALL, mk()).unwrap();
-    // `ST_MODEL_SEED` replays another seed (long runs sweep them).
     let seed = std::env::var("ST_MODEL_SEED")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -487,7 +475,6 @@ fn tag_pages_counts_and_lookups_follow_every_change_in(mk: &dyn Fn() -> Arc<Pool
                     }
                 }
                 gone.insert(t, into);
-                // Readers of the target see the merged carriers before the fold; counts mark them.
                 if let Some(i) = into
                     && !old.carriers.is_empty()
                 {
@@ -521,7 +508,6 @@ fn tag_pages_counts_and_lookups_follow_every_change_in(mk: &dyn Fn() -> Arc<Pool
         }
     }
     check(&s, &m);
-    // The feed lists every tag once, at its last change, live and deleted alike.
     let (entries, more, end) = s.tag_feed(key::TAG_CHANGE, 0, 10_000).unwrap();
     assert!(!more);
     let listed: BTreeSet<u64> = entries.iter().map(|(_, t)| *t).collect();
@@ -533,7 +519,6 @@ fn tag_pages_counts_and_lookups_follow_every_change_in(mk: &dyn Fn() -> Arc<Pool
         .tag_feed(key::TAG_CHANGE, entries[entries.len() / 2].0, 10_000)
         .unwrap();
     assert_eq!(half, entries[entries.len() / 2 + 1..]);
-    // The assignment feed lists the entities whose tags changed.
     let (ents, _, _) = s.tag_feed(key::ENTITY_TAG_CHANGE, 0, 10_000).unwrap();
     let changed: BTreeSet<u64> = ents.iter().map(|(_, e)| *e).collect();
     assert_eq!(changed, retagged);
@@ -571,7 +556,6 @@ fn a_cursor_for_another_sort_is_refused() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// The same tags, carriers and orders, through a bulk load and through commits.
 fn tag_library() -> Vec<Vec<Record>> {
     let mut rng = Rng(7);
     let mut out = Vec::new();
@@ -638,7 +622,6 @@ fn a_bulk_load_places_every_tag_as_commits_do() {
         let ids: Vec<u64> = (1..=40).collect();
         assert_eq!(s.tag_counts(&ids).unwrap(), c.tag_counts(&ids).unwrap());
         assert_eq!(s.tag_unused(100).unwrap(), c.tag_unused(100).unwrap());
-        // The commit path goes on from the load's places.
         for st in [&s, &c] {
             st.commit_wait(vec![
                 assign(100, 2, false),
@@ -725,10 +708,8 @@ fn unassigning_a_merged_tag_keeps_its_target() {
         rec("entityDelete", vec![Value::Id(1)]),
     ])
     .unwrap();
-    // The client's delete-and-merge unassigns the merged tag from each entity that carried it.
     s.commit_wait(vec![assign(10, 1, false)]).unwrap();
     wait_folds(&s);
-    // 10 carried the target itself: it keeps it.
     assert_eq!(
         s.library_tag_ids(&[10, 11]).unwrap(),
         vec![vec![2], vec![2]]
@@ -755,9 +736,7 @@ fn a_deleted_tags_name_finds_the_last_tag_deleted_with_it() {
     ])
     .unwrap();
     wait_folds(&s);
-    // Folded as live names are.
     assert_eq!(gone("OLD"), Some(1));
-    // A later one with the same folded name takes it over.
     s.commit_wait(vec![
         rec("tagMerge", vec![Value::Id(3), Value::Id(4)]),
         rec("entityDelete", vec![Value::Id(3)]),
@@ -834,7 +813,6 @@ fn a_reorder_pass_counts_the_live_tags_it_wrote() {
     ])
     .unwrap();
     assert_eq!(status(&s), (1, Some(0), 3, 5));
-    // Written again: counted once; the order is the later one.
     s.commit_wait(vec![pass_order(1, 3.0, 1)]).unwrap();
     assert_eq!(status(&s), (1, Some(0), 3, 5));
     let q = Query {
@@ -857,7 +835,6 @@ fn a_reorder_pass_counts_the_live_tags_it_wrote() {
         ),
         vec![2, 3, 1, 4, 5]
     );
-    // A written tag that goes leaves the count; one that comes doesn't join it.
     s.commit_wait(vec![rec("tagPrune", vec![Value::Id(2)])])
         .unwrap();
     s.commit_wait(vec![set(6, NAME, "t6"), mark(6), create(6, TAG, "t6")])
@@ -867,7 +844,6 @@ fn a_reorder_pass_counts_the_live_tags_it_wrote() {
     drop(s);
     s = Store::open_in(&dir, SMALL, pool()).unwrap();
     assert_eq!(status(&s), (1, Some(0), 2, 5));
-    // A new pass counts from none; tags the old one wrote are unwritten for it.
     s.commit_wait(vec![pass(2, Some(1))]).unwrap();
     assert_eq!(status(&s), (2, Some(1), 0, 5));
     assert_eq!(
@@ -1015,8 +991,6 @@ fn part_counts_after_a_crash_before_install_are_not_doubled() {
     let _ = fs::remove_dir_all(&committed);
 }
 
-/// One commit assigning many tags to one character: each assignment's cost stays flat, not growing with the tags
-/// the character carries already.
 #[test]
 #[ignore]
 fn bench_many_tags_on_one_character() {

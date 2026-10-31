@@ -1,7 +1,3 @@
-// Every Playwright worker gets its own server.js on its own throwaway data root under the run root, so
-// workers can run in parallel without sharing state. Each data root starts as a copy of the seed (see
-// e2e-global-setup.js); a worker with `freshAccount` starts from an empty data root, so its account has not
-// been through the first-run dialog. (The page's build is the checkout's, packages/ui/dist, shared by all.)
 import fs from 'node:fs';
 import path from 'node:path';
 import { test as base, expect } from '@playwright/test';
@@ -31,8 +27,6 @@ export const test = base.extend({
         fs.writeFileSync(path.join(dataRoot, WORKER_DONE_MARKER), '');
     }, { scope: 'worker', auto: true, timeout: 180000 }],
 
-    // Names each test that didn't end as expected in its worker's data root, so e2e-run-root.js keeps
-    // that data root (and only that one) for inspection.
     failureMarker: [async ({ stServer }, use, testInfo) => {
         await use(undefined);
         if (testInfo.status !== testInfo.expectedStatus) {

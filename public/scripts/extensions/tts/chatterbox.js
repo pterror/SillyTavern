@@ -406,7 +406,7 @@ class ChatterboxTtsProvider {
 
             if (voiceId && voiceId.startsWith('ref_')) {
                 isReferenceVoice = true;
-                actualVoiceId = voiceId.substring(4); // strip 'ref_' prefix
+                actualVoiceId = voiceId.substring(4);
             }
 
             const requestBody = {
@@ -499,7 +499,7 @@ class ChatterboxTtsProvider {
 
             if (voiceId && voiceId.startsWith('ref_')) {
                 isReferenceVoice = true;
-                actualVoiceId = voiceId.substring(4); // strip 'ref_' prefix
+                actualVoiceId = voiceId.substring(4);
             }
 
             const requestBody = {
@@ -539,7 +539,6 @@ class ChatterboxTtsProvider {
 
             this.updateStatus('Ready');
 
-            // SillyTavern's TTS pipeline expects a Response object, not parsed audio data
             return response;
         } catch (error) {
             console.error('Error in generateTts:', error);

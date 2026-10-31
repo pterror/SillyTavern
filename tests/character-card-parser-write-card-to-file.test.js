@@ -5,7 +5,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { Buffer } from 'node:buffer';
 
-// A minimal valid 1x1 transparent PNG - same fixture character-card-parser.test.js uses.
 const BLANK_PNG = Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
     'base64',
@@ -13,9 +12,6 @@ const BLANK_PNG = Buffer.from(
 
 const reflinkFileMock = jest.fn();
 
-// Same reasoning as local-import-copy.test.js: @reflink/reflink is a real native binding, not something a
-// unit test should depend on this platform/filesystem actually supporting - mocked here so the fast-path
-// vs fallback behavior is deterministic regardless of what /tmp happens to be mounted on in CI.
 jest.unstable_mockModule('@reflink/reflink', () => ({
     reflinkFile: reflinkFileMock,
 }));
@@ -38,7 +34,7 @@ beforeAll(async () => {
 
 /**
  * @param {Buffer} buffer
- * @returns {Record<string, string>} tEXt keyword -> decoded text, lowercased keys
+ * @returns {Record<string, string>}
  */
 function readTextChunks(buffer) {
     const chunks = extract(new Uint8Array(buffer));
@@ -52,13 +48,8 @@ function readTextChunks(buffer) {
 }
 
 /**
- * Builds a source PNG that already carries a 'chara' tEXt chunk - matching the real-world shape of a
- * previously-exported character card (write() always removes an existing chara/ccv3 chunk before adding
- * the new one, so a realistic fixture needs one present to exercise that removal).
  * @param {object} charaData
- * @param {'before-idat' | 'before-iend'} [position] Where to place the chara chunk - 'before-iend' (the
- * default) matches every real sample checked against the live install; 'before-idat' simulates a foreign
- * tool's layout this optimization must safely decline to fast-path.
+ * @param {'before-idat' | 'before-iend'} [position]
  * @returns {Buffer}
  */
 function buildSourcePng(charaData, position = 'before-iend') {
@@ -80,7 +71,6 @@ describe('writeCardToFile', () => {
         destPath = path.join(tempDir, 'dest.png');
 
         reflinkFileMock.mockReset();
-        // Default: simulate a working reflink by doing a real copy - most tests exercise the fast path.
         reflinkFileMock.mockImplementation(async (src, dst) => {
             fs.copyFileSync(src, dst);
             return 0;
@@ -99,10 +89,6 @@ describe('writeCardToFile', () => {
         const result = await cardParser.writeCardToFile(sourcePath, destPath, newData);
 
         expect(result.reflinked).toBe(true);
-        // Splicing only touches tEXt chunks - IDAT (and therefore the avatar-identity hash) is unaffected by
-        // the JSON edit, so this must match computeAvatarIdentityHashFromChunks() of the ORIGINAL source's own
-        // chunks (a fresh extract() here, not reused, so this assertion doesn't just echo the implementation's
-        // own computation back at itself).
         const sourceChunks = extract(new Uint8Array(fs.readFileSync(sourcePath)));
         expect(result.avatarIdentityHash).toBe(cardParser.computeAvatarIdentityHashFromChunks(sourceChunks));
         expect(reflinkFileMock).toHaveBeenCalledTimes(1);
@@ -145,7 +131,6 @@ describe('writeCardToFile', () => {
         expect(result.reflinked).toBe(false);
         const written = fs.readFileSync(destPath);
         expect(JSON.parse(Buffer.from(readTextChunks(written).chara, 'base64').toString('utf8'))).toEqual({ name: 'Ghost 2' });
-        // No abandoned temp file from the failed attempt.
         expect(fs.readdirSync(tempDir).filter(f => f.endsWith('.tmp'))).toEqual([]);
     });
 
@@ -210,8 +195,6 @@ describe('reclaimReflinkPrefix', () => {
     test('reclaims an already-imported file whose shared prefix genuinely matches its source', async () => {
         const source = buildSourcePng({ name: 'Original' });
         fs.writeFileSync(sourcePath, source);
-        // Simulate what writeCharacterData()/write() would have produced before writeCardToFile() existed -
-        // same prefix as source, own independent chara chunk.
         const alreadyImported = cardParser.write(source, JSON.stringify({ name: 'Imported Copy' }));
         fs.writeFileSync(existingPath, alreadyImported);
 
@@ -219,7 +202,6 @@ describe('reclaimReflinkPrefix', () => {
 
         expect(result).toEqual({ reflinked: true });
         expect(reflinkFileMock).toHaveBeenCalledTimes(1);
-        // Content is byte-identical to what was there before the reclaim - only the on-disk sharing changed.
         expect(Buffer.compare(fs.readFileSync(existingPath), alreadyImported)).toBe(0);
     });
 
@@ -227,8 +209,6 @@ describe('reclaimReflinkPrefix', () => {
         const source = buildSourcePng({ name: 'Original' });
         fs.writeFileSync(sourcePath, source);
 
-        // A different image (mutated IDAT bytes), not just different metadata - a genuine content_hash
-        // mismatch's real-world shape, since two DIFFERENT images could never share an IDAT prefix.
         const differentImageChunks = extract(new Uint8Array(BLANK_PNG));
         const idat = differentImageChunks.find(c => c.name === 'IDAT');
         idat.data = new Uint8Array(idat.data);
@@ -259,8 +239,6 @@ describe('reclaimReflinkPrefix', () => {
     test('preserves the existing file own current tail bytes verbatim, not a re-derived value', async () => {
         const source = buildSourcePng({ name: 'Original' });
         fs.writeFileSync(sourcePath, source);
-        // A file with two tEXt chunks in the tail (chara + a foreign ccv3, e.g. from a pre-fix write or an
-        // external tool) that reclaim must preserve exactly, byte for byte.
         const data = JSON.stringify({ name: 'V3 Card', spec: 'chara_card_v3', spec_version: '3.0' });
         const written = cardParser.write(source, data);
         const writtenChunks = extract(new Uint8Array(written));
@@ -274,7 +252,7 @@ describe('reclaimReflinkPrefix', () => {
         const result = fs.readFileSync(existingPath);
         expect(Buffer.compare(result, alreadyImported)).toBe(0);
         const chunks = extract(new Uint8Array(result)).filter(c => c.name === 'tEXt');
-        expect(chunks.length).toBe(2); // chara + ccv3, both preserved
+        expect(chunks.length).toBe(2);
     });
 
     test('leaves the file untouched when the reflink itself fails', async () => {

@@ -327,8 +327,6 @@ export class FilterHelper {
             const fuzzySearchTagsResult = fuzzySearchTags(searchValue, this.fuzzySearchCaches);
             this.cacheScores(FILTER_TYPES.SEARCH, new Map(fuzzySearchTagsResult.map(i => [`tag.${i.item.id}`, i.score])));
 
-            // The main list is searched on the server. This pass serves callers that filter rows they already hold,
-            // such as upstream's synchronous getEntitiesList({ doFilter: true }).
             const fuzzySearchCharactersResults = fuzzySearchCharacters(searchValue, this.fuzzySearchCaches);
             const fuzzySearchGroupsResults = fuzzySearchGroups(searchValue, this.fuzzySearchCaches);
             this.cacheScores(FILTER_TYPES.SEARCH, new Map(fuzzySearchCharactersResults.map(i => [`character.${i.item.avatar}`, i.score])));

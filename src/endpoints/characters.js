@@ -45,7 +45,6 @@ import { ALTERNATIVES_VIEWS, ui, uiUser } from '../ui-wiring.js';
 import { groupDigests, groupObjects } from './groups.js';
 // Use shallow character data for the character list
 const useShallowCharacters = !!getConfigValue('performance.lazyLoadCharacters', false, 'boolean');
-// Whole cards are heavy; a full /batch reads the characters a page holds (one character or a group's members).
 export const FULL_BATCH_MAX = 200;
 const useDiskCache = !!getConfigValue('performance.useDiskCache', true, 'boolean');
 
@@ -216,8 +215,6 @@ export async function readCardContent(directories, avatar) {
 }
 
 /**
- * The names a character's lorebook links after the first read as (upstream's `world_info.charLore` extra books):
- * its `data.extensions.world` is the first.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} avatar
  * @returns {Promise<string[]>}
@@ -227,9 +224,6 @@ export async function readExtraBooks(directories, avatar) {
 }
 
 /**
- * A V2 card with each V1_V2_FIELD_MAPPINGS field at the top level taken from its `data.*` value where that is set and
- * differs: readCardContent() returns the card's raw top-level fields, which its readers (the prompt's card fields)
- * use, and every other reader resolves the same drift through readFromV2(). In memory only: nothing is stored.
  * @param {any} card
  * @returns {any}
  */
@@ -243,10 +237,9 @@ function withV2FieldsOnTop(card) {
 }
 
 /**
- * A shareable PNG of a character: its image with its current card in it. Built in memory; nothing is written.
  * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} avatar Avatar filename, e.g. `Alice.png`
- * @returns {Promise<{ buffer: Buffer, cardJson: string }|null>} `null` when there is no such character.
+ * @param {string} avatar
+ * @returns {Promise<{ buffer: Buffer, cardJson: string }|null>}
  */
 export async function materializeCardPng(directories, avatar) {
     const { lib } = await userStore(directories);
@@ -257,9 +250,6 @@ export async function materializeCardPng(directories, avatar) {
 }
 
 /**
- * A card about to be written with no greetings, when the stored one has some and the writer didn't confirm it saw
- * them (`freshFieldPaths` holding `data.alternate_greetings`), keeps the stored ones: a stale empty list never wipes
- * them.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} avatar
  * @param {string} data
@@ -287,22 +277,19 @@ async function keepStoredGreetings(directories, avatar, data, freshFieldPaths) {
 }
 
 /**
- * Stores a character's card and, with `image`, its image as `characters/<avatar>`: a PNG file taken as it is, reflinked
- * (its text chunks never read, character-avatars.js); otherwise the image made (cropped, converted), its card chunk
- * stripped. A new avatar is a new character.
  * @param {import('express').Request} request
- * @param {string} avatar Avatar filename, e.g. `Alice.png`
- * @param {string} data The card's JSON.
+ * @param {string} avatar
+ * @param {string} data
  * @param {object} [o]
- * @param {string|Buffer} [o.image] An image file or its bytes; absent: the card's image stays.
+ * @param {string|Buffer} [o.image]
  * @param {Crop} [o.crop]
- * @param {string|null} [o.contentHash] sha256 hex of the uploaded file's bytes, for an import.
- * @param {Set<string>|null} [o.freshFieldPaths] V2 dot-paths the caller confirmed match what is stored.
- * @param {boolean} [o.fav] A new character's favourite flag.
- * @param {number} [o.dateAdded] A new character's date added.
- * @param {{ from: string, pastChats: boolean }} [o.renamed] The card is the stored one renamed (LibraryEngine.writeCard()).
+ * @param {string|null} [o.contentHash]
+ * @param {Set<string>|null} [o.freshFieldPaths]
+ * @param {boolean} [o.fav]
+ * @param {number} [o.dateAdded]
+ * @param {{ from: string, pastChats: boolean }} [o.renamed]
  * @returns {Promise<void>}
- * @throws {ImageReadError} when the image can't be read; nothing is written then.
+ * @throws {ImageReadError}
  */
 async function writeCharacter(request, avatar, data, { image, crop, contentHash = null, freshFieldPaths = null, fav, dateAdded, renamed } = {}) {
     const directories = request.user.directories;
@@ -318,12 +305,10 @@ async function writeCharacter(request, avatar, data, { image, crop, contentHash 
     let chunks;
     try {
         bytes = Buffer.isBuffer(image) ? await parseImageBuffer(image, crop) : await tryReadImage(image, crop);
-        // A file that only starts like a PNG fails here, before anything is written.
         chunks = extractPngChunks(new Uint8Array(bytes));
     } catch (error) {
         throw new ImageReadError(imageDisplayName(image, request), error);
     }
-    // A PNG file taken as it is (no crop) is the image itself, reflinked: no image write (character-avatars.js).
     if (typeof image === 'string' && crop === undefined && await isPngFile(image)) {
         const avatarIdentityHash = computeAvatarIdentityHashFromChunks(chunks);
         await linkWithAvatar(lib, directories, avatar, image, () => lib.writeCard(directories, avatar, card, { ...options, avatarIdentityHash }));
@@ -429,7 +414,6 @@ async function tryReadImage(imgPath, crop) {
         const rawImg = await Jimp.read(imgPath);
         return await applyAvatarCropResize(rawImg, crop);
     } catch (error) {
-        // Jimp can't decode APNG, which is still a PNG: keep its bytes as they are. Anything else isn't an image.
         const raw = fs.readFileSync(imgPath);
         if (raw.subarray(0, 8).equals(PNG_SIGNATURE)) {
             return raw;
@@ -444,8 +428,8 @@ async function tryReadImage(imgPath, crop) {
  */
 class ImageReadError extends Error {
     /**
-     * @param {string} name The file as the user knows it
-     * @param {unknown} cause Why it couldn't be read
+     * @param {string} name
+     * @param {unknown} cause
      */
     constructor(name, cause) {
         const reason = cause instanceof Error ? cause.message : String(cause);
@@ -487,12 +471,9 @@ function sendWriteFailure(response, err) {
 
 
 /**
- * Characters as upstream's routes answer them (`/get`, `/all`, `/batch`, `/import`): each card normalized, with what
- * the store keeps beside it (favourite flag, tags, global styles, dates, chat stats, data size) and the compat
- * `chat`; null for an avatar no character has.
  * @param {import('express').Request} request
  * @param {string[]} avatars
- * @param {{ shallow: boolean }} o `shallow`: list rows (`toShallow()`) instead of whole characters.
+ * @param {{ shallow: boolean }} o
  * @returns {Promise<(Record<string, any> | null)[]>}
  */
 export async function characterObjects(request, avatars, { shallow }) {
@@ -605,9 +586,9 @@ async function importFromCharX(uploadPath, { request, contentHash }, preservedFi
  * @param {string} uploadPath
  * @param {object} params
  * @param {import('express').Request} params.request
- * @param {string|null} [params.contentHash] sha256 hex digest of the uploaded .byaf file's raw bytes (bulk-import dedup)
- * @param {string|undefined} preservedFileName Preserved file name
- * @returns {Promise<string>} Internal name of the character
+ * @param {string|null} [params.contentHash]
+ * @param {string|undefined} preservedFileName
+ * @returns {Promise<string>}
  */
 async function importFromByaf(uploadPath, { request, contentHash }, preservedFileName) {
     const data = getArrayBufferSlice(await fsPromises.readFile(uploadPath));
@@ -620,7 +601,6 @@ async function importFromByaf(uploadPath, { request, contentHash }, preservedFil
 
     await writeCharacter(request, `${fileName}.png`, JSON.stringify(card), { image: byafData.images[0].image, contentHash: contentHash ?? null });
 
-    // Chats and images come only with a character newly imported, not one replaced or updated.
     if (!preservedFileName) {
         // Upload backgrounds
         for (const bg of byafData.chatBackgrounds) {
@@ -636,14 +616,13 @@ async function importFromByaf(uploadPath, { request, contentHash }, preservedFil
             }
         }
 
-        // Each scenario a chat of its own, from the character's root.
         if (Array.isArray(byafData.scenarios) && byafData.scenarios.length > 0) {
             const store = await requestStore(request);
             const avatar = `${fileName}.png`;
             const [tree] = await store.people.trees([{ avatar }]);
             const treeSpeaker = (await store.people.byAvatar([avatar])).get(avatar) ?? null;
             const actor = (await requestSession(store.chats, request, /** @type {bigint} */ (tree))).actor();
-            /** @type {string | null | undefined} The first chat's last message: where the character opens for the importing user. */
+            /** @type {string | null | undefined} */
             let firstChatEnd;
             for (const scenario of byafData.scenarios) {
                 const chatName = sanitize(`${scenario.title || card.name} - ${humanizedDateTime()} imported`, { replacement: sanitizeSafeCharacterReplacements });
@@ -698,13 +677,10 @@ async function importFromJson(uploadPath, { request, contentHash }, preservedFil
 }
 
 /**
- * Pure (no file I/O, no sqlite) counterpart to importFromJson()'s per-spec logic above.
- * @param {string} rawText Raw JSON text
+ * @param {string} rawText
  * @param {import('../users.js').UserDirectoryList} directories
- * @param {string | null} [avatarFileName] The character's eventual avatar identity (id, no extension), if the
- * caller has already minted one - threaded into importRisuSprites()/importChubExpressions() so their sprite
- * folder writes match runtime lookup's avatar-identity-first resolution.
- * @returns {string | null} The final Spec V2 JSON string, or `null` if `rawText` matches no recognized shape.
+ * @param {string | null} [avatarFileName]
+ * @returns {string | null}
  */
 export function buildJsonImportData(rawText, directories, avatarFileName = null) {
     let jsonData = JSON.parse(rawText);
@@ -787,7 +763,6 @@ async function importFromPng(uploadPath, { request, contentHash }, preservedFile
     const data = buildPngImportData(imgData, request.user.directories, pngName);
     if (data === null) return '';
 
-    // Temp upload gets cleaned up whether the write succeeds or throws.
     try {
         await writeCharacter(request, `${pngName}.png`, data, { image: uploadPath, contentHash: contentHash ?? null });
     } finally {
@@ -797,18 +772,14 @@ async function importFromPng(uploadPath, { request, contentHash }, preservedFile
 }
 
 /**
- * Pure (no file I/O, no sqlite) counterpart to importFromPng()'s per-spec logic above.
- * @param {string} rawText Raw embedded card JSON text
+ * @param {string} rawText
  * @param {import('../users.js').UserDirectoryList} directories
- * @param {string | null} [avatarFileName] The character's eventual avatar identity (id, no extension), if the
- * caller has already minted one - see buildJsonImportData() for why this is threaded through.
- * @returns {string | null} The final Spec V2 JSON string, or `null` if `rawText` has neither `spec` nor `name`.
+ * @param {string | null} [avatarFileName]
+ * @returns {string | null}
  */
 export function buildPngImportData(rawText, directories, avatarFileName = null) {
     let jsonData = JSON.parse(rawText);
 
-    // Read the pre-sanitize name once: sanitize() can turn an all-illegal name into '', and re-reading it
-    // after that mutation would wrongly fall through to jsonData.name (usually undefined on v2/v3 cards).
     const rawName = jsonData.data?.name || jsonData.name;
     if (jsonData.data?.name) {
         jsonData.data.name = sanitize(jsonData.data.name);
@@ -858,10 +829,8 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
 
         request.body.ch_name = sanitize(request.body.ch_name);
 
-        // The favourite flag is the store's, never the card's.
         const initialFav = normalizeFav(request.body.fav);
         const charaData = charaFormatData(request.body, request.user.directories);
-        // A lorebook embedded in json_data is kept as-is, as on an imported card, not replaced by the linked World's.
         const embeddedBook = _.get(tryParse(request.body.json_data), 'data.character_book');
         if (embeddedBook !== undefined) {
             _.set(charaData, 'data.character_book', embeddedBook);
@@ -877,14 +846,12 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
         } else {
             const crop = tryParse(request.query.crop);
             const uploadPath = path.join(request.file.destination, request.file.filename);
-            // Temp upload gets cleaned up whether the write succeeds or throws.
             try {
                 await writeCharacter(request, avatarName, char, { image: uploadPath, crop, fav: initialFav });
             } finally {
                 fs.unlinkSync(uploadPath);
             }
         }
-        // The tags picked in the create form, assigned as part of the create (the character has no key to assign to before).
         const tagIds = [request.body.tag_ids ?? []].flat().filter(id => typeof id === 'string' && id !== '');
         if (tagIds.length > 0) {
             const { lib } = await requestStore(request);
@@ -896,7 +863,6 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
                 });
                 if (result?.result !== 'ok') unassigned.push(tagId);
             }
-            // The character is created either way; the page names the tags it didn't get.
             if (unassigned.length > 0) response.setHeader('X-Unassigned-Tag-Ids', JSON.stringify(unassigned));
         }
         return response.send(avatarName);
@@ -906,12 +872,6 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
     }
 });
 
-/**
- * Renames a character: a card edit, its avatar (its id) staying. Its messages name it by id, so every chat shows the
- * new name. With `rename_past_chats`, past messages show the new name; without, a message sent before the rename keeps
- * the name the character had then (the character's rename history, read when messages are). No chat is rewritten
- * either way, so `past_chats_renamed`, the chats rewritten, is 0. Answers `{ avatar, past_chats_renamed? }`.
- */
 router.post('/rename', validateAvatarUrlMiddleware, async function (request, response) {
     if (!request.body.avatar_url || !request.body.new_name) {
         return response.sendStatus(400);
@@ -956,7 +916,6 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
         return;
     }
 
-    // Per-field content-hash conflict detection: rejects with 409 if a field group the client loaded has since changed.
     const contentHashesHeader = request.headers['x-content-hashes'];
     let freshFieldPaths = null;
     if (contentHashesHeader) {
@@ -977,7 +936,6 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
                 if (conflicts.length > 0) {
                     return response.status(409).json({ error: 'conflict', conflicts });
                 }
-                // The body hash covers alternate_greetings, so a match confirms this request's view is current.
                 if (clientHashes.body !== undefined) {
                     freshFieldPaths = new Set(['data.alternate_greetings']);
                 }
@@ -988,7 +946,6 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
     }
 
     let char = charaFormatData(request.body, request.user.directories);
-    // The favourite flag and the current chat are the store's, never the card's.
     const requestedChat = request.body.chat;
     char.create_date = request.body.create_date;
     omitFavField(char);
@@ -1003,7 +960,6 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
             const crop = tryParse(request.query.crop);
             const newAvatarPath = path.join(request.file.destination, request.file.filename);
             invalidateThumbnail(request.user.directories, 'avatar', avatar);
-            // Temp upload gets cleaned up whether the write succeeds or throws.
             try {
                 await writeCharacter(request, avatar, char, { image: newAvatarPath, crop, freshFieldPaths });
             } finally {
@@ -1046,7 +1002,6 @@ router.post('/edit-avatar', validateAvatarUrlMiddleware, async function (request
         }
 
         const crop = tryParse(request.query.crop);
-        // Temp upload gets cleaned up whether the write succeeds or throws.
         try {
             await writeCharacter(request, request.body.avatar_url, data, { image: uploadPath, crop });
         } finally {
@@ -1111,7 +1066,6 @@ router.post('/edit-attribute', validateAvatarUrlMiddleware, async function (requ
     }
 });
 
-/** Signals a field should be deleted rather than set, without overloading `null`. Shared with the frontend. */
 const UNSET_SENTINEL = '__@@UNSET@@__';
 
 /** Maximum number of characters processed in parallel during bulk merge */
@@ -1157,16 +1111,12 @@ async function mergeCharacterUpdate(avatar, updateData, request, shouldSkip = nu
     _.unset(update, 'json_data');
     _.unset(character, 'json_data');
 
-    // Greetings must go through the named /greetings/* operations instead, which enforce no empty entries,
-    // stable order, and a tracked default. /edit is exempt - it takes a whole card, not a merge.
     const forbiddenGreetingPaths = ['data.alternate_greetings', 'data.first_mes', 'alternate_greetings', 'first_mes'];
     const touchedGreetingPaths = forbiddenGreetingPaths.filter(p => _.has(update, p));
     if (touchedGreetingPaths.length > 0) {
         return { ok: false, error: 'greeting-fields-forbidden', touchedGreetingPaths };
     }
 
-    // Per-field conflict detection: compare cyrb53 hashes the client loaded against the current card, and
-    // report a conflict only for fields the client is actually writing.
     const loadedFieldHashes = update._loadedFieldHashes;
     delete update._loadedFieldHashes;
     let freshFieldPaths = null;
@@ -1187,7 +1137,6 @@ async function mergeCharacterUpdate(avatar, updateData, request, shouldSkip = nu
         }
     }
 
-    // The favourite flag and the current chat are the store's, never the card's: applied after the write below.
     const favRequested = _.has(update, 'fav') || _.has(update, 'data.extensions.fav');
     const chatRequested = _.has(update, 'chat');
 
@@ -1199,7 +1148,6 @@ async function mergeCharacterUpdate(avatar, updateData, request, shouldSkip = nu
     omitChatField(character);
 
     const validator = new TavernCardValidator(character);
-    //Accept either V1 or V2.
     if (!validator.validate()) {
         return { ok: false, error: validator.lastValidationError ?? 'Validation failed' };
     }
@@ -1214,10 +1162,6 @@ async function mergeCharacterUpdate(avatar, updateData, request, shouldSkip = nu
         await moveToChatNamed(request, response, { avatar }, requestedChat);
     }
 
-    // Server is the sole source of the conflict-detection hash: for every field the caller echoed a loaded hash
-    // for, hand back a fresh one computed off the just-written value, so the caller's next edit round has an
-    // up-to-date baseline it never had to compute itself. Additive - omitted entirely when the caller didn't
-    // opt in by sending _loadedFieldHashes, so callers that don't care about hashes see no response-shape change.
     let hashes;
     if (loadedFieldHashes && typeof loadedFieldHashes === 'object') {
         hashes = {};
@@ -1238,8 +1182,6 @@ async function mergeCharacterUpdate(avatar, updateData, request, shouldSkip = nu
  */
 router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async function (request, response) {
     try {
-        // A multipart request carrying an avatar file JSON-encodes the rest of the update under `payload`,
-        // since the app-wide multer upload already consumes a field named `avatar` as the file itself.
         if (request.file && typeof request.body.payload === 'string') {
             let parsedBody;
             try {
@@ -1338,8 +1280,6 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
         }
 
         if (result.ok) {
-            // Additive: only present when the request opted in via _loadedFieldHashes, so a caller that never
-            // sends that (and therefore never reads this) sees the exact same `200, no body` shape as before.
             if (result.hashes) {
                 response.status(200).json({ hashes: result.hashes });
             } else {
@@ -1362,19 +1302,14 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
     }
 });
 
-// Named, position-addressed operations on a character's greeting list; ops targeting an existing greeting carry a precondition hash and refuse rather than guess on mismatch.
 
 /**
- * Reads a character card fresh from disk, applies a single greeting-list operation, and writes it back,
- * unless the operation left the greetings and default unchanged, in which case nothing is written.
  * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} avatar avatar filename (e.g. "char.png")
+ * @param {string} avatar
  * @param {(model: import('../greeting-list.js').GreetingsModel) => {ok: boolean, reason?: string, model?: import('../greeting-list.js').GreetingsModel, position?: number, sourcePosition?: number, targetPosition?: number}} op
  * @returns {Promise<{ok: boolean, reason?: string, status?: number, greetings?: string[], hashes?: number[], defaultPosition?: number|null, position?: number, sourcePosition?: number, targetPosition?: number}>}
  */
 export function applyGreetingOperation(directories, avatar, op) {
-    // One card's operations run one at a time: each reads the card the one before it wrote (two read at once and the
-    // later write drops the earlier's change).
     const key = `${directories.root}\u0000${avatar}`;
     const run = (greetingOperationQueues.get(key) ?? Promise.resolve()).then(() => runGreetingOperation(directories, avatar, op));
     const tail = run.then(() => {}, () => {});
@@ -1385,11 +1320,10 @@ export function applyGreetingOperation(directories, avatar, op) {
     return run;
 }
 
-/** @type {Map<string, Promise<void>>} Per user and card, the last greeting operation queued; held while one is. */
+/** @type {Map<string, Promise<void>>} */
 const greetingOperationQueues = new Map();
 
 /**
- * {@link applyGreetingOperation}, once the card's earlier operations are done.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} avatar
  * @param {Parameters<typeof applyGreetingOperation>[2]} op
@@ -1430,7 +1364,6 @@ async function runGreetingOperation(directories, avatar, op) {
         return { ok: false, reason: validator.lastValidationError ?? 'validation failed', status: 500 };
     }
 
-    // A card without an image to read takes only the user's directories.
     await writeCharacter(/** @type {any} */ ({ user: { directories } }), avatar, JSON.stringify(character), { freshFieldPaths: new Set(['data.alternate_greetings']) });
 
     return {
@@ -1463,17 +1396,12 @@ function sendGreetingOpResult(response, result) {
     return response.status(200).send(body);
 }
 
-/**
- * Inserts a new greeting at `position` (length appends at the end). Refuses a stale `expected_length`. No content dedup - two identical greetings are legitimate on a card.
- * With `append: true` (and no `position` or `expected_length`) it goes after the last greeting, whatever the length, and the response's `position` is where it landed.
- */
 router.post('/greetings/add', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');
         const text = request.body.text;
         if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
         if (typeof text !== 'string') return response.status(400).send({ ok: false, reason: 'text is required' });
-        // Invalid input, not a conflict: a 409 tells the page another session changed the list.
         if (text === '') return response.status(400).send({ ok: false, reason: 'refused to add empty greeting text' });
         if (request.body.append === true) {
             if (request.body.position !== undefined || request.body.expected_length !== undefined) {
@@ -1495,12 +1423,6 @@ router.post('/greetings/add', validateAvatarUrlMiddleware, async function (reque
     }
 });
 
-/**
- * Replaces the text of the greeting at `position`, or, when the greeting there no longer has `expected_hash`, of the
- * one greeting anywhere in the list that has it. Refuses empty text, and an `expected_hash` no greeting (or more than
- * one) has, unless the greeting at `position` already has `text` (the edit is already in place). The response's
- * `position` is where the edit landed.
- */
 router.post('/greetings/edit', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');
@@ -1509,7 +1431,6 @@ router.post('/greetings/edit', validateAvatarUrlMiddleware, async function (requ
         const text = request.body.text;
         if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
         if (typeof text !== 'string') return response.status(400).send({ ok: false, reason: 'text is required' });
-        // Invalid input, not a conflict: emptying a greeting is deleting it (/greetings/delete).
         if (text === '') return response.status(400).send({ ok: false, reason: 'refused to blank stored greeting text' });
         if (!Number.isInteger(position)) return response.status(400).send({ ok: false, reason: 'position must be an integer' });
         if (!Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'expected_hash is required' });
@@ -1522,12 +1443,6 @@ router.post('/greetings/edit', validateAvatarUrlMiddleware, async function (requ
     }
 });
 
-/**
- * Removes the greeting at `position`, or, when the greeting there no longer has `expected_hash`, the one greeting
- * anywhere in the list that has it. Refuses an `expected_hash` no greeting (or more than one) has. Removing the
- * current default clears default-ness rather than picking a successor. The response's `position` is where the
- * removed greeting was.
- */
 router.post('/greetings/delete', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');
@@ -1545,14 +1460,6 @@ router.post('/greetings/delete', validateAvatarUrlMiddleware, async function (re
     }
 });
 
-/**
- * Moves the greeting at `source_position` immediately before or after (`side`) the greeting at `target_position`.
- * Both positions are read against the list as it currently stands, and each is checked against its own hash
- * (`expected_hash`, `target_expected_hash`); an end whose position no longer holds its hash is the one greeting
- * anywhere in the list that has it, and a hash no greeting (or more than one) has is refused. "Move to the end" is
- * `side: 'after'` with the last greeting as the target. The response's `source_position` and `target_position` are
- * where the two were found.
- */
 router.post('/greetings/move', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');
@@ -1577,11 +1484,6 @@ router.post('/greetings/move', validateAvatarUrlMiddleware, async function (requ
     }
 });
 
-/**
- * Makes the greeting at `position` the default, or, when the greeting there no longer has `expected_hash`, the one
- * greeting anywhere in the list that has it. Refuses an `expected_hash` no greeting (or more than one) has, unless the
- * default already has that text. Never reorders anything. The response's `position` is where the default is.
- */
 router.post('/greetings/default/set', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');
@@ -1599,12 +1501,6 @@ router.post('/greetings/default/set', validateAvatarUrlMiddleware, async functio
     }
 });
 
-/**
- * Clears the default entirely - no default greeting at all. The list keeps its order and membership.
- * Refuses a stale `expected_default_position` (an integer, or `null` for "no default"). Given instead an
- * `expected_default_hash`, it refuses only when the default greeting isn't the one with that hash, wherever it sits.
- * With no default already, either form succeeds without a change.
- */
 router.post('/greetings/default/unset', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');
@@ -1653,15 +1549,12 @@ async function* everyCharacter(request) {
     }
 }
 
-/** Characters read a page at a time by a walk over all of them. */
 const EVERY_PAGE = 500;
 
-/** Sets favorite status. Accepts `{ avatar, fav }` for one character or `{ bulk: [{ avatar, fav }, ...] }` for a batch. */
 router.post('/fav', getFileNameValidationFunction('avatar'), async function (request, response) {
     try {
         const { avatar, fav, bulk, toggle } = request.body ?? {};
         const { lib } = await requestStore(request);
-        /** `toggle: true` flips the stored value and answers it, so the page needs no copy of the character. */
         const flip = async (/** @type {string} */ key) => {
             const e = await lib.entity(TYPE.character, key);
             if (!e) return null;
@@ -1708,10 +1601,6 @@ router.post('/fav', getFileNameValidationFunction('avatar'), async function (req
     }
 });
 
-/**
- * A write of a character's current chat: the requesting tab switches to the chat `chat` names (`moveToChatNamed()`);
- * '' or null is a new chat. Answers `{ chat }`: the tab's compat chat id there after.
- */
 router.post('/chat', getFileNameValidationFunction('avatar'), async function (request, response) {
     try {
         const { avatar, chat } = request.body ?? {};
@@ -1730,7 +1619,6 @@ router.post('/chat', getFileNameValidationFunction('avatar'), async function (re
     }
 });
 
-/** Sets `allow_global_styles`. Accepts `{ avatar, allowed }` for one character or `{ bulk: [{ avatar, allowed }, ...] }` for a batch. */
 router.post('/allow-global-styles', async function (request, response) {
     try {
         const { avatar, allowed, bulk } = request.body ?? {};
@@ -1760,13 +1648,10 @@ router.post('/allow-global-styles', async function (request, response) {
 });
 
 /**
- * Deletes a character. With `deleteChats` its whole tree goes too; without, its chats are kept as an unowned tree a
- * character made with its avatar again takes back.
  * @param {import('express').Request} request
- * @param {string} avatarUrl Avatar filename of the character to delete.
+ * @param {string} avatarUrl
  * @param {boolean} deleteChats
- * @returns {Promise<{ok: true, chats: string[]}|{ok: false, status: number}>} `chats`: with `deleteChats`, the names of
- * the character's chats (each a `CHAT_DELETED` on the page).
+ * @returns {Promise<{ok: true, chats: string[]}|{ok: false, status: number}>}
  */
 async function deleteOneCharacter(request, avatarUrl, deleteChats) {
     if (avatarUrl !== sanitize(avatarUrl)) {
@@ -1802,7 +1687,6 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
         return response.sendStatus(400);
     }
 
-    // ── Bulk mode: avatar_urls array is present ──────────────────
     if (Array.isArray(request.body.avatar_urls)) {
         const avatarUrls = request.body.avatar_urls;
         const deleteChats = request.body.delete_chats == true;
@@ -1830,14 +1714,8 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
     return result.dropped ? response.send({ dropped: result.dropped }) : response.sendStatus(200);
 });
 
-// Requests that omit `limit` still need a bound.
 const DEFAULT_PAGE_LIMIT = 500;
 
-/**
- * Upstream's character list. No `search`: every character (a bare array, streamed a page at a time; O(cards) by
- * nature, kept for upstream's callers). With `search` (and `includeGroups`, `fav`, `offset`, `limit`): a page of
- * the matches, best first.
- */
 router.post('/all', async function (request, response) {
     try {
         const { offset, limit, search, includeGroups, fav } = request.body ?? {};
@@ -1892,13 +1770,9 @@ router.post('/all', async function (request, response) {
     }
 });
 
-/** PNGs read from `characters/` per batch by a rescan, with a pause between batches. */
 const RESCAN_BATCH = 100;
 
 /**
- * Imports those of the PNGs `avatars` (names in `characters/`) that the library doesn't have (by avatar). A file the
- * conversion converted, unchanged since (name, size, mtime), isn't imported: the conversion left the old store's
- * PNGs there, those of characters deleted since included.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string[]} avatars
  * @returns {Promise<{ imported: number, skipped: number, failed: string[] }>}
@@ -1941,9 +1815,6 @@ async function importDropped(directories, avatars) {
 }
 
 /**
- * Imports the character PNGs in `characters/` that the library doesn't have, a batch at a time with a pause between.
- * Answers `{ imported, skipped, failed }`: counts of files imported and of converted files left, and the files that
- * couldn't be imported.
  * @param {import('../users.js').UserDirectoryList} directories
  */
 async function rescanCharacters(directories) {
@@ -1969,20 +1840,12 @@ async function rescanCharacters(directories) {
     return total;
 }
 
-/** How long a dropped file must stay quiet before it is read: a copy in progress keeps changing it. */
 const DROP_QUIET_MS = 500;
 
 /**
- * Picks up PNGs dropped into a user's `characters/`, as upstream did: once now (`rescanCharacters()`, in batches),
- * then each file a filesystem watch reports, once it has been quiet for a moment. Files the app writes itself are
- * written aside and renamed after their card is stored, so they are known by then. A watch can miss what a
- * filesystem doesn't report (a network share); a file dropped while the server was stopped is found by the first pass.
- * Imports run one at a time. Call `close()` to stop.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {number} [quietMs]
- * @returns {{ first: Promise<void>, idle: () => Promise<void>, close: () => Promise<void> }} `first` settles once the first
- * pass is done; `idle` once every import started so far is; `close` stops the watch, then settles like `idle` without
- * importing what it still held back.
+ * @returns {{ first: Promise<void>, idle: () => Promise<void>, close: () => Promise<void> }}
  */
 export function watchDroppedCharacters(directories, quietMs = DROP_QUIET_MS) {
     let tail = Promise.resolve();
@@ -2035,12 +1898,10 @@ export function watchDroppedCharacters(directories, quietMs = DROP_QUIET_MS) {
     };
 }
 
-/** @type {Map<string, ReturnType<typeof watchDroppedCharacters>>} A watch for each user directory, by its root. */
+/** @type {Map<string, ReturnType<typeof watchDroppedCharacters>>} */
 const droppedWatches = new Map();
 
 /**
- * Starts `watchDroppedCharacters()` for a user (the one it already has, if started before), to be stopped with
- * `stopDroppedWatch()` when the user is deleted, or `stopDroppedWatches()`.
  * @param {import('../users.js').UserDirectoryList} directories
  */
 export function startDroppedWatch(directories) {
@@ -2053,7 +1914,6 @@ export function startDroppedWatch(directories) {
 }
 
 /**
- * Stops the user's watch `startDroppedWatch()` started, once the imports under way are done.
  * @param {import('../users.js').UserDirectoryList} directories
  */
 export async function stopDroppedWatch(directories) {
@@ -2063,17 +1923,12 @@ export async function stopDroppedWatch(directories) {
     await watch?.close();
 }
 
-/** Stops every watch `startDroppedWatch()` started, once the imports under way are done. */
 export async function stopDroppedWatches() {
     const all = [...droppedWatches.values()];
     droppedWatches.clear();
     await Promise.all(all.map(watch => watch.close()));
 }
 
-/**
- * Upstream's rescan: imports the character PNGs dropped into `characters/` that the library doesn't have, and
- * answers `{ imported, skipped, failed }` (see rescanCharacters()).
- */
 router.post('/metadata/rescan', async function (request, response) {
     try {
         return response.send(await rescanCharacters(request.user.directories));
@@ -2083,10 +1938,6 @@ router.post('/metadata/rescan', async function (request, response) {
     }
 });
 
-/**
- * A batch import's bracket: between them, the imports arriving together are committed together (each still answered
- * once it is durable).
- */
 router.post('/metadata/batch-import/begin', async function (request, response) {
     try {
         (await requestStore(request)).lib.beginBatch();
@@ -2107,27 +1958,21 @@ router.post('/metadata/batch-import/end', async function (request, response) {
     }
 });
 
-/** The `/query` range fields (`filter.ranges`), besides `tag:<id>`. */
 const QUERY_RANGE_FIELDS = new Set(['create_date', 'date_last_chat', 'chat_size', 'data_size', 'closed_folders']);
 const QUERY_RANGE_TAG_PREFIX = 'tag:';
 
 /**
- * Whether `field` is a `/query` range field.
  * @param {string} field
  */
 function isQueryRangeField(field) {
     return QUERY_RANGE_FIELDS.has(field) || (field.startsWith(QUERY_RANGE_TAG_PREFIX) && field.length > QUERY_RANGE_TAG_PREFIX.length);
 }
 
-/**
- * @typedef {Record<string, { min?: number, max?: number }>} QueryRanges
- */
+/** @typedef {Record<string, { min?: number, max?: number }>} QueryRanges */
 
 /**
- * A /query `filter.ranges`, checked: each key an isQueryRangeField() field, each bound a finite number. Empty bounds
- * are dropped, and no bounds at all is `undefined`.
  * @param {unknown} raw
- * @returns {QueryRanges | undefined | null} null when it isn't valid.
+ * @returns {QueryRanges | undefined | null}
  */
 export function parseQueryRanges(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -2150,10 +1995,6 @@ export function parseQueryRanges(raw) {
 }
 
 /**
- * Turns `filter.folder` into the filter it means, in place. "none": rows carrying no closed folder tag, and no filter
- * at all while no tag is a closed folder (so the list keeps its counted totals). A tag id: rows carrying that folder's
- * tag, as a tag include when the tag filter is 'and', else as a `tag:<id>` range, since an 'or' tag filter can't also
- * require one tag.
  * @param {import('../library-engine.js').LibraryEngine} lib
  * @param {{ folder?: string, tags?: { include?: string[], exclude?: string[], mode?: string }, ranges?: QueryRanges }} filter
  */
@@ -2179,19 +2020,18 @@ const QUERY_SORT_FIELDS = new Set(['name', 'date_added', 'date_last_chat', 'chat
 const DEFAULT_QUERY_PAGE_SIZE = 500;
 const MAX_QUERY_PAGE_SIZE = 2000;
 
-/**
- * @typedef {{ status: number, body: object } | { hashes: Parameters<typeof serializeQueryHashesBinary>[0] }} QueryReply
- * What runQuery() answers: a JSON body with its status, or hash mode's binary body.
- */
+/** @typedef {{ status: number, body: object } | { hashes: Parameters<typeof serializeQueryHashesBinary>[0] }} QueryReply */
 
-/** @param {number} status @param {object} body @returns {QueryReply} */
+/**
+ * @param {number} status
+ * @param {object} body
+ * @returns {QueryReply}
+ */
 function queryReply(status, body) {
     return { status, body };
 }
 
 /**
- * The change feed's end (the characters' `/changes` cursor) and the answer's freshness token: the store's log end,
- * read before the rows, so a write after it makes the token stale, never the rows.
  * @param {import('../library-engine.js').LibraryEngine} lib
  */
 async function queryVersion(lib) {
@@ -2201,21 +2041,12 @@ async function queryVersion(lib) {
 }
 
 /**
- * `/query`'s answer to one request body: a page of characters (and with `filter.includeGroups` groups) under the
- * filter, sort and search, as list rows, or (`want: ['hashes']`) as hash rows in the binary form.
- *
- * `want: 'hidden'` adds `hidden`, upstream's "N hidden" count: every character (and, with `filter.includeGroups`, every
- * group) less the rows on this page; `~`-prefixed (in hash mode, flagged) when estimated.
- *
- * `filter.group` is the Groups filter: `true` keeps only groups and needs `filter.includeGroups`, `false` keeps only
- * characters. Rows keep the shape `filter.includeGroups` asks for.
  * @param {import('express').Request} request
- * @param {object} body The request body: filter, sort, want, page, pageSize, cursor, ifToken.
- * @param {{ compat?: boolean }} [o] `compat: false` leaves the rows' compat `chat` out (null).
+ * @param {object} body
+ * @param {{ compat?: boolean }} [o]
  * @returns {Promise<QueryReply>}
  */
 async function runQuery(request, body, { compat = true } = {}) {
-    // A copy: ranges and the folder case are rewritten below, and a caller may reuse its body for the next page.
     const filter = { ...(body.filter ?? {}) };
     const sort = body.sort ?? {};
     const want = Array.isArray(body.want) ? body.want : ['rows', 'total'];
@@ -2242,7 +2073,6 @@ async function runQuery(request, body, { compat = true } = {}) {
     if (sort.field === 'random' && !Number.isFinite(seed)) {
         return queryReply(400, { error: true, reason: 'random-seed-required', message: 'sort.field "random" requires a finite sort.seed - design doc §5.3 decision 10, the client mints and persists this (public/scripts/random-sort.js).' });
     }
-    // In relevance order, `sort.tie` orders the matches only tag names match (all scoring alike): the list's sort.
     const tie = sort.field === 'search' && sort.tie && typeof sort.tie === 'object' ? sort.tie : undefined;
     if (tie !== undefined && (!QUERY_SORT_FIELDS.has(tie.field) || tie.field === 'search')) {
         return queryReply(400, { error: true, reason: 'invalid-sort-field', message: 'sort.tie.field takes a list sort field.' });
@@ -2259,7 +2089,6 @@ async function runQuery(request, body, { compat = true } = {}) {
     const wantHidden = want.includes('hidden');
     const wantRows = want.includes('rows');
     const wantTotal = want.includes('total') || wantHidden;
-    // Hash-only mode is mutually exclusive with `rows` - one shape or the other per request.
     const wantHashes = want.includes('hashes');
     if (wantHashes && wantRows) {
         return queryReply(400, { error: true, reason: 'hashes-and-rows-exclusive', message: 'want cannot include both "rows" and "hashes" in the same request.' });
@@ -2304,7 +2133,6 @@ async function runQuery(request, body, { compat = true } = {}) {
         wantHidden,
         groupsOnly: includeGroups && group === true,
         includeGroups: includeGroups && group !== false,
-        // Upstream's "N hidden": every character, and every group when the list holds groups, whichever the filter keeps.
         hiddenKinds: { characters: true, groups: includeGroups },
         includeCreatorNotes: shallowCharactersIncludeCreatorNotes(),
         ...(searchTerm ? { search: searchTerm } : {}),
@@ -2323,7 +2151,6 @@ async function runQuery(request, body, { compat = true } = {}) {
         ...(typeof result.cursor === 'string' ? { cursor: result.cursor } : {}),
     };
 
-    // A group's compat chat values are part of its object, so its digests are taken over the object /batch answers.
     const groupKeys = keys.filter(k => k.group).map(k => k.key);
     const groups = new Map((compat && groupKeys.length ? await groupObjects(request, groupKeys) : []).filter(g => g !== null).map(g => [(g).id, g]));
 
@@ -2368,12 +2195,10 @@ async function handleQuery(request, response) {
 
 router.post('/query', (request, response) => withSearchTiming(response, () => handleQuery(request, response)));
 
-/** Upstream's search index rebuild: the library's search is kept at every write, so there is nothing to rebuild. */
 router.post('/search-index/rebuild', function (_request, response) {
     return response.send({ ok: true });
 });
 
-/** Which avatars name a character: `{ ids }` → `{ [avatar]: boolean }`. */
 router.post('/exists', async function (request, response) {
     try {
         const ids = Array.isArray(request.body?.ids) ? request.body.ids : null;
@@ -2392,10 +2217,6 @@ router.post('/exists', async function (request, response) {
     }
 });
 
-/**
- * findChar()'s library-wide lookup: `{ name?, allowAvatar?, insensitive?, tags? }` answers `{ ids, capped }`;
- * `{ type: 'group', name }` answers `{ ids }`.
- */
 router.post('/find', async function (request, response) {
     try {
         const body = request.body ?? {};
@@ -2421,12 +2242,8 @@ router.post('/find', async function (request, response) {
     }
 });
 
-// Fixed page size for /changes: the server always pages, and the client loops on `hasMore`.
 const CHANGES_PAGE_SIZE = 500;
 
-/**
- * The characters changed after `sinceSeq`, each once at its last change; paged (`hasMore`), never truncated.
- */
 router.post('/changes', async function (request, response) {
     try {
         const sinceSeq = Number(request.body?.sinceSeq);
@@ -2441,26 +2258,9 @@ router.post('/changes', async function (request, response) {
     }
 });
 
-/** Search-backend enum codes for the binary hash-mode `/query` response. 0 means "absent". */
 const HASH_QUERY_SEARCH_BACKEND_CODES = { tantivy: 1, native: 2, wasm: 3, unavailable: 4 };
 
 /**
- * Serializes `/query`'s hash-only mode (`want: ['hashes']`) into a compact binary response. See
- * `deserializeQueryHashesBinary()` client-side (character-repository.js) for the matching decoder.
- *
- * Header (20 bytes): headerFlags(1) [bit0=hasTotal, bit1=totalApprox, bit2=more, bit3=hasCursor] + searchBackendCode(1) + seq(8, float64) +
- * total(8, float64, meaningful only if hasTotal) + rowCount(2, uint16).
- *
- * Per row: flags(1) [bit0=isGroup, bit1=hasCreateDate] + idLen(2) + id(idLen, utf8) + the row's cache key: for a
- * character its version(8, float64) + tagIdsHash(4), for a group favHash(4) + tagIdsHash(4) + contentHash(4); then
- * date_added(8, float64) + create_date(8, float64, 0 if !hasCreateDate) +
- * date_last_chat(8, float64) + chat_size(8, float64) + data_size(8, float64) + chatLen(2) +
- * chat(chatLen, utf8, omitted if chatLen is 0).
- *
- * Trailer, after the last row: tokenLen(2, uint16) + token(tokenLen, utf8); tokenLen 0 when the token is null.
- * Then, only when the header's bit3 is set: cursorLen(2, uint16) + cursor(cursorLen, utf8), runSearchWalk()'s cursor.
- * Then, only when `hidden` is a number: hiddenFlags(1) [bit0=approx] + hidden(8, float64). A decoder that reads no
- * further than the token still reads the rest correctly.
  * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string, hidden?:number, approxHidden?:boolean, more?:boolean, cursor?:string}} params
  * @returns {Buffer}
  */
@@ -2472,13 +2272,13 @@ export function serializeQueryHashesBinary({ seq, token, total, approxTotal, has
     const searchBackendCode = HASH_QUERY_SEARCH_BACKEND_CODES[searchBackend] ?? 0;
 
     const tokenBytes = token ? Buffer.byteLength(token, 'utf8') : 0;
-    let totalSize = 1 + 1 + 8 + 8 + 2; // header
+    let totalSize = 1 + 1 + 8 + 8 + 2;
     for (const row of hashRows) {
         const idBytes = Buffer.byteLength(row.id, 'utf8');
         const chatBytes = row.chat ? Buffer.byteLength(row.chat, 'utf8') : 0;
         totalSize += 1 + 2 + idBytes + (row.isGroup ? 4 + 4 + 4 : 8 + 4) + 8 + 8 + 8 + 8 + 8 + 2 + chatBytes;
     }
-    totalSize += 2 + tokenBytes; // trailer
+    totalSize += 2 + tokenBytes;
     if (hasCursor) totalSize += 2 + cursorBytes;
     if (hasHidden) totalSize += 1 + 8;
 
@@ -2540,7 +2340,6 @@ export function serializeQueryHashesBinary({ seq, token, total, approxTotal, has
 }
 
 /**
- * Sends a hash-mode `/query` response as `application/octet-stream`.
  * @param {import("express").Response} response
  * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string}} params
  */
@@ -2549,11 +2348,9 @@ function sendHashQueryResponse(response, params) {
     return response.send(serializeQueryHashesBinary(params));
 }
 
-/** The saved views' entity types: their changes are told as `views-changed`, not as the library's. */
 const VIEW_TYPES = new Set([TYPE.viewList, TYPE.view, TYPE.condition, TYPE.range]);
 
 /**
- * Whether the entity change feed between `from` and `to` holds an entity other than a saved view's.
  * @param {import('../library-engine.js').LibraryEngine} lib
  * @param {number} from
  * @param {number} to
@@ -2572,16 +2369,6 @@ async function changedOtherThanViews(lib, from, to) {
     }
 }
 
-/**
- * SSE stream of what changed for this user, so a page asks instead of polling: `{}` when characters changed (the page
- * asks `/changes`), `{ type: 'groups-changed' }` when groups or what characters and groups carry changed (it asks
- * `/api/tags/assignment-changes`), `{ type: 'tags-changed' }` for tag definitions (it asks `/api/tags/changes`),
- * `{ type: 'tag-order-settled' }`, `{ type: 'tag-move-failed', ... }`, `{ type: 'views-changed' }`, and
- * `{ type: 'state-changed', tree, at }` when a chat's state changed at a message (`at`, null: the tree's root; `tree`
- * the character's avatar or the group's id), which a page showing that message reads again; with `tree` null (a
- * change reverted) every page reads its state again. Also carries the browser
- * presence heartbeat: one permanent connection per tab, as the browser's per-origin connection pool is small.
- */
 router.get('/changes/stream', async function (request, response) {
     let store;
     try {
@@ -2602,7 +2389,6 @@ router.get('/changes/stream', async function (request, response) {
 
     const send = (/** @type {object} */ frame) => response.write(`data: ${JSON.stringify(frame)}\n\n`);
     const tab = await tabStreamSession(request, store, send);
-    // The new code's views are pushed on this stream too (one connection per tab).
     const detachUi = tab ? ui.attach(uiUser(request), tab.session, send) : null;
 
     const presenceInterval = setInterval(() => {
@@ -2610,7 +2396,6 @@ router.get('/changes/stream', async function (request, response) {
         touchBrowserPresence();
     }, PRESENCE_PING_INTERVAL_MS);
 
-    // Debounced so a burst of commits is one frame, with maxWait so a steady stream of them still tells the page.
     const writeChanged = _.debounce(() => response.write('data: {}\n\n'), 500, { maxWait: 2000 });
     const writeGroupsChanged = _.debounce(() => send({ type: 'groups-changed' }), 500, { maxWait: 2000 });
     const writeTagsChanged = _.debounce(() => send({ type: 'tags-changed' }), 500, { maxWait: 2000 });
@@ -2643,11 +2428,9 @@ router.get('/changes/stream', async function (request, response) {
                 told.add(id);
                 send(frame);
             }
-            // The new page's views that follow the tab's chat, after the old frames (and never holding them up).
             if (tab && records.some(r => CHAT_MOVES.has(/** @type {any} */ (r).kind))) {
                 ui.chatMoved(uiUser(request), tab.session).catch(error => console.error('[ui] chat views not pushed:', error));
             }
-            // The alternatives the tab looks at, when a message or a card changed (each tab reads its own once).
             if (tab && records.some(r => ALTERNATIVE_CHANGES.has(/** @type {any} */ (r).kind))) {
                 ui.changedFor(uiUser(request), tab.session, ALTERNATIVES_VIEWS).catch(error => console.error('[ui] alternatives not pushed:', error));
             }
@@ -2687,25 +2470,15 @@ router.get('/changes/stream', async function (request, response) {
 
 const SESSION_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TAB_TOKEN = /^[0-9A-Za-z_-]{8,64}$/;
-/** Records after which a chat's state may read otherwise where a tab is: its state changed, or a session moved. */
-/** Records that change a message's alternatives (added, removed, edited, chosen) or a card's greetings. */
 const ALTERNATIVE_CHANGES = new Set(['messageAppend', 'messageParent', 'subtreeDelete', 'textEdit', 'textValue', 'jsonValue', 'valueDelete', 'openingChoice', 'pointerMove', 'pointerRoot', 'historyStep', 'currentChat']);
 const CHAT_MOVES = new Set(['stateChange', 'stateRevert', 'pointerMove', 'pointerRoot', 'historyStep', 'currentChat']);
-/** Records that move a session, or switch its current chat. */
 const SESSION_KINDS = new Set(['pointerMove', 'pointerRoot', 'historyStep', 'sessionFork', 'messageAppend', 'currentChat']);
 
 /**
- * The session a tab's changes stream holds (`?session=<UUID>&token=<tab token>`; `claim=1` instead of a session: the
- * server picks one), told to the tab as the stream's first frame, `{ type: 'session', session, held, place }`.
- * `held`: another tab holds the one it asked for, and this stream holds none (the tab forks it). A session picked for the tab is followed
- * by its current chats, `{ type: 'session-chats', chats: [{ tree, bookmark }] }` (tree `{ avatar }` or
- * `{ group }`). From then on, `{ type: 'session-place', place }` when the session moves and
- * `{ type: 'current-chat', tree, bookmark }` when its current chat switches.
  * @param {import('express').Request} request
  * @param {import('../user-stores.js').UserStore} store
  * @param {(frame: object) => void} send
- * @returns {Promise<{ session: string, told(records: object[]): Promise<void>, release(): void } | null>} null: a stream
- *   with no tab.
+ * @returns {Promise<{ session: string, told(records: object[]): Promise<void>, release(): void } | null>}
  */
 async function tabStreamSession(request, store, send) {
     const token = typeof request.query.token === 'string' && TAB_TOKEN.test(request.query.token) ? request.query.token : null;
@@ -2763,10 +2536,6 @@ async function tabStreamSession(request, store, send) {
     };
 }
 
-/**
- * Upstream's manifest: every character as `{ avatar, mtime, thumbnailVersion }` (a bare array, streamed a page at a
- * time; O(cards) by nature, kept for upstream's callers). `mtime` changes whenever the character does (its version).
- */
 router.post('/manifest', async function (request, response) {
     try {
         const { lib } = await requestStore(request);
@@ -2799,10 +2568,6 @@ router.post('/manifest', async function (request, response) {
     }
 });
 
-/**
- * The characters a list of avatars names, whole (`full: true`, at most FULL_BATCH_MAX, with the edit-conflict
- * hashes) or as `lazyLoadCharacters` says; `fields` answers only those fields of each list row (plus `avatar`).
- */
 router.post('/batch', async function (request, response) {
     try {
         const avatars = Array.isArray(request.body?.avatars) ? request.body.avatars : [];
@@ -2814,8 +2579,6 @@ router.post('/batch', async function (request, response) {
             }
         }
 
-        // The page's copies, as each field's hash (`characterRowFieldHashes()`): answered with only the fields that differ,
-        // `[{ avatar, set: { path: value }, unset: [path] }]`, a character with no copy given every field.
         const hashes = request.body?.hashes;
         if (hashes !== undefined) {
             if (!hashes || typeof hashes !== 'object' || Array.isArray(hashes)) return response.sendStatus(400);
@@ -2869,8 +2632,6 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
         const [data] = await characterObjects(request, [request.body.avatar_url], { shallow: false });
         if (!data) return response.sendStatus(404);
 
-        // Per-field content hashes for edit conflict detection: sent back on save so the server can detect
-        // if another session changed the card in between. Fields hash covers metadata, body hash the editable body.
         data._fieldsHash = characterDigestFieldsHash(data);
         data._bodyHash = characterDigestCardBodyHash(data);
 
@@ -2881,14 +2642,8 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
     }
 });
 
-/** Chats a page of `/chats` lists at most. */
 const CHATS_PAGE = 500;
 
-/**
- * Upstream's chat list of a character: its bookmarks, and first the requesting tab's session when it is in the tree
- * and no bookmark is at its message. Each by its compat chat id (`file_name`: a bookmark's id, a session's UUID) and
- * its `label`. `simple` answers those only; `metadata` adds each one's `chat_metadata`.
- */
 router.post('/chats', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         if (!request.body) return response.sendStatus(400);
@@ -2922,16 +2677,13 @@ router.post('/chats', validateAvatarUrlMiddleware, async function (request, resp
         })));
     } catch (error) {
         console.error(error);
-        // Deliberately `{ error: true }`, not `[]` - callers must not treat this as "zero chats".
         return response.send({ error: true });
     }
 });
 
 /**
- * Mints the immutable id a new character is created/imported under: a UUIDv7, unrelated to the display name.
- * Throws rather than overwriting a character if it keeps colliding.
- * @param {import('../users.js').UserDirectoryList} directories User directories
- * @returns {Promise<string>} A UUIDv7 no character's avatar (`<id>.png`) has.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @returns {Promise<string>}
  */
 export async function mintCharacterId(directories) {
     const { lib } = await userStore(directories);
@@ -2943,9 +2695,8 @@ export async function mintCharacterId(directories) {
 }
 
 /**
- * Gets the preserved name for the uploaded file if the request is valid.
- * @param {import("express").Request} request - Express request object
- * @returns {string | undefined} - The preserved name if the request is valid, otherwise undefined
+ * @param {import("express").Request} request
+ * @returns {string | undefined}
  */
 function getPreservedName(request) {
     return typeof request.body.preserved_name === 'string' && request.body.preserved_name.length > 0
@@ -2954,9 +2705,8 @@ function getPreservedName(request) {
 }
 
 /**
- * sha256 hex digest of a file's raw bytes, streamed rather than read fully into memory first.
  * @param {string} filePath
- * @returns {Promise<string>} lowercase hex digest
+ * @returns {Promise<string>}
  */
 export function hashFileContents(filePath) {
     return new Promise((resolve, reject) => {
@@ -2968,7 +2718,6 @@ export function hashFileContents(filePath) {
     });
 }
 
-/** Format -> importer dispatch table for `/import` below, shared with importCharacterFileHeadless(). */
 const formatImportFunctions = {
     'yaml': importFromYaml,
     'yml': importFromYaml,
@@ -2979,14 +2728,11 @@ const formatImportFunctions = {
 };
 
 /**
- * Headless counterpart to `POST /import` for scan-discovered files, driven through the same dispatch table, dedup, and write path as a browser upload, via a minimal fake Express `request`.
- * `filePath` is consumed (deleted) by the import - callers must pass a staged copy, never the original source file.
- * @param {string} filePath Absolute path to a staged copy of the discovered file - consumed (deleted) by the import.
- * @param {string} format One of formatImportFunctions' keys (yaml/yml/json/png/charx/byaf)
+ * @param {string} filePath
+ * @param {string} format
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {{ userHandle: string, contentHash: string }} options
- * @returns {Promise<{ fileName: string } | { duplicateOf: string } | null>} `null` for an unsupported format or a
- * failed import (the importer returned no file name).
+ * @returns {Promise<{ fileName: string } | { duplicateOf: string } | null>}
  */
 export async function importCharacterFileHeadless(filePath, format, directories, { userHandle, contentHash }) {
     const importFunction = formatImportFunctions[format];
@@ -3021,9 +2767,6 @@ router.post('/import', async function (request, response) {
             throw new Error(`Unsupported format: ${format}`);
         }
 
-        // Exact-byte-identical dedup, skipped only when `preservedFileName` is set (an explicit "replace THIS
-        // character" action must not silently no-op just because its bytes match some other character). The
-        // hash itself is always computed and recorded regardless, so content_hash doesn't go stale on a replace.
         const contentHash = await hashFileContents(uploadPath);
         const { lib } = await requestStore(request);
         const imported = await lib.importLane(contentHash, async () => {
@@ -3049,22 +2792,17 @@ router.post('/import', async function (request, response) {
             invalidateThumbnail(request.user.directories, 'avatar', `${preservedFileName}.png`);
         }
 
-        // ALL/ONLY_EXISTING tag-import modes done atomically here, in the same request; ASK still needs the
-        // client's interactive review popup, so tag import there stays entirely client-driven.
         const tagImportMode = request.body.tagImportMode;
-        /** @type {object[]} Tag definitions resolved by the ALL/ONLY_EXISTING seed below, shipped back so the client can merge them without a second /api/tags/get round trip. Empty for ASK/NONE. */
+        /** @type {object[]} */
         let tagDefinitions = [];
         if (tagImportMode === 'all' || tagImportMode === 'existing') {
             try {
                 ({ tagDefinitions } = await (await requestStore(request)).lib.tags.seedCardTags(`${fileName}.png`, { onlyExisting: tagImportMode === 'existing' }));
             } catch (err) {
-                // Card-tag seeding failing must not fail the import itself - the character row already exists.
                 console.error(`Failed to seed card tags for ${fileName}.png:`, err);
             }
         }
 
-        // Hands the client the freshly-imported character's whole card in the same response, so the page can hold it
-        // (it holds only full cards) without reading it back.
         const [character] = await characterObjects(request, [`${fileName}.png`], { shallow: false });
 
         response.send({ file_name: fileName, character, tagDefinitions });
@@ -3076,9 +2814,8 @@ router.post('/import', async function (request, response) {
 });
 
 /**
- * Duplicates a character under the next free `<name>_<n>.png`: its card, its image (the same file) and its tags.
  * @param {import('express').Request} request
- * @param {string} avatarUrl Avatar filename of the character to duplicate.
+ * @param {string} avatarUrl
  * @returns {Promise<{ok: true, newAvatar: string}|{ok: false, status: number, error: string}>}
  */
 async function duplicateOneCharacter(request, avatarUrl) {
@@ -3090,7 +2827,6 @@ async function duplicateOneCharacter(request, avatarUrl) {
         return { ok: false, status: 404, error: 'not found' };
     }
 
-    // A name ending in _<number> counts on from it. The suffix is at most 15 digits, so `suffix++` always advances.
     const nameParts = path.basename(avatar, path.extname(avatar)).split('_');
     const lastPart = nameParts[nameParts.length - 1];
     const isStrictInteger = /^\d{1,15}$/.test(lastPart);
@@ -3113,7 +2849,6 @@ async function duplicateOneCharacter(request, avatarUrl) {
     const [tags] = await lib.store.libraryTagIds([source.id]);
     const hashOf = (/** @type {number} */ which) => source.hashes.find(h => h.which === which)?.hash.toString('hex') ?? null;
     try {
-        // The duplicate's image is a copy of the source's, sharing its bytes where the filesystem can (a reflink).
         await inAvatarLane(lib, newAvatar, async () => {
             const from = avatarFile(request.user.directories, avatar);
             const to = avatarFile(request.user.directories, newAvatar);
@@ -3135,7 +2870,6 @@ async function duplicateOneCharacter(request, avatarUrl) {
 
 router.post('/duplicate', validateAvatarUrlMiddleware, async function (request, response) {
     try {
-        // ── Bulk mode: avatar_urls array is present ──────────────
         if (Array.isArray(request.body.avatar_urls)) {
             const avatarUrls = request.body.avatar_urls;
             const results = [];
@@ -3172,38 +2906,29 @@ router.post('/duplicate', validateAvatarUrlMiddleware, async function (request, 
     }
 });
 
-/** Rows per `/query` page the bulk selection walks. Within MAX_QUERY_PAGE_SIZE. */
 const BULK_QUERY_PAGE_SIZE = 1000;
-/** The most avatars a selection may name one by one, and the most position ranges it may hold. */
 const BULK_MAX_NAMED = 10000;
 const BULK_MAX_RANGES = 1000;
-/** Avatars a prepared selection answers by name, for the page to show who is in it. */
 const BULK_SAMPLE_SIZE = 30;
-/** Avatars a `/bulk/ids` page holds. */
 const BULK_IDS_PAGE = 500;
-/** Entity ids per record of a run list. */
 const RUN_LIST_CHUNK = 1000;
-/** The actions `/bulk/run` carries out on each selected character. */
 const BULK_ACTIONS = new Set(['delete', 'fav', 'duplicate', 'tag-add', 'tag-remove', 'tag-reset', 'tag-import']);
 
-/** Hands the event loop back between batches, so a long bulk action holds no request up. */
 const bulkPause = () => new Promise(resolve => setImmediate(resolve));
 
 /**
- * @typedef {object} BulkSelection What the page keeps of a selection: every character a list shows (`all`), or the
- * ones at `ranges` of it (positions, both ends included, groups counted), less those at `excludeRanges`, plus the
- * avatars `include` names, less those `exclude` names. `query` is the list's `{ filter, sort }`.
+ * @typedef {object} BulkSelection
  * @property {{ filter: object, sort?: object } | null} query
  * @property {boolean} all
- * @property {[number, number][]} ranges Sorted, apart.
- * @property {[number, number][]} excludeRanges Sorted, apart.
+ * @property {[number, number][]} ranges
+ * @property {[number, number][]} excludeRanges
  * @property {string[]} include
  * @property {Set<string>} exclude
  */
 
 /**
  * @param {unknown} value
- * @returns {[number, number][] | null} Ranges of positions, both ends included, sorted and merged; `null` when malformed.
+ * @returns {[number, number][] | null}
  */
 function parseBulkRanges(value) {
     if (value === undefined) return [];
@@ -3229,7 +2954,7 @@ function parseBulkRanges(value) {
 
 /**
  * @param {unknown} value
- * @returns {string[] | null} The avatars, or `null` when malformed.
+ * @returns {string[] | null}
  */
 function parseBulkAvatars(value) {
     if (value === undefined) return [];
@@ -3239,9 +2964,8 @@ function parseBulkAvatars(value) {
 }
 
 /**
- * A request's selection, checked.
  * @param {unknown} raw
- * @returns {BulkSelection | string} The reason when it isn't one.
+ * @returns {BulkSelection | string}
  */
 function parseBulkSelection(raw) {
     if (!raw || typeof raw !== 'object') return 'selection-required';
@@ -3258,7 +2982,6 @@ function parseBulkSelection(raw) {
 }
 
 /**
- * The list a selection's positions are of, a page at a time from `start`: each row's avatar, or null for a group.
  * @param {import('express').Request} request
  * @param {{ filter: object, sort?: object }} query
  * @param {number} start
@@ -3266,7 +2989,6 @@ function parseBulkSelection(raw) {
  */
 async function* listRows(request, query, start) {
     const filter = /** @type {Record<string, any>} */ (query.filter ?? {});
-    // Groups aren't characters, so a groups-only list holds none.
     if (filter.group === true) return;
     let page = Math.floor(start / BULK_QUERY_PAGE_SIZE) + 1;
     let position = (page - 1) * BULK_QUERY_PAGE_SIZE;
@@ -3288,13 +3010,11 @@ async function* listRows(request, query, start) {
 }
 
 /**
- * The avatars a selection holds, in its order (the list's rows in it, then `include`), from a place `/bulk/ids`
- * answered (`p<position>` or `i<index>`).
  * @param {import('express').Request} request
  * @param {BulkSelection} selection
  * @param {string} [from]
- * @param {{ missing?: boolean }} [o] `missing`: also the avatars `include` names that no character has, flagged.
- * @returns {AsyncGenerator<{ avatar: string, next: string, missing?: true }, void, undefined>} `next`: the place after it.
+ * @param {{ missing?: boolean }} [o]
+ * @returns {AsyncGenerator<{ avatar: string, next: string, missing?: true }, void, undefined>}
  */
 async function* selectedAvatars(request, selection, from, { missing = false } = {}) {
     const at = typeof from === 'string' ? /^([pi])(\d+)$/.exec(from) : null;
@@ -3324,10 +3044,6 @@ async function* selectedAvatars(request, selection, from, { missing = false } = 
     }
 }
 
-/**
- * How many characters a selection holds, whether it holds `current`, the first of them, and the avatars `include`
- * names that no character has. Body: `{ selection, current? }`; answers `{ count, containsCurrent, sample, missing }`.
- */
 router.post('/bulk/prepare', async function (request, response) {
     const body = request.body ?? {};
     const selection = parseBulkSelection(body.selection);
@@ -3352,7 +3068,6 @@ router.post('/bulk/prepare', async function (request, response) {
     }
 });
 
-/** A page of a selection's avatars, in its order. Body: `{ selection, after? }`. Answers `{ avatars, more, after? }`. */
 router.post('/bulk/ids', async function (request, response) {
     const body = request.body ?? {};
     const selection = parseBulkSelection(body.selection);
@@ -3376,16 +3091,14 @@ router.post('/bulk/ids', async function (request, response) {
     }
 });
 
-/** The `metaValue` names of a run list: its state, and its chunks of entity ids. */
 const RUNS_KEY = 'bulk.runs';
 const runKey = (/** @type {string} */ run) => `bulk.run.${run}`;
 const chunkKey = (/** @type {string} */ run, /** @type {number} */ n) => `bulk.run.${run}.${n}`;
 
 /**
- * Changes the list of run lists, one change at a time.
  * @param {import('../library-engine.js').LibraryEngine} lib
  * @param {(runs: string[]) => string[]} change
- * @param {object[]} [records] Committed with it.
+ * @param {object[]} [records]
  */
 function changeRuns(lib, change, records = []) {
     return lib.serialized(RUNS_LANE, RUNS_KEY, async () => {
@@ -3395,13 +3108,9 @@ function changeRuns(lib, change, records = []) {
     });
 }
 
-/** The lane changes of the list of run lists take. */
 const RUNS_LANE = -2;
 
 /**
- * Writes a selection as a run list in the store: its characters' entity ids in its order, in chunks, so a run acting
- * on them walks what it was given whatever its own changes do to the list. Each entry is `[id, avatar]`, `id` null
- * for an avatar the selection names that no character has, so the run can name it. Removed by `endRunList()`.
  * @param {import('express').Request} request
  * @param {BulkSelection} selection
  * @param {string} action
@@ -3433,8 +3142,6 @@ async function writeRunList(request, selection, action) {
 }
 
 /**
- * The characters of a run list's chunk, each by its avatar now; `gone` for one no character is any more (or never
- * was), by the avatar the selection named.
  * @param {import('../library-engine.js').LibraryEngine} lib
  * @param {string} run
  * @param {number} n
@@ -3454,7 +3161,6 @@ async function runListChunk(lib, run, n) {
 }
 
 /**
- * Removes a run list.
  * @param {import('../library-engine.js').LibraryEngine} lib
  * @param {string} run
  * @param {number} chunks
@@ -3467,8 +3173,6 @@ async function endRunList(lib, run, chunks) {
 }
 
 /**
- * The run lists a stop left (a run doesn't go on after a restart): each reported, with how far it got, and removed.
- * Called after the server listens.
  * @param {import('../library-engine.js').LibraryEngine} lib
  */
 export async function dropStoppedRuns(lib) {
@@ -3480,13 +3184,11 @@ export async function dropStoppedRuns(lib) {
             ? `[characters/bulk] A bulk "${s.action}" was stopped by the server stopping, after ${s.done} of ${s.total} characters; the rest weren't changed.`
             : '[characters/bulk] A bulk action was stopped by the server stopping before it began; nothing was changed.');
         let chunks = s?.chunks ?? 0;
-        // A list stopped while it was written has chunks its state doesn't count yet.
         while ((await lib.store.meta([chunkKey(run, chunks)]))[0] !== null) chunks++;
         await endRunList(lib, run, chunks);
     }
 }
 
-/** The tags every character of a selection carries. Body: `{ selection }`. Answers `{ tagIds }`. */
 router.post('/bulk/mutual-tags', async function (request, response) {
     const selection = parseBulkSelection(request.body?.selection);
     if (typeof selection === 'string') return response.status(400).send({ error: true, reason: selection });
@@ -3514,7 +3216,6 @@ router.post('/bulk/mutual-tags', async function (request, response) {
 });
 
 /**
- * Carries out one bulk action on one character.
  * @param {import('express').Request} request
  * @param {string} action
  * @param {string} avatar
@@ -3563,15 +3264,6 @@ async function applyBulkAction(request, action, avatar, options) {
     return { ok: false, error: 'unknown action' };
 }
 
-/**
- * Carries out an action on every character of a selection, a batch at a time with a pause between batches, walking
- * a run list written at its start (so its own changes don't move what it walks). Body: `{ selection, action,
- * options?, watch? }`: `action` one of BULK_ACTIONS; `options` `deleteChats` (delete), `tagIds` (tag-add,
- * tag-remove), `onlyExisting` (tag-import); `watch` the avatars the page shows or holds, whose results it is sent.
- * Answers newline-separated JSON as it goes: `{ type: 'item', avatar, ... }` for a watched character done,
- * `{ type: 'failed', avatar, error }` for each one that failed, `{ type: 'progress', done, failed }` after each batch,
- * and last `{ type: 'done', done, failed }` (or `{ type: 'error', done, failed }` when it had to stop).
- */
 router.post('/bulk/run', async function (request, response) {
     const { action, options, watch } = request.body ?? {};
     if (typeof action !== 'string' || !BULK_ACTIONS.has(action)) {
@@ -3603,7 +3295,6 @@ router.post('/bulk/run', async function (request, response) {
                 try {
                     outcome = gone ? { ok: false, error: 'not found' } : await applyBulkAction(request, action, avatar, actionOptions);
                 } catch (err) {
-                    // One character going wrong is named, and the rest are still done.
                     console.error(`[characters/bulk/run] ${action} failed for ${avatar}:`, err);
                     outcome = { ok: false, error: err instanceof Error ? err.message : String(err) };
                 }
@@ -3642,7 +3333,6 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
 
         switch (request.body.format) {
             case 'png': {
-                // Built here: an exported file carries the current card, as other tools read it by that chunk alone.
                 const materialized = await materializeCardPng(request.user.directories, avatar);
                 if (!materialized) return response.sendStatus(404);
                 const mutatedData = mutateJsonString(materialized.cardJson, unsetPrivateFields);

@@ -159,7 +159,6 @@ describe('canonicalStringify', () => {
 });
 
 describe('character row fields', () => {
-    /** What `/api/characters/batch` answers for `held`'s hashes against `row`. */
     function answer(row, held) {
         const hashes = held ? characterRowFieldHashes(held) : {};
         const now = characterRowFieldHashes(row);

@@ -1,4 +1,3 @@
-// Needs this checkout's native build and wasm build in engine/dist/ (node engine/build.js; node engine/build.js --wasm).
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -16,7 +15,7 @@ const platform = currentPlatform();
 const nativeName = nativeFileName(key, platform);
 const wasmName = wasmFileName(key);
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'st-engine-test-'));
-/** @type {Map<string, string>} release path -> local file */
+/** @type {Map<string, string>} */
 const release = new Map();
 /** @type {string[]} */
 const requests = [];

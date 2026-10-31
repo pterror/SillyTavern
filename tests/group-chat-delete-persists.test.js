@@ -1,14 +1,10 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import path from 'node:path';
 
-// Deleting a group chat must take its id out of the group file's `chats`: the client never saves that list after a
-// delete, and /api/groups/new-chat appends to whatever list is on disk.
-
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
 /** @type {typeof import('./converted-user.fixture.js')} */
 let fixture;
-/** The tab (session) the requests of a test come from. */
 let tab = '';
 /** @type {import('node:http').Server} */
 let server;
@@ -47,11 +43,9 @@ beforeEach(async () => {
 afterEach(() => user.close());
 
 /**
- * A request from a tab, which takes the session the answer hands it, and makes a new one when told its own is gone,
- * as the page does.
  * @param {string} urlPath
  * @param {object} body
- * @param {{ tab: string }} [from] The tab; the test's own by default.
+ * @param {{ tab: string }} [from]
  */
 async function post(urlPath, body, from = undefined) {
     const sender = from ?? { get tab() { return tab; }, set tab(value) { tab = value; } };
@@ -74,17 +68,15 @@ async function postOk(urlPath, body, from = undefined) {
     return result.body;
 }
 
-/** A second tab, its own session. */
 async function otherTab() {
     return { tab: (await import('../src/chat-engine.js')).newSessionKey() };
 }
 
-/** The group as the tab sees it (its chat list and current chat). @param {string} id */
+/** @param {string} id */
 async function readGroupFile(id) {
     return (await postOk('/api/groups/batch', { ids: [id] }))[0];
 }
 
-/** A group whose only chat is the one /create minted, with one message saved to it. */
 async function createGroupWithChat() {
     const created = await postOk('/api/groups/create', { name: 'Group', members: ['a.png'] });
     await saveChat(created.id, created.chat_id);
@@ -92,8 +84,10 @@ async function createGroupWithChat() {
 }
 
 /**
- * @param {string} groupId @param {string} chatId @param {{ tab: string }} [from]
- * @returns {Promise<string>} The compat id of the chat saved.
+ * @param {string} groupId
+ * @param {string} chatId
+ * @param {{ tab: string }} [from]
+ * @returns {Promise<string>}
  */
 async function saveChat(groupId, chatId, from = undefined) {
     return (await postOk('/api/chats/group/save', {
@@ -106,28 +100,25 @@ async function saveChat(groupId, chatId, from = undefined) {
     }, from)).chat_id;
 }
 
-/** The request deleteGroupChat() / deleteGroupChatByName() make. @param {string} groupId @param {string} chatId */
+/**
+ * @param {string} groupId
+ * @param {string} chatId
+ */
 function deleteChat(groupId, chatId) {
     return post('/api/chats/group/delete', { id: chatId, group_id: groupId });
 }
 
-// The group's chat list is its bookmarks, newest first, and the tab's own session when no bookmark is where it is; a
-// tab's current chat (`chat_id`) is a chat's name: a bookmark's label, else its own conversation's (as upstream names a
-// group chat, its time). A new chat is named anew.
 describe('/api/chats/group/delete removes the id from the group\'s chats', () => {
     test('deleting the tab\'s own chat (its session), then new-chat: the id is gone from the list and the answer', async () => {
         const group = await createGroupWithChat();
         const deletedId = group.chat_id;
-        // The save named the tab's own session: it saved onto it and made no bookmark.
         expect((await readGroupFile(group.id)).chats).toEqual([deletedId]);
 
         expect((await deleteChat(group.id, deletedId)).status).toBe(200);
         expect(tab).not.toBe(deletedId);
         expect((await readGroupFile(group.id)).chats).not.toContain(deletedId);
 
-        // No chats left, so the client asks for a new one (createNewGroupChat()).
         const newChat = await postOk('/api/groups/new-chat', { id: group.id });
-        // No current chat: the tab's own conversation in the group's tree, named anew.
         expect(newChat.chat_id).toMatch(/^\d{4}-\d{2}-\d{2}@\d{2}h\d{2}m\d{2}s\d{3}ms$/);
         expect(newChat.chat_id).not.toBe(deletedId);
         expect(newChat.chats).toEqual([newChat.chat_id]);
@@ -143,7 +134,6 @@ describe('/api/chats/group/delete removes the id from the group\'s chats', () =>
         expect((await deleteChat(group.id, other)).status).toBe(200);
         expect((await readGroupFile(group.id))).toMatchObject({ chats: [group.chat_id], chat_id: group.chat_id });
 
-        // A new chat is the tab's session at the group's root, named anew: listed once.
         const newChat = await postOk('/api/groups/new-chat', { id: group.id });
         expect(newChat.chat_id).not.toBe(group.chat_id);
         expect(newChat).toEqual({ chat_id: newChat.chat_id, chats: [newChat.chat_id] });
@@ -159,7 +149,6 @@ describe('/api/chats/group/delete removes the id from the group\'s chats', () =>
         expect((await deleteChat(group.id, current)).status).toBe(200);
         expect((await readGroupFile(group.id)).chats).toEqual([group.chat_id]);
 
-        // openGroupChat() on the remaining chat saves only these two fields.
         await postOk('/api/groups/save-partial', { id: group.id, props: { chat_id: group.chat_id, date_last_chat: Date.now() } });
         expect((await readGroupFile(group.id))).toMatchObject({ chats: [group.chat_id], chat_id: group.chat_id });
     });
@@ -183,7 +172,6 @@ describe('/api/chats/group/delete removes the id from the group\'s chats', () =>
 
     test('a bookmark with no saved messages is removed from the list, and new-chat does not bring it back', async () => {
         const group = await createGroupWithChat();
-        // A bookmark at the group's root.
         const empty = 'Empty chat';
         const tree = await fixture.treeOf(user.store, { group: group.id });
         const made = await user.store.chats.createBookmark({ tree, node_id: null, name: empty, actor: { user: user.user.profile.handle, session: (await otherTab()).tab } });

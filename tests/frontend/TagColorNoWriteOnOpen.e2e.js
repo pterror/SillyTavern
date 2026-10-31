@@ -1,13 +1,9 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// Opening Manage Tags only shows the tags: it must send no edit and leave every stored colour exactly as it
-// was written. A colour the user picks still saves.
-
 /** @param {import('@playwright/test').Page} page */
 async function loadApp(page) {
     await testSetup.awaitST({ page });
-    // APP_READY is an auto-fire event: a listener added after it was emitted still runs.
     await page.evaluate(() => {
         window['__appReady'] = false;
         const { eventSource, eventTypes } = window['SillyTavern'].getContext();
@@ -73,7 +69,6 @@ test.describe('Manage Tags colour pickers', () => {
             [`color-rgba-${stamp}`]: { color: 'rgba(10, 20, 30, 0.5)', color2: 'rgba(1, 2, 3, 1)' },
         };
 
-        // Created from a throwaway context so the page under test learns of the tags only through its own boot.
         const setupContext = await browser.newContext();
         try {
             const setup = await setupContext.newPage();
@@ -101,10 +96,8 @@ test.describe('Manage Tags colour pickers', () => {
         const hexId = `color-hex-${stamp}`;
         const row = page.locator(`.tag_view_item[id="${hexId}"]`);
         await expect(row).toBeVisible();
-        // Every picker has taken its colour once it reports one.
         await expect.poll(() => page.evaluate(() => [...document.querySelectorAll('#tag_view_list toolcool-color-picker')]
             .every(picker => !!picker['rgba']))).toBe(true);
-        // Longer than the picker's own start-up and any debounce between a change and its request.
         await page.waitForTimeout(3000);
         await expect.poll(() => inFlight.size, { timeout: 30000 }).toBe(0);
 

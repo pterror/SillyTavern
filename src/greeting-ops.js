@@ -2,16 +2,6 @@ import { getStringHash } from '../public/scripts/hash-utils.js';
 import { reindexDefaultAfterMove, reindexDefaultAfterRemoval } from './greeting-list.js';
 
 /**
- * Six named operations against a character's greeting list, addressing positions in the unified list
- * (see {@link import('./greeting-list.js').GreetingsModel}). Every op takes a precondition and refuses
- * with `{ ok: false, reason }` when it doesn't match (append, which can't overwrite anything, takes none): ops that target an existing greeting (edit,
- * delete, move's source and its anchor, set-default) take an `expectedHash` of that greeting, found at
- * the position given or, if it moved, by the hash alone (see {@link findGreeting}); add takes the `expectedLength` of the list, unset-default the `expectedDefaultPosition` or the hash of the default greeting. Pure: each
- * returns either `{ ok: true, model }` (new model, input never mutated) or `{ ok: false, reason }`.
- */
-
-/**
- * Hashes greeting text the same way the client's `_loadedFieldHashes` hashes any loaded field value.
  * @param {string} text
  */
 export function hashGreetingText(text) {
@@ -27,9 +17,6 @@ function hashMatches(model, position, expectedHash) {
 }
 
 /**
- * Finds the greeting whose hash is `expectedHash`: the one at `position` when its hash matches; otherwise (the
- * position is out of range, or holds something else) the one greeting anywhere in the list that has it. Refuses when
- * no greeting or more than one greeting has it, with `outOfRange` when `position` is out of range, else `changed`.
  * @param {import('./greeting-list.js').GreetingsModel} model
  * @param {number} position
  * @param {number} expectedHash
@@ -55,9 +42,6 @@ const GREETING_REASONS = { outOfRange: 'position out of range', changed: 'greeti
 const TARGET_REASONS = { outOfRange: 'target position out of range', changed: 'target greeting changed since it was loaded' };
 
 /**
- * Inserts `text` at `position` (0..length, i.e. `length` appends at the end). Refuses empty text.
- * It targets an insertion point, not existing content, so its precondition is the list's length
- * rather than a hash.
  * @param {import('./greeting-list.js').GreetingsModel} model
  * @param {number} position
  * @param {number} expectedLength
@@ -81,8 +65,6 @@ export function opAdd(model, position, expectedLength, text) {
 }
 
 /**
- * Inserts `text` after the last greeting, whatever the list's length. Refuses empty text. It can't overwrite
- * anything, so it takes no precondition. `position` in the result is where it landed.
  * @param {import('./greeting-list.js').GreetingsModel} model
  * @param {string} text
  * @returns {{ok: true, model: import('./greeting-list.js').GreetingsModel, position: number}|{ok: false, reason: string}}
@@ -94,10 +76,6 @@ export function opAppend(model, text) {
 }
 
 /**
- * Replaces the text of the greeting whose hash is `expectedHash`, found by {@link findGreeting}, so an edit still
- * lands on its greeting after other greetings were added, removed or moved. Refuses empty text. When that greeting
- * can't be found but the one at `position` already has `text`, the edit is already in place (a retry, or the same
- * edit from another session) and succeeds without a change. `position` in the result is where the edit landed.
  * @param {import('./greeting-list.js').GreetingsModel} model
  * @param {number} position
  * @param {number} expectedHash
@@ -121,9 +99,6 @@ export function opEdit(model, position, expectedHash, text) {
 }
 
 /**
- * Removes the greeting whose hash is `expectedHash`, found by {@link findGreeting}. Removing the current default
- * clears default-ness (no successor is guessed at) via {@link reindexDefaultAfterRemoval}.
- * `position` in the result is where the removed greeting was.
  * @param {import('./greeting-list.js').GreetingsModel} model
  * @param {number} position
  * @param {number} expectedHash
@@ -139,17 +114,12 @@ export function opDelete(model, position, expectedHash) {
 }
 
 /**
- * Moves the greeting whose hash is `expectedHash` immediately before or after the anchor greeting whose hash is
- * `targetExpectedHash`, order otherwise preserved. Each is found by {@link findGreeting}, starting from
- * `sourcePosition` and `targetPosition` read against the list as it currently stands. "Move to the end" is
- * `side: 'after'` with the last greeting as the anchor. `sourcePosition` and `targetPosition` in the result are
- * where the moved greeting and the anchor were found.
  * @param {import('./greeting-list.js').GreetingsModel} model
  * @param {number} sourcePosition
- * @param {number} expectedHash hash of the greeting to move
- * @param {'before'|'after'} side which side of the anchor the moved greeting lands on
- * @param {number} targetPosition position of the anchor greeting (an existing greeting, not an insertion index)
- * @param {number} targetExpectedHash hash of the anchor greeting
+ * @param {number} expectedHash
+ * @param {'before'|'after'} side
+ * @param {number} targetPosition
+ * @param {number} targetExpectedHash
  * @returns {{ok: true, model: import('./greeting-list.js').GreetingsModel, sourcePosition: number, targetPosition: number}|{ok: false, reason: string}}
  */
 export function opMove(model, sourcePosition, expectedHash, side, targetPosition, targetExpectedHash) {
@@ -173,10 +143,6 @@ export function opMove(model, sourcePosition, expectedHash, side, targetPosition
 }
 
 /**
- * Makes the greeting whose hash is `expectedHash`, found by {@link findGreeting}, the default. Never reorders
- * anything. When copies of that text make the greeting ambiguous but the default already has that text, the
- * default is already what was asked for and it succeeds without a change. `position` in the result is where the
- * default is.
  * @param {import('./greeting-list.js').GreetingsModel} model
  * @param {number} position
  * @param {number} expectedHash
@@ -194,9 +160,6 @@ export function opSetDefault(model, position, expectedHash) {
 }
 
 /**
- * Clears the default entirely when the default greeting is the one whose hash is `expectedDefaultHash`, wherever it
- * now sits. With no default already, it succeeds without a change. Refuses when the default is another greeting.
- * The list keeps its order and membership.
  * @param {import('./greeting-list.js').GreetingsModel} model
  * @param {number} expectedDefaultHash
  */
@@ -208,10 +171,8 @@ export function opUnsetDefaultByHash(model, expectedDefaultHash) {
 }
 
 /**
- * Clears the default entirely. With no default already, it succeeds without a change, whatever
- * `expectedDefaultPosition` says. The list keeps its order and membership.
  * @param {import('./greeting-list.js').GreetingsModel} model
- * @param {number|null} expectedDefaultPosition `null` asserts there is no default
+ * @param {number|null} expectedDefaultPosition
  */
 export function opUnsetDefault(model, expectedDefaultPosition) {
     if (model.defaultIndex !== null && model.defaultIndex !== expectedDefaultPosition) {

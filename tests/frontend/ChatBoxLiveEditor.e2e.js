@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// The chat box gets the live editor once the page is idle after loading, only while it doesn't have focus. Its toolbar
-// is always shown, in its own row, so focusing it moves nothing.
-
 /** @param {import('@playwright/test').Page} page */
 async function openChat(page) {
     await page.evaluate(async () => {
@@ -32,7 +29,6 @@ function chatBoxValue(page) {
 }
 
 /**
- * Holds back the editor's code until `release()` is called, so a test can act before the editor is ready.
  * @param {import('@playwright/test').Page} page
  */
 async function holdEditorCode(page) {
@@ -78,14 +74,12 @@ test.describe('the chat box with the live editor', () => {
         const first = 'typed in the plain box ';
         await page.keyboard.type(first);
         release();
-        // The editor's code arrives while the user is typing: it waits, and every key keeps landing in the box.
         await page.evaluate(() => import('/scripts/live-editor/mount.js'));
         const second = 'and still typing after it loaded';
         await page.keyboard.type(second);
         expect(await chatBoxValue(page)).toBe(first + second);
         await expect(chatBoxEditor(page)).toHaveCount(0);
         await expect(page.locator('#send_textarea')).toBeFocused();
-        // Put the cursor in the middle, then leave: the editor goes on with the text and the cursor where they were.
         await page.evaluate(() => {
             const box = /** @type {HTMLTextAreaElement} */ (document.getElementById('send_textarea'));
             box.setSelectionRange(5, 10);
@@ -132,7 +126,6 @@ test.describe('the chat box with the live editor', () => {
             return SillyTavern.getContext().chat.some(m => m.is_user && m.mes === 'sent from the editor');
         })).toBe(true);
         await expect.poll(() => chatBoxValue(page)).toBe('');
-        // Empty again: the editor shows the chat box's placeholder.
         await expect(chatBoxEditor(page).locator('.cm-placeholder')).toBeVisible();
         await page.evaluate(() => {
             // @ts-ignore
@@ -144,7 +137,6 @@ test.describe('the chat box with the live editor', () => {
         await testSetup.awaitST({ page });
         await openChat(page);
         await expect(chatBoxEditor(page)).toHaveCount(1, { timeout: 10000 });
-        // As the quick replies bar and other extensions' bars do: the form's first child.
         await page.evaluate(() => {
             const bar = document.createElement('div');
             bar.id = 'testExtensionBar';
@@ -157,7 +149,6 @@ test.describe('the chat box with the live editor', () => {
             const box = (/** @type {string} */ selector) => document.querySelector(selector).getBoundingClientRect();
             const toolbar = box('#send_form .cm-panels-top');
             return {
-                // At or under the bar, at or above the text, inside the form, and the chat ends above the form.
                 underBar: toolbar.top >= box('#testExtensionBar').bottom - 0.5,
                 aboveText: toolbar.bottom <= box('#send_form .cm-content').top + 0.5,
                 inForm: toolbar.top >= box('#send_form').top - 0.5,
@@ -269,7 +260,6 @@ test.describe('the chat box with the live editor', () => {
             const { power_user } = await import('/scripts/power-user.js');
             power_user.send_on_enter = 1;
         });
-        // A plain value write plus an input event, then reading it back (GuidedGenerations and others).
         const read = await page.evaluate(() => {
             const box = /** @type {HTMLTextAreaElement} */ (document.getElementById('send_textarea'));
             box.value = 'written plainly';
@@ -278,7 +268,6 @@ test.describe('the chat box with the live editor', () => {
         });
         expect(read).toBe('written plainly');
         await expect(chatBoxEditor(page).locator('.cm-content')).toHaveText('written plainly');
-        // An input listener added on the textarea hears the user typing in the editor.
         await page.evaluate(() => {
             window['__heard'] = 0;
             document.getElementById('send_textarea').addEventListener('input', () => { window['__heard']++; });
@@ -287,7 +276,6 @@ test.describe('the chat box with the live editor', () => {
         await page.keyboard.press('End');
         await page.keyboard.type('!');
         expect(await page.evaluate(() => window['__heard'])).toBeGreaterThan(0);
-        // A synthetic Enter dispatched on the textarea by code sends, as upstream's handler on it does.
         await page.evaluate(() => {
             const box = /** @type {HTMLTextAreaElement} */ (document.getElementById('send_textarea'));
             box.value = 'sent by a synthetic Enter';

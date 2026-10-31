@@ -10,10 +10,10 @@ const MESSAGE_BLOCKED_TOAST = 'A message is being edited - confirm or cancel it 
 
 /**
  * @typedef {object} Field
- * @property {string} id Textarea id.
- * @property {string} tab The `charInfoTabs_tab` radio value of the field's tab.
- * @property {string} key The field's name in the create request, and under the stored card's `data` unless `stored` says otherwise.
- * @property {string[]} [stored] Where the stored card keeps the value, when that isn't `data[key]`.
+ * @property {string} id
+ * @property {string} tab
+ * @property {string} key
+ * @property {string[]} [stored]
  */
 
 /** @type {Field[]} */
@@ -30,15 +30,14 @@ const FIELDS = [
 ];
 
 /**
- * @param {any} card A stored card, as /api/characters/get returns it.
+ * @param {any} card
  * @param {Field} field
- * @returns {any} The field's stored value.
+ * @returns {any}
  */
 function storedValue(card, field) {
     return (field.stored ?? [field.key]).reduce((value, key) => value?.[key], card.data);
 }
 
-/** Every `charInfoTabs_tab` radio value, in tab order. */
 const TABS = ['creatorNotes', 'description', 'greeting', 'mainPrompt', 'postHistoryInstructions', 'personality', 'scenario', 'characterNote', 'exampleMessages'];
 
 const stamp = () => `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
@@ -57,8 +56,8 @@ async function awaitAppReady(page) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @param {Record<string, string>} values Create-request fields other than the name.
- * @returns {Promise<string>} The new character's avatar filename.
+ * @param {Record<string, string>} values
+ * @returns {Promise<string>}
  */
 async function createCharacter(page, name, values) {
     return page.evaluate(async ({ name, values }) => {
@@ -89,8 +88,8 @@ async function deleteCharacterOnServer(page, avatar) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @param {string[]} members Member avatars.
- * @returns {Promise<string>} The group's id.
+ * @param {string[]} members
+ * @returns {Promise<string>}
  */
 async function createGroup(page, name, members) {
     return page.evaluate(async ({ name, members }) => {
@@ -121,7 +120,7 @@ async function deleteGroupOnServer(page, id) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
- * @returns {Promise<any>} The character card as stored on the server.
+ * @returns {Promise<any>}
  */
 async function fetchStoredCharacter(page, avatar) {
     return page.evaluate(async (avatarUrl) => {
@@ -133,7 +132,6 @@ async function fetchStoredCharacter(page, avatar) {
 }
 
 /**
- * Opens the character in the editor, with the character list refreshed first.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -149,7 +147,6 @@ async function openCharacter(page, avatar) {
 }
 
 /**
- * Collects the path of every request that saves a character field from here on.
  * @param {import('@playwright/test').Page} page
  * @returns {string[]}
  */
@@ -181,7 +178,7 @@ async function getAutoSaveTimeout(page) {
  * @param {import('@playwright/test').Page} page
  * @param {'auto_save_msg_edits' | 'click_to_edit'} key
  * @param {boolean} value
- * @returns {Promise<boolean>} The previous value.
+ * @returns {Promise<boolean>}
  */
 async function setPowerUserSetting(page, key, value) {
     return page.evaluate(async ({ key, value }) => {
@@ -212,7 +209,6 @@ function fieldLocators(page, id) {
 }
 
 /**
- * Replaces a field's text by typing in its editor, as a user does (the textarea itself is hidden while it's mounted).
  * @param {import('@playwright/test').Page} page
  * @param {ReturnType<typeof fieldLocators>} f
  * @param {string} text
@@ -254,7 +250,6 @@ async function expectEditMode(page, field) {
 }
 
 /**
- * Shows the field's tab and enters edit mode with the pencil.
  * @param {import('@playwright/test').Page} page
  * @param {Field} field
  */
@@ -273,7 +268,6 @@ async function expectToast(page, text) {
 }
 
 /**
- * The field being edited blocked something: its ✓ ✕ flash, as for a tab click, and no toast says so.
  * @param {import('@playwright/test').Page} page
  * @param {ReturnType<typeof fieldLocators>} f
  */
@@ -283,7 +277,6 @@ async function expectBlockedByFlash(page, f) {
 }
 
 /**
- * Pins the character info drawer open, so clicks in the chat leave it open, runs `body`, then unpins it.
  * @param {import('@playwright/test').Page} page
  * @param {() => Promise<void>} body
  */
@@ -302,9 +295,8 @@ async function withDrawerPinned(page, body) {
 }
 
 /**
- * Sends a user message after the greeting and gives it a stored reasoning block.
  * @param {import('@playwright/test').Page} page
- * @returns {Promise<number>} The message's id.
+ * @returns {Promise<number>}
  */
 async function addUserMessageWithReasoning(page) {
     const mesId = await page.evaluate(async () => {
@@ -336,8 +328,6 @@ async function addUserMessageWithReasoning(page) {
 }
 
 /**
- * Creates a character holding `value` in `field` (and a greeting, unless `field` is the greeting), opens it,
- * runs `body`, then deletes the character.
  * @param {import('@playwright/test').Page} page
  * @param {Field} field
  * @param {string} value
@@ -623,7 +613,6 @@ test.describe('character field edit mode', () => {
                             await enterEdit(page, field);
                             const f = fieldLocators(page, field.id);
                             await fillField(page, f, 'in progress');
-                            // Its button is on the greeting tab, which can't be opened mid-edit; other code can still press it.
                             await page.locator('.open_alternate_greetings').first().evaluate(el => (/** @type {HTMLElement} */ (el)).click());
                             await expectBlockedByFlash(page, f);
                             await expect(page.locator('dialog.alternatives')).toHaveCount(0);
@@ -767,7 +756,6 @@ test.describe('character field edit mode', () => {
                         await openInfoTab(page, field.tab);
                         const previous = await setPowerUserSetting(page, 'click_to_edit', clickToEdit);
                         try {
-                            // The link must not leave the page under test; the app's own handlers still run.
                             await page.evaluate(() => document.addEventListener('click', (event) => {
                                 if (event.target instanceof Element && event.target.closest('a')) event.preventDefault();
                             }, true));
@@ -780,7 +768,6 @@ test.describe('character field edit mode', () => {
                             await link.dblclick();
                             await expectPreviewMode(page, field);
 
-                            // Outside the link the preview still opens the editor.
                             const words = f.preview.getByText('plain words');
                             if (clickToEdit) {
                                 await words.click();
@@ -816,7 +803,6 @@ test.describe('character field edit mode', () => {
                             await expect(page.locator('.img_enlarged_container')).toHaveCount(0);
                             await expectPreviewMode(page, field);
 
-                            // Outside the image the preview still opens the editor.
                             const words = f.preview.getByText('plain words');
                             if (clickToEdit) {
                                 await words.click();
@@ -875,7 +861,6 @@ test.describe('character field edit mode', () => {
                     const pills = fieldLocators(page, field.id).preview.locator('span.macro-pill');
                     await expect(pills).toHaveCount(1);
                     await expect(pills).toHaveText(name);
-                    // On hover, its tooltip: a card of who it names, with its source.
                     await pills.hover();
                     const tooltip = page.locator('.macro-tooltip:popover-open');
                     await expect(tooltip.locator('.macro-person-name')).toHaveText(name);
@@ -999,7 +984,6 @@ test.describe('character field edit mode', () => {
                 await expect(preview).not.toContainText('<b>');
                 await expect(preview.locator('strong')).toHaveText('strong');
                 await expect(preview.locator('code')).toHaveText('<i>code</i>');
-                // The card's <style> is kept to the description's own preview.
                 await expect(box).toHaveCSS('border-top-width', '3px');
                 expect(await page.evaluate(() => [...document.querySelectorAll('style')].some(s => s.textContent.includes('#description_preview .custom-sheet')))).toBe(true);
                 await expect(preview.locator('script')).toHaveCount(0);
@@ -1033,7 +1017,6 @@ test.describe('character field edit mode', () => {
                     await openInfoTab(page, field.tab);
                     const preview = fieldLocators(page, field.id).preview;
                     await expect(preview.locator('.macro-pill-mention')).toHaveText(name);
-                    // Each is a pill saying it is filled in when sent, its source in its tooltip.
                     expect(await preview.locator('.macro-pill-later').evaluateAll(els => els.map(el => el.getAttribute('data-macro-source')))).toEqual([
                         `{{setvar::${key}::set}}`,
                         `{{incvar::${key}n}}`,
@@ -1093,7 +1076,6 @@ test.describe('character field edit mode', () => {
             });
         });
 
-        // The chat itself runs the greeting's macros when it shows it, so only the preview's rendering is checked.
         test('greeting_field: the preview shows macros with side effects or randomness as written', async ({ page }) => {
             const field = FIELDS.find(x => x.id === 'greeting_field');
             await withCharacter(page, field, '[{{char}}] {{random::aa::bb}}', async (_avatar, name) => {
@@ -1128,7 +1110,7 @@ test.describe('expanded editor layer', () => {
      * @param {import('@playwright/test').Page} page
      * @param {number} x
      * @param {number} y
-     * @returns {Promise<string>} The id of the layer the page shows at that point: the editor layer, the chat, or a drawer.
+     * @returns {Promise<string>}
      */
     function layerAt(page, x, y) {
         return page.evaluate(([x, y]) => {
@@ -1215,16 +1197,12 @@ test.describe('expanded editor layer', () => {
                 const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
                 await expect.poll(() => layerAt(page, center.x, center.y)).toBe('editor');
 
-                // The chat is covered by the layer; its icon brings it forward.
                 await page.locator('#chatDrawerIcon').click();
                 await expect.poll(() => layerAt(page, center.x, center.y)).toBe('sheld');
 
-                // A click on the layer's visible part brings it back.
                 await page.mouse.click(box.x + 5, box.y + box.height / 2);
                 await expect.poll(() => layerAt(page, center.x, center.y)).toBe('editor');
 
-                // A click on the character info drawer's visible part brings that forward over the layer.
-                // An empty spot near the drawer's bottom, past the layer's right edge.
                 const drawer = await page.locator('#char-info-panel').boundingBox();
                 const strip = { x: Math.max(drawer.x, box.x + box.width) + 5, y: drawer.y + drawer.height - 10 };
                 await page.mouse.click(strip.x, strip.y);
@@ -1241,7 +1219,6 @@ test.describe('expanded editor layer', () => {
     });
 
     test('an .editor_maximize field opens the same layer, kept in sync, and Escape returns to the field', async ({ page }) => {
-        // A field and button of its own, as an extension would add them, so the test doesn't depend on which drawer holds one.
         await page.evaluate(() => {
             const holder = document.createElement('div');
             holder.id = 'expand_test_holder';

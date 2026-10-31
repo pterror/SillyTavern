@@ -728,7 +728,6 @@ export class QuickReply {
                     preBreakPointEnd = message.selectionEnd;
                     toggleBreakpoint();
                 } else if (evt.code == 'Backslash' && evt.ctrlKey && !evt.shiftKey && !evt.altKey) {
-                    // evt.code (not evt.key) so this uses the same physical key across keyboard layouts
                     evt.stopImmediatePropagation();
                     evt.stopPropagation();
                     evt.preventDefault();
@@ -1762,8 +1761,6 @@ export class QuickReply {
             }
             this.message = value;
             this.updateRender();
-            // Triggered per keystroke while typing - a continuous edit, so let the set coalesce it
-            // (see QuickReplySet.saveQrUpdate's immediate=false path) instead of firing a request now.
             this.onUpdate(this, { immediate: false });
         }
     }
@@ -1819,8 +1816,6 @@ export class QuickReply {
             }
             this.label = value;
             this.updateRender();
-            // Triggered per keystroke while typing - a continuous edit, so let the set coalesce it
-            // (see QuickReplySet.saveQrUpdate's immediate=false path) instead of firing a request now.
             this.onUpdate(this, { immediate: false });
         }
     }
@@ -1832,8 +1827,6 @@ export class QuickReply {
         if (this.onUpdate) {
             this.title = value;
             this.updateRender();
-            // Triggered per keystroke while typing - a continuous edit, so let the set coalesce it
-            // (see QuickReplySet.saveQrUpdate's immediate=false path) instead of firing a request now.
             this.onUpdate(this, { immediate: false });
         }
     }

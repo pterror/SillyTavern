@@ -19,10 +19,6 @@ let baseUrl;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
-/**
- * Mounts the real characters.js router, mirroring characters-query.test.js's setup - `/changes` is a read over
- * the same store `/query` reads, so the same seeding approach applies.
- */
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
@@ -65,9 +61,6 @@ async function postJson(urlPath, body) {
 }
 
 /**
- * Same seeding shape as characters-query.test.js's seedCharacter() - writes a row through the real
- * upsertCharacterFromWrite() write-path hook (the one characters.js's real create/edit routes call), which is
- * also the path that records a change.
  * @param {string} avatar
  * @param {object} overrides
  */
@@ -114,7 +107,6 @@ describe('POST /api/characters/changes', () => {
         /** @type {{seq: number, changes: {id: string, op: string}[], truncated: boolean}} */
         const body = await response.json();
         expect(body.truncated).toBe(false);
-        // A position in the store's change feed, read to its end.
         expect(body.seq).toBe(await user.store.lib.changesEnd());
         expect(body.changes.map(c => c.id).sort()).toEqual(['Alice.png', 'Bob.png', 'Carol.png']);
         expect(body.changes.every(c => c.op === 'upsert')).toBe(true);
@@ -166,8 +158,6 @@ describe('POST /api/characters/changes', () => {
     });
 
     test('a card imported by the rescan of the characters folder also logs a real change', async () => {
-        // A real parseable card, not just a file that ends in .png - the rescan skips (and only logs a warning for)
-        // anything it can't read.
         const baseImage = await fs.promises.readFile(path.join(process.cwd(), '..', 'public', 'img', 'ai4.png'));
         const card = {
             name: 'Legacy', fav: false, spec: 'chara_card_v2', spec_version: '2.0',

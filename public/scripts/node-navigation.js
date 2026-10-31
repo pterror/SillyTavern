@@ -9,7 +9,6 @@ import { isProvisionalNodeId } from './node-identity.js';
 import { _snapshotMessages } from './generation.js';
 
 /**
- * Takes the state where the session now is from an answer that moved it (`chat_metadata`), when it carries one.
  * @param {{ chat_metadata?: ChatMetadata } | null | undefined} answer
  */
 async function takeStateFrom(answer) {
@@ -19,9 +18,6 @@ async function takeStateFrom(answer) {
 }
 
 /**
- * Switches to a sibling's path; nothing is removed from the database, so swiping back reaches the old alternative's children again.
- * With `redraw: false` only the data moves (node, selection, the continuation in `chat`); the caller redraws
- * from mesId + 1 itself, e.g. mid-animation, so the old text stays on screen until the swipe hides it.
  * @param {number} mesId
  * @param {number} swipeId
  * @param {{redraw?: boolean}} [options]
@@ -35,7 +31,6 @@ export async function switchToAlternativePath(mesId, swipeId, { redraw = true } 
         return false;
     }
 
-    // An unstored greeting has nothing to select or fetch; no row is minted here (ensureOpeningRow() does that when needed).
     const unstored = isProvisionalNodeId(targetNodeId);
     /** @type {{messages?: ChatMessage[]}} */
     let payload = { messages: [] };
@@ -61,7 +56,6 @@ export async function switchToAlternativePath(mesId, swipeId, { redraw = true } 
         }
     }
 
-    // Re-check: the await means the chat may have moved on while the fetch was in flight.
     if (chat[mesId] !== message) {
         return false;
     }
@@ -70,7 +64,6 @@ export async function switchToAlternativePath(mesId, swipeId, { redraw = true } 
     chat.splice(mesId + 1, chat.length - (mesId + 1), ...(payload.messages ?? []));
     await takeStateFrom(payload);
 
-    // Without this the freshly-fetched messages read as changed against the snapshot on the next save.
     _snapshotMessages();
 
     if (redraw) {
@@ -85,8 +78,6 @@ export async function switchToAlternativePath(mesId, swipeId, { redraw = true } 
 }
 
 /**
- * Moves the character's chat pointer onto targetNodeId. An unstored (provisional) node has nothing
- * persisted server-side to point at yet, so it's skipped, matching switchToAlternativePath()'s guard.
  * @param {string} targetNodeId
  */
 async function _persistNodeSelection(targetNodeId) {
@@ -110,7 +101,6 @@ async function _persistNodeSelection(targetNodeId) {
 }
 
 /**
- * Jumps to any node in the open tree-backed chat without a full reload. Solo tree-backed chats only; returns false so the caller can fall back to a full open.
  * @param {string} targetNodeId
  * @returns {Promise<boolean>}
  */
@@ -155,7 +145,6 @@ export async function switchToNode(targetNodeId) {
         return false;
     }
 
-    // Deepest already-loaded ancestor of the target, walked backward so the closest fork point is found first.
     let forkPos = -1;
     let forkAncestryIdx = -1;
     for (let j = ancestry.length - 1; j >= 0; j--) {
@@ -166,7 +155,6 @@ export async function switchToNode(targetNodeId) {
             break;
         }
     }
-    // No shared ancestry at all - a genuinely different chat. Let the caller do a full open.
     if (forkPos < 0) {
         return false;
     }

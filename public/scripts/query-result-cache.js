@@ -1,28 +1,20 @@
 import { localforage } from '../lib.js';
 
-// The character list's query pages, kept in browser storage across reloads: per request, the ordered hash rows (ids
-// and the hashes rows are resolved by), the token to send back as `ifToken`, and the cursor the page ended at, which
-// the next page starts from. A request answered without hash rows keeps its cursor alone. Rows themselves live in
-// the character and group caches, never here. One size budget for every entry; the least recently used goes first,
-// except entries a saved view pins.
-
-/** Stored entries' JSON, in characters, kept at or under this. */
 const BUDGET = 4 * 1024 * 1024;
 const INDEX_KEY = '__index__';
 
 /**
  * @typedef {object} QueryCacheEntry
- * @property {object[]} hashRows As `/query`'s hash mode answered them.
+ * @property {object[]} hashRows
  * @property {string} token
  * @property {number} seq
  * @property {number|string} [total]
  * @property {number|string} [hidden]
  * @property {string} [searchBackend]
- * @property {string} [cursor] Where the page ended: the next page's start.
+ * @property {string} [cursor]
  */
 
 /**
- * A request's entry with its cursor alone (an answer without hash rows).
  * @typedef {object} QueryCursorEntry
  * @property {string} cursor
  */
@@ -32,7 +24,6 @@ const INDEX_KEY = '__index__';
 /** @type {Map<string, LocalForage>} */
 const storesByHandle = new Map();
 
-/** The user whose entries are read and written; set by the caller, which knows the user. */
 let currentHandle = '';
 
 /** @param {string} handle */
@@ -50,7 +41,6 @@ function getStore() {
     return store;
 }
 
-/** Writes and evictions run one at a time, so the index never loses an update. */
 let queue = Promise.resolve();
 
 /**
@@ -71,8 +61,7 @@ async function readIndex() {
 }
 
 /**
- * The entry kept for a request, or null. Marks it used.
- * @param {string} key The request's signature.
+ * @param {string} key
  * @returns {Promise<QueryCacheEntry | null>}
  */
 export async function readQueryCache(key) {
@@ -93,7 +82,6 @@ export async function readQueryCache(key) {
 }
 
 /**
- * Keeps `entry` for a request, then evicts the least recently used unpinned entries past the budget.
  * @param {string} key
  * @param {QueryCacheEntry} entry
  */
@@ -111,7 +99,6 @@ export async function writeQueryCache(key, entry) {
 }
 
 /**
- * Drops the least recently used unpinned entries until the kept ones fit the budget. Edits `index` in place.
  * @param {QueryCacheIndex} index
  */
 async function evict(index) {
@@ -127,9 +114,7 @@ async function evict(index) {
 }
 
 /**
- * Where a request's page ended (its entry's `cursor`), or null. Read behind the writes already asked for, so a page
- * just kept is seen.
- * @param {string} key The request's signature.
+ * @param {string} key
  * @returns {Promise<string | null>}
  */
 export async function readQueryCursor(key) {
@@ -145,8 +130,6 @@ export async function readQueryCursor(key) {
 }
 
 /**
- * Keeps where a request's page ended (`undefined`: it has no cursor), changing only the cursor of a kept page. An
- * entry left with neither rows nor a cursor goes. Writes nothing when the cursor is the one kept.
  * @param {string} key
  * @param {string | undefined} cursor
  */
@@ -177,8 +160,6 @@ export async function writeQueryCursor(key, cursor) {
 }
 
 /**
- * Pins `keys` for `owner` (a saved view) and lets go of every key it pinned before that isn't among them. A pinned
- * entry is never evicted; a key pinned before its page is kept stays pinned once it is.
  * @param {string} owner
  * @param {string[]} keys
  */
@@ -191,7 +172,6 @@ export async function pinQueryCache(owner, keys) {
             const has = item.pins.includes(owner);
             if (has && !wanted.has(key)) {
                 item.pins = item.pins.filter(pin => pin !== owner);
-                // A pin on a page never kept leaves nothing behind once let go.
                 if (item.size === 0 && item.pins.length === 0) delete index[key];
                 changed = true;
             } else if (!has && wanted.has(key)) {
@@ -212,7 +192,6 @@ export async function pinQueryCache(owner, keys) {
 }
 
 /**
- * Which entries `owner` pins.
  * @param {string} owner
  * @returns {Promise<string[]>}
  */

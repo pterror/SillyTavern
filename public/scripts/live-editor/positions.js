@@ -1,7 +1,4 @@
-// Importable without loading CodeMirror: where in a text a click on its rendered HTML lands.
-
 /**
- * The element's shown text, and how many of its characters come before the point clicked.
  * @param {HTMLElement} dom
  * @param {MouseEvent} event
  * @returns {{ text: string, offset: number }}
@@ -31,10 +28,6 @@ export function renderedOffset(dom, event) {
 const WORD = /[\p{L}\p{N}_]+/gu;
 
 /**
- * The source position matching a point in the rendered text. Rendering takes markup away and changes spacing,
- * numbering and entities, but keeps the words and their order: the point is in (or after) the n-th time a word shows,
- * so it goes to the same place in the n-th time that word is in the source. A word the source doesn't have (a macro's
- * value) goes to the nearest word before it that it does.
  * @param {string} source
  * @param {{ text: string, offset: number }} rendered
  * @returns {number}

@@ -104,8 +104,7 @@ async function characterStatsHandler(characters, this_chid) {
 }
 
 /**
- * {@link characterStatsHandler} for a character the page holds.
- * @param {Character} character - The character to show stats for.
+ * @param {Character} character
  */
 async function showCharacterStats(character) {
     await getStats([character.avatar]);

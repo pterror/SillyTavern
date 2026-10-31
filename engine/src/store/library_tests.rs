@@ -1,6 +1,3 @@
-//! The library's orders, numberings, counts and pages against a model of the entities, through flushes,
-//! merges, cleaning and reopening.
-
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
@@ -93,7 +90,6 @@ struct M {
     added: i64,
     data: u64,
     tags: Vec<u64>,
-    /// Lorebook links in list order: (item, book).
     links: Vec<(u64, u64)>,
 }
 
@@ -126,8 +122,6 @@ fn cmp_num(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
     }
 }
 
-/// The list's order: the key, then characters before groups, then the entity id, so equal keys list in creation
-/// order (the orders' tie is the id, not upstream's avatar); descending reverses it.
 fn model_order(m: &BTreeMap<u64, M>, ids: &mut [u64], sort: &Sort) {
     let asc = |x: u64, y: u64, s: u64| {
         let (a, b) = (&m[&x], &m[&y]);
@@ -197,7 +191,6 @@ fn query(f: Filter, sort: Sort, limit: usize) -> Query {
     }
 }
 
-/// Every page of `q` through cursors, and its total.
 fn all_pages(s: &Store, mut q: Query) -> (Vec<u64>, Page) {
     let first = s.library_page(&q).unwrap();
     let mut ids = first.ids.clone();
@@ -214,10 +207,8 @@ fn all_pages(s: &Store, mut q: Query) -> (Vec<u64>, Page) {
 }
 
 const TAGS: [u64; 3] = [900, 901, 902];
-/// The books lorebook links name, with their keys.
 const BOOKS: [(u64, &str); 2] = [(950, "lore"), (951, "lore2")];
 
-/// A character's link of `item` to `book` (list 4), at `position`.
 fn link(e: u64, item: u64, position: u64, book: u64) -> Vec<Record> {
     vec![
         rec(
@@ -419,8 +410,6 @@ fn filters() -> Vec<Filter> {
     ]
 }
 
-/// A narrowed read (`entities_only`) of `ids` is the whole read less the values it leaves out: every other part
-/// equal, and of the values just the fields asked (one asked of no entity) and the listed lists' items.
 fn narrow_reads_are_whole_reads(s: &Store, ids: &[u64]) {
     let whole = s.library_entities(ids).unwrap();
     let mut fields: Vec<FieldRef> = whole
@@ -432,7 +421,6 @@ fn narrow_reads_are_whole_reads(s: &Store, ids: &[u64]) {
     fields.sort_by_key(|f| format!("{f:?}"));
     fields.dedup();
     for half in 0..2 {
-        // Every other field, and one nobody holds.
         let asked: Vec<FieldRef> = fields
             .iter()
             .skip(half)
@@ -524,7 +512,6 @@ fn check(s: &Store, m: &BTreeMap<u64, M>) {
             if first.total_exact {
                 assert_eq!(first.total, Some(want.len() as u64), "{f:?}");
             }
-            // An offset lands where the cursor pages do.
             let mut q = query(f.clone(), sort, 5);
             q.offset = 6;
             let p = s.library_page(&q).unwrap();
@@ -533,7 +520,6 @@ fn check(s: &Store, m: &BTreeMap<u64, M>) {
                 want.iter().skip(6).take(5).copied().collect::<Vec<_>>()
             );
         }
-        // Random: every match once, the same order for the same seed, descending its reverse.
         for desc in [false, true] {
             let (got, _) = all_pages(s, query(f.clone(), Sort::Random { seed: 42, desc }, 6));
             let mut sorted = got.clone();
@@ -545,7 +531,6 @@ fn check(s: &Store, m: &BTreeMap<u64, M>) {
             assert_eq!(again, got);
         }
     }
-    // Each numbering is dense and maps back: the entity at each number keeps that number in its host entry.
     for scope in [
         library::Scope::All,
         library::Scope::Tag(TAGS[0]),
@@ -660,7 +645,6 @@ impl Lib {
         recs
     }
 
-    /// One random change to an existing entity.
     fn change(&mut self) -> Vec<Record> {
         let ids: Vec<u64> = self.m.keys().copied().collect();
         let e = ids[(self.rand() % ids.len() as u64) as usize];
@@ -689,7 +673,6 @@ impl Lib {
                 vec![set(e, NAME, &name)]
             }
             3 => {
-                // A one-letter edit of the name.
                 let old = self.m[&e].name.clone();
                 if old.is_empty() || !old.is_ascii() {
                     return Vec::new();
@@ -715,7 +698,6 @@ impl Lib {
                 vec![rec("dataSize", vec![Value::Id(e), Value::UInt(d)])]
             }
             5 if kind == CHARACTER => {
-                // A book's link goes, or comes at the end of the list.
                 let b = BOOKS[(self.rand() % 2) as usize].0;
                 let m = self.m.get_mut(&e).unwrap();
                 match m.links.iter().position(|(_, x)| *x == b) {
@@ -821,13 +803,11 @@ fn a_merged_tags_carriers_read_as_the_targets_before_and_after_the_fold() {
     s.commit_wait(vec![rec("tagMerge", vec![Value::Id(a), Value::Id(b)])])
         .unwrap();
     narrow_reads_are_whole_reads(&s, &[2, 3, 6]);
-    // Whether or not the fold has run, b's readers see a's carriers, each once.
     let (got, first) = all_pages(&s, query(f.clone(), byname, 50));
     assert_eq!(got, want);
     if first.total_exact {
         assert_eq!(first.total, Some(want.len() as u64));
     }
-    // Assigning the merged tag assigns its target.
     s.commit_wait(vec![assign(1, a, true)]).unwrap();
     let mut want1 = want.clone();
     want1.insert(0, 1);
@@ -852,7 +832,6 @@ fn a_merged_tags_carriers_read_as_the_targets_before_and_after_the_fold() {
     assert_eq!(got, want1);
     assert_eq!(first.total, Some(want1.len() as u64));
     assert!(first.total_exact);
-    // a's orders are empty; a filter on a reads as b.
     let fa = Filter {
         all_tags: vec![a],
         ..f.clone()
@@ -861,7 +840,6 @@ fn a_merged_tags_carriers_read_as_the_targets_before_and_after_the_fold() {
     let ents = s.library_entities(&[6]).unwrap();
     assert_eq!(ents[0].as_ref().unwrap().tags, vec![b]);
     narrow_reads_are_whole_reads(&s, &[1, 2, 3, 6, a, b]);
-    // Reopened, the same; random pages cover every carrier.
     s.close();
     drop(s);
     let s = Store::open_in(&dir, SMALL, pool()).unwrap();
@@ -1020,7 +998,6 @@ fn an_entity_key_is_taken_once_and_deleting_frees_everything_it_held() {
     assert_eq!(e.values.len(), 3);
     s.commit_wait(vec![rec("entityDelete", vec![Value::Id(1)])])
         .unwrap();
-    // Nothing of entity 1 is left but the dead bytes of its records.
     let left = s
         .derived(|v| {
             let mut n = 0;
@@ -1054,7 +1031,6 @@ fn an_entity_key_is_taken_once_and_deleting_frees_everything_it_held() {
     assert_eq!(left, 0);
     s.commit_wait(vec![create(2, CHARACTER, "a.png", 6)])
         .unwrap();
-    // A tag goes only with its merge.
     assert!(
         s.commit_wait(vec![rec("entityDelete", vec![Value::Id(900)])])
             .is_err()
@@ -1102,13 +1078,11 @@ fn a_bulk_load_into_an_empty_library_numbers_every_scope() {
             assert!(done.unwrap().number_entries > 0);
             s
         } else {
-            // Stopped before the load's run: replay numbers the load as commits do.
             assert!(done.is_err());
             drop(s);
             Store::open_in(&dir, SMALL, pool()).unwrap()
         };
         check(&s, &lib.m);
-        // The commit path numbers on from the load's.
         for _ in 0..120 {
             let r = lib.change();
             if !r.is_empty() {
@@ -1119,7 +1093,6 @@ fn a_bulk_load_into_an_empty_library_numbers_every_scope() {
             s.commit_wait(lib.records_for_new(e)).unwrap();
         }
         check(&s, &lib.m);
-        // Characters and groups load only into a library with none.
         let mut l = s.loader().unwrap();
         l.add(lib.records_for_new(3000)).unwrap();
         lib.m.remove(&3000);
@@ -1133,7 +1106,6 @@ fn a_bulk_load_into_an_empty_library_numbers_every_scope() {
     }
 }
 
-/// The entity change feed as (id, gone key).
 fn entity_feed(s: &Store, after: u64) -> Vec<(u64, Option<String>)> {
     use super::chat_read::Js;
     let js = s
@@ -1237,7 +1209,6 @@ fn the_local_import_records_follow_their_paths_and_a_duplicates_delete() {
         s.chat_read(|v| local_import::skip(v, b"/a/n.txt")).unwrap(),
         Some((3.0, b"not a card".to_vec()))
     );
-    // Forgotten by a record with no mtime, and by its duplicate's delete.
     s.commit_wait(vec![mtime("/a/x.png", None, None)]).unwrap();
     s.commit_wait(vec![rec("entityDelete", vec![Value::Id(1)])])
         .unwrap();

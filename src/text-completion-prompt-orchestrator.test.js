@@ -7,10 +7,6 @@ import { fileURLToPath } from 'node:url';
 
 import { write as writeCardIntoPng } from './character-card-parser.js';
 import { regex_placement } from './regex-scripts-engine.js';
-// character-card-fields.js pulls in src/endpoints/characters.js, which (via character-shallow.js)
-// reads process-wide config at import time - set the config path before importing it, the same way
-// src/character-card-fields.test.js does (mirroring the real server's src/config-init.js startup
-// step), since this test runs standalone.
 import { setConfigFilePath } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -23,19 +19,6 @@ stores.setStoreEngine(() => engineBinding);
 after(() => stores.closeUserStores());
 const { tokenizers } = await import('./tokenizer-ids.js');
 
-/**
- * Real, END-TO-END integration test: a small but realistic fixture exercising every stage of the
- * orchestrator (see src/text-completion-prompt-orchestrator.js's module doc comment for exactly
- * what is and isn't wired). No mocking framework - getCharacterCardFields() (one of the 18 already-
- * ported modules) reads real character cards via readCardContent(), which reads the card JSON from
- * the user's store and never from the PNG. So this test builds a REAL PNG per fixture, with the
- * character JSON embedded in a 'chara' tEXt chunk, and writes that same card JSON into the store of the
- * test's own user directory, using this repo's own
- * character-card-parser.js write() against the repo's default placeholder avatar image
- * (public/img/ai4.png) as the base image - same technique src/character-card-fields.test.js uses - exercising the actual character-card-fields module for
- * real, matching the task's "real integration" intent instead of piping around it.
- */
-
 const baseAvatarBuffer = fs.readFileSync(path.join(__dirname, '..', 'public', 'img', 'ai4.png'));
 
 function makeDirectories() {
@@ -46,8 +29,6 @@ function makeDirectories() {
     fs.mkdirSync(charactersDir, { recursive: true });
     fs.mkdirSync(chatsDir, { recursive: true });
     fs.mkdirSync(filesDir, { recursive: true });
-    // endpoints/characters.js's on-disk read cache keys its cache dir off this global (set by the
-    // real server at startup) - point it at our fixture root so the cache doesn't error out standalone.
     globalThis.DATA_ROOT = root;
     return { charactersDir, chatsDir, filesDir, root };
 }
@@ -84,7 +65,7 @@ function baseFixture(directories, avatar) {
         worldInfoCandidates: [
             {
                 uid: '1', world: 'test', key: ['sword'], content: 'The moonblade sword was forged by ancient elves under a lunar eclipse.',
-                order: 100, position: 0, // world_info_position.before
+                order: 100, position: 0,
             },
             {
                 uid: '2', world: 'test', key: ['dragon'], content: 'Dragons have not been seen in these lands for a thousand years.',
@@ -92,9 +73,6 @@ function baseFixture(directories, avatar) {
             },
         ],
         worldInfoIncludeNames: false,
-        // Same template as default/content/presets/context/Default.json's story_string - the
-        // client's own shipped default context preset - so the story string actually renders
-        // character-card fields AND world-info before/after strings.
         storyStringTemplate: '{{#if anchorBefore}}{{anchorBefore}}\n{{/if}}{{#if system}}{{system}}\n{{/if}}{{#if wiBefore}}{{wiBefore}}\n{{/if}}{{#if description}}{{description}}\n{{/if}}{{#if personality}}{{personality}}\n{{/if}}{{#if scenario}}{{scenario}}\n{{/if}}{{#if wiAfter}}{{wiAfter}}\n{{/if}}{{#if persona}}{{persona}}\n{{/if}}{{#if anchorAfter}}{{anchorAfter}}\n{{/if}}{{trim}}',
         settings: { type: 'ooba', temp: 0.7, top_p: 0.9, rep_pen: 1.1 },
         model: 'test-model',
@@ -138,7 +116,6 @@ test('assembleTextCompletionPrompt: instruct mode OFF - end to end', async () =>
     assert.ok(result.combinedPrompt.includes('moonblade sword was forged'), 'should contain the activated world-info entry');
     assert.ok(!result.combinedPrompt.includes('Dragons have not been seen'), 'should NOT contain the non-activated world-info entry');
 
-    // generate_data shape sanity check (createTextGenGenerationData's return shape).
     assert.equal(result.generate_data.prompt, result.combinedPrompt);
     assert.equal(result.generate_data.model, 'test-model');
     assert.equal(result.generate_data.max_new_tokens, 80);
@@ -146,7 +123,6 @@ test('assembleTextCompletionPrompt: instruct mode OFF - end to end', async () =>
     assert.ok(Array.isArray(result.generate_data.stop));
     assert.equal(result.generate_data.truncation_length, result.thisMaxContext);
 
-    // Intermediate state sanity checks.
     assert.ok(result.worldInfoBefore.includes('moonblade sword was forged'));
     assert.equal(typeof result.system, 'string');
     assert.ok(Array.isArray(result.mesSend));
@@ -268,16 +244,11 @@ test('assembleTextCompletionPrompt: instruct mode wraps character-card example d
     };
     const result = await assembleTextCompletionPrompt(input);
 
-    // Before this task, mesExamplesArray/mesExamplesRawArray were always identical (the local
-    // parseMesExamplesBlocks adapter never applied formatInstructModeExamples()'s instruct-mode
-    // reformatting) - so example dialogues were never wrapped with input_sequence/output_sequence
-    // even in instruct mode. Prove that gap is now closed:
     assert.notDeepEqual(result.mesExamplesArray, result.mesExamplesRawArray, 'formatted example array should now diverge from the raw one in instruct mode');
     assert.ok(result.mesExamplesArray.some(x => x.includes('### Instruction:')), 'formatted example array should contain the input_sequence marker');
     assert.ok(result.mesExamplesArray.some(x => x.includes('### Response:')), 'formatted example array should contain the output_sequence marker');
     assert.ok(!result.mesExamplesRawArray.some(x => x.includes('### Instruction:')), 'the raw example array should stay unwrapped');
 
-    // And the wrapped example dialogue actually reaches the final combined prompt.
     assert.ok(result.combinedPrompt.includes('### Instruction:'), 'combinedPrompt should contain the wrapped example input_sequence marker');
     assert.ok(result.combinedPrompt.includes('### Response:'), 'combinedPrompt should contain the wrapped example output_sequence marker');
     assert.ok(result.combinedPrompt.includes('The moonblade sword, of course.'), 'combinedPrompt should still contain the example content itself');
@@ -351,17 +322,14 @@ test('assembleTextCompletionPrompt: a world-info @Depth entry is spliced into th
             ...baseFixture(directories, avatar).worldInfoCandidates,
             {
                 uid: '3', world: 'test', key: ['sword'], content: 'The sword hums with a faint blue light whenever danger is near.',
-                order: 100, position: 4, // world_info_position.atDepth
-                depth: 1, role: 0, // extension_prompt_roles.SYSTEM
+                order: 100, position: 4,
+                depth: 1, role: 0,
             },
         ],
     };
 
     const result = await assembleTextCompletionPrompt(input);
 
-    // Before this task, worldInfoDepth entries were computed but never spliced into anything (see
-    // the old gap (1) doc comment) - this proves the @Depth entry now actually reaches combinedPrompt/
-    // mesSend/finalMesSend via the new doChatInject()-equivalent wiring.
     assert.ok(result.worldInfoDepth.length > 0, 'sanity check: bucketActivatedEntries should have produced an @Depth entry');
     assert.ok(
         result.combinedPrompt.includes('The sword hums with a faint blue light'),
@@ -405,20 +373,20 @@ test('assembleTextCompletionPrompt: author\'s note combines with WI ANTop/ANBott
         hasCharacterOrGroup: true,
         chatMetadata: {
             note_prompt: 'Remember: it is raining.',
-            note_interval: 1, // always due
-            note_position: 1, // extension_prompt_types.IN_CHAT
+            note_interval: 1,
+            note_position: 1,
             note_depth: 0,
-            note_role: 0, // SYSTEM
+            note_role: 0,
         },
         worldInfoCandidates: [
             ...baseFixture(directories, avatar).worldInfoCandidates,
             {
                 uid: '4', world: 'test', key: ['sword'], content: 'Above the note: a chill wind blows.',
-                order: 200, position: 2, // world_info_position.ANTop
+                order: 200, position: 2,
             },
             {
                 uid: '5', world: 'test', key: ['sword'], content: 'Below the note: the woods grow quiet.',
-                order: 200, position: 3, // world_info_position.ANBottom
+                order: 200, position: 3,
             },
         ],
     };
@@ -462,10 +430,6 @@ test('assembleTextCompletionPrompt: quiet-prompt and scannable author\'s-note te
         },
     });
 
-    // Case 1: a world-info entry whose ONLY matching keyword appears in the quiet-prompt text - not
-    // in chat history, character card, or an author's note. Before this task's ordering fix, World
-    // Info activation ran before the quiet-prompt was ever resolvable as scannable input, so this
-    // entry could never activate purely from quiet_prompt text.
     {
         const input = {
             ...baseFixture(directories, avatar),
@@ -484,10 +448,6 @@ test('assembleTextCompletionPrompt: quiet-prompt and scannable author\'s-note te
         );
     }
 
-    // Case 2: a world-info entry whose ONLY matching keyword appears in an author's-note value, with
-    // noteSettings.allowWIScan: true - not in chat history or character card. Before this task's
-    // ordering fix, the Author's Note wasn't even resolved yet when World Info ran, so this could
-    // never activate.
     {
         const input = {
             ...baseFixture(directories, avatar),
@@ -495,8 +455,8 @@ test('assembleTextCompletionPrompt: quiet-prompt and scannable author\'s-note te
             noteSettings: { allowWIScan: true },
             chatMetadata: {
                 note_prompt: 'The griffin nests atop the northern cliffs.',
-                note_interval: 1, // always due
-                note_position: 1, // extension_prompt_types.IN_CHAT
+                note_interval: 1,
+                note_position: 1,
                 note_depth: 0,
                 note_role: 0,
             },
@@ -547,10 +507,10 @@ test('assembleTextCompletionPrompt: an author\'s note positioned at BEFORE_PROMP
         hasCharacterOrGroup: true,
         chatMetadata: {
             note_prompt: 'A distinctive before-scenario note: the moon is full tonight.',
-            note_interval: 1, // always due
-            note_position: 2, // extension_prompt_types.BEFORE_PROMPT
+            note_interval: 1,
+            note_position: 2,
             note_depth: 0,
-            note_role: 0, // SYSTEM
+            note_role: 0,
         },
     };
 
@@ -568,9 +528,6 @@ test('assembleTextCompletionPrompt: an author\'s note positioned at BEFORE_PROMP
         'the note text should reach combinedPrompt via the beforeScenarioAnchor mechanism',
     );
 
-    // Mutual exclusivity: the note is NOT also spliced into the chat as an IN_CHAT depth injection.
-    // doChatInject() only ever reads IN_CHAT-positioned table entries, so a BEFORE_PROMPT note must
-    // never appear via chat-splicing - it should appear in combinedPrompt exactly once (via the anchor).
     const occurrences = result.combinedPrompt.split('A distinctive before-scenario note: the moon is full tonight.').length - 1;
     assert.equal(occurrences, 1, 'the note text should appear exactly once in combinedPrompt, not double-injected');
 });
@@ -606,10 +563,10 @@ test('assembleTextCompletionPrompt: an author\'s note positioned at IN_CHAT does
         hasCharacterOrGroup: true,
         chatMetadata: {
             note_prompt: 'A distinctive in-chat-only note: the lantern flickers.',
-            note_interval: 1, // always due
-            note_position: 1, // extension_prompt_types.IN_CHAT
+            note_interval: 1,
+            note_position: 1,
             note_depth: 0,
-            note_role: 0, // SYSTEM
+            note_role: 0,
         },
     };
 
@@ -648,8 +605,6 @@ test('assembleTextCompletionPrompt: character card depth_prompt is now spliced i
             mes_example: '',
             system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '',
             alternate_greetings: [],
-            // depth 0 lands on the newest message (see doChatInject's depth convention) so the
-            // injected text is guaranteed to survive any token-budget trimming in this small fixture.
             extensions: { depth_prompt: { prompt: 'Remember: the moonblade hums when danger is near.', depth: 0, role: 'user' } },
         },
     });
@@ -661,9 +616,6 @@ test('assembleTextCompletionPrompt: character card depth_prompt is now spliced i
     };
     const result = await assembleTextCompletionPrompt(input);
 
-    // Before this task, getCharacterCardFields() never resolved depth/role, and nothing wrote the
-    // character's depth_prompt into the extension-prompt table, so this text could never reach
-    // combinedPrompt/finalMesSend via doChatInject() - proving the single-character gap is now closed.
     assert.ok(
         result.combinedPrompt.includes('Remember: the moonblade hums when danger is near.'),
         'character-card depth_prompt text should now appear in combinedPrompt via doChatInject()',
@@ -700,8 +652,6 @@ test('assembleTextCompletionPrompt: group-chat member depth_prompt is spliced in
             mes_example: '',
             system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '',
             alternate_greetings: [],
-            // Depth 0 lands on the newest message (same reasoning as the single-character test above)
-            // so the injected text is guaranteed to survive any token-budget trimming in this fixture.
             extensions: { depth_prompt: { prompt: 'Aria whispers: the moonblade hums when danger is near.', depth: 0, role: 'user' } },
         },
     });
@@ -726,14 +676,13 @@ test('assembleTextCompletionPrompt: group-chat member depth_prompt is spliced in
             mes_example: '',
             system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '',
             alternate_greetings: [],
-            // No depth_prompt at all - should not contribute any injected entry.
             extensions: {},
         },
     });
 
     await (await stores.userStore(directories)).lib.writeGroup({
         id: 'the-woods-group',
-        generation_mode: 1, // group_generation_mode.APPEND
+        generation_mode: 1,
         members: [avatarAria, avatarBran],
         disabled_members: [],
     });
@@ -746,9 +695,6 @@ test('assembleTextCompletionPrompt: group-chat member depth_prompt is spliced in
     };
     const result = await assembleTextCompletionPrompt(input);
 
-    // Before this task, only the single-character branch existed, so a group chat's per-member
-    // depth_prompt text could never reach combinedPrompt/finalMesSend - proving the group-chat gap
-    // (getGroupCharacterDepthPrompts()) is now closed.
     assert.ok(
         result.combinedPrompt.includes('Aria whispers: the moonblade hums when danger is near.'),
         'the group member\'s own depth_prompt text should now appear in combinedPrompt via doChatInject()',
@@ -803,9 +749,6 @@ test('assembleTextCompletionPrompt: an AI_OUTPUT regex script transforms a chat 
 
     const result = await assembleTextCompletionPrompt(input);
 
-    // The raw chat message ("Ah yes, the moonblade sword...") is an AI (non-user) message, so the
-    // AI_OUTPUT-placement script above should have rewritten "moonblade" to "starblade" before it
-    // ever reached finalizeCoreChatMessage()/combinedPrompt.
     assert.ok(result.combinedPrompt.includes('the starblade sword'), 'the AI_OUTPUT-regexed chat message should appear in combinedPrompt');
     assert.ok(!result.combinedPrompt.includes('the moonblade sword'), 'the pre-regex chat message text should NOT appear in combinedPrompt');
 });
@@ -854,10 +797,6 @@ test('assembleTextCompletionPrompt: a WORLD_INFO regex script transforms an acti
 
     const result = await assembleTextCompletionPrompt(input);
 
-    // The activated world-info entry's raw content is "The moonblade sword was forged by ancient
-    // elves..." - the WORLD_INFO-placement script above should have rewritten "forged" to "crafted"
-    // via bucketActivatedEntries's resolveContent callback before it landed in worldInfoBefore/
-    // combinedPrompt.
     assert.ok(result.worldInfoBefore.includes('was crafted by ancient elves'), 'the WORLD_INFO-regexed entry content should appear in worldInfoBefore');
     assert.ok(!result.worldInfoBefore.includes('was forged by ancient elves'), 'the pre-regex entry content should NOT appear in worldInfoBefore');
     assert.ok(result.combinedPrompt.includes('was crafted by ancient elves'), 'the WORLD_INFO-regexed entry content should appear in combinedPrompt');
@@ -890,17 +829,11 @@ test('assembleTextCompletionPrompt: no extra.files on any fixture message - file
         },
     });
 
-    // Same fixture chat as baseFixture() - none of its messages carry an `extra.files` array, so
-    // appendFileAttachments() should take its no-op path for every message (see
-    // src/file-attachment-inline.js: `!Array.isArray(extra.files) || extra.files.length === 0` ->
-    // messageText unchanged) and combinedPrompt should be identical to the pre-gap-3-port baseline.
     const withDirectories = baseFixture(directories, avatar);
     const result = await assembleTextCompletionPrompt(withDirectories);
 
     assert.ok(result.combinedPrompt.includes('ancient sword'), 'sanity check: raw chat message still present');
     assert.ok(result.combinedPrompt.includes('moonblade sword'), 'sanity check: raw chat message still present');
-    // No stray leading '\n\n' artifact (the all-empty-file-texts edge case from
-    // file-attachment-inline.test.js) should leak in when there was never a files array at all.
     assert.ok(!result.combinedPrompt.includes('\n\n\n\n'), 'no unexpected blank-line artifact from file-attachment inlining');
 });
 
@@ -929,8 +862,6 @@ test('assembleTextCompletionPrompt: a real extra.files attachment is inlined int
             extensions: {}, alternate_greetings: [],
         },
     });
-    // A real temp file inside a real fixture directories.files directory, exactly as
-    // src/file-attachment-inline.test.js exercises readFileAttachment() itself.
     fs.writeFileSync(path.join(filesDir, 'notes.txt'), 'ATTACHED NOTES: the bridge is out east of town.');
 
     const input = {
@@ -1002,8 +933,6 @@ test('assembleTextCompletionPrompt: mainApi "kobold" dispatches Step 16 to creat
 
     const result = await assembleTextCompletionPrompt(input);
 
-    // Real createKoboldGenerationData() shape (src/kobold-generation-data.js), NOT
-    // createTextGenGenerationData()'s shape - proves Step 16 actually dispatched on mainApi.
     assert.equal(result.generate_data.prompt, result.combinedPrompt);
     assert.equal(result.generate_data.gui_settings, false);
     assert.equal(result.generate_data.max_length, 80);
@@ -1014,7 +943,6 @@ test('assembleTextCompletionPrompt: mainApi "kobold" dispatches Step 16 to creat
     assert.equal(result.generate_data.api_server, 'http://localhost:5001');
     assert.ok(Array.isArray(result.generate_data.stop_sequence), 'can_use_stop_sequence:true should resolve a real stop_sequence array');
     assert.equal(result.generate_data.prompt.includes('Aria is a wandering ranger'), true);
-    // textgen-only fields must NOT be present on the kobold payload.
     assert.equal(result.generate_data.max_new_tokens, undefined);
     assert.equal(result.generate_data.truncation_length, undefined);
 });
@@ -1036,11 +964,6 @@ test('assembleTextCompletionPrompt: mainApi "novel" dispatches Step 16 to create
             mirostat_lr: 1, mirostat_tau: 0, phrase_rep_pen: 'off', banned_tokens: '', logit_bias: [], prefix: 'vanilla',
             order: [1, 5, 0, 2, 3, 4],
         },
-        // Real, verified two-arg (tokenizerType, text) encoder - see the orchestrator's own
-        // `encodeTokensByType` JSDoc for exactly why this must NOT be the same shape as the generic
-        // single-arg `encodeTokens` fixture (createNovelGenerationData() calls this with a real
-        // `tokenizerType` as the FIRST argument - passing the generic `encodeTokens` straight through
-        // would silently misbind it and drop `text`, a real bug this test guards against).
         encodeTokensByType: (tokenizerType, text) => [tokenizerType, ...Array.from(text).map(ch => ch.codePointAt(0))],
         novelTokenizerType: tokenizers.NERD,
         ephemeralStoppingStrings: ['STOP_HERE'],
@@ -1048,8 +971,6 @@ test('assembleTextCompletionPrompt: mainApi "novel" dispatches Step 16 to create
 
     const result = await assembleTextCompletionPrompt(input);
 
-    // Real createNovelGenerationData() shape (src/novel-generation-data.js), NOT
-    // createTextGenGenerationData()'s/createKoboldGenerationData()'s shape.
     assert.equal(result.generate_data.input, result.combinedPrompt);
     assert.equal(result.generate_data.model, 'clio-v1');
     assert.equal(result.generate_data.use_string, true);
@@ -1062,7 +983,6 @@ test('assembleTextCompletionPrompt: mainApi "novel" dispatches Step 16 to create
     }
     assert.deepEqual(result.generate_data.bad_words_ids, []);
     assert.deepEqual(result.generate_data.logit_bias_exp, []);
-    // textgen/kobold-only fields must NOT be present on the novel payload.
     assert.equal(result.generate_data.max_new_tokens, undefined);
     assert.equal(result.generate_data.max_context_length, undefined);
 });

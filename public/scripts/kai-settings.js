@@ -149,7 +149,6 @@ function loadKoboldSettingsFromPreset(preset) {
         $(slider.counterId).val(formattedValue);
     }
 
-    // streaming_kobold is the server's: selecting the preset applies it there.
     if (Object.hasOwn(preset, 'use_default_badwordsids')) {
         kai_settings.use_default_badwordsids = preset.use_default_badwordsids;
         $('#use_default_badwordsids').prop('checked', kai_settings.use_default_badwordsids);
@@ -224,10 +223,6 @@ export async function generateKoboldWithStreaming(generate_data, signal) {
         throw new Error(`Got response status ${response.status}`);
     }
 
-    // Every /api/backends/kobold/generate streaming response is the compact binary protocol (see
-    // public/scripts/llamacpp-compact-stream.js for the wire format/decoder) - raw-action or not,
-    // src/endpoints/backends/kobold.js's forwardAndPersistCompactStream() call is the only thing
-    // that ever handles a streaming request here.
     const reader = response.body.getReader();
     return async function* streamData() {
         const decoder = new CompactStreamDecoder();
@@ -427,7 +422,6 @@ export async function getStatusKobold() {
         autoSelectInstructPreset(online_status);
         setKoboldFlags(data.koboldUnitedVersion, data.koboldCppVersion);
 
-        // A non-200 with a response body still means the endpoint connected.
         if (online_status === 'no_connection' && data.response) {
             toastr.error(data.response, t`API Error`, { timeOut: 5000, preventDuplicates: true });
         }
@@ -460,7 +454,6 @@ export function initKoboldSettings() {
             }
 
             $('#api_url_text').val(value);
-            // Autoconnect on boot re-clicks this button with the already-stored URL; don't persist a no-op.
             const serverChanged = value !== kai_settings.api_server;
             kai_settings.api_server = value;
             startStatusLoading();
@@ -497,13 +490,11 @@ export function initKoboldSettings() {
     });
 
     $('#settings_preset').on('change', async function () {
-        // loadKoboldSettings() re-triggers this on load to re-run the side effects below; only the save at the end is guarded against that no-op.
         const previousPreset = kai_settings.preset_settings;
 
         if ($('#settings_preset').find(':selected').val() != 'gui') {
             kai_settings.preset_settings = $('#settings_preset').find(':selected').text();
             const preset = koboldai_settings[koboldai_setting_names[kai_settings.preset_settings]];
-            // The response length, context size and streaming are the server's: selecting the preset applies them there.
             loadKoboldSettingsFromPreset(preset);
             $('#kobold_api-settings').find('input').prop('disabled', false);
             $('#kobold_api-settings').css('opacity', 1.0);
@@ -521,7 +512,6 @@ export function initKoboldSettings() {
                 .sortable('disable');
         }
 
-        // PRESET_CHANGED always fires, even when unchanged - other listeners rely on it running on load.
         if (kai_settings.preset_settings !== previousPreset) {
             saveSettingsDebounced('kai_settings');
         }

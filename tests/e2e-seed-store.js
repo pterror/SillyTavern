@@ -1,5 +1,3 @@
-// Run as its own process by e2e-global-setup.js: `node e2e-seed-store.js <dataRoot>`. Writes the standard test user
-// (standard-user.fixture.js) as the default user of the data root, so the e2e servers run on its store.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

@@ -1,9 +1,6 @@
 import { TEXTGEN_TYPES } from './constants.js';
 import { readSettingsFor } from './settings-reads.js';
 
-// Fixed vendor endpoints - mirrors the *_SERVER constants in public/scripts/textgen-settings.js.
-// Known gap: that client also allows a per-browser Mancer server override via localStorage,
-// which is never sent to (or stored by) the server - this always resolves the default instead.
 const FIXED_SERVERS = {
     [TEXTGEN_TYPES.MANCER]: 'https://neuro.mancer.tech',
     [TEXTGEN_TYPES.TOGETHERAI]: 'https://api.together.xyz',
@@ -13,7 +10,6 @@ const FIXED_SERVERS = {
     [TEXTGEN_TYPES.FEATHERLESS]: 'https://api.featherless.ai/v1',
 };
 
-// Mirrors getTextGenModel() in public/scripts/textgen-settings.js.
 function resolveModel(settings) {
     switch (settings.type) {
         case TEXTGEN_TYPES.OOBA:
@@ -52,7 +48,6 @@ function resolveModel(settings) {
     }
 }
 
-// Mirrors getTextGenServer() in public/scripts/textgen-settings.js.
 export function resolveServerUrl(settings) {
     if (settings.type in FIXED_SERVERS) {
         return FIXED_SERVERS[settings.type];
@@ -61,10 +56,8 @@ export function resolveServerUrl(settings) {
 }
 
 /**
- * Resolves which text-generation backend to talk to (type, server URL, model) from the server's
- * own stored settings, instead of trusting whatever a client request claims.
  * @param {import('./users.js').UserDirectoryList} directories
- * @param {import('./settings-reads.js').SettingsContext} [context] The generation's chat and speaker.
+ * @param {import('./settings-reads.js').SettingsContext} [context]
  * @returns {{ type: string, serverUrl: string, model: string|undefined }}
  */
 export function resolveTextGenBackend(directories, context = {}) {

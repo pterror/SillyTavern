@@ -7,23 +7,9 @@ import { SETTINGS_FILE } from './constants.js';
 import { getAtPath, setAtPath, settingsWithoutCharLore } from '../public/scripts/hash-utils.js';
 import { settingsDocumentOf } from './settings-documents.js';
 
-/**
- * Sharded on-disk storage for a user's settings, one file per top-level key
- * (`<user root>/settings/<key>.json`) instead of a single monolithic settings.json.
- * A JSON file can't be patched in place, so writing one key at a time requires one file per key.
- * Legacy monolithic settings.json is migrated in-place lazily on first touch (see ensureMigrated()).
- *
- * Once a user's settings are the settings model's (settings-document.js), every function here reads and writes the
- * user's open settings document instead, and the files are moved aside (FILES_ASIDE): a read of a user's files then
- * is an error, not a stale copy.
- */
-
-/** Where a user's settings files go once the settings model holds them. */
 export const FILES_ASIDE = 'settings.before-model';
 
 /**
- * The user's open settings document, or undefined to read the files; an error when the files are moved aside
- * and no document is open.
  * @param {import('./users.js').UserDirectoryList} directories
  */
 function documentOf(directories) {
@@ -47,8 +33,6 @@ export function legacySettingsPath(directories) {
 }
 
 /**
- * Top-level settings keys become filenames; this guards against a key like '__proto__' or '../../etc'
- * escaping the settings directory.
  * @param {string} key
  */
 export function isValidSettingsKey(key) {
@@ -56,8 +40,6 @@ export function isValidSettingsKey(key) {
 }
 
 /**
- * Sets `obj[key] = value` as a genuine own property even when `key === '__proto__'` - a bare
- * assignment to that literal key triggers a prototype swap instead of creating an own property.
  * @param {Record<string, unknown>} obj
  * @param {string} key
  * @param {unknown} value
@@ -68,7 +50,7 @@ function setOwnProperty(obj, key, value) {
 
 /**
  * @param {string} filePath
- * @returns {*} Parsed content, or undefined if the file doesn't exist or fails to parse.
+ * @returns {*}
  */
 function readKeyFile(filePath) {
     if (!fs.existsSync(filePath)) {
@@ -83,7 +65,6 @@ function readKeyFile(filePath) {
 }
 
 /**
- * Idempotent; a no-op once the sharded directory exists.
  * @param {import('./users.js').UserDirectoryList} directories
  */
 function ensureMigrated(directories) {
@@ -121,7 +102,6 @@ function ensureMigrated(directories) {
 }
 
 /**
- * The values at dotted paths of a settings object, copied.
  * @param {Record<string, any>} settings
  * @param {string[]} dottedPaths
  * @returns {Record<string, unknown>}
@@ -144,7 +124,6 @@ export function settingsExist(directories) {
 }
 
 /**
- * Reconstructs the full flat settings object, same shape a legacy settings.json parsed to.
  * @param {import('./users.js').UserDirectoryList} directories
  */
 export function readAllSettings(directories) {
@@ -165,7 +144,6 @@ export function readAllSettings(directories) {
 }
 
 /**
- * Serialized the same way legacy settings.json was; this exact string is what settingsHash is hashed from.
  * @param {import('./users.js').UserDirectoryList} directories
  */
 export function readAllSettingsAsJson(directories) {
@@ -173,10 +151,9 @@ export function readAllSettingsAsJson(directories) {
 }
 
 /**
- * Reads only the on-disk file(s) for the top-level key(s) the given paths belong to, never the whole store.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string[]} dottedPaths
- * @returns {Record<string, unknown>} Map of path -> current value (undefined if absent)
+ * @returns {Record<string, unknown>}
  */
 export function readSettingsAtPaths(directories, dottedPaths) {
     const document = documentOf(directories);
@@ -200,12 +177,9 @@ export function readSettingsAtPaths(directories, dottedPaths) {
 }
 
 /**
- * Writes only the on-disk file(s) for the top-level key(s) named in `keys`, leaving every other key's
- * file untouched. A dotted path is applied against that key's current on-disk value. Upstream's `charLore`
- * (CHAR_LORE_PATH) is never stored: characters' links are the store's.
  * @param {import('./users.js').UserDirectoryList} directories
- * @param {Record<string, unknown>} keys Top-level keys or dotted paths to their new values.
- * @returns {Promise<string[]>} The top-level key names touched, once written.
+ * @param {Record<string, unknown>} keys
+ * @returns {Promise<string[]>}
  */
 export function writeSettingsKeys(directories, keys) {
     const document = documentOf(directories);
@@ -251,12 +225,9 @@ export function writeSettingsKeys(directories, keys) {
 }
 
 /**
- * Writes one file per top-level key in `object` and removes nothing: a key `object` leaves out keeps its file.
- * Unlike writeSettingsKeys(), a key is never read as a dotted path, and an invalid key is logged and skipped.
- * Upstream's `charLore` (CHAR_LORE_PATH) is never stored.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {Record<string, unknown>} object
- * @returns {Promise<Set<string>>} The file names written (the keys), once written.
+ * @returns {Promise<Set<string>>}
  */
 export function writeNamedSettings(directories, object) {
     const document = documentOf(directories);
@@ -282,11 +253,9 @@ export function writeNamedSettings(directories, object) {
 }
 
 /**
- * Full replace: writes one file per top-level key in `fullObject` and removes any existing per-key
- * file not present in `fullObject`, matching a whole-file settings.json overwrite.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {Record<string, unknown>} fullObject
- * @returns {Promise<void>} Once written.
+ * @returns {Promise<void>}
  */
 export function writeAllSettings(directories, fullObject) {
     const document = documentOf(directories);
@@ -296,7 +265,6 @@ export function writeAllSettings(directories, fullObject) {
         for (const key of Object.keys(fullObject ?? {}).filter(isValidSettingsKey)) setOwnProperty(next, key, settingsWithoutCharLore(key, fullObject[key]).value);
         return document.replace(next);
     }
-    // Files: written before this returns (the promise only says so).
     const wantedFiles = new Set(Object.keys(fullObject ?? {}).filter(isValidSettingsKey).map(k => `${k}.json`));
     void writeNamedSettings(directories, fullObject);
     const dir = settingsDirPath(directories);
@@ -310,11 +278,8 @@ export function writeAllSettings(directories, fullObject) {
 }
 
 /**
- * Deletes both the sharded directory and any not-yet-migrated legacy file. Deleting only the legacy
- * path would leave a stale sharded directory that ensureMigrated() treats as already-migrated,
- * defeating the reset.
  * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<void>} Once done.
+ * @returns {Promise<void>}
  */
 export function deleteAllSettings(directories) {
     const document = documentOf(directories);

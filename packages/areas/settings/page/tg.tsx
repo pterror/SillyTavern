@@ -17,10 +17,6 @@ import {
 } from './fields.tsx';
 import type { FieldState } from './fields.tsx';
 
-// The text generation fields of the AI response configuration panel, laid out as the old markup
-// (#textgenerationwebui_api-settings) had them. What's between them is still the old page's: the logit bias editor
-// and the sampler orders.
-
 const KEY = '_textgenerationwebui';
 
 function useView() {
@@ -28,10 +24,6 @@ function useView() {
     return client.view<SettingsView>(VIEW);
 }
 
-/**
- * A block of fields (the old markup's DRY block, XTC block and the like): shown for its backends, or as the user's
- * chosen samplers say (by `sampler`, the block's name in the sampler select).
- */
 function Block(props: {
     id?: string;
     class: string;
@@ -58,7 +50,6 @@ function Block(props: {
     );
 }
 
-/** An info icon with its tip (translated by its key where the old markup had one). */
 function Info(props: { tip: string; i18n?: string | undefined; class?: string }) {
     const { t } = useUi();
     return <div class={props.class ?? 'fa-solid fa-circle-info opacity50p'} title={t(props.tip, props.i18n)} />;
@@ -68,7 +59,6 @@ const COLUMN = 'alignitemscenter flex-container flexFlowColumn flexBasis30p flex
 const HALF = 'alignitemscenter flex-container flexFlowColumn flexBasis48p flexGrow flexShrink gap0';
 const GROWING = 'alignitemscenter flex-container marginBot5 flexFlowColumn flexGrow flexShrink gap0';
 
-/** A sampler's slider: its label (and tip) over the slider and its counter. */
 function TgSlider(props: {
     name: string;
     label: string;
@@ -100,7 +90,6 @@ function TgSlider(props: {
     );
 }
 
-/** A checkbox row of the old markup's checkboxes column. */
 function TgCheckbox(props: {
     name: string;
     label: string;
@@ -129,7 +118,6 @@ function TgCheckbox(props: {
     );
 }
 
-/** Neutralize Samplers and the sampler select, and swipes per generation (the old markup's top of the panel). */
 export function TgTop() {
     const { client, t } = useUi();
     const [selecting, setSelecting] = createSignal(false);
@@ -178,10 +166,6 @@ export function TgTop() {
     );
 }
 
-/**
- * The sampler select: which samplers the panel shows for this backend, and whether that list decides ("prioritize
- * manual"); without it the backend decides. Kept by the server, per backend.
- */
 function SamplerSelectDialog(props: { onClose: () => void }) {
     const { client, t } = useUi();
     const view = useView();
@@ -265,7 +249,6 @@ function SamplerSelectDialog(props: { onClose: () => void }) {
     );
 }
 
-/** The samplers, up to the logit bias editor. */
 export function TgSamplers() {
     const { t } = useUi();
     return (
@@ -695,7 +678,6 @@ export function TgSamplers() {
     );
 }
 
-/** Banned tokens: the global and the preset's lists, and the switch that sends them. */
 function BannedTokens() {
     const { t } = useUi();
     return (
@@ -768,7 +750,6 @@ function BannedList(props: { field: FieldState }) {
     );
 }
 
-/** CFG: its scale and negative prompt (the old block after the logit bias editor). */
 export function TgCfg() {
     const { t } = useUi();
     return (
@@ -818,7 +799,6 @@ export function TgCfg() {
     );
 }
 
-/** Whether the context is unlocked (rep pen range's zen steps go further then). */
 function useUnlocked() {
     const view = useView();
     return () => view()?.values['power_user.max_context_unlocked'] === true;

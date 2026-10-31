@@ -1,4 +1,3 @@
-// The token-count cache on the engine answers as the old store's tables did, and keeps each table at its cap.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -31,7 +30,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await write({ counts: [{ identity: 'tok', hash: hash(0), count: 12 }], ids: [{ identity: 'tok', hash: hash(0), ids: [1, 200, 70000] }] }, 1_000);
         assert.equal(await cache.readCount('tok', hash(0)), 12);
         assert.deepEqual(await cache.readIdsRow('tok', hash(0)), { ids: [1, 200, 70000], chunks: null });
-        // A count kept, then replaced on purpose; ids filled with their chunks; another tokenizer apart.
         await write({ counts: [{ identity: 'tok', hash: hash(0), count: 99 }, { identity: 'other', hash: hash(0), count: 3 }], ids: [{ identity: 'tok', hash: hash(0), ids: [5], chunks: ['a', 'b\ud800', 'c'] }] }, 2_000);
         assert.equal(await cache.readCount('tok', hash(0)), 12, 'a stored count keeps its value');
         assert.deepEqual(await cache.readIdsRow('tok', hash(0)), { ids: [1, 200, 70000], chunks: ['a', 'b\ud800', 'c'] }, 'stored ids take the chunks given');
@@ -39,7 +37,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.equal(await cache.readIdsRow('other', hash(0)), null);
         await write({ counts: [{ identity: 'tok', hash: hash(0), count: 13, replace: true }] }, 3_000);
         assert.equal(await cache.readCount('tok', hash(0)), 13, 'a replacing count writes over it');
-        // Past the cap, the least recently used go; one used again a day later stays.
         for (let n = 1; n <= 6; n++) await write({ counts: [{ identity: 'tok', hash: hash(n), count: n }] }, 10_000 + n);
         await write({ counts: [{ identity: 'tok', hash: hash(1), count: 1 }] }, 10_000 + DAY);
         await write({ counts: [{ identity: 'tok', hash: hash(7), count: 7 }] }, 20_000 + DAY);

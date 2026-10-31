@@ -34,7 +34,6 @@ describe('the default settings template on a fresh install', () => {
         jest.spyOn(console, 'log').mockImplementation(() => {});
         const { directories } = user;
 
-        // Server startup order: content seeding, then the store's resumed work (the settings tags import).
         await contentManager.checkForNewContent([directories]);
         const { resumeStoreWork } = await import('../src/user-stores.js');
         await resumeStoreWork([directories]);

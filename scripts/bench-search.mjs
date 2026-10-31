@@ -1,22 +1,5 @@
 #!/usr/bin/env node
 /* eslint-env node */
-/**
- * Search benchmark: times `POST /api/characters/query` for every request shape the character list can send.
- *
- * The live run sends them to a running server (`--url`) over HTTP: read-only, it opens and copies nothing. Each
- * (shape, word) is sent once, then WARM_RUNS times more, back to back, each timed end to end; each line of `--out` is
- * one (shape, word). `--out` gets a `{"type":"header"}` line first and a `{"type":"end"}` line once every shape has run.
- *
- * `--concurrency` is a separate run that writes, on a made-up library in `--scratch` and never on live: see
- * concurrencyRun(). `--out` then gets one JSON document.
- *
- * Usage:
- *   node scripts/bench-search.mjs --url <server> [--out <raw.jsonl>] [--only <regex on shape id>]
- *   node scripts/bench-search.mjs --list --url <server>
- *   node scripts/bench-search.mjs --report <raw.jsonl>
- *   node scripts/bench-search.mjs --concurrency --scratch <empty dir> [--cards <n>] [--keep] [--timeout-min <n>]
- *                                 [--out <raw.json>]
- */
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -28,31 +11,22 @@ import { performance } from 'node:perf_hooks';
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(SCRIPT_PATH), '..');
 
-// Tiers by description docFreq on the live library (2026-09-26, 379,408 cards): high = girl/the/love,
-// mid = dragon/vampire/detective, low = saxophone/quokka, 2-letter prefix = dr, two-word = dark knight.
 /** @type {string[]} */
 const WORDS = ['girl', 'the', 'love', 'dragon', 'vampire', 'detective', 'saxophone', 'quokka', 'dr', 'dark knight'];
 
-/** Requests after the first, for each (shape, word). */
 const WARM_RUNS = 5;
 const PAGE_SIZE = 50;
 const DEEP_PAGE = 100;
 const DROPDOWN_PAGE_SIZE = 500;
-/** The random sort's seed, the same in every run so shapes line up across runs. */
 const RANDOM_SEED = 1234567890;
-/** A shape fails when its first requests' p50 or its repeats' max is over this many ms. */
 const LIMIT_MS = 100;
-/** The concurrency run's made-up library, in cards. */
 const DEFAULT_CARDS = 20_000;
-/** The concurrency run's burst: tag assignments and deletes, sent this many at a time. */
 const BURST_ASSIGNS = 5000;
 const BURST_DELETES = 20;
 const BURST_IN_FLIGHT = 8;
 
 const NOTE = 'Note: "Show only groups" and "Show only folders" send the same body as no filter, and opening a folder'
     + ' sends tags.include:[folderTagId], the same shape as 1 included tag, so neither is a shape of its own.';
-
-// ---------------------------------------------------------------- args
 
 function parseArgs(argv) {
     const opts = {
@@ -108,8 +82,6 @@ function parseArgs(argv) {
     return opts;
 }
 
-// ---------------------------------------------------------------- helpers
-
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function isInside(child, parent) {
@@ -148,10 +120,7 @@ function gitInfo() {
     return { head, dirty };
 }
 
-// ---------------------------------------------------------------- the server
-
 /**
- * A session on a server: its CSRF token and cookie, as the page gets them.
  * @param {string} base
  */
 async function openSession(base) {
@@ -198,14 +167,12 @@ function parseServerTiming(header) {
     return out;
 }
 
-/** The page's own decoder of the hash-mode answer. */
 async function hashDecoder() {
     const mod = await import(pathToFileURL(path.join(REPO_ROOT, 'public', 'scripts', 'query-hashes-binary.js')).href);
     return mod.deserializeQueryHashesBinary;
 }
 
 /**
- * One timed POST /api/characters/query, end to end: from before the fetch to after the body is read.
  * @param {{ base: string, token: string, cookie: string }} session
  * @param {object} body
  * @param {(buffer: ArrayBuffer) => any} decode
@@ -242,9 +209,6 @@ async function timedQuery(session, body, decode) {
     return record;
 }
 
-// ---------------------------------------------------------------- shapes
-
-// Filter keys go in the order the client sends them: search, tags, fav, includeGroups (shapes.md).
 const FILTERS = [
     { id: 'none', build: () => ({}) },
     { id: 'fav', build: () => ({ fav: true }) },
@@ -254,7 +218,6 @@ const FILTERS = [
     { id: 'xtag1', build: tags => ({ tags: { include: [], exclude: [tags[0]], mode: 'and' } }) },
 ];
 
-// The sort dropdown's options (public/index.html #character_sort_order), without Search.
 const LIST_SORTS = [
     { id: 'name-asc', sort: { field: 'name', order: 'asc' } },
     { id: 'name-desc', sort: { field: 'name', order: 'desc' } },
@@ -272,12 +235,11 @@ const LIST_SORTS = [
 /**
  * @typedef {object} Shape
  * @property {string} id
- * @property {boolean} hasTerm Whether it runs once per word of WORDS.
+ * @property {boolean} hasTerm
  * @property {(word: string|null) => object} body
  */
 
 /**
- * Every shape, in run order. Ids don't depend on the library, so runs line up by id.
  * @param {{ tagIds: string[], searchOrder: 'asc'|'desc' }} params
  * @returns {Shape[]}
  */
@@ -305,7 +267,6 @@ function buildShapes({ tagIds, searchOrder }) {
             }
         }
     }
-    // The search dropdown (shapes.md S4). Its fav filter goes after includeGroups, as the client sends it.
     for (const fav of [false, true]) {
         shapes.push({
             id: `dropdown/${fav ? 'fav' : 'none'}`,
@@ -323,7 +284,6 @@ function buildShapes({ tagIds, searchOrder }) {
 }
 
 /**
- * The three tags most characters and groups carry, from the server's tag list.
  * @param {{ base: string, token: string, cookie: string }} session
  * @returns {Promise<{ id: string, name: string|null, count: number }[]>}
  */
@@ -335,7 +295,6 @@ async function readTopTags(session) {
 }
 
 /**
- * The search sort's order as the client sends it: "desc" when power_user.sort_order is "desc", else "asc".
  * @param {{ base: string, token: string, cookie: string }} session
  * @returns {Promise<'asc'|'desc'>}
  */
@@ -355,15 +314,11 @@ function describeTags(tags) {
     return tags.map((t, i) => `t${i + 1} = ${t.id} (${t.name === null ? 'no name' : JSON.stringify(t.name)}, ${t.count} carriers)`).join('; ');
 }
 
-// ---------------------------------------------------------------- --list
-
 async function listShapes(opts) {
     const { shapes } = await loadShapes(await openSession(opts.url));
     console.log(`${shapes.length} shapes. A body with "<word>" runs once for each of: ${WORDS.join(', ')}.`);
     for (const shape of shapes) console.log(`${shape.id}  ${JSON.stringify(shape.body(shape.hasTerm ? '<word>' : null))}`);
 }
-
-// ---------------------------------------------------------------- live run
 
 async function liveRun(opts) {
     if (opts.out && isInside(opts.out, path.join(REPO_ROOT, 'data'))) {
@@ -379,8 +334,6 @@ async function liveRun(opts) {
     if (shapes.length === 0) throw new Error(`--only ${opts.only} matches no shape id (see --list)`);
     const header = { type: 'header', time: startedAt, url: opts.url, checkout: REPO_ROOT, head: git.head, dirty: git.dirty, tags, seed: RANDOM_SEED, words: WORDS };
 
-    // Opened before the first request, so an existing file is refused before anything runs. The header line goes
-    // first and the end line last, so `--report` can print the header and tell an interrupted run by its missing end.
     const outFd = opts.out ? fs.openSync(opts.out, 'wx') : null;
     const total = shapes.reduce((n, s) => n + (s.hasTerm ? WORDS.length : 1), 0);
     /** @type {object[]} */
@@ -418,10 +371,7 @@ async function liveRun(opts) {
     return pass ? 0 : 1;
 }
 
-// ---------------------------------------------------------------- report
-
 /**
- * Prints the run's header from its header line and end line. `end` is undefined when the run didn't get there.
  * @param {object|undefined} header
  * @param {object|undefined} end
  */
@@ -441,7 +391,6 @@ function printHeader(header, end) {
 }
 
 /**
- * A sample's phases: its Server-Timing entries other than `handler`, plus outside_handler and await_gaps.
  * @returns {Map<string, number>}
  */
 function samplePhases(sample) {
@@ -454,7 +403,6 @@ function samplePhases(sample) {
     return phases;
 }
 
-/** The phase with the largest median over `samples`; a sample without a phase spent 0 ms in it. */
 function dominantByMedian(samples) {
     const all = samples.map(samplePhases);
     const names = new Set(all.flatMap(p => [...p.keys()]));
@@ -466,7 +414,6 @@ function dominantByMedian(samples) {
     return best?.name ?? '-';
 }
 
-/** The largest phase of the sample with the largest e2e. */
 function dominantOfMax(samples) {
     const max = samples.reduce((a, b) => (b.e2e > a.e2e ? b : a));
     let best = null;
@@ -477,9 +424,8 @@ function dominantOfMax(samples) {
 }
 
 /**
- * Prints one row per shape from raw lines, pooling a shape's words, then every errored request.
  * @param {object[]} lines
- * @returns {boolean} whether every shape passed and nothing errored
+ * @returns {boolean}
  */
 function printReport(lines) {
     /** @type {Map<string, { first: object[], repeat: object[], errors: string[] }>} */
@@ -488,7 +434,6 @@ function printReport(lines) {
         if (!byShape.has(line.shape)) byShape.set(line.shape, { first: [], repeat: [], errors: [] });
         const s = byShape.get(line.shape);
         const where = `${line.shape} ${line.word ?? '-'}`;
-        // Errored requests stay out of the timings: a fast 500 would pull the p50 down, a hung one the max up.
         line.requests.forEach((r, i) => {
             if (r.error) s.errors.push(`${where} ${i === 0 ? 'first' : `repeat ${i}`}: ${r.error}`);
             else (i === 0 ? s.first : s.repeat).push(r);
@@ -556,17 +501,6 @@ function reportFromFile(file) {
     return printReport(lines) ? 0 : 1;
 }
 
-// ---------------------------------------------------------------- concurrency run
-
-// The concurrency run times queries while a burst of commits goes on (tag assignments and character deletes through
-// the routes), to show what writes cost the queries beside them. The made-up cards carry only the searched fields, so
-// upstream's card routes refuse to edit them (no `spec`); assigning a tag is a write every character takes. It writes, so it never runs on the live library: it runs on a
-// made-up library the engine's search bench generates (`engine/examples/search.rs --real`, the synthetic text of
-// scripts/bench-search-synth.mjs) in `--scratch`, served by this checkout's server on a free port.
-//
-// Scratch layout: data/ (the data root, the library's store in data/default-user/store), config.yaml (the default
-// config, made by the server on its first start), global-extensions/, server.log.
-
 const state = {
     server: null,
     scratch: null,
@@ -593,7 +527,6 @@ function clearScratch(scratch) {
     }
 }
 
-/** Stops the server and clears the scratch dir unless `--keep`. */
 async function cleanupConcurrency() {
     if (state.cleanedUp) return;
     state.cleanedUp = true;
@@ -627,10 +560,6 @@ function tailLog(logPath, n = 50) {
     }
 }
 
-/**
- * Checks `--scratch`: outside the repo's data dir (by real path), and empty or missing. Creates it when missing.
- * Returns its real path.
- */
 function checkScratchDir(opts) {
     const liveData = path.join(REPO_ROOT, 'data');
     let scratch = path.resolve(opts.scratch);
@@ -645,8 +574,6 @@ function checkScratchDir(opts) {
 }
 
 /**
- * Writes the made-up library's store at `dir` with the engine's search bench (a release build of the crate's
- * example; the engine's own build needs the Rust toolchain).
  * @param {string} dir
  * @param {number} cards
  */
@@ -658,7 +585,6 @@ function generateLibrary(dir, cards) {
     });
 }
 
-/** Starts server.js from this checkout on the scratch library, on a free port (never 8000). */
 async function startServer(opts) {
     const port = await freePort();
     if (port === 8000) throw new Error('the free port picked was 8000; the bench never uses it');
@@ -701,7 +627,6 @@ async function startServer(opts) {
 }
 
 /**
- * The made-up library's characters by name, up to `n` of them.
  * @param {{ base: string, token: string, cookie: string }} session
  * @param {number} n
  * @param {(buffer: ArrayBuffer) => any} decode
@@ -719,10 +644,6 @@ async function characterIds(session, n, decode) {
     return ids.slice(0, n);
 }
 
-/**
- * The burst: BURST_ASSIGNS tag assignments (the most used tag, to characters that may not carry it) and BURST_DELETES
- * deletes (the first word's first page), BURST_IN_FLIGHT at a time, while queries go back to back, cycling the words.
- */
 async function runConcurrency({ session, primary, run, decode }) {
     const records = run.records;
     const probe = await timedQuery(session, primaryBody(primary, WORDS[0]), decode);
@@ -768,7 +689,6 @@ async function runConcurrency({ session, primary, run, decode }) {
     })();
     try {
         await writer;
-        // A last cycle of queries after the burst, so the first word is read once the deletes are in.
         const seen = records.length;
         while (records.length < seen + WORDS.length) await sleep(10);
     } finally {
@@ -789,8 +709,7 @@ function primaryBody(primary, word) {
 }
 
 /**
- * Prints the concurrency run's result from whatever `run` holds, so an errored run still reports what it got.
- * @returns {boolean} whether the max during the burst is within LIMIT_MS and no request errored
+ * @returns {boolean}
  */
 function reportConcurrency(run) {
     console.log(`made-up library: ${run.cards} cards`);
@@ -871,8 +790,6 @@ async function concurrencyRun(opts) {
     }
     return pass ? 0 : 1;
 }
-
-// ---------------------------------------------------------------- main
 
 async function main() {
     const opts = parseArgs(process.argv.slice(2));

@@ -19,17 +19,11 @@ import { sessionHeaderOf } from '../request-session.js';
  * stem of the file its name would have had (`bookKey()`). Upstream's format comes in through importWorldInfoFromRaw().
  */
 
-/**
- * The missing books already reported, so a link to a book that isn't there prints once, not on every generation,
- * /get and card save, until a read finds the book. One LRU for every user, by root and book key; when full, the least
- * recently reported is dropped (and reported again next time).
- * @type {Set<string>}
- */
+/** @type {Set<string>} */
 const reportedMisses = new Set();
 const REPORTED_MISS_LIMIT = 10_000;
 
 /**
- * Prints that a book is missing, once while it stays missing.
  * @param {{ root: string }} directories
  * @param {string} worldInfoName
  */
@@ -54,9 +48,8 @@ function foundAgain(directories, worldInfoName) {
 }
 
 /**
- * Whether a book exists under this name. Never logs.
- * @param {import('../users.js').UserDirectoryList} directories User directories
- * @param {string} worldInfoName Name of the World Info file
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} worldInfoName
  * @returns {Promise<boolean>}
  */
 export async function worldInfoFileExists(directories, worldInfoName) {
@@ -67,18 +60,14 @@ export async function worldInfoFileExists(directories, worldInfoName) {
 }
 
 /**
- * What a character's primary lorebook link points at: no link, a book, the card's own embedded lorebook (no book has
- * the linked name, the card has a `character_book`), or nothing. Never logs. Read on this thread (the user's store
- * opened here when nothing has opened it yet), so the card normalizers that call it stay synchronous.
- * @param {import('../users.js').UserDirectoryList} directories User directories
- * @param {{data?: {extensions?: {world?: string}, character_book?: object}}|null|undefined} character The character card
- * @returns {string} One of `character_world_link` (public/scripts/character-world-link.js)
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {{data?: {extensions?: {world?: string}, character_book?: object}}|null|undefined} character
+ * @returns {string}
  */
 export function getCharacterWorldLink(directories, character) {
     return resolveCharacterWorldLink(character, (name) => !!name && bookExistsHere(engineStoreHere(directories), name));
 }
 
-/** Guards against a crafted uid (e.g. containing path separators). */
 function sanitizeEntryUid(uid) {
     const safe = sanitize(String(uid));
     return safe ? safe : null;
@@ -110,12 +99,11 @@ export function readWorldInfoFile(directories, worldInfoName, allowDummy, { logM
 }
 
 /**
- * {@link readWorldInfoFile} without holding this thread: for a caller that can wait.
- * @param {import('../users.js').UserDirectoryList} directories User directories
- * @param {string} worldInfoName Name of the World Info file
- * @param {boolean} allowDummy If true, answers an empty object if the file doesn't exist
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} worldInfoName
+ * @param {boolean} allowDummy
  * @param {{ logMissing?: boolean }} [options]
- * @returns {Promise<object>} World Info file contents
+ * @returns {Promise<object>}
  */
 export async function readWorldInfo(directories, worldInfoName, allowDummy, { logMissing = true } = {}) {
     const dummyObject = allowDummy ? { entries: {} } : null;
@@ -140,10 +128,6 @@ router.post('/list', storeRoute('reading the World Info list', async (request, r
     return response.send(await lib.books.list());
 }));
 
-/**
- * A book as stored (the dummy `{ entries: {} }` when there is none). A book that exists also answers its id, which a
- * rename keeps, in the `X-ST-Book-Id` header: outside the body, which is the book's own data.
- */
 router.post('/get', storeRoute('reading a World Info book', async (request, response) => {
     if (!request.body?.name) {
         return response.sendStatus(400);
@@ -157,15 +141,6 @@ router.post('/get', storeRoute('reading a World Info book', async (request, resp
     return response.send(file);
 }));
 
-/**
- * Changes a character's lorebook links after the first (upstream's additional World Info), in one round trip: the
- * client sends the action. `characterAvatar` is the character's file name without its extension (upstream's
- * `getCharaFilename()`), the character the one keyed `<characterAvatar>.png`. `add` appends the books not linked yet,
- * `remove` removes them, `set` makes them the links after the first; on a character with no links, the first book
- * added is its first link (its `world`). Repeats are dropped, the first kept. Unknown books or an unknown character:
- * 404, nothing written. Answers `{ result: 'ok', extraBooks }`, the links after the first. It writes no settings:
- * this is the only writer of a character's links after the first.
- */
 router.post('/additional-books', storeRoute('changing a character\'s additional World Info', async (request, response) => {
     const { characterAvatar, op, books } = request.body ?? {};
     if (typeof characterAvatar !== 'string' || !characterAvatar) {
@@ -179,8 +154,6 @@ router.post('/additional-books', storeRoute('changing a character\'s additional 
         return response.status(400).send({ result: 'error', error: 'books must be a non-empty string or array of strings' });
     }
 
-    // Reject names that don't correspond to a real World - the whole point of a dedicated
-    // endpoint is that the server decides what's a legal binding, not whatever the client asserts.
     const { lib } = await requestStore(request);
     const unknownBooks = [];
     for (const name of requested) {
@@ -213,7 +186,6 @@ router.post('/delete', storeRoute('deleting a World Info book', async (request, 
 }));
 
 /**
- * Who a request writes as: its user, through its tab's session.
  * @param {any} request
  * @returns {import('../world-info-engine.js').Actor}
  */
@@ -222,14 +194,11 @@ function actorOf(request) {
 }
 
 /**
- * Stores a raw World Info JSON blob as a book of the given user, deriving the World's name from desiredName the same
- * way the /import route does. Shared so other endpoints (e.g. content-manager's Chub linked-lorebook import) can store
- * a World server-side without a client round-trip through /import for bytes the server already fetched itself.
  * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} desiredName Filename (with or without extension) to derive the World's name from
- * @param {string} fileContents Raw World Info JSON text; must contain an `entries` key
- * @param {import('../world-info-engine.js').Actor | null} [actor] Who imports it (none: the server itself)
- * @returns {Promise<string>} The written World's name
+ * @param {string} desiredName
+ * @param {string} fileContents
+ * @param {import('../world-info-engine.js').Actor | null} [actor]
+ * @returns {Promise<string>}
  */
 export async function importWorldInfoFromRaw(directories, desiredName, fileContents, actor = null) {
     const filename = `${path.parse(sanitize(desiredName)).name}.json`;
@@ -272,12 +241,6 @@ router.post('/import', storeRoute('importing a World Info book', async (request,
     }
 }));
 
-/**
- * Creates a book. Body: `name` (default "New World"); `unique` (default true: a taken name gets a number, " (<N>)";
- * false: a taken name is refused with 409, unless `replace`); `replace`: write over the book with that name (the user
- * chose to); `data`: the book's content (a World Info JSON with `entries`), empty when left out. The name is minted
- * here against the stored books, not a client's possibly stale `world_names`.
- */
 router.post('/create', storeRoute('creating a World Info book', async (request, response) => {
     const { name, unique = true, replace = false, data } = request.body ?? {};
     if (name !== undefined && typeof name !== 'string') {
@@ -311,20 +274,8 @@ router.post('/create', storeRoute('creating a World Info book', async (request, 
     return response.send({ ok: true, name: finalName });
 }));
 
-/** Book fields an apply may set: everything but the entries and the storage format. */
 const isBookField = (/** @type {unknown} */ key) => typeof key === 'string' && key !== '' && key !== 'entries' && key !== 'format';
 
-/**
- * Applies changes a page made to its copy of a book, each against the version it had (the hash of the entry or
- * field as it loaded it, `jsonHash()`; null for one that didn't exist). A change whose entry or field has changed
- * on the server since is not applied: it is answered in `conflicts` with what the server has now. Nothing else in
- * the book is touched.
- *
- * Body: `name`; `entries: [{ uid, base_hash, data }]` (`data` null deletes the entry); `fields: [{ key, base_hash,
- * value }]` (book fields other than `entries`; `value` null removes the field).
- * Answers `{ ok, entries: { uid: stored entry }, deleted: uid[], fields: { key: value }, conflicts: [{ uid } |
- * { key }, with `current`] }`.
- */
 router.post('/entries/apply', storeRoute('applying World Info changes', async (request, response) => {
     const { name, entries: entryChanges = [], fields: fieldChanges = [] } = request.body ?? {};
     if (typeof name !== 'string' || !name) {
@@ -360,7 +311,6 @@ router.post('/entries/apply', storeRoute('applying World Info changes', async (r
     return response.send(result);
 }));
 
-/** Copies a book under a new name. 409 when the name is taken. */
 router.post('/duplicate', storeRoute('duplicating a World Info book', async (request, response) => {
     const { name, new_name: newName } = request.body ?? {};
     if (typeof name !== 'string' || !name || typeof newName !== 'string' || !newName.trim()) {
@@ -378,14 +328,6 @@ router.post('/duplicate', storeRoute('duplicating a World Info book', async (req
     return response.send({ ok: true, name: newName });
 }));
 
-/**
- * Renames a book and moves the links that name it: the global selection, every persona's lorebook and, with
- * `relink_characters`, every character's links to it (in the same commit as the rename; without, those characters
- * keep linking the old name). A chat's link (in its metadata) is not moved here. 409 when
- * the new name is taken.
- * Answers `{ ok, name, characters_updated, characters_failed, settings: { world_info_settings, 'power_user.persona_data' },
- * settings_hash }`.
- */
 router.post('/rename', storeRoute('renaming a World Info book', async (request, response) => {
     const { name, new_name: newName, relink_characters: relinkCharacters = false } = request.body ?? {};
     if (typeof name !== 'string' || !name || typeof newName !== 'string' || !newName.trim() || name === newName) {
@@ -461,10 +403,6 @@ router.post('/edit', storeRoute('saving a World Info book', async (request, resp
     return response.send({ ok: true });
 }));
 
-/**
- * Moves (or copies) a single World Info entry from one lorebook to another, server-side, in one request: under the
- * target's lowest free integer uid, after its highest `displayIndex`, at its end; both books in one commit.
- */
 router.post('/entry/transplant', storeRoute('moving a World Info entry', async (request, response) => {
     const { source_name, target_name, uid, delete_original } = request.body ?? {};
 
@@ -498,10 +436,6 @@ router.post('/entry/transplant', storeRoute('moving a World Info entry', async (
     return response.send({ ok: true, entry: result.entry });
 }));
 
-/**
- * Mints a uid for a brand-new World Info entry and reserves it in the given lorebook, server-side, in one request:
- * the lowest free integer uid, a bare `{ uid }` entry at the book's end. The caller fills in the entry's fields after.
- */
 router.post('/entry/create', storeRoute('creating a World Info entry', async (request, response) => {
     const { name, uid } = request.body ?? {};
 
@@ -523,10 +457,6 @@ router.post('/entry/create', storeRoute('creating a World Info entry', async (re
     return response.send({ ok: true, entry: result.entry });
 }));
 
-/**
- * Writes one World Info entry's full field set, server-side, in one request. `uid` cannot be reassigned through this
- * endpoint: the written entry's `uid` stays the stored one.
- */
 router.post('/entry/edit', storeRoute('saving a World Info entry', async (request, response) => {
     const { name, uid, data: entryData } = request.body ?? {};
 
@@ -551,15 +481,9 @@ router.post('/entry/edit', storeRoute('saving a World Info entry', async (reques
     return response.send({ ok: true, entry: result.entry });
 }));
 
-/** A search answers this many entries when the request names no `limit` (the tags query's page size). */
 const DEFAULT_SEARCH_PAGE_SIZE = 50;
 const MAX_SEARCH_PAGE_SIZE = 500;
 
-/**
- * A page of one book's entries a search string matches, best first: `{ name | avatar, search, limit?, cursor? }` →
- * `{ entries: [{ uid, score }], total, totalExact, cursor? }`. `name` is a world book; `avatar` a character's own
- * embedded book. `limit` is 1 to 500 (50 when absent); `cursor` the one the page before answered.
- */
 router.post('/search', storeRoute('searching a World Info book', async (request, response) => {
     const { name, avatar, search, limit, cursor } = request.body ?? {};
     if ((typeof name === 'string') === (typeof avatar === 'string') || (name ?? avatar) === '') {

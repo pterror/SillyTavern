@@ -1,9 +1,6 @@
 import { color } from '../util.js';
 
-/**
- * Loaded once and cached; a missing native binding falls back to Fuse.js search rather than failing startup.
- * @type {typeof import('better-sqlite3') | null | undefined} undefined = not yet attempted, null = failed
- */
+/** @type {typeof import('better-sqlite3') | null | undefined} */
 let databaseCtor = undefined;
 
 /** @returns {Promise<typeof import('better-sqlite3') | null>} */
@@ -15,7 +12,6 @@ export async function getBetterSqlite3() {
     try {
         const module = await import('better-sqlite3');
         const Ctor = module.default;
-        // The native binding is only probed on first Database construction, not on import.
         new Ctor(':memory:').close();
         databaseCtor = Ctor;
     } catch (err) {

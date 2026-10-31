@@ -1,11 +1,7 @@
 import { test, expect } from './fixtures.js';
 import { awaitLoaderGone, testSetup, openInfoTab } from './frontent-test-utils.js';
 
-// Reported problems with the live editor, each named by its report id.
-
 /**
- * Mounts an editor in a test host, rendering with the app's markdown and filling in macros as a field does, focused
- * at the end.
  * @param {import('@playwright/test').Page} page
  * @param {string} value
  * @param {{ textareaStyle?: string, contentClass?: string, className?: string, placeholder?: string }} [options]
@@ -55,10 +51,9 @@ async function select(page, anchor, head = anchor) {
 }
 
 /**
- * A computed style of an element made from `html` and put in the page for a moment: what the app's own CSS gives it.
  * @param {import('@playwright/test').Page} page
  * @param {string} html
- * @param {string} selector The element inside `html` to read.
+ * @param {string} selector
  * @param {string} property
  */
 async function probeStyle(page, html, selector, property) {
@@ -72,7 +67,11 @@ async function probeStyle(page, html, selector, property) {
     }, { html, selector, property });
 }
 
-/** @param {import('@playwright/test').Locator} locator @param {string} property @param {string} [pseudo] */
+/**
+ * @param {import('@playwright/test').Locator} locator
+ * @param {string} property
+ * @param {string} [pseudo]
+ */
 const styleOf = (locator, property, pseudo) => locator.evaluate((el, { property, pseudo }) => getComputedStyle(el, pseudo).getPropertyValue(property), { property, pseudo });
 
 const value = (/** @type {import('@playwright/test').Page} */ page) => page.locator('#liveEditorTestTextarea').inputValue();
@@ -124,7 +123,6 @@ test.describe('live editor: reported problems', () => {
         await mount(page, '', { placeholder: 'Type a message, or /? for help' });
         const cursor = page.locator('#liveEditorTestHost .cm-cursor');
         await expect(cursor).toHaveCount(1);
-        // Read in the blink's shown half: hidden, it has no box.
         await expect(cursor).toBeVisible();
         const line = await page.locator('#liveEditorTestHost .cm-line').boundingBox();
         const drawn = await cursor.boundingBox();
@@ -159,12 +157,10 @@ test.describe('live editor: reported problems', () => {
         const expectChatQuote = async () => {
             const quote = editor.locator('q');
             await expect(quote).toHaveCount(1);
-            // Polled: the block is drawn again as focus moves, and a style read off the old element is empty.
             await expect.poll(() => styleOf(quote, 'color')).toBe(quoteColor);
             await expect.poll(() => styleOf(quote, 'content', '::before')).toBe('""');
             await expect.poll(() => styleOf(quote, 'content', '::after')).toBe('""');
         };
-        // Away from the chat box, its text is drawn as chat draws it; in it, the text is styled the same.
         await expectChatQuote();
         await editor.locator('.cm-content').focus();
         await expectChatQuote();
@@ -200,11 +196,9 @@ test.describe('live editor: reported problems', () => {
             power_user.enable_md_hotkeys = true;
         });
         await mount(page, 'one *two* three', { className: 'mdHotkeys' });
-        // The italic text with its marks selected.
         await select(page, 4, 9);
         await page.keyboard.press('Control+i');
         expect(await value(page)).toBe('one two three');
-        // The cursor in a word of an italic phrase.
         await page.evaluate(() => {
             // @ts-ignore
             window.liveEditorTest.textarea.value = 'a *b c* d';
@@ -212,7 +206,6 @@ test.describe('live editor: reported problems', () => {
         await select(page, 5);
         await page.keyboard.press('Control+i');
         expect(await value(page)).toBe('a b c d');
-        // Underscores are italics too.
         await page.evaluate(() => {
             // @ts-ignore
             window.liveEditorTest.textarea.value = 'x _y_ z';
@@ -220,7 +213,6 @@ test.describe('live editor: reported problems', () => {
         await select(page, 3, 4);
         await page.keyboard.press('Control+i');
         expect(await value(page)).toBe('x y z');
-        // Bold text is made bold italic, not unbolded.
         await page.evaluate(() => {
             // @ts-ignore
             window.liveEditorTest.textarea.value = 'p **q** r';
@@ -249,7 +241,6 @@ test.describe('live editor: reported problems', () => {
     test('ED20: every macro shows its value and is highlighted the same, in code and HTML too, as in the preview', async ({ page }) => {
         await mount(page, 'a {{char}} `{{char}}` <b>{{char}}</b>\n\n<div>{{char}}</div>\n\n```\n{{char}}\n```\n\nend');
         const pills = page.locator('#liveEditorTestHost .cm-line .macro-pill');
-        // Wherever the cursor is, every macro is a pill holding its value.
         for (const line of [1, 3, 9, 6]) {
             await page.evaluate((line) => {
                 // @ts-ignore

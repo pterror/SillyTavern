@@ -2,16 +2,6 @@ import { describe, test, expect } from '@jest/globals';
 import { applyGreetingsModelToCard, cardToGreetingsModel } from '../src/greeting-list.js';
 import { readFromV2 } from '../src/character-card-normalize.js';
 
-// A card carries its default greeting twice: the v1 `first_mes` field and the v2 `data.first_mes`
-// one. readFromV2() reconciles them on every read by taking v2 and overwriting v1 with it, so a write
-// that updates only v1 does not half-save an edit - it discards it. The write returns ok, the
-// client's in-memory copy is right for the rest of the session, and the next read from disk hands
-// back the old text.
-//
-// applyGreetingsModelToCard() is the single write path behind all six /api/characters/greetings/*
-// operations, and it updated v1 and `data.alternate_greetings` while leaving `data.first_mes`
-// untouched. In use that looked like the greeting editor reverting an edit, with the stale copy also
-// turning up as a duplicate greeting in the chat log.
 const cardWith = (firstMes, alternates) => ({
     name: 'Test',
     first_mes: firstMes,
@@ -31,8 +21,6 @@ describe('applyGreetingsModelToCard', () => {
         const card = cardWith('old default', ['alt one', 'alt two']);
         applyGreetingsModelToCard(card, { greetings: ['edited default', 'alt one', 'alt two'], defaultIndex: 0 });
 
-        // What every reader of a card actually gets. Before both copies were written, this handed back
-        // the pre-edit text.
         readFromV2(card);
         expect(card.first_mes).toBe('edited default');
         expect(cardToGreetingsModel(card).greetings).toEqual(['edited default', 'alt one', 'alt two']);

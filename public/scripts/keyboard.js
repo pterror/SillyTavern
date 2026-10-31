@@ -1,7 +1,7 @@
 /* All selectors that should act as interactables / keyboard buttons by default */
 const interactableSelectors = [
-    '.interactable', // Can also be added manually in code
-    '.custom_interactable', // See makeKeyboardInteractable()
+    '.interactable',
+    '.custom_interactable',
     '.menu_button',
     '.right_menu_button',
     '.drawer-icon',
@@ -17,7 +17,7 @@ const interactableSelectors = [
     '.extraMesButtons>div:not(.mes_button)',
     '.swipe_left, .swipe_right',
     '.stscript_btn',
-    '.select2_choice_clickable+span.select2-container .select2-selection__choice__display', // Only the clickable variant
+    '.select2_choice_clickable+span.select2-container .select2-selection__choice__display',
     '.avatar_load_preview',
     '.select_chat_block',
     '.select_chat_block .exportRawChatButton',

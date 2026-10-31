@@ -1,13 +1,10 @@
 import { expect } from '@playwright/test';
 import { openInfoTab } from './frontent-test-utils.js';
 
-// Driving a character's greetings list (the alternatives list, packages/areas/alternatives) from a spec.
-
 /** @param {import('@playwright/test').Page} page */
 export const greetingsList = page => page.locator('dialog.alternatives');
 
 /**
- * A greeting's row: the one at `which` (an index), or the one whose text is `which` (once the list shows it).
  * @param {import('@playwright/test').Page} page
  * @param {number|string} which
  */
@@ -19,9 +16,8 @@ export function greetingRow(page, which) {
 }
 
 /**
- * Opens the shown character's greetings list from character info.
  * @param {import('@playwright/test').Page} page
- * @param {number} count How many greetings it should list.
+ * @param {number} count
  */
 export async function openGreetingsList(page, count) {
     await openInfoTab(page, 'greeting');
@@ -30,7 +26,6 @@ export async function openGreetingsList(page, count) {
 }
 
 /**
- * An action's answer: JSON, or NDJSON (views read in parts) whose first line is the answer.
  * @param {import('@playwright/test').Response} response
  */
 export async function answerOf(response) {
@@ -38,7 +33,6 @@ export async function answerOf(response) {
 }
 
 /**
- * The answer to the list's next greeting operation.
  * @param {import('@playwright/test').Page} page
  */
 export function greetingAnswer(page) {
@@ -47,7 +41,6 @@ export function greetingAnswer(page) {
 }
 
 /**
- * Sends one greeting operation from the list and waits for it to be done (`ok` unless `refused`).
  * @param {import('@playwright/test').Page} page
  * @param {() => Promise<void>} act
  * @param {{ refused?: boolean }} [options]
@@ -93,7 +86,6 @@ export async function listDelete(page, index, options) {
 }
 
 /**
- * Moves the greeting at `index` to the end of the list.
  * @param {import('@playwright/test').Page} page
  * @param {number|string} index
  */
@@ -102,7 +94,6 @@ export async function listMoveToEnd(page, index) {
 }
 
 /**
- * Makes the greeting the default, or, when it is, no greeting the default.
  * @param {import('@playwright/test').Page} page
  * @param {number|string} index
  * @param {{ refused?: boolean }} [options]

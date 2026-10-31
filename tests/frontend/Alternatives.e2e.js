@@ -4,17 +4,13 @@ import { testSetup, openCharacterManagementDrawer, openInfoTab } from './fronten
 import { cardToGreetingsModel } from '../../src/greeting-list.js';
 import { hashGreetingText } from '../../src/greeting-ops.js';
 
-// The alternatives of a message (packages/areas/alternatives): one list for a message's swipes and a character's
-// greetings, every one rendered as the chat renders it; the server answers the list, the counts and the search.
-
 const stamp = () => `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
 /**
- * Creates a character with these greetings (the first the default).
  * @param {import('@playwright/test').Page} page
  * @param {string} name
  * @param {string[]} greetings
- * @returns {Promise<string>} Its avatar.
+ * @returns {Promise<string>}
  */
 async function createCharacter(page, name, greetings) {
     return page.evaluate(async ({ name, greetings }) => {
@@ -31,10 +27,9 @@ async function createCharacter(page, name, greetings) {
 }
 
 /**
- * Opens the character's chat (and its editor) and waits for its first message.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
- * @param {{ switchMenu?: boolean }} [options] `switchMenu`: the character's editor opens too (on a phone it covers the chat).
+ * @param {{ switchMenu?: boolean }} [options]
  */
 async function openCharacter(page, avatar, { switchMenu = true } = {}) {
     await page.evaluate(async ({ avatar, switchMenu }) => {
@@ -51,7 +46,6 @@ async function openCharacter(page, avatar, { switchMenu = true } = {}) {
 }
 
 /**
- * The character's greetings as the server stores them.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -66,7 +60,6 @@ async function storedModel(page, avatar) {
 }
 
 /**
- * The character's greetings as this page holds them.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -84,7 +77,6 @@ const rows = page => list(page).locator('li.alternative:not(.alternatives-new)')
 const shownRows = page => list(page).locator('li.alternative:not(.alternatives-new):visible');
 
 /**
- * The chat goes to the opening's alternative #n.
  * @param {import('@playwright/test').Page} page
  * @param {number} n
  */
@@ -103,7 +95,6 @@ const chatSwipe = (page, mesId = 0) => page.evaluate((mesId) => {
 }, mesId);
 
 /**
- * A long greeting, as cards have them: paragraphs, emphasis, dialogue.
  * @param {number} i
  */
 const longGreeting = i => [
@@ -129,13 +120,10 @@ test.describe('the alternatives of a message', () => {
         await expect(list(page).locator('.alternatives-place')).toHaveText('#3 of 3');
         await expect(rows(page).nth(2)).toHaveClass(/current/);
         await expect(rows(page).nth(0).locator('.alternative-number')).toHaveText('#1');
-        // Rendered: the markdown is the chat's.
         await expect(rows(page).nth(0).locator('.alternative-text em')).toHaveText('there');
         await expect(rows(page).nth(1).locator('.alternative-text strong')).toHaveText('bold');
-        // Token counts come from the server.
         await expect(rows(page).nth(0).locator('.alternative-size')).toContainText(/\d+t/);
 
-        // Go on a row: the chat shows it, and the list closes.
         await rows(page).nth(0).locator('.alternative-go').click();
         await expect(list(page)).toBeHidden();
         await expect.poll(async () => (await chatSwipe(page)).id).toBe(0);
@@ -156,12 +144,10 @@ test.describe('the alternatives of a message', () => {
         await number.fill('5');
         await expect(rows(page).nth(4)).toHaveClass(/selected/);
         await expect(rows(page).nth(4)).toBeInViewport();
-        // Selecting isn't going: the chat still shows #40.
         expect((await chatSwipe(page)).id).toBe(39);
         await list(page).locator('form.alternatives-select .alternatives-go').click();
         await expect(list(page)).toBeHidden();
         await expect.poll(async () => (await chatSwipe(page)).id).toBe(4);
-        // Until the swipe is done, the chat says it can't change (Go says so too).
         await expect.poll(() => page.evaluate(async () => (await import('/script.js')).isSwipingAllowed())).toBe(true);
 
         await page.locator('#chat .mes[mesid="0"] .swipes-counter').click();
@@ -172,7 +158,6 @@ test.describe('the alternatives of a message', () => {
         await expect.poll(async () => (await chatSwipe(page)).id).toBe(11);
         await expect.poll(() => page.evaluate(async () => (await import('/script.js')).isSwipingAllowed())).toBe(true);
 
-        // The command does what Go does.
         await page.evaluate(async () => {
             // @ts-ignore
             await SillyTavern.getContext().executeSlashCommandsWithOptions('/swipe-go message=0 20');
@@ -196,18 +181,15 @@ test.describe('the alternatives of a message', () => {
         await expect(rows(page).nth(54)).toBeInViewport();
         const search = list(page).locator('.alternatives-search');
         await search.pressSequentially('lighth');
-        // A prefix of the last word, as the chat search takes it.
         await expect(shownRows(page)).toHaveCount(5);
         await search.fill('red LIGHTHOUSE');
         await expect(shownRows(page)).toHaveCount(1);
         await expect(shownRows(page).first().locator('.alternative-number')).toHaveText('#31');
         const marks = shownRows(page).first().locator('mark.match');
         await expect(marks).toHaveText(['red', 'Lighthouse']);
-        // Coloured by the theme variable, which custom CSS can set.
         await page.addStyleTag({ content: ':root { --match-color: rgb(1, 2, 3); }' });
         await expect(marks.first()).toHaveCSS('background-color', 'rgb(1, 2, 3)');
         await expect(list(page).locator('.alternatives-marker')).not.toHaveCount(0);
-        // Rows the search hid keep what they drew: nothing is drawn again for them.
         await search.fill('no such words');
         await expect(shownRows(page)).toHaveCount(0);
         await expect(list(page)).toContainText('Nothing matches.');
@@ -226,14 +208,12 @@ test.describe('the alternatives of a message', () => {
             const context = SillyTavern.getContext();
             await context.executeSlashCommandsWithOptions(`/send Hi ${s}`);
             await context.executeSlashCommandsWithOptions(`/sendas name=Narrator One more ${s}`);
-            // The user's message gets a second alternative (stored beside it), and the chat is read again.
             const { chatOpAddAlternative } = await import('/scripts/chat-store.js');
             await chatOpAddAlternative(1, `Hello ${s}`);
             const { reloadCurrentChat } = await import('/script.js');
             await reloadCurrentChat();
         }, s);
         await expect(page.locator('#chat .mes')).toHaveCount(3);
-        // Not the last: the opening (two greetings) and the user's message (two) show it; a later one with one does.
         await expect(page.locator('#chat .mes[mesid="0"] .swipes-counter')).toBeVisible();
         await expect(page.locator('#chat .mes[mesid="1"] .swipes-counter')).toBeVisible();
         await expect(page.locator('#chat .mes[mesid="1"] .swipes-counter')).toHaveText('1/2');
@@ -253,7 +233,6 @@ test.describe('the alternatives of a message', () => {
         await expect(rows(page)).toHaveCount(4);
         await expect(list(page).locator('.alternatives-title')).toHaveText('Greetings');
 
-        // Edit.
         await rows(page).nth(1).locator('.alternative-edit').click();
         await rows(page).nth(1).locator('textarea').fill(`One *edited* ${s}`);
         await rows(page).nth(1).getByRole('button', { name: 'Save' }).click();
@@ -261,7 +240,6 @@ test.describe('the alternatives of a message', () => {
         expect((await storedModel(page, avatar)).greetings).toEqual([g[0], `One *edited* ${s}`, g[2], g[3]]);
         await expect.poll(async () => (await pageModel(page, avatar)).greetings[1]).toBe(`One *edited* ${s}`);
 
-        // Reorder by dragging Three's handle above Zero.
         const handle = rows(page).nth(3).locator('.alternative-drag');
         const target = await rows(page).nth(0).boundingBox();
         const from = await handle.boundingBox();
@@ -272,16 +250,13 @@ test.describe('the alternatives of a message', () => {
         await page.mouse.up();
         await expect(rows(page).nth(0).locator('.alternative-text')).toContainText(`Three ${s}`);
         expect((await storedModel(page, avatar)).greetings).toEqual([g[3], g[0], `One *edited* ${s}`, g[2]]);
-        // A key moves it too.
         await rows(page).nth(0).locator('.alternative-drag').press('ArrowDown');
         await expect(rows(page).nth(1).locator('.alternative-text')).toContainText(`Three ${s}`);
 
-        // The default.
         await rows(page).nth(3).locator('.alternative-default').click();
         await expect.poll(async () => (await storedModel(page, avatar)).defaultIndex).toBe(3);
         await expect(rows(page).nth(3)).toHaveClass(/current/);
 
-        // An edit to nothing removes the greeting, once confirmed.
         await rows(page).nth(2).locator('.alternative-edit').click();
         await rows(page).nth(2).locator('textarea').fill('');
         await rows(page).nth(2).getByRole('button', { name: 'Save' }).click();
@@ -292,7 +267,6 @@ test.describe('the alternatives of a message', () => {
         await expect.poll(() => pageModel(page, avatar)).toEqual(stored);
         await expect(page.locator('.greeting-pager-total')).toHaveText('/3');
 
-        // Add.
         await list(page).locator('.alternatives-add').click();
         await list(page).locator('.alternatives-new textarea').fill(`Four ${s}`);
         await list(page).locator('.alternatives-new').getByRole('button', { name: 'Save' }).click();
@@ -308,7 +282,6 @@ test.describe('the alternatives of a message', () => {
         await openInfoTab(page, 'greeting');
         await page.locator('.open_alternate_greetings').click();
         await expect(rows(page)).toHaveCount(2);
-        // The edit names the greeting by a hash it no longer has.
         await page.route('**/api/ui/action', async route => {
             const body = route.request().postDataJSON();
             if (body?.type !== 'alternatives.greeting') return route.continue();
@@ -334,7 +307,6 @@ test.describe('the alternatives of a message', () => {
             const hash = (/** @type {string} */ text) => getStringHash(JSON.stringify(text));
             // @ts-ignore
             const headers = { ...SillyTavern.getContext().getRequestHeaders(), 'Content-Type': 'application/json' };
-            // An answer is JSON, or NDJSON whose first line is the answer.
             const send = (/** @type {object} */ payload) => fetch('/api/ui/action', { method: 'POST', headers, body: JSON.stringify({ type: 'alternatives.greeting', payload }) })
                 .then(r => r.text())
                 .then(text => JSON.parse(text.split('\n')[0]));
@@ -376,7 +348,6 @@ test.describe('the alternatives of a message', () => {
         await list(page).locator('li.alternative', { hasText: `Three ${s}` }).locator('.alternative-delete-greeting').click();
         await page.locator('dialog.popup:not(.alternatives) .popup-button-ok').click();
         await expect.poll(async () => (await storedModel(page, avatar)).greetings).toEqual([`One edited ${s}`, g[2], g[0]]);
-        // The old page's character took each change.
         await expect.poll(async () => (await pageModel(page, avatar)).greetings).toEqual([`One edited ${s}`, g[2], g[0]]);
     });
 
@@ -390,7 +361,6 @@ test.describe('the alternatives of a message', () => {
             // @ts-ignore
             await SillyTavern.getContext().SlashCommandParser.commands['addswipe'].callback({ quiet: 'true' }, text);
         }, added);
-        /** The chat's openings as the server lists them. */
         const openings = () => page.evaluate(async (avatar) => {
             // @ts-ignore
             const headers = SillyTavern.getContext().getRequestHeaders();
@@ -398,7 +368,6 @@ test.describe('the alternatives of a message', () => {
             const answer = await response.json();
             return { stored: answer.stored, texts: answer.alternatives.map((/** @type {any} */ a) => a.mes) };
         }, avatar);
-        // Only the added swipe is stored: no stored copy of the card's greeting.
         await expect.poll(openings).toEqual({ stored: 1, texts: [added, g[0], g[1]] });
 
         await page.reload();
@@ -432,7 +401,6 @@ test.describe('the alternatives of a message', () => {
         await expect(list(page)).toBeHidden();
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toContainText(`Night ${s}.`);
 
-        // Another character's chat: the greeting can't be shown, and the list says why.
         const other = await createCharacter(page, `AltOther-${s}`, [`Other ${s}.`]);
         await openCharacter(page, other);
         await page.evaluate(async (avatar) => {
@@ -465,7 +433,6 @@ test.describe('the alternatives of a message', () => {
         await page.reload();
         await testSetup.awaitST({ page });
         await openCharacter(page, avatar);
-        // The server's answer is held back: the list is there before it, from what was kept.
         /** @type {() => void} */
         let release = () => {};
         const held = new Promise(resolve => { release = () => resolve(undefined); });
@@ -504,7 +471,6 @@ test.describe('the alternatives of a message', () => {
         await expect(rows(page)).toHaveCount(2);
         await page.keyboard.press('Escape');
         await expect(list(page)).toBeHidden();
-        // The server's answer is held back: the list is there before it.
         /** @type {() => void} */
         let release = () => {};
         const held = new Promise(resolve => { release = () => resolve(undefined); });
@@ -520,7 +486,6 @@ test.describe('the alternatives of a message', () => {
 });
 
 test.describe('on a phone', () => {
-    // The project's browser stays; only the phone's viewport, touch and user agent are taken.
     const { viewport, deviceScaleFactor, isMobile, hasTouch, userAgent } = devices['Pixel 7'];
     test.use({ viewport, deviceScaleFactor, isMobile, hasTouch, userAgent });
     test.beforeEach(testSetup.awaitST);
@@ -535,7 +500,6 @@ test.describe('on a phone', () => {
             await SillyTavern.getContext().executeSlashCommandsWithOptions(`/go ${name}`);
         }, `AltTap-${s}`);
         await expect(page.locator('#chat .mes[mesid="0"]')).toContainText(`First ${s}.`, { timeout: 15000 });
-        // On a phone the character's panel opens over the chat with it: it's closed, as the user would.
         const editor = page.locator('#charInfoHolder > .drawer-toggle .drawer-icon');
         if (await page.locator('div#delete_button').isVisible()) await editor.tap();
         await expect(page.locator('div#delete_button')).toBeHidden();
@@ -552,8 +516,6 @@ test.describe('on a phone', () => {
     });
 
     /**
-     * How long, in the page, a click on the counter takes to show the current alternative drawn (formatted), how many
-     * rows are there then, and how long until every row is, under a phone's CPU (throttled).
      * @param {import('@playwright/test').Page} page
      * @param {number} count
      */
@@ -566,8 +528,6 @@ test.describe('on a phone', () => {
                 /** @type {HTMLElement} */ (document.querySelector('#chat .mes[mesid="0"] .swipes-counter')).click();
                 /** @type {{ current: number, rowsThen: number, all: number }} */
                 const times = { current: 0, rowsThen: 0, all: 0 };
-                // Sampled each frame: when the current one is drawn (formatted) and how many rows there are then,
-                // and when every row is there.
                 await new Promise((resolve) => {
                     const check = () => {
                         const rows = document.querySelectorAll('dialog.alternatives li.alternative').length;
@@ -577,7 +537,6 @@ test.describe('on a phone', () => {
                             times.rowsThen = rows;
                         }
                         if (times.current && rows === count) {
-                            // Drawn: the frame after the one they're in has started.
                             requestAnimationFrame(() => requestAnimationFrame(() => {
                                 times.all = performance.now() - start;
                                 resolve(undefined);
@@ -596,8 +555,6 @@ test.describe('on a phone', () => {
     }
 
     /**
-     * How long a search takes to show its first match and to be done, and whether it said it was still searching on
-     * the way, under the throttled CPU.
      * @param {import('@playwright/test').Page} page
      * @param {string} query
      * @param {number} matching
@@ -613,7 +570,6 @@ test.describe('on a phone', () => {
                 input.dispatchEvent(new Event('input', { bubbles: true }));
                 /** @type {{ first: number, done: number, sawSearching: boolean }} */
                 const times = { first: 0, done: 0, sawSearching: false };
-                // Sampled each frame: the first match shown, whether it said it was still searching, and when it's done.
                 await new Promise((resolve) => {
                     const check = () => {
                         const filtering = document.querySelector('dialog.alternatives .alternatives-list.filtering');
@@ -637,11 +593,6 @@ test.describe('on a phone', () => {
         }
     }
 
-    // Budgets on a phone's CPU (4x throttled): the current alternative drawn within CURRENT_MS; every row of 1,000 long
-    // greetings within OPEN_1000_MS, of 3,000 (stored openings and the card's greetings) within OPEN_3000_MS; a search
-    // answered within SEARCH_MS. Both first opens (nothing seen before) and opening again (what was seen shows at once).
-    // Measured alone (one worker), they come in at about half these; the margin is for a machine running the other
-    // specs beside them.
     const CURRENT_MS = 1000;
     const OPEN_1000_MS = 3000;
     const OPEN_3000_MS = 8000;
@@ -657,11 +608,9 @@ test.describe('on a phone', () => {
         await expect(page.locator('#chat .mes[mesid="0"] .swipes-counter')).toContainText('/1000', { timeout: 30000 });
         const answered = page.waitForResponse(r => r.request().postDataJSON()?.type === 'alternatives.open');
         const open = await timeOpen(page, 1000);
-        // The answer streams (NDJSON): the rows around the current one first, then all of them.
         const answer = await answered;
         expect(answer.headers()['content-type']).toContain('application/x-ndjson');
         const lines = (await answer.text()).trim().split('\n').map(line => JSON.parse(line));
-        // The list's parts, among the other views' (the counts fill in on the same answer).
         const parts = lines.map(line => line.views.find((/** @type {any} */ v) => v.key === 'alternatives.list')?.value).filter(Boolean);
         const first = parts[0];
         expect(first.complete).toBe(false);
@@ -681,7 +630,6 @@ test.describe('on a phone', () => {
         const s = stamp();
         const greetings = Array.from({ length: 1000 }, (_, i) => longGreeting(i));
         const avatar = await createCharacter(page, `AltBudget3k-${s}`, greetings);
-        // 2,000 stored openings: a chat whose first message has that many swipes, imported.
         const opened = await page.evaluate(async ({ avatar, s }) => {
             // @ts-ignore
             const context = SillyTavern.getContext();
@@ -709,7 +657,6 @@ test.describe('on a phone', () => {
         await page.keyboard.press('Escape');
         await expect(list(page)).toBeHidden();
         const reopen = await timeOpen(page, 3000);
-        // A match among the last: the search streams what each step found and how far it is.
         const searched = page.waitForResponse(r => r.request().postDataJSON()?.type === 'alternatives.search');
         const search = await timeSearch(page, `Stored opening 1999 ${s}`, 1);
         const steps = (await (await searched).text()).trim().split('\n').map(line => JSON.parse(line).views.find((/** @type {any} */ v) => v.key === 'alternatives.matches'));
@@ -720,11 +667,9 @@ test.describe('on a phone', () => {
         console.log(`[budget] 3000 alternatives: search first ${Math.round(search.first)} ms, done ${Math.round(search.done)} ms, in ${steps.length} parts, said it was searching while drawn: ${search.sawSearching} (CPU 4x)`);
         expect(search.done).toBeLessThan(SEARCH_3000_MS);
         console.log(`[budget] 3000 alternatives: current drawn ${Math.round(open.current)} ms (with ${open.rowsThen} rows), all ${Math.round(open.all)} ms; open again: current ${Math.round(reopen.current)} ms, all ${Math.round(reopen.all)} ms (CPU 4x)`);
-        // Streamed: the current one is drawn before the rest of the list is there.
         expect(open.rowsThen).toBeLessThan(3000);
         expect(open.current).toBeLessThan(CURRENT_MS);
         expect(open.all).toBeLessThan(OPEN_3000_MS);
-        // Opened again, the list seen before is there at once.
         expect(reopen.current).toBeLessThan(CURRENT_MS);
         expect(reopen.all).toBeLessThan(OPEN_3000_MS);
     });
