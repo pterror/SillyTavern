@@ -19,7 +19,6 @@
 - "remember we only support migrations from upstream"
 
 ## Compat
-- "we break extension compat, it's degrading our architecture"
 - "our upstream parity requirement is compat not behavior, especially wrong behavior"
 
 ## UX
@@ -49,4 +48,10 @@
 ## Asking and stopping
 - "keep going? hello? don't stop until there's actually ambiguity????"
 - "you understand that if i wanted to make all the decisions it'd be faster and less friction for me to do it by hand?"
+
+# Decisions
+
+- Extensions written for upstream SillyTavern are not supported. Nothing is kept for them: not upstream's exports or
+  signatures from `public/script.js` and `public/scripts/`, not its globals, events, or DOM ids and classes. No shims
+  or stubs.
 
