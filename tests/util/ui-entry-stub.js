@@ -3,3 +3,5 @@ export function start() {
 }
 
 export const SERVER_OWNED = new Set();
+
+export * from '../../packages/occlusion/src/index.ts';

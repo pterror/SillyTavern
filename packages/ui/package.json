@@ -5,6 +5,7 @@
     "dependencies": {
         "@st/alternatives": "*",
         "@st/backgrounds": "*",
+        "@st/occlusion": "*",
         "@st/page": "*",
         "@st/protocol": "*",
         "@st/settings": "*",
