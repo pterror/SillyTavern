@@ -11,13 +11,11 @@
 - The server is never in a broken state: no stored data is ever missing, partial or waiting for a backfill.
 
 ## Scale and storage
-- Everything must work at 10 billion cards: no cost per card or per row in any operation, and no read of the whole
-  library or a whole table.
-- Storage minimizes asymptotic latency, writes and disk space: nothing is stored, derived or written unless a read
-  needs it.
+- Everything must work at 10 billion cards, with no cost per card or per row.
+- Storage has one source of truth and minimal asymptotic latency, writes and disk space.
 - No write amplification.
 - The only migrations are from upstream SillyTavern's data. Our own format changes are hard cutovers while there are
-  no users: no transition period, no side-by-side rebuild.
+  no users.
 
 ## Compat
 - Extensions written for upstream are not supported.
