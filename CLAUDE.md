@@ -8,7 +8,8 @@
 - Minimize round trips.
 - Every piece of state has one source of truth.
 - Make wrong states impossible by construction instead of detecting or repairing them.
-- The server is never in a broken state.
+- The server is never in a broken state: derived data is computed when what it derives from is written, never left
+  missing for a backfill script to fill in later.
 
 ## Scale and storage
 - Everything must work at 10 billion cards: no cost per card or per row in any operation, and no read of the whole
