@@ -3,6 +3,7 @@ import type { ChatOwner, ViewPush } from '@st/protocol';
 
 export type { ViewFrame } from '@st/protocol';
 export { SERVER_OWNED } from '@st/settings/page';
+export * from '@st/occlusion';
 import { createClient } from '@st/page/client';
 import { UiProvider } from '@st/page/context';
 import type { Ui } from '@st/page/context';
