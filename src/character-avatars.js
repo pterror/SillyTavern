@@ -8,23 +8,6 @@ import { copyCharacterFile } from './local-import-copy.js';
 import { computeAvatarIdentityHashFromImageBuffer, stripCardData } from './character-card-parser.js';
 import { TYPE } from './library-engine.js';
 
-/**
- * Characters' images are `characters/<avatar>`, upstream's paths; the store holds each card's values and its image's
- * identity hash (the image without its card chunk), which recognises the same picture on import. Copies of one image
- * share their bytes through the filesystem (reflinks), not through the store.
- *
- * A card imported from a PNG file the server can read (a local import source, an upload, a file dropped into
- * `characters/`) keeps that file's bytes as they are: its image is a reflink of the file (a full copy only where the
- * filesystem can't reflink; never a hardlink, `copyCharacterFile()`), so an import costs no image write. The bytes
- * may still hold the card's text chunks (`chara`, `ccv3`) as the source had them; nothing reads them: the store is
- * the only source of a card's data. Everything that leaves the server leaves without them: the image route streams
- * the file without its text chunks (`stripPngText()`), and an exported card is written fresh from the store
- * (`materializeCardPng()`). An image the server makes or changes itself (a crop, a card format's embedded image, the
- * default avatar) is written as before, its card chunk stripped (`writeWithAvatar()`). Every write is a new file
- * renamed into place, never a change to a file in place.
- */
-
-/** A character's image and its card are written in the avatar's lane, so two writes of one character don't interleave. */
 const LANE = -1;
 
 /**
@@ -36,8 +19,6 @@ export function avatarFile(directories, avatar) {
 }
 
 /**
- * The image file a character shows: its file in `characters/`, the default avatar when it has none; null when there
- * is no such character.
  * @param {import('./library-engine.js').LibraryEngine} lib
  * @param {{ characters: string }} directories
  * @param {string} avatar
@@ -51,8 +32,7 @@ export async function avatarPathOf(lib, directories, avatar) {
 }
 
 /**
- * An image as a character's: its card chunk stripped (the store holds the card), and its identity hash.
- * @param {Buffer} image A PNG.
+ * @param {Buffer} image
  * @returns {{ image: Buffer, avatarIdentityHash: string }}
  */
 export function avatarImage(image) {
@@ -61,8 +41,6 @@ export function avatarImage(image) {
 }
 
 /**
- * Stores a card with a new image, in the avatar's lane: the image written beside the character's file, `write` (which
- * stores the card), then the image put in place. When `write` fails the character keeps the image it had.
  * @template T
  * @param {import('./library-engine.js').LibraryEngine} lib
  * @param {{ characters: string }} directories
@@ -90,11 +68,6 @@ export function writeWithAvatar(lib, directories, avatar, image, write) {
 }
 
 /**
- * Stores a card with an image taken from a PNG file, in the avatar's lane: the file reflinked beside the character's
- * file (copied where it can't be), `write` (which stores the card), then put in place; a file that already is the
- * character's file (dropped into `characters/`) stays as it is. When `write` fails the character keeps the image it
- * had. With `unchanged`, the source must still have that size and mtime once linked (the bytes the caller read and
- * hashed), else nothing is stored and `null` answered: a source rewritten since is imported again when it's seen.
  * @template T
  * @param {import('./library-engine.js').LibraryEngine} lib
  * @param {{ characters: string }} directories
@@ -132,7 +105,6 @@ export function linkWithAvatar(lib, directories, avatar, source, write, unchange
 }
 
 /**
- * Runs `write` in the avatar's lane.
  * @template T
  * @param {import('./library-engine.js').LibraryEngine} lib
  * @param {string} avatar

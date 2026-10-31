@@ -18,7 +18,6 @@ async function doTokenCounter() {
     const countDebounced = debounce(async () => {
         const text = String($('#token_counter_textarea').val());
         let ids;
-        // The answer the ids came from.
         let idsAnswer;
         if (main_api == 'openai') {
             // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
@@ -75,7 +74,7 @@ function drawChunks(chunks, ids) {
     $('#tokenized_chunks_display').empty();
 
     for (let i = 0; i < chunks.length; i++) {
-        let chunk = chunks[i].replace(/[▁Ġ]/g, ' '); // sentencepiece leading-space marker (U+2581)
+        let chunk = chunks[i].replace(/[▁Ġ]/g, ' ');
 
         if (/^<0x[0-9A-F]+>$/i.test(chunk)) {
             const code = parseInt(chunk.substring(3, chunk.length - 1), 16);

@@ -15,12 +15,6 @@ import { applyServerGreetings, deleteSwipe, ensureSwipes, isMessageSwipeable, is
 import { chat } from '/scripts/chat-state.js';
 
 /**
- * The old page's half of the alternatives list (packages/areas/alternatives): what the list asks of the chat on
- * screen (rendering as it renders, swiping, deleting a swipe), and opening the list from the swipe counter.
- */
-
-/**
- * Whether the message has alternatives to list: more than one, and it's a message that has swipes.
  * @param {number} messageId
  * @returns {boolean}
  */
@@ -36,7 +30,6 @@ export function canOpenSwipePickerForMessage(messageId) {
 }
 
 /**
- * Why the chat can't show another of the message's alternatives now; null when it can.
  * @param {number} messageId
  * @returns {string|null}
  */
@@ -47,7 +40,6 @@ function cantGo(messageId) {
 }
 
 /**
- * Whether the chat can be sent to another of the message's alternatives now.
  * @param {number} messageId
  * @returns {boolean}
  */
@@ -56,7 +48,6 @@ export function canJumpToSwipeForMessage(messageId) {
 }
 
 /**
- * The chat shows the message's alternative at `index`, on its branch.
  * @param {number} messageId
  * @param {number} index
  */
@@ -73,7 +64,6 @@ async function go(messageId, index) {
 export const alternativesOldPage = {
     format(text, item, mesId) {
         const html = messageFormatting(text, item.name, item.role === 'system', item.role === 'user', mesId ?? 0);
-        // A template's content is inert: nothing in it runs or loads until it's shown.
         const template = document.createElement('template');
         template.innerHTML = html;
         return template.content;
@@ -102,10 +92,8 @@ export const alternativesOldPage = {
 };
 
 /**
- * Opens the list of a message's alternatives: a character chat's first message lists its openings (the stored ones
- * and the card's greetings), any other its stored swipes.
  * @param {number} messageId
- * @param {number} [at] The one to select (0-based), else the one shown.
+ * @param {number} [at]
  */
 export function openAlternatives(messageId, at) {
     const message = chat[messageId];
@@ -121,7 +109,6 @@ export function openAlternatives(messageId, at) {
     newUi().alternatives.openMessage(messageId, opening ? null : String(message.node_id), String(message.name ?? ''), at);
 }
 
-/** The swipe counter opens the list, on every device: a click, a tap, or Space or Enter on it. */
 export function initSwipePicker() {
     /** @param {JQuery.TriggeredEvent} event */
     function onCounter(event) {

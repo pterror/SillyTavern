@@ -4,7 +4,6 @@ import path from 'node:path';
 import os from 'node:os';
 import process from 'node:process';
 
-// writeCharacterData()'s and the JSON importer's DEFAULT_AVATAR_PATH ('./public/img/...') is repo-root-relative.
 const originalCwd = process.cwd();
 
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
@@ -34,7 +33,11 @@ const FAV_CASES = [
 ];
 const PRESENT_FAV_CASES = FAV_CASES.filter(([, value]) => value !== MISSING);
 
-/** @param {object} target @param {unknown} value @returns {object} */
+/**
+ * @param {object} target
+ * @param {unknown} value
+ * @returns {object}
+ */
 function withFav(target, value) {
     if (value !== MISSING) target.fav = value;
     return target;
@@ -87,7 +90,10 @@ async function postJson(urlPath, body) {
     });
 }
 
-/** @param {string} id @returns {Promise<{ fav: number, shallow: any, card: any }>} The fav column, the list row and the card. */
+/**
+ * @param {string} id
+ * @returns {Promise<{ fav: number, shallow: any, card: any }>}
+ */
 async function readCharacterRow(id) {
     const fav = (await user.store.lib.entity(TYPE.character, id))?.fav ? 1 : 0;
     const page = await user.store.lib.query({ ids: [id], wantRows: true, limit: 1 });
@@ -102,7 +108,10 @@ async function storedFav(id) {
     return { fav: row.fav, shallowFav: row.shallow.fav, shallowExtensionsFav: row.shallow.data.extensions.fav };
 }
 
-/** @param {boolean} expected @returns {Awaited<ReturnType<typeof storedFav>>} */
+/**
+ * @param {boolean} expected
+ * @returns {Awaited<ReturnType<typeof storedFav>>}
+ */
 function storedFavFor(expected) {
     return { fav: expected ? 1 : 0, shallowFav: expected, shallowExtensionsFav: expected };
 }
@@ -136,7 +145,10 @@ function cardWithFav(value) {
     return JSON.stringify(card);
 }
 
-/** @param {unknown} value @returns {Promise<string>} the created avatar */
+/**
+ * @param {unknown} value
+ * @returns {Promise<string>}
+ */
 async function createCharacter(value) {
     const response = await postJson('/api/characters/create', withFav({ ch_name: 'Zorkmid', file_name: 'Zorkmid', description: 'd' }, value));
     expect(response.status).toBe(200);
@@ -253,7 +265,6 @@ describe('every card-sending route sends both fav fields as the column boolean',
         const entityQuery = await (await postJson('/api/characters/query', { filter: { includeGroups: true }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 10 })).json();
         sent.push(['/query rows with groups', entityQuery.rows.find(r => r.type === 'character').item]);
 
-        // A replace-import of the same character keeps its db-authoritative fav.
         const formData = new FormData();
         formData.append('avatar', new Blob([JSON.stringify({ name: 'Zorkmid', description: 'reimported' })], { type: 'application/json' }), 'zorkmid.json');
         formData.append('file_type', 'json');

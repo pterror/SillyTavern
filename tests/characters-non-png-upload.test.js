@@ -1,7 +1,3 @@
-/**
- * A non-PNG avatar upload is converted to PNG without first trying the PNG-only fast path, so a normal
- * jpg/webp upload logs no "writeCardToFile failed" error. A PNG upload still takes the fast path.
- */
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jest } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -27,7 +23,6 @@ const originalCwd = process.cwd();
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
-    // The server installs this at startup; Jimp's WASM decoders load their .wasm through a file:// fetch.
     await import('../src/fetch-patch.js');
 
     characters = await import('../src/endpoints/characters.js');
@@ -69,7 +64,6 @@ afterEach(async () => {
     await user.close();
 });
 
-/** The character's stored image (card data stripped) and its card. */
 async function storedAlice() {
     const image = fs.readFileSync(/** @type {string} */ (await avatars.avatarPathOf(user.store.lib, directories, 'Alice.png')));
     const [card] = await user.store.lib.cards(['Alice.png']);
@@ -84,7 +78,6 @@ const post = (route, body) => fetch(`${baseUrl}/api/characters/${route}`, {
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
 
-// A 1x1 lossy WebP.
 const WEBP_1X1 = Buffer.from('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA', 'base64');
 
 /**
@@ -96,7 +89,6 @@ function sampleImage(mime) {
 }
 
 /**
- * Uploads `bytes` as Alice's new avatar through /edit, the route that logged the error.
  * @param {Buffer} bytes
  * @param {string} type
  * @param {string} name

@@ -41,15 +41,12 @@ beforeEach(async () => {
 
 afterEach(() => user.close());
 
-// Characters' and groups' dates are set; their data sizes and chats differ, and the ranges are read against the
-// values the store holds for them (chat sizes and times come from the messages stored).
 const CHARACTERS = Array.from({ length: 12 }, (_, i) => ({ id: `c${String(i).padStart(2, '0')}.png`, fav: i % 3 === 0, created: 1000 + i * 100, messages: i, dataSize: 50 + i * 5 }));
 const GROUPS = Array.from({ length: 4 }, (_, i) => ({ id: `g${i}`, fav: i % 2 === 1, created: 1050 + i * 300, messages: i }));
 
 /** @type {{ type: string, id: string, fav: boolean, created: number, lastChat: number, chatSize: number, dataSize?: number }[]} */
 let ALL = [];
 
-/** Stores the entities, then reads the values each now has: the model the ranges are checked against. */
 async function seed() {
     for (const c of CHARACTERS) {
         const cardJson = JSON.stringify({
@@ -71,7 +68,6 @@ async function seed() {
 }
 
 /**
- * Whether an entity is inside `ranges`; a group has no data_size, so a bound on it leaves groups out.
  * @param {{ type: string, created: number, lastChat: number, chatSize: number, dataSize?: number }} e
  * @param {Record<string, { min?: number, max?: number }>} ranges
  */
@@ -81,14 +77,16 @@ function inRanges(e, ranges) {
         && (min === undefined || value[field] >= min) && (max === undefined || value[field] <= max));
 }
 
-/** A value of a field over the entities that have it, `at` of the way up. @param {(e: typeof ALL[number]) => number | undefined} get @param {number} at */
+/**
+ * @param {(e: typeof ALL[number]) => number | undefined} get
+ * @param {number} at
+ */
 const quantile = (get, at) => {
     const values = ALL.map(get).filter(v => v !== undefined).sort((a, b) => a - b);
     return values[Math.floor(values.length * at)];
 };
 const median = get => quantile(get, 0.5);
 
-/** Ranges that each leave some entities in and some out, from the seeded values. */
 function rangesList() {
     return [
         { create_date: { min: 1300, max: 1900 } },

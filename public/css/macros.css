@@ -388,7 +388,6 @@
    Enhanced Macro Autocomplete Styles
    ============================================ */
 
-/* Overrides the autocomplete list's grid display: contents */
 .autoComplete > .item.macro-ac-item {
     display: flex !important;
     flex-wrap: nowrap;

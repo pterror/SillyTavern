@@ -2,24 +2,17 @@ import { getRequestHeaders } from './request-headers.js';
 
 /**
  * @typedef {object} TokenizerWarning
- * @property {string} kind `fallback-copy`, `estimate`, `dropped`, `trim-estimate`, `license`, `unreadable-reply`
- *   or `reply-not-saved`.
- * @property {string} key `api|type-or-source|url|model|tokenizer`.
- * @property {string} message Built by the server.
+ * @property {string} kind
+ * @property {string} key
+ * @property {string} message
  * @property {string[]} [entries]
- * @property {string} [generation_id] `reply-not-saved`: the generation whose reply the server kept, to store again.
+ * @property {string} [generation_id]
  */
 
-/**
- * Fired on `window` when a generated reply couldn't be stored (`detail: {generationId}`), and when a
- * later try stored it (`detail: {generationId, node_id, mes}`). generation.js marks and stamps the reply.
- */
 export const REPLY_NOT_SAVED_EVENT = 'st:reply-not-saved';
 export const REPLY_STORED_EVENT = 'st:reply-stored';
 
 /**
- * Shows that a reply wasn't saved, until it is: the toast stays, and its button asks the server to
- * store the reply from the text it kept. The page never writes the reply itself.
  * @param {TokenizerWarning} warning
  */
 function showReplyNotSaved(warning) {
@@ -58,11 +51,10 @@ function showReplyNotSaved(warning) {
 
 const SHOWN_KEY = 'tokenizerNoticesShown';
 
-/** Kinds shown once per browser session per `kind|key`; every other kind is shown on every call. */
 const ONCE_PER_SESSION_KINDS = new Set(['fallback-copy', 'estimate']);
 
 /**
- * @returns {string[]|null} null when storage is unavailable or its value is unparseable.
+ * @returns {string[]|null}
  */
 function readShown() {
     try {
@@ -87,7 +79,6 @@ function writeShown(shown) {
 }
 
 /**
- * Shows the tokenizer warnings a server-built send or count reported.
  * @param {TokenizerWarning[]|unknown} warnings
  */
 export function showTokenizerWarnings(warnings) {
@@ -116,14 +107,9 @@ export function showTokenizerWarnings(warnings) {
 }
 
 /**
- * Marks what an on-screen count is, in two sibling spans kept next to the count element: `~` before
- * it for an estimate, and after it the local copy's name for a fallback count, or a marker for a
- * model no tokenizer is known for. Never touches the count element itself, which callers and
- * extensions read back as a number.
  * @param {Element|JQuery} countElement
- * @param {{ name?: string, basis?: string, messages?: { unknownModel?: string } }|null|undefined} tokenizer The answer the count came from.
- * @param {{ omitCopyLabel?: boolean }} [options] `omitCopyLabel`: leave the fallback copy's name out,
- * for an element that already shows that name.
+ * @param {{ name?: string, basis?: string, messages?: { unknownModel?: string } }|null|undefined} tokenizer
+ * @param {{ omitCopyLabel?: boolean }} [options]
  */
 export function renderCountBasis(countElement, tokenizer, { omitCopyLabel = false } = {}) {
     const count = $(countElement);

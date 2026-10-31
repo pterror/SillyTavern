@@ -100,7 +100,6 @@ describe('user stores', () => {
         expect(await stores.oldFormatLine({ root })).toBeNull();
         const [card] = /** @type {any[]} */ (await s.lib.cards(['Alice.png']));
         expect(card.data.name).toBe('Alice');
-        // Rows show the chats' stats: the newest message's time and the chat size; a tree with none, 0.
         const rows = (await s.lib.query({ sortField: 'name', sortOrder: 'asc', limit: 50 })).rows;
         const row = (/** @type {string} */ id) => rows.find((/** @type {any} */ r) => r.id === id);
         expect(row('Alice.png').date_last_chat).toBeGreaterThan(0);
@@ -113,7 +112,6 @@ describe('user stores', () => {
         const groupStats = (await s.lib.chatStats([/** @type {bigint} */ (groupId)])).get(/** @type {bigint} */ (groupId));
         expect(groupStats?.chat_size).toBeGreaterThan(0);
         expect(groupStats?.date_last_chat).toBeGreaterThan(0);
-        // findChar()'s library-wide half: an avatar wins, names compare as compareIgnoreCaseAndAccents() or exactly.
         expect(await s.lib.findCharacters({ name: 'alice' })).toEqual({ ids: ['Alice.png'], capped: false });
         expect(await s.lib.findCharacters({ name: 'alice', insensitive: false })).toEqual({ ids: [], capped: false });
         expect(await s.lib.findCharacters({ name: 'Bob' })).toEqual({ ids: ['Bob.png'], capped: false });
@@ -122,14 +120,12 @@ describe('user stores', () => {
         expect(await s.lib.findCharacters({ tags: ['Nope'] })).toEqual({ ids: [], capped: false });
         expect(await s.lib.findGroups('PARTY')).toEqual(['1700000000001']);
         expect(await s.lib.findGroups('Nobody')).toEqual([]);
-        // Card tags as tags: a name folds to a live tag, one with none is made; ROOT is never one.
         await s.lib.writeCard({ root }, 'Dee.png', JSON.stringify({ name: 'Dee', data: { name: 'Dee', tags: [' red ', 'ROOT', 'Fresh', 'fresh'] } }));
         const seeded = await s.lib.tags.seedCardTags('Dee.png');
         expect(seeded.tagDefinitions.map(t => t.name)).toEqual(['Red', 'Fresh']);
         expect(seeded.tagIds[0]).toBe('tag-red');
         expect((await s.lib.tags.tagIdsFor(['Dee.png']))['Dee.png'].sort()).toEqual([...seeded.tagIds].sort());
         expect((await s.lib.tags.seedCardTags('Dee.png', { onlyExisting: true })).tagIds).toEqual(seeded.tagIds);
-        // The change feed: every character once; a change moves it to the end; a delete is answered as one.
         const all = await s.lib.changes(0, 1000);
         expect(all.changes.filter(c => c.op === 'upsert').map(c => c.id).sort()).toEqual(['Alice.png', 'Bob.png', 'Cara.png', 'Dee.png']);
         expect(all).toMatchObject({ truncated: false, hasMore: false });
@@ -139,7 +135,6 @@ describe('user stores', () => {
         expect(after.changes).toEqual([{ id: 'Bob.png', op: 'upsert', fields: null }, { id: 'Cara.png', op: 'delete' }]);
         expect(after.seq).toBeGreaterThan(all.seq);
         expect((await s.lib.changes(after.seq, 1000)).changes).toEqual([]);
-        // The local import scan's bookkeeping: per path, written only when it changes; a duplicate's delete forgets it.
         await s.lib.setLocalImportMtime('/in/a.png', 5.5, 'Alice.png');
         await s.lib.setLocalImportMtime('/in/b.png', 6);
         const end = s.lib.store.durableEnd();
@@ -152,7 +147,6 @@ describe('user stores', () => {
         await s.lib.clearLocalImportSkip('/in/n.txt');
         expect(await s.lib.localImportSkip('/in/n.txt')).toBeNull();
         await s.lib.clearLocalImportMtime('/in/b.png');
-        // A character deleted without its chats leaves an unowned tree the same key adopts; with them, the tree goes.
         const [alice] = await s.people.trees([{ avatar: 'Alice.png' }]);
         const marks = async (/** @type {bigint} */ t) => (await s.chats.bookmarks({ tree: t, limit: 50 })).rows.length;
         const aliceMarks = await marks(/** @type {bigint} */ (alice));
@@ -170,7 +164,6 @@ describe('user stores', () => {
         const gone = await s.chats.deleteTree({ tree: bobTree, actor: { user: 'u' } });
         expect(gone.ok).toBe(true);
         expect(gone.drops?.bookmarks.length).toBe(1);
-        // The state at its root goes too, listed with the drops.
         const rootIds = atRoot.ok ? atRoot.changes : [];
         expect(gone.drops?.changes.filter(c => c.node_id === null).map(c => c.id)).toEqual(expect.arrayContaining(rootIds));
         expect((await s.chats.stateAt({ tree: bobTree, at: null })).state).toEqual({});

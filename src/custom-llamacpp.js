@@ -7,21 +7,12 @@ import { readSecret, SECRET_KEYS } from './endpoints/secrets.js';
 import { fetchTextgenStatus, knownModelName } from './backend-status.js';
 import { logBackendFailure } from './backend-unreachable.js';
 
-/**
- * Whether a chat-completion custom URL is llama.cpp, so its counts go through llama.cpp's own
- * `/tokenize`. Detected with `GET <url minus a trailing /v1>/props`, built as the `/props` route
- * builds it (trimV1), and remembered per URL.
- */
-
-/** At most this many URLs are remembered; the oldest is forgotten first. */
 export const MAX_REMEMBERED_LLAMACPP_URLS = 100;
 
-/** @type {Map<string, boolean>} Keyed by the URL with a trailing `/` and `/v1` removed. */
+/** @type {Map<string, boolean>} */
 const detected = new Map();
 
 /**
- * llama.cpp's own `GET /props` reply shape (llama.cpp server README, "GET `/props`: Get server global
- * properties"): a `default_generation_settings` object, a numeric `total_slots` and a string `build_info`.
  * @param {unknown} data
  * @returns {boolean}
  */
@@ -37,8 +28,6 @@ export function isLlamaCppProps(data) {
 }
 
 /**
- * Asks `url` for its `/props`. Any failure (HTTP or network error, a reply that isn't JSON or has
- * another shape) means it is not llama.cpp. Never throws.
  * @param {string} url
  * @param {Record<string, string>} headers
  * @returns {Promise<boolean>}
@@ -71,7 +60,7 @@ export function rememberLlamaCppDetection(url, isLlamaCpp) {
 
 /**
  * @param {string} url
- * @returns {boolean|undefined} undefined when nothing is remembered for it
+ * @returns {boolean|undefined}
  */
 export function recallLlamaCppDetection(url) {
     return detected.get(trimV1(url));
@@ -82,7 +71,6 @@ export function clearLlamaCppDetectionMemory() {
 }
 
 /**
- * Probes `url` and remembers the answer, replacing what was remembered.
  * @param {string} url
  * @param {Record<string, string>} headers
  * @returns {Promise<boolean>}
@@ -94,11 +82,8 @@ export async function refreshLlamaCppDetection(url, headers) {
 }
 
 /**
- * The headers a chat-completion custom send gives its URL: `Authorization: Bearer <the active custom
- * key>`, then the custom headers over it. Must stay what the send gives, because the textgen llama.cpp
- * key must never reach a custom URL.
  * @param {import('./users.js').UserDirectoryList|undefined} directories
- * @param {string} includeHeaders The custom headers as YAML, macros already substituted.
+ * @param {string} includeHeaders
  * @returns {Record<string, string>}
  */
 export function customEndpointHeaders(directories, includeHeaders) {
@@ -110,15 +95,11 @@ export function customEndpointHeaders(directories, includeHeaders) {
 
 /**
  * @typedef {object} CustomLlamaCppEndpoint
- * @property {string} url The custom URL
- * @property {Record<string, string>} headers What the send gives that URL
+ * @property {string} url
+ * @property {Record<string, string>} headers
  */
 
 /**
- * The chat-completion custom URL as a llama.cpp backend, or null when it isn't one. The custom
- * headers are `includeHeaders` when the caller has them with its own macros substituted (a
- * server-built send); otherwise they are the saved ones, and when those hold a macro (`{{`) what the
- * send gives the URL can't be known here, so nothing is asked and the URL is not treated as llama.cpp.
  * @param {string|undefined} url
  * @param {import('./users.js').UserDirectoryList|undefined} directories
  * @param {string} [includeHeaders]
@@ -131,7 +112,6 @@ export async function resolveCustomLlamaCppEndpoint(url, directories, includeHea
     let headerText = includeHeaders;
     if (headerText === undefined) {
         const saved = directories
-            // Only a request carrying no chat falls back here (the token count route): the user's own.
             ? readUserSettings(directories, ['oai_settings.custom_include_headers'])['oai_settings.custom_include_headers']
             : undefined;
         headerText = typeof saved === 'string' ? saved : '';
@@ -146,8 +126,6 @@ export async function resolveCustomLlamaCppEndpoint(url, directories, includeHea
 }
 
 /**
- * The model a llama.cpp custom URL lists first in `/v1/models`, as textgen llama.cpp's `/status` lookup
- * reads it; null when unknown or the lookup fails.
  * @param {CustomLlamaCppEndpoint} endpoint
  * @returns {Promise<string|null>}
  */

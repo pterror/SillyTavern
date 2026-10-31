@@ -8,12 +8,9 @@ import { mock } from 'node:test';
 
 import { setConfigFilePath } from './util.js';
 
-// Run: node --experimental-test-module-mocks src/tokenizer-loader.test.js
-
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-tokenizer-loader-'));
 const configPath = path.join(tempDir, 'config.yaml');
-// Fits llama.model and mistral.model together, not with yi.model too; gemma.model alone is bigger.
 fs.writeFileSync(configPath, 'tokenizerMemoryCacheCapacity: \'1.5mb\'\n');
 setConfigFilePath(configPath);
 globalThis.DATA_ROOT = tempDir;
@@ -23,15 +20,14 @@ const { loadTokenizerFile } = await import('./tokenizer-loader.js');
 const { getWebTokenizer } = await import('./endpoints/tokenizers.js');
 
 const model = name => path.join(root, 'src', 'tokenizers', `${name}.model`);
-const LLAMA = model('llama'); // 499,723 bytes
-const MISTRAL = model('mistral'); // 493,443 bytes
-const YI = model('yi'); // 1,033,105 bytes
-const JAMBA = model('jamba'); // 1,124,714 bytes
-const GEMMA = model('gemma'); // 4,241,003 bytes, more than the whole budget
+const LLAMA = model('llama');
+const MISTRAL = model('mistral');
+const YI = model('yi');
+const JAMBA = model('jamba');
+const GEMMA = model('gemma');
 
 const load = file => loadTokenizerFile(file, 'sentencepiece');
 
-/** Loads gemma.model, which is bigger than the budget, so nothing else stays loaded. */
 async function unloadAll() {
     await load(GEMMA);
 }
@@ -52,7 +48,6 @@ async function testCase(name, fn) {
 }
 
 /**
- * Runs an ES module snippet in a child node process from the project root, with module mocks.
  * @param {string} code
  */
 function runChild(code) {
@@ -112,10 +107,12 @@ await testCase('parallel loads of one file share one load', async () => {
 });
 
 await testCase('two registry entries sharing one file get their own readers', async () => {
-    // A tiktoken file where every byte is its own token; ids 256-259 are special.
     const file = path.join(tempDir, 'shared.tiktoken');
     fs.writeFileSync(file, Array.from({ length: 256 }, (_, rank) => `${Buffer.from([rank]).toString('base64')} ${rank}`).join('\n'));
-    /** @param {Record<string, number>} specialTokens @param {'all' | 'none'} allowedSpecial */
+    /**
+     * @param {Record<string, number>} specialTokens
+     * @param {'all' | 'none'} allowedSpecial
+     */
     const config = (specialTokens, allowedSpecial) => ({
         patStr: String.raw`\S+|\s+`,
         specialTokens,
@@ -136,11 +133,14 @@ await testCase('two registry entries sharing one file get their own readers', as
 });
 
 await testCase('a tiktoken config with no split encodes the text whole; one with no reserved name names every special id', async () => {
-    // Every byte is its own token, then `aa` and `aaa`; ids 258-259 are special.
     const file = path.join(tempDir, 'merges.tiktoken');
     const ranks = [...Array.from({ length: 256 }, (_, rank) => Buffer.from([rank])), Buffer.from('aa'), Buffer.from('aaa')];
     fs.writeFileSync(file, ranks.map((token, rank) => `${token.toString('base64')} ${rank}`).join('\n'));
-    /** @param {{ maxChars: number, maxRun: number } | null} split @param {Record<string, number>} specialTokens @param {string} [name] */
+    /**
+     * @param {{ maxChars: number, maxRun: number } | null} split
+     * @param {Record<string, number>} specialTokens
+     * @param {string} [name]
+     */
     const config = (split, specialTokens, name) => ({
         patStr: String.raw`\S+|\s+`,
         specialTokens,
@@ -169,7 +169,6 @@ await testCase('without the setting, the budget is 256mb', async () => {
     const childDir = fs.mkdtempSync(path.join(tempDir, 'default-'));
     fs.writeFileSync(path.join(childDir, 'config.yaml'), 'enableDownloadableTokenizers: true\n');
     const MIB = 1024 * 1024;
-    // Sparse files: only their size on disk counts, and the mocked reader doesn't read them.
     const sizes = { a: 128 * MIB, b: 128 * MIB, c: 1 };
     for (const [name, size] of Object.entries(sizes)) {
         fs.closeSync(fs.openSync(path.join(childDir, name), 'w'));

@@ -22,12 +22,9 @@ import { setGlobalVariablesListener } from './chat-store.js';
 
 const MAX_LOOPS = 100;
 
-/** The chat's variables (its metadata's), the same store the macros use (variable-store.js). */
 export const localVariables = createVariableScope(() => (chat_metadata.variables ??= {}), { changed: saveMetadataDebounced, convert: convertValueType });
-/** The global variables, kept in the extension settings. */
 export const globalVariables = createVariableScope(() => (extension_settings.variables.global ??= {}), { changed: () => saveSettingsDebounced('extension_settings'), convert: convertValueType });
 
-// What a prompt the server built set and removed of them: kept, and saved with the settings.
 setGlobalVariablesListener(({ set, unset }) => {
     const values = (extension_settings.variables.global ??= {});
     for (const [name, value] of Object.entries(set ?? {})) values[name] = value;

@@ -1,22 +1,9 @@
-//! Randomized model tests: seeded sequences of commits of every value kind, reads of every kind (point gets,
-//! limited and unlimited pages up and down, snapshots held across later writes) and flushes, merges and reopens at
-//! random points, every read checked against a plain model of what each key holds. Churn writes values to
-//! never-used keys and undoes them in the same commit, then pages over them before a flush: the buffer then holds
-//! entries that settle to nothing where no run holds anything (the case 50d22b76c fixed).
-//!
-//! `ST_MODEL_SEEDS=<n>` runs n seeds from `ST_MODEL_BASE` (default 12 from 1, sized for CI); `ST_MODEL_SEED=<s>`
-//! runs seed s alone, to replay a failure; `ST_MODEL_STEPS` sets steps per seed. A failure names its seed and step.
-//! The sequence of operations is fixed by the seed. The simulated runs also fix the interleaving: background
-//! flushes and merges run as steps picked by the seed between operations (`Executor::simulated`), so a failure
-//! replays exactly; the threaded runs let real threads interleave as they will.
-
 use std::collections::BTreeMap;
 use std::sync::atomic::AtomicU64;
 
 use super::val::{count_bytes, counter_bytes, map_bytes, max_bytes, put_u64};
 use super::*;
 
-/// SplitMix64: small, seedable, the same everywhere.
 struct Rng(u64);
 
 impl Rng {
@@ -55,16 +42,12 @@ impl Hooks for NoHooks {
     fn flushed(&self, _: &Keyspace) {}
 }
 
-/// What a key holds in the model. A key's family fixes which value kinds it is written with, as the derivers
-/// keep them apart (`over` treats other mixes as faults).
 #[derive(Clone, Debug, PartialEq)]
 enum Held {
     Bytes(Vec<u8>),
     Counter(i64),
     Max(u64),
-    /// Slots of a map written with `Map` (set; 0 removes) or `MaxMap` (raise), as the family says.
     Map(BTreeMap<u32, u32>),
-    /// Counts of a map written with `AddMap`.
     Counts(BTreeMap<u32, u64>),
 }
 
@@ -137,7 +120,6 @@ fn slots(rng: &mut Rng, max_value: u32) -> Vec<(u32, u32)> {
     m.into_iter().collect()
 }
 
-/// A random write of key `i`'s family, applied to the model.
 fn write(rng: &mut Rng, model: &mut Model, i: u64) -> (Vec<u8>, Val) {
     let k = key(i);
     let cur = model.get(&k).cloned();
@@ -169,7 +151,6 @@ fn write(rng: &mut Rng, model: &mut Model, i: u64) -> (Vec<u8>, Val) {
                 _ => None,
             };
             if rng.chance(4) {
-                // A lowering, as search writes it: a `Put` of the exact value.
                 let m = rng.below(1000);
                 (Val::Put(max_bytes(m)), Some(Held::Max(m)))
             } else {
@@ -242,7 +223,6 @@ fn write(rng: &mut Rng, model: &mut Model, i: u64) -> (Vec<u8>, Val) {
                 let s = rng.below(12) as u32;
                 let have = i64::try_from(*map.get(&s).unwrap_or(&0)).unwrap()
                     + deltas.get(&s).copied().unwrap_or(0);
-                // Never below 0: a count that would leave its range is a fault in the derived data.
                 let d = rng.below(11) as i64 - have.min(5);
                 if d != 0 {
                     *deltas.entry(s).or_insert(0) += d;
@@ -295,7 +275,6 @@ fn bytes_of(v: Vec<(Vec<u8>, Val)>) -> Vec<(Vec<u8>, Vec<u8>)> {
         .collect()
 }
 
-/// A random range bound: a key, sometimes one between keys, or the end of the keyspace.
 fn bound(rng: &mut Rng, keys: u64) -> Vec<u8> {
     match rng.below(8) {
         0 => vec![8],
@@ -310,10 +289,8 @@ fn bound(rng: &mut Rng, keys: u64) -> Vec<u8> {
     }
 }
 
-/// A page read: `[start, end)` up to `limit` entries, as bytes.
 type PageRead<'a> = &'a dyn Fn(&[u8], &[u8], usize) -> Vec<(Vec<u8>, Vec<u8>)>;
 
-/// Checks one random read against `expect` (the model's bytes when the read's state was taken).
 fn check_read(
     rng: &mut Rng,
     keys: u64,
@@ -366,7 +343,6 @@ fn check_read(
     }
 }
 
-/// What a run ended with: the steps run under simulation, and every key and value at the end.
 type Outcome = (u64, Vec<(Vec<u8>, Vec<u8>)>);
 
 fn run_seed(seed: u64, steps: u64, sim: bool) -> Outcome {
@@ -383,7 +359,6 @@ fn run_seed(seed: u64, steps: u64, sim: bool) -> Outcome {
         block_size: 128 + rng.below(1024) as usize,
         max_frozen: 1 + rng.below(2) as usize,
     };
-    // A small buffer flushes often; a larger one keeps churned windows unflushed while they are read.
     let buffer = if rng.chance(2) {
         (4 + rng_free(seed)) << 10
     } else {
@@ -406,14 +381,12 @@ fn run_seed(seed: u64, steps: u64, sim: bool) -> Outcome {
     let mut ks = open(&dir);
     let mut model: Model = BTreeMap::new();
     let mut end = 0u64;
-    // Snapshots held across later writes, each with the model as it was.
     for step in 0..steps {
         let at = format!(
             "seed {seed}{} step {step}",
             if sim { " (simulated)" } else { "" }
         );
         if sim {
-            // Background work between operations: a few of the queued steps, picked by the executor's seed.
             for _ in 0..rng.below(6) {
                 ks.pool().exec.pump();
             }
@@ -426,7 +399,6 @@ fn run_seed(seed: u64, steps: u64, sim: bool) -> Outcome {
                 };
                 let mut batch = Vec::new();
                 for _ in 0..n {
-                    // Several writes of one key in a commit go in one insert, oldest first, as a commit's do.
                     let i = rng_key(&mut rng, keys);
                     batch.push(write(&mut rng, &mut model, i));
                 }
@@ -447,17 +419,12 @@ fn run_seed(seed: u64, steps: u64, sim: bool) -> Outcome {
                 );
             }
             85..=87 => {
-                // Churn over a window of keys past the written ones: each written, then undone by a later insert of
-                // the same commit (a map's slot set then removed, counts added then taken back, a value put then
-                // deleted), so the buffer holds entries that settle to nothing where the runs may hold nothing.
-                // Never-used keys, so no run holds anything in the window.
                 let from = FRESH + fresh;
                 let n = 1 + rng.below(120);
                 fresh += n;
                 let (mut first, mut undo) = (Vec::new(), Vec::new());
                 for i in from..from + n {
                     if rng.chance(5) {
-                        // A live value among the undone ones, which a short page must not hide.
                         let (k, v) = write(&mut rng, &mut model, i);
                         undo.push((k, v));
                         continue;
@@ -475,7 +442,6 @@ fn run_seed(seed: u64, steps: u64, sim: bool) -> Outcome {
                         _ => (Val::Put(vec![1, 2, 3]), Val::Del),
                     };
                     if model.contains_key(&key(i)) {
-                        // Live from an earlier churn: undoing would read as an edit the model doesn't know.
                         continue;
                     }
                     first.push((key(i), a));
@@ -486,7 +452,6 @@ fn run_seed(seed: u64, steps: u64, sim: bool) -> Outcome {
                 ks.insert(first, None);
                 wait_for_room(ks.pool());
                 ks.insert(undo, Some((end, 1)));
-                // Short pages over the window, before a flush takes it into a run.
                 let expect = model_bytes(&model);
                 for _ in 0..4 {
                     let (s, e) = (
@@ -522,7 +487,6 @@ fn run_seed(seed: u64, steps: u64, sim: bool) -> Outcome {
                 }
             }
             88..=89 => {
-                // A snapshot, then writes, then reads through the snapshot see the state of then.
                 let expect = model_bytes(&model);
                 let snap = ks.snapshot();
                 let mut later = model.clone();
@@ -571,8 +535,6 @@ fn run_seed(seed: u64, steps: u64, sim: bool) -> Outcome {
                 );
             }
             _ => {
-                // Reopen: what the runs hold is all there is (a store replays its log tail; this keyspace has
-                // none, so everything is flushed first).
                 ks.freeze_at(end);
                 ks.wait_flushed().unwrap();
                 ks.stop();
@@ -597,9 +559,6 @@ fn run_seed(seed: u64, steps: u64, sim: bool) -> Outcome {
     (sim_steps, all)
 }
 
-/// A commit's writes, oldest first, as inserts each holding a key at most once (a later write of a key goes in a
-/// later insert), the last carrying the commit's log end. No fold here: the keyspace's own folding is what is
-/// under test.
 fn insert_batch(ks: &Keyspace, batch: Vec<(Vec<u8>, Val)>, end: u64) {
     let mut groups: Vec<Vec<(Vec<u8>, Val)>> = Vec::new();
     let mut seen: Vec<std::collections::BTreeSet<Vec<u8>>> = Vec::new();
@@ -622,12 +581,9 @@ fn insert_batch(ks: &Keyspace, batch: Vec<(Vec<u8>, Val)>, end: u64) {
     }
 }
 
-/// How far past `FRESH` random reads reach (churn has used a few thousand keys there by the end of a seed).
 const CHURN: u64 = 4000;
-/// Where never-used keys for churn start: past every key the other writes use.
 const FRESH: u64 = 1 << 40;
 
-/// A key, skewed so some keys get many writes.
 fn rng_key(rng: &mut Rng, keys: u64) -> u64 {
     if rng.chance(3) {
         rng.below(keys.min(12))
@@ -636,7 +592,6 @@ fn rng_key(rng: &mut Rng, keys: u64) -> u64 {
     }
 }
 
-/// A small per-seed variation of the buffer size, so flushes come at different points.
 fn rng_free(seed: u64) -> usize {
     (seed % 4) as usize
 }

@@ -16,7 +16,6 @@ function writeExtensionSettings(profiles) {
 
 const directories = { root };
 
-// Text completion profile resolves type from CONNECT_API_MAP
 writeExtensionSettings([
     { id: 'p1', mode: 'cc', api: 'koboldcpp', model: 'my-model', 'api-url': 'http://127.0.0.1:5001' },
 ]);
@@ -27,7 +26,6 @@ writeExtensionSettings([
     assert.equal(selectedApiMap.type, 'koboldcpp');
 }
 
-// Chat completion profile resolves source
 writeExtensionSettings([
     { id: 'p2', mode: 'cc', api: 'openrouter', model: 'some/model' },
 ]);
@@ -37,19 +35,15 @@ writeExtensionSettings([
     assert.equal(selectedApiMap.source, 'openrouter');
 }
 
-// Missing profile
 writeExtensionSettings([{ id: 'p1', api: 'koboldcpp' }]);
 assert.throws(() => resolveConnectionProfile(directories, 'does-not-exist'), /Profile not found/);
 
-// Profile with no api
 writeExtensionSettings([{ id: 'p3' }]);
 assert.throws(() => resolveConnectionProfile(directories, 'p3'), /has an API/);
 
-// Profile with an unknown api alias
 writeExtensionSettings([{ id: 'p4', api: 'totally-not-a-real-api' }]);
 assert.throws(() => resolveConnectionProfile(directories, 'p4'), /Unknown API type/);
 
-// Every textgen type and chat completion source generated automatically resolves
 writeExtensionSettings([{ id: 'p5', api: 'vllm' }, { id: 'p6', api: 'claude' }]);
 {
     const vllm = resolveConnectionProfile(directories, 'p5');

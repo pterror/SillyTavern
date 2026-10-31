@@ -469,10 +469,9 @@ async function callExtensionHook(name, hookName) {
 }
 
 /**
- * Toggles an extension's enabled state on the server, which owns and merges disabledExtensions.
- * @param {string} name Extension name
- * @param {boolean} enabled Desired enabled state
- * @returns {Promise<string[]?>} The server's resulting disabledExtensions array, or null on failure
+ * @param {string} name
+ * @param {boolean} enabled
+ * @returns {Promise<string[]?>}
  */
 async function setExtensionEnabled(name, enabled) {
     try {
@@ -598,7 +597,6 @@ async function activateExtensions() {
     const extensions = Object.entries(manifests).sort((a, b) => sortManifestsByOrder(a[1], b[1]));
     const extensionNames = extensions.map(x => x[0]);
 
-    // Load all extension resources in parallel rather than one at a time.
     const toActivate = [];
 
     for (const entry of extensions) {
@@ -676,7 +674,7 @@ async function activateExtensions() {
 
     for (const { name, displayName, loadPromise } of toActivate) {
         try {
-            await loadPromise; // propagates per-extension load errors
+            await loadPromise;
             activeExtensions.add(name);
             await callExtensionHook(name, 'activate');
         } catch (err) {
@@ -706,8 +704,6 @@ function getExtensionTabTitle(container) {
 }
 
 /**
- * Moves one extension's already-injected settings block (a direct child of #extensions_settings or
- * #extensions_settings2) into its own tab panel, if it has any content and hasn't already been moved.
  * @param {HTMLElement} container
  */
 function moveExtensionContainerIntoTab(container) {
@@ -718,15 +714,11 @@ function moveExtensionContainerIntoTab(container) {
     const title = getExtensionTabTitle(container);
     const tabId = `ext_tab_${container.id || Math.random().toString(36).slice(2)}`;
 
-    // The extension's own name (used as `title` above) already appears in the tab label itself, so hide
-    // it inside the panel content to avoid duplicating it right below the tab bar.
     const nameHeader = container.querySelector('.inline-drawer-toggle b, .inline-drawer-toggle strong, .inline-drawer-header b, .inline-drawer-header strong');
     if (nameHeader?.textContent?.trim() === title) {
         nameHeader.style.display = 'none';
     }
 
-    // Flatten the container's own .inline-drawer, if any: dropping 'inline-drawer-toggle' from the header
-    // disables the document-level click handler (script.js) that toggles it, so it can't be re-collapsed.
     const drawer = container.querySelector(':scope > .inline-drawer, .inline-drawer');
     if (drawer) {
         const header = drawer.querySelector(':scope > .inline-drawer-header, .inline-drawer-header');
@@ -748,17 +740,10 @@ function moveExtensionContainerIntoTab(container) {
     const panel = document.createElement('div');
     panel.id = tabId;
     panel.classList.add('extensions_tab_panel');
-    panel.appendChild(container); // moves container (and its content) out of its original column
+    panel.appendChild(container);
     document.getElementById(EXTENSIONS_TABS_CONTAINER_ID)?.appendChild(panel);
 }
 
-/**
- * Converts whatever extensions have already appended their settings into #extensions_settings/
- * #extensions_settings2 into a jQuery UI tab per extension, replacing the old two-column stacked-
- * collapsibles layout. Safe to call multiple times (idempotent per extension container) - also attaches
- * a MutationObserver on first call to catch extensions that inject asynchronously after this point (some
- * third-party extensions have no reliable "settings HTML added" completion signal to await instead).
- */
 export function initExtensionsTabs() {
     const columns = [document.getElementById('extensions_settings'), document.getElementById('extensions_settings2')];
     for (const column of columns) {
@@ -2114,11 +2099,6 @@ async function checkForExtensionUpdates(force) {
 }
 
 /**
- * Confirms with the user before running the boot-triggered extension auto-update. Server admins can enable
- * `enable_extensions_auto_update`, but the actual pull/update of extension code is a write with real effects
- * (it can change installed code and requires a reload) and until now ran with no user gesture at all whenever
- * the app version changed. Mirrors the confirm-before-fetching-third-party-code pattern already used for
- * installExtension() (Popup.show.confirm before installing a URL-supplied extension).
  * @returns {Promise<void>}
  */
 async function confirmAndAutoUpdateExtensions() {
@@ -2228,7 +2208,6 @@ export const UNSET_VALUE = '__@@UNSET@@__';
  */
 export async function writeExtensionField(characterId, key, value) {
     const context = getContext();
-    // Truthiness, not a card check: a hit on a non-index key such as `length` must behave as it did upstream.
     const character = resolveCharacterRef(characterId);
     if (!character) {
         console.warn('Character not found', characterId);

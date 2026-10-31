@@ -6,16 +6,9 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// While an overswipe's reply is generated its message shows the new slot, which has no node yet: nothing may address
-// the alternative swiped from as if it were that slot. An edit opened on the message while the reply streams in isn't
-// possible, and an edit an extension makes when the reply arrives (MESSAGE_RECEIVED) lands on the reply's own node,
-// never on the first alternative.
-
 const MODEL = 'overswipe-edit-model';
 
 /**
- * A mock llama.cpp server answering the n-th completion with `Reply number n <stamp>.`, streamed in small pieces spaced
- * well apart (so the page shows part of it for a few seconds before the end) or whole after a pause.
  * @param {string} stamp
  */
 function startLlamaCpp(stamp) {
@@ -108,7 +101,6 @@ async function connectLlamaCpp(page, url) {
     await page.selectOption('#main_api', 'textgenerationwebui', { force: true });
     await page.locator('#textgen_type').selectOption('llamacpp');
     await page.locator('#llamacpp_api_url_text').fill(url);
-    // A worker's earlier tests leave server URLs in the history, whose suggestions would cover the button.
     // @ts-ignore
     await page.evaluate(() => { const field = $('#llamacpp_api_url_text'); if (field.autocomplete('instance')) field.autocomplete('close'); });
     await page.locator('#api_button_textgenerationwebui').click();
@@ -118,7 +110,6 @@ async function connectLlamaCpp(page, url) {
 }
 
 /**
- * Waits until the generation is done and every message has its stored node.
  * @param {import('@playwright/test').Page} page
  */
 async function settled(page) {
@@ -132,7 +123,6 @@ async function settled(page) {
 }
 
 /**
- * The alternatives the server stores beside the page's message `mesId`.
  * @param {import('@playwright/test').Page} page
  * @param {number} mesId
  */
@@ -147,12 +137,11 @@ function storedAlternatives(page, mesId) {
 }
 
 /**
- * A character with one stored reply (`Reply number 1`), talking to the mock server.
  * @param {import('@playwright/test').Page} page
  * @param {{ url: string }} mock
  * @param {string} stamp
  * @param {boolean} streaming
- * @param {(page: import('@playwright/test').Page) => Promise<void>} [beforeSend] Run once connected, before the question.
+ * @param {(page: import('@playwright/test').Page) => Promise<void>} [beforeSend]
  */
 async function chatWithOneReply(page, mock, stamp, streaming, beforeSend) {
     await testSetup.awaitST({ page });
@@ -181,9 +170,7 @@ test('an edit opened on an overswipe\'s message while its reply streams in is re
         await page.evaluate(() => { SillyTavern.getContext().powerUserSettings.click_to_edit = true; });
         expect(await storedAlternatives(page, 2)).toEqual([`Reply number 1 ${stamp}.`]);
 
-        // Overswipe; once part of the second reply is shown, click its text (click-to-edit) and press Done.
         await page.locator('#chat .mes[mesid="2"] .swipe_right').click();
-        // Part of the second reply shown, not the first's text.
         await expect.poll(() => page.locator('#chat .mes[mesid="2"] .mes_text').textContent(), { timeout: 30000 }).toMatch(/^\s*Reply(?! number 1)/);
         await page.locator('#chat .mes[mesid="2"] .mes_text').click();
         const opened = await page.locator('#chat .mes[mesid="2"] .edit_textarea').count();
@@ -206,7 +193,6 @@ for (const streaming of [true, false]) {
         const mock = await startLlamaCpp(stamp);
         try {
             await chatWithOneReply(page, mock, stamp, streaming);
-            // An extension changes the second reply when it arrives, and saves that edit (context.editMessage()).
             await page.evaluate(() => {
                 // @ts-ignore
                 const ctx = SillyTavern.getContext();

@@ -3,15 +3,11 @@ import { readFileSync } from 'node:fs';
 import * as cheerio from 'cheerio';
 import Handlebars from 'handlebars';
 
-// The itemized view names the tokenizer its own count batch used, not the stored name, and marks
-// that batch's basis beside the name.
-
 global.$ = cheerio.load('');
 
-/** The batch `getTokenCountsWithTokenizer` answers with. */
 let batch;
 
-/** @type {cheerio.CheerioAPI|null} The rendered view. */
+/** @type {cheerio.CheerioAPI|null} */
 let view = null;
 
 jest.unstable_mockModule('../public/lib.js', () => ({
@@ -88,7 +84,6 @@ beforeAll(async () => {
 const unknownModel = 'No tokenizer is known for this model, so token counts are estimates. A tokenizer can be picked in Advanced Formatting → Tokenizer.';
 
 /**
- * A batch whose shown name is `shownName` and whose answer has `basis` and `name`.
  * @param {string} shownName
  * @param {string} basis
  * @param {string} name
@@ -149,7 +144,6 @@ const shared = {
     samplerConfig: '{}',
 };
 
-/** Every field itemizedParams returns for textSet() besides tokenizerAnswer. */
 const textParamsBefore = {
     ...zeroCounts,
     finalPromptTokens: 0, storyStringTokens: 0, examplesStringTokens: 0, mesSendStringTokens: 0,
@@ -169,7 +163,6 @@ const textParamsBefore = {
     selectedTokenizer: 'Gemma / Gemini',
 };
 
-/** Every field itemizedParams returns for chatSet() besides tokenizerAnswer. */
 const chatParamsBefore = {
     ...zeroCounts,
     ...shared,

@@ -1,10 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// A message is marked as on its last swipe (its right arrow highlighted) only when it is: an operator-precedence slip
-// marked every message whose overswipe edits, on any swipe. And Ctrl+Up with no user message in the chat does
-// nothing (it threw).
-
 test('only a message on its last alternative is marked so; Ctrl+Up without a user message does nothing', async ({ page }) => {
     /** @type {string[]} */
     const errors = [];

@@ -2,7 +2,6 @@ import { saveSettingsDebounced } from '../script.js';
 import { getEntryTokenIds, getTextTokens, prefetchEntryTokenIdsDebounced, showDroppedEntries, tokenizers } from './tokenizers.js';
 import { getSortableDelay, uuidv4 } from './utils.js';
 
-/** Nothing reads it; kept because upstream exports it. */
 export const BIAS_CACHE = new Map();
 
 /**
@@ -181,12 +180,10 @@ export function buildLogitBiasListResult(biasPreset, getIds, getBiasObject, drop
 }
 
 /**
- * Populate logit bias list from preset.
- * @param {object[]} biasPreset Bias preset
- * @param {number} tokenizerType Tokenizer type (see tokenizers.js). `API_CURRENT` and `BEST_MATCH`
- * use the tokenizer the server resolves, leave out entries it has no ids for, and warn about them.
- * @param {(bias: number, sequence: number[]) => object} getBiasObject Transformer function to create bias object
- * @returns {object[]} Array of logit bias objects
+ * @param {object[]} biasPreset
+ * @param {number} tokenizerType
+ * @param {(bias: number, sequence: number[]) => object} getBiasObject
+ * @returns {object[]}
  */
 export function getLogitBiasListResult(biasPreset, tokenizerType, getBiasObject) {
     if (tokenizerType === tokenizers.API_CURRENT || tokenizerType === tokenizers.BEST_MATCH) {

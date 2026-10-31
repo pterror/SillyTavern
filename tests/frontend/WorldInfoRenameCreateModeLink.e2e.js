@@ -1,10 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// In create mode the character being created isn't stored yet, so the rename's relink of stored characters can't
-// reach it. Renaming a book it links moves its links (primary and auxiliary) to the new name, so it isn't created
-// linked to a name with no book behind it.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -71,7 +67,6 @@ test.describe('renaming a lorebook in create mode', () => {
                         confirmAsked = true;
                         return POPUP_RESULT.NEGATIVE;
                     };
-                    // The editor switches to the new name as the rename's last step.
                     const onChange = () => {
                         if (String($('#world_editor_select').find(':selected').text()) === newName) {
                             $('#world_editor_select').off('change', onChange);
@@ -88,7 +83,6 @@ test.describe('renaming a lorebook in create mode', () => {
                 return { confirmAsked, world: create_save.world, extraBooks: [...create_save.extra_books] };
             }, { oldName, newName });
 
-            // No stored character links the book, so there is nothing to ask about.
             expect(confirmAsked).toBe(false);
             expect(world).toBe(newName);
             expect(extraBooks).toEqual([newName, otherName]);

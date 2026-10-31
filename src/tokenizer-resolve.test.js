@@ -3,11 +3,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { TEXTGEN_TYPES } from './constants.js';
-// tokenizer-resolve.js statically imports src/endpoints/tokenizers.js, which pulls in code that
-// reads process-wide config at MODULE IMPORT time (e.g. src/endpoints/secrets.js) - the config
-// path must be set before that import chain runs, so (unlike src/token-bans-and-bias.test.js,
-// which only needs to defer its *own* smoke-test import of endpoints/tokenizers.js)
-// tokenizer-resolve.js itself has to be imported dynamically here, after setConfigFilePath().
 import { setConfigFilePath } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -20,14 +15,10 @@ const {
     TokenizerFailure,
 } = await import('./tokenizer-resolve.js');
 
-// --- encodeWithTokenizerType: NONE -> [] ---
-
 {
     const ids = await encodeWithTokenizerType(tokenizers.NONE, 'hello world');
     assert.deepEqual(ids, []);
 }
-
-// --- encodeWithTokenizerType: numeric-enum -> string-key mapping table sanity ---
 
 assert.equal(TOKENIZER_TYPE_KEYS[tokenizers.LLAMA], 'llama');
 assert.equal(TOKENIZER_TYPE_KEYS[tokenizers.MISTRAL], 'mistral');
@@ -45,10 +36,7 @@ assert.equal(TOKENIZER_TYPE_KEYS[tokenizers.GPT2], 'gpt2');
 assert.equal(TOKENIZER_TYPE_KEYS[tokenizers.NERD], 'nerdstash');
 assert.equal(TOKENIZER_TYPE_KEYS[tokenizers.NERD2], 'nerdstash_v2');
 
-// --- encodeWithTokenizerType: branch dispatch, using injected stub encoders (no real network/tokenizer files) ---
-
 {
-    // Local ENCODE_TOKENIZERS-style dispatch: mapped key passed straight through to encodeLocal.
     const calls = [];
     const encodeLocal = async (key, text) => {
         calls.push([key, text]);
@@ -60,7 +48,6 @@ assert.equal(TOKENIZER_TYPE_KEYS[tokenizers.NERD2], 'nerdstash_v2');
 }
 
 {
-    // OPENAI and GPT2 both go through the flat 'gpt2' local encoder (documented judgment call).
     const calls = [];
     const encodeLocal = async (key, text) => { calls.push(key); return [42]; };
     await encodeWithTokenizerType(tokenizers.OPENAI, 'hi', { encodeLocal });
@@ -69,7 +56,6 @@ assert.equal(TOKENIZER_TYPE_KEYS[tokenizers.NERD2], 'nerdstash_v2');
 }
 
 {
-    // NovelAI clio (NERD) and kayra (NERD2).
     const calls = [];
     const encodeLocal = async (key, text) => { calls.push([key, text]); return [5]; };
     assert.deepEqual(await encodeWithTokenizerType(tokenizers.NERD, 'hi', { encodeLocal }), [5]);
@@ -78,7 +64,6 @@ assert.equal(TOKENIZER_TYPE_KEYS[tokenizers.NERD2], 'nerdstash_v2');
 }
 
 {
-    // API_TEXTGENERATIONWEBUI: remote succeeds -> its ids are used, local encoder not called.
     let localCalled = false;
     const encodeTextgenRemote = async () => ({ count: 2, ids: [7, 8] });
     const encodeLocal = async () => { localCalled = true; return []; };
@@ -94,8 +79,6 @@ assert.equal(TOKENIZER_TYPE_KEYS[tokenizers.NERD2], 'nerdstash_v2');
 }
 
 {
-    // API_TEXTGENERATIONWEBUI / API_CURRENT: a remote error or a reply without ids is a failure,
-    // not a local encode.
     let localCalled = false;
     const encodeLocal = async () => { localCalled = true; return [9]; };
     for (const reply of [{ error: true }, {}, { count: 1 }]) {
@@ -107,7 +90,6 @@ assert.equal(TOKENIZER_TYPE_KEYS[tokenizers.NERD2], 'nerdstash_v2');
 }
 
 {
-    // API_KOBOLD: fetch succeeds -> uses returned ids.
     const fetchImpl = async () => ({
         ok: true,
         json: async () => ({ value: 2, ids: [11, 12] }),
@@ -120,7 +102,6 @@ assert.equal(TOKENIZER_TYPE_KEYS[tokenizers.NERD2], 'nerdstash_v2');
 }
 
 {
-    // API_KOBOLD: a fetch failure, an HTTP error or a reply without ids is a failure, not a local encode.
     let localCalled = false;
     const encodeLocal = async () => { localCalled = true; return [99]; };
     const fetchImpls = [
@@ -139,16 +120,11 @@ assert.equal(TOKENIZER_TYPE_KEYS[tokenizers.NERD2], 'nerdstash_v2');
 }
 
 {
-    // Unsupported tokenizer type -> throws.
     await assert.rejects(() => encodeWithTokenizerType(tokenizers.BEST_MATCH, 'hi'));
 }
 
 console.log('tokenizer-resolve.test.js: encodeWithTokenizerType stub-dispatch assertions passed');
 
-// --- encodeWithTokenizerType: real encodeTextByLocalTokenizerType smoke test ---
-// Depends on real tokenizer model files (gpt2's tiktoken vocab), which may or may not be present
-// in this checkout/CI environment. Skip gracefully rather than failing the whole file, same
-// pattern as src/token-bans-and-bias.test.js's smoke test.
 try {
     const ids = await encodeWithTokenizerType(tokenizers.GPT2, 'Hello world');
     assert.ok(Array.isArray(ids));
@@ -158,8 +134,6 @@ try {
 } catch (err) {
     console.log(`encodeWithTokenizerType smoke test: skipped (${err.message})`);
 }
-
-// --- resolveTokenizer: one resolver, on the server ---
 
 const http = await import('node:http');
 const fs = await import('node:fs');
@@ -186,16 +160,13 @@ const openRouterModels = await import('./openrouter-models.js').catch(error => {
     console.log(`openrouter-models.js not importable: ${error.message}`);
     return {};
 });
-// OpenRouter models resolve through OpenRouter's model list first. The cases below that don't pass
-// their own list resolve as if the list named no hugging_face_id for them, and nothing is fetched.
 openRouterModels.rememberOpenRouterModels?.([]);
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenizer-resolve-test-'));
 const directories = /** @type {any} */ ({ root: tmpRoot });
 
 /**
- * A fake backend on an ephemeral port, recording every request path it gets.
- * @param {Record<string, (req: any, res: any) => void>} routes path -> handler; others answer 404.
+ * @param {Record<string, (req: any, res: any) => void>} routes
  */
 async function startFakeBackend(routes) {
     const paths = [];
@@ -477,8 +448,6 @@ await check('an unrecognized api, or textgen with nothing set -> estimate', asyn
     }
 });
 
-// --- remote capability memory ---
-
 await check('textgen /status on OOBA remembers encode support; resolving then probes nothing', async () => {
     const { router } = await import('./endpoints/backends/text-completions.js');
     const ooba = await startFakeBackend({
@@ -574,8 +543,6 @@ await check('kobold /status remembers can_use_tokenization from the /extra/versi
         assert.equal(res.status, 200);
         const body = await res.json();
         assert.deepEqual(body, { koboldUnitedVersion: '1.2.5', koboldCppVersion: 'KoboldCpp', model: 'koboldcpp/gemma-2-9b-it' });
-        // 'KoboldCpp' is not a version, but upstream's versionCompare puts letters after digits,
-        // so any KoboldCpp passes the 1.41 gate.
         assert.equal(backendStatus.recallRemoteTokenization('kobold', undefined, `${kcpp.url}/api`), true);
 
         kcpp.paths.length = 0;
@@ -617,8 +584,6 @@ await check('kobold version gate matches the client versionCompare', async () =>
     assert.equal(backendStatus.koboldCanUseTokenization(undefined), false);
 });
 
-// --- model lookup ---
-
 await check('model lookup: placeholder answers and failures mean unknown', async () => {
     const valid = await startFakeBackend({ '/v1/models': json({ data: [] }) });
     const tabbyNone = await startFakeBackend({ '/v1/model/list': json({ data: [{ id: 'a' }] }) });
@@ -654,8 +619,6 @@ await check('a non-empty model setting is used as is; the backend is not asked',
     }
 });
 
-// --- counting ---
-
 await check('estimate is bytes / 3.35 rounded up; countWithTokenizer uses it for an estimate', async () => {
     assert.equal(estimateTokenCount('Hello world'), Math.ceil(11 / 3.35));
     assert.equal(estimateTokenCount('héllo'), Math.ceil(6 / 3.35));
@@ -678,8 +641,6 @@ await check('countWithTokenizer counts with the resolved tokenizer', async () =>
     assert.equal(await countWithTokenizer(openai, 'Hello world'), 2, 'tiktoken gpt-4o');
     assert.equal(await countWithTokenizer(openai, ''), 0);
 });
-
-// --- a failing tokenizer ---
 
 const failingRemote = async () => ({ error: true });
 const refusedFetch = async () => { throw new Error('connection refused'); };
@@ -773,12 +734,9 @@ await check('a local tokenizer that fails to load: no ids, estimate counts, drop
     assert.ok(warnings[1].message.includes('Qwen2'), warnings[1].message);
 });
 
-// --- registry entries ---
-
 const { lookupModelTokenizer } = await import('./tokenizer-model-map.js');
 const { tokenizerAnswer, tokenizerResponseWarnings, ENCODE_TOKENIZERS } = await import('./tokenizer-resolve.js');
 
-/** Test-only entries under production ids, so they have `tokenizers` values. */
 const testRegistry = [
     { id: 'qwen3', family: 'Test Qwen', format: 'hf-json', sha256: 'a'.repeat(64), bytes: 1, license: 'Test License A', licenseUrl: 'https://example.invalid/a', sources: [] },
     { id: 'kimi', family: 'Test Kimi', format: 'tiktoken', sha256: 'b'.repeat(64), bytes: 1, license: 'Test License B', licenseUrl: 'https://example.invalid/b', sources: [] },
@@ -786,9 +744,8 @@ const testRegistry = [
 /** @type {string[]} */
 const registryLoads = [];
 let nextLoadDownloads = false;
-/** @type {string|null} The license of the source the next download comes from, when not the entry's. */
+/** @type {string|null} */
 let nextLoadLicense = null;
-/** A stub loader: qwen3 encodes to [1000, length], kimi to [2000, length]. */
 const loadPinned = async (entry) => {
     registryLoads.push(entry.id);
     const downloaded = nextLoadDownloads;
@@ -939,7 +896,6 @@ await check('one model, several official files: the vendor\'s own API gets its f
     const openrouter = await resolveTokenizer({ api: 'openai', source: 'openrouter', model: 'test-several-files' }, registryDeps);
     assert.deepEqual({ kind: openrouter.kind, basis: openrouter.basis }, { kind: 'estimate', basis: 'unknown' });
 
-    // No backend is counted as HF-based serving by assumption, so the HF file is used by none.
     const generic = await resolveTokenizer({ api: TEXTGEN, type: TEXTGEN_TYPES.GENERIC, model: 'test-several-files', tokenizerSetting: tokenizers.BEST_MATCH }, registryDeps);
     assert.deepEqual({ kind: generic.kind, basis: generic.basis }, { kind: 'estimate', basis: 'unknown' });
 
@@ -1241,7 +1197,6 @@ await check('a Phi or Nemotron name Microsoft\'s or NVIDIA\'s API serves: its fi
     }
 });
 
-// Rows of OpenRouter's /models reply as it was on 2026-09-28, cut down to the fields read here.
 const OPENROUTER_LIST = [
     { id: 'meta-llama/llama-3.1-8b-instruct', hugging_face_id: 'meta-llama/Meta-Llama-3.1-8B-Instruct' },
     { id: 'qwen/qwen-2.5-72b-instruct', hugging_face_id: 'Qwen/Qwen2.5-72B-Instruct' },
@@ -1267,13 +1222,10 @@ await check('an OpenRouter model resolves by the hugging_face_id OpenRouter list
             ['meta-llama/llama-3.1-8b-instruct', entry(tokenizers.LLAMA3_1, 'llama3.1', 'Llama 3.1')],
             ['qwen/qwen-2.5-72b-instruct', entry(tokenizers.QWEN2_5, 'qwen2.5', 'Qwen2.5')],
             ['deepseek/deepseek-chat-v3.1', entry(tokenizers.DEEPSEEK_V3_1, 'deepseek-v3.1', 'DeepSeek-V3.1')],
-            // Names that alone give every hosted API the estimate: the repo says which weights they are.
             ['deepseek/deepseek-v4-pro', entry(tokenizers.DEEPSEEK_V4, 'deepseek-v4', 'DeepSeek-V4')],
             ['google/gemma-4-31b-it', entry(tokenizers.GEMMA_4, 'gemma-4', 'Gemma 4')],
             ['microsoft/phi-4', entry(tokenizers.PHI_4, 'phi-4', 'Phi-4')],
-            // Kimi entries share one file, so only their own repos name them.
             ['moonshotai/kimi-k3', entry(tokenizers.KIMI_K3, 'kimi-k3', 'Kimi K3')],
-            // A variant suffix OpenRouter doesn't list is the listed model.
             ['deepseek/deepseek-chat-v3.1:nitro', entry(tokenizers.DEEPSEEK_V3_1, 'deepseek-v3.1', 'DeepSeek-V3.1')],
         ];
         for (const [model, expected] of local) {
@@ -1287,7 +1239,6 @@ await check('an OpenRouter model resolves by the hugging_face_id OpenRouter list
             }
         }
 
-        // Mistral's own files disagree, so on OpenRouter only Nemo keeps nemo.json; the rest get none.
         const nemo = await resolveTokenizer({ api: 'openai', source: 'openrouter', model: 'mistralai/mistral-nemo' }, deps);
         assert.deepEqual({ kind: nemo.kind, id: nemo.id }, { kind: 'local', id: tokenizers.NEMO });
 
@@ -1303,7 +1254,6 @@ await check('an OpenRouter model resolves by the hugging_face_id OpenRouter list
             assert.deepEqual({ kind: resolved.kind, basis: resolved.basis }, { kind: 'estimate', basis: 'unknown' }, model);
         }
 
-        // A repo that ships no registry file leaves the model to its OpenRouter id.
         const byName = await resolveTokenizer({ api: 'openai', source: 'openrouter', model: 'meta-llama/llama-3-70b-instruct' }, deps);
         assert.deepEqual({ kind: byName.kind, id: byName.id }, { kind: 'local', id: tokenizers.LLAMA3 });
     } finally {
@@ -1320,7 +1270,6 @@ await check('without OpenRouter\'s model list, an OpenRouter model is unknown, e
             const resolved = await resolveTokenizer({ ...backend, model: 'meta-llama/llama-3-70b-instruct', tokenizerSetting: tokenizers.BEST_MATCH }, deps);
             assert.deepEqual({ kind: resolved.kind, basis: resolved.basis }, { kind: 'estimate', basis: 'unknown' }, JSON.stringify(backend));
         }
-        // Other backends don't read the list.
         const groq = await resolveTokenizer({ api: 'openai', source: 'groq', model: 'meta-llama/llama-3-70b-instruct' }, deps);
         assert.deepEqual({ kind: groq.kind, id: groq.id }, { kind: 'local', id: tokenizers.LLAMA3 });
     } finally {
@@ -1343,8 +1292,6 @@ await check('the old resolvers and their llama defaults are no longer exported',
     }
 });
 
-// --- llama.cpp's own /tokenize (step 22) ---
-
 const customLlamaCpp = await import('./custom-llamacpp.js').catch(error => {
     console.log(`custom-llamacpp.js not importable: ${error.message}`);
     return {};
@@ -1353,12 +1300,9 @@ const { writeSecret } = await import('./endpoints/secrets.js');
 const { writeSettingsKeys } = await import('./settings-store.js');
 const { countChatCompletionMessages } = await import('./endpoints/tokenizers.js');
 
-/** llama.cpp's `GET /props` reply shape (llama.cpp server README, "GET `/props`"). */
 const llamaCppProps = { default_generation_settings: { n_ctx: 4096 }, total_slots: 1, build_info: 'b1-abc' };
 
 /**
- * A fake backend recording each request's method, path, headers and JSON body. `/tokenize` answers
- * one token per UTF-8 byte (with `with_pieces`, each piece that byte as a list), or 500 when `failTokenize`.
  * @param {{ props?: any, propsStatus?: number, models?: string[] }} options
  */
 async function startFakeLlamaCpp({ props = llamaCppProps, propsStatus = 200, models = [] } = {}) {
@@ -1480,7 +1424,6 @@ await check('chat completion, custom URL: the answer is remembered per URL; /sta
         assert.deepEqual([first.kind, second.kind], ['local', 'local']);
         assert.equal(fake.requests.filter(r => r.path === '/props').length, 1, 'probed once');
 
-        // The server came up as llama.cpp; connecting asks again.
         const llamaCpp = await startFakeLlamaCpp();
         const statusUrl = `http://127.0.0.1:${st.address().port}/status`;
         await fetch(statusUrl, {
@@ -1613,8 +1556,6 @@ await check('textgen llamacpp /tokenize failing: a count that begins the prompt 
     assert.equal(tokenizerOutcomeBasis(resolved, fieldOutcome), 'fallback');
 });
 
-// --- tokenizerIdentity: which stored counts a tokenizer may reuse ---
-
 const { tokenizerIdentity } = await import('./tokenizer-resolve.js');
 const crypto = await import('node:crypto');
 const { createRequire } = await import('node:module');
@@ -1701,7 +1642,6 @@ await check('the tokenizer that answered each call: the resolution, its local co
     assert.equal(byCopy.tokenizer, remote.localCopy, 'the copy answered');
     assert.equal(await tokenizerIdentity(byCopy.tokenizer), `file:sentencepiece:${fileSha256(bundled('gemma.model'))}`, 'its count is the copy\'s');
 
-    // The same request's next call can be answered by the remote again: each call reports its own.
     const next = {};
     await countWithTokenizer(remote, 'Hello world', { ...options, encodeTextgenRemote: async () => ({ count: 1, ids: [1] }), answeredOut: next });
     assert.equal(next.tokenizer, remote);

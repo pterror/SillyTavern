@@ -2,19 +2,9 @@ import { describe, test, expect } from '@jest/globals';
 import path from 'node:path';
 import { setConfigFilePath } from '../src/util.js';
 
-// character-card-normalize.js reaches modules that read config at load (through endpoints/worldinfo.js and the engine
-// store), so the config path is set before it is imported.
 setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 const { unsetPrivateFields } = await import('../src/character-card-normalize.js');
 
-// unsetPrivateFields() strips per-user local state (favorite flag, active chat file) from a character object
-// before it's shared - either inbound (import, so a shared card's local state doesn't leak into the importer's
-// library) or outbound (export, so the exporter's own local state doesn't leak into the shared file). It used to
-// live in src/endpoints/characters.js (added in 76c59cbc5, "Unset chat field on import/export") but was dropped
-// during the phase-1 SQLite metadata store refactor (f872377eb) when getCharaCardV2/convertToV2/readFromV2/
-// charaFormatData were moved out to this module - every sibling function made the move except this one, leaving
-// all 5 of characters.js's call sites referencing an undefined function. It's re-added here rather than back in
-// characters.js so it lives alongside the rest of the normalization helpers it was extracted with.
 describe('unsetPrivateFields', () => {
     test('unsets top-level fav, mirrors it false on V1-shaped cards', () => {
         const char = { name: 'Test', fav: true, chat: 'Test - 2024-1-1 @00h00m00s' };

@@ -1,10 +1,3 @@
-//! A run's blocks: sorted entries with their keys prefix-compressed against the entry before, a full key every
-//! `RESTART` entries so a lookup can binary-search, and a checksum.
-//!
-//! Layout: entries, each `shared varint, unshared varint, unshared key bytes, value (Val::encode)`; then the
-//! restart offsets (u32 LE each), their count (u32 LE), the block kind (u8) and a CRC-32C of everything
-//! before it (u32 LE).
-
 use std::sync::Arc;
 
 use super::val::Val;
@@ -32,7 +25,6 @@ impl BlockBuilder {
         self.n == 0
     }
 
-    /// The block's size if it were finished now.
     pub fn size(&self) -> usize {
         self.buf.len() + self.restarts.len() * 4 + TAIL
     }
@@ -41,7 +33,6 @@ impl BlockBuilder {
         &self.last
     }
 
-    /// Adds an entry; keys must come in increasing order.
     pub fn add(&mut self, key: &[u8], val: &Val) {
         debug_assert!(self.n == 0 || key > self.last.as_slice());
         let shared = if self.n.is_multiple_of(RESTART) {
@@ -62,7 +53,6 @@ impl BlockBuilder {
         self.n += 1;
     }
 
-    /// The finished block's bytes; the builder is empty again (its last key kept).
     pub fn finish(&mut self, kind: u8) -> Vec<u8> {
         let mut out = std::mem::take(&mut self.buf);
         for r in self.restarts.drain(..) {
@@ -77,7 +67,6 @@ impl BlockBuilder {
     }
 }
 
-/// A checked block.
 pub struct Block {
     bytes: Vec<u8>,
     entries_end: usize,
@@ -123,8 +112,6 @@ impl Block {
         u32::from_le_bytes(self.bytes[at..at + 4].try_into().unwrap()) as usize
     }
 
-    /// Decodes the key of the entry at `at`, whose key shares a prefix with `key` (the entry before it), into
-    /// `key`. Returns where its value starts (decoded only when asked for) and where the next entry starts.
     fn decode(&self, at: usize, key: &mut Vec<u8>) -> Result<(usize, usize), String> {
         let buf = &self.bytes[..self.entries_end];
         let mut p = at;
@@ -150,10 +137,7 @@ impl Block {
         Ok((val_at, p))
     }
 
-    /// The first entry whose key is at least `target`: its key into `key` (whatever `key` held is replaced), and
-    /// where its value starts; None when every key is below `target`.
     pub fn seek_at_least(&self, target: &[u8], key: &mut Vec<u8>) -> Result<Option<usize>, String> {
-        // The last restart whose key is at most the target.
         let (mut lo, mut hi) = (0, self.restarts);
         while hi - lo > 1 {
             let mid = (lo + hi) / 2;
@@ -179,14 +163,12 @@ impl Block {
         Ok(None)
     }
 
-    /// The value starting at `at`.
     pub fn value(&self, at: usize) -> Result<Val, String> {
         let mut p = at;
         Val::decode(&self.bytes[..self.entries_end], &mut p)
             .ok_or_else(|| "a value doesn't decode".to_string())
     }
 
-    /// The key of the entry at restart `i`, in place: a restart's entry shares nothing with the one before it.
     fn restart_key(&self, i: usize) -> Result<&[u8], String> {
         let buf = &self.bytes[..self.entries_end];
         let mut p = self.restart(i);
@@ -199,7 +181,6 @@ impl Block {
             .ok_or_else(bad)
     }
 
-    /// The bytes of the `Val::Put` starting at `at`, in place; None for any other value.
     pub fn put_bytes(&self, at: usize) -> Option<&[u8]> {
         let buf = &self.bytes[..self.entries_end];
         let mut p = at;
@@ -211,7 +192,6 @@ impl Block {
         buf.get(p..p.checked_add(len)?)
     }
 
-    /// The last restart whose key is below `target`, if any.
     fn last_restart_below(&self, target: &[u8]) -> Result<Option<usize>, String> {
         let (mut lo, mut hi) = (0, self.restarts);
         while lo < hi {
@@ -225,7 +205,6 @@ impl Block {
         Ok(lo.checked_sub(1))
     }
 
-    /// Restart segment `i`'s entries: each key and where its value starts.
     fn segment(&self, i: usize) -> Result<Vec<(Vec<u8>, usize)>, String> {
         let end = if i + 1 < self.restarts {
             self.restart(i + 1)
@@ -244,13 +223,9 @@ impl Block {
     }
 }
 
-/// A position in a block read last first: the keys of one restart segment are decoded at a time, a value only
-/// when asked for.
 pub struct RevCursor {
     block: Arc<Block>,
-    /// The restart segment held.
     seg: usize,
-    /// Its entries: each key and where its value starts.
     entries: Vec<(Vec<u8>, usize)>,
     at: usize,
     pub valid: bool,
@@ -273,7 +248,6 @@ impl RevCursor {
         Ok(c)
     }
 
-    /// At the block's last entry.
     pub fn last(block: Arc<Block>) -> Result<RevCursor, String> {
         let seg = block.restarts.checked_sub(1);
         let mut c = RevCursor::at_segment(block, seg)?;
@@ -281,7 +255,6 @@ impl RevCursor {
         Ok(c)
     }
 
-    /// At the last entry whose key is below `target`.
     pub fn before(block: Arc<Block>, target: &[u8]) -> Result<RevCursor, String> {
         let seg = block.last_restart_below(target)?;
         let mut c = RevCursor::at_segment(block, seg)?;
@@ -291,8 +264,6 @@ impl RevCursor {
         Ok(c)
     }
 
-    /// At the first entry whose key is at least `target`, or the last entry when none is: in an index block, the
-    /// child that holds the last key before `target` (an index entry is its child's last key).
     pub fn covering(block: Arc<Block>, target: &[u8]) -> Result<RevCursor, String> {
         if block.restarts == 0 {
             return RevCursor::at_segment(block, None);
@@ -315,17 +286,14 @@ impl RevCursor {
         &self.entries[self.at].0
     }
 
-    /// The current entry's value.
     pub fn val(&self) -> Result<Val, String> {
         self.block.value(self.entries[self.at].1)
     }
 
-    /// The current entry's value's bytes, in place, if it is a `Val::Put`.
     pub fn put_bytes(&self) -> Option<&[u8]> {
         self.block.put_bytes(self.entries[self.at].1)
     }
 
-    /// Back to the entry before, or past the first.
     pub fn prev(&mut self) -> Result<(), String> {
         if !self.valid {
             return Ok(());
@@ -344,7 +312,6 @@ impl RevCursor {
     }
 }
 
-/// A position in a block: the current entry, or past the end.
 pub struct Cursor {
     block: Arc<Block>,
     next: usize,
@@ -366,19 +333,15 @@ impl Cursor {
         Ok(c)
     }
 
-    /// The current entry's value.
     pub fn val(&self) -> Result<Val, String> {
         self.block.value(self.val_at)
     }
 
-    /// The current entry's value's bytes, in place, if it is a `Val::Put`.
     pub fn put_bytes(&self) -> Option<&[u8]> {
         self.block.put_bytes(self.val_at)
     }
 
-    /// At the first entry whose key is at least `target`.
     pub fn seek(block: Arc<Block>, target: &[u8]) -> Result<Cursor, String> {
-        // The last restart whose key is at most the target.
         let (mut lo, mut hi) = (0, block.restarts);
         while hi - lo > 1 {
             let mid = (lo + hi) / 2;
@@ -407,7 +370,6 @@ impl Cursor {
         Ok(c)
     }
 
-    /// `seek` again, in the same block.
     pub fn reseek(&mut self, target: &[u8]) -> Result<(), String> {
         *self = Cursor::seek(self.block.clone(), target)?;
         Ok(())
@@ -444,7 +406,6 @@ mod tests {
             let c = Cursor::seek(block.clone(), &key(i)).unwrap();
             assert!(c.valid && c.key == key(i));
             assert_eq!(c.val().unwrap(), Val::Put(i.to_le_bytes().to_vec()));
-            // Between key(i - 1) and key(i).
             let mut gap = key(i);
             *gap.last_mut().unwrap() -= 1;
             let c = Cursor::seek(block.clone(), &gap).unwrap();
@@ -464,13 +425,11 @@ mod tests {
     #[test]
     fn reverse_cursors_find_every_key_and_every_gap() {
         let mut b = BlockBuilder::default();
-        // 100 entries: segments of 16, the last one short.
         for i in 0..100 {
             b.add(&key(i), &Val::Put(i.to_le_bytes().to_vec()));
         }
         let block = Arc::new(Block::parse(b.finish(KIND_DATA)).unwrap());
         for i in 0..100 {
-            // The last entry below key(i) is key(i - 1), at every segment boundary too.
             let c = RevCursor::before(block.clone(), &key(i)).unwrap();
             if i == 0 {
                 assert!(!c.valid);
@@ -487,10 +446,8 @@ mod tests {
             let c = RevCursor::before(block.clone(), &gap).unwrap();
             assert_eq!(c.valid, i > 0);
         }
-        // Past the last key: `covering` holds the last entry, `before` too.
         assert!(RevCursor::covering(block.clone(), b"zz").unwrap().key() == key(99));
         assert!(RevCursor::before(block.clone(), b"zz").unwrap().key() == key(99));
-        // Last first, through every segment.
         let mut c = RevCursor::last(block).unwrap();
         let mut n = 100;
         while c.valid {

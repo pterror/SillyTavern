@@ -7,18 +7,11 @@ import lodash from 'lodash';
 
 import { characterContentFieldsFingerprint, characterRowFields, normalizeFav, normalizeTagIds, shallowCharacterData } from '../public/scripts/hash-utils.js';
 
-// The real delta-sync client (character-list.js getCharacters() -> fetchCharactersDelta() -> character-cache.js)
-// against the real server routes: after POST /fav, delta-sync sends its cached record's field hashes and merges only
-// the changed fields into it, which must then be the list row the server shows for it, compared by fav, tag_ids and the content fields. Only modules that can't load in node are replaced: IndexedDB
-// (localforage) by an in-memory store that structured-clones like IndexedDB does, and character-list.js's DOM-bound
-// UI imports.
-
-// writeCharacterData()'s and the JSON importer's DEFAULT_AVATAR_PATH ('./public/img/...') is repo-root-relative.
 const originalCwd = process.cwd();
 
 const USER_HANDLE = 'delta-sync-fav-merge-test-user';
 
-/** @type {Map<string, Map<string, any>>} localforage instance name -> key -> record */
+/** @type {Map<string, Map<string, any>>} */
 const localforageStores = new Map();
 
 function createFakeLocalforageInstance({ name }) {
@@ -42,7 +35,6 @@ function createFakeLocalforageInstance({ name }) {
     };
 }
 
-// One stable array, mutated in place: the mocked module's export is bound once.
 const residentCharacters = [];
 const noop = () => {};
 
@@ -58,7 +50,6 @@ jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({ favsT
 jest.unstable_mockModule('../public/scripts/character-store.js', () => ({
     characters: residentCharacters,
     charactersStore: { get: () => undefined, has: () => false, onChange: () => noop, reindex: noop, reset: noop },
-    // The real resolveCharacterRef over this mock's stores: charactersStore.get() always misses.
     resolveCharacterRef: ref => residentCharacters[ref],
     this_avatar: undefined,
 }));
@@ -137,14 +128,11 @@ const FULL_CARD = {
         extensions: { talkativeness: 0.5, world: 'Lore' },
     },
 };
-// No character_version/creator/tags/creator_notes/world, so the server's shallow projection fills in its defaults.
 const SPARSE_CARD = {
     spec: 'chara_card_v2', spec_version: '2.0', name: 'Sparse',
     data: { name: 'Sparse', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', extensions: {} },
 };
-// Not even data.name.
 const BARE_CARD = { spec: 'chara_card_v2', spec_version: '2.0', name: 'Bare', data: { extensions: {} } };
-// Top-level V1 mirrors disagreeing with data.*.
 const DRIFT_CARD = {
     spec: 'chara_card_v2', spec_version: '2.0', name: 'Old name', tags: ['old'],
     data: {
@@ -152,13 +140,11 @@ const DRIFT_CARD = {
         character_version: '', creator: '', tags: ['new'], creator_notes: 'n', extensions: { world: '' },
     },
 };
-// No spec at all.
 const V1_CARD = { name: 'Legacy', description: 'd', creatorcomment: 'legacy notes', creator: 'c', tags: ['a', 'b'] };
 
 const CARDS = [['full', FULL_CARD], ['sparse', SPARSE_CARD], ['bare', BARE_CARD], ['drifted', DRIFT_CARD], ['V1', V1_CARD]];
 
 /**
- * What a list row shows of fav, tag_ids and the content fields, normalized as the page compares them.
  * @param {any} shallow
  */
 function listFactsOf(shallow) {
@@ -170,8 +156,6 @@ function listFactsOf(shallow) {
 }
 
 /**
- * A cached record's list facts: its character, with the fields its store split off put back, projected as the
- * server's list row is under `includeCreatorNotes`.
  * @param {any} record
  * @param {boolean} includeCreatorNotes
  */
@@ -210,7 +194,6 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
     beforeAll(async () => {
         process.env.SILLYTAVERN_PERFORMANCE_SHALLOWCHARACTERSINCLUDECREATORNOTES = String(creatorNotes);
         process.env.SILLYTAVERN_PERFORMANCE_LAZYLOADCHARACTERS = String(lazy);
-        // Both settings are read at module load, so each mode gets its own module instances.
         jest.resetModules();
 
         const { setConfigFilePath } = await import('../src/util.js');
@@ -254,7 +237,6 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         for (const records of localforageStores.values()) records.clear();
         residentCharacters.length = 0;
         toastrError.mockClear();
-        // The client issues root-relative URLs; route them to the test server.
         globalThis.fetch = (url, init) => realFetch(String(url).startsWith('/') ? `${mode.baseUrl}${url}` : url, init);
     });
 
@@ -279,8 +261,7 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
     }
 
     /**
-     * The list facts of each character's list row (the store's list rows), as the client projects its cached records.
-     * @param {number} expectedRows how many character rows the calling test has written
+     * @param {number} expectedRows
      * @returns {Promise<Map<string, ReturnType<typeof listFactsOf>>>}
      */
     async function serverListFacts(expectedRows) {
@@ -291,8 +272,6 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
     }
 
     /**
-     * Delta-syncs on top of whatever the cache already holds, recording the fields each /batch answer carried for a
-     * character (the paths it set or unset, sorted).
      * @returns {Promise<{cached: Map<string, any>, fieldRequests: string[][]}>}
      */
     async function incrementalSync() {
@@ -316,12 +295,14 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         return { cached: new Map([...cache].filter(([key]) => key.endsWith('.png'))), fieldRequests };
     }
 
-    /** @param {string} avatar @returns {Promise<boolean>} the fav the server stores for this character */
+    /**
+     * @param {string} avatar
+     * @returns {Promise<boolean>}
+     */
     async function storedFav(avatar) {
         return (await user.store.lib.entity(mode.TYPE.character, avatar))?.fav === true;
     }
 
-    /** Syncs the written character into the cache, then toggles fav through /fav and syncs only that change. */
     async function favMergeAgainstServer(avatar, favSequence) {
         const actual = [];
         const expected = [];
@@ -332,15 +313,12 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
             expected.push({ step, fieldRequests: expectedFieldRequests, serverHasRows: true, hashes: Object.fromEntries(server) });
         };
 
-        // The cache has no copy yet: every field of the row comes back.
         const warm = await incrementalSync();
         const record = warm.cached.get(avatar);
         const row = { ...record.character };
         for (const field of record.dedup ?? []) row[field] = row.data[field];
         await recordStep('warm', warm, [[...characterRowFields(row).keys()].sort()]);
-        /** The server's whole row, as `/batch` answers it with no hashes. */
         const rowOf = async () => (await (await postJson('/api/characters/batch', { avatars: [avatar] })).json())[0];
-        /** The fields whose values differ between two rows. */
         const changed = (a, b) => {
             const [fa, fb] = [characterRowFields(a), characterRowFields(b)];
             return [...new Set([...fa.keys(), ...fb.keys()])].filter(k => JSON.stringify(fa.get(k)) !== JSON.stringify(fb.get(k))).sort();
@@ -351,18 +329,13 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
             await postJson('/api/characters/fav', { avatar, fav });
             const fields = changed(rowBefore, await rowOf());
             expect(fields).toEqual(before === fav ? [] : expect.arrayContaining(FAV_FIELDS));
-            // The page sends its copy's field hashes, so only the fields the flip changed come back: fav, its
-            // data.extensions mirror, and a full row's card JSON when the card holds fav. Setting the fav already
-            // stored changes nothing, so there is nothing to sync.
             await recordStep(`fav #${index} ${fav}`, await incrementalSync(), before === fav ? [] : [fields]);
         }
         return { actual, expected };
     }
 
-    // A card carrying both fav mirrors, as an older client or an imported card wrote it.
     const FAV_CARD = { ...FULL_CARD, fav: true, data: { ...FULL_CARD.data, extensions: { ...FULL_CARD.data.extensions, fav: true } } };
 
-    /** The fields a fav flip changes in a row. */
     const FAV_FIELDS = ['["data","extensions","fav"]', '["fav"]'];
 
     describe('field-level merge after POST /fav', () => {

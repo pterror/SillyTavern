@@ -17,12 +17,15 @@ function readView(page) {
     return page.evaluate(async () => (await import('/scripts/character-list.js')).getCharacterView());
 }
 
-/** @param {import('@playwright/test').Page} page @param {object} view */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {object} view
+ */
 function setView(page, view) {
     return page.evaluate(async (view) => (await import('/scripts/character-list.js')).setCharacterView(view), view);
 }
 
-/** Deletes every saved view this user has, so each test starts from none. @param {import('@playwright/test').Page} page */
+/** @param {import('@playwright/test').Page} page */
 async function clearViews(page) {
     await page.evaluate(async () => {
         const headers = window['SillyTavern'].getContext().getRequestHeaders();
@@ -41,7 +44,10 @@ async function openPicker(page) {
     await expect(page.locator('.view_picker_popover')).toBeVisible();
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ */
 async function saveAs(page, name) {
     await openPicker(page);
     await page.locator('.view_picker_save input').fill(name);
@@ -51,7 +57,6 @@ async function saveAs(page, name) {
 
 /** @param {import('@playwright/test').Page} page */
 async function pickerNames(page) {
-    // The saved views' rows; open folders are listed in a section of their own.
     return page.locator('.view_picker_popover .view_picker_row:not(.view_picker_folder) .view_picker_row_name').allTextContents();
 }
 
@@ -104,7 +109,6 @@ test.describe('saved views', () => {
         await page.locator('.view_picker_row', { hasText: 'Three' }).locator('[data-action="delete"]').click();
         await page.locator('.view_picker_confirm').click();
         await expect.poll(() => pickerNames(page)).toEqual(['All characters', 'First', 'Two']);
-        // Three was the view in use, so the list is back to "All characters".
         await expect(page.locator('#character_view_picker .view_picker_name')).toHaveText('All characters');
     });
 

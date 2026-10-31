@@ -50,7 +50,6 @@ export const hook_order = {
 /** @type {MessageFormatter} */
 let instance;
 
-// Exported under the class name so callers can write `import { MessageFormatter } from './message-formatter.js'`.
 export { instance as MessageFormatter };
 
 class MessageFormatter {
@@ -65,10 +64,16 @@ class MessageFormatter {
     /** @type {Map<MessageFormattingStage, { fn: MessageFormattingHook, order: number }[]>} */
     #hooks = new Map();
 
-    /** @type {typeof formatting_stage} @readonly */
+    /**
+     * @type {typeof formatting_stage}
+     * @readonly
+     */
     stage = formatting_stage;
 
-    /** @type {typeof hook_order} @readonly */
+    /**
+     * @type {typeof hook_order}
+     * @readonly
+     */
     order = hook_order;
 
     constructor() {
@@ -90,7 +95,6 @@ class MessageFormatter {
         this.#hooks.get(stage).push({ fn, order });
     }
 
-    // Not meant to be called directly by extensions — invoked internally by messageFormatting at each pipeline point.
     runStage(stage, mes, base) {
         const bucket = this.#hooks.get(stage);
         if (!bucket?.length) return mes;
@@ -111,7 +115,6 @@ class MessageFormatter {
         return mes;
     }
 
-    // Convenience shim over the top-level messageFormatting function, for extensions that already import getContext().
     format(mes, characterName, isSystem, isUser, messageId, sanitizerOverrides = {}, isReasoning = false) {
         return messageFormatting(mes, characterName, isSystem, isUser, messageId, sanitizerOverrides, isReasoning);
     }

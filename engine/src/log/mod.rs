@@ -1,15 +1,3 @@
-//! P1, the record log (design `.plans/2026-10-03-storage-from-needs.md` 3 and 4.1): records appended in commit
-//! order by one writer thread, grouped so every commit that arrives while a sync runs joins the next sync.
-//!
-//! Files: `log-<first block seq, 16 hex digits>.blk` in the log's directory. A position is
-//! `(file index << FILE_SHIFT) | offset in the file`, so the file holding a position follows from the position
-//! alone and nothing per file is kept in memory. A file takes rounds until it reaches `file_target`; a round's
-//! group never crosses files, so every file starts with an item.
-//!
-//! Within a file, items never cross a block boundary, except a record larger than the room left in a block,
-//! which starts at a block start; the item after it starts at the next block start. So every block start that
-//! isn't inside such a record is an item boundary, and a record is decoded by reading its block from the start.
-
 pub mod format;
 
 use std::collections::VecDeque;
@@ -24,12 +12,8 @@ use format::{
     get_uvarint, kind_by_header, skip_body,
 };
 
-/// Bits of a position holding the offset in its file.
 pub const FILE_SHIFT: u32 = 36;
-/// A file takes no new round once it reaches this size; it bounds what opening the log reads.
 pub const FILE_TARGET: u64 = 16 << 20;
-/// Provisional; the plan's stages 2 and 3 record how it was measured (cleaning works per file, so it doesn't
-/// depend on this).
 pub const BLOCK_SIZE: u64 = 4 << 10;
 
 #[derive(Debug, Clone, Copy)]
@@ -54,16 +38,11 @@ pub enum LogError {
         position: u64,
         error: FormatError,
     },
-    /// A position that isn't a durable record's start (or, for iterating, an item boundary).
     Position(u64, &'static str),
-    /// A commit larger than a log file can hold.
     TooLarge(u64),
-    /// An earlier write or sync failed, so nothing more is appended until the log is reopened.
     Failed,
-    /// Bytes inside the log, not at its end, that hold no whole group.
     Corrupt(Corruption),
     Closed,
-    /// A log file that cleaning has removed: nothing points into it any more.
     Gone(u64),
 }
 
@@ -112,30 +91,20 @@ impl From<io::Error> for LogError {
 
 pub type LogResult<T> = Result<T, LogError>;
 
-/// Where a log file is damaged: offsets in the file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Corruption {
     pub file: String,
-    /// Whole groups before the damage.
     pub groups_before: u64,
     pub damaged_from: u64,
-    /// Where the first whole group after the damage starts.
     pub damaged_to: u64,
-    /// Whole groups from `damaged_to` on, one after another.
     pub groups_after: u64,
-    /// Where they end.
     pub after_to: u64,
 }
 
-/// The checksum a group starts from: its position's, so a group's bytes check out only where they were
-/// written (a group that begins with a pad would otherwise also check out from any zero byte in that block).
 fn group_seed(position: u64) -> u32 {
     crc32c::crc32c(&position.to_le_bytes())
 }
 
-/// The end of a whole group of at least one record starting at `start`, from the bytes `rest` that start at
-/// offset `base`. Only the layout and the checksum are checked: ids and times are differences from earlier
-/// records in the block, which may be in the damage.
 fn whole_group_at(block: u64, file: u64, rest: &[u8], base: u64, start: u64) -> Option<u64> {
     let end = base + rest.len() as u64;
     let (mut offset, mut crc, mut records) = (start, group_seed(position(file, start)), 0);
@@ -174,8 +143,6 @@ fn whole_group_at(block: u64, file: u64, rest: &[u8], base: u64, start: u64) -> 
     None
 }
 
-/// Whether a whole group starts anywhere in `rest` (the bytes after the last whole group, from offset `base`):
-/// if one does, the bytes before it are damage, not a torn last group.
 fn find_damage(cfg: &Config, file: u64, rest: &[u8], base: u64) -> Option<Corruption> {
     let end = base + rest.len() as u64;
     let (start, mut group_end) = (base + 1..end)
@@ -213,21 +180,15 @@ fn parse_file_name(cfg: &Config, name: &str) -> Option<u64> {
     (offset == 0 && file_name(cfg, file) == name).then_some(file)
 }
 
-// ---- placement: shared by the writer and every reader ----
-
 fn block_start(block: u64, offset: u64) -> u64 {
     offset - offset % block
 }
 
-/// Where an item of `len` bytes goes from the item boundary `offset`: at `offset` if it fits in the block or
-/// `offset` is a block start, else (after a pad at `offset`) at the next block start.
 fn place(block: u64, offset: u64, len: u64) -> Option<u64> {
     let in_block = offset % block;
     (in_block != 0 && in_block + len > block).then(|| block_start(block, offset) + block)
 }
 
-/// The item boundary after an item at `start` that ends at `end`: `end`, unless the item crossed into a
-/// later block, then the start of the block after the one it ends in.
 fn after(block: u64, start: u64, end: u64) -> u64 {
     if end.is_multiple_of(block) || block_start(block, start) == block_start(block, end) {
         end
@@ -235,8 +196,6 @@ fn after(block: u64, start: u64, end: u64) -> u64 {
         block_start(block, end) + block
     }
 }
-
-// ---- reading a file ----
 
 struct LogFile {
     #[cfg(any(unix, windows))]
@@ -255,7 +214,6 @@ impl LogFile {
         };
     }
 
-    /// Reads up to `buf.len()` bytes at `offset`; fewer only at the end of the file.
     fn read_at(&self, mut buf: &mut [u8], mut offset: u64) -> io::Result<usize> {
         let mut total = 0;
         while !buf.is_empty() {
@@ -281,32 +239,23 @@ impl LogFile {
     }
 }
 
-/// One item read from a file.
 enum Item {
     Record(Record),
-    /// A record stepped over without decoding it (`Scanner::next_item`).
     Skipped,
     Pad,
-    /// A trailer, and whether its checksum holds.
     Trailer(bool),
 }
 
-/// Reads one file's items in order from a block start, keeping the decoding context and the running
-/// checksum of the current group.
 struct Scanner<'a> {
     block: u64,
     file_index: u64,
     file: &'a LogFile,
-    /// Never read at or past this offset.
     limit: u64,
-    /// Bytes of the file from `buf_start`.
     buf: Vec<u8>,
     buf_start: u64,
-    /// The next item's offset.
     offset: u64,
     ctx: Ctx,
     crc: u32,
-    /// The length of the item `next` returned last.
     last_len: u64,
 }
 
@@ -331,7 +280,6 @@ impl<'a> Scanner<'a> {
         self.buf_start + self.buf.len() as u64
     }
 
-    /// Reads on to `end` (capped by the limit and the file's end).
     fn fill_to(&mut self, end: u64) -> io::Result<()> {
         let (want, have) = (end.min(self.limit), self.buf_end());
         if want > have {
@@ -350,23 +298,19 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    /// The next item and its offset; None at the limit or the end of the file.
     fn next(&mut self) -> LogResult<Option<(u64, Item)>> {
         self.next_item(true)
     }
 
-    /// Where the next item starts.
     fn at(&self) -> u64 {
         self.offset
     }
 
-    /// As `next`; a record is decoded only if `decode`, else stepped over (`Item::Skipped`), keeping the context.
     fn next_item(&mut self, decode: bool) -> LogResult<Option<(u64, Item)>> {
         let block = self.block;
         let start = self.offset;
         if start.is_multiple_of(block) {
             self.ctx = Ctx::default();
-            // Bytes before the current block are never needed again.
             self.buf
                 .drain(..((start - self.buf_start) as usize).min(self.buf.len()));
             self.buf_start = start;
@@ -433,7 +377,6 @@ impl<'a> Scanner<'a> {
                     return Ok(Some((start, item)));
                 }
                 Err(FormatError::Incomplete) => {
-                    // Only a record at a block start continues into the next block.
                     let before = self.buf_end();
                     if start.is_multiple_of(block) {
                         self.fill_to(before + block)?;
@@ -448,9 +391,6 @@ impl<'a> Scanner<'a> {
     }
 }
 
-// ---- the log ----
-
-/// The end of the durable log: the item boundary after the last synced trailer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct End {
     file: u64,
@@ -465,7 +405,6 @@ impl End {
 
 pub type Done = Box<dyn FnOnce(LogResult<Vec<u64>>) + Send>;
 
-/// A record with its position and encoded length.
 pub type Positioned = (u64, Record, u64);
 
 struct Pending {
@@ -479,12 +418,9 @@ struct Queue {
     closed: bool,
 }
 
-/// Counts kept for measurement.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Stats {
-    /// Sync rounds: groups written and synced.
     pub rounds: u64,
-    /// Bytes written by appends, pads and trailers included.
     pub bytes: u64,
 }
 
@@ -494,8 +430,6 @@ struct Shared {
     queue: Mutex<Queue>,
     wake: Condvar,
     durable: Mutex<End>,
-    /// Open read handles, most recently used last. Not under wasm, where a file descriptor belongs to the
-    /// thread that opened it.
     #[cfg(not(target_family = "wasm"))]
     readers: Mutex<VecDeque<(u64, Arc<LogFile>)>>,
     stats: Mutex<Stats>,
@@ -504,7 +438,6 @@ struct Shared {
 #[cfg(not(target_family = "wasm"))]
 const READERS: usize = 4;
 
-/// Where the next group goes.
 #[derive(Debug, Clone, Copy)]
 pub struct Cursor {
     pub file: u64,
@@ -513,7 +446,6 @@ pub struct Cursor {
 }
 
 impl Cursor {
-    /// A file's start.
     pub fn file_start(file: u64) -> Cursor {
         Cursor {
             file,
@@ -523,16 +455,13 @@ impl Cursor {
     }
 }
 
-/// The tail file's write handle.
 pub struct TailFile {
     file: u64,
-    /// Whether `file` exists on disk.
     exists: bool,
     handle: Option<File>,
 }
 
 impl TailFile {
-    /// The tail file `file`, which exists.
     pub fn existing(file: u64) -> TailFile {
         TailFile {
             file,
@@ -541,8 +470,6 @@ impl TailFile {
         }
     }
 
-    /// Writes a group's bytes (from `Layout::close`) into `file` and syncs them, creating `file` first if the
-    /// group starts it. Returns the bytes written.
     pub fn write(&mut self, log: &Log, file: u64, runs: &[(u64, Vec<u8>)]) -> LogResult<u64> {
         let shared = &log.shared;
         let path = shared.dir.join(file_name(&shared.cfg, file));
@@ -574,8 +501,6 @@ impl TailFile {
         }
         crate::faults::op(crate::faults::Op::Sync, &path)?;
         handle.sync_data()?;
-        // Under wasm a file descriptor belongs to the thread that opened it, and groups are written from any of
-        // the engine's threads: open the file per group there.
         #[cfg(target_family = "wasm")]
         {
             self.handle = None;
@@ -587,21 +512,16 @@ impl TailFile {
     }
 }
 
-/// How opening finds the log's last file.
 #[derive(Debug, Clone, Copy)]
 pub enum Start {
-    /// List the directory.
     List,
-    /// Probe upward from this file: every file from it to the last exists.
     From(u64),
 }
 
-/// What opening found.
 pub struct Opened {
     pub log: Log,
     pub cursor: Cursor,
     pub tail: TailFile,
-    /// The first file, when the directory was listed.
     pub first_file: Option<u64>,
 }
 
@@ -611,8 +531,6 @@ pub struct Log {
 }
 
 fn sync_dir(dir: &Path) -> io::Result<()> {
-    // A new file's directory entry is durable once its directory is synced. On Windows, as in SQLite, no
-    // directory is synced: NTFS journals the entry, and a directory can't be opened as a file there.
     crate::faults::op(crate::faults::Op::SyncDir, dir)?;
     #[cfg(not(windows))]
     File::open(dir)?.sync_all()?;
@@ -622,7 +540,6 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
 }
 
 impl Log {
-    /// Opens the log in `dir` (created if missing) with its own writer thread for `append`: see `open_parts`.
     pub fn open(dir: &Path, cfg: Config) -> LogResult<Log> {
         let Opened {
             log, cursor, tail, ..
@@ -636,11 +553,6 @@ impl Log {
         Ok(log)
     }
 
-    /// Opens the log in `dir` (created if missing) for a caller that writes the groups itself (`append`
-    /// refuses): finds the last file, reads it to its last group whose checksum holds, and cuts off what
-    /// follows if that is a group a crash tore before its sync returned (never acknowledged). If a whole group
-    /// follows the damage, it fails with `Corrupt` and changes nothing. Later files can't exist: a file is
-    /// created only after the round before it synced.
     pub fn open_parts(dir: &Path, cfg: Config, start: Start) -> LogResult<Opened> {
         assert!(
             cfg.block_size.is_power_of_two()
@@ -704,8 +616,6 @@ impl Log {
                 }
             }
             if len > cursor.offset {
-                // Only the last group can be torn by a crash. If a whole group follows the damage, synced and
-                // acknowledged records would be lost by cutting there: refuse instead, changing nothing.
                 let mut rest = vec![0; (len - cursor.offset) as usize];
                 let n = reader.read_at(&mut rest, cursor.offset)?;
                 rest.truncate(n);
@@ -758,8 +668,6 @@ impl Log {
         &self.shared.cfg
     }
 
-    /// Appends `records` as one commit: durable together, in one sync group. `done` runs on the writer thread
-    /// with their positions once that group's sync has returned, or with the error.
     pub fn append(&self, records: Vec<Record>, done: Done) {
         let mut q = self.shared.queue.lock().unwrap();
         if q.closed {
@@ -771,19 +679,16 @@ impl Log {
         self.shared.wake.notify_one();
     }
 
-    /// Appends and waits for the sync.
     pub fn append_wait(&self, records: Vec<Record>) -> LogResult<Vec<u64>> {
         let (tx, rx) = std::sync::mpsc::channel();
         self.append(records, Box::new(move |r| drop(tx.send(r))));
         rx.recv().unwrap_or(Err(LogError::Closed))
     }
 
-    /// The position after the last durable record.
     pub fn durable_end(&self) -> u64 {
         self.shared.durable.lock().unwrap().position()
     }
 
-    /// Makes the log up to `end` (a group's end, synced) readable.
     pub fn set_durable(&self, end: Cursor) {
         *self.shared.durable.lock().unwrap() = End {
             file: end.file,
@@ -795,12 +700,10 @@ impl Log {
         *self.shared.stats.lock().unwrap()
     }
 
-    /// The path of a log file.
     pub fn file_path(&self, file: u64) -> PathBuf {
         self.shared.dir.join(file_name(&self.shared.cfg, file))
     }
 
-    /// Removes a log file nothing will read again.
     pub fn remove_file(&self, file: u64) -> io::Result<()> {
         #[cfg(not(target_family = "wasm"))]
         self.shared
@@ -844,7 +747,6 @@ impl Log {
         Ok(f)
     }
 
-    /// The record at `pos`, which must be a durable record's start, and its encoded length.
     pub fn read_sized(&self, pos: u64) -> LogResult<(Record, u64)> {
         let end = *self.shared.durable.lock().unwrap();
         if pos >= end.position() {
@@ -874,8 +776,6 @@ impl Log {
         Err(LogError::Position(pos, "not a record's start"))
     }
 
-    /// The records at durable positions, in the order given: each block holding some is decoded once, up to the last
-    /// of them.
     pub fn read_many(&self, positions: &[u64]) -> LogResult<Vec<(Record, u64)>> {
         let end = *self.shared.durable.lock().unwrap();
         let block = self.shared.cfg.block_size;
@@ -890,7 +790,6 @@ impl Log {
             }
             let (file, offset) = split(pos);
             let start = block_start(block, offset);
-            // The positions in this block, in order.
             let mut j = i;
             while j < order.len() {
                 let (f, o) = split(positions[order[j]]);
@@ -939,7 +838,6 @@ impl Log {
             .collect())
     }
 
-    /// The record at `pos` in a file staged in `dir` (a bulk load's, not yet in the log).
     pub fn read_staged(&self, dir: &Path, pos: u64) -> LogResult<(Record, u64)> {
         let (file, offset) = split(pos);
         let reader = match File::open(dir.join(file_name(&self.shared.cfg, file))) {
@@ -964,8 +862,6 @@ impl Log {
         Err(LogError::Position(pos, "not a record's start"))
     }
 
-    /// Writes a group laid out from a file's start (`Layout::close` done) as file `file` in `dir`, synced: a bulk
-    /// load's staging. Returns the bytes written.
     pub fn write_staged(&self, dir: &Path, file: u64, runs: &[(u64, Vec<u8>)]) -> LogResult<u64> {
         let path = dir.join(file_name(&self.shared.cfg, file));
         let handle = OpenOptions::new()
@@ -983,25 +879,18 @@ impl Log {
         Ok(bytes)
     }
 
-    /// The name of log file `file`.
     pub fn file_name(&self, file: u64) -> String {
         file_name(&self.shared.cfg, file)
     }
 
-    /// The record at `pos`, which must be a durable record's start.
     pub fn read(&self, pos: u64) -> LogResult<Record> {
         self.read_sized(pos).map(|(r, _)| r)
     }
 
-    /// Up to `limit` durable records from `from` (0, a record's position, or a `next` returned here), with
-    /// their positions and encoded lengths, and the position to continue from. A file that cleaning removed
-    /// is `Gone`.
     pub fn iterate_sized(&self, from: u64, limit: usize) -> LogResult<(Vec<Positioned>, u64)> {
         self.iterate_from(from, limit, false)
     }
 
-    /// As `iterate_sized`, but only within `from`'s file: at its end, the position returned is the next
-    /// file's start, which isn't opened.
     pub fn iterate_file(&self, from: u64, limit: usize) -> LogResult<(Vec<Positioned>, u64)> {
         self.iterate_from(from, limit, true)
     }
@@ -1048,7 +937,6 @@ impl Log {
             if out.len() == limit || file == end.file {
                 break;
             }
-            // This file is done: the log goes on in the next.
             file += 1;
             scan_from = 0;
             next = position(file, 0);
@@ -1059,13 +947,11 @@ impl Log {
         Ok((out, next))
     }
 
-    /// Up to `limit` durable records from `from`, as `iterate_sized` without the lengths.
     pub fn iterate(&self, from: u64, limit: usize) -> LogResult<(Vec<(u64, Record)>, u64)> {
         let (records, next) = self.iterate_sized(from, limit)?;
         Ok((records.into_iter().map(|(p, r, _)| (p, r)).collect(), next))
     }
 
-    /// Lets the writer finish what is queued, then stops it. Later appends fail with `Closed`.
     pub fn close(&self) {
         self.shared.queue.lock().unwrap().closed = true;
         self.shared.wake.notify_one();
@@ -1110,7 +996,6 @@ fn writer_loop(shared: &Arc<Shared>, mut tail: TailFile, mut cursor: Cursor) {
                 for (p, result) in done {
                     (p.done)(result);
                 }
-                // Commits the round had no room for go first in the next.
                 if !batch.is_empty() {
                     let mut q = shared.queue.lock().unwrap();
                     while let Some(p) = batch.pop_back() {
@@ -1119,8 +1004,6 @@ fn writer_loop(shared: &Arc<Shared>, mut tail: TailFile, mut cursor: Cursor) {
                 }
             }
             Err(e) => {
-                // What reached the file is unknown, so nothing more is appended; reopening recovers to the
-                // last group whose checksum holds.
                 failed = true;
                 let msg = e.to_string();
                 for p in done.into_iter().map(|(p, _)| p).chain(batch) {
@@ -1131,7 +1014,6 @@ fn writer_loop(shared: &Arc<Shared>, mut tail: TailFile, mut cursor: Cursor) {
     }
 }
 
-/// A group's bytes, laid out from a cursor as runs of contiguous bytes.
 pub struct Layout {
     block: u64,
     pub file: u64,
@@ -1141,7 +1023,6 @@ pub struct Layout {
     crc: u32,
 }
 
-/// A layout's state, to go back to.
 #[derive(Clone, Copy)]
 pub struct Mark {
     offset: u64,
@@ -1158,8 +1039,6 @@ impl Mark {
 }
 
 impl Layout {
-    /// A group starting at `at`, or at the next file's start once `at`'s file has reached its target size
-    /// (unless `stay`: while a bulk load holds the files after it).
     pub fn start(cfg: &Config, at: Cursor, stay: bool) -> Layout {
         let at = if at.offset >= cfg.file_target && !stay {
             Cursor {
@@ -1180,7 +1059,6 @@ impl Layout {
         }
     }
 
-    /// Bytes laid out in the group's file so far, from its start.
     pub fn offset(&self) -> u64 {
         self.offset
     }
@@ -1214,8 +1092,6 @@ impl Layout {
         }
     }
 
-    /// Lays out an item of `len` bytes from here: a pad first if it must go to the next block. Returns
-    /// where it starts.
     fn make_room(&mut self, len: u64) -> u64 {
         if let Some(next_block) = place(self.block, self.offset, len) {
             self.push(self.offset, &[PAD]);
@@ -1228,7 +1104,6 @@ impl Layout {
         self.offset
     }
 
-    /// Lays out a record; returns its position and encoded length.
     pub fn record(&mut self, rec: &Record) -> (u64, u64) {
         let at_block_start = self.offset.is_multiple_of(self.block);
         let mut ctx = if at_block_start {
@@ -1240,7 +1115,6 @@ impl Layout {
         encode(rec, &mut ctx, &mut bytes);
         let at = self.make_room(bytes.len() as u64);
         if !at_block_start && at.is_multiple_of(self.block) {
-            // Moved to the next block: encode again against its fresh context.
             ctx = Ctx::default();
             bytes.clear();
             encode(rec, &mut ctx, &mut bytes);
@@ -1252,7 +1126,6 @@ impl Layout {
         (position(self.file, at), bytes.len() as u64)
     }
 
-    /// Ends the group with its trailer; returns where the next group goes.
     pub fn close(&mut self) -> Cursor {
         let at = self.make_room(TRAILER_LEN as u64);
         let mut bytes = [TRAILER; TRAILER_LEN];
@@ -1267,14 +1140,10 @@ impl Layout {
     }
 }
 
-/// The largest commit a group can take: a group ends past `file_target` by at most its last commit, and
-/// offsets stay below 2^FILE_SHIFT.
 pub fn max_commit(cfg: &Config) -> u64 {
     (1u64 << FILE_SHIFT) - cfg.file_target - cfg.block_size
 }
 
-/// Writes one group from the front of `batch` and syncs it, moving the commits it took to `done` with their
-/// results. Commits it has no room for stay in `batch`.
 fn write_round(
     log: &Log,
     tail: &mut TailFile,
@@ -1308,7 +1177,6 @@ fn write_round(
     Ok(())
 }
 
-/// `write_all_at` through the fault seam (`crate::faults`): a write a test tears is written in part, then fails.
 fn write_hooked(path: &Path, file: &File, bytes: &[u8], offset: u64) -> io::Result<()> {
     match crate::faults::write(path, offset, bytes.len())? {
         None => write_all_at(file, bytes, offset),

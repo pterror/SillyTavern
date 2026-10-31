@@ -1,11 +1,7 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// The fields the text APIs share (response length, context size, its unlock, each API's streaming), drawn by the new
-// page from the server's settings view (packages/areas/settings/page/common.tsx).
-
 /**
- * The stored settings, as the server has them.
  * @param {import('@playwright/test').Page} page
  */
 async function stored(page) {
@@ -18,7 +14,6 @@ async function stored(page) {
 }
 
 /**
- * Saves settings keys as the old page does (for what isn't the panel's).
  * @param {import('@playwright/test').Page} page
  * @param {Record<string, unknown>} keys
  */
@@ -32,7 +27,6 @@ async function savePartial(page, keys) {
 }
 
 /**
- * Edits a control as the user does (it's in a closed drawer, so by its events).
  * @param {import('@playwright/test').Page} page
  * @param {string} selector
  * @param {string} value

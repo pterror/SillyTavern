@@ -66,23 +66,19 @@ fn get(s: &Store, table: u64, n: u64) -> Option<(u64, Vec<u8>)> {
 fn results_are_kept_marked_used_replaced_and_evicted_least_recently_used_first() {
     let dir = temp_dir("lru");
     let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
-    // Keys 0..40 in table 0 at times 1000 + n; one key in table 1.
     for n in 0..40 {
         put(&s, vec![p(0, n, &[n as u8], false)], 1000 + n);
     }
     put(&s, vec![p(1, 0, b"ids", false)], 5);
     assert_eq!(s.chat_read(|v| token_cache::count(v, 0)).unwrap(), 40);
     assert_eq!(get(&s, 0, 3), Some((1003, vec![3])));
-    // Used again within the granularity: nothing changes; after it, marked used, the value kept.
     put(&s, vec![p(0, 3, b"other", false)], 1050);
     assert_eq!(get(&s, 0, 3), Some((1003, vec![3])));
     put(&s, vec![p(0, 3, b"other", false)], 2000);
     assert_eq!(get(&s, 0, 3), Some((2000, vec![3])));
-    // Replaced on purpose; twice in one batch, the later wins.
     put(&s, vec![p(0, 4, b"a", true), p(0, 4, b"b", true)], 2001);
     assert_eq!(get(&s, 0, 4), Some((2001, b"b".to_vec())));
     assert_eq!(s.chat_read(|v| token_cache::count(v, 0)).unwrap(), 40);
-    // Down to 30 in slices of 4: the oldest go (0..13 but not 3 or 4), table 1 untouched.
     while evict(&s, 0, 30, 4) {}
     assert_eq!(s.chat_read(|v| token_cache::count(v, 0)).unwrap(), 30);
     let kept: Vec<u64> = (0..40).filter(|n| get(&s, 0, *n).is_some()).collect();
@@ -92,7 +88,6 @@ fn results_are_kept_marked_used_replaced_and_evicted_least_recently_used_first()
     assert_eq!(kept, want);
     assert!(!evict(&s, 0, 30, 4));
     assert_eq!(get(&s, 1, 0), Some((5, b"ids".to_vec())));
-    // Kept through a clean reopen.
     drop(s);
     let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     assert_eq!(s.chat_read(|v| token_cache::count(v, 0)).unwrap(), 30);

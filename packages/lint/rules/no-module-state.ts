@@ -1,7 +1,5 @@
 import type { CreateRule } from 'vite-plus/lint/plugins';
 
-// State the page keeps lives in the client's view cache, owned by one module. A `let` at module level is a second
-// copy nobody else can see change.
 const rule: CreateRule = {
     meta: {
         type: 'problem',

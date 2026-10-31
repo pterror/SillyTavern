@@ -52,9 +52,8 @@ router.post('/upload', async (request, response) => {
 });
 
 /**
- * Deletes a single file at a client-relative path, validating it stays under the user's files directory.
- * @param {import('express').Request} request The HTTP request object (used for `request.user.directories`).
- * @param {string} relativePath Client-relative path of the file to delete.
+ * @param {import('express').Request} request
+ * @param {string} relativePath
  * @returns {{ok: true}|{ok: false, status: number}}
  */
 function deleteOneFile(request, relativePath) {
@@ -74,7 +73,6 @@ function deleteOneFile(request, relativePath) {
 
 router.post('/delete', async (request, response) => {
     try {
-        // ── Bulk mode: paths array is present ─────────────────────
         if (Array.isArray(request.body.paths)) {
             const results = request.body.paths.map(p => {
                 if (typeof p !== 'string' || !p) {

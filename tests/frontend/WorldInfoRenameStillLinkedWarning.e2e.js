@@ -1,20 +1,15 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// Renaming a lorebook doesn't warn which characters still have the old name as their primary lorebook before the
-// relink prompt: that list is out of date as soon as the answer is yes. After the prompt, the characters left on
-// the old name (declined, or the relink failed) are listed.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
 /**
- * Creates characters through the API, each with `world` as its primary lorebook.
  * @param {import('@playwright/test').Page} page
  * @param {string[]} names
  * @param {string} world
- * @returns {Promise<string[]>} The avatar filenames, in the order of `names`.
+ * @returns {Promise<string[]>}
  */
 async function createCharacters(page, names, world) {
     return page.evaluate(async ({ names, world }) => {
@@ -51,7 +46,7 @@ async function deleteCharacters(page, avatars) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
- * @returns {Promise<string>} The stored card's primary lorebook.
+ * @returns {Promise<string>}
  */
 async function storedWorld(page, avatar) {
     return page.evaluate(async (avatar) => {
@@ -80,14 +75,11 @@ async function deleteWorlds(page, worldNames) {
 }
 
 /**
- * Renames `oldName` to `newName` through the editor's rename button, answering the relink prompt with `relink`,
- * and waits for the rename to finish.
  * @param {import('@playwright/test').Page} page
  * @param {string} oldName
  * @param {string} newName
  * @param {boolean} relink
- * @returns {Promise<{ confirmAsked: boolean, warningsAtPrompt: string[] }>} warningsAtPrompt: the text of every
- * warning toast naming `oldName` on screen when the relink prompt was asked.
+ * @returns {Promise<{ confirmAsked: boolean, warningsAtPrompt: string[] }>}
  */
 async function renameWorld(page, oldName, newName, relink) {
     return page.evaluate(async ({ oldName, newName, relink }) => {
@@ -111,7 +103,6 @@ async function renameWorld(page, oldName, newName, relink) {
                     .filter(text => text.includes(oldName));
                 return relink ? POPUP_RESULT.AFFIRMATIVE : POPUP_RESULT.NEGATIVE;
             };
-            // The editor switches to the new name as the rename's last step, after the relink and its warning.
             const onChange = () => {
                 if (confirmAsked && String($('#world_editor_select').find(':selected').text()) === newName) {
                     $('#world_editor_select').off('change', onChange);
@@ -134,7 +125,6 @@ const warningsNaming = (page, worldName) => page.locator('#toast-container .toas
 test.describe('renaming a lorebook characters link to', () => {
     test.beforeEach(testSetup.awaitST);
 
-    // relinkFails: the rename moves no character's link and answers that it failed for each.
     for (const { relink, relinkFails, title, left } of [
         { relink: true, relinkFails: false, title: 'no warning when the relink is accepted', left: false },
         { relink: false, relinkFails: false, title: 'lists the characters left on the old name after the relink is declined', left: true },

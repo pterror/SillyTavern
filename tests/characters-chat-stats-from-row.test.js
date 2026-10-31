@@ -4,7 +4,6 @@ import path from 'node:path';
 import os from 'node:os';
 import process from 'node:process';
 
-// writeCharacterData()'s and the JSON importer's DEFAULT_AVATAR_PATH ('./public/img/...') is repo-root-relative.
 const originalCwd = process.cwd();
 
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
@@ -68,7 +67,6 @@ describe('every route sending a character takes chat_size and date_last_chat fro
     test('a character whose row and chats folder disagree', async () => {
         const avatar = 'Zorkmid.png';
         expect((await postJson('/api/characters/create', { ch_name: 'Zorkmid', file_name: 'Zorkmid', description: 'd' })).status).toBe(200);
-        // The character's chat messages are what the stats come from; the chats folder (a stray file) is not read.
         await fixture.saveBranch(user.store, { avatar }, 'Zorkmid chat', [{}, { name: 'User', is_user: true, mes: 'hello there', send_date: 5678, extra: {} }]);
         const tree = await fixture.treeOf(user.store, { avatar });
         const stats = (await user.store.lib.chatStats([tree])).get(tree);

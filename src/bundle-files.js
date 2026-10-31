@@ -4,14 +4,6 @@ import path from 'node:path';
 import sanitize from 'sanitize-filename';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
-/**
- * The bundles' files (the settings model, step 7): sampler presets by API family, templates, themes and quick reply
- * sets, each a JSON file named by the bundle in its group's folder. Every route that reads or writes one goes
- * through here, and so does the compat edge's `bundles` (settings-compat.js); the model's switch (its step 10)
- * changes these and nothing else.
- */
-
-/** Each group's folder, a user directories key. */
 export const BUNDLE_FOLDERS = Object.freeze({
     'preset.openai': 'openAI_Settings',
     'preset.textgenerationwebui': 'textGen_Settings',
@@ -28,7 +20,6 @@ export const BUNDLE_FOLDERS = Object.freeze({
 const EXTENSION = '.json';
 
 /**
- * The group of an upstream preset API id (`/api/presets/*`'s `apiId`), or undefined for none.
  * @param {unknown} apiId
  * @returns {keyof typeof BUNDLE_FOLDERS | undefined}
  */
@@ -61,7 +52,6 @@ export function bundleFolder(directories, group) {
 }
 
 /**
- * A bundle's file path, its name sanitized; undefined for a group or name there can't be.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} group
  * @param {unknown} name
@@ -73,7 +63,6 @@ export function bundleFilePath(directories, group, name) {
 }
 
 /**
- * A bundle's file, parsed; null when there's none or it isn't JSON.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} group
  * @param {unknown} name
@@ -94,7 +83,7 @@ export function readBundleFile(directories, group, name) {
  * @param {string} group
  * @param {unknown} name
  * @param {unknown} content
- * @returns {string | undefined} The name it was written under (sanitized), or undefined when it can't be.
+ * @returns {string | undefined}
  */
 export function writeBundleFile(directories, group, name, content) {
     const file = bundleFilePath(directories, group, name);
@@ -107,7 +96,7 @@ export function writeBundleFile(directories, group, name, content) {
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} group
  * @param {unknown} name
- * @returns {boolean} Whether there was one.
+ * @returns {boolean}
  */
 export function deleteBundleFile(directories, group, name) {
     const file = bundleFilePath(directories, group, name);
@@ -134,13 +123,9 @@ export function renameBundleFile(directories, group, name, newName) {
 }
 
 /**
- * Every bundle file of a group that is JSON, by name: its text as stored and its parse. A file that isn't JSON is
- * left out, warned.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} group
- * @param {{ order?: 'locale' | 'code', skipped?: (file: string) => void }} [options] How the file names sort: by
- *   locale (the presets' order) or by code unit (the templates', themes' and quick reply sets'); `skipped` hears of
- *   each file left out (instead of the warning).
+ * @param {{ order?: 'locale' | 'code', skipped?: (file: string) => void }} [options]
  * @returns {{ name: string, text: string, file: any }[]}
  */
 export function listBundleFiles(directories, group, { order = 'code', skipped } = {}) {
@@ -163,7 +148,6 @@ export function listBundleFiles(directories, group, { order = 'code', skipped } 
 }
 
 /**
- * The compat edge's view of the user's bundle files.
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {import('./settings-model/settings-compat.js').BundleFiles}
  */

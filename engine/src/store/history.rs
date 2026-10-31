@@ -1,21 +1,3 @@
-//! History: every change to an entity's values kept, with who made it and when, so it can be read back, reverted,
-//! restored after a delete, or forgotten.
-//!
-//! A change is a record with an id from the state layer's id space (`state::CHANGE` points at it, which keeps it
-//! live): `histSet`, `histEdit` (a text diff, for JSON values too), `histDelete` of a field; `histPlace` of a list
-//! item; `histEntityDelete` and `histRestore` of the entity. `HIST` files an entity's changes by field (a list item's
-//! under its text field; the entity's own under none), each field's value changes and place changes apart (`Part`),
-//! by id. A field's current value is still its head (`key::HEAD`, text or JSON), rebuilt from `HIST` on
-//! each change from the latest full value and the edits after it, so a current read never walks history and a
-//! write walks only the head's edits.
-//!
-//! Forgetting removes past changes, never a field's current one. A forgotten change whose next change is an edit of
-//! it has that edit rewritten from the value before it, keeping its id, who and when. With a marker, the forget record
-//! takes the forgotten changes' place in `HIST` (one marker per field, its `MARKS` counting them). Forgetting an
-//! entity's history up to now keeps each field's latest value and place change (an edit rewritten as a full value)
-//! and its latest entity change; the rest goes a slice at a time (`forget_step`), and reads as gone from the commit
-//! on: what stays below the forget's bound is listed per field (`KEEP`), so a read skips straight past the rest.
-
 use std::collections::BTreeMap;
 
 use super::StoreError;
@@ -37,26 +19,14 @@ use crate::log::format::{
     Ctx, FieldRef, Record, Value, encode, get_uvarint, kind_by_name, wtf8_to_utf16,
 };
 
-/// Per (entity, field or none, part, change id): the change; or, holding a forget's id, that forget's marker in the
-/// place of the changes it forgot.
 pub const HIST: u64 = 210;
-/// Per (entity, field, n): the n-th edit of a JSON value written with its history since its last full value (its
-/// head is the field's `key::HEAD`, as `Cur::Json`).
 pub const JSON_EDIT: u64 = 212;
-/// Per deleted entity: `[position, length]` of the record its entity entry pointed at, and the delete's position.
 pub const GONE: u64 = 213;
-/// Per (book, deleted entry): `[flags, place in the book, displayIndex bits]` (flag 1: a place, 2: an index).
 pub const DELETED: u64 = 214;
-/// Per forget with a marker: its markers in `HIST` (a counter).
 pub const MARKS: u64 = 215;
-/// Per entity whose history up to a change is being forgotten: `[upto, record position, record length, marker id
-/// + 1 or 0]`, then the `HIST` key the next slice starts at.
 pub const FORGET: u64 = 216;
-/// Per (entity, field or none) with changes the entity's pending forget removes: the (part, id) of its entries
-/// below the bound that stay (its kept changes and its marker).
 pub const KEEP: u64 = 217;
 
-/// Changes a slice of a forget removes.
 pub const FORGET_SLICE: usize = 256;
 
 fn refused(why: String) -> StoreError {
@@ -67,9 +37,6 @@ fn corrupt(why: &str) -> StoreError {
     StoreError::Entry(format!("history: {why}"))
 }
 
-// ---- keys ----
-
-/// The two parts of a field's history: its value changes (or the entity's own), and a list item's place changes.
 type Part = u8;
 const VALUES: Part = 0;
 const PLACES: Part = 1;
@@ -88,7 +55,6 @@ fn put_slot(k: &mut Vec<u8>, slot: Option<&FieldRef>) {
     }
 }
 
-/// The prefix of an entity's changes of `slot` (a field; None: the entity's own).
 fn slot_prefix(e: u64, slot: Option<&FieldRef>) -> Vec<u8> {
     let mut k = key::id(HIST, e);
     put_slot(&mut k, slot);
@@ -107,7 +73,6 @@ fn hist_key(e: u64, slot: Option<&FieldRef>, part: Part, c: u64) -> Vec<u8> {
     k
 }
 
-/// The slot, part and change id of a `HIST` key of entity `e`.
 fn parse_hist(e: u64, k: &[u8]) -> Result<(Option<FieldRef>, Part, u64), StoreError> {
     let mut at = key::id(HIST, e).len();
     let bad = || corrupt("a history key doesn't decode");
@@ -152,7 +117,6 @@ fn change_key(c: u64) -> Vec<u8> {
     key::id(CHANGE, c)
 }
 
-/// A `HIST` entry's marker: the forget whose marker it is, or None for a change.
 fn marker_of(b: &[u8]) -> Result<Option<u64>, StoreError> {
     if b.is_empty() {
         Ok(None)
@@ -161,9 +125,6 @@ fn marker_of(b: &[u8]) -> Result<Option<u64>, StoreError> {
     }
 }
 
-// ---- records ----
-
-/// What a change record is a change of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Family {
     Value,
@@ -186,7 +147,6 @@ fn part_of(fam: Family) -> Part {
     if fam == Family::Place { PLACES } else { VALUES }
 }
 
-/// Who made a change and when.
 #[derive(Debug, Clone, PartialEq)]
 struct Meta {
     id: Option<u64>,
@@ -195,7 +155,6 @@ struct Meta {
     user: Option<u64>,
 }
 
-/// The slots of a kind's id, time, session and user.
 fn meta_slots(kind: &str) -> Option<[usize; 4]> {
     Some(match kind {
         "histSet" | "histPlace" | "histRestore" | "histForget" => [4, 5, 6, 7],
@@ -229,7 +188,6 @@ impl Meta {
         self.id.expect("a change record has an id")
     }
 
-    /// Its values after the change's own: id, time, session, user.
     fn values(&self) -> [Value; 4] {
         [
             Value::Id(self.change()),
@@ -301,7 +259,6 @@ fn opt_uint(rec: &Record, i: usize) -> Option<u64> {
     }
 }
 
-/// The field a change record is filed under (None: the entity's own).
 fn slot_of(rec: &Record) -> Option<FieldRef> {
     match family(rec) {
         Some(Family::Value) => Some(field(rec, 1).clone()),
@@ -310,7 +267,6 @@ fn slot_of(rec: &Record) -> Option<FieldRef> {
     }
 }
 
-/// The record at `l`: `extra` when it is the one being derived (not readable from the view yet).
 fn read_at(view: &View, extra: Option<(u64, &Record)>, l: Loc) -> Result<Record, StoreError> {
     match extra {
         Some((p, r)) if p == l.pos => Ok(r.clone()),
@@ -324,8 +280,6 @@ fn encoded_len(rec: &Record) -> u64 {
     b.len() as u64
 }
 
-/// One edit turning `before` into `after`: what lies between their common start and end, at character boundaries
-/// (bytes 0x80..0xc0 continue a character in WTF-8).
 pub fn one_edit(before: &[u8], after: &[u8]) -> (u64, u64, Vec<u8>) {
     let cont = |b: Option<&u8>| b.is_some_and(|b| (0x80..0xc0).contains(b));
     let max = before.len().min(after.len());
@@ -350,10 +304,6 @@ pub fn one_edit(before: &[u8], after: &[u8]) -> (u64, u64, Vec<u8>) {
     )
 }
 
-// ---- walking ----
-
-/// Each entry of one part of `slot` below change `end` (None: all), last first, read in batches of `page`: (change
-/// id, marker); `each` says whether to go on.
 fn walk_back(
     view: &View,
     e: u64,
@@ -384,7 +334,6 @@ fn walk_back(
     }
 }
 
-/// The latest change of one part of `slot` (a marker never is: what is forgotten is never a part's latest).
 fn latest(
     view: &View,
     e: u64,
@@ -399,13 +348,11 @@ fn latest(
     Ok(last)
 }
 
-/// The change record of id `c`.
 fn change(view: &View, extra: Option<(u64, &Record)>, c: u64) -> Result<(Loc, Record), StoreError> {
     let l = change_loc(view, c)?.ok_or_else(|| corrupt("a change in the history has no record"))?;
     Ok((l, read_at(view, extra, l)?))
 }
 
-/// Each slot of entity `e` with history, in key order.
 fn slots(view: &View, e: u64) -> Result<Vec<Option<FieldRef>>, StoreError> {
     let hp = key::id(HIST, e);
     let end = key::prefix_end(&hp);
@@ -419,13 +366,8 @@ fn slots(view: &View, e: u64) -> Result<Vec<Option<FieldRef>>, StoreError> {
     Ok(out)
 }
 
-// ---- values ----
-
-/// A value: whether it is JSON, and its text. None: no value.
 pub type Got = Option<(bool, Vec<u8>)>;
 
-/// A value change's records back to its full value: the full value and the edits after it, in order. No base: the
-/// field has no value there.
 struct Chain {
     base: Option<(Loc, Record)>,
     edits: Vec<(Loc, Record)>,
@@ -453,7 +395,6 @@ impl Chain {
     }
 }
 
-/// The chain of field `f`'s latest value change below `end` (None: its latest).
 fn chain_before(
     view: &View,
     extra: Option<(u64, &Record)>,
@@ -500,12 +441,10 @@ fn chain_before(
     Ok(Chain { base, edits })
 }
 
-/// Field `f`'s value as of change `c` (a value change of it).
 fn value_at(view: &View, e: u64, f: &FieldRef, c: u64) -> Result<Got, StoreError> {
     chain_before(view, None, e, f, Some(c + 1))?.value()
 }
 
-/// A JSON head's value.
 fn json_of_head(view: &View, e: u64, f: &FieldRef, head: &Head) -> Result<Vec<u8>, StoreError> {
     let (full, _) = view.record(head.full.pos)?;
     let mut v = bytes(&full, 2).to_vec();
@@ -529,7 +468,6 @@ fn json_head(view: &View, e: u64, f: &FieldRef) -> Result<Option<Head>, StoreErr
     })
 }
 
-/// The value entity `e`'s field `f` has by its head `cur`: whether it is JSON, and its text.
 pub(super) fn value_of(
     view: &View,
     e: u64,
@@ -546,7 +484,6 @@ pub(super) fn value_of(
     })
 }
 
-/// Entity `e`'s JSON value of `f`: a `jsonValue` record's, or a diffed one's.
 pub fn json_value(view: &View, e: u64, f: &FieldRef) -> Result<Option<Vec<u8>>, StoreError> {
     match Cur::get(view, e, f)? {
         Some(cur @ (Cur::Json(_) | Cur::Whole(_))) => Ok(Some(value_of(view, e, f, &cur)?.1)),
@@ -554,14 +491,12 @@ pub fn json_value(view: &View, e: u64, f: &FieldRef) -> Result<Option<Vec<u8>>, 
     }
 }
 
-/// Field `f`'s current value.
 fn current(view: &View, e: u64, f: &FieldRef) -> Result<Got, StoreError> {
     Cur::get(view, e, f)?
         .map(|cur| value_of(view, e, f, &cur))
         .transpose()
 }
 
-/// The edit bytes since the full value of field `f`'s current head.
 fn head_edit_bytes(view: &View, e: u64, f: &FieldRef) -> Result<u64, StoreError> {
     Ok(match Cur::get(view, e, f)? {
         Some(Cur::Text(h) | Cur::Json(h)) => h.edit_bytes(),
@@ -569,8 +504,6 @@ fn head_edit_bytes(view: &View, e: u64, f: &FieldRef) -> Result<u64, StoreError>
     })
 }
 
-/// The record making field `f` `new` from `base` (whose chain has `base_bytes` of edits): an edit of it, unless the
-/// edits since the full value would reach the new value's size (a read stays within about twice it).
 fn value_record(e: u64, f: &FieldRef, base: &Got, base_bytes: u64, new: &Got, m: &Meta) -> Record {
     let Some((json, v)) = new else {
         return delete_record(e, f, m);
@@ -586,7 +519,6 @@ fn value_record(e: u64, f: &FieldRef, base: &Got, base_bytes: u64, new: &Got, m:
     set_record(e, f, *json, v.clone(), m)
 }
 
-/// Field `f`'s head (text or JSON) becomes `chain`'s, writing only the edit entries that change.
 fn set_head(
     view: &View,
     out: &mut Out,
@@ -603,13 +535,11 @@ fn set_head(
             h.edit_key(f, n)
         }
     };
-    // The edit entries the new head finds in place: those of the old head, if of its kind.
     let mut in_place: Vec<Option<Loc>> = Vec::new();
     let cur = Cur::get(view, e, f)?;
     let old = match cur {
         Some(Cur::Text(old)) => Some((false, old)),
         Some(Cur::Json(old)) => Some((true, old)),
-        // A value written whole before (no history): its record dies with it.
         Some(Cur::Whole(l)) => {
             dead(out, l);
             None
@@ -659,7 +589,6 @@ fn set_head(
     Ok(())
 }
 
-/// Removes field `f`'s head, as its entity goes.
 fn drop_head(view: &View, out: &mut Out, e: u64, f: &FieldRef) -> Result<(), StoreError> {
     let none = Chain {
         base: None,
@@ -668,7 +597,6 @@ fn drop_head(view: &View, out: &mut Out, e: u64, f: &FieldRef) -> Result<(), Sto
     set_head(view, out, e, f, &none)
 }
 
-/// What reads field `f` hears of its value going from `old` to `new`: search, the library's orders, tags, books.
 fn changed(
     view: &View,
     out: &mut Out,
@@ -705,8 +633,6 @@ fn changed(
     Ok(())
 }
 
-// ---- places ----
-
 fn item_at_key(e: u64, list: u64, item: u64) -> Vec<u8> {
     let mut k = key::ids(key::ITEM_AT, e, list);
     put_u64(&mut k, item);
@@ -719,7 +645,6 @@ fn item_key(e: u64, list: u64, position: u64) -> Vec<u8> {
     k
 }
 
-/// The list and item of a list item's text field.
 fn item_of(f: &FieldRef) -> Option<(u64, u64)> {
     match f {
         FieldRef::Code(c) if *c >= ITEM_BASE => {
@@ -729,7 +654,6 @@ fn item_of(f: &FieldRef) -> Option<(u64, u64)> {
     }
 }
 
-/// An item's latest place change: its record's place and the place it gives.
 fn latest_place(
     view: &View,
     extra: Option<(u64, &Record)>,
@@ -743,7 +667,6 @@ fn latest_place(
     Ok(Some((l, opt_uint(&r, 3))))
 }
 
-/// Item (`list`, `item`) of entity `e` is placed as `latest` says (None: no place change, so none).
 fn set_place(
     view: &View,
     out: &mut Out,
@@ -789,8 +712,6 @@ fn set_place(
     Ok(())
 }
 
-// ---- deleted entities ----
-
 fn gone(view: &View, e: u64) -> Result<Option<[u64; 3]>, StoreError> {
     view.get(&key::id(GONE, e))?
         .map(|b| parse_varints::<3>(&b))
@@ -804,12 +725,10 @@ fn refuse_gone(view: &View, e: u64) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Whether deleted entity `e`'s record (the one its restore reads) is at `pos`.
 pub fn gone_at(view: &View, e: u64, pos: u64) -> Result<bool, StoreError> {
     Ok(gone(view, e)?.is_some_and(|[p, _, _]| p == pos))
 }
 
-/// Points deleted entity `e`'s entry at `to` if it points at `from`.
 pub fn repoint_gone(
     view: &View,
     out: &mut Out,
@@ -829,10 +748,6 @@ fn deleted_key(book: u64, e: u64) -> Vec<u8> {
     key::ids(DELETED, book, e)
 }
 
-// ---- filing a change ----
-
-/// The change record of id `c` is new, after every change of its part of its slot; or (a forget's rewrite of it) it
-/// replaces change `c`'s record of the same family and slot, which dies. Returns whether it replaces one.
 fn place_change(
     view: &View,
     out: &mut Out,
@@ -863,7 +778,6 @@ fn place_change(
     }
 }
 
-/// The entries filing change `c` of family `fam` at `at`, given to `out` and to a layer over the view.
 fn file(
     out: &mut Out,
     local: &mut BTreeMap<Vec<u8>, Val>,
@@ -881,9 +795,6 @@ fn file(
     o.apply(local);
 }
 
-// ---- pending forgets ----
-
-/// A pending forget of an entity's history up to a change.
 #[derive(Debug, Clone)]
 struct Forgetting {
     upto: u64,
@@ -944,7 +855,6 @@ fn parse_keep(b: &[u8]) -> Result<Vec<(Part, u64)>, StoreError> {
     Ok(out)
 }
 
-/// The entries of a slot below a pending forget's bound that stay, when the forget removes any of its entries.
 type Kept = Option<Vec<(Part, u64)>>;
 
 fn kept(view: &View, e: u64, slot: Option<&FieldRef>) -> Result<Kept, StoreError> {
@@ -953,7 +863,6 @@ fn kept(view: &View, e: u64, slot: Option<&FieldRef>) -> Result<Kept, StoreError
         .transpose()
 }
 
-/// Whether entry (`part`, `c`) of `slot` reads as gone: a pending forget is removing it.
 fn hidden(
     view: &View,
     e: u64,
@@ -966,7 +875,6 @@ fn hidden(
     Ok(c < f.upto && kept(view, e, slot)?.is_some_and(|k| !k.contains(&(part, c))))
 }
 
-/// The `HIST` entry of change (or marker) `c` of `slot`: its part and marker.
 fn entry_of(
     view: &View,
     e: u64,
@@ -981,9 +889,6 @@ fn entry_of(
     Ok(None)
 }
 
-// ---- derivers ----
-
-/// `histSet`, `histEdit`, `histDelete`.
 struct ValueChange;
 
 impl Deriver for ValueChange {
@@ -991,8 +896,6 @@ impl Deriver for ValueChange {
         true
     }
 
-    /// Checks the change against the field's value; writes an edit as a full value once the edits since the last one
-    /// would reach the value's size.
     fn prepare(&self, rec: Record, view: &View) -> Result<Record, StoreError> {
         let (e, f) = (id(&rec, 0), field(&rec, 1).clone());
         let m = Meta::of(&rec);
@@ -1052,7 +955,6 @@ impl Deriver for ValueChange {
         let mut local = BTreeMap::new();
         file(out, &mut local, e, Some(&f), Family::Value, m.change(), at);
         if gone(view, e)?.is_some() {
-            // A deleted entity's history is rewritten (by a forget), never its values.
             return if replaces {
                 Ok(())
             } else {
@@ -1120,7 +1022,6 @@ impl Deriver for ValueChange {
     }
 }
 
-/// `histPlace`.
 struct PlaceChange;
 
 impl Deriver for PlaceChange {
@@ -1128,7 +1029,6 @@ impl Deriver for PlaceChange {
         true
     }
 
-    /// Checks the place changes.
     fn prepare(&self, rec: Record, view: &View) -> Result<Record, StoreError> {
         let (e, list, item) = (id(&rec, 0), id(&rec, 1), id(&rec, 2));
         let m = Meta::of(&rec);
@@ -1199,8 +1099,6 @@ impl Deriver for PlaceChange {
     }
 }
 
-/// `histEntityDelete`: a world-info entry or a settings entity goes from every read, as `entityDelete` takes it; its
-/// values' records stay, as its history.
 struct EntityDelete;
 
 impl Deriver for EntityDelete {
@@ -1236,7 +1134,6 @@ impl Deriver for EntityDelete {
                 varints(&[flags, place.unwrap_or(0), index.map_or(0, f64::to_bits)]),
             );
         }
-        // Values written with their history; a value written whole (no history) stays, as before `key::HEAD`.
         let p = key::id(key::HEAD, e);
         for (vk, v) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
             if matches!(Cur::parse(&v)?, Cur::Whole(_)) {
@@ -1286,9 +1183,6 @@ impl Deriver for EntityDelete {
     }
 }
 
-/// `histRestore`: a deleted world-info entry comes back under a key of its own book, a settings entity under any
-/// key of its type not taken; its values its history's latest. Its record is then the entity's (as `entityCreate`'s
-/// is).
 struct Restore;
 
 impl Deriver for Restore {
@@ -1337,7 +1231,6 @@ impl Deriver for Restore {
         out.entries.extend(o.entries.iter().cloned());
         o.apply(&mut local);
         file(out, &mut local, e, None, Family::Entity, m.change(), at);
-        // Each field's value and each item's place: its history's latest.
         for slot in slots(view, e)? {
             let Some(f) = slot else { continue };
             let lv = view.with_layer(&local);
@@ -1382,7 +1275,6 @@ impl Deriver for Restore {
     }
 }
 
-/// `histRevert`: written as the change it makes.
 struct Revert;
 
 impl Deriver for Revert {
@@ -1442,9 +1334,6 @@ impl Deriver for Revert {
     }
 }
 
-// ---- forgetting ----
-
-/// Markers going (negative) or coming per forget id, settled once: a forget whose last marker goes dies.
 #[derive(Default)]
 struct Marks(BTreeMap<u64, i64>);
 
@@ -1472,7 +1361,6 @@ impl Marks {
     }
 }
 
-/// An entry of an entity's history: where it is, and the forget whose marker it holds, if it is one.
 struct Entry<'a> {
     e: u64,
     slot: Option<&'a FieldRef>,
@@ -1481,8 +1369,6 @@ struct Entry<'a> {
     old: Option<u64>,
 }
 
-/// The entry goes: its change's record dies (but the one a deleted entity's restore reads) and its entry goes, or
-/// (`marker`) becomes that forget's marker.
 fn forget_one(
     view: &View,
     out: &mut Out,
@@ -1521,14 +1407,11 @@ fn forget_one(
     Ok(())
 }
 
-/// What forgetting a slot's history keeps, and its first entry that goes, with its marker.
 struct Summary {
     keep: Vec<(Part, u64)>,
     first: Option<(Part, u64, Option<u64>)>,
 }
 
-/// What forgetting `slot`'s history below `upto` keeps: each part's latest change (a part's latest is never a
-/// marker).
 fn summarize(
     view: &View,
     e: u64,
@@ -1553,13 +1436,10 @@ fn summarize(
     Ok(Summary { keep, first })
 }
 
-/// `histForget`.
 struct Forget;
 
-/// A forget's entity, what it forgets and the id of the marker it leaves.
 struct Forgets {
     e: u64,
-    /// The slot of its one change (None: the entity's history up to now).
     what: Option<Option<FieldRef>>,
     target: Option<u64>,
     marker: Option<u64>,
@@ -1599,8 +1479,6 @@ impl Deriver for Forget {
         true
     }
 
-    /// The forget, then the changes it rewrites: forgetting one change, the next value change when it is an edit of
-    /// the one forgotten; forgetting up to now, each field's latest value change that is an edit, as a full value.
     fn expand(&self, rec: Record, view: &View) -> Result<Vec<Record>, StoreError> {
         let Forgets {
             e,
@@ -1718,7 +1596,6 @@ impl Deriver for Forget {
                 };
                 any = true;
                 if let Some(mk) = marker {
-                    // The change there goes with the slices; its entry is the marker from now on.
                     if let Some(o) = old {
                         marks.add(o, -1);
                     }
@@ -1795,14 +1672,11 @@ impl Deriver for Forget {
     }
 }
 
-/// Whether a forget is pending anywhere (for a store opening with one left).
 pub fn any_forget_pending(view: &View) -> Result<bool, StoreError> {
     let p = key::of(FORGET);
     Ok(!view.scan(&p, &key::prefix_end(&p), 1)?.is_empty())
 }
 
-/// One slice of the first pending forget: up to `FORGET_SLICE` of its entries are read and the ones below its bound
-/// but kept go; it ends at the entity's last entry. Returns whether one was found.
 pub fn forget_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
     let fp = key::of(FORGET);
     let Some((fk, v)) = view.scan(&fp, &key::prefix_end(&fp), 1)?.into_iter().next() else {
@@ -1815,7 +1689,6 @@ pub fn forget_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
     let found = view.scan(&f.cursor, &key::prefix_end(&hp), FORGET_SLICE)?;
     let done = found.len() < FORGET_SLICE;
     let mut marks = Marks::default();
-    // The slot read last, and the entries below the bound it keeps (None: it keeps them all).
     let mut keep: Option<(Option<FieldRef>, Kept)> = None;
     for (k, v) in &found {
         let (slot, part, c) = parse_hist(e, k)?;
@@ -1832,7 +1705,6 @@ pub fn forget_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
             .is_some_and(|(_, l)| l.as_ref().is_none_or(|l| l.contains(&(part, c))))
         {
             if marker.is_some() && marker == f.marker {
-                // The marker stands in the place of the change that was there.
                 if let Some(l) = change_loc(view, c)? {
                     dead(out, l);
                     out.del(change_key(c));
@@ -1867,8 +1739,6 @@ pub fn forget_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
     Ok(true)
 }
 
-// ---- reads (`Store.worldRead`) ----
-
 fn field_js(f: &Option<FieldRef>) -> Js {
     match f {
         None => Js::Null,
@@ -1881,7 +1751,6 @@ fn opt_big(v: Option<u64>) -> Js {
     v.map_or(Js::Null, Js::Big)
 }
 
-/// One change of a history page.
 fn change_js(view: &View, c: u64, marker: Option<u64>) -> Result<Js, StoreError> {
     let (r, by) = match marker {
         Some(m) => (change(view, None, m)?.1, Some(m)),
@@ -1918,10 +1787,6 @@ fn change_js(view: &View, c: u64, marker: Option<u64>) -> Result<Js, StoreError>
     Ok(Js::Obj(o))
 }
 
-/// Up to `limit` of entity `e`'s changes of `slot` (None: its own) before change `before`, last first: `{ changes:
-/// [{ id, kind, time, session, user, json?, position?, by? }], more }`. `kind` is `set`, `edit`, `delete`, `place`
-/// (`position` null: the item left the list), `deleted`, `restored`, or `forgotten` (`by`: the forget; `time`,
-/// `session` and `user` are its).
 pub fn history_page(
     view: &View,
     e: u64,
@@ -1929,7 +1794,6 @@ pub fn history_page(
     before: Option<u64>,
     limit: usize,
 ) -> Result<Js, StoreError> {
-    // Below a pending forget's bound, only the entries it keeps are read.
     let keep = match pending_forget(view, e)? {
         Some(f) => kept(view, e, slot)?.map(|k| (f.upto, k)),
         None => None,
@@ -1970,8 +1834,6 @@ pub fn history_page(
     ]))
 }
 
-/// Entity `e`'s field `f` as value change `c` left it: `{ json, value }`, or null when it had no value. Refused
-/// for anything but a value change of the field that reads as there.
 pub fn history_value(view: &View, e: u64, f: &FieldRef, c: u64) -> Result<Js, StoreError> {
     let no_change = || refused(format!("entity {e}'s field has no value change {c}"));
     if view.get(&hist_key(e, Some(f), VALUES, c))? != Some(Vec::new())
@@ -1985,8 +1847,6 @@ pub fn history_value(view: &View, e: u64, f: &FieldRef, c: u64) -> Result<Js, St
     })
 }
 
-/// Up to `limit` of the fields entity `e` has history of, after `after` (absent: from the first; the entity's own,
-/// null, sorts first): `{ fields: [code | key | null], more }`.
 pub fn history_fields(
     view: &View,
     e: u64,
@@ -2016,9 +1876,6 @@ pub fn history_fields(
     ]))
 }
 
-/// Up to `limit` of book `book`'s deleted entries after the entity `after`, in id order: `{ entries: [{ id, key,
-/// position, index }], more }` (`key` the entry's key in the book; `position` its place and `index` its
-/// `displayIndex` when it was deleted, or null).
 pub fn deleted_page(
     view: &View,
     book: u64,

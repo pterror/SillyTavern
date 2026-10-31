@@ -6,16 +6,12 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// A message sent with a slash command (/send, /sendas, /sys, /comment) that the server fails to store doesn't look
-// sent: it is marked as not saved, with a notice that says so and doesn't fade, as a failed send from the input is.
-
 for (const command of ['/send', '/sendas name=Bob', '/sys', '/comment']) {
     test(`${command}: a message the server fails to store is shown as not saved`, async ({ page }) => {
         const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
         await testSetup.awaitST({ page });
         const avatar = await createCharacter(page, `AppendFailure-${stamp}`);
         await openCharacter(page, avatar);
-        // The greeting is stored first, so the append is the only request that fails.
         await page.evaluate(async () => {
             const { ensureOpeningRow } = await import('/scripts/chat-store.js');
             await ensureOpeningRow(0);
@@ -33,7 +29,6 @@ for (const command of ['/send', '/sendas name=Bob', '/sys', '/comment']) {
         await expect(sent).toHaveClass(/failed_send/);
         await expect(page.locator('.toast-error', { hasText: 'Message not saved' })).toBeVisible();
 
-        // Saved again once the server takes it: no longer marked.
         await page.unroute('**/api/chats/message/append');
         await page.locator('.toast-error', { hasText: 'Message not saved' }).getByRole('button', { name: 'Save it again' }).click();
         await expect(sent).not.toHaveClass(/failed_send/);

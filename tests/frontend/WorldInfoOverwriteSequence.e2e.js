@@ -1,16 +1,7 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-/** A page's write of a whole book: the changes it made (or a new book). */
 const BOOK_WRITE = /\/api\/worldinfo\/(entries\/apply|create)$/;
-
-// A create or import that overwrites a book waits for the old book's deletion before it writes the new one, so the
-// deletion can never land after the write and remove the new book. The links to the name (the open character's
-// primary lorebook, the global selection, the persona's lorebook) stay while a book has that name after the write;
-// if none does, they are removed and a warning lists each one.
-//
-// Only an overwrite under a name that differs from the old one (here, in case) deletes the old book first; one under
-// exactly the old name replaces its file in place (WorldInfoOverwriteSameName.e2e.js).
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -20,7 +11,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
  * @param {import('@playwright/test').Page} page
  * @param {string} name
  * @param {string} world
- * @returns {Promise<string>} The avatar filename.
+ * @returns {Promise<string>}
  */
 async function createCharacter(page, name, world) {
     return page.evaluate(async ({ name, world }) => {
@@ -51,7 +42,7 @@ async function deleteCharacter(page, avatar) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
- * @returns {Promise<string>} The stored card's primary lorebook, once the open character's pending field saves land.
+ * @returns {Promise<string>}
  */
 async function storedWorld(page, avatar) {
     return page.evaluate(async (avatar) => {
@@ -66,7 +57,6 @@ async function storedWorld(page, avatar) {
 }
 
 /**
- * Creates a book with one entry, so the overwrite (which writes an empty book) can be told apart from it.
  * @param {import('@playwright/test').Page} page
  * @param {string} worldName
  */
@@ -97,7 +87,7 @@ async function deleteWorld(page, worldName) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} worldName
- * @returns {Promise<object|null>} The book as the server has it, or null if it has none by that name.
+ * @returns {Promise<object|null>}
  */
 async function serverWorld(page, worldName) {
     return page.evaluate(async (worldName) => {
@@ -111,11 +101,10 @@ async function serverWorld(page, worldName) {
 }
 
 /**
- * Overwrites an existing book through createNewWorldInfo() or importWorldInfo(), confirming the overwrite prompt.
  * @param {import('@playwright/test').Page} page
  * @param {'create'|'import'} how
- * @param {string} worldName - The new book's name, matching the existing one's ignoring case.
- * @returns {Promise<unknown>} What the create or import returned.
+ * @param {string} worldName
+ * @returns {Promise<unknown>}
  */
 async function overwriteWorld(page, how, worldName) {
     return page.evaluate(async ({ how, worldName }) => {
@@ -136,7 +125,6 @@ async function overwriteWorld(page, how, worldName) {
 }
 
 /**
- * Opens the character in the editor and adds `worldName` to the global lorebook selection.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  * @param {string} worldName
@@ -186,7 +174,6 @@ test.describe('overwriting a lorebook', () => {
             try {
                 /** @type {string[]} */
                 const events = [];
-                // The deletion's response is held back, so a write sent without waiting for it would be seen first.
                 await page.route('**/api/worldinfo/delete', async (route) => {
                     events.push('delete sent');
                     const response = await route.fetch();
@@ -205,7 +192,6 @@ test.describe('overwriting a lorebook', () => {
 
                 expect(events).toEqual(['delete sent', 'delete done', 'write sent']);
 
-                // The new, empty book is what the server has, and the old one is gone.
                 const book = await serverWorld(page, newName);
                 expect(book).not.toBeNull();
                 expect(Object.keys(book.entries ?? {})).toEqual([]);
@@ -235,7 +221,6 @@ test.describe('overwriting a lorebook', () => {
 
                 expect(writes).toBe(0);
                 await expect(page.locator('#toast-container .toast-error .toast-message', { hasText: `Could not delete the existing lorebook ${worldName}, so nothing was written.` })).toHaveCount(1);
-                // The deletion never reached the server, so the old book is still there.
                 const book = await serverWorld(page, worldName);
                 expect(Object.keys(book?.entries ?? {}).length).toBe(1);
             } finally {

@@ -1,15 +1,11 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// The tag filter bar above the character list draws the used tags the server lists, a page at a time, and the saved
-// tag filters are kept whatever the page managed to read: one is removed only when the server says its tag is gone.
-
 const BAR = '#rm_characters_block .rm_tag_filter';
 
 /** @param {import('@playwright/test').Page} page */
 async function loadApp(page) {
     await testSetup.awaitST({ page });
-    // APP_READY is an auto-fire event: a listener added after it was emitted still runs.
     await page.evaluate(() => {
         window['__appReady'] = false;
         const { eventSource, eventTypes } = window['SillyTavern'].getContext();
@@ -33,7 +29,6 @@ async function api(page, path, body = {}) {
 }
 
 /**
- * Runs `work` on a page of its own context, so the page under test learns of what it does only from the server.
  * @param {import('@playwright/test').Browser} browser
  * @param {(page: import('@playwright/test').Page) => Promise<T>} work
  * @returns {Promise<T>}
@@ -51,7 +46,6 @@ async function elsewhere(browser, work) {
 }
 
 /**
- * Creates tags named like their ids, in the manual order given by their place in `ids`.
  * @param {import('@playwright/test').Page} page
  * @param {string[]} ids
  * @param {number} firstSortOrder
@@ -72,7 +66,11 @@ async function createTags(page, ids, firstSortOrder) {
     }, { ids, firstSortOrder });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<string>} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
@@ -85,14 +83,11 @@ async function createCharacter(page, name) {
 }
 
 /**
- * A manual order ahead of every tag made before: the tags of the test that asks lead the bar, whatever earlier tests
- * left in this worker's data.
  * @returns {number}
  */
 const leadingSortOrder = () => -Date.now();
 
 /**
- * Opens the character list with its bar showing its tags.
  * @param {import('@playwright/test').Page} page
  */
 async function openBar(page) {
@@ -102,22 +97,34 @@ async function openBar(page) {
     if (!(await toggle.evaluate(el => el.classList.contains('selected')))) await toggle.click();
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} id */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} id
+ */
 function pill(page, id) {
     return page.locator(`${BAR} .tag[id="${id}"]`);
 }
 
-/** @param {import('@playwright/test').Page} page @returns {Promise<string[]>} the ids of the tag pills drawn, in order */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @returns {Promise<string[]>}
+ */
 function pillOrder(page) {
     return page.locator(`${BAR} .tag:not(.actionable):not(.placeholder-expander)`).evaluateAll(pills => pills.map(el => el.id));
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} key */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} key
+ */
 function stored(page, key) {
     return page.evaluate(key => localStorage.getItem(key), key);
 }
 
-/** @param {number} n @returns {string} */
+/**
+ * @param {number} n
+ * @returns {string}
+ */
 const pad = n => String(n).padStart(3, '0');
 
 test.describe('The tag filter bar reads the used tags from the server', () => {
@@ -161,7 +168,6 @@ test.describe('The tag filter bar reads the used tags from the server', () => {
         await expect(pill(page, b)).toBeVisible({ timeout: 30000 });
         expect((await pillOrder(page)).slice(0, 2)).toEqual([a, b]);
 
-        // The same assignment again changes nothing the bar draws: its re-read sends the hash it has and is told so.
         const reread = page.waitForResponse(async (response) => {
             if (new URL(response.url()).pathname !== '/api/tags/query') return false;
             const asked = response.request().postDataJSON();
@@ -206,7 +212,6 @@ test.describe('The tag filter bar reads the used tags from the server', () => {
         await loadApp(page);
         await page.evaluate(({ used, unused }) => {
             localStorage.setItem(`CharacterList_tag_${used}`, 'SELECTED');
-            // A filter on a tag nothing carries is a filter all the same.
             localStorage.setItem(`CharacterList_tag_${unused}`, 'EXCLUDED');
         }, { used, unused });
 
@@ -229,7 +234,6 @@ test.describe('The tag filter bar reads the used tags from the server', () => {
         await expect(pill(page, unused)).toHaveClass(/excluded/);
         expect(await stored(page, `CharacterList_tag_${unused}`)).toBe('EXCLUDED');
 
-        // Both can be cleared from the bar.
         await page.locator(`${BAR} .clearAllFilters`).click();
         await expect(pill(page, used)).not.toHaveClass(/selected/);
         await expect.poll(() => stored(page, `CharacterList_tag_${unused}`)).toBe('UNDEFINED');
@@ -246,10 +250,8 @@ test.describe('The tag filter bar reads the used tags from the server', () => {
             localStorage.setItem(`CharacterList_tag_${deleted}`, 'SELECTED');
             localStorage.setItem(`CharacterList_tagname_${deleted}`, 'A Deleted Tag');
             localStorage.setItem(`CharacterList_tag_${kept}`, 'SELECTED');
-            // A filter saved before names were kept.
             localStorage.setItem('GroupCandidates_tag_never-existed', 'EXCLUDED');
         }, { deleted, kept });
-        // Deleted while this browser has no tab that hears of it.
         await page.goto('about:blank');
         await elsewhere(browser, other => api(other, '/api/tags/delete', { id: deleted, mergeInto: null }));
 
@@ -261,7 +263,6 @@ test.describe('The tag filter bar reads the used tags from the server', () => {
         expect(await stored(page, `CharacterList_tag_${deleted}`)).toBeNull();
         expect(await stored(page, `CharacterList_tagname_${deleted}`)).toBeNull();
         expect(await stored(page, 'GroupCandidates_tag_never-existed')).toBeNull();
-        // The filter on the tag that is still there is untouched.
         expect(await stored(page, `CharacterList_tag_${kept}`)).toBe('SELECTED');
         await expect(pill(page, kept)).toHaveClass(/selected/);
         await expect(pill(page, deleted)).toHaveCount(0);
@@ -274,7 +275,6 @@ test.describe('The tag filter bar reads the used tags from the server', () => {
         const card = await elsewhere(browser, async (other) => {
             const first = leadingSortOrder();
             await createTags(other, ids, first);
-            // After the 51 others in the manual order, so past the 50 the bar draws.
             await other.evaluate(async ({ folder, sort_order }) => {
                 const headers = window['SillyTavern'].getContext().getRequestHeaders();
                 const tag = { id: folder, name: folder, folder_type: 'OPEN', sort_order, is_hidden_on_character_card: false, color: '', color2: '', create_date: Date.now() };
@@ -291,7 +291,6 @@ test.describe('The tag filter bar reads the used tags from the server', () => {
         await expect(pill(page, ids[0])).toBeVisible();
         await expect(pill(page, folder)).toHaveCount(0);
 
-        // Open folders have no tiles in the list any more; upstream's chooseBogusFolder() is what a tile click called.
         await page.evaluate(async folder => (await import('/scripts/tags.js')).chooseBogusFolder($('#rm_characters_block .rm_tag_filter'), folder), folder);
         await expect(pill(page, folder)).toHaveClass(/selected/);
         await expect(page.locator(`#rm_characters_block .rm_tag_bogus_drilldown .tag[id="${folder}"]`)).toBeVisible();
@@ -302,7 +301,6 @@ test.describe('The tag filter bar reads the used tags from the server', () => {
         await expect(page.locator(`#rm_characters_block .rm_tag_bogus_drilldown .tag[id="${folder}"]`)).toHaveCount(0);
         await expect.poll(() => stored(page, `CharacterList_tag_${folder}`)).toBe('UNDEFINED');
 
-        // The setting is stored in this worker's data, which later tests share.
         const saved = page.waitForResponse(response => response.url().endsWith('/api/settings/save-partial')
             && response.request().postData()?.includes('bogus_folders'));
         await page.evaluate(() => { $('#bogus_folders').prop('checked', false).trigger('input'); });

@@ -6,9 +6,6 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// A click on Send while a swipe is under way (its slide, or the new alternative being generated) isn't dropped: the
-// send is queued, shown on the button, and goes once the swipe is done.
-
 test('a click on Send during a swipe is queued, and sent once the swipe is done', async ({ page }) => {
     test.setTimeout(90000);
     const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
@@ -29,7 +26,6 @@ test('a click on Send during a swipe is queued, and sent once the swipe is done'
 
         const followUp = `Follow-up ${stamp}`;
         await chatBox(page).fill(followUp);
-        // A slow slide, so the button is there to click while the swipe is under way.
         await page.evaluate(async () => {
             const { setAnimationDuration } = await import('/script.js');
             setAnimationDuration(1500);
@@ -50,7 +46,6 @@ test('a click on Send during a swipe is queued, and sent once the swipe is done'
         });
         expect(clickedDuringSwipe).toBe(true);
 
-        // The swipe finishes, then the follow-up is sent after the new alternative.
         await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText('Mock reply 2', { timeout: 30000 });
         await expect(page.locator('#chat .mes[mesid="3"] .mes_text')).toContainText(followUp, { timeout: 30000 });
         await expect(page.locator('#chat .mes[mesid="4"] .mes_text')).toContainText('Mock reply 3', { timeout: 30000 });

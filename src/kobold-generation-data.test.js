@@ -43,7 +43,6 @@ function baseArgs(overrides = {}) {
     };
 }
 
-// --- basic shape ---
 {
     const data = createKoboldGenerationData(baseArgs());
     assert.equal(data.prompt, 'Hello world');
@@ -56,7 +55,6 @@ function baseArgs(overrides = {}) {
     console.log('ok - basic shape');
 }
 
-// --- sampler_order fallback ---
 {
     const withOwn = createKoboldGenerationData(baseArgs({
         koboldSettings: { ...baseArgs().koboldSettings, sampler_order: [6, 0, 1, 3, 4, 2, 5] },
@@ -71,7 +69,6 @@ function baseArgs(overrides = {}) {
     console.log('ok - sampler_order fallback');
 }
 
-// --- sampler_seed ---
 {
     const negSeed = createKoboldGenerationData(baseArgs({
         koboldSettings: { ...baseArgs().koboldSettings, seed: -1 },
@@ -90,7 +87,6 @@ function baseArgs(overrides = {}) {
     console.log('ok - sampler_seed');
 }
 
-// --- min_p capability gate ---
 {
     const on = createKoboldGenerationData(baseArgs({
         koboldFlags: { ...baseArgs().koboldFlags, can_use_min_p: true },
@@ -111,7 +107,6 @@ function baseArgs(overrides = {}) {
     console.log('ok - min_p gate');
 }
 
-// --- stop_sequence capability gate + real getStoppingStrings invocation ---
 {
     const on = createKoboldGenerationData(baseArgs({
         koboldFlags: { ...baseArgs().koboldFlags, can_use_stop_sequence: true },
@@ -146,18 +141,15 @@ function baseArgs(overrides = {}) {
     console.log('ok - stop_sequence gate + real getStoppingStrings');
 }
 
-// --- stop_sequence isImpersonate/isContinue derivation from type ---
 {
     const impersonate = createKoboldGenerationData(baseArgs({
         type: 'impersonate',
         stoppingStringsParams: { instructPreset: {}, namesAsStopStrings: true, name1: 'User', name2: 'Char' },
     }));
-    // When impersonating, the char-string is pushed first instead of the user-string.
     assert.ok(impersonate.stop_sequence.includes('\nChar:'));
     console.log('ok - stop_sequence derives isImpersonate from type');
 }
 
-// --- streaming: requires all three gates independently ---
 {
     const allOn = createKoboldGenerationData(baseArgs({
         koboldSettings: { ...baseArgs().koboldSettings, streaming_kobold: true },
@@ -189,7 +181,6 @@ function baseArgs(overrides = {}) {
     console.log('ok - streaming requires all three gates');
 }
 
-// --- can_abort mirrors can_use_streaming ---
 {
     const on = createKoboldGenerationData(baseArgs({ koboldFlags: { ...baseArgs().koboldFlags, can_use_streaming: true } }));
     assert.equal(on.can_abort, true);
@@ -198,7 +189,6 @@ function baseArgs(overrides = {}) {
     console.log('ok - can_abort');
 }
 
-// --- mirostat capability gate ---
 {
     const on = createKoboldGenerationData(baseArgs({
         koboldFlags: { ...baseArgs().koboldFlags, can_use_mirostat: true },
@@ -225,7 +215,6 @@ function baseArgs(overrides = {}) {
     console.log('ok - mirostat gate');
 }
 
-// --- use_default_badwordsids capability gate ---
 {
     const on = createKoboldGenerationData(baseArgs({
         koboldFlags: { ...baseArgs().koboldFlags, can_use_default_badwordsids: true },
@@ -246,7 +235,6 @@ function baseArgs(overrides = {}) {
     console.log('ok - use_default_badwordsids gate');
 }
 
-// --- grammar capability gate + real substituteParams invocation ---
 {
     const on = createKoboldGenerationData(baseArgs({
         koboldFlags: { ...baseArgs().koboldFlags, can_use_grammar: true },
@@ -272,7 +260,6 @@ function baseArgs(overrides = {}) {
     console.log('ok - grammar gate + real substituteParams');
 }
 
-// --- grammar_retain_state: AND of can_use_grammar and isContinue, not either alone ---
 {
     const bothTrue = createKoboldGenerationData(baseArgs({
         koboldFlags: { ...baseArgs().koboldFlags, can_use_grammar: true },
@@ -292,7 +279,6 @@ function baseArgs(overrides = {}) {
     }));
     assert.equal(onlyContinue.grammar_retain_state, undefined);
 
-    // isHorde does NOT force-enable grammar_retain_state (client never checks isHorde here).
     const hordeOnlyContinue = createKoboldGenerationData(baseArgs({
         koboldFlags: { ...baseArgs().koboldFlags, can_use_grammar: false },
         type: 'continue',

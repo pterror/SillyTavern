@@ -13,10 +13,6 @@ import {
     isInterleavedReasoningProvider,
 } from './chat-completion-tool-capabilities.js';
 
-// ---------------------------------------------------------------------------
-// getToolReasoningMode
-// ---------------------------------------------------------------------------
-
 test('getToolReasoningMode returns a valid configured mode as-is', () => {
     assert.strictEqual(
         getToolReasoningMode({ tool_reasoning_mode: TOOL_REASONING_MODES.ACTIVE_CHAIN }),
@@ -35,10 +31,6 @@ test('getToolReasoningMode falls back to DISABLED for an invalid mode', () => {
 test('getToolReasoningMode falls back to DISABLED when the mode is missing entirely', () => {
     assert.strictEqual(getToolReasoningMode({}), TOOL_REASONING_MODES.DISABLED);
 });
-
-// ---------------------------------------------------------------------------
-// getEffectiveToolReasoningMode
-// ---------------------------------------------------------------------------
 
 test('getEffectiveToolReasoningMode is DISABLED when show_thoughts is falsy, regardless of configured mode', () => {
     assert.strictEqual(
@@ -62,10 +54,6 @@ test('getEffectiveToolReasoningMode delegates to getToolReasoningMode when show_
     );
 });
 
-// ---------------------------------------------------------------------------
-// isReasoningSignatureSupported
-// ---------------------------------------------------------------------------
-
 test('isReasoningSignatureSupported is true for Vertex AI and Makersuite', () => {
     assert.strictEqual(isReasoningSignatureSupported({ chat_completion_source: chat_completion_sources.VERTEXAI }), true);
     assert.strictEqual(isReasoningSignatureSupported({ chat_completion_source: chat_completion_sources.MAKERSUITE }), true);
@@ -76,7 +64,6 @@ test('isReasoningSignatureSupported is true for OpenRouter with a matching Gemin
         isReasoningSignatureSupported({ chat_completion_source: chat_completion_sources.OPENROUTER, openrouter_model: 'google/gemini-2.5-pro' }),
         true,
     );
-    // Case-insensitive regex.
     assert.strictEqual(
         isReasoningSignatureSupported({ chat_completion_source: chat_completion_sources.OPENROUTER, openrouter_model: 'Google/Gemini-Flash' }),
         true,
@@ -94,10 +81,6 @@ test('isReasoningSignatureSupported is false for an unrelated source', () => {
     assert.strictEqual(isReasoningSignatureSupported({ chat_completion_source: chat_completion_sources.OPENAI }), false);
     assert.strictEqual(isReasoningSignatureSupported({ chat_completion_source: chat_completion_sources.CLAUDE }), false);
 });
-
-// ---------------------------------------------------------------------------
-// isToolCallingSupported
-// ---------------------------------------------------------------------------
 
 function baseToolSettings(overrides = {}) {
     return {
@@ -191,7 +174,6 @@ test('isToolCallingSupported reads currentModel.properties (array of {property_i
 });
 
 test('isToolCallingSupported falls back to the supportedSources allowlist when no model-specific case applies', () => {
-    // CLAUDE has no switch case, and no model list is supplied - falls through to supportedSources.
     const settings = baseToolSettings({ chat_completion_source: chat_completion_sources.CLAUDE });
     assert.strictEqual(isToolCallingSupported({ mainApi: 'openai', settings, model: 'claude-3-opus' }), true);
 });
@@ -203,14 +185,9 @@ test('isToolCallingSupported falls back to the supportedSources allowlist when m
 });
 
 test('isToolCallingSupported is false for a source genuinely not in supportedSources', () => {
-    // PERPLEXITY is in chat_completion_sources but deliberately absent from the ~25-entry supportedSources allowlist.
     const settings = baseToolSettings({ chat_completion_source: chat_completion_sources.PERPLEXITY });
     assert.strictEqual(isToolCallingSupported({ mainApi: 'openai', settings, model: 'perplexity-model' }), false);
 });
-
-// ---------------------------------------------------------------------------
-// canPerformToolCalls
-// ---------------------------------------------------------------------------
 
 test('canPerformToolCalls excludes impersonate, quiet, and continue generation types', () => {
     const settings = baseToolSettings();
@@ -228,10 +205,6 @@ test('canPerformToolCalls is false for a normal type when tool calling itself is
     const settings = baseToolSettings({ function_calling: false });
     assert.strictEqual(canPerformToolCalls({ type: 'normal', mainApi: 'openai', settings, model: 'gpt-4o' }), false);
 });
-
-// ---------------------------------------------------------------------------
-// isInterleavedReasoningProvider
-// ---------------------------------------------------------------------------
 
 test('isInterleavedReasoningProvider is true for OPENROUTER and CUSTOM only', () => {
     assert.strictEqual(isInterleavedReasoningProvider(chat_completion_sources.OPENROUTER), true);

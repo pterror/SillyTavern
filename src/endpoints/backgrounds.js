@@ -27,8 +27,6 @@ router.post('/all', async function (request, response) {
             return {
                 filename: img,
                 isAnimated: metadata?.isAnimated ?? false,
-                // Cached thumbnail's own mtime, if one exists yet - lets getThumbnailUrl() emit `?v=` up front
-                // and skip the thumbnail route's no-cache redirect hop. See getThumbnailVersion() for details.
                 thumbnailVersion: getThumbnailVersion(request.user.directories, 'bg', img),
             };
         });

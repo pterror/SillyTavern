@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, setStackedDrawers } from './frontent-test-utils.js';
 
-// With stacked drawers on: what is hidden doesn't depend on the path that got there, and every drawer takes part in
-// the stack wherever it sits in the page and whoever opens it.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -22,7 +19,7 @@ async function loadApp(page) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} id
- * @returns {Promise<number>} How many sampled points of the screen hit the layer `id`.
+ * @returns {Promise<number>}
  */
 function pointsHitting(page, id) {
     return page.evaluate((id) => {
@@ -40,7 +37,7 @@ function pointsHitting(page, id) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} id
- * @returns {Promise<string[]>} Layers other than `id` found under the middle of `id` (none when it occludes them).
+ * @returns {Promise<string[]>}
  */
 function layersUnder(page, id) {
     return page.evaluate((id) => {
@@ -70,7 +67,6 @@ for (const { layout, width, height } of [
             await page.waitForTimeout(600);
             expect(await pointsHitting(page, 'right-nav-panel')).toBe(0);
 
-            // The chat icon path, for comparison: the same outcome.
             await page.locator('#rightNavDrawerIcon').click();
             await page.locator('#chatDrawerIcon').click();
             await page.waitForTimeout(600);
@@ -78,9 +74,7 @@ for (const { layout, width, height } of [
         });
 
         test('a drawer outside the drawer bar (the prompt manager popup) occludes the chat under it', async ({ page }) => {
-            // The chat brought forward, so a drawer that appears unfronted would land under it.
             await page.locator('#chatDrawerIcon').click();
-            // As PromptManager.showPopup() opens it.
             await page.evaluate(() => {
                 document.getElementById('completion_prompt_manager_popup_inspect').style.display = 'flex';
                 window['$']('#completion_prompt_manager_popup').slideDown(200, 'swing').addClass('openDrawer');

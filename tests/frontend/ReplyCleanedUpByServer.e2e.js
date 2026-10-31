@@ -6,14 +6,9 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// A generated reply is cleaned up by the server before it is stored, as upstream's page cleaned it up
-// (cleanUpMessage()): a stopping string it ends partway into is cut, AI_OUTPUT regex scripts run, an incomplete last
-// sentence is trimmed. The page shows the reply as stored, right after generating and after reopening the chat.
-
 const MODEL = 'reply-cleanup-model';
 
 /**
- * A mock llama.cpp server answering every completion with `reply`, streamed in small pieces or whole.
  * @param {() => string} reply
  */
 function startLlamaCpp(reply) {
@@ -39,7 +34,6 @@ function startLlamaCpp(reply) {
                 }
                 res.writeHead(200, { 'Content-Type': 'text/event-stream' });
                 (async () => {
-                    // Pieces that cut through the prefix and suffix, as a real stream does.
                     for (let i = 0; i < text.length; i += 5) {
                         res.write(`data: ${JSON.stringify({ content: text.slice(i, i + 5), stop: false })}\n\n`);
                         await new Promise(resolve => setTimeout(resolve, 5));
@@ -112,7 +106,6 @@ async function connectLlamaCpp(page, url) {
 }
 
 /**
- * The last reply as the page has it, as it is drawn, and as the server stored it.
  * @param {import('@playwright/test').Page} page
  */
 function lastReply(page) {
@@ -136,8 +129,6 @@ function lastReply(page) {
 for (const streaming of [true, false]) {
     test(`a reply is stored and shown cleaned up: stopping string, AI_OUTPUT regex, incomplete sentence (${streaming ? 'streaming' : 'not streaming'})`, async ({ page }) => {
         const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-        // "###END" is a stopping string the reply ends partway into; "colour" an AI_OUTPUT regex rewrites; "Then half" an
-        // incomplete sentence.
         const mock = await startLlamaCpp(() => `Ahoy ${stamp}, what a colour. Then half\n###E`);
         try {
             await testSetup.awaitST({ page });
@@ -158,7 +149,6 @@ for (const streaming of [true, false]) {
                 const { saveSettingsDebounced } = await import('/script.js');
                 saveSettingsDebounced('power_user.custom_stopping_strings', 'power_user.trim_sentences', 'extension_settings');
             }, streaming);
-            // The server reads the backend and the cleanup settings from the saved settings; give the saves time to land.
             await page.waitForTimeout(2500);
 
             await chatBox(page).fill(`Say something ${stamp}.`);

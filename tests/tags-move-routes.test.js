@@ -2,10 +2,6 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jes
 import path from 'node:path';
 import { storedTagDefinitions } from './tag-store-reads.js';
 
-// POST /api/tags/move, /api/tags/reorder and the manual order /api/tags/query answers while a reorder pass runs.
-// (The route-level part of tags-move, tags-reorder, tags-reorder-pass, tags-query-reorder-pass and
-// tags-query-pending-moves, whose other tests were of the old store's queue and pass tables.)
-
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
 /** @type {typeof import('./converted-user.fixture.js')} */
@@ -41,12 +37,14 @@ beforeEach(async () => {
 
 afterEach(async () => {
     jest.restoreAllMocks();
-    // A reorder pass in the background ends before the store goes.
     while (await user.store.lib.tags.passStep());
     await user.close();
 });
 
-/** @param {string} route @param {object} body */
+/**
+ * @param {string} route
+ * @param {object} body
+ */
 async function post(route, body) {
     const response = await fetch(`${baseUrl}/api/tags/${route}`, {
         method: 'POST',
@@ -56,12 +54,12 @@ async function post(route, body) {
     return { status: response.status, body: await response.json() };
 }
 
-/** @param {string[]} ids Tags `id` named `id`, ordered as given by their sort_order (1, 2, ...). */
+/** @param {string[]} ids */
 async function seedOrdered(ids) {
     for (const [i, id] of ids.entries()) await user.store.lib.tags.create({ id, name: id, sort_order: i + 1 });
 }
 
-/** The ids in the manual order. @param {object} [more] */
+/** @param {object} [more] */
 async function manual(more = {}) {
     const ids = [];
     let cursor = null;
@@ -101,7 +99,6 @@ describe('POST /api/tags/move', () => {
         for (const { id, sort_order } of body.written) expect(stored.find(t => t.id === id).sort_order).toBe(sort_order);
         await post('move', { id: 'a', after: 'c' });
         expect(await manual()).toEqual(['d', 'b', 'c', 'a']);
-        // Already in place: nothing is written.
         expect((await post('move', { id: 'd', before: 'b' })).body.written).toEqual([]);
     });
 
@@ -135,7 +132,6 @@ describe('POST /api/tags/reorder', () => {
         const before = (await post('manifest', {})).body.changesSeq;
         expect(await post('reorder', { id: 'c', before: 'a', mode: 'alphabetical' })).toEqual({ status: 200, body: { result: 'ok', refused: [], queued: true } });
         expect((await post('manifest', {})).body.changesSeq).toBe(before);
-        // While the pass is recorded the order read is the mode's with the move on top; once it ran it is the one it left.
         while (await user.store.lib.tags.passStep());
         expect(await manual()).toEqual(['c', 'a', 'b']);
     });

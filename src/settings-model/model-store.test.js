@@ -41,7 +41,6 @@ test('a chat completion preset with its prompts and orders comes back as it was 
     const { preset } = presetFromUpstream('openai', 'Default', file);
     await writeDrafts(lib, [preset]);
     assert.deepEqual(await readDraft(lib, TYPE.samplerPreset, 'openai:Default'), json(preset));
-    // A prompt's own entity, keyed under its preset.
     const main = await readDraft(lib, TYPE.chatPrompt, 'openai:Default:main');
     assert.ok(main && typeof main.values.content === 'string');
 });
@@ -72,7 +71,6 @@ test('refs are stored as ids: a profile names its connection and bundles, a name
     const [stored] = await lib.entities([ids.get(`${TYPE.connectionProfile}:p1`)]);
     const connectionValue = stored.values.find(v => v.field === 'connection');
     assert.equal(connectionValue.text, String(ids.get(`${TYPE.connection}:c1`)));
-    // The preset and proxy named don't exist yet: placeholders, keyed by their names.
     assert.notEqual((await lib.ids(TYPE.samplerPreset, ['openai:Default']))[0], null);
     assert.notEqual((await lib.ids(TYPE.proxy, ['Mine']))[0], null);
     assert.deepEqual(await readDraft(lib, TYPE.connectionProfile, 'p1'), json(profiles[0]));
@@ -86,7 +84,6 @@ test('ref lists, part lists of parts with lists, and a persona\'s book', async (
     await writeDrafts(lib, [...presets, set, ...personas]);
     assert.deepEqual(await readDraft(lib, TYPE.regexPreset, 'rp'), json(presets[0]));
     assert.deepEqual(await readDraft(lib, TYPE.quickReplySet, 'Tools'), json(set));
-    // The book is found by its file name's stem; read back as that.
     const persona = await readDraft(lib, TYPE.persona, 'a.png');
     assert.equal(persona?.values.lorebook, 'Ann Lore');
     assert.notEqual((await lib.ids(TYPE.book, ['Ann Lore']))[0], null);
@@ -112,7 +109,6 @@ test('a catalog reads a page at a time in key order, parts with their holders, a
     const rest = await readCatalog(lib, TYPE.proxy, { after: 'c', limit: 3 });
     assert.deepEqual([rest.drafts.map(d => d.key), rest.more], [['d'], false]);
     assert.deepEqual(rest.drafts[0], json(proxies[3]));
-    // A preset written twice, a prompt dropped: the prompt's entity goes with its history kept.
     await writeDrafts(lib, [presetFromUpstream('openai', 'P', { prompts: [{ identifier: 'x' }, { identifier: 'y' }] }).preset]);
     await writeDrafts(lib, [presetFromUpstream('openai', 'P', { prompts: [{ identifier: 'y' }] }).preset]);
     assert.deepEqual((await readCatalog(lib, TYPE.chatPrompt, { limit: 10 })).drafts.map(d => d.key), ['openai:P:y']);

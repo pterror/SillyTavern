@@ -5,10 +5,10 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// The welcome screen's recent chats are the conversations by their last activity, one row each, titled by the
-// bookmark's label, else the character's name.
-
-/** @param {import('@playwright/test').Page} page @param {string} name */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
@@ -22,7 +22,11 @@ async function createCharacter(page, name) {
     }, name);
 }
 
-/** Opens the character and says one thing in its chat. @param {import('@playwright/test').Page} page @param {string} avatar @param {string} text */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ * @param {string} text
+ */
 async function speak(page, avatar, text) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
@@ -66,21 +70,17 @@ test('recent chats are the conversations by last activity, one row each', async 
     await speak(page, first, 'one');
     await speak(page, second, 'two');
 
-    // Each character's conversation of the tab's session, the last act first.
     let rows = (await recentChats(page)).filter((/** @type {any} */ r) => [first, second].includes(r.avatar));
     expect(rows.map((/** @type {any} */ r) => r.avatar)).toEqual([second, first]);
-    // Each named as upstream names a new chat: the character's name and the session's time.
     expect(rows.every((/** @type {any} */ r) => /^Recent(One|Two)-\S+ - \d{4}-\d{2}-\d{2}@\d{2}h\d{2}m\d{2}s\d{3}ms\.jsonl$/.test(r.file_name) && r.label === null)).toBe(true);
     expect(rows.map((/** @type {any} */ r) => r.mes)).toEqual(['two', 'one']);
 
-    // The page shows them in that order, titled by the character's name (a label would be shown after it).
     await page.evaluate(async () => (await import('/script.js')).closeCurrentChat());
     const titles = page.locator('.recentChat .chatName');
     await expect(titles.first()).toBeVisible();
     const shown = await page.locator('.recentChat').evaluateAll(items => items.map(item => [item.getAttribute('data-avatar'), item.querySelector('.chatName')?.textContent?.replace(/\s+/g, ' ').trim()]));
     expect(shown.filter(([avatar]) => [first, second].includes(String(avatar)))).toEqual([[second, `RecentTwo-${stamp} – RecentTwo-${stamp}`], [first, `RecentOne-${stamp} – RecentOne-${stamp}`]]);
 
-    // A bookmark of the first character, once someone acts in it, is a row of its own, titled by its label.
     await speak(page, first, 'one again');
     const name = await page.evaluate(async () => {
         const { forkChat } = await import('/scripts/bookmarks.js');
@@ -104,7 +104,6 @@ test('recent chats are the conversations by last activity, one row each', async 
 });
 
 test('past the most recent ones, older chats load a page at a time, in order', async ({ page }) => {
-    // Five characters are made and each opened to speak in.
     test.setTimeout(120000);
     await testSetup.awaitST({ page });
     const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;

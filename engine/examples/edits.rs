@@ -1,11 +1,3 @@
-//! Measures the tree edits (`store::prune`, `ChatEngine`'s deletes and cuts) as the records they commit: per
-//! operation, the record bytes and the derived entries written, slices included, against what an append of the
-//! same messages wrote.
-//!
-//!   cargo run --release --example edits -- <dir>
-//!
-//! Each case runs on its own tree: a chain of 600-byte messages through one session. `dir` is created and removed.
-
 use std::path::Path;
 use std::time::Duration;
 
@@ -55,7 +47,6 @@ fn append(id: u64, parent: Option<u64>, tree: u64, session: Option<u64>) -> Reco
     )
 }
 
-/// Waits for the slices (subtree deletes, depth rewrites) to finish.
 fn settle(s: &Store) {
     while s
         .chat_read(|v| Ok(prune::any_pending(v)? || sessions::any_pending(v)?))
@@ -65,7 +56,6 @@ fn settle(s: &Store) {
     }
 }
 
-/// Commits `recs`, waits for its slices: (record bytes, derived entries).
 fn measure(s: &Store, recs: Vec<Record>) -> (f64, f64) {
     let (log0, ks0) = (s.stats().log_bytes, s.keyspace().stats().inserted);
     s.commit_wait(recs).unwrap();
@@ -82,7 +72,6 @@ struct Ids {
 }
 
 impl Ids {
-    /// A chain of `n` messages in a new tree through session 1, the session at its end: its ids.
     fn chain(
         &mut self,
         s: &Store,
@@ -156,7 +145,6 @@ fn main() {
         );
     };
     for n in [1u64, 10, 100, 1000] {
-        // Delete this path / this swipe and below / everything below: one `subtreeDelete` of a chain of n.
         let (base, _) = ids.chain(&s, 5, None, None);
         let tree = ids.tree;
         let (tail, appended) = ids.chain(&s, n, Some(base[4]), Some(tree));
@@ -170,7 +158,6 @@ fn main() {
         );
     }
     {
-        // Every swipe at a position and below: 3 alternatives, 10 below each.
         let (base, _) = ids.chain(&s, 5, None, None);
         let tree = ids.tree;
         let mut roots = Vec::new();
@@ -190,7 +177,6 @@ fn main() {
         );
     }
     {
-        // A delete dropping a pinned bookmark and moving two sessions: what it adds to the root's record.
         let (base, _) = ids.chain(&s, 5, None, None);
         let tree = ids.tree;
         let (tail, appended) = ids.chain(&s, 10, Some(base[4]), Some(tree));
@@ -221,8 +207,6 @@ fn main() {
         );
     }
     for (shared, own) in [(0u64, 10u64), (10, 10), (100, 0)] {
-        // Cut 2 messages from a path: `shared` after them are another branch's too (copied), `own` this path's
-        // (moved under the copies); the cut messages go when nothing else passes through them.
         let (base, _) = ids.chain(&s, 3, None, None);
         let tree = ids.tree;
         let (cut, _) = ids.chain(&s, 2, Some(base[2]), Some(tree));
@@ -232,7 +216,6 @@ fn main() {
         let mut parent = base[2];
         let mut appended = 0.0;
         if shared > 0 {
-            // Another branch under the last shared message.
             ids.chain(&s, 1, Some(*sh.last().unwrap()), Some(tree));
             for m in &sh {
                 let id = ids.message;
@@ -284,7 +267,6 @@ fn main() {
         );
     }
     {
-        // Cut everywhere: 2 messages out, the reply below and one other branch move up, the 2 go.
         let (base, _) = ids.chain(&s, 3, None, None);
         let tree = ids.tree;
         let (cut, _) = ids.chain(&s, 2, Some(base[2]), Some(tree));

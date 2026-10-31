@@ -3,8 +3,6 @@ import { bucketActivatedEntries, world_info_position, wi_anchor_position, extens
 
 const identity = { resolveContent: (entry) => entry.content };
 
-// before/after entries: joined with '\n', in ascending-order order (sorted descending by .order,
-// then unshifted, which re-reverses back to ascending)
 {
     const entries = [
         { uid: 'b1', position: world_info_position.before, order: 10, content: 'low-order-before' },
@@ -18,7 +16,6 @@ const identity = { resolveContent: (entry) => entry.content };
     assert.equal(result.worldInfoAfter, 'low-order-after\nhigh-order-after');
 }
 
-// Empty content (post-resolveContent) is skipped entirely - doesn't appear in any bucket
 {
     const entries = [
         { uid: 'e1', position: world_info_position.before, order: 1, content: '' },
@@ -30,7 +27,6 @@ const identity = { resolveContent: (entry) => entry.content };
     assert.equal(result.worldInfoAfter, '');
 }
 
-// Skip via a resolveContent callback that returns empty for some entries
 {
     const entries = [
         { uid: 'r1', position: world_info_position.before, order: 1, content: 'raw-1' },
@@ -40,7 +36,6 @@ const identity = { resolveContent: (entry) => entry.content };
     assert.equal(result.worldInfoBefore, 'resolved-raw-2');
 }
 
-// EMTop/EMBottom -> worldInfoExamples, tagged with wi_anchor_position, unshift-reversed together
 {
     const entries = [
         { uid: 'em1', position: world_info_position.EMTop, order: 1, content: 'top-1' },
@@ -55,7 +50,6 @@ const identity = { resolveContent: (entry) => entry.content };
     ]);
 }
 
-// ANTop/ANBottom -> anBefore/anAfter plain string arrays
 {
     const entries = [
         { uid: 'an1', position: world_info_position.ANTop, order: 1, content: 'an-top-1' },
@@ -67,7 +61,6 @@ const identity = { resolveContent: (entry) => entry.content };
     assert.deepEqual(result.anAfter, ['an-bottom-1']);
 }
 
-// atDepth: same depth + same role merge into one entry's .entries array (unshifted, verify order)
 {
     const entries = [
         { uid: 'd1', position: world_info_position.atDepth, order: 1, depth: 2, role: extension_prompt_roles.SYSTEM, content: 'first-by-order' },
@@ -77,11 +70,9 @@ const identity = { resolveContent: (entry) => entry.content };
     assert.equal(result.worldInfoDepth.length, 1);
     assert.equal(result.worldInfoDepth[0].depth, 2);
     assert.equal(result.worldInfoDepth[0].role, extension_prompt_roles.SYSTEM);
-    // Sorted descending by order first (d2, d1), then each unshifted -> ascending order again
     assert.deepEqual(result.worldInfoDepth[0].entries, ['first-by-order', 'second-by-order']);
 }
 
-// atDepth: different depth -> separate WIDepthEntries entries
 {
     const entries = [
         { uid: 'd1', position: world_info_position.atDepth, order: 1, depth: 1, role: extension_prompt_roles.SYSTEM, content: 'depth-1-content' },
@@ -91,7 +82,6 @@ const identity = { resolveContent: (entry) => entry.content };
     assert.equal(result.worldInfoDepth.length, 2);
 }
 
-// atDepth: same depth, different role -> separate WIDepthEntries entries
 {
     const entries = [
         { uid: 'd1', position: world_info_position.atDepth, order: 1, depth: 3, role: extension_prompt_roles.SYSTEM, content: 'sys-content' },
@@ -103,17 +93,9 @@ const identity = { resolveContent: (entry) => entry.content };
     assert.deepEqual(sysEntry.entries, ['user-content']);
 }
 
-// atDepth: depth-fallback-only-for-matching discrepancy. A NEW entry with entry.depth === undefined
-// stores .depth as undefined (RAW), not DEFAULT_DEPTH - even though DEFAULT_DEPTH is what's used to
-// search for a match. Because the stored value is the raw undefined (not defaulted), a LATER entry
-// with an explicit depth === DEFAULT_DEPTH does NOT find/merge into that earlier bucket (its lookup
-// defaults its own depth to DEFAULT_DEPTH and compares against the stored raw `undefined`, which
-// never equals DEFAULT_DEPTH) - it creates its own separate bucket instead. This is the client's
-// actual (slightly inconsistent-looking) behavior; ported faithfully, not "fixed".
 {
     const DEFAULT_DEPTH = 4;
     const entries = [
-        // Higher order -> processed FIRST (descending sort), so this one creates the bucket.
         { uid: 'd1', position: world_info_position.atDepth, order: 2, depth: undefined, role: extension_prompt_roles.SYSTEM, content: 'undefined-depth-content' },
         { uid: 'd2', position: world_info_position.atDepth, order: 1, depth: DEFAULT_DEPTH, role: extension_prompt_roles.SYSTEM, content: 'explicit-default-depth-content' },
     ];
@@ -125,7 +107,6 @@ const identity = { resolveContent: (entry) => entry.content };
     assert.equal(explicitDepthEntry.depth, DEFAULT_DEPTH);
 }
 
-// outlet: grouped by outletName
 {
     const entries = [
         { uid: 'o1', position: world_info_position.outlet, order: 1, outletName: 'sidebar', content: 'sidebar-1' },
@@ -133,15 +114,12 @@ const identity = { resolveContent: (entry) => entry.content };
         { uid: 'o3', position: world_info_position.outlet, order: 1, outletName: 'footer', content: 'footer-1' },
     ];
     const result = bucketActivatedEntries(entries, identity);
-    // outlet buckets use push (not unshift), so order follows the descending-.order processing
-    // order, not a re-reversed ascending order like the other buckets.
     assert.deepEqual(result.outletEntries, {
         sidebar: ['sidebar-2', 'sidebar-1'],
         footer: ['footer-1'],
     });
 }
 
-// outlet: missing outletName is skipped without crashing, doesn't appear anywhere
 {
     const entries = [
         { uid: 'o1', position: world_info_position.outlet, order: 1, outletName: '', content: 'orphan' },
@@ -156,7 +134,6 @@ const identity = { resolveContent: (entry) => entry.content };
     assert.deepEqual(result.anAfter, []);
 }
 
-// default/unrecognized position: no-op, entry vanishes entirely
 {
     const entries = [
         { uid: 'x1', position: 999, order: 1, content: 'nowhere' },
@@ -173,7 +150,6 @@ const identity = { resolveContent: (entry) => entry.content };
     });
 }
 
-// Default resolveContent (no options passed) uses entry.content as-is
 {
     const entries = [
         { uid: 'p1', position: world_info_position.before, order: 1, content: 'plain-content' },

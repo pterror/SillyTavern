@@ -20,7 +20,6 @@ beforeEach(async () => {
     user = await fixture.emptyUser('st-settings-tags-import-test-');
     directories = user.directories;
     globalThis.DATA_ROOT = user.dataRoot;
-    // An existing store, which never gets the default tags (tags-default-seed.test.js).
     await user.store.lib.store.commit([{ kind: 'metaValue', key: 'tags_seed_pending' }]);
 });
 
@@ -29,10 +28,9 @@ afterEach(async () => {
     await user.close();
 });
 
-/** Imports the settings tags, as the boot chain does. */
 const migrate = () => user.store.lib.tags.importSettingsTags(directories);
 
-/** The tags a character or group carries. @param {string} key */
+/** @param {string} key */
 async function tagIdsOf(key) {
     return (await user.store.lib.tags.tagIdsFor([key]))[key] ?? [];
 }
@@ -46,7 +44,6 @@ function cardJson() {
     });
 }
 
-/** Bob.png and group1, as the boot chain would have them before the pass runs. */
 async function seedEntities() {
     await user.store.lib.writeCard(directories, 'Bob.png', cardJson());
     await user.store.lib.writeGroup({ id: 'group1', name: 'G', members: [] });
@@ -57,7 +54,11 @@ function keyFilePath(name) {
     return path.join(directories.root, 'settings', name);
 }
 
-/** @param {string} key @param {unknown} value @returns {string} The text written. */
+/**
+ * @param {string} key
+ * @param {unknown} value
+ * @returns {string}
+ */
 function writeKeyFile(key, value) {
     fs.mkdirSync(path.join(directories.root, 'settings'), { recursive: true });
     const text = JSON.stringify(value, null, 4);
@@ -70,7 +71,7 @@ async function metaValue(key) {
     return (await user.store.lib.store.meta([key]))[0] ?? undefined;
 }
 
-/** @returns {Promise<Record<string, any>>} Stored definitions by id. */
+/** @returns {Promise<Record<string, any>>} */
 async function definitionsById() {
     return Object.fromEntries((await storedTagDefinitions(user.store.lib)).map(t => [t.id, t]));
 }
@@ -92,12 +93,10 @@ describe('migrateSettingsTagsIfNeeded', () => {
         const tagsText = writeKeyFile('tags', tags);
         const tagMapText = writeKeyFile('tag_map', tagMap);
 
-        // As in MIGRATION_PASSES: until the column fill has run, a new tag gets no sort_order of its own.
         await migrate();
 
         const defs = await definitionsById();
         expect(defs.t3).toEqual({ id: 't3', name: 'Mid', sort_order: 5 });
-        // No sort_order of their own: max+1 upward, alphabetically, after the ordered ones.
         expect(defs.t2).toEqual({ id: 't2', name: 'alpha', sort_order: 6 });
         expect(defs.t1).toEqual({ id: 't1', name: 'Zeta', sort_order: 7 });
         expect([...await tagIdsOf('Bob.png')].sort()).toEqual(['t1', 't2']);
@@ -149,7 +148,6 @@ describe('migrateSettingsTagsIfNeeded', () => {
         expect(defs.x1).toEqual({ id: 'x1', name: 'Kept', sort_order: 1 });
         expect(defs.n1).toMatchObject({ name: 'New' });
         expect(Object.keys(defs).sort()).toEqual(['n1', 'x1']);
-        // An assignment to a tag with no definition isn't made.
         expect(await tagIdsOf('Bob.png')).toEqual(['n1']);
 
         const text = logged(warn, log, error);

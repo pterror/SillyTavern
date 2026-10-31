@@ -1,16 +1,11 @@
-//! The reference the index is checked against: the same query answered by reading every document's text, in two
-//! passes over the documents (statistics, then matches), so a library too large to hold can be streamed.
-
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::query::{Clause, Filter, Query};
 use super::text::{GRAM_MAX, GRAM_MIN, char_len, first_chars, tokens};
 use super::{Scope, clause_score, idf, long_prefix, pair_fields, pairs, word_text};
 
-/// A document: per field, its values' tokens.
 pub type Fields = Vec<Vec<Vec<String>>>;
 
-/// A document's values tokenized, with an empty field for each of the scope's fields it doesn't give.
 pub fn tokenize_fields(scope: Scope, values: &[Vec<Vec<u8>>]) -> Fields {
     let mut out: Fields = values
         .iter()
@@ -20,23 +15,19 @@ pub fn tokenize_fields(scope: Scope, values: &[Vec<Vec<u8>>]) -> Fields {
     out
 }
 
-/// One scope's documents: per document, per field, its values.
 #[derive(Default, Clone)]
 pub struct Corpus {
     pub docs: BTreeMap<u64, Vec<Vec<Vec<u8>>>>,
 }
 
-/// The library, the tag names, and which tags each entity carries.
 #[derive(Default, Clone)]
 pub struct World {
     pub library: Corpus,
     pub tags: Corpus,
     pub members: BTreeMap<u64, BTreeSet<u64>>,
-    /// The index has every document's pairs (`super::pairs`): a phrase's idf in short fields is its rarest pair's.
     pub pairs: bool,
 }
 
-/// A document's tokens counted, per field: whole tokens, and their first 2–20 characters.
 pub struct Doc<'a> {
     pub fields: &'a Fields,
     scope: Scope,
@@ -45,7 +36,6 @@ pub struct Doc<'a> {
 }
 
 impl<'a> Doc<'a> {
-    /// Prefix terms are counted in the scope's prefix fields only.
     pub fn new(fields: &'a Fields, scope: Scope) -> Doc<'a> {
         let mut exact = Vec::with_capacity(fields.len());
         let mut grams = Vec::with_capacity(fields.len());
@@ -72,7 +62,6 @@ impl<'a> Doc<'a> {
         }
     }
 
-    /// A term's matches in field `f`: whole tokens, or (`prefix`) tokens starting with it.
     pub fn count(&self, f: usize, term: &str, prefix: bool) -> u64 {
         if !prefix {
             return self.exact[f].get(term).copied().unwrap_or(0);
@@ -87,8 +76,6 @@ impl<'a> Doc<'a> {
             .count() as u64
     }
 
-    /// Whether some field holds `term` as a whole token, or a prefix field as a prefix term, or (a pair) a short
-    /// field's value its two tokens adjacent: the documents a term's document count counts (`DOCS_SLOT`).
     pub fn holds(&self, term: &str) -> bool {
         if let Some((a, b)) = term.split_once(pairs::SEPARATOR) {
             let short = pair_fields(self.scope);
@@ -108,7 +95,6 @@ fn occurs(toks: &[String], phrase: &[String], prefix: bool) -> bool {
     occurrences(toks, phrase, prefix) > 0
 }
 
-/// How many times `phrase` occurs in one value's tokens, overlapping occurrences each counted.
 fn occurrences(toks: &[String], phrase: &[String], prefix: bool) -> u64 {
     let last = phrase.len() - 1;
     if toks.len() < phrase.len() {
@@ -127,30 +113,21 @@ fn occurrences(toks: &[String], phrase: &[String], prefix: bool) -> u64 {
         .count() as u64
 }
 
-/// A field length as scoring takes it: its length code's length.
 fn quantized(len: usize) -> f64 {
     super::code_length(super::length_code(len as u64))
 }
 
-/// Per field where a clause holds: the field and its tokens' (token, frequency), in token order.
 type Parts = Vec<(usize, Vec<(usize, u64)>)>;
 
-/// A clause's tokens and how it matches.
 struct Shape {
     toks: Vec<String>,
     fields: Option<Vec<u32>>,
     prefix: bool,
     phrase: bool,
     negate: bool,
-    /// Restricted to the card tags field: the tags whose names it matches, carried.
     carried: Option<BTreeSet<u64>>,
-    /// Over every library field: the tags whose names it matches, whose carriers it matches too.
     tagged: BTreeSet<u64>,
-    /// Its tokens' idfs as the query gives them (`Query::weights`), a phrase's short idf after them; else from the
-    /// counts.
     weights: Option<Vec<f64>>,
-    /// A phrase's pairs of adjacent whole tokens, when the index has pairs and it may match in a short field: its
-    /// idf there is the rarest's.
     pairs: Vec<String>,
 }
 
@@ -188,12 +165,10 @@ impl Shape {
             .is_none_or(|fs| fs.contains(&(f as u32)))
     }
 
-    /// Whether token `i` is read as a prefix.
     fn is_prefix(&self, i: usize) -> bool {
         i == self.toks.len() - 1 && self.prefix
     }
 
-    /// The term whose document count is token `i`'s: a prefix's first `GRAM_MAX` characters.
     fn df_term(&self, i: usize) -> String {
         if self.is_prefix(i) {
             first_chars(&self.toks[i], GRAM_MAX).to_string()
@@ -207,7 +182,6 @@ impl Shape {
         for f in (0..scope.fields().len()).filter(|&f| self.allowed(f)) {
             let vals = &doc.fields[f];
             if self.phrase {
-                // A phrase is one part: its count in the field.
                 let n: u64 = vals
                     .iter()
                     .map(|v| occurrences(v, &self.toks, self.prefix))
@@ -219,7 +193,6 @@ impl Shape {
             }
             let mut ps = Vec::new();
             for (i, tok) in self.toks.iter().enumerate() {
-                // A prefix longer than the prefix terms is counted on the whole prefix.
                 let tf = doc.count(f, tok, self.is_prefix(i) && scope.fields()[f].prefix);
                 if tf > 0 {
                     ps.push((i, tf));
@@ -232,7 +205,6 @@ impl Shape {
         out
     }
 
-    /// Each token's idf.
     fn idfs(&self, stats: &Stats) -> Vec<f64> {
         if let Some(w) = &self.weights {
             return w[..self.toks.len()].to_vec();
@@ -242,7 +214,6 @@ impl Shape {
             .collect()
     }
 
-    /// A phrase's idf in short fields: its rarest pair's (None without pairs).
     fn short_idf(&self, stats: &Stats) -> Option<f64> {
         if let Some(w) = &self.weights {
             return w.get(self.toks.len()).copied().filter(|&x| x >= 0.0);
@@ -251,9 +222,6 @@ impl Shape {
         Some(idf(least as f64, stats.n))
     }
 
-    /// The clause's score, `tagged` when the document carries a tag whose name holds it. A phrase scores as one
-    /// term: its count per field, in short fields at its short idf (when it has one), elsewhere (and its tag part)
-    /// at its tokens' idfs summed.
     fn score(&self, scope: Scope, stats: &Stats, parts: &Parts, doc: &Doc, tagged: bool) -> f64 {
         let text = |i: usize, keep: &dyn Fn(usize) -> bool| {
             word_text(
@@ -280,7 +248,6 @@ impl Shape {
     }
 }
 
-/// The documents with text, and each word's document count.
 struct Stats {
     n: f64,
     df: HashMap<String, u64>,
@@ -305,24 +272,19 @@ impl Stats {
     }
 }
 
-/// One query checked over streamed documents: `stats` with every document, then `matches` with every one again.
 pub struct Checker {
     q: Query,
     shapes: Vec<Shape>,
     stats: Stats,
-    /// Carriers per tag, counted in the first pass.
     pub carriers: HashMap<u64, u64>,
     best: Vec<(u64, f64)>,
     keep: usize,
     total: u64,
-    /// The matches every positive clause matches by a tag name alone.
     pub tied: BTreeSet<u64>,
-    /// Their score, when every positive clause matches tag names.
     pub tie: Option<f64>,
 }
 
 impl Checker {
-    /// `tags`: every tag's name. Keeps the best `keep` matches; `pairs` when the index has every document's pairs.
     pub fn new(q: &Query, tags: &BTreeMap<u64, Vec<u8>>, keep: usize, pairs: bool) -> Checker {
         let scope = q.scope;
         let last = q
@@ -355,7 +317,6 @@ impl Checker {
                 shapes.push(s);
             }
         }
-        // The query's idfs, to each positive clause that scores in order.
         if let Some(w) = q.weights.as_ref().filter(|w| !w.is_empty()) {
             let mut at = 0;
             for s in shapes.iter_mut().filter(|s| !s.negate && s.carried.is_none()) {
@@ -385,7 +346,6 @@ impl Checker {
         }
     }
 
-    /// First pass: one document with its tags.
     pub fn stats(&mut self, doc: &Doc, tags: &BTreeSet<u64>) {
         self.stats.add(doc);
         for t in tags {
@@ -393,7 +353,6 @@ impl Checker {
         }
     }
 
-    /// What a carrier of a clause's tags scores by them alone (0 when they have none).
     fn boost(&self, s: &Shape) -> f64 {
         if !s
             .tagged
@@ -405,12 +364,10 @@ impl Checker {
         clause_score(&s.idfs(&self.stats), &vec![0.0; s.toks.len()], true)
     }
 
-    /// Second pass: document `id` with its tags.
     pub fn matches(&mut self, id: u64, doc: &Doc, tags: &BTreeSet<u64>) {
         let scope = self.q.scope;
         let mut score = 0.0;
         let mut positive = false;
-        // Every positive clause matches tag names, and the document by them alone.
         let positives = self
             .shapes
             .iter()
@@ -470,7 +427,6 @@ impl Checker {
                 return;
             }
         }
-        // With nothing else to match, every document with text does.
         if !positive && !included && !doc.fields.iter().flatten().any(|v| !v.is_empty()) {
             return;
         }
@@ -490,14 +446,12 @@ impl Checker {
         self.best.truncate(self.keep);
     }
 
-    /// The best matches, best first, and the number of matches.
     pub fn result(mut self) -> (Vec<(u64, f64)>, u64) {
         self.trim();
         (self.best, self.total)
     }
 }
 
-/// An in-memory world's answer: every match, best first, and their number.
 pub fn search(w: &World, q: &Query) -> (Vec<(u64, f64)>, u64) {
     let corpus = if q.scope == Scope::TAGS {
         &w.tags
@@ -509,7 +463,6 @@ pub fn search(w: &World, q: &Query) -> (Vec<(u64, f64)>, u64) {
         .iter()
         .map(|(&d, f)| (d, tokenize_fields(q.scope, f)))
         .collect();
-    // Documents without text match by the tags they carry.
     let mut ids: BTreeSet<u64> = docs.keys().copied().collect();
     if q.scope == Scope::LIBRARY {
         ids.extend(w.members.keys());
@@ -552,7 +505,6 @@ pub fn search(w: &World, q: &Query) -> (Vec<(u64, f64)>, u64) {
     c.result()
 }
 
-/// A clause from text.
 pub fn clause(text: &str, fields: Option<Vec<u32>>, negate: bool, quoted: bool) -> Clause {
     Clause {
         text: text.as_bytes().to_vec(),

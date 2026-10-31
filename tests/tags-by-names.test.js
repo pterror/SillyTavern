@@ -1,8 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import path from 'node:path';
 
-// /api/tags/by-names: the page finds a tag by name without holding every tag.
-
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
 /** @type {typeof import('./converted-user.fixture.js')} */
@@ -57,7 +55,10 @@ async function post(urlPath, body) {
     return { status: response.status, body: parsed };
 }
 
-/** @param {string} id @param {string} name */
+/**
+ * @param {string} id
+ * @param {string} name
+ */
 async function create(id, name) {
     expect((await post('/api/tags/create', { tag: { id, name } })).status).toBe(200);
 }

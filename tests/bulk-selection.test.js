@@ -1,9 +1,6 @@
 import { describe, test, expect } from '@jest/globals';
 import { emptySelection, isSelected, setOne, setRange, setAll, isEverything, isEmpty, countSelection, selectionToWire } from '../public/scripts/bulk-selection.js';
 
-// The character list's bulk selection held as rules over the list: picking and leaving out one by one, ranges of
-// positions, and "everything", combined so that what the page shows selected is what the server is told.
-
 const LIST = { filter: { includeGroups: true }, sort: { field: 'name', order: 'asc' } };
 
 describe('bulk selection', () => {

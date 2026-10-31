@@ -41,7 +41,6 @@ async function trimTokensCallback(arg, value) {
 }
 
 /**
- *
  * @param {import('../SlashCommand.js').NamedArguments} param0
  * @param {string} [reason]
  */
@@ -57,7 +56,6 @@ async function generateRawCallback(args, value) {
         return '';
     }
 
-    // Prevent generate recursion
     $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
     const lock = isTrueBoolean(args?.lock);
     const as = args?.as || 'system';
@@ -98,10 +96,9 @@ async function generateRawCallback(args, value) {
 }
 
 /**
- * @returns {Promise<string>} The generated text
+ * @returns {Promise<string>}
  */
 async function generateCallback(args, value) {
-    // Prevent generate recursion
     $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
     const lock = isTrueBoolean(args?.lock);
     const trim = isTrueBoolean(args?.trim?.toString());

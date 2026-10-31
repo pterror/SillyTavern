@@ -9,13 +9,8 @@ let generateThumbnail;
 let tempDir;
 let directories;
 
-/**
- * An original that isn't a readable image (an image saved with broken bytes) gets no thumbnail. It is asked for on every
- * list draw, so it is decoded and reported once per version of the file, and tried again once the file changes.
- */
 beforeAll(async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-thumbnail-undecodable-test-'));
-    // A persona image: its original is a plain file in the avatars folder, with no store to look it up in.
     directories = { thumbnailsPersona: path.join(tempDir, 'thumbnails', 'persona'), avatars: path.join(tempDir, 'User Avatars') };
     fs.mkdirSync(directories.thumbnailsPersona, { recursive: true });
     fs.mkdirSync(directories.avatars, { recursive: true });
@@ -39,8 +34,6 @@ describe('an original that is not a readable image', () => {
             expect(String(warn.mock.calls[0][0])).toContain('Broken.png');
             expect(error).not.toHaveBeenCalled();
 
-            // Jimp doesn't take a Buffer from jest's module realm as one, so a real image can't be decoded here: the
-            // change is seen by the file being read, and reported, again.
             fs.writeFileSync(original, 'PNG-1 still broken');
             expect((await generateThumbnail(directories, 'persona', 'Broken.png')).path).toBeNull();
             expect(warn).toHaveBeenCalledTimes(2);

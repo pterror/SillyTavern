@@ -2,10 +2,6 @@ import http from 'node:http';
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, chatBox } from './frontent-test-utils.js';
 
-// A reply's prompt itemization is kept with the reply on the server. Opening a chat reads none of them: each message
-// says whether it has one, which shows its "Prompt" button. Opening the view fetches that one message's, and the one
-// it is diffed against only when the diff is asked for.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -17,7 +13,6 @@ const itemization = (rawPrompt) => ({
 });
 
 /**
- * The itemized-prompt requests the page makes while `run` runs.
  * @param {import('@playwright/test').Page} page
  * @param {() => Promise<void>} run
  */
@@ -81,7 +76,6 @@ test('opening a chat reads no itemization; the Prompt view fetches its message\'
         await expect(page.locator('#chat .mes')).toHaveCount(3);
     });
     expect(atOpen).toEqual([]);
-    // The button sits in the message's collapsed extra buttons, so it is checked by its own display.
     await expect(page.locator('#chat .mes[mesid="0"] .mes_prompt')).not.toHaveCSS('display', 'none');
     await expect(page.locator('#chat .mes[mesid="1"] .mes_prompt')).toHaveCSS('display', 'none');
     await expect(page.locator('#chat .mes[mesid="2"] .mes_prompt')).not.toHaveCSS('display', 'none');
@@ -141,7 +135,10 @@ function startLlamaCpp() {
     });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} url */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} url
+ */
 async function connectLlamaCpp(page, url) {
     if (!(await page.locator('#main_api').isVisible())) {
         await page.locator('#API-status-top').click();
@@ -181,7 +178,6 @@ for (const streaming of [true, false]) {
                 // @ts-ignore
                 SillyTavern.getContext().textCompletionSettings.streaming = streaming;
             }, streaming);
-            // The connection's settings reach the server through a debounced save.
             await page.waitForTimeout(2500);
 
             /** @type {any} */

@@ -1,6 +1,3 @@
-//! History: changes kept with who and when, runs, reverts, deletes restored, forgetting with and without a marker,
-//! through commits, a reopen, a crash and cleaning.
-
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
@@ -58,17 +55,14 @@ const ENTRY_ID: u64 = 10;
 const USER: u64 = 1;
 const TAB: u64 = 7;
 const OTHER_TAB: u64 = 8;
-/// An entry's `content` (searched) and `uid` (JSON).
 const CONTENT: u64 = 104;
 const UID: u64 = 100;
-/// An entry's `key` list.
 const KEYS: u64 = 0;
 
 fn content() -> FieldRef {
     FieldRef::Code(CONTENT)
 }
 
-/// Through which session (None: none) user 1 makes a change.
 #[derive(Clone, Copy)]
 struct By {
     tab: Option<u64>,
@@ -157,7 +151,6 @@ fn revert(c: u64, f: &FieldRef, target: u64) -> Record {
     rec("histRevert", vals)
 }
 
-/// A forget of change `target` of `f` (None, None: everything up to now), leaving marker `marker` or none.
 fn forget(f: Option<&FieldRef>, target: Option<u64>, marker: Option<u64>) -> Record {
     rec(
         "histForget",
@@ -174,12 +167,10 @@ fn forget(f: Option<&FieldRef>, target: Option<u64>, marker: Option<u64>) -> Rec
     )
 }
 
-/// A store with a world book (1), an entry of it (10, key `1:0`, at place 5), user 1 and sessions 7 and 8.
 fn open(dir: &std::path::Path) -> Store {
     open_with(dir, pool())
 }
 
-/// `open` with the store in `pool` (a simulated one, for instance).
 fn open_with(dir: &std::path::Path, pool: Arc<Pool>) -> Store {
     let s = Store::open_in(dir, SMALL, pool).unwrap();
     if s.derived(|v| library::entity_info(v, BOOK_ID))
@@ -243,7 +234,6 @@ fn refused(s: &Store, r: Vec<Record>) -> bool {
     matches!(s.commit_wait(r), Err(StoreError::Refused(_)))
 }
 
-/// The entry's values as a read finds them: (field, text or `json:` + JSON).
 fn values(s: &Store) -> Vec<(FieldRef, String)> {
     let Some(e) = s.library_entities(&[ENTRY_ID]).unwrap().pop().unwrap() else {
         return Vec::new();
@@ -274,7 +264,6 @@ fn get<'a>(o: &'a Js, name: &str) -> &'a Js {
     &fields.iter().find(|(k, _)| *k == name).unwrap().1
 }
 
-/// The field's changes, last first: (id, kind).
 fn changes(s: &Store, f: Option<&FieldRef>) -> Vec<(u64, String)> {
     let page = s
         .chat_read(|v| history::history_page(v, ENTRY_ID, f, None, 1000))
@@ -292,7 +281,6 @@ fn changes(s: &Store, f: Option<&FieldRef>) -> Vec<(u64, String)> {
         .collect()
 }
 
-/// The field as change `c` left it (None: no value), or None when it reads as no value change.
 fn at(s: &Store, f: &FieldRef, c: u64) -> Option<Option<String>> {
     match s.chat_read(|v| history::history_value(v, ENTRY_ID, f, c)) {
         Ok(Js::Null) => Some(None),
@@ -330,7 +318,6 @@ fn found(s: &Store, word: &str) -> Vec<u64> {
         .collect()
 }
 
-/// A text long enough that a few small edits of it stay edits.
 const LONG: &str = "In the north of the old kingdom a dragon sleeps under the hill, and the village keeps its watch \
                     from the tower by the river, where the knight who once fought it still lives, older now, \
                     remembering every word of the song they sang that night.";
@@ -343,8 +330,6 @@ fn end(tail: &str) -> u64 {
     (LONG.len() + tail.len()) as u64
 }
 
-/// Commits `n` changes of field `f` from id `from`, each after a dead record (a value of the book written over), so
-/// cleaning has log files to clean and moves history records.
 fn churn(s: &Store, from: u64, n: u64, f: &FieldRef) {
     for c in from..from + n {
         s.commit_wait(vec![filler(), set(c, f, &format!("n{c}"), false, NOBODY)])
@@ -352,7 +337,6 @@ fn churn(s: &Store, from: u64, n: u64, f: &FieldRef) {
     }
 }
 
-/// A value of the book, each written over the one before.
 fn filler() -> Record {
     rec(
         "textValue",
@@ -366,7 +350,6 @@ fn filler() -> Record {
     )
 }
 
-/// Flushes and cleans until some log file has been cleaned.
 fn clean(s: &Store) {
     for _ in 0..20 {
         s.inner.ks.freeze_at(s.durable_end());
@@ -380,7 +363,6 @@ fn clean(s: &Store) {
     panic!("nothing was cleaned: {:?}", s.stats());
 }
 
-/// The kinds of the log's records something points at (what cleaning keeps).
 fn live_kinds(s: &Store) -> Vec<&'static str> {
     let mut all = Vec::new();
     let mut next = 0;
@@ -455,7 +437,6 @@ fn every_change_is_kept_with_who_and_when_and_current_reads_are_the_latest() {
         changes(&s, Some(&f)),
         vec![(101, "edit".into()), (100, "set".into())]
     );
-    // A JSON value's edit is a full value while an edit would be about as big.
     assert_eq!(
         changes(&s, Some(&uid)),
         vec![(103, "set".into()), (102, "set".into())]
@@ -463,7 +444,6 @@ fn every_change_is_kept_with_who_and_when_and_current_reads_are_the_latest() {
     assert_eq!(at(&s, &f, 100), Some(Some(long(" quiet"))));
     assert_eq!(at(&s, &f, 101), Some(Some(long(" loud"))));
     assert_eq!(at(&s, &uid, 102), Some(Some("0".into())));
-    // A change that changes nothing, an id already used, an id older than the field's latest: refused.
     assert!(refused(
         &s,
         vec![set(104, &f, &long(" loud"), false, NOBODY)]
@@ -474,12 +454,10 @@ fn every_change_is_kept_with_who_and_when_and_current_reads_are_the_latest() {
     assert_eq!(value(&s, &f), None);
     assert!(found(&s, "loud").is_empty());
     assert_eq!(at(&s, &f, 104), Some(None));
-    // Nothing superseded is dead.
     let live = live_kinds(&s);
     assert_eq!(count(&live, "histSet"), 3);
     assert_eq!(count(&live, "histEdit"), 1);
     assert_eq!(count(&live, "histDelete"), 1);
-    // The changes and their values outlive a reopen, a crash and cleaning (which moves them).
     s.close();
     drop(s);
     let s = open(&dir);
@@ -511,7 +489,6 @@ fn every_committed_write_is_a_change_of_its_own_with_its_session() {
     let f = content();
     s.commit_wait(vec![set(100, &f, LONG, false, NOBODY)])
         .unwrap();
-    // Writes one after another through one session, through another, through none: each its own change.
     s.commit_wait(vec![edit(101, &f, end(""), 0, " t", by(TAB))])
         .unwrap();
     s.commit_wait(vec![edit(102, &f, end(" t"), 0, "y", by(TAB))])
@@ -548,9 +525,7 @@ fn every_committed_write_is_a_change_of_its_own_with_its_session() {
     };
     assert_eq!(rows.len(), 3);
     assert_eq!(*get(&rows[0], "session"), Js::Big(TAB));
-    // An unknown session is refused.
     assert!(refused(&s, vec![edit(105, &f, 0, 0, "x", by(99))]));
-    // Places too, merged with the item's text in its history (an edit of a short text is a full value).
     let item = library::item_field(KEYS, 1);
     s.commit_wait(vec![set(400, &item, "k", false, NOBODY)])
         .unwrap();
@@ -610,10 +585,8 @@ fn a_revert_is_a_new_change_back_to_an_earlier_value() {
             (100, "set".into())
         ]
     );
-    // Back to what it is already, or to no change of the field: refused.
     assert!(refused(&s, vec![revert(105, &f, 102)]));
     assert!(refused(&s, vec![revert(105, &f, 999)]));
-    // A place goes back too.
     let item = library::item_field(KEYS, 0);
     s.commit_wait(vec![
         set(105, &item, "k", false, NOBODY),
@@ -630,7 +603,6 @@ fn a_revert_is_a_new_change_back_to_an_earlier_value() {
         .unwrap()
         .unwrap();
     assert_eq!(e.items, vec![(KEYS, 0, 1)]);
-    // A state revert can't name a history change.
     assert!(refused(
         &s,
         vec![rec(
@@ -682,11 +654,8 @@ fn a_deleted_entry_is_restored_with_its_values() {
     assert_eq!(*get(&rows[0], "key"), Js::Text(b"0".to_vec()));
     assert_eq!(*get(&rows[0], "position"), Js::Num(5.0));
     assert_eq!(*get(&rows[0], "index"), Js::Num(3.0));
-    // Writes to it are refused; its history is still read.
     assert!(refused(&s, vec![set(105, &f, "x", false, NOBODY)]));
     assert_eq!(at(&s, &f, 100), Some(Some("a dragon".into())));
-    // Its key taken meanwhile: a restore under it, or into another book, is refused; under another key of its book it
-    // comes back.
     s.commit_wait(vec![rec(
         "entityCreate",
         vec![
@@ -722,8 +691,6 @@ fn a_deleted_entry_is_restored_with_its_values() {
         .chat_read(|v| history::deleted_page(v, BOOK_ID, None, 10))
         .unwrap();
     assert_eq!(*get(&page, "entries"), Js::Arr(Vec::new()));
-    // Restoring one not deleted is refused; it can be deleted and restored again, its records kept through
-    // cleaning.
     assert!(refused(&s, vec![restore(106, "1:2")]));
     churn(&s, 300, 60, &FieldRef::Code(105));
     s.commit_wait(vec![entity_delete(400)]).unwrap();
@@ -794,7 +761,6 @@ fn forgetting_one_change_leaves_a_marker_or_nothing_and_never_the_current_value(
         refused(&s, vec![forget(Some(&f), Some(99), None)]),
         "no such change"
     );
-    // With a marker: 101 goes, and 102 (an edit of it) is written again from 100, its id kept.
     s.commit_wait(vec![forget(Some(&f), Some(101), Some(200))])
         .unwrap();
     assert_eq!(
@@ -812,7 +778,6 @@ fn forgetting_one_change_leaves_a_marker_or_nothing_and_never_the_current_value(
     let live = live_kinds(&s);
     assert_eq!(count(&live, "histEdit"), 2);
     assert_eq!(count(&live, "histForget"), 1);
-    // Without a trace: nothing of 102 is left.
     s.commit_wait(vec![forget(Some(&f), Some(102), None)])
         .unwrap();
     assert_eq!(
@@ -825,7 +790,6 @@ fn forgetting_one_change_leaves_a_marker_or_nothing_and_never_the_current_value(
     );
     assert_eq!(value(&s, &f), Some(long(" def ghi jkl")));
     assert_eq!(at(&s, &f, 103), Some(Some(long(" def ghi jkl"))));
-    // The marker itself goes without a trace: the forget that left it is dead.
     s.commit_wait(vec![forget(Some(&f), Some(101), None)])
         .unwrap();
     assert_eq!(
@@ -872,7 +836,6 @@ fn forgetting_up_to_now_keeps_each_current_value_and_goes_in_slices_through_a_cr
         set(last + 6, &FieldRef::Code(106), "only", false, NOBODY),
     ])
     .unwrap();
-    // The forget commits without its slices, as after a crash.
     let marker = last + 10;
     let (tx, rx) = std::sync::mpsc::channel();
     s.inner.submit(Job::Commit(
@@ -882,7 +845,6 @@ fn forgetting_up_to_now_keeps_each_current_value_and_goes_in_slices_through_a_cr
         }),
     ));
     rx.recv().unwrap().unwrap();
-    // It reads as done at once: each field's current change (an edit written as a full value) after one marker.
     assert_eq!(
         changes(&s, Some(&f)),
         vec![(last, "set".into()), (100, "forgotten".into())]
@@ -908,7 +870,6 @@ fn forgetting_up_to_now_keeps_each_current_value_and_goes_in_slices_through_a_cr
         .unwrap()
         .unwrap();
     assert_eq!(e.items, vec![(KEYS, 0, 2)]);
-    // A field with nothing to forget reads as it was.
     assert_eq!(
         changes(&s, Some(&FieldRef::Code(106))),
         vec![(last + 6, "set".into())]
@@ -918,7 +879,6 @@ fn forgetting_up_to_now_keeps_each_current_value_and_goes_in_slices_through_a_cr
         "pending"
     );
     assert!(refused(&s, vec![revert(marker + 1, &f, 101)]), "forgotten");
-    // A change made meanwhile stays.
     s.commit_wait(vec![edit(marker + 1, &f, 0, 0, "y", NOBODY)])
         .unwrap();
     let current = value(&s, &f);
@@ -950,7 +910,6 @@ fn forgetting_up_to_now_keeps_each_current_value_and_goes_in_slices_through_a_cr
     let live = live_kinds(&s);
     assert_eq!(count(&live, "histEdit"), 1);
     assert_eq!(count(&live, "histForget"), 1);
-    // Without a trace: no marker, and nothing of what went, the forget before included, is live.
     s.commit_wait(vec![forget(None, None, None)]).unwrap();
     wait_forgotten(&s);
     assert_eq!(changes(&s, Some(&f)), vec![(marker + 1, "set".into())]);
@@ -969,7 +928,6 @@ fn forgetting_up_to_now_keeps_each_current_value_and_goes_in_slices_through_a_cr
     assert_eq!(count(&live, "histSet"), 3);
     assert_eq!(count(&live, "histPlace"), 1);
     assert_eq!(count(&live, "histDelete"), 1);
-    // A forget with nothing to forget leaves nothing.
     s.commit_wait(vec![forget(None, None, Some(marker + 2))])
         .unwrap();
     assert!(!s.derived(history::any_forget_pending).unwrap());
@@ -980,12 +938,9 @@ fn forgetting_up_to_now_keeps_each_current_value_and_goes_in_slices_through_a_cr
 
 #[test]
 fn commits_that_read_what_they_change_stay_right_while_the_log_is_cleaned_flushed_and_merged() {
-    // A commit's job reads each published value once (`derive::Memo`): while it derives, cleaning, flushes
-    // and merges go on beside it, and every value and every change still reads as written, also reopened.
     let dir = temp_dir("memo-cleaning");
     let uid = FieldRef::Code(UID);
     const N: u64 = 160;
-    // Ids `first(i) - 1 ..= first(i) + 3` are commit i's.
     let first = |i: u64| 1000 + i * 5;
     let check = |s: &Store| {
         let last = N - 1;
@@ -1038,9 +993,6 @@ fn commits_that_read_what_they_change_stay_right_while_the_log_is_cleaned_flushe
             for i in 0..N {
                 let c = first(i);
                 let a = format!("a{i}");
-                // A value set, then edited twice in the same commit (each edit reads the one before it,
-                // unpublished), and a JSON value; every other commit also edits the value the commit before
-                // left (published, read through the job's memo) before setting it again.
                 let mut recs = vec![filler()];
                 if i % 2 == 1 {
                     recs.push(edit(c - 1, &content(), 0, 0, "p", NOBODY));
@@ -1066,7 +1018,6 @@ fn commits_that_read_what_they_change_stay_right_while_the_log_is_cleaned_flushe
     fs::remove_dir_all(&dir).unwrap();
 }
 
-/// SplitMix64, seeded: the randomized history test's choices.
 struct Rng(u64);
 
 impl Rng {
@@ -1082,10 +1033,6 @@ impl Rng {
     }
 }
 
-/// Random commits of sets, edits (several of one field in a commit, each over the one before) and deletes of three
-/// fields, with dead records for cleaning, interleaved with flushes, merges, cleaning and reopens: every current
-/// value, every past change's value and every field's change count read as a plain model says. `ST_MODEL_SEEDS`,
-/// `ST_MODEL_SEED` and `ST_MODEL_STEPS` choose seeds and length as in the keyspace's model test.
 #[test]
 fn random_history_reads_as_the_model_says_through_flushes_cleaning_and_reopens() {
     let seeds: Vec<u64> = match std::env::var("ST_MODEL_SEED") {
@@ -1107,8 +1054,6 @@ fn random_history_reads_as_the_model_says_through_flushes_cleaning_and_reopens()
         (FieldRef::Key(b"note".to_vec()), false),
         (FieldRef::Code(UID), true),
     ];
-    // Each seed twice: on real threads, and simulated, where the seed also fixes how background steps (syncs,
-    // flushes, merges, cleaning, folds) interleave with the commits and reads, so a failure replays exactly.
     for (seed, sim) in seeds.iter().flat_map(|&s| [(s, false), (s, true)]) {
         let mut rng = Rng(seed);
         let dir = temp_dir(&format!("random-{seed}-{sim}"));
@@ -1120,7 +1065,6 @@ fn random_history_reads_as_the_model_says_through_flushes_cleaning_and_reopens()
             }
         };
         let mut s = open_with(&dir, mk());
-        // Per field: its current value, and the value each of its changes left (None: no value).
         let mut cur: Vec<Option<String>> = vec![None; fields.len()];
         let mut after: Vec<Vec<(u64, Option<String>)>> = vec![Vec::new(); fields.len()];
         let mut next = 1000u64;
@@ -1179,7 +1123,6 @@ fn random_history_reads_as_the_model_says_through_flushes_cleaning_and_reopens()
                             }
                         };
                         if new == planned[fi] {
-                            // A change that changes nothing is refused.
                             recs.pop();
                             continue;
                         }
@@ -1307,7 +1250,6 @@ fn a_types_entities_page_by_key_without_the_deleted() {
         (vec!["b\u{0}x".into(), "c".into()], false)
     );
     assert_eq!(keys(Some("c"), 10), (vec![], false));
-    // The entry deleted (its history keeps it, restorable) isn't listed.
     let (entries, _) = s.library_of_type(ENTRY, None, 10).unwrap();
     assert_eq!(entries.len(), 1);
     s.commit_wait(vec![entity_delete(104)]).unwrap();
@@ -1361,7 +1303,6 @@ fn a_settings_entity_is_deleted_with_its_history_and_restored_from_it() {
     let e = s.library_entities(&[PROXY]).unwrap().pop().unwrap().unwrap();
     let value = e.values.into_iter().find(|(f, _)| *f == url).map(|(_, v)| v);
     assert!(matches!(value, Some(Stored::Text(t)) if t == b"http://b"));
-    // A character isn't deleted this way.
     s.commit_wait(vec![rec(
         "entityCreate",
         vec![Value::Id(61), Value::UInt(0), text("c.png"), Value::F64(0.0)],

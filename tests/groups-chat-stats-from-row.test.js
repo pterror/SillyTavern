@@ -50,7 +50,6 @@ beforeEach(async () => {
 afterEach(() => user.close());
 
 /**
- * A group with a chat file in the group chats folder (which nothing reads).
  * @param {string} id
  * @param {string} name
  * @param {string} chatId
@@ -64,7 +63,6 @@ async function writeGroupWithChatFile(id, name, chatId, chatBytes) {
 describe('the group routes take chat_size and date_last_chat from the group\'s chats, not the group chat files', () => {
     test('/groups/all and the groups search', async () => {
         await writeGroupWithChatFile('g1', 'Quuxbrook', 'c1', 4321);
-        // The group's chat messages are what the stats come from.
         await fixture.saveBranch(user.store, { group: 'g1' }, 'c1', [{}, { name: 'User', is_user: true, mes: 'hello there', send_date: 5678, extra: {} }]);
         const tree = await fixture.treeOf(user.store, { group: 'g1' });
         const real = (await user.store.lib.chatStats([tree])).get(tree);

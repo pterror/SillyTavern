@@ -2,15 +2,8 @@ import { baseChatReplace, substituteParams } from './macro-substitution.js';
 import { wi_anchor_position } from './world-info/result-bucketing.js';
 
 /**
- * The example messages' blocks a prompt is built with, as public/script.js's Generate() makes them: the card's
- * examples split into blocks (parseMesExamples()), the lorebook's example-message entries before or after them.
- */
-
-/**
- * public/script.js's parseMesExamples(): one block per `<START>`, each under its heading.
  * @param {string} examplesStr
  * @param {{ mainApi?: string, isInstruct?: boolean, exampleSeparator?: string, macroContext?: import('./macro-substitution.js').SubstituteParamsContext }} options
- *   `exampleSeparator` is the context template's, as written.
  * @returns {string[]}
  */
 export function parseMesExamples(examplesStr, { mainApi, isInstruct = false, exampleSeparator = '', macroContext = {} } = {}) {
@@ -26,8 +19,7 @@ export function parseMesExamples(examplesStr, { mainApi, isInstruct = false, exa
 }
 
 /**
- * The card's example blocks with the lorebook's example-message entries: those at the top before them, the rest after.
- * @param {string} mesExamples The card's examples, macros filled in.
+ * @param {string} mesExamples
  * @param {{ content: string, position: number }[]} worldInfoExamples
  * @param {Parameters<typeof parseMesExamples>[1]} options
  * @returns {string[]}

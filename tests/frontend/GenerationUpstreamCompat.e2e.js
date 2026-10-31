@@ -6,17 +6,9 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// Generation as upstream extensions see it: a quiet prompt (`/sysgen`) reaches the backend's prompt; CHAT_LOADED
-// carries `id` and GROUP_MEMBER_DRAFTED the member's index in `characters`, as upstream emits them; a generation
-// that fails shows one toast with the backend's message.
-
 const MODEL = 'upstream-compat-model';
 const REPLY = 'Sunny.';
 
-/**
- * A llama.cpp stand-in that records each /completion prompt. `refuse` makes /completion drop the connection, as a
- * backend that isn't running would.
- */
 function startLlamaCpp() {
     const state = { prompts: /** @type {string[]} */ ([]), refuse: false };
     const server = http.createServer((req, res) => {
@@ -52,7 +44,10 @@ function startLlamaCpp() {
     });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
@@ -66,7 +61,7 @@ async function createCharacter(page, name) {
     }, name);
 }
 
-/** Records the events an upstream extension listens to, from now on. @param {import('@playwright/test').Page} page */
+/** @param {import('@playwright/test').Page} page */
 async function recordEvents(page) {
     await page.evaluate(() => {
         // @ts-ignore
@@ -82,7 +77,10 @@ async function recordEvents(page) {
     });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
 async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
@@ -95,7 +93,11 @@ async function openCharacter(page, avatar) {
     await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} url @param {boolean} streaming */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} url
+ * @param {boolean} streaming
+ */
 async function connectLlamaCpp(page, url, streaming) {
     if (!(await page.locator('#main_api').isVisible())) {
         await page.locator('#API-status-top').click();
@@ -112,7 +114,6 @@ async function connectLlamaCpp(page, url, streaming) {
         // @ts-ignore
         SillyTavern.getContext().textCompletionSettings.streaming = streaming;
     }, streaming);
-    // The server reads the backend from the saved settings; let that save land.
     await page.waitForTimeout(2500);
 }
 
@@ -161,7 +162,6 @@ test.describe('generation as upstream extensions see it', () => {
         const avatar = await createCharacter(page, `SysgenInstruct-${stamp()}`);
         await openCharacter(page, avatar);
         await connectLlamaCpp(page, mock.url, false);
-        // Gemma 2's sequences, as default/content/presets/instruct/Gemma 2.json has them.
         await page.evaluate(async () => {
             // @ts-ignore
             Object.assign(SillyTavern.getContext().powerUserSettings.instruct, {
@@ -184,7 +184,6 @@ test.describe('generation as upstream extensions see it', () => {
             });
             await expect.poll(() => mock.state.prompts.length).toBeGreaterThan(before);
             const prompt = mock.state.prompts.at(-1);
-            // The instruction is a turn of its own, and the prompt ends opening the model's.
             expect(prompt).toMatch(/<start_of_turn>(user|system)\n[^<]*Describe the weather in one word\.[^<]*<end_of_turn>/);
             expect(prompt.trimEnd()).toMatch(/<start_of_turn>model(\n.*)?$/);
         } finally {

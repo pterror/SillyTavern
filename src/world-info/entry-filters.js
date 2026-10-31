@@ -1,17 +1,9 @@
 /**
- * Server-side port of checkWorldInfo()'s generation-trigger and character/tag filter checks
- * (public/scripts/world-info.js:4888-4925). Pure predicate, no lookups performed here - the caller
- * resolves the current character's filename/tags itself (this session's rule: report the raw fact,
- * don't re-derive the lookup mechanism in the port).
  * @param {object} entry
- * @param {string[]} [entry.triggers] Generation types this entry is restricted to
+ * @param {string[]} [entry.triggers]
  * @param {{names?: string[], tags?: string[], isExclude?: boolean}} [entry.characterFilter]
  * @param {{trigger?: string, characterFilename?: string, characterTags?: string[]}} context
- * @returns {boolean} True if the entry passes every filter and should be considered for activation
- *
- * Simplification: the client skips the tag filter entirely when the character has no tagMap entry
- * at all (distinct from having one with zero tags) - this port treats "no known tags" the same as
- * "empty tags array" in both cases, which only differs from the client for that specific edge case.
+ * @returns {boolean}
  */
 export function passesEntryFilters(entry, context = {}) {
     const { trigger, characterFilename, characterTags = [] } = context;

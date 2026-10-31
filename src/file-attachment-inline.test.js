@@ -30,8 +30,6 @@ test('appendFileAttachments: extra.files empty array - messageText unchanged', a
 
 test('appendFileAttachments: file entry with .text already set - used verbatim, no fs read attempted', async () => {
     const directories = makeFilesDir();
-    // No file on disk at all - if this attempted a real read it would throw/return undefined and
-    // fail the assertion below, proving .text short-circuits the disk read.
     const extra = { files: [{ text: 'inline file text', url: '/user/files/does-not-exist.txt' }] };
     const result = await appendFileAttachments(extra, 'the message', { directories });
     assert.equal(result, 'inline file text\n\nthe message');
@@ -75,10 +73,6 @@ test('appendFileAttachments: a missing file among multiple is gracefully skipped
 
 test('appendFileAttachments: EDGE CASE - files array non-empty but every resolved text is empty/falsy still prepends a bare \\n\\n', async () => {
     const directories = makeFilesDir();
-    // Neither file exists on disk, and no .text is set - every individual fileText resolves falsy,
-    // but the extra.files.length > 0 guard already let us into the branch, so per the client's
-    // exact logic (fileTexts.join('\n\n') + '\n\n', where fileTexts ends up []) the merged prefix
-    // degenerates to a bare '\n\n', not "no change at all".
     const extra = {
         files: [
             { url: '/user/files/missing-one.txt' },
@@ -108,7 +102,6 @@ test('readFileAttachment: returns undefined (not throw) for an unreadable file',
 
 test('readFileAttachment: rejects a crafted path that would escape directories.files', async () => {
     const directories = makeFilesDir();
-    // Plant a secret file just outside the files dir, then try to reach it via a traversal URL.
     fs.writeFileSync(path.join(directories.root, 'secret.txt'), 'TOP SECRET');
     const result = await readFileAttachment('/user/files/../../secret.txt', { directories });
     assert.equal(result, undefined, 'path.basename() should strip the traversal segments, and the file should not be found inside directories.files');

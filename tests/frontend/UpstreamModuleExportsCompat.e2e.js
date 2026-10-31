@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// public/scripts modules keep upstream's exports, with upstream's signatures and what callers rely on
-// (scripts/script-exports.mjs checks names and signatures; these check the behaviour behind them).
-
 test.describe('public/scripts modules keep upstream\'s exports', () => {
     test.beforeEach(testSetup.awaitST);
 
@@ -77,7 +74,6 @@ test.describe('public/scripts modules keep upstream\'s exports', () => {
         });
         expect(result.membersIsArray).toBe(true);
         expect(result.members).toBe(0);
-        // The second call finds nothing changed since the first was stored.
         expect(result.sent).toEqual([{ fav: true }]);
         expect(result.fav).toBe(true);
     });

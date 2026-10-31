@@ -7,11 +7,10 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 }
 
 /**
- * Creates a character whose greetings are `greetings`, in order, with the first one as the default.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
  * @param {string[]} greetings
- * @returns {Promise<string>} The new character's avatar filename.
+ * @returns {Promise<string>}
  */
 async function createCharacter(page, name, greetings) {
     return page.evaluate(async ({ name, greetings }) => {
@@ -28,7 +27,6 @@ async function createCharacter(page, name, greetings) {
 }
 
 /**
- * Opens the character (editor included) and waits for its chat's opening to be in place.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -49,7 +47,6 @@ async function openCharacter(page, avatar) {
 }
 
 /**
- * The character's greetings and default as the server stores them.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -65,8 +62,6 @@ async function storedModel(page, avatar) {
 }
 
 /**
- * Records every greeting op request in order, and holds the first one's response (after the server has applied
- * it) until `release()`, so that write is still in flight when the next one is started.
  * @param {import('@playwright/test').Page} page
  */
 async function holdFirstGreetingWrite(page) {
@@ -102,7 +97,6 @@ async function holdFirstGreetingWrite(page) {
 
 const stamp = () => `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
-/** How long a write that isn't queued is given to show up while the earlier one is held. */
 const OVERLAP_GRACE_MS = 1500;
 
 test.describe('one character\'s greeting writes never overlap', () => {
@@ -151,14 +145,11 @@ test.describe('one character\'s greeting writes never overlap', () => {
 });
 
 /**
- * Registers a CHARACTER_EDITED listener that, on the first event only, saves `nestedText` through the sidebar pager
- * and waits for that save, then runs `start` and waits up to `limitMs` for it and for the nested save.
  * @param {import('@playwright/test').Page} page
  * @param {string} nestedText
- * @param {'pager'|'form'} outer What starts the outer save: the pager saving `outerText`, or `createOrEditCharacter`
- * after `#character_json_data`'s greetings are set to `outerGreetings`.
+ * @param {'pager'|'form'} outer
  * @param {{outerText?: string, outerGreetings?: string[]}} args
- * @returns {Promise<{outer: string, nested: string}>} Each is `'done'`, or `'hung'` if it didn't finish in time.
+ * @returns {Promise<{outer: string, nested: string}>}
  */
 async function saveWithNestedListenerSave(page, nestedText, outer, { outerText, outerGreetings }) {
     return page.evaluate(async ({ nestedText, outer, outerText, outerGreetings }) => {
@@ -225,8 +216,6 @@ test.describe('a greeting save started from inside CHARACTER_EDITED', () => {
 });
 
 /**
- * Sets `#character_json_data`'s greetings to `greetings` and runs `createOrEditCharacter`, recording every
- * CHARACTER_EDITED it fires.
  * @param {import('@playwright/test').Page} page
  * @param {string[]} greetings
  * @returns {Promise<{greetingEdit: any, greetingEdits: any}[]>}

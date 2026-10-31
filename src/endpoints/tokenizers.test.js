@@ -6,18 +6,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import zlib from 'node:zlib';
 import { mock } from 'node:test';
 
-// This module reads process-wide config at import time (e.g. src/endpoints/secrets.js) - the
-// config path must be set before that import chain runs, same approach as
-// src/tokenizer-resolve.test.js and src/novel-generation-data.test.js.
 import { setConfigFilePath } from '../util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
-// Tokenizer downloads fail with 503 without touching the network, except the URLs in
-// `downloadBodies`, which answer that body. Needs --experimental-test-module-mocks.
 const canMockDownloads = typeof mock.module === 'function';
-/** @type {string[]} URLs the download stub was asked for. */
+/** @type {string[]} */
 const downloadRequests = [];
 /** @type {Map<string, Buffer>} */
 const downloadBodies = new Map();
@@ -41,8 +36,6 @@ if (canMockDownloads) {
     console.log('tokenizers.test.js: node:test mock.module() is unavailable (run with --experimental-test-module-mocks) - skipping the download-failure case, which needs it to stub the tokenizer download');
 }
 
-// No model maps to an official file yet, so the model map gets a stand-in name for a model with
-// several official files: the tekken file on Mistral's API, nothing elsewhere. Needs --experimental-test-module-mocks.
 const testModels = {
     'test-several-files': { byBackend: { vendorApis: { mistralai: { source: 'nemo-tekken' } } } },
 };
@@ -58,8 +51,6 @@ if (canMockDownloads) {
 }
 
 const { computeLogitBias, computeTextgenLogitBias, countChatCompletionMessages, router, encodeTextByLocalTokenizerType, getTiktokenTokenizer, guesstimate } = await import('./tokenizers.js');
-// OpenRouter models resolve as if OpenRouter's model list named no hugging_face_id for them, and the
-// list is not fetched.
 const { rememberOpenRouterModels } = await import('../openrouter-models.js');
 rememberOpenRouterModels([]);
 const { resolveTokenizer, encodeWithTokenizer, tokenizers } = await import('../tokenizer-resolve.js');
@@ -67,17 +58,12 @@ const { router: currentRouter } = await import('./tokenizers-current.js');
 const { default: express } = await import('express');
 const { Tokenizer } = await import('@agnai/web-tokenizers');
 
-// --- computeLogitBias ---
-
-// A real bias-preset entry with plain text resolves to a real token-id-keyed bias object, using
-// the actual tiktoken-family tokenizer (cheap/synchronous/offline - no model download needed).
 {
     const result = await computeLogitBias([{ text: 'hello', value: -100 }], 'gpt-3.5-turbo');
     assert.deepEqual(Object.keys(result).length > 0, true);
     assert.deepEqual(Object.values(result), [-100]);
 }
 
-// Multiple entries merge into one map; entries missing `text` are skipped.
 {
     const result = await computeLogitBias([
         { text: 'hello', value: -100 },
@@ -87,37 +73,29 @@ const { Tokenizer } = await import('@agnai/web-tokenizers');
     assert.deepEqual(Object.values(result), [-100]);
 }
 
-// A raw JSON array of token ids as `text` is used as-is instead of being tokenized.
 {
     const result = await computeLogitBias([{ text: '[1, 2, 3]', value: 10 }], 'gpt-3.5-turbo');
     assert.deepEqual(result, { 1: 10, 2: 10, 3: 10 });
 }
 
-// model === 'claude' returns an empty bias object (no bias support for Claude).
 {
     const result = await computeLogitBias([{ text: 'hello', value: -100 }], 'claude-3-opus');
     assert.deepEqual(result, {});
 }
 
-// Non-array input returns an empty object rather than throwing.
 {
     assert.deepEqual(await computeLogitBias(undefined, 'gpt-3.5-turbo'), {});
     assert.deepEqual(await computeLogitBias(null, 'gpt-3.5-turbo'), {});
 }
 
-// Empty entries array returns an empty object.
 {
     assert.deepEqual(await computeLogitBias([], 'gpt-3.5-turbo'), {});
 }
-
-// --- computeTextgenLogitBias ---
 
 const mistralResolved = await resolveTokenizer({ api: 'textgenerationwebui', type: 'ooba', model: 'x', tokenizerSetting: tokenizers.MISTRAL });
 assert.equal(mistralResolved.id, tokenizers.MISTRAL);
 const mistral = { encode: (text) => encodeWithTokenizer(mistralResolved, text) };
 
-// A {...}-wrapped verbatim-text entry and a plain-text entry both resolve to real token-id-keyed
-// bias entries via a real local tokenizer.
 {
     const result = await computeTextgenLogitBias(
         [{ text: '{hello}', value: -50 }, { text: 'world', value: 25 }],
@@ -128,7 +106,6 @@ const mistral = { encode: (text) => encodeWithTokenizer(mistralResolved, text) }
     assert.equal(Object.values(result).includes(25), true);
 }
 
-// A [...]-wrapped raw JSON token-id entry passes through directly without going through the tokenizer.
 {
     const result = await computeTextgenLogitBias(
         [{ text: '[7, 8, 9]', value: 3 }],
@@ -137,14 +114,12 @@ const mistral = { encode: (text) => encodeWithTokenizer(mistralResolved, text) }
     assert.deepEqual(result, { 7: 3, 8: 3, 9: 3 });
 }
 
-// Empty/absent logit_bias array -> {}, no computation attempted (no tokenizerOptions needed at all).
 {
     assert.deepEqual(await computeTextgenLogitBias([]), {});
     assert.deepEqual(await computeTextgenLogitBias(undefined), {});
     assert.deepEqual(await computeTextgenLogitBias(null), {});
 }
 
-// Entries without text, or with only whitespace, are skipped.
 {
     const result = await computeTextgenLogitBias(
         [{ value: 1 }, { text: '', value: 2 }, { text: '   ', value: 3 }, { text: 'hi', value: -1 }],
@@ -154,7 +129,6 @@ const mistral = { encode: (text) => encodeWithTokenizer(mistralResolved, text) }
     assert.equal(Object.values(result).every(v => v === -1), true);
 }
 
-// A failing remote tokenizer with no local copy leaves the entry out and lists it.
 {
     const remote = await resolveTokenizer({ api: 'textgenerationwebui', type: 'vllm', model: 'x' });
     assert.equal(remote.kind, 'remote');
@@ -166,7 +140,6 @@ const mistral = { encode: (text) => encodeWithTokenizer(mistralResolved, text) }
     assert.deepEqual(dropped, ['hello']);
 }
 
-// A non-empty preset with no resolution throws rather than picking a tokenizer.
 {
     await assert.rejects(() => computeTextgenLogitBias([{ text: 'hello', value: -1 }]), /tokenizerOptions\.encode is required/);
     await assert.rejects(() => computeTextgenLogitBias([{ text: 'hello', value: -1 }], { settingsType: 'ooba', powerUserTokenizer: 'mistral' }), /tokenizerOptions\.encode is required/);
@@ -182,8 +155,6 @@ async function testCase(name, fn) {
         console.log(`  FAIL: ${name}: ${error.message}`);
     }
 }
-
-// --- computeLogitBias on a model no tokenizer is known for ---
 
 await testCase('computeLogitBias, unmapped model: entries needing ids dropped and listed, raw ids kept', async () => {
     const dropped = [];
@@ -203,13 +174,8 @@ await testCase('computeLogitBias, claude: no bias, nothing listed as dropped', a
     assert.deepEqual(dropped, []);
 });
 
-// --- /openai/encode, /openai/decode, /openai/count ---
-
-// Nemo and DeepSeek are downloaded tokenizers. The cache gets stand-in files so no download
-// happens; they are claude.json, whose ids differ from llama3 and tiktoken.
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'st-tokenizers-test-'));
 globalThis.DATA_ROOT = dataRoot;
-// The token tables are the user's store (a new one, in `dataRoot`).
 const stores = await import('../user-stores.js');
 const engineBinding = (await import('../../engine/load.js')).loadEngine().binding;
 stores.setStoreEngine(() => engineBinding);
@@ -240,9 +206,6 @@ async function postTokenizer(route, model, body) {
 const text = 'Antidisestablishmentarianism, naïveté and 東京.';
 const messages = [{ role: 'user', content: text }];
 
-// --- a sentencepiece file that fails to load ---
-
-// Runs before anything loads llama: a loaded tokenizer stays loaded, and a failed load is tried again.
 await testCase('/current/count: a corrupt llama.model is a failed tokenizer, not 0 tokens', async () => {
     const modelPath = 'src/tokenizers/llama.model';
     const corruptPath = path.join(dataRoot, 'llama.model');
@@ -296,8 +259,6 @@ await testCase('/openai/*: an unmapped name gets the estimate, ids: [] and { tex
     assert.deepEqual(counted, { token_count: guesstimate(JSON.stringify(messages)) }, 'count');
 });
 
-// A tokenizer name upstream accepts in ?model= is an explicit pick of that tokenizer, even where
-// the model map would leave the name unmapped.
 for (const name of ['claude', 'mistral', 'llama', 'deepseek', 'jamba']) {
     await testCase(`/openai/*: the tokenizer name '${name}' picks that tokenizer`, async () => {
         const ids = await encodeTextByLocalTokenizerType(name, text);
@@ -317,8 +278,6 @@ for (const name of ['claude', 'mistral', 'llama', 'deepseek', 'jamba']) {
 
 if (canMockDownloads) {
     await testCase('/openai/*: with the X-ST-Connection-State header, a several-files model on Mistral\'s API gets the tekken file; without it, the estimate as before', async () => {
-        // A stand-in under the tekken entry's cache name, so nothing is downloaded: every byte is
-        // its own token, and the ids start after 10 special tokens.
         const { TOKENIZER_SOURCES, getCacheFileName } = await import('../tokenizer-sources.js');
         const tekken = TOKENIZER_SOURCES.find(entry => entry.id === 'nemo-tekken');
         fs.writeFileSync(path.join(dataRoot, '_cache', getCacheFileName(tekken)), JSON.stringify({
@@ -356,8 +315,6 @@ if (canMockDownloads) {
         }
     });
 }
-
-// --- downloadable tokenizers ---
 
 if (canMockDownloads) {
     await testCase('qwen2 download failure: no llama3.json load, a throw, and no new request for 60 s', async () => {
@@ -397,7 +354,6 @@ if (canMockDownloads) {
         assert.deepEqual(downloadRequests, ['https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-r.json.gz'], 'the download was tried');
     });
 
-    // command-a's download answers claude.json, so the load succeeds.
     await testCase('command-a, four parallel encodes on a cold cache: one request and one fromJSON', async () => {
         const commandAUrl = 'https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-a.json.gz';
         downloadBodies.set(commandAUrl, zlib.gzipSync(fs.readFileSync(path.join(__dirname, '..', 'tokenizers', 'claude.json'))));
@@ -418,9 +374,6 @@ if (canMockDownloads) {
     });
 }
 
-// --- /remote/textgenerationwebui/encode ---
-
-// An api_type with no remote tokenize endpoint answers HTTP 400, as upstream does.
 await testCase('/remote/textgenerationwebui/encode: an unknown api_type answers 400', async () => {
     for (const apiType of ['some-unknown-type', undefined]) {
         const response = await fetch(`${baseUrl}/remote/textgenerationwebui/encode`, {
@@ -431,9 +384,6 @@ await testCase('/remote/textgenerationwebui/encode: an unknown api_type answers 
     }
 });
 
-// --- /current/* ---
-
-// A fake llama.cpp: `/tokenize` fails, or answers one token per character.
 let fakeTokenizeMode = 'fail';
 let fakeTokenizeCalls = 0;
 const fakeLlamaCpp = express();
@@ -491,7 +441,6 @@ await testCase('/current/*: each route names the tokenizer it used', async () =>
 });
 
 await testCase('/current/*: a registry entry picked in Advanced Formatting is named by the answer', async () => {
-    // A stand-in under the Qwen3 entry's cache name, so nothing is downloaded: llama3.json, an hf-json file.
     const { TOKENIZER_SOURCES } = await import('../tokenizer-sources.js');
     const qwen3 = TOKENIZER_SOURCES.find(entry => entry.id === 'qwen3');
     fs.copyFileSync(path.join(__dirname, '..', 'tokenizers', 'llama3.json'), path.join(dataRoot, '_cache', `${qwen3.sha256}.json`));
@@ -516,7 +465,6 @@ await testCase('/current/*: a registry entry picked in Advanced Formatting is na
 });
 
 await testCase('/current/*: explicitTokenizer names the tokenizer on every api, chat completion included', async () => {
-    // The same stand-in under the Qwen3 entry's cache name, so nothing is downloaded.
     const { TOKENIZER_SOURCES } = await import('../tokenizer-sources.js');
     const qwen3 = TOKENIZER_SOURCES.find(entry => entry.id === 'qwen3');
     fs.copyFileSync(path.join(__dirname, '..', 'tokenizers', 'llama3.json'), path.join(dataRoot, '_cache', `${qwen3.sha256}.json`));
@@ -631,7 +579,6 @@ await testCase('/current/*: an unmapped model gets estimate counts, basis unknow
     const decoded = await postCurrent('decode', { state: unmappedState, ids: [1, 2] });
     assert.equal(decoded.text, '');
 
-    // Upstream /trimtokens' character-proportion fallback.
     const limit = 5;
     const trimIndex = Math.floor(text.length * (limit / guesstimate(text)));
     const trimmedEnd = await postCurrent('trim', { state: unmappedState, text, limit, direction: 'end' });
@@ -654,8 +601,6 @@ await testCase('/current/trim: the same text as encode-slice-decode for a local 
     assert.equal((await postCurrent('trim', { state: llama3State, text, limit: 'x' })).text, text, 'no limit');
 });
 
-// The reference ids from python tokenizers 0.23.2 for a string where llama3.json's `ignore_merges`
-// matters (tests/fixtures/tokenizer-reference, sample 15). @agnai/web-tokenizers gives 40 ids.
 const ignoreMergesText = 'Ở Việt Nam, việc này có nhiều điều hợp lý; jeho každý характер değişti.';
 const ignoreMergesIds = [5080, 252, 101798, 31074, 11, 100769, 97635, 29876, 100937, 101309, 100827, 101226, 26, 101503, 112357, 105670, 409, 44907, 7370, 10462, 13];
 
@@ -674,7 +619,6 @@ await testCase('llama3.json: /llama3/*, /openai/* and /current/* give the refere
 });
 
 await testCase('llama3.json: chat-completion message counts give the reference count where ignore_merges matters', async () => {
-    // A message's values are joined with '\n\n', so a message with one value counts that value alone.
     const llama3Messages = [{ content: ignoreMergesText }];
 
     const state = { api: 'openai', source: 'openrouter', model: 'meta-llama/llama-3-70b-instruct' };
@@ -733,11 +677,6 @@ await testCase('/current/*: a request without state answers 400', async () => {
     }
 });
 
-// --- llama.cpp's own /tokenize (step 22) ---
-
-// A fake llama.cpp recording each request: `/props` answers llama.cpp's shape (llama.cpp server README,
-// "GET `/props`"), `/tokenize` one token per UTF-8 byte (with `with_pieces`, each piece that byte as a
-// list, as llama.cpp gives a piece that isn't valid UTF-8), or 500 when `stepFake.fail`.
 const stepFake = { fail: false, requests: [], props: {} };
 const stepLlamaCpp = express();
 stepLlamaCpp.use(express.json());
@@ -791,7 +730,6 @@ await testCase('/current/*: with /tokenize failing, a single field\'s local-copy
     const encoded = await postCurrent('encode', { state: stepTextgenState, texts: [text] });
     assert.deepEqual(encoded.ids, [gemmaIds]);
     assert.equal(encoded.tokenizer.basis, 'fallback');
-    // gemma.model's BOS is id 2 (`<bos>`).
     assert.notEqual(encoded.ids[0][0], 2, 'no BOS first');
     assert.equal(tokenizeBodies().length, 1, 'llama.cpp was tried first');
     assert.equal('add_special' in tokenizeBodies()[0], false, 'and asked for no BOS');
@@ -945,15 +883,12 @@ await testCase('computeLogitBias at a custom llama.cpp URL: with a storedEncoder
     }
 });
 
-// --- /current/count and /current/encode store what they counted, after the response ---
-
 {
     const { clearLlamaCppPropsMemory } = await import('../llamacpp-props.js');
     const { TOKEN_KEY_KINDS, tokenKeyHash, readCount, readIdsRow, writeBack } = await import('../token-count-store.js');
     const directories = { root: dataRoot };
     const identity = 'llamacpp:["/models/current.gguf","b1-abc"]';
     const idsRowsRunning = async () => Number(await (await stores.userStore(directories)).lib.store.chatRead('tokenCacheCount', { table: 1 }));
-    /** Waits for a write-back that runs after the response: `read()` until it gives something other than null. */
     const stored = async (read) => {
         for (let i = 0; i < 200; i++) {
             const value = await read();
@@ -1004,8 +939,6 @@ await testCase('computeLogitBias at a custom llama.cpp URL: with a storedEncoder
         assert.equal(await idsRowsRunning(), rowsBefore, 'no row added');
     });
 
-    // --- A text already stored is answered from the tables ---
-
     await testCase('/current/count on llama.cpp: a text stored under the current identity makes no /tokenize and answers the same count', async () => {
         storedState();
         const message = 'a message the per-message counter counts twice';
@@ -1036,10 +969,7 @@ await testCase('computeLogitBias at a custom llama.cpp URL: with a storedEncoder
         assert.deepEqual(again.tokenizer, fresh.tokenizer, 'the same tokenizer answer');
     });
 
-    // --- A failed read of the token tables fails nothing: upstream's /current/* never read them ---
-
     /**
-     * Runs `body` with every read of token_counts and token_ids throwing, as a broken store would.
      * @param {() => Promise<void>} body
      */
     const withFailingTokenReads = async (body) => {

@@ -2,7 +2,6 @@ import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
 /**
- * Mounts an editor that renders with the app's markdown, as a field's preview does.
  * @param {import('@playwright/test').Page} page
  * @param {string} value
  */
@@ -68,7 +67,6 @@ test.describe('live editor rendering', () => {
     test('a click puts the cursor where it lands in the text', async ({ page }) => {
         const text = '1. first item\n2. second item with the target word\n> quoted *target* too\nHello **there**, the target again';
         await mountRendered(page, text);
-        // Measured just before each click: a web font finishing its load moves the text.
         const pointOf = (/** @type {number} */ k) => page.evaluate((k) => {
             const content = document.querySelector('#liveEditorTestHost .cm-content');
             const found = [];

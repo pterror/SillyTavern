@@ -1,18 +1,7 @@
-//! The I/O fault seam: every write, sync, directory sync, rename, removal and truncation the log and the runs
-//! make passes through a hook here first. Outside tests every hook is an inlined `Ok`, so production pays
-//! nothing.
-//!
-//! In tests, a `Plan` installed for a directory counts the operations on paths under it and, at a chosen
-//! operation, fails it (EIO, ENOSPC), tears a write (part of its bytes, then EIO) or crashes (the operation and
-//! every later one fail). It also follows each file's written and synced lengths, so `crash_cut` can leave a
-//! file as a power loss would: synced bytes kept, unsynced ones cut at a seeded point. Not modelled: a rename or
-//! a new file lost because its directory wasn't synced.
-
 use std::io;
 #[cfg(not(test))]
 use std::path::Path;
 
-/// What the hooks are asked about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
     Sync,
@@ -26,8 +15,6 @@ pub fn op(_: Op, _: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Before writing `len` bytes at `offset` of `path`: Ok(None) writes them all; Ok(Some(n)) writes the first n
-/// and then fails (a torn write); Err fails before writing.
 #[cfg(not(test))]
 #[inline(always)]
 pub fn write(_: &Path, _: u64, _: usize) -> io::Result<Option<usize>> {
@@ -46,7 +33,6 @@ pub fn set_len(_: &Path, _: u64) -> io::Result<()> {
     Ok(())
 }
 
-/// The error a torn write ends with.
 pub fn torn() -> io::Error {
     io::Error::other("injected: a write torn part way")
 }
@@ -67,18 +53,12 @@ mod sim {
     pub enum Fault {
         Eio,
         Enospc,
-        /// A write is written part way and fails (a non-write operation fails as `Eio`); the next operation
-        /// crashes.
         Torn,
-        /// The process is gone: the operation unwinds with `Crashed` (a step under simulation runs on the thread
-        /// that waits for it, so the test catches it), and nothing more is written.
         Crash,
     }
 
-    /// The panic payload of a crash (`Fault::Crash`).
     pub struct Crashed;
 
-    /// Runs `f`; Some(its value), or None if a crash (`Fault::Crash`) ended it. Other panics go on.
     pub fn catch_crash<T>(f: impl FnOnce() -> T) -> Option<T> {
         static QUIET: std::sync::Once = std::sync::Once::new();
         QUIET.call_once(|| {
@@ -113,12 +93,9 @@ mod sim {
 
     static PLANS: Mutex<Vec<Arc<Mutex<Plan>>>> = Mutex::new(Vec::new());
 
-    /// A plan for the operations on paths under `dir`; removed when dropped.
     pub struct Faults(Arc<Mutex<Plan>>);
 
     impl Faults {
-        /// Counts operations under `dir`; with `at = Some((n, fault))`, the n-th (from 1) gets `fault`. `seed`
-        /// picks where torn writes and `crash_cut` cut.
         pub fn install(dir: &Path, at: Option<(u64, Fault)>, seed: u64) -> Faults {
             let plan = Arc::new(Mutex::new(Plan {
                 dir: dir.to_path_buf(),
@@ -132,19 +109,15 @@ mod sim {
             Faults(plan)
         }
 
-        /// Operations counted so far.
         pub fn ops(&self) -> u64 {
             self.0.lock().unwrap().ops
         }
 
-        /// Whether the planned fault has happened.
         pub fn fired(&self) -> bool {
             let p = self.0.lock().unwrap();
             p.at.is_some_and(|(n, _)| p.ops >= n)
         }
 
-        /// After a crash: cuts every file written since the plan began to a seeded length between what was
-        /// synced and what is on disk, as a power loss may leave it. Returns the bytes cut.
         pub fn crash_cut(&self) -> u64 {
             let mut p = self.0.lock().unwrap();
             let mut cut = 0;
@@ -198,7 +171,6 @@ mod sim {
         }
     }
 
-    /// Counts an operation; the fault it gets, if any. `ST_FAULT_TRACE` prints each.
     fn count(p: &mut Plan, what: &str, path: &Path) -> Option<Fault> {
         p.ops += 1;
         if std::env::var_os("ST_FAULT_TRACE").is_some() {
@@ -218,10 +190,8 @@ mod sim {
         }
     }
 
-    /// The error for `f`, after letting go of the plan; a crash unwinds instead.
     fn fail(p: std::sync::MutexGuard<'_, Plan>, f: Fault) -> io::Error {
         drop(p);
-        // Already unwinding (a destructor doing I/O after the crash): an error, not a second panic.
         if f == Fault::Crash && !std::thread::panicking() {
             std::panic::panic_any(Crashed);
         }

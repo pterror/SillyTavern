@@ -16,7 +16,6 @@ use crate::store::kinds::test_codes::ITEM_SEPARATOR;
 use crate::store::kinds::{key, parse_loc, test_codes};
 use crate::store::{Store, StoreConfig, StoreResult};
 
-/// The phrase structures are a process-wide switch: tests here take turns.
 fn turn() -> std::sync::MutexGuard<'static, ()> {
     static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
     TURN.lock().unwrap_or_else(|e| e.into_inner())
@@ -137,7 +136,6 @@ fn sentence(r: &mut Rng, n: u64) -> String {
     (0..n).map(|_| r.pick(WORDS)).collect::<Vec<_>>().join(" ")
 }
 
-/// A store and the same documents in memory.
 struct Lib {
     store: Store,
     world: World,
@@ -188,7 +186,6 @@ fn build(dir: &Path, seed: u64, docs: u64) -> Lib {
     build_ids(dir, seed, docs, |d| d)
 }
 
-/// `build` with the documents' ids `id` gives.
 fn build_ids(dir: &Path, seed: u64, docs: u64, id: fn(u64) -> u64) -> Lib {
     let mut r = Rng(seed);
     let mut lib = Lib {
@@ -201,7 +198,6 @@ fn build_ids(dir: &Path, seed: u64, docs: u64, id: fn(u64) -> u64) -> Lib {
         lib.tag(t, &name);
     }
     for _ in 0..docs {
-        // Spread over several score blocks.
         let doc = id(1 + r.below(1500));
         random_fields(&mut lib, &mut r, doc);
         for _ in 0..r.below(3) {
@@ -211,7 +207,6 @@ fn build_ids(dir: &Path, seed: u64, docs: u64, id: fn(u64) -> u64) -> Lib {
     lib
 }
 
-/// A library with no tags whose documents `id(1)` to `id(docs)` are each written once.
 fn build_fresh(dir: &Path, seed: u64, docs: u64, id: fn(u64) -> u64) -> Lib {
     let mut r = Rng(seed);
     let mut lib = Lib {
@@ -224,7 +219,6 @@ fn build_fresh(dir: &Path, seed: u64, docs: u64, id: fn(u64) -> u64) -> Lib {
     lib
 }
 
-/// `build_fresh`, with tags 1 to 12 named first and each document assigned up to two of them once its text is set.
 fn build_fresh_tagged(dir: &Path, seed: u64, docs: u64, id: fn(u64) -> u64) -> Lib {
     let mut r = Rng(seed);
     let mut lib = Lib {
@@ -245,7 +239,6 @@ fn build_fresh_tagged(dir: &Path, seed: u64, docs: u64, id: fn(u64) -> u64) -> L
     lib
 }
 
-/// Random text in a document's name, description, example messages, scenario, creator, tags and greetings.
 fn random_fields(lib: &mut Lib, r: &mut Rng, doc: u64) {
     for f in [0usize, 1, 2, 3, 7, 8] {
         let n = if f == 0 || f == 7 {
@@ -317,7 +310,6 @@ fn query(clauses: Vec<Clause>, limit: usize) -> Query {
     }
 }
 
-/// Every page of a query, following `more`.
 fn pages(s: &Store, q: &Query) -> (Vec<(u64, f64)>, Found) {
     let mut q = q.clone();
     let mut all = Vec::new();
@@ -366,8 +358,6 @@ fn check(lib: &Lib, q: &Query) {
 type Hook = Box<dyn FnOnce()>;
 
 thread_local! {
-    /// Run once by a query of this thread when it reaches the named point of its read: "walk" at a walk's first
-    /// match.
     static HOOKS: std::cell::RefCell<Vec<(&'static str, Hook)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -417,14 +407,10 @@ fn results_equal_a_scan_of_every_document() {
     }
 }
 
-/// Ids in runs of 50, each run `1 << 27` ids after the last: the runs are under different level-1 nodes of the
-/// block maxima, and under level-2 nodes 0 to 3 (`super::node_of`).
 fn spread_id(d: u64) -> u64 {
     d % 50 + (d / 50 << 27)
 }
 
-/// With ids spread over the maxima's nodes above level 0, results equal a scan, and the walk passes over nodes
-/// at levels 1 and 2 by their maxima.
 #[test]
 fn results_over_sparse_ids_equal_a_scan_of_every_document() {
     let _turn = turn();
@@ -444,13 +430,10 @@ fn results_over_sparse_ids_equal_a_scan_of_every_document() {
     assert!(passed[1] > 0 && passed[2] > 0, "{passed:?}");
 }
 
-/// Pages 1 to `n` of a query equal the reference's first matches, each page exact; whether every page was read
-/// best first by the word's maxima (no step of the walk in id order).
 fn check_pages(lib: &Lib, q: &Query, n: usize) -> bool {
     check_pages_walked(lib, q, n, false)
 }
 
-/// `check_pages`; with `walk_exact`, every page the walk in id order read has an exact total.
 fn check_pages_walked(lib: &Lib, q: &Query, n: usize, walk_exact: bool) -> bool {
     let (want, total) = brute::search(&lib.world, q);
     let mut q = q.clone();
@@ -479,8 +462,6 @@ fn check_pages_walked(lib: &Lib, q: &Query, n: usize, walk_exact: bool) -> bool 
     descended
 }
 
-/// One-word clauses read best first: whole words (quoted), and prefixes in some fields (a long one in prefix
-/// fields only, read through its first `GRAM_MAX` characters and counted on the text).
 fn descending_words() -> Vec<Clause> {
     let mut out: Vec<Clause> = WORDS
         .iter()
@@ -500,8 +481,6 @@ fn descending_words() -> Vec<Clause> {
     out
 }
 
-/// One word's pages 1 to 3, read best first, equal a scan: over dense and spread ids, with filters and a negated
-/// clause, at several page sizes.
 #[test]
 fn a_words_pages_read_best_first_equal_a_scan() {
     let _turn = turn();
@@ -523,7 +502,6 @@ fn a_words_pages_read_best_first_equal_a_scan() {
             (vec![], Some(clause("vampire", None, true, false))),
         ];
         let mut words = descending_words();
-        // Prefixes over every field: read best first above `CHECKED_WHOLE` documents.
         for w in ["the", "dr", "d", "kn"] {
             words.push(clause(w, None, false, false));
         }
@@ -535,8 +513,6 @@ fn a_words_pages_read_best_first_equal_a_scan() {
                     clauses.push(w.clone());
                     let mut q = query(clauses, limit);
                     q.filters = fs.clone();
-                    // A single word with an include is read best first only until that costs about what the walk
-                    // led by the rarer of them would; then the counting walk reads it, its total exact.
                     let included = fs.iter().any(|f| {
                         matches!(f, Filter::AllTags(_) | Filter::AnyTag(_) | Filter::Ids(_))
                     });
@@ -555,7 +531,6 @@ fn a_words_pages_read_best_first_equal_a_scan() {
     }
 }
 
-/// Cards whose one word scores alike across many blocks: pages cut inside a tie come back in id order.
 #[test]
 fn a_words_ties_at_the_page_edge_come_back_in_id_order() {
     let _turn = turn();
@@ -570,7 +545,6 @@ fn a_words_ties_at_the_page_edge_come_back_in_id_order() {
         };
         let mut ids = Vec::new();
         for i in 0..48u64 {
-            // Three scores, each held by 16 cards spread over the blocks.
             let filler = "knight ".repeat((i % 3) as usize);
             lib.set(id(i), 0, &[format!("{filler}omega")]);
             ids.push(id(i));
@@ -584,8 +558,6 @@ fn a_words_ties_at_the_page_edge_come_back_in_id_order() {
                 for limit in 1..=8 {
                     let mut q = query(vec![w.clone()], limit);
                     q.filters = filters.clone();
-                    // Under ids the descent may hand the page to the counting walk (as a single word with an
-                    // include is read), whose total is exact; with no filter it is read best first.
                     let best_first = check_pages_walked(&lib, &q, 3, true);
                     if filters.is_empty() {
                         assert!(best_first, "{q:?}");
@@ -598,8 +570,6 @@ fn a_words_ties_at_the_page_edge_come_back_in_id_order() {
     }
 }
 
-/// A document's parts of its score for `tok` before the idf, from its text, in the fields of `fields` (None:
-/// every field): (field, `field_score`), in prefix fields as a prefix when `prefix`.
 fn parts_of(
     lib: &Lib,
     doc: u64,
@@ -626,7 +596,6 @@ fn parts_of(
         .collect()
 }
 
-/// The level-0 maxima maps of `term` in the library, by group.
 fn maxima_maps(s: &Store, term: &str) -> Vec<(u64, Vec<(u32, u32)>)> {
     let start = super::block_maxima_at(Scope::LIBRARY, term, 0);
     s.scan(&start, &key::prefix_end(&start), usize::MAX)
@@ -639,16 +608,6 @@ fn maxima_maps(s: &Store, term: &str) -> Vec<(u64, Vec<(u32, u32)>)> {
         .collect()
 }
 
-/// On a library with no tags, a word read best first, over every field or in one field, opens on its first page
-/// at most `k + 1` posting blocks (`k` the hits a page keeps: its size and one more), plus the blocks whose stored
-/// maximum (over every field, or in the one field) equals the k-th hit's score there as stored (rounded up); and
-/// reads at most `(L + 1) + (k + 1 + those)·L` maxima maps, `L` the top level of the highest document's block. Any
-/// exact descent opens those tied blocks: a maximum is stored rounded up, so a block whose best card ties the k-th
-/// can't be told apart from one whose best card ranks just above it. Exact maxima would double their space for
-/// this edge.
-///
-/// A clause in several fields is bounded by its fields' maxima summed, which may be different cards', so it is
-/// only checked against the scan.
 #[test]
 fn an_untagged_words_first_page_opens_at_most_k_plus_one_blocks_and_its_ties() {
     let _turn = turn();
@@ -671,7 +630,6 @@ fn an_untagged_words_first_page_opens_at_most_k_plus_one_blocks_and_its_ties() {
                 if !check_pages(&lib, &q, 1) {
                     continue;
                 }
-                // None: every field.
                 let field = match w.fields.as_deref() {
                     None => None,
                     Some(&[f]) => Some(f),
@@ -681,8 +639,6 @@ fn an_untagged_words_first_page_opens_at_most_k_plus_one_blocks_and_its_ties() {
                 let k = limit as u64 + 1;
                 let tok = tokens(&w.text).remove(0);
                 let prefix = !w.quoted && super::text::char_len(&tok) >= super::text::GRAM_MIN;
-                // The list the word is read by: a long prefix in a prefix field is read through its first
-                // `GRAM_MAX` characters, in another field as a whole token.
                 let (term, reading) = match field {
                     Some(f) if prefix && super::text::char_len(&tok) > super::text::GRAM_MAX => {
                         if Scope::LIBRARY.fields()[f as usize].prefix {
@@ -761,12 +717,10 @@ fn filters_and_negations_restrict_matches() {
     }
 }
 
-/// One random edit: a text edit, a name, a tag assignment, a tag rename or a list field.
 fn random_edit(lib: &mut Lib, r: &mut Rng, docs: &[u64], i: u64) {
     let doc = docs[r.below(docs.len() as u64) as usize];
     match i % 5 {
         0 => {
-            // A text edit: replace a span at character boundaries.
             let old = String::from_utf8(
                 lib.world.library.docs[&doc][1]
                     .first()
@@ -896,7 +850,6 @@ fn a_words_total_is_its_counter_when_nothing_restricts_it() {
         if f.total_exact {
             assert_eq!(f.total, total, "{q:?}");
         }
-        // Not the query's last word: whole tokens, all fields, no tag join.
         let mut one = query(vec![c(w), c("")], 3);
         one.clauses.pop();
         let (_, total) = brute::search(&lib.world, &one);
@@ -908,7 +861,6 @@ fn a_words_total_is_its_counter_when_nothing_restricts_it() {
     }
 }
 
-/// The test kind's order: `testSet` keys.
 struct TestOrder;
 
 impl SortKey for TestOrder {
@@ -1007,8 +959,6 @@ fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings(
         .unwrap();
     let inserted = |s: &Store| s.stats().ks.inserted;
     let before = inserted(&s);
-    // "alpha" → "betas": one term gone, one new: per term its posting slot and its counts (`term_counts`), and
-    // the new one's block maximum; same length.
     s.commit_wait(vec![rec(
         "textEdit",
         vec![
@@ -1022,34 +972,22 @@ fn a_field_edit_writes_only_its_changed_terms_and_other_kinds_write_no_postings(
         ],
     )])
     .unwrap();
-    // Plus the text's head, its edit and the entity's version, and its entry in the entity change feed moving.
     assert_eq!(inserted(&s) - before, 2 * 2 + 1 + 3 + 2);
     let before = inserted(&s);
     s.commit_wait(vec![assign(7, 1, true)]).unwrap();
     s.commit_wait(vec![rec("fav", vec![Value::Id(7), Value::Bit(true)])])
         .unwrap();
-    // Membership both ways, its block map and a count; every tag's carriers summed (`key::CARRIER_PAIRS`; the
-    // tag has no name, so no term's carriers); the entity's place in the assignment change feed and the pointer
-    // to it; the fav and the version, and the entity change feed's entry moving.
     assert_eq!(inserted(&s) - before, 4 + 1 + 2 + 2 + 2);
     for e in 100..150 {
         s.commit_wait(vec![assign(e, 1, true)]).unwrap();
     }
     s.commit_wait(vec![text_value(1, test_codes::TAG_NAME, "red")])
         .unwrap();
-    // Wait for the tag to move to the heavy side, and hold the move the rename starts.
     settle_moves(&s);
     s.hold_carriers(true);
     let before = inserted(&s);
     s.commit_wait(vec![text_value(1, test_codes::TAG_NAME, "blue")])
         .unwrap();
-    // A rename writes the tag's own name terms, whatever number of entities carry it: "re" and "red" go,
-    // "bl", "blu" and "blue" come (posting slot and counts each, a block maximum for the new ones); plus the
-    // text's head, version, and the old value's dead bytes, and the entity change feed's entry moving. The tag is heavy (51
-    // carriers, K = 8), so its carriers move from the old name's 3 terms to the new one's 4
-    // (`key::TERM_CARRIERS`), 7 counters; and it starts a move, which raises its carriers' maxima for the new
-    // terms: listed under the 7 terms of either name (`key::TERM_MOVING`), queued (`key::MOVING`) and its flight
-    // (`key::TAG_MAP`) (`store::carriers::renamed`).
     assert_eq!(inserted(&s) - before, 5 * 2 + 3 + 3 + 2 + 7 + 7 + 1 + 1);
     s.hold_carriers(false);
 }
@@ -1073,8 +1011,6 @@ fn phrases_equal_a_scan() {
     }
 }
 
-/// A library of tag names and texts where names score above tags and tags above the body: "girl" in a name,
-/// as a carried tag's name (tags 1 and 3, carried by documents 20..=60 and 61..=80), and in descriptions.
 fn tagged_lib(name: &str) -> Lib {
     let mut lib = Lib {
         store: open(&temp_dir(name)),
@@ -1083,7 +1019,6 @@ fn tagged_lib(name: &str) -> Lib {
     for (t, n) in [(1, "girl"), (2, "dragon"), (3, "monster girl")] {
         lib.tag(t, n);
     }
-    // More tags matching "gi" than a walk reads members of.
     for t in 4..=15u64 {
         lib.tag(t, &format!("giant {t}"));
     }
@@ -1113,7 +1048,6 @@ fn tagged_lib(name: &str) -> Lib {
             lib.assign(e, 4 + e % 12, true);
         }
     }
-    // Carriers without text.
     for e in 1001..=1005 {
         lib.assign(e, 1, true);
     }
@@ -1143,7 +1077,6 @@ fn tag_names_rank_carriers_between_names_and_the_body() {
             check(&lib, &query(clauses, limit));
         }
     }
-    // Name matches, then carriers (those with text first), then the body; carriers of either tag alike.
     let (hits, _) = pages(&lib.store, &query(vec![c("girl")], 500));
     let rank = |d: u64| hits.iter().position(|h| h.0 == d).unwrap();
     let names = [50u64, 100, 150, 200];
@@ -1158,7 +1091,6 @@ fn tag_names_rank_carriers_between_names_and_the_body() {
     assert!(carrier_ranks.clone().all(|r| r > last_name));
     let last_carrier = carrier_ranks.max().unwrap();
     assert!(body.iter().all(|&d| rank(d) > last_carrier));
-    // Carriers only tags match tie, in id order here.
     let tie = hits[rank(20)].1;
     let tied: Vec<u64> = hits.iter().filter(|h| h.1 == tie).map(|h| h.0).collect();
     let mut sorted = tied.clone();
@@ -1167,9 +1099,6 @@ fn tag_names_rank_carriers_between_names_and_the_body() {
     assert!(tied.contains(&61) && tied.contains(&1001) && !tied.contains(&21));
 }
 
-/// A query whose read is interrupted at `at` by `write` (run to completion, on another thread so a write that
-/// waited for the read would show as a timeout rather than a hang): its page and total are those of the state
-/// before the write, and the write didn't wait.
 fn read_across_a_write(
     store: &Arc<Store>,
     q: &Query,
@@ -1208,7 +1137,6 @@ fn a_walk_sees_one_state_while_an_edit_publishes() {
     let _turn = turn();
     let (store, world) = snapshot_lib("snapshot-walk");
     let c = |t: &str| clause(t, None, false, false);
-    // A walk: at its first match, the best matches lose a word.
     let q = query(vec![c("dark"), c("knight")], 5);
     let (want, total) = brute::search(&world, &q);
     let gone: Vec<u64> = want.iter().take(5).map(|x| x.0).collect();
@@ -1239,7 +1167,6 @@ fn a_long_read_does_not_delay_writes() {
         ],
         5,
     );
-    // The read stays open across a hundred commits, each acknowledged while it is open.
     let started = std::time::Instant::now();
     read_across_a_write(&store, &q, "walk", |s| {
         for i in 0..100u64 {
@@ -1261,7 +1188,6 @@ fn pairs_on(s: &Store, on: bool) {
         .unwrap();
 }
 
-/// Every pair posting slot: (scope, term, document, field) → count.
 fn pair_slots(s: &Store) -> std::collections::BTreeMap<(u64, String, u64, u32), u64> {
     let mut out = std::collections::BTreeMap::new();
     for scope in [Scope::LIBRARY, Scope::TAGS] {
@@ -1288,7 +1214,6 @@ fn pair_slots(s: &Store) -> std::collections::BTreeMap<(u64, String, u64, u32), 
     out
 }
 
-/// The pair slots the documents' values call for: in their short fields.
 fn pair_slots_of(w: &World) -> std::collections::BTreeMap<(u64, String, u64, u32), u64> {
     let mut out = std::collections::BTreeMap::new();
     for (scope, corpus) in [(Scope::LIBRARY, &w.library), (Scope::TAGS, &w.tags)] {
@@ -1307,7 +1232,6 @@ fn pair_slots_of(w: &World) -> std::collections::BTreeMap<(u64, String, u64, u32
     out
 }
 
-/// Each pair's document count as stored, and as the slots call for: (scope, term) → documents.
 fn pair_counts(
     s: &Store,
     slots: &std::collections::BTreeMap<(u64, String, u64, u32), u64>,
@@ -1351,7 +1275,6 @@ fn pairs_are_indexed_over_existing_text_while_writes_go_on() {
     let mut lib = build(&dir, 9, 300);
     let docs: Vec<u64> = lib.world.library.docs.keys().copied().collect();
     let mut r = Rng(5);
-    // A store made before pairs were indexed has none; phrases answer as a scan meanwhile.
     assert!(pair_slots(&lib.store).is_empty());
     let c = |t: &str| clause(t, None, false, false);
     let phrases = [
@@ -1366,13 +1289,11 @@ fn pairs_are_indexed_over_existing_text_while_writes_go_on() {
     }
     pairs_on(&lib.store, true);
     assert_eq!(lib.store.pairs_mode().unwrap(), super::pairs::INDEXING);
-    // Writes between the pass's slices, before and after where it has reached.
     let (mut i, mut slices) = (0, 0);
     let swap = temp_dir("pairs-swap");
     while pairs_step(&lib.store) {
         slices += 1;
         if slices == 5 {
-            // Stopped and opened again: the pass resumes from what was kept.
             drop(std::mem::replace(&mut lib.store, open(&swap)));
             lib.store = open(&dir);
         }
@@ -1386,7 +1307,6 @@ fn pairs_are_indexed_over_existing_text_while_writes_go_on() {
     }
     assert!(slices > 10, "{slices}");
     assert_eq!(lib.store.pairs_mode().unwrap(), super::pairs::INDEXED);
-    // Once every document has its pairs, a phrase's idf in short fields is its rarest pair's.
     lib.world.pairs = true;
     let slots = pair_slots(&lib.store);
     assert_eq!(slots, pair_slots_of(&lib.world));
@@ -1403,7 +1323,6 @@ fn pairs_are_indexed_over_existing_text_while_writes_go_on() {
     for clauses in &phrases {
         check(&lib, &query(clauses.clone(), 6));
     }
-    // In a short field, two whole words are decided by their pair, with no text read: two words of a name.
     let (a, b) = lib
         .world
         .library
@@ -1423,7 +1342,6 @@ fn pairs_are_indexed_over_existing_text_while_writes_go_on() {
         .unwrap();
     assert!(!f.hits.is_empty());
     assert_eq!(f.texts, 0);
-    // The phrase's candidates are the documents holding its pair, not every document holding both words.
     let pair = super::pairs::term(&a, &b);
     let holding: std::collections::BTreeSet<u64> = slots
         .keys()
@@ -1448,7 +1366,6 @@ fn the_old_options_pairs_are_deleted_then_pairs_are_indexed() {
     let mut lib = build(&dir, 11, 200);
     let docs: Vec<u64> = lib.world.library.docs.keys().copied().collect();
     let mut r = Rng(7);
-    // A store with the old option on: its writes keep pair postings with no counts or maxima.
     let mut state = Vec::new();
     crate::log::format::put_uvarint(&mut state, super::pairs::LEGACY_ON);
     lib.store.keyspace().insert(
@@ -1478,10 +1395,8 @@ fn the_old_options_pairs_are_deleted_then_pairs_are_indexed() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A varint whose continuation bit is set with nothing after it: no reader decodes it.
 const TRUNCATED: u8 = 0x80;
 
-/// A query over a built store whose value at `k` is overwritten with a value that doesn't decode.
 fn query_with_corrupt(name: &str, k: Vec<u8>) -> StoreResult<Found> {
     let _turn = turn();
     let dir = temp_dir(name);
@@ -1512,7 +1427,6 @@ fn a_term_count_map_that_doesnt_decode_fails_the_query() {
     assert!(r.is_err(), "scored with a corrupt term count map");
 }
 
-/// BM25's term frequency part, written out: `K1` = 1.2, `B` = 0.75.
 fn tfn(tf: f64, len: f64, ref_len: f64) -> f64 {
     tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * len / ref_len))
 }
@@ -1531,7 +1445,6 @@ fn close(got: f64, want: f64) -> bool {
 
 #[test]
 fn the_reference_scores_cases_computed_by_hand() {
-    // Fields: 0 name (20, prefix, `REF_NAME` tokens), 1 description (3, `REF_DESCRIPTION` tokens).
     let mut w = World::default();
     w.library.docs.insert(1, library_doc(&[(0, "elf")]));
     w.library.docs.insert(2, library_doc(&[(1, "elf ranger")]));
@@ -1541,7 +1454,6 @@ fn the_reference_scores_cases_computed_by_hand() {
     w.tags.docs.insert(2, vec![vec![b"elf ranger".to_vec()]]);
     w.members.insert(3, [1].into());
     w.members.insert(2, [2].into());
-    // n = 4; "elf" is in 2 documents' text, "ranger" in 3 (carried tags don't count).
     let idf_elf = (1.0f64 + 2.5 / 2.5).ln();
     let idf_ranger = (1.0f64 + 1.5 / 3.5).ln();
     let name1 = 20.0 * tfn(1.0, 1.0, super::REF_NAME);
@@ -1549,7 +1461,6 @@ fn the_reference_scores_cases_computed_by_hand() {
     let name1_ranger = 20.0 * tfn(1.0, 1.0, super::REF_NAME);
     let desc1 = 3.0 * tfn(1.0, 1.0, super::REF_DESCRIPTION);
 
-    // A whole word: idf times the card's text, plus `TAG_WEIGHT` once for a carrier of a tag named by it.
     let q = query(vec![clause("elf", None, false, true)], 10);
     let (got, total) = brute::search(&w, &q);
     let want = [
@@ -1563,7 +1474,6 @@ fn the_reference_scores_cases_computed_by_hand() {
         assert!(*d == wd && close(*s, ws), "{got:?} against {want:?}");
     }
 
-    // A word in its fields only: no tag part.
     let q = query(vec![clause("ranger", Some(vec![0, 1]), false, true)], 10);
     let (got, _) = brute::search(&w, &q);
     let want = [
@@ -1576,8 +1486,6 @@ fn the_reference_scores_cases_computed_by_hand() {
         assert!(*d == wd && close(*s, ws), "{got:?} against {want:?}");
     }
 
-    // A phrase scores as one term: its count per field (once in the description), its tokens' idfs summed, with
-    // the tag part at that idf.
     let q = query(vec![clause("elf ranger", None, false, true)], 10);
     let (got, total) = brute::search(&w, &q);
     assert_eq!(total, 1);
@@ -1587,8 +1495,6 @@ fn the_reference_scores_cases_computed_by_hand() {
         "{got:?} against {want}"
     );
 
-    // A prefix (the query's last word, unquoted): prefix terms in prefix fields, whole tokens elsewhere; its
-    // count is of the documents holding it either way.
     let q = query(vec![clause("el", None, false, false)], 10);
     let (got, total) = brute::search(&w, &q);
     let idf_el = (1.0f64 + 3.5 / 1.5).ln();
@@ -1598,9 +1504,6 @@ fn the_reference_scores_cases_computed_by_hand() {
         assert!(*d == wd && close(*s, ws), "{got:?} against {want:?}");
     }
 
-    // With pairs, a phrase in a short field is at its pair's idf: "elf ranger" is a pair in one name (a
-    // description holds no pairs). n = 5; "elf" is in 3 documents, "ranger" in 4. Body text and the tag part keep
-    // the tokens' idfs.
     w.pairs = true;
     w.library.docs.insert(5, library_doc(&[(0, "elf ranger")]));
     let q = query(vec![clause("elf ranger", None, false, true)], 10);
@@ -1615,8 +1518,6 @@ fn the_reference_scores_cases_computed_by_hand() {
     }
 }
 
-/// Every card's score from the reference equals its idf times its text score (`word_text`) and tag, computed here
-/// from the card's text.
 #[test]
 fn the_reference_scores_every_card_at_idf_times_local() {
     let mut r = Rng(31);
@@ -1656,7 +1557,6 @@ fn the_reference_scores_every_card_at_idf_times_local() {
         .filter(|f| f.iter().flatten().any(|v| !v.is_empty()))
         .count() as f64;
     let mut checked = 0;
-    // Words of one token.
     for &word in WORDS.iter().filter(|w| tokens(w.as_bytes()).len() == 1) {
         for prefix in [false, true] {
             let q = query(vec![clause(word, None, false, !prefix)], 10_000);
@@ -1715,7 +1615,6 @@ fn the_reference_scores_every_card_at_idf_times_local() {
     assert!(checked > 1000, "{checked}");
 }
 
-/// Passes every document.
 struct PassAll;
 
 impl super::query::DocCheck for PassAll {
@@ -1724,8 +1623,6 @@ impl super::query::DocCheck for PassAll {
     }
 }
 
-/// Documents `1..=n`, each holding `word` once in its name, after a varying number of other words, and carrying
-/// tag 1 when odd.
 fn word_lib(dir: &Path, word: &str, n: u64) -> Lib {
     let mut lib = Lib {
         store: open(dir),
@@ -1762,8 +1659,6 @@ fn a_page_filtered_only_by_document_checks_reports_an_estimated_total() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Documents `1..=n`, each holding "omega psi" in its name after `filler(d)` other words, carrying tag 1 when
-/// `carrier(d)`.
 fn two_word_lib(dir: &Path, n: u64, filler: fn(u64) -> u64, carrier: fn(u64) -> bool) -> Lib {
     let mut lib = Lib {
         store: open(dir),
@@ -1780,8 +1675,6 @@ fn two_word_lib(dir: &Path, n: u64, filler: fn(u64) -> u64, carrier: fn(u64) -> 
     lib
 }
 
-/// A walk filtered to 50 ids that passes cards over for not beating the page estimates its total from the ids
-/// it checked, not from the words' counts: at most the 50.
 #[test]
 fn a_floored_walk_led_by_ids_estimates_at_most_their_count() {
     let _turn = turn();
@@ -1803,9 +1696,6 @@ fn a_floored_walk_led_by_ids_estimates_at_most_their_count() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A walk led by a tag whose carriers sit at even spacing, every one holding the words, and stopped by its work
-/// limit: the ids it covered are that share of the carriers, so the estimate is off from their count only by
-/// where the stop falls between two of them.
 #[test]
 fn a_stopped_walk_led_by_an_evenly_spread_tag_estimates_its_carriers() {
     let _turn = turn();
@@ -1813,7 +1703,6 @@ fn a_stopped_walk_led_by_an_evenly_spread_tag_estimates_its_carriers() {
     let lib = two_word_lib(&dir, 1200, |d| d % 9, |d| d % 12 == 0);
     let carriers = 100u64;
     let c = |t: &str| clause(t, None, false, false);
-    // Room for every carrier: no page to beat, so nothing is passed over.
     let mut q = query(vec![c("omega"), c("psi")], 1000);
     q.filters = vec![Filter::AllTags(vec![1])];
     let (_, total) = brute::search(&lib.world, &q);
@@ -1844,7 +1733,6 @@ fn a_stopped_walk_led_by_an_evenly_spread_tag_estimates_its_carriers() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Passes even documents.
 struct EvenOnly;
 
 impl super::query::DocCheck for EvenOnly {
@@ -1853,7 +1741,6 @@ impl super::query::DocCheck for EvenOnly {
     }
 }
 
-/// Every page of a query read by the counting walk (`super::query::run_counting`), following `more`; and the first.
 fn counting_pages(s: &Store, q: &Query) -> (Vec<(u64, f64)>, Found) {
     let cache = super::query::StatsCache::default();
     let run = |q: &Query| {
@@ -1877,8 +1764,6 @@ fn counting_pages(s: &Store, q: &Query) -> (Vec<(u64, f64)>, Found) {
     (all, first)
 }
 
-/// The counting walk's total is exact for a filtered single word past `CHECKED_WHOLE` documents, whose descent
-/// can only estimate it: every match is counted however low it scores, and its pages equal the reference's.
 #[test]
 fn the_counting_walk_counts_a_filtered_words_every_match() {
     let _turn = turn();
@@ -1887,7 +1772,6 @@ fn the_counting_walk_counts_a_filtered_words_every_match() {
     let lib = word_lib(&dir, word, 400);
     let c = |t: &str| clause(t, None, false, false);
     let evens: Vec<u64> = (1..=400).filter(|d| d % 2 == 0).collect();
-    // Each filter, and the reference's for it.
     let filters: Vec<(Vec<Filter>, Vec<Filter>)> = vec![
         (
             vec![Filter::Ids((1..=300).collect())],
@@ -1909,7 +1793,6 @@ fn the_counting_walk_counts_a_filtered_words_every_match() {
             vec![Filter::NotIds((1..=50).collect()), Filter::Ids(evens)],
         ),
     ];
-    // A prefix past the prefix terms, a prefix term, the whole word, and the word in the name alone.
     let clauses = [
         c("supercalifragilisticexp"),
         c("supercal"),
@@ -1940,11 +1823,6 @@ fn the_counting_walk_counts_a_filtered_words_every_match() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The counting walk passes a node above level 0 only where its clause can't match. Cards 1 and 2 score best and
-/// fill a one-card page and the one after it; card `1 << 30` holds the word outside the name, so its block can't
-/// match a name-only clause and the walk climbs from it; card `1 << 30 | 1 << 21`, in the same level-2 node, holds
-/// it in a long name and can't beat them, so a walk passing nodes by the page's floor would pass it over. Both the
-/// counting walk and a search the descent hands to it count it, and their totals are exact.
 #[test]
 fn the_counting_walk_passes_no_node_for_not_beating_the_page() {
     let _turn = turn();
@@ -1977,9 +1855,6 @@ fn the_counting_walk_passes_no_node_for_not_beating_the_page() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Pages 1 to 3 of single words under includes equal the reference's, read as a search reads them: by the descent
-/// where it finishes within its budget, else by the counting walk, whose total is then exact. A `ranked` limit of 0
-/// sends every page to the walk.
 #[test]
 fn a_filtered_words_pages_equal_a_scan_whichever_side_reads_them() {
     let _turn = turn();
@@ -2041,8 +1916,6 @@ fn a_filtered_words_pages_equal_a_scan_whichever_side_reads_them() {
     assert!(walked > 0 && descended > 0, "walked {walked}, descended {descended}");
 }
 
-/// Documents `1..=n`, each holding "omega" in its name; those `carrier` picks carry tag 1, after `filler` other
-/// words, the rest after `1 + d % 9`.
 fn rare_tag_lib(dir: &Path, n: u64, carrier: fn(u64) -> bool, filler: u64) -> Lib {
     let mut lib = Lib {
         store: open(dir),
@@ -2059,8 +1932,6 @@ fn rare_tag_lib(dir: &Path, n: u64, carrier: fn(u64) -> bool, filler: u64) -> Li
     lib
 }
 
-/// `q`'s first page read as a search reads it, best first however much that costs, and by the counting walk; each
-/// with the statistics read afresh.
 fn three_reads(lib: &Lib, q: &Query) -> (Found, Found, Found) {
     let read = |f: fn(&View, &Query, &super::query::StatsCache) -> StoreResult<Found>| {
         let cache = super::query::StatsCache::default();
@@ -2073,9 +1944,6 @@ fn three_reads(lib: &Lib, q: &Query) -> (Found, Found, Found) {
     )
 }
 
-/// A word every card holds under a tag 10 of them carry, those scoring lowest: the descent would read the word's
-/// every card before reaching them, so it stops at its budget and the counting walk led by the tag reads the
-/// page, its total exact. Its work is at most the budget and the walk's alone, and well under the descent's alone.
 #[test]
 fn a_rare_tag_under_a_common_word_is_read_by_the_walk() {
     let _turn = turn();
@@ -2113,9 +1981,6 @@ fn a_rare_tag_under_a_common_word_is_read_by_the_walk() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A word every card holds under a tag half of them carry, those scoring highest: the descent finds the page within
-/// its budget and reads it as it does with no budget, its one extra read the tag's count (the word's count is read
-/// already for a prefix over every field).
 #[test]
 fn a_common_tag_under_a_word_is_read_best_first_as_before() {
     let _turn = turn();
@@ -2138,10 +2003,6 @@ fn a_common_tag_under_a_word_is_read_best_first_as_before() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// One word's next page goes on from the page before by its rank (its score before the idf), which documents
-/// created in between (changing the scope's count and the word's, so the idf and every score) don't move: page 2
-/// is the new view's order after page 1's last hit, none repeated or skipped. Read best first, by the walk (under
-/// ids, with `ranked` 0), and with tag names (tied documents).
 #[test]
 fn a_words_next_page_goes_on_where_it_was_after_documents_are_created() {
     let _turn = turn();
@@ -2190,11 +2051,6 @@ fn a_words_next_page_goes_on_where_it_was_after_documents_are_created() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Several words' later pages rank by the idfs page 1 ranked by (`Found::weights`, sent back as `Query::weights`):
-/// documents created between pages 1 and 2 change the words' counts, and page 2 is the reference's order on the
-/// new view under page 1's idfs after page 1's last hit, none repeated or skipped. Words, a phrase (its short idf,
-/// its pair's, among its idfs), a word in a field, words matching tag names (tied documents), and one word beside
-/// a negated one (no weights).
 #[test]
 fn several_words_next_page_ranks_by_the_first_pages_idfs() {
     let _turn = turn();
@@ -2221,7 +2077,6 @@ fn several_words_next_page_ranks_by_the_first_pages_idfs() {
             let Some(last) = first.hits.last().filter(|_| first.more) else {
                 continue;
             };
-            // Field 8 is the tags field: a clause there only filters.
             let words: usize = clauses
                 .iter()
                 .filter(|c| !c.negate && c.fields != Some(vec![8]))
@@ -2249,7 +2104,6 @@ fn several_words_next_page_ranks_by_the_first_pages_idfs() {
             assert!(second.page_exact, "{q:?}");
             assert_eq!(hits(&second), want, "{q:?} limit {limit}");
             assert_eq!(second.weights, first.weights, "{q:?}");
-            // What page 2 would have been on the new view's own idfs.
             let (fresh, _) = brute::search(&lib.world, &q);
             moved += usize::from(fresh != order);
         }
@@ -2260,8 +2114,6 @@ fn several_words_next_page_ranks_by_the_first_pages_idfs() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A query's `weights` must give one idf per token of each positive clause that scores (a clause in the tags field
-/// only filters) and a phrase's short idf, none for one word: any other count is refused as an invalid cursor.
 #[test]
 fn weights_that_dont_fit_the_query_are_an_invalid_cursor() {
     let _turn = turn();
@@ -2281,7 +2133,6 @@ fn weights_that_dont_fit_the_query_are_an_invalid_cursor() {
         let err = lib.store.search(&q).unwrap_err().to_string();
         assert!(err.contains("invalid cursor"), "{q:?} {n}: {err}");
     }
-    // The fitting counts are taken.
     for (clauses, n) in [
         (vec![c("the"), c("knight")], 2),
         (vec![clause("dark knight", None, false, true)], 3),
@@ -2298,14 +2149,11 @@ fn weights_that_dont_fit_the_query_are_an_invalid_cursor() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A filtered prefix word's total: with at most 128 documents every one is checked, so it is exact; above, it is
-/// exact only when the walk saw every match, and an estimate otherwise.
 #[test]
 fn a_filtered_prefix_words_total_is_exact_up_to_128_documents_and_estimated_above_unless_all_were_seen()
  {
     let _turn = turn();
     let c = |t: &str| clause(t, None, false, false);
-    // Each filter, and whether above 128 documents its walk can't see every match (so the total is estimated).
     let filters: Vec<(Vec<Filter>, Vec<Clause>, bool)> = vec![
         (vec![Filter::AllTags(vec![1])], vec![], false),
         (vec![Filter::AnyTag(vec![1])], vec![], false),
@@ -2324,7 +2172,6 @@ fn a_filtered_prefix_words_total_is_exact_up_to_128_documents_and_estimated_abov
             clauses.push(c("omega"));
             let mut q = query(clauses, 3);
             q.filters = fs.clone();
-            // The reference has no document checks; one that passes everything changes nothing.
             let mut reference = q.clone();
             reference.filters.retain(|f| !matches!(f, Filter::Check(_)));
             let (want, total) = brute::search(&lib.world, &reference);
@@ -2346,7 +2193,6 @@ fn a_filtered_prefix_words_total_is_exact_up_to_128_documents_and_estimated_abov
     }
 }
 
-/// The level-0 block maxima of `term` in the library: (slot, value) over every group.
 fn maxima_slots(s: &Store, term: &str) -> Vec<(u32, u32)> {
     let start = super::block_maxima_at(Scope::LIBRARY, term, 0);
     s.scan(&start, &key::prefix_end(&start), usize::MAX)
@@ -2356,8 +2202,6 @@ fn maxima_slots(s: &Store, term: &str) -> Vec<(u32, u32)> {
         .collect()
 }
 
-/// A term has a prefix maximum only when a query reads it as a prefix: not of one character, nor over
-/// `GRAM_MAX` characters (such a prefix is read through its first `GRAM_MAX`).
 #[test]
 fn only_terms_read_as_prefixes_have_a_prefix_maximum() {
     let _turn = turn();
@@ -2388,9 +2232,6 @@ fn only_terms_read_as_prefixes_have_a_prefix_maximum() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A card read by a long prefix (over `GRAM_MAX` characters: its first `GRAM_MAX` in the prefix fields, the whole
-/// token in the others) whose text score sits just under an `f32`, so its two block maxima are as tight as they
-/// get, comes back first among cards in earlier blocks scoring a little less.
 #[test]
 fn a_long_prefix_card_scoring_just_under_an_f32_comes_back() {
     let _turn = turn();
@@ -2401,13 +2242,11 @@ fn a_long_prefix_card_scoring_just_under_an_f32_comes_back() {
     };
     let prefix = "abcdefghijklmnopqrstu";
     let longer = "abcdefghijklmnopqrstuv";
-    // `hits` of `word` among `len` tokens.
     let field = |hits: usize, len: usize, word: &str| {
         let mut t = vec![word; hits];
         t.resize(len, "w");
         t.join(" ")
     };
-    // (field, hits, tokens): name and creator hold the longer token, description and scenario the prefix itself.
     let shape = |scenario: usize| {
         [
             (0, 1, 12, longer),
@@ -2425,7 +2264,6 @@ fn a_long_prefix_card_scoring_just_under_an_f32_comes_back() {
     let above = super::max_value(super::max_bits(text));
     assert!(above - text <= 4.0 * text * f64::EPSILON, "{text} {above}");
     let card = 2000;
-    // Longer scenarios (of a higher length code) score less.
     for (doc, scenario) in [(3, 130), (500, 143), (900, 130), (card, 118)] {
         for (f, hits, n, word) in shape(scenario) {
             lib.set(doc, f as usize, &[field(hits, n, word)]);
@@ -2440,7 +2278,6 @@ fn a_long_prefix_card_scoring_just_under_an_f32_comes_back() {
 }
 
 impl Lib {
-    /// Every field of `doc` emptied: it holds no term.
     fn clear(&mut self, doc: u64) {
         for f in 0..10 {
             if self.world.library.docs[&doc][f].iter().any(|v| !v.is_empty()) {
@@ -2450,11 +2287,6 @@ impl Lib {
     }
 }
 
-/// The blocks a word's first page opens, on a fresh library; after its best cards are emptied, which leaves their
-/// blocks' maxima (and shortest lengths) above every card left there; and over rounds of the same query, each
-/// followed by the jobs its reports queued. The rounds settle (the last reports nothing) at no more blocks than the
-/// first opened, back to `k + 1` plus the blocks tied at the k-th hit's stored score, the answers equal to the
-/// reference. The numbers are printed.
 #[test]
 fn a_words_blocks_opened_settle_at_k_plus_one_once_jobs_lower_what_its_best_cards_left() {
     let _turn = turn();
@@ -2476,7 +2308,6 @@ fn a_words_blocks_opened_settle_at_k_plus_one_once_jobs_lower_what_its_best_card
             assert!(check_pages(&lib, &q, 1), "{q:?}");
             let fresh = lib.store.search(&q).unwrap().posting_blocks;
             lib.store.jobs_wait();
-            // The best cards, more than a page of them, emptied.
             let (all, _) = brute::search(&lib.world, &query(vec![w.clone()], 100_000));
             for &(doc, _) in all.iter().take(3 * k as usize) {
                 lib.clear(doc);
@@ -2491,8 +2322,6 @@ fn a_words_blocks_opened_settle_at_k_plus_one_once_jobs_lower_what_its_best_card
             eprintln!("{name} {q:?} limit {limit}: fresh {fresh}, then (opened, reported) {rounds:?}");
             let (first, last) = (rounds[0].0, rounds[rounds.len() - 1]);
             assert!(last.1 == 0 && last.0 <= first, "{q:?}: {rounds:?}");
-            // The blocks whose stored maximum ties the k-th hit's (as in
-            // `an_untagged_words_first_page_opens_at_most_k_plus_one_blocks_and_its_ties`).
             let tok = tokens(&w.text).remove(0);
             let prefix = !w.quoted && super::text::char_len(&tok) >= super::text::GRAM_MIN;
             let field = w.fields.as_ref().map(|f| f[0]);
@@ -2520,7 +2349,6 @@ fn a_words_blocks_opened_settle_at_k_plus_one_once_jobs_lower_what_its_best_card
     }
 }
 
-/// The slots of `term`'s level-0 node over block `block`, by sub (`super::unmax_slot`'s field and reading).
 fn node_slots(s: &Store, term: &str, block: u64) -> std::collections::BTreeMap<u32, u32> {
     let k = super::block_maxima(Scope::LIBRARY, term, 0, block >> super::GROUP_BITS);
     let node = (block & ((1 << super::GROUP_BITS) - 1)) as u32;
@@ -2533,9 +2361,6 @@ fn node_slots(s: &Store, term: &str, block: u64) -> std::collections::BTreeMap<u
         .collect()
 }
 
-/// The most each slot of `term`'s node over block `block` covers (`max_bits`), by sub, from the documents there as
-/// `w` holds them: over every field with `TAG_WEIGHT` where a document carries a tag whose name holds the term in
-/// that reading, and without it; and in each field.
 fn true_maxima(
     w: &World,
     term: &str,
@@ -2597,7 +2422,6 @@ fn true_maxima(
     (tagged, text)
 }
 
-/// Waits until no tag's carriers are moving and no re-siding scan is under way.
 fn settle_moves(s: &Store) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
@@ -2621,9 +2445,6 @@ fn settle_moves(s: &Store) {
     }
 }
 
-/// After deletes and edits, with no carriers moving: each block a query reports has every slot at least the most
-/// a document there scores (over every field with its tag part where it carries a matching tag), and once its job
-/// ran, exactly that; and answers equal the reference before and after the jobs.
 #[test]
 fn tightening_jobs_lower_reported_blocks_to_what_their_documents_score() {
     let _turn = turn();
@@ -2653,7 +2474,6 @@ fn tightening_jobs_lower_reported_blocks_to_what_their_documents_score() {
                 qs.push(query(clauses.clone(), limit));
             }
         }
-        // Each reported block with its node's slots, before any job.
         let mut reported: std::collections::BTreeMap<(String, u64), _> = Default::default();
         let mut reports = Vec::new();
         for q in &qs {
@@ -2696,7 +2516,6 @@ fn tightening_jobs_lower_reported_blocks_to_what_their_documents_score() {
     }
 }
 
-/// Whether document `d` carries a tag whose name holds `term` as a whole token, or (`prefix`) as a prefix term.
 fn carries(w: &World, d: u64, term: &str, prefix: bool) -> bool {
     let kind = if prefix {
         super::TermKind::Gram
@@ -2715,11 +2534,6 @@ fn carries(w: &World, d: u64, term: &str, prefix: bool) -> bool {
     })
 }
 
-/// On a library whose cards carry tags, a word read best first, over every field or in one field, opens on its
-/// first page at most `k + 1` posting blocks plus the blocks whose stored maximum ties the k-th hit's score there
-/// as stored (over every field with its tag part where the k-th card carries a tag holding the word), and reads
-/// at most `(L + 1) + (k + 1 + those)·L` maxima maps, as on an untagged one
-/// (`an_untagged_words_first_page_opens_at_most_k_plus_one_blocks_and_its_ties`). No move is in flight.
 #[test]
 fn a_tagged_words_first_page_opens_at_most_k_plus_one_blocks_and_its_ties() {
     let _turn = turn();
@@ -2808,7 +2622,6 @@ fn a_tagged_words_first_page_opens_at_most_k_plus_one_blocks_and_its_ties() {
     }
 }
 
-/// Every page of a query as a read of view `v` gives it, following `more`, and its first page.
 fn pages_in(v: &View, q: &Query) -> StoreResult<(Vec<(u64, f64)>, Found)> {
     use super::query::{StatsCache, TagNames, run};
     let mut q = q.clone();
@@ -2828,8 +2641,6 @@ fn pages_in(v: &View, q: &Query) -> StoreResult<(Vec<(u64, f64)>, Found)> {
     Ok((all, first))
 }
 
-/// What the states checked had in flight: a move with its cursor among its carriers, a heavy tag's move and a
-/// light one's.
 #[derive(Default, Debug)]
 struct Flown {
     split: bool,
@@ -2837,7 +2648,6 @@ struct Flown {
     light: bool,
 }
 
-/// Every query of `queries` answers in view `v` as the reference does over `w`, each page exact.
 fn equal_in(v: &View, w: &World, at: &str, flown: &mut Flown) -> StoreResult<()> {
     let p = key::of(key::TAG_MAP);
     for (_, b) in v.scan(&p, &key::prefix_end(&p), usize::MAX)? {
@@ -2861,8 +2671,6 @@ fn equal_in(v: &View, w: &World, at: &str, flown: &mut Flown) -> StoreResult<()>
     Ok(())
 }
 
-/// With carrier moves held: the answers in the store's state, and in each state stepping its moves leads to
-/// until none is left (the first ten, then ever sparser, and the last), equal the reference's.
 fn equal_through_steps(lib: &Lib, at: &str, flown: &mut Flown) {
     lib.store
         .derived_read(|v| {
@@ -2891,14 +2699,9 @@ fn equal_through_steps(lib: &Lib, at: &str, flown: &mut Flown) {
         .unwrap();
 }
 
-/// Tagged queries equal the reference while carrier moves are held and through every step they take, dense and
-/// spread: light and heavy tags renamed to gain many terms (moves of several steps each), to lose some (a heavy
-/// tag's loss alone taken at once), to none; with assigns, unassigns, edits and cards emptied meanwhile; and once
-/// the moves ran.
 #[test]
 fn tagged_results_equal_a_scan_while_carriers_move() {
     let _turn = turn();
-    // Every word's name terms: a rename to it gains many, so a move's budget takes few carriers a step.
     let long: String = WORDS.join(" ");
     for (name, id) in [
         ("moving-dense", (|d| d) as fn(u64) -> u64),
@@ -2907,7 +2710,6 @@ fn tagged_results_equal_a_scan_while_carriers_move() {
         let dir = temp_dir(name);
         let mut lib = build_ids(&dir, 31, 300, id);
         let docs: Vec<u64> = lib.world.library.docs.keys().copied().collect();
-        // Tag 1 heavy, with more carriers than a step of a rename to `long` takes.
         for (i, &d) in docs.iter().enumerate() {
             if i % 2 == 0 {
                 lib.assign(d, 1, true);
@@ -2945,7 +2747,6 @@ fn tagged_results_equal_a_scan_while_carriers_move() {
                 lib.tag(t, n);
             }
             for j in 0..12 {
-                // Assigns, unassigns, edits; no renames past the round's.
                 let e = [0, 1, 2, 4][(j % 4) as usize];
                 random_edit(&mut lib, &mut r, &docs, e);
             }

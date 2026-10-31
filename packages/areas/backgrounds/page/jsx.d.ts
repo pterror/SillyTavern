@@ -3,7 +3,6 @@ import 'solid-js';
 declare module 'solid-js' {
     // oxlint-disable-next-line typescript/no-namespace -- the JSX namespace is how TypeScript reads JSX types.
     namespace JSX {
-        /** Attributes the old page's CSS selects by (`attr:<name>`), kept so its stylesheets still apply. */
         interface ExplicitAttributes {
             bgfile: string;
             custom: string;

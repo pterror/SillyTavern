@@ -1,5 +1,3 @@
-// An upstream user directory's groups, books and chats go into the store once, every message with its swipes; what
-// is in the store already is left as it is, and what can't be imported is listed with why.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -35,7 +33,6 @@ const write = (/** @type {string} */ rel, /** @type {string} */ text) => {
     fs.writeFileSync(file, text);
 };
 
-/** The messages shown down to the tree's bookmark labelled `name`. */
 async function chatNamed(owner, name) {
     const tree = await treeOf(store, owner);
     const [b] = await store.lib.store.chatRead('bookmarksNamed', { tree, name });

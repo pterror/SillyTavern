@@ -10,15 +10,6 @@ import { createVariableScope } from '../public/scripts/variable-store.js';
 import { parseTimestamp } from './timestamps.js';
 
 /**
- * The server's macro substitution: the macro engine the page runs (public/scripts/macros/), with the env built from
- * what the caller passes. Nothing is read from a global: the caller resolves the request's facts (the chat, its
- * variables, the settings) and passes them in. A fact left out reads as empty.
- *
- * Macros an extension registers on the page (MacrosParser) aren't here: they run in the page. `dynamicMacros` is for
- * a caller that has resolved some itself.
- */
-
-/**
  * @typedef {object} CharacterCardFields
  * @property {string} [system]
  * @property {string} [jailbreak]
@@ -27,7 +18,7 @@ import { parseTimestamp } from './timestamps.js';
  * @property {string} [scenario]
  * @property {string} [persona]
  * @property {string} [mesExamplesRaw]
- * @property {string} [mesExamples] Already-joined example-messages block (instruct-formatted or raw - caller's choice, matching client behavior for the current mode)
+ * @property {string} [mesExamples]
  * @property {string} [charVersion]
  * @property {string} [charDepthPrompt]
  * @property {string} [creatorNotes]
@@ -47,38 +38,38 @@ import { parseTimestamp } from './timestamps.js';
 
 /**
  * @typedef {object} SubstituteParamsContext
- * @property {string} [name1] Raw {{user}}
- * @property {string} [name2] Raw {{char}}
- * @property {string} [original] Value substituted once for {{original}}, then emptied
- * @property {string} [group] Explicit {{group}}/{{charIfNotGroup}} value override
- * @property {string[]} [groupMembers] Character names of all group members (for group-derived macros when `group` isn't given)
- * @property {string[]} [groupDisabledMembers] Subset of groupMembers currently muted, for {{groupNotMuted}}
- * @property {boolean} [isGroup] Whether this is a group chat at all
- * @property {string} [model] {{model}}
- * @property {boolean} [replaceCharacterCard] Default true, matches client default
+ * @property {string} [name1]
+ * @property {string} [name2]
+ * @property {string} [original]
+ * @property {string} [group]
+ * @property {string[]} [groupMembers]
+ * @property {string[]} [groupDisabledMembers]
+ * @property {boolean} [isGroup]
+ * @property {string} [model]
+ * @property {boolean} [replaceCharacterCard]
  * @property {CharacterCardFields} [characterCard]
- * @property {ChatMessage[]} [chat] Message history, for the lastMessage/swipe/idle_duration family
- * @property {object} [chatMetadata] Mutable chat_metadata - variables and {{firstIncludedMessageId}} read/write this directly
- * @property {object} [globalVariables] Mutable extension_settings.variables.global - {{getglobalvar}}/{{setglobalvar}} etc. read/write this directly
- * @property {string} [chatId] Stable per-chat identifier, for {{pick}}'s repeatable-but-unique seed
- * @property {string} [currentInput] Raw, not-yet-sent text currently in the user's message box, for {{input}}
- * @property {number|null} [firstDisplayedMessageId] Id of the message currently scrolled into view, for {{firstDisplayedMessageId}}
- * @property {string[]} [bannedWordsSink] Where {{banned}} puts each word it bans; given only for a request that bans words (text completion)
- * @property {number} [maxPromptTokens] {{maxPrompt}}
- * @property {number} [maxContextTokens] {{maxContext}}
- * @property {number} [maxResponseTokens] {{maxResponse}}
- * @property {string} [mainApi] The API generating (main_api)
- * @property {Record<string, string>} [outlets] World info outlets' text by key, for {{outlet}}
- * @property {boolean} [isMobile] {{isMobile}}
- * @property {number} [utcOffset] The user's offset from UTC in minutes, for {{time}} and its kin; left out: the server's
- * @property {string} [lastGenerationType] {{lastGenerationType}}
- * @property {{ names: string[], disabled: string[] }} [extensions] The extensions there are, and those turned off, for {{hasExtension}}
- * @property {Record<string, any>} [instruct] The instruct template, for the instruct macros
- * @property {{ enabled?: boolean, content?: string }} [sysprompt] The system prompt, for {{systemPrompt}}
- * @property {Record<string, any>} [contextTemplate] The context template, for {{chatStart}}/{{exampleSeparator}}
- * @property {boolean} [preferCharacterPrompt] {{systemPrompt}} gives the character's main prompt when it has one
- * @property {Record<string, string | ((...args: any[]) => string)>} [dynamicMacros] Extra macros, checked before the registered ones (lower-case names match any case)
- * @property {(value: string, macro?: object) => string} [postProcessFn] Applied to every macro's value before it's put in its place; not a whole-string post-process
+ * @property {ChatMessage[]} [chat]
+ * @property {object} [chatMetadata]
+ * @property {object} [globalVariables]
+ * @property {string} [chatId]
+ * @property {string} [currentInput]
+ * @property {number|null} [firstDisplayedMessageId]
+ * @property {string[]} [bannedWordsSink]
+ * @property {number} [maxPromptTokens]
+ * @property {number} [maxContextTokens]
+ * @property {number} [maxResponseTokens]
+ * @property {string} [mainApi]
+ * @property {Record<string, string>} [outlets]
+ * @property {boolean} [isMobile]
+ * @property {number} [utcOffset]
+ * @property {string} [lastGenerationType]
+ * @property {{ names: string[], disabled: string[] }} [extensions]
+ * @property {Record<string, any>} [instruct]
+ * @property {{ enabled?: boolean, content?: string }} [sysprompt]
+ * @property {Record<string, any>} [contextTemplate]
+ * @property {boolean} [preferCharacterPrompt]
+ * @property {Record<string, string | ((...args: any[]) => string)>} [dynamicMacros]
+ * @property {(value: string, macro?: object) => string} [postProcessFn]
  */
 
 initMacroEngine({
@@ -94,7 +85,6 @@ initMacroEngine({
 registerBuiltinMacros();
 
 /**
- * {{group}} and its kin, as the page's MacroEnvBuilder makes them.
  * @param {SubstituteParamsContext} context
  * @param {{ includeMuted?: boolean, filterOutChar?: boolean }} options
  */
@@ -102,7 +92,6 @@ function groupValue({ name1 = '', name2 = '', group, groupMembers, groupDisabled
     if (typeof group === 'string') return group;
     if (!isGroup) return filterOutChar ? name1 : name2;
     if (!Array.isArray(groupMembers)) return '';
-    // Everyone but the one speaking is the others and the user.
     return groupMembers
         .filter(name => includeMuted || !groupDisabledMembers.includes(name))
         .filter(name => !filterOutChar || name !== name2)
@@ -192,7 +181,6 @@ function buildEnv(content, context) {
 }
 
 /**
- * Substitutes the macros in a string, as the page does.
  * @param {string} content
  * @param {SubstituteParamsContext} [context]
  * @returns {string}
@@ -204,11 +192,8 @@ export function substituteParams(content, context = {}) {
 }
 
 /**
- * Mirrors public/script.js's baseChatReplace(): substitutes without re-expanding character-card
- * macros (so a card field can't recursively re-trigger itself), for resolving one raw card field
- * before it's placed into a SubstituteParamsContext.characterCard.
  * @param {string} value
- * @param {SubstituteParamsContext} [context] Everything else the macros read.
+ * @param {SubstituteParamsContext} [context]
  * @returns {string}
  */
 export function baseChatReplace(value, context = {}) {

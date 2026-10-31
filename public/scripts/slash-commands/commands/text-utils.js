@@ -312,7 +312,6 @@ export function registerTextUtilsCommands() {
                     return JSON.stringify([parsedValue]);
                 }
 
-                // Wrap the original value (string, number, boolean) into an array, preserving quotes for strings
                 return JSON.stringify([value]);
             } catch {
                 return JSON.stringify([value]);

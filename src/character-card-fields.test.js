@@ -4,9 +4,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { write as writeCard } from './character-card-parser.js';
-// character-card-fields.js pulls in src/endpoints/characters.js, which (via character-shallow.js)
-// reads process-wide config at import time - set the config path before importing it, the same way
-// the real server does at startup (src/config-init.js), since this test runs standalone.
 import { setConfigFilePath } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -19,14 +16,12 @@ const user = await convertedUser('st-character-card-fields-test-');
 const { directories } = user;
 globalThis.DATA_ROOT = user.dataRoot;
 
-// A real base PNG to embed card JSON into.
 const baseImage = fs.readFileSync(path.join(__dirname, '..', 'public', 'img', 'ai4.png'));
 
 /**
- * Writes a minimal valid Spec V2 character card PNG to the fixture characters directory.
- * @param {string} avatar Filename, e.g. 'Alice.png'
- * @param {object} overrides Shallow-merged onto a minimal card (top-level fields win over `data` mirror by spec)
- * @returns {Promise<string>} avatar (for chaining into a group's members list)
+ * @param {string} avatar
+ * @param {object} overrides
+ * @returns {Promise<string>}
  */
 async function writeCharacter(avatar, overrides = {}) {
     const name = overrides.data?.name ?? overrides.name ?? avatar.replace(/\.png$/, '');
@@ -56,7 +51,6 @@ async function writeCharacter(avatar, overrides = {}) {
         },
         ...overrides,
     };
-    // Keep data.* mirrors in sync unless the caller explicitly overrode `data` itself.
     if (!Object.prototype.hasOwnProperty.call(overrides, 'data')) {
         for (const key of ['description', 'personality', 'scenario', 'first_mes', 'mes_example']) {
             if (Object.prototype.hasOwnProperty.call(overrides, key)) {
@@ -75,7 +69,6 @@ async function writeGroup(id, group) {
 }
 
 async function run() {
-    // 1. Plain non-group character - all fields resolve, both prefer flags on.
     {
         const avatar = await writeCharacter('Alice.png', {
             description: 'Alice is {{char}}.',
@@ -115,7 +108,6 @@ async function run() {
         assert.equal(fields.firstMessage, 'Hello, Alice here!');
         assert.equal(fields.version, '1.2');
         assert.equal(fields.charDepthPrompt, 'Depth note for Alice');
-        // depth_prompt has no explicit depth/role -> defaults (4 / SYSTEM=0).
         assert.equal(fields.charDepthPromptDepth, 4);
         assert.equal(fields.charDepthPromptRole, 0);
         assert.equal(fields.creatorNotes, 'Notes about Alice.');
@@ -123,7 +115,6 @@ async function run() {
         assert.deepEqual(fields.alternateGreetings, ['Greeting one from Alice', 'Greeting two from Alice']);
     }
 
-    // 2. prefer_character_prompt / prefer_character_jailbreak off -> system/jailbreak resolve to ''.
     {
         const avatar = await writeCharacter('Bob.png', {
             data: {
@@ -141,7 +132,6 @@ async function run() {
         assert.equal(fields.jailbreak, '');
     }
 
-    // 3. chat_metadata.scenario / chat_metadata.mes_example override the character's own values.
     {
         const avatar = await writeCharacter('Carol.png', {
             scenario: 'Carol\'s own scenario',
@@ -155,13 +145,11 @@ async function run() {
         assert.equal(fields.scenario, 'Per-chat scenario override');
         assert.equal(fields.mesExamples, 'Per-chat example override');
 
-        // Without a chat_metadata override, the character's own values are used.
         const fieldsNoOverride = await getCharacterCardFields(directories, { avatar, chatMetadata: {} });
         assert.equal(fieldsNoOverride.scenario, 'Carol\'s own scenario');
         assert.equal(fieldsNoOverride.mesExamples, '<START>\nCarol\'s own example');
     }
 
-    // 4. No avatar at all -> every field resolves to its empty/default fallback.
     {
         const fields = await getCharacterCardFields(directories, { avatar: undefined, personaDescription: 'Just a persona' });
         assert.equal(fields.system, '');
@@ -174,12 +162,10 @@ async function run() {
         assert.equal(fields.version, '');
         assert.deepEqual(fields.alternateGreetings, []);
         assert.equal(fields.persona, 'Just a persona');
-        // No character at all -> depth-prompt sub-fields fall back to the same defaults too.
         assert.equal(fields.charDepthPromptDepth, 4);
         assert.equal(fields.charDepthPromptRole, 0);
     }
 
-    // 4b. depth_prompt.depth/.role explicitly set - custom numeric depth, and role given by name.
     {
         const avatarUser = await writeCharacter('Dave.png', {
             data: {
@@ -202,7 +188,6 @@ async function run() {
         assert.equal(fieldsAssistant.charDepthPromptDepth, 0);
         assert.equal(fieldsAssistant.charDepthPromptRole, 2, 'role \'assistant\' resolves to extension_prompt_roles.ASSISTANT (2)');
 
-        // A role already given as a valid number passes through as-is.
         const avatarNumericRole = await writeCharacter('Frank.png', {
             data: {
                 name: 'Frank',
@@ -212,7 +197,6 @@ async function run() {
         const fieldsNumericRole = await getCharacterCardFields(directories, { avatar: avatarNumericRole });
         assert.equal(fieldsNumericRole.charDepthPromptRole, 1, 'a valid numeric role passes through unchanged');
 
-        // An unrecognized role string falls back to SYSTEM (0), matching the client's own fallback.
         const avatarBadRole = await writeCharacter('Grace.png', {
             data: {
                 name: 'Grace',
@@ -223,7 +207,6 @@ async function run() {
         assert.equal(fieldsBadRole.charDepthPromptRole, 0, 'unrecognized role name falls back to SYSTEM (0)');
     }
 
-    // 5. Group-combine path.
     {
         const memberA = await writeCharacter('GroupMemberA.png', {
             description: 'A description',
@@ -244,7 +227,6 @@ async function run() {
             data: { name: 'MemberDisabled' },
         });
 
-        // generation_mode: APPEND (1) - disabled member is skipped unless it's the "current" avatar.
         await writeGroup('group-append', {
             generation_mode: 1,
             members: [memberA, memberB, memberDisabled],
@@ -259,9 +241,7 @@ async function run() {
             chatMetadata: {},
         });
 
-        // Disabled member (not the "current" avatar) is skipped entirely.
         assert.ok(!fields.description.includes('Disabled description'), 'disabled member is skipped in APPEND mode');
-        // Prefix/suffix wrap each member's contribution, with <FIELDNAME> and {{char}} substituted per-member.
         assert.equal(
             fields.description,
             '[Description of MemberA]\nA description\n[/Description]\n[Description of MemberB]\nB description\n[/Description]',
@@ -270,26 +250,22 @@ async function run() {
             fields.personality,
             '[Personality of MemberA]\nA personality\n[/Personality]\n[Personality of MemberB]\nB personality\n[/Personality]',
         );
-        // No chat_metadata override -> collected from members.
         assert.equal(
             fields.scenario,
             '[Scenario of MemberA]\nA scenario\n[/Scenario]\n[Scenario of MemberB]\nB scenario\n[/Scenario]',
         );
-        // mesExamples: each member's raw text is preprocessed with a <START> prefix before being wrapped.
         assert.equal(
             fields.mesExamples,
             '[Example Messages of MemberA]\n<START>\nA example line\n[/Example Messages]\n'
             + '[Example Messages of MemberB]\n<START>\nB example line\n[/Example Messages]',
         );
 
-        // The disabled member IS included when it's the "current" characterAvatar being asked about.
         const fieldsAsDisabled = await getCharacterCardFields(directories, {
             avatar: memberDisabled,
             groupId: 'group-append',
         });
         assert.ok(fieldsAsDisabled.description.includes('Disabled description'), 'disabled member is included when it is the current avatar');
 
-        // generation_mode: APPEND_DISABLED (2) - disabled members are always included.
         await writeGroup('group-append-disabled', {
             generation_mode: 2,
             members: [memberA, memberDisabled],
@@ -301,7 +277,6 @@ async function run() {
         });
         assert.ok(fieldsAppendDisabled.description.includes('Disabled description'), 'APPEND_DISABLED mode always includes disabled members');
 
-        // chat_metadata.scenario/mes_example override wins over the collected group value.
         const fieldsOverride = await getCharacterCardFields(directories, {
             avatar: memberA,
             groupId: 'group-append',
@@ -310,14 +285,11 @@ async function run() {
         assert.equal(fieldsOverride.scenario, 'Group chat scenario override');
         assert.equal(fieldsOverride.mesExamples, 'Group chat example override');
 
-        // A group with generation_mode SWAP (0, falsy) never combines - falls back to the plain character.
         await writeGroup('group-swap', { generation_mode: 0, members: [memberA, memberB] });
         const fieldsSwap = await getCharacterCardFields(directories, { avatar: memberA, groupId: 'group-swap' });
         assert.equal(fieldsSwap.description, 'A description');
     }
 
-    // 6. getGroupCharacterDepthPrompts() - per-member depth-prompt resolution (distinct from the
-    // combined-cards path above).
     {
         const memberNoPrompt = await writeCharacter('DepthMemberNone.png', {
             data: { name: 'DepthMemberNone' },
@@ -341,8 +313,6 @@ async function run() {
             },
         });
 
-        // APPEND mode (1): disabled_members includes memberDisabledCurrent and memberDisabledOther.
-        // characterAvatar = memberDisabledCurrent -> that one IS included (exception), the other is not.
         await writeGroup('group-depth-prompts', {
             generation_mode: 1,
             members: [memberNoPrompt, memberWithPrompt, memberDisabledCurrent, memberDisabledOther],
@@ -364,7 +334,6 @@ async function run() {
         assert.equal(disabledCurrentEntry.depth, 4, 'no explicit depth -> DEPTH_PROMPT_DEPTH_DEFAULT (4)');
         assert.equal(disabledCurrentEntry.role, 0, 'no explicit role -> SYSTEM (0)');
 
-        // Whole-group SWAP-mode (0) exclusion - returns [] regardless of member depth_prompts.
         await writeGroup('group-depth-prompts-swap', {
             generation_mode: 0,
             members: [memberWithPrompt],
@@ -372,7 +341,6 @@ async function run() {
         const swapPrompts = await getGroupCharacterDepthPrompts(directories, 'group-depth-prompts-swap', memberWithPrompt);
         assert.deepEqual(swapPrompts, [], 'SWAP-mode group returns no depth prompts at all');
 
-        // No groupId / unknown groupId -> [].
         assert.deepEqual(await getGroupCharacterDepthPrompts(directories, undefined, memberWithPrompt), []);
         assert.deepEqual(await getGroupCharacterDepthPrompts(directories, 'no-such-group', memberWithPrompt), []);
     }

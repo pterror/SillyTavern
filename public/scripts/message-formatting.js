@@ -1,5 +1,3 @@
-/** Display-only: never import chat-store writers (`updateMessage()` etc.) — display substitutions have previously leaked into stored messages this way. */
-
 import { systemUserName, substituteParams, setMesForShowdownParse } from '../script.js';
 import { chat } from './chat-state.js';
 import { COMMENT_NAME_DEFAULT } from './slash-commands.js';
@@ -13,16 +11,10 @@ import { renderMarkdown } from './marked-processor.js';
 
 const TITLE = String.raw`"(?:\\[\s\S]|[^"\\])*"`;
 const IMAGE_SIZE = String.raw` =[^\s"'()]*`;
-/** A link or image's `](url "title")`, as marked reads it (the size is an image's `=WxH`). */
 const TITLED_LINK = String.raw`\]\(\s*(?:<(?:\\.|[^\n<>\\])*>|(?:\\.|[^\s()\\]|\((?:\\.|[^\s()\\])*\))+)`
     + String.raw`(?:${IMAGE_SIZE}[ \t]*(?:\n[ \t]*)?|[ \t]+(?:\n[ \t]*)?|\n[ \t]*)${TITLE}\s*\)`;
-/** A reference definition's `[id]: url "title"` line, as marked reads it. */
 const TITLED_DEFINITION = String.raw`^ {0,3}\[(?:\\[\s\S]|[^\[\]\\])+\]:[ \t]*(?:\n[ \t]*)?(?:<[^\n]*?>|[^<\s]\S*?)`
     + String.raw`(?:${IMAGE_SIZE}[ \t]*(?:\n[ \t]*)?| +(?:\n[ \t]*)?| *\n[ \t]*)${TITLE}[ \t]*$`;
-/**
- * Quoted dialogue to wrap in `<q>`, captured per quote style. Code, `<style>` and a double-quoted title in link, image
- * or reference-definition syntax match uncaptured, so they're left as written.
- */
 const quoteRegex = new RegExp(
     String.raw`<style>[\s\S]*?<\/style>|${'```'}[\s\S]*?${'```'}|~~~[\s\S]*?~~~|${'``'}[\s\S]*?${'``'}|${'`'}[\s\S]*?${'`'}`
     + `|${TITLED_LINK}|${TITLED_DEFINITION}`
@@ -31,14 +23,13 @@ const quoteRegex = new RegExp(
 );
 
 /**
- * @param {number} messageId - Index in the chat array, or -1 for transient messages (e.g. streaming previews).
+ * @param {number} messageId
  */
 export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, sanitizerOverrides = {}, isReasoning = false) {
     if (!mes) {
         return '';
     }
 
-    // Redone on every render, not cached — see this file's header for why.
     if (Number(messageId) === 0 && !isSystem && !isUser && !isReasoning) {
         mes = substituteParams(mes, undefined, ch_name);
     }
@@ -53,7 +44,6 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, san
         isSystem = false;
     }
 
-    // Prompt bias replacement should be applied on the raw message
     const replacedPromptBias = power_user.user_prompt_bias && substituteParams(power_user.user_prompt_bias);
     if (!power_user.show_user_prompt_bias && ch_name && !isUser && !isSystem && replacedPromptBias && mes.startsWith(replacedPromptBias)) {
         mes = mes.slice(replacedPromptBias.length);
@@ -103,7 +93,6 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, san
             : mes.replaceAll('<', '&lt;').replaceAll('>', '&gt;');
     }
 
-    // Make sure reasoning strings are always shown, even if they include "<" or ">"
     [power_user.reasoning.prefix, power_user.reasoning.suffix].forEach((reasoningString) => {
         if (!reasoningString || !reasoningString.trim().length) {
             return;
@@ -114,7 +103,6 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, san
     });
 
     if (!isSystem) {
-        // Save double quotes in tags as a special character to prevent them from being encoded
         if (!power_user.encode_tags) {
             mes = mes.replace(/<([^>]+)>/g, function (_, contents) {
                 return '<' + contents.replace(/"/g, '\ufffe') + '>';
@@ -125,22 +113,16 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, san
             quoteRegex,
             function (match, p1, p2, p3, p4, p5, p6) {
                 if (p1) {
-                    // English double quotes
                     return `<q>"${p1.slice(1, -1)}"</q>`;
                 } else if (p2) {
-                    // Curly double quotes “ ”
                     return `<q>“${p2.slice(1, -1)}”</q>`;
                 } else if (p3) {
-                    // Guillemets « »
                     return `<q>«${p3.slice(1, -1)}»</q>`;
                 } else if (p4) {
-                    // Corner brackets 「 」
                     return `<q>「${p4.slice(1, -1)}」</q>`;
                 } else if (p5) {
-                    // White corner brackets 『 』
                     return `<q>『${p5.slice(1, -1)}』</q>`;
                 } else if (p6) {
-                    // Fullwidth quotes ＂ ＂
                     return `<q>＂${p6.slice(1, -1)}＂</q>`;
                 } else {
                     return match;
@@ -157,7 +139,6 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, san
         mes = renderMarkdown(mes);
 
         mes = mes.replace(/<code(.*)>[\s\S]*?<\/code>/g, function (match) {
-            // Firefox creates extra newlines from <br>s in code blocks
             return match.replace(/\n/gm, '\u0000');
         });
         mes = mes.replace(/\u0000/g, '\n');

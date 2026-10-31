@@ -2,11 +2,6 @@ import { describe, test, expect, jest, beforeAll } from '@jest/globals';
 import { Marked } from 'marked';
 import showdown from 'showdown';
 
-// A URL ending in `_` keeps the `_` in its link, for bare URLs and `<...>` autolinks, alone and mid-sentence.
-// Other trailing punctuation stays out of a bare URL's link, as GFM's extended-autolink rule says.
-// Checked on both marked processors and through messageFormatting (the chat render path). messageFormatting's
-// DOM-bound and app-wide imports are replaced; DOMPurify needs a window, so sanitize is the identity here.
-
 jest.unstable_mockModule('../public/lib.js', () => ({
     Marked,
     showdown,

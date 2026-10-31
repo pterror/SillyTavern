@@ -112,7 +112,6 @@ export class EnhancedMacroAutoCompleteOption extends AutoCompleteOption {
             }
         }
 
-        // {{//}} right after a lone typed slash would otherwise be treated as a flag, not the macro name
         const fullText = this.#options?.fullText ?? this.#context?.fullText ?? '';
         if (macro.name === '//' && fullText.endsWith('/')) {
             this.replacementStartOffset = (this.replacementStartOffset ?? 0) - 1;
@@ -1131,7 +1130,6 @@ export class MacroClosingTagAutoCompleteOption extends AutoCompleteOption {
         this.#isOptional = options.isOptional ?? false;
         this.#nestingLevel = options.nestingLevel ?? 0;
 
-        // Negative so replacement eats whitespace the user already typed, normalizing it to paddingBefore
         const currentPadding = options.currentPadding ?? '';
         this.replacementStartOffset = -currentPadding.length;
 
@@ -1139,12 +1137,10 @@ export class MacroClosingTagAutoCompleteOption extends AutoCompleteOption {
             return `${this.#paddingBefore}/${macroName}${this.#paddingAfter}}}`;
         };
 
-        // valueProvider alone makes the option non-selectable; this re-enables TAB completion
         this.makeSelectable = true;
 
         this.nameOffset = 2;
 
-        // Closing tags should always appear at the very top
         this.sortPriority = 1;
     }
 

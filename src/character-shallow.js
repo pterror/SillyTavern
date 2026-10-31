@@ -2,8 +2,6 @@ import { getConfigValue } from './util.js';
 import { shallowCharacterData } from '../public/scripts/hash-utils.js';
 
 /**
- * Whether the shallow character response includes creator_notes (matches upstream SillyTavern's shallow response).
- * Read when asked, not on import: importing this module needs no config.
  * @returns {boolean}
  */
 export function shallowCharactersIncludeCreatorNotes() {
@@ -11,18 +9,16 @@ export function shallowCharactersIncludeCreatorNotes() {
 }
 
 /**
- * Calculate the total string length of the data object.
- * @param {object} data Character `data` object (Spec V2)
- * @returns {number} Total string length across every value in `data`
+ * @param {object} data
+ * @returns {number}
  */
 export function calculateDataSize(data) {
     return typeof data === 'object' ? Object.values(data).reduce((acc, val) => acc + String(val).length, 0) : 0;
 }
 
 /**
- * Only get fields that are used to display the character list.
- * @param {object} character Must already carry date_added/create_date/date_last_chat/chat_size/data_size.
- * @returns {{shallow: true, [key: string]: any}} Shallow character
+ * @param {object} character
+ * @returns {{shallow: true, [key: string]: any}}
  */
 export function toShallow(character) {
     return {

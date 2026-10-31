@@ -2,41 +2,6 @@ import { TEXTGEN_TYPES } from './constants.js';
 import { substituteParams } from './macro-substitution.js';
 import { computeTextgenLogitBias } from './endpoints/tokenizers.js';
 
-/**
- * Server-side port of public/scripts/textgen-settings.js's createTextGenGenerationData() - builds
- * the sampler/request-shape payload for every textgenerationwebui backend type.
- *
- * api_type/api_server are NOT part of the output - src/textgen-backend-resolve.js already resolves
- * those server-side, and model resolution (getTextGenModel) lives there too; this takes `model` as
- * an already-resolved parameter, matching the original function's own signature.
- *
- * logitBias is now computed for real (this session, same pass as chat-completion-generation-data.js's
- * equivalent fix): the client's calculateLogitBias() (public/scripts/textgen-settings.js) does no
- * computation of its own beyond dispatching to getTokenizerForTokenIds() + getLogitBiasListResult() -
- * both of which bottom out in either an already-in-process local tokenizer or one of the server's own
- * existing remote-tokenize routes. Ported as computeTextgenLogitBias() (src/endpoints/tokenizers.js),
- * called directly against `settings.logit_bias` (the raw preset array - textgen keeps it inline on
- * settings, unlike chat-completion's separate bias_presets/bias_preset_selected indirection) via the
- * `logitBiasContext` context param. A pre-resolved `logitBias` override is still accepted (and takes
- * priority) for callers that already have one, mirroring the `logitBiasOverride` escape-hatch
- * convention from that same chat-completion port.
- *
- * Deliberately taken as explicit context parameters instead of ported (each needs its own
- * server-side capability that doesn't exist yet, tracked separately from this piece):
- * - bannedTokens/bannedStrings - getCustomTokenBans() needs the server's own tokenizer access to
- *   turn ban strings into token ids.
- * - stoppingStrings - getStoppingStrings() depends on instruct-mode stopping sequences and
- *   getCustomStoppingStrings()'s macro substitution + "ephemeral stopping strings" concept, which
- *   isn't ported. Pass the fully-resolved array in; used verbatim for both `stop` and
- *   `stopping_strings`, matching the original calling getStoppingStrings() twice for the same value.
- * - maxContext - the client's global `max_context`; this is really a resolved-settings value the
- *   caller already has to compute for other reasons (prompt budget), not specific to this function.
- * - requestTokenProbabilities - the client's power_user.request_token_probabilities setting.
- * - macroContext - passed through to substituteParams() for settings.negative_prompt; optional,
- *   defaults to {} (empty user/char context - substituteParams degrades gracefully).
- */
-
-/** Mirrors public/scripts/textgen-settings.js's toIntArray(). */
 function toIntArray(value) {
     if (!value) return [];
     if (Array.isArray(value)) return value.map(x => parseInt(x)).filter(x => !isNaN(x));
@@ -57,16 +22,11 @@ function isPlainObject(item) {
     return !!(item && typeof item === 'object' && !Array.isArray(item));
 }
 
-/** Mirrors public/scripts/textgen-settings.js's getLogprobsNumber(). */
 function getLogprobsNumber(type) {
     if (type === TEXTGEN_TYPES.VLLM || type === TEXTGEN_TYPES.INFERMATICAI) return 5;
     return 10;
 }
 
-// Static source: public/index.html's #dynatemp_block_ooba element's data-tg-type attribute -
-// which backend types show/support the dynamic-temperature UI block. Not runtime data, just baked
-// into the template rather than JS; mirror it here rather than reading a DOM attribute that has no
-// server equivalent.
 const DYNATEMP_SUPPORTED_TYPES = [
     TEXTGEN_TYPES.OOBA, TEXTGEN_TYPES.MANCER, TEXTGEN_TYPES.KOBOLDCPP,
     TEXTGEN_TYPES.TABBY, TEXTGEN_TYPES.LLAMACPP, TEXTGEN_TYPES.APHRODITE,
@@ -85,30 +45,25 @@ const { OOBA, MANCER, VLLM, APHRODITE, TABBY, KOBOLDCPP, LLAMACPP, OLLAMA, INFER
 
 /**
  * @typedef {object} TextGenGenerationDataContext
- * @property {string[]} [stoppingStrings] Fully-resolved stop strings (instruct sequences + custom stopping strings)
- * @property {string} [bannedTokens] Raw banned-token line/array data, same shape getCustomTokenBans() would return
+ * @property {string[]} [stoppingStrings]
+ * @property {string} [bannedTokens]
  * @property {string[]} [bannedStrings]
- * @property {object} [logitBias] Escape hatch: an already-computed token-id-keyed bias map to use
- * as-is instead of computing one from `settings.logit_bias` via computeTextgenLogitBias(). Takes
- * priority when provided.
+ * @property {object} [logitBias]
  * @property {{encode?: (text: string) => Promise<number[]|null>, dropped?: string[]}} [logitBiasContext]
- * Forwarded to computeTextgenLogitBias() (src/endpoints/tokenizers.js) when `logitBias` isn't
- * given - see that function's doc comment. `encode` is required when `settings.logit_bias` is
- * non-empty and no `logitBias` is given.
  * @property {number} [maxContext]
  * @property {boolean} [requestTokenProbabilities]
- * @property {{name1?: string, name2?: string}} [macroContext] For substituting settings.negative_prompt
+ * @property {{name1?: string, name2?: string}} [macroContext]
  */
 
 /**
- * @param {object} settings textgenerationwebui_settings (or an equivalent object, e.g. a merged preset)
- * @param {string} model Already-resolved model name
+ * @param {object} settings
+ * @param {string} model
  * @param {string} finalPrompt
  * @param {number} maxTokens
  * @param {boolean} isImpersonate
  * @param {boolean} isContinue
  * @param {{guidanceScale?: {value: number}, negativePrompt?: string}} cfgValues
- * @param {string} [type] 'quiet'/'impersonate'/'continue'/'normal' - only affects whether multi-swipe (n>1) is allowed
+ * @param {string} [type]
  * @param {TextGenGenerationDataContext} [context]
  * @returns {Promise<object>}
  */
@@ -124,10 +79,6 @@ export async function createTextGenGenerationData(settings, model, finalPrompt, 
         macroContext = {},
     } = context;
 
-    // Mirrors the original: computed only when settings.logit_bias (the raw preset array) is a
-    // non-empty array - the exact same condition public/scripts/textgen-settings.js's
-    // createTextGenGenerationData() checks before calling calculateLogitBias(settings). A
-    // pre-resolved override takes priority when given.
     let logitBias = logitBiasOverride;
     if (logitBias === undefined && Array.isArray(settings.logit_bias) && settings.logit_bias.length) {
         const { encode, dropped } = logitBiasContext;
@@ -369,9 +320,6 @@ export async function createTextGenGenerationData(settings, model, finalPrompt, 
         }
     }
 
-    // Client leaves this function on the returned object (harmless there - JSON.stringify() drops
-    // functions silently before the wire anyway); deleted here so the return value is a plain,
-    // structuredClone-safe object. No behavior change either way.
     delete params.parseSequenceBreakers;
     return params;
 }

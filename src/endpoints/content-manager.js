@@ -173,7 +173,6 @@ async function seedContent(contentIndex, contentLogPath, resolveTarget, forceCat
         contentLog.push(contentItem.filename);
         newLogEntries.push(contentItem.filename);
 
-        // A user's worlds and characters go into the user's store; anything else is a file in its folder.
         const isWorld = contentItem.type === CONTENT_TYPES.WORLD && !!directories;
         const isCharacter = contentItem.type === CONTENT_TYPES.CHARACTER && !!directories;
         const inStore = isWorld || isCharacter;
@@ -200,7 +199,6 @@ async function seedContent(contentIndex, contentLogPath, resolveTarget, forceCat
                 try {
                     await seed();
                 } catch (err) {
-                    // Left out of the content log, so the next start seeds it again.
                     console.error(`Couldn't add the bundled character "${basePath}"; it will be tried again on the next start.`, err, firstError);
                     contentLog.pop();
                     newLogEntries.pop();
@@ -223,7 +221,6 @@ async function seedContent(contentIndex, contentLogPath, resolveTarget, forceCat
 }
 
 /**
- * Appends new filenames to the content log without rewriting the entries already there.
  * @param {string} contentLogPath
  * @param {string[]} newEntries
  */
@@ -458,9 +455,8 @@ function getContentLog(contentLogPath) {
 }
 
 /**
- * @param {import('../users.js').UserDirectoryList} directories User directories
- * @returns {boolean} Whether the user has allowed fetching a character's linked lorebooks on import.
- * Unset (never toggled) counts as forbidden, matching the client-side default.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @returns {boolean}
  */
 export function isLinkedLorebookFetchAllowed(directories) {
     const key = 'power_user.forbid_linked_lorebooks';
@@ -525,14 +521,7 @@ async function downloadChubCharacter(id) {
     const metadata = await result.json();
     const { definition, topics } = metadata.node;
 
-    // Kept separate from any linked (non-embedded) lorebooks - those are resolved individually
-    // via a follow-up request per path (see /importChubLorebookByPath), not merged in here.
     const characterBook = definition.embedded_lorebook;
-    // The top-level node.related_lorebooks is bare numeric ids only, no slug - but
-    // definition.extensions.chub.related_lorebooks carries the same ids WITH a path
-    // ("lorebooks/creator/project-name"), which downloadChubLorebook() already knows how to
-    // resolve. Paths matter here specifically because Chub's own path-based lookup is what
-    // still works for unlisted content; a bare numeric id is not guaranteed to.
     /** @type {string[]} */
     const relatedLorebookPaths = (definition.extensions?.chub?.related_lorebooks ?? [])
         .map(entry => entry?.path)
@@ -806,7 +795,6 @@ async function downloadGenericPng(url) {
 export function parseRisuUrl(url) {
     // Example: https://realm.risuai.net/character/7adb0ed8d81855c820b3506980fb40f054ceef010ff0c4bab73730c0ebe92279
     // or https://realm.risuai.net/character/7adb0ed8-d818-55c8-20b3-506980fb40f0
-    // A query string or fragment (a shared link's) isn't part of the id.
     let parsed;
     try {
         parsed = new URL(url);
@@ -863,7 +851,6 @@ function isPerchanceUUID(uuid) {
 export function parsePerchanceSlug(url) {
     // Example: https://perchance.org/ai-character-chat?data=Personality_Advisor~6903e991c90fd1dba52c036d917e99c6.gz
     // or: Personality_Advisor~6903e991c90fd1dba52c036d917e99c6.gz
-    // or the link a stored card's source makes, whose `data` is the slug alone: ...?data=6903e991c90fd1dba52c036d917e99c6.gz
     let data = url ?? '';
     try {
         data = new URL(data).searchParams.get('data') ?? '';
@@ -1072,10 +1059,9 @@ export function isHostWhitelisted(host) {
 export const router = express.Router();
 
 /**
- * Logs and responds with an import failure naming the URL or id that was being imported.
  * @param {import('express').Response} response
  * @param {number} status
- * @param {string} name The URL or id from the request.
+ * @param {string} name
  * @param {unknown} reason
  */
 function sendImportFailure(response, status, name, reason) {
@@ -1178,17 +1164,6 @@ router.post('/importURL', async (request, response) => {
     }
 });
 
-/**
- * Fetches and imports a single Chub lorebook that's linked to a character (as opposed to
- * embedded in the card) by its "lorebooks/creator/project-name" path - as surfaced via the
- * X-Related-Lorebook-Paths header on a prior /importURL response for a Chub character. One path
- * per request, by design: the character import and each of its linked lorebooks are independent
- * downloads, not one bundled payload. Writes the World Info file server-side (untrusted external
- * content is validated and persisted in one place, not round-tripped as raw bytes through the
- * client and back). Reuses downloadChubLorebook() - the same path-based resolution Chub's own
- * lorebook page uses, and (per Chub's related_lorebooks numeric ids being unreliable for
- * unlisted content) preferred over id-based lookup.
- */
 router.post('/importChubLorebookByPath', async (request, response) => {
     const path = request.body.path;
     if (typeof path !== 'string' || !path.startsWith('lorebooks/')) {

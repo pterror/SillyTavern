@@ -1,26 +1,11 @@
 import { TYPE } from '../library-codes.js';
 import { draft } from './entity-draft.js';
 
-/**
- * Capabilities (§1.4, step 3c): each a slot naming a connection from the one list, so captioning through llama.cpp is
- * the llama.cpp connection text generation uses, and an OpenAI voice the OpenAI connection. Made from the built-in
- * extensions' provider fields, which leave their settings (kept as JSON, Q8) and come back at the edge.
- *
- * - A provider that is a chat completion source or text completion backend names that family's connection type; one
- *   that runs in the browser a `browser:*` type; the server's own models (transformers.js) `transformers`; Extras
- *   `extras`. A provider with nothing to share names a type of its own, `<capability>:<provider>`, which a provider
- *   these tables don't know (an extension's) also gets, so it comes back as it came.
- * - Classification through the main API follows text generation (`FOLLOWS_TEXT_GENERATION`); none is `null`.
- * - Speech recognition has no provider field in this repo (no such built-in extension); its settings stay as they are.
- */
-
-/** A capability's statement that it uses whatever text generation uses. */
 export const FOLLOWS_TEXT_GENERATION = 'textGeneration';
 
 const tc = name => `textgenerationwebui:${name}`;
 const cc = name => `openai:${name}`;
 
-/** Caption's multimodal APIs. */
 const CAPTION_APIS = Object.freeze({
     aimlapi: cc('aimlapi'), chutes: cc('chutes'), anthropic: cc('claude'), workers_ai: cc('workers_ai'), cohere: cc('cohere'),
     custom: cc('custom'), electronhub: cc('electronhub'), google: cc('makersuite'), vertexai: cc('vertexai'), groq: cc('groq'),
@@ -29,19 +14,15 @@ const CAPTION_APIS = Object.freeze({
     vllm: tc('vllm'), xai: cc('xai'), zai: cc('zai'),
 });
 
-/** Caption's other sources. */
 const CAPTION_SOURCES = Object.freeze({ local: 'transformers', extras: 'extras', horde: 'horde' });
 
-/** Expressions' classification APIs (numbers). */
 const CLASSIFICATION_APIS = Object.freeze({ 0: 'transformers', 1: 'extras', 2: FOLLOWS_TEXT_GENERATION, 3: 'browser:webllm', 99: null });
 
-/** TTS providers that share another family's connection or run in the browser; any other is `tts:<name>`. */
 const TTS_PROVIDERS = Object.freeze({
     'OpenAI': cc('openai'), 'Chutes': cc('chutes'), 'Electron Hub': cc('electronhub'), 'Pollinations': cc('pollinations'),
     'MiniMax': cc('minimax'), 'Novel': 'novel', 'SpeechT5': 'transformers', 'System': 'browser:speech-synthesis', 'Kokoro': 'browser:kokoro',
 });
 
-/** Image generation sources that share another family's connection; `google` by its `google_api`; any other `image:<source>`. */
 const IMAGE_SOURCES = Object.freeze({
     extras: 'extras', horde: 'horde', novel: 'novel', openai: cc('openai'), aimlapi: cc('aimlapi'), togetherai: tc('togetherai'),
     pollinations: cc('pollinations'), chutes: cc('chutes'), electronhub: cc('electronhub'), nanogpt: cc('nanogpt'), xai: cc('xai'),
@@ -49,7 +30,6 @@ const IMAGE_SOURCES = Object.freeze({
 });
 const IMAGE_GOOGLE_APIS = Object.freeze({ makersuite: cc('makersuite'), vertexai: cc('vertexai') });
 
-/** Embedding sources; any other is `embeddings:<source>`. */
 const EMBEDDING_SOURCES = Object.freeze({
     chutes: cc('chutes'), workers_ai: cc('workers_ai'), cohere: cc('cohere'), electronhub: cc('electronhub'), extras: 'extras',
     palm: cc('makersuite'), vertexai: cc('vertexai'), koboldcpp: tc('koboldcpp'), llamacpp: tc('llamacpp'), transformers: 'transformers',
@@ -79,11 +59,7 @@ function valueIn(table, prefix, type) {
     return type?.startsWith(`${prefix}:`) ? type.slice(prefix.length + 1) : undefined;
 }
 
-/**
- * Each capability: its extension's settings key, and how its provider fields give a connection type and back.
- * `from` reads the type and drops the fields it read from the settings copy; `to` writes them for a type.
- * @type {Readonly<Record<string, { extension: string, from: (s: Record<string, any>) => string | null | undefined, to: (s: Record<string, any>, type: string | null) => boolean }>>}
- */
+/** @type {Readonly<Record<string, { extension: string, from: (s: Record<string, any>) => string | null | undefined, to: (s: Record<string, any>, type: string | null) => boolean }>>} */
 const CAPABILITIES = Object.freeze({
     captioning: {
         extension: 'caption',
@@ -194,22 +170,20 @@ const CAPABILITIES = Object.freeze({
     },
 });
 
-/** The capability slots, besides text generation's (connections.js). */
 export const CAPABILITY_SLOTS = Object.freeze(Object.keys(CAPABILITIES));
 
 /**
  * @typedef {import('./entity-draft.js').EntityDraft} EntityDraft
  * @typedef {object} CapabilitiesFromUpstream
- * @property {Record<string, string | null>} capabilities Each slot's statement: a connection key,
- *   FOLLOWS_TEXT_GENERATION, or null for none.
- * @property {Record<string, Record<string, unknown>>} settings The extensions' settings without their provider fields.
- * @property {EntityDraft[]} connections The connections made for types no connection had.
+ * @property {Record<string, string | null>} capabilities
+ * @property {Record<string, Record<string, unknown>>} settings
+ * @property {EntityDraft[]} connections
  */
 
 /**
- * @param {Record<string, any>} extensionSettings Upstream's `extension_settings`.
- * @param {EntityDraft[]} connections The connections there are.
- * @param {(hint: string) => string} newKey The key of what `hint` names; the same hint, the same key.
+ * @param {Record<string, any>} extensionSettings
+ * @param {EntityDraft[]} connections
+ * @param {(hint: string) => string} newKey
  * @returns {CapabilitiesFromUpstream}
  */
 export function capabilitiesFromUpstream(extensionSettings, connections, newKey) {
@@ -240,7 +214,6 @@ export function capabilitiesFromUpstream(extensionSettings, connections, newKey)
 }
 
 /**
- * The extensions' settings with their provider fields, from the capabilities.
  * @param {Record<string, Record<string, unknown>>} settings
  * @param {Record<string, string | null>} capabilities
  * @param {EntityDraft[]} connections

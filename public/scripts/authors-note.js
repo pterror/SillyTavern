@@ -128,8 +128,7 @@ function updateSettings() {
 }
 
 /**
- * Counts a value and writes the count, with its basis, into a counter.
- * @param {string} selector The counter.
+ * @param {string} selector
  * @param {string} value
  */
 async function setTokenCounter(selector, value) {
@@ -428,7 +427,6 @@ function onANMenuItemClick() {
         }, animation_duration);
     }
 
-    // Duplicates script.js's options-menu close handler: this listener must run first.
     $('#options').stop().fadeOut(animation_duration);
 }
 

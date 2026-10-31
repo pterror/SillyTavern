@@ -1,6 +1,5 @@
 import { color } from './util.js';
 
-/** How far apart progress lines are, at the least. */
 export const PROGRESS_INTERVAL_MS = 10_000;
 
 /**
@@ -12,7 +11,6 @@ function count(n) {
 }
 
 /**
- * A duration in plain words: "40 s", "3 min", "1 h 20 min".
  * @param {number} ms
  * @returns {string}
  */
@@ -26,16 +24,11 @@ export function formatDuration(ms) {
     return rest === 0 ? `${hours} h` : `${hours} h ${rest} min`;
 }
 
-/**
- * The console output of one background pass: a progress line at most every `intervalMs` while it runs, saying how
- * far it is and roughly how long is left, and one line when it finishes. A pass that finishes before the first
- * interval only logs the finished line. Failures are not its business: callers name each one as it happens.
- */
 export class ProgressLog {
     /**
      * @param {object} options
-     * @param {string} options.what What the pass does, in plain words, e.g. "search index".
-     * @param {number | null} [options.total] How many items it has to do, when known.
+     * @param {string} options.what
+     * @param {number | null} [options.total]
      * @param {(line: string) => void} [options.log]
      * @param {number} [options.intervalMs]
      * @param {() => number} [options.now]
@@ -59,7 +52,6 @@ export class ProgressLog {
     }
 
     /**
-     * Counts `n` more items done, and logs a progress line when the interval has passed.
      * @param {number} [n]
      */
     add(n = 1) {
@@ -90,8 +82,7 @@ export class ProgressLog {
     }
 
     /**
-     * Logs the finished line.
-     * @param {string} [extra] More to say, in plain words, e.g. "12 changed".
+     * @param {string} [extra]
      */
     finish(extra = '') {
         const took = formatDuration(this.now() - this.started);

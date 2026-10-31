@@ -39,8 +39,7 @@ export const reasoning_templates = [];
 export const DEFAULT_REASONING_TEMPLATE = 'Think XML';
 
 /**
- * Whether the given (or currently active) main API is Chat Completion (OpenAI-compatible).
- * @param {string} [api] API to check. Defaults to the currently active main API.
+ * @param {string} [api]
  * @returns {boolean}
  */
 function isOpenAiApi(api = main_api) {
@@ -365,10 +364,6 @@ export class ReasoningHandler {
         }
         const extra = chat[messageId].extra;
 
-        // extra.reasoning_type is set whenever a reasoning block was deliberately created (manually
-        // added, edited, or parsed), even if its text is currently blank. Checking extra.reasoning
-        // alone would conflate that state with "no reasoning block was ever created" - both are
-        // falsy/empty, but only the latter should count as ReasoningState.None.
         if (extra.reasoning || extra.reasoning_type) {
             this.state = ReasoningState.Done;
         } else if (extra.reasoning_duration) {
@@ -446,7 +441,6 @@ export class ReasoningHandler {
         this.type = (this.#isParsingReasoning || this.#parsingReasoningMesStartIndex) ? ReasoningType.Parsed : ReasoningType.Model;
 
         if (persist) {
-            // Build and save the reasoning data to message extras via updateMessage (frozen-safe)
             updateMessage(messageId, {
                 extra: {
                     ...chat[messageId].extra,
@@ -1251,10 +1245,6 @@ function setReasoningEventHandlers() {
         const mes = $(this).closest('.mes');
         const mesEditArea = mes.find('#curEditTextarea');
 
-        // While the message itself is being edited, a click always opens the reasoning editor,
-        // even if the block currently has no content. A reasoning block that was added but left
-        // blank still exists - it's not the same as "no reasoning block at all" - and this is the
-        // only way to reach it, since it has no other visible content to click on.
         if (mesEditArea.length) {
             const summary = $(mes).find('.mes_reasoning_summary');
             if (!summary.attr('open')) {
@@ -1263,8 +1253,6 @@ function setReasoningEventHandlers() {
             return;
         }
 
-        // Outside of edit mode, keep click behavior aligned with CSS: only blocks with backing
-        // content can toggle open/closed - there is nothing to show or edit otherwise.
         if (details.attr('data-has-content') !== 'true') {
             e.preventDefault();
             return;
@@ -1582,8 +1570,6 @@ export function parseReasoningInSwipes(swipes, swipeInfoArray, duration) {
     }
 
     for (let index = 0; index < swipes.length; index++) {
-        // Alternatives a chat load left as holes have nothing to parse and no swipe_info object to
-        // write into. They were parsed when they were generated, so skipping them loses nothing.
         if (typeof swipes[index] !== 'string' || !swipeInfoArray[index]) {
             continue;
         }
@@ -1597,16 +1583,10 @@ export function parseReasoningInSwipes(swipes, swipeInfoArray, duration) {
     }
 }
 
-/**
- * Messages about to be announced as received whose reasoning the server already split off (a generated reply, as the
- * server stored it). Their MESSAGE_RECEIVED doesn't parse them again: the page only shows what the server stored.
- * @type {Set<number>}
- */
+/** @type {Set<number>} */
 const serverFinishedReplies = new Set();
 
 /**
- * Marks the message as a reply the server finished (stored with its reasoning split off), for the next
- * MESSAGE_RECEIVED of it, which then leaves it as it is.
  * @param {number} messageId
  */
 export function markServerFinishedReply(messageId) {

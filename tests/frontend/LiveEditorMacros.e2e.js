@@ -2,7 +2,6 @@ import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
 /**
- * Mounts an editor that fills in macros the way a field does.
  * @param {import('@playwright/test').Page} page
  * @param {string} value
  */
@@ -51,7 +50,6 @@ test.describe('live editor macros', () => {
                 // @ts-ignore
                 window.liveEditorTest.editor.view.dispatch({ selection: { anchor } });
             }, anchor);
-            // A name is the name alone; one worked out only when sent, or sending nothing, says what it is.
             await expect(pills).toHaveText(['Testchar', 'random · a · b', '//note']);
             expect(await pills.evaluateAll(els => els.map(el => el.className))).toEqual(['macro-pill macro-pill-mention', 'macro-pill macro-pill-later', 'macro-pill macro-pill-empty']);
             expect(await page.locator('#liveEditorTestHost .cm-content').textContent()).not.toContain('{{');
@@ -67,20 +65,15 @@ test.describe('live editor macros', () => {
             return { head: view.state.selection.main.head, doc: view.state.doc.toString() };
         });
         await page.locator('#liveEditorTestHost .cm-content').click();
-        // Away from the pills, so no hover tooltip shows.
         await page.mouse.move(0, 0);
         await page.keyboard.press('Home');
         const tooltip = page.locator('.macro-tooltip:popover-open');
-        // Where the user put the cursor: not where it was placed for them.
         await expect(tooltip).toHaveCount(0);
         for (let i = 0; i < 6; i++) await page.keyboard.press('ArrowRight');
-        // Just the source: the pill says the rest.
         await expect(tooltip).toHaveText('{{char}}');
-        // Above the pill, centered on it.
         const pill = await page.locator('#liveEditorTestHost .macro-pill').boundingBox();
         const box = await tooltip.boundingBox();
         expect(box.y + box.height).toBeLessThanOrEqual(pill.y + 1);
-        // Within the editor's border: CodeMirror places a tooltip from the editor's inside.
         expect(Math.abs((box.x + box.width / 2) - (pill.x + pill.width / 2))).toBeLessThan(3);
         await page.keyboard.press('ArrowRight');
         expect((await view()).head).toBe(14);
@@ -95,13 +88,11 @@ test.describe('live editor macros', () => {
         await mountWithMacros(page, 'A {{char}} b {{random::x::y}} c {{//note}} d', { person: true });
         const tooltip = page.locator('.macro-tooltip:popover-open');
         await page.locator('#liveEditorTestHost .cm-content').click();
-        // Away from the pills, so no hover tooltip shows.
         await page.mouse.move(0, 0);
         await page.keyboard.press('Home');
         await page.keyboard.press('ArrowRight');
         await page.keyboard.press('ArrowRight');
         await expect(tooltip.locator('.macro-person-name')).toHaveText('Person char');
-        // Its text is who it names' description as the server fills it in: here no character, so none.
         await expect(tooltip.locator('.macro-person-about')).toHaveCount(0);
         await expect(tooltip.locator('code')).toHaveText('{{char}}');
         await expect(tooltip.locator('.macro-person-avatar')).toHaveAttribute('src', '/img/ai4.png');
@@ -134,7 +125,6 @@ test.describe('live editor macros', () => {
             const { text, macros } = withMacroPlaceholders(source, values.valueOf);
             const preview = document.createElement('div');
             preview.id = 'renderedPillTest';
-            // Clipped by what holds it, as a drawer clips its preview: the tooltip isn't.
             preview.style.cssText = 'overflow:hidden;height:1.6em;margin-top:220px';
             preview.innerHTML = insertMacroPills(text, macros, s => s.join(''),
                 name => withFilledAbout({ name: `Person ${name}`, avatarUrl: '/img/ai4.png', about: `About ${name}.` }, name, values.valueOf));
@@ -168,7 +158,6 @@ test.describe('live editor macros', () => {
         await page.keyboard.type(' @');
         const list = page.locator('#liveEditorTestHost .cm-tooltip-autocomplete li');
         await expect(list).toHaveText(['Person user{{user}}', 'Person char{{char}}']);
-        // Each with its avatar, as a mention list shows them.
         await expect(list.locator('img.live-mention-avatar')).toHaveCount(2);
         await expect(list.first().locator('img.live-mention-avatar')).toHaveAttribute('src', '/img/ai4.png');
         await page.keyboard.type('ch');
@@ -176,7 +165,6 @@ test.describe('live editor macros', () => {
         await page.keyboard.press('Enter');
         await expect(page.locator('#liveEditorTestTextarea')).toHaveValue('Hi {{char}}');
         await expect(page.locator('#liveEditorTestHost .macro-pill')).toHaveText(['Testchar']);
-        // Inside a word (an address), "@" is only a character.
         await page.keyboard.type(' a@');
         await page.waitForTimeout(300);
         await expect(list).toHaveCount(0);
@@ -201,7 +189,6 @@ test.describe('live editor macros', () => {
     });
 
     test('a click at the start of a paragraph\'s last line puts the cursor on that line, wherever a pill falls', async ({ page }) => {
-        // The macro at every offset across the editor's width, so one of them falls where a line wraps.
         const lines = Array.from({ length: 60 }, (_, i) => `${'w'.repeat(i)} ${'word '.repeat(9)}{{char}} at the end.`);
         await mountWithMacros(page, lines.join('\n\n'));
         const misses = await page.evaluate(async () => {
@@ -214,11 +201,9 @@ test.describe('live editor macros', () => {
                 view.dispatch({ effects: view.constructor.scrollIntoView(line.to, { y: 'center' }) });
                 await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
                 const last = view.coordsAtPos(line.to, -1);
-                // Clicks along the start of the paragraph's last line, where a pill lands when the line wraps at it.
                 for (const dx of [3, 20, 40, 60]) {
                     const pos = view.posAtCoords({ x: left + dx, y: last.top + 5 });
                     const caret = view.coordsAtPos(pos, 1);
-                    // Beside a pill the cursor takes the pill's box, a pixel off the text's: the same line within half a line.
                     if (Math.abs(caret.top - last.top) > 8) out.push(`line ${n} +${dx}: cursor at ${Math.round(caret.top)}, clicked ${Math.round(last.top)}`);
                 }
             }
@@ -234,7 +219,6 @@ test.describe('live editor macros', () => {
         await expect(pills).toHaveCount(macros.length);
         const colors = await pills.evaluateAll(els => els.map(el => getComputedStyle(el).color));
         expect(new Set(colors).size).toBe(macros.length);
-        // Every one has the text color's lightness.
         const textLightness = await page.evaluate(() => {
             const probe = document.createElement('span');
             probe.style.color = 'oklch(from var(--SmartThemeBodyColor) l 0 0)';
@@ -244,11 +228,9 @@ test.describe('live editor macros', () => {
             return color.match(/oklch\(([\d.]+)/)?.[1];
         });
         expect(colors.map(color => color.match(/oklch\(([\d.]+)/)?.[1])).toEqual(Array(macros.length).fill(textLightness));
-        // {{user}} and {{char}} far apart.
         const hue = (/** @type {string} */ color) => Number(color.match(/oklch\([\d.]+ [\d.]+ ([\d.]+)/)?.[1]);
         const apart = Math.abs(hue(colors[0]) - hue(colors[1]));
         expect(Math.min(apart, 360 - apart)).toBeGreaterThan(90);
-        // A preview draws the same pills, so they have the same colors.
         const preview = await page.evaluate(async () => {
             const { withMacroPlaceholders } = await import('/scripts/safe-macros.js');
             const { macroValuesOf } = await import('/scripts/macro-values.js');
@@ -277,7 +259,6 @@ test.describe('live editor macros', () => {
         const editor = page.locator('.macro-colors-editor');
         await expect(editor).toBeVisible();
         await expect(editor.locator('.macro-colors-row .macro-pill[data-macro-name="char"]')).toBeVisible();
-        // A macro's own color.
         const charRow = editor.locator('.macro-colors-row').filter({ has: page.locator('.macro-pill[data-macro-name="char"]') });
         await charRow.locator('input[type="color"]').evaluate(el => {
             const input = /** @type {HTMLInputElement} */ (el);
@@ -286,7 +267,6 @@ test.describe('live editor macros', () => {
         });
         await expect.poll(async () => (await colorsOf())[1]).toBe('rgb(255, 0, 0)');
         expect((await colorsOf())[0]).toBe(before[0]);
-        // The chroma for all.
         await editor.locator('input[aria-label="Colorfulness"]').evaluate(el => {
             const input = /** @type {HTMLInputElement} */ (el);
             input.value = '0';
@@ -299,7 +279,6 @@ test.describe('live editor macros', () => {
         });
         expect(saved[0]).toMatchObject({ chroma: 0, overrides: { char: { color: '#ff0000' } } });
         expect(saved[1]).toEqual(saved[0]);
-        // Back to the default.
         await editor.getByRole('button', { name: 'Reset all' }).click();
         await expect.poll(colorsOf).toEqual(before);
         await page.keyboard.press('Escape');

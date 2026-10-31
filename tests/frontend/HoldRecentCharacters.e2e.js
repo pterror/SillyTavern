@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// "Keep recently used characters": off, extensions see only the current character; on with a number, they also see
-// the most recently used characters up to that number, and the page holds them, across a reload.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -22,7 +19,7 @@ async function loadApp(page) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @returns {Promise<string>} its avatar key
+ * @returns {Promise<string>}
  */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
@@ -37,7 +34,6 @@ async function createCharacter(page, name) {
 }
 
 /**
- * Sets the setting through its controls and waits for it to be saved.
  * @param {import('@playwright/test').Page} page
  * @param {boolean} on
  * @param {number} [count]
@@ -55,7 +51,7 @@ async function setHoldRecent(page, on, count) {
 
 /**
  * @param {import('@playwright/test').Page} page
- * @returns {Promise<string[]>} the avatars extensions see
+ * @returns {Promise<string[]>}
  */
 async function shownAvatars(page) {
     return page.evaluate(() => window['SillyTavern'].getContext().characters.map(character => character.avatar));
@@ -63,7 +59,7 @@ async function shownAvatars(page) {
 
 /**
  * @param {import('@playwright/test').Page} page
- * @returns {Promise<number>} how many characters the library has
+ * @returns {Promise<number>}
  */
 async function libraryCount(page) {
     return page.evaluate(async () => {
@@ -75,7 +71,6 @@ async function libraryCount(page) {
 
 test.describe('Keep recently used characters', () => {
     test.afterEach(async ({ page }) => {
-        // The workers share their data root; leave the setting off for the tests after this one.
         await setHoldRecent(page, false, 100);
     });
 
@@ -121,7 +116,6 @@ test.describe('Keep recently used characters', () => {
 
     test('lowering the number shows fewer, most recently used kept', async ({ page }) => {
         await loadApp(page);
-        // Enough characters for three to be kept, whatever else this worker's library holds.
         await createCharacter(page, 'HoldRecent Lower A');
         await createCharacter(page, 'HoldRecent Lower B');
         const avatar = await createCharacter(page, 'HoldRecent Lower');

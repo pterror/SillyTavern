@@ -38,9 +38,6 @@ import { bindFieldDraft, clearDraftsUnder, clearThingDrafts, hasFieldDrafts, rea
 import { isUserEvent } from './live-editor/registry.js';
 
 /**
- * Whether the verbose [WI] step-by-step scan trace should print. Off by default - the trace fires
- * unconditionally on every message (phase dividers, loop state, per-entry checks) regardless of how
- * many entries actually activate, same shape as eventemitter.js's eventTracing toggle.
  * @returns {boolean}
  */
 function isWorldInfoTracingEnabled() {
@@ -103,18 +100,12 @@ export let world_info_use_group_scoring = false;
 export let world_info_character_strategy = world_info_insertion_strategy.character_first;
 export let world_info_budget_cap = 0;
 export let world_info_max_recursion_steps = 0;
-/**
- * Debounced whole-book saves still waiting to run, one per book name, each holding the data of its latest call.
- * A book's entry is removed when its save runs or is cancelled, so only books with a save pending are kept.
- * One debounce per book means a save for one book never absorbs or cancels another book's pending save.
- * @type {Map<string, {data: any, save: () => void}>}
- */
+/** @type {Map<string, {data: any, save: () => void}>} */
 const pendingWorldSaves = new Map();
 
 /**
- * Saves a whole book once `debounce_timeout.relaxed` has passed without another debounced save of the same book.
- * @param {string} name - The name of the world info
- * @param {any} data - The data to be saved
+ * @param {string} name
+ * @param {any} data
  */
 function saveWorldDebounced(name, data) {
     let pending = pendingWorldSaves.get(name);
@@ -140,8 +131,7 @@ function saveWorldDebounced(name, data) {
 }
 
 /**
- * Cancels a book's pending debounced save, if it has one. Other books' pending saves are left alone.
- * @param {string} name - The name of the world info
+ * @param {string} name
  */
 function cancelWorldSaveDebounced(name) {
     const pending = pendingWorldSaves.get(name);
@@ -152,19 +142,14 @@ function cancelWorldSaveDebounced(name) {
     pendingWorldSaves.delete(name);
 }
 
-/**
- * Write requests (whole-book and single-entry) still waiting on the server, by book name. A name is removed once all
- * of its writes have settled, so only books with a write in flight are kept.
- * @type {Map<string, Set<Promise<unknown>>>}
- */
+/** @type {Map<string, Set<Promise<unknown>>>} */
 const worldWritesInFlight = new Map();
 
 /**
- * Records a write request to a book until it settles.
  * @template T
- * @param {string} name - The book's name
- * @param {Promise<T>} request - The write request
- * @returns {Promise<T>} The same request.
+ * @param {string} name
+ * @param {Promise<T>} request
+ * @returns {Promise<T>}
  */
 function trackWorldWrite(name, request) {
     let writes = worldWritesInFlight.get(name);
@@ -184,8 +169,7 @@ function trackWorldWrite(name, request) {
 }
 
 /**
- * Waits until no write request to a book is in flight.
- * @param {string} name - The book's name
+ * @param {string} name
  * @returns {Promise<void>}
  */
 async function worldWritesSettled(name) {
@@ -990,15 +974,11 @@ export const wi_anchor_position = {
  * @type {StructuredCloneMap<string,object>}
  * */
 /**
- * The version of each book the page holds: per entry (by uid) and per book field, the jsonHash() of the value as the
- * server last had it as far as the page knows. A save sends, for each entry or field it changes, the hash it had,
- * so the server can refuse a change to something changed elsewhere since.
  * @typedef {{ entries: Map<string, number>, fields: Map<string, number> }} BookVersion
  * @type {Map<string, BookVersion>}
  */
 const bookVersions = new Map();
 
-/** The page's books; forgetting one also forgets its version. */
 class WorldInfoCache extends StructuredCloneMap {
     /** @param {string} key */
     delete(key) {
@@ -1015,7 +995,6 @@ class WorldInfoCache extends StructuredCloneMap {
 export const worldInfoCache = new WorldInfoCache({ cloneOnGet: true, cloneOnSet: false });
 
 /**
- * The version of a book as the server has it.
  * @param {any} book
  * @returns {BookVersion}
  */
@@ -1032,7 +1011,6 @@ function versionOf(book) {
 }
 
 /**
- * Records an entry as the server now has it (null: it has none).
  * @param {string} name
  * @param {string|number} uid
  * @param {any} entry
@@ -1045,7 +1023,6 @@ function noteStoredEntry(name, uid, entry) {
 }
 
 /**
- * Reads a book's version from the server, for a save of a copy the page didn't load.
  * @param {string} name
  * @returns {Promise<BookVersion>}
  */
@@ -1186,13 +1163,11 @@ export function setWorldInfoSettings(settings, data) {
         $('#world_editor_select').append(`<option value='${i}'>${item}</option>`);
     });
 
-    // Settings are read again after boot too; the book the open character links may have come or gone.
     updateCharacterWorldButton();
 
     $('#world_info_sort_order').val(accountStorage.getItem(SORT_ORDER_KEY) || '0');
     $('#world_info').trigger('change');
 
-    // Restore last-selected lorebook in the editor dropdown
     if (power_user.wi_last_editor_book) {
         const lastBookIndex = world_names.indexOf(power_user.wi_last_editor_book);
         if (lastBookIndex !== -1) {
@@ -1207,7 +1182,6 @@ export function setWorldInfoSettings(settings, data) {
         eventSource.on(event_types.CHAT_CHANGED, async () => {
             const hasWorldInfo = !!chat_metadata[METADATA_KEY] && world_names.includes(chat_metadata[METADATA_KEY]);
             $('.chat_lorebook_button').toggleClass('world_set', hasWorldInfo);
-            // Pre-cache the world info data for the chat for quicker first prompt generation
             await getSortedEntries();
         });
 
@@ -1222,7 +1196,6 @@ export function setWorldInfoSettings(settings, data) {
             }
         });
 
-        // Add slash commands
         registerWorldInfoSlashCommands();
     }
 }
@@ -1253,9 +1226,6 @@ function registerWorldInfoSlashCommands() {
     }
 
     async function getEntriesFromFile(file, { args = {}, unnamed = null, callbackName = 'getEntriesFromFile' } = {}) {
-        // EMBEDDED_WORLD_NAME is a real, activatable "world" a caller can be handed back via an
-        // activated entry's `world` field, but it never appears in world_names - it has no backing
-        // World file to load, only the current character's own embedded character_book.
         if (file === EMBEDDED_WORLD_NAME) {
             const characterBook = getCurrentCharacter()?.data?.character_book;
             const entries = characterBook?.entries?.length ? Object.values(convertCharacterBook(characterBook).entries) : [];
@@ -1397,12 +1367,6 @@ function registerWorldInfoSlashCommands() {
         const hasExplicitName = typeof possibleName === 'string';
         const desiredName = hasExplicitName ? String(possibleName) : (fallbackName ?? `Lorebook (${uuidv4()})`);
 
-        // The server mints/validates the final name against real on-disk state (POST
-        // /api/worldinfo/create) instead of resolving uniqueness against this client's cached
-        // `world_names`, which could be stale (e.g. another tab created a book with the same name
-        // in the meantime). An explicitly given name (hasExplicitName) must fail loudly on a real
-        // collision, matching this function's prior behavior, rather than be silently renamed; an
-        // auto-generated fallback name (no name given) may be silently uniquified.
         const response = await fetch('/api/worldinfo/create', {
             method: 'POST',
             headers: getRequestHeaders(),
@@ -1651,7 +1615,6 @@ function registerWorldInfoSlashCommands() {
                 break;
             case 'characterFilterTags': {
                 tagNames = parseStringArray(value);
-                // Names match exactly, case included, as upstream's do; every tag that has the name counts.
                 const found = await findTagsByNames(tagNames);
                 const tagIds = [
                     ...[...found.values()].filter((tag) => tag && tagNames.includes(tag.name)),
@@ -2303,8 +2266,7 @@ export async function loadWorldInfo(name) {
 }
 
 /**
- * Reloads the lorebook names (`world_names`) and the lorebook selects built from them.
- * @returns {Promise<boolean>} Whether the list was reloaded; false leaves `world_names` as it was.
+ * @returns {Promise<boolean>}
  */
 export async function updateWorldInfoList() {
     const result = await fetch('/api/settings/get', {
@@ -2329,7 +2291,6 @@ export async function updateWorldInfoList() {
             $('#world_editor_select').append(editorListOption);
         });
 
-        // A book created, imported, renamed or deleted can be the one the open character links.
         updateCharacterWorldButton();
     }
 
@@ -2506,11 +2467,8 @@ function clearEntryList($list) {
         return;
     }
 
-    // The editor is closing or showing something else: a commit point for every field in it.
     $list.find('[data-wi-draft]').each(function () {
         void entryFieldBindings.get(this)?.handle({ type: 'close' });
-        // Taken down from here: what clearing it fires (select2's destroy fires `change` on a picker whose options
-        // are gone) is not an edit, and would commit an empty field over the stored one.
         entryFieldBindings.delete(this);
     });
 
@@ -2599,7 +2557,6 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
             return;
         }
 
-        // Each character's extra link to the book goes, as an action, while the book is still there to name.
         const linking = (world_info.charLore ?? []).filter(e => e.extraBooks?.includes(name)).map(e => e.name);
         for (const fileName of linking) {
             await sendAuxBooksOp(fileName, 'remove', [name]);
@@ -2727,7 +2684,6 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
     $('#world_popup_new').off('click').on('click', async () => {
         const entry = await createStoredWorldInfoEntry(name, data);
         if (!entry) return;
-        // A book's new entry is stored by the server as it's created; an embedded lorebook's is saved into the card.
         if (name === EMBEDDED_WORLD_NAME) await saveWorldInfoEntry(name, data, entry.uid);
         updateEditor(entry.uid);
     });
@@ -3101,7 +3057,6 @@ function customTokenizer(input, _selection, callback) {
             else if (!regexClosed) regexClosed = true;
         }
 
-        // Commas inside an unclosed regex don't split the token
         if (char === ',') {
             const token = current.slice(0, i).trim();
 
@@ -3112,7 +3067,6 @@ function customTokenizer(input, _selection, callback) {
             if (token) {
                 const isRegex = isValidRegex(token);
 
-                // Re-check validity: token may have been a valid regex mid-typing but not anymore
                 if (token.startsWith('/') && !isRegex) {
                     const tokens = token.split(',').map(x => x.trim());
                     tokens.forEach(x => callback({ id: getSelect2OptionId(x), text: x }));
@@ -3160,7 +3114,6 @@ export function parseRegexFromString(input) {
 
     let [, pattern, flags] = match;
 
-    // Reject unescaped slash delimiters inside the pattern
     if (pattern.match(/(^|[^\\])\//)) {
         return null;
     }
@@ -3174,42 +3127,37 @@ export function parseRegexFromString(input) {
     }
 }
 
-//MARK: Entry field drafts
-
-// While the user types in an entry's field, what they typed is a draft (field-drafts.js); the page's copy of the
-// book holds only what is stored. Each finished edit of a field is committed as one write.
 
 const ENTRY_DRAFT_KIND = 'world-entry';
 
-/** @type {Map<string, string>} Book names to their book's id, from the `X-ST-Book-Id` of the book's last read. */
+/** @type {Map<string, string>} */
 const bookIds = new Map();
 
-/** @type {Map<string, Promise<string|null>>} Reads of a book made only for its id, while on their way. */
+/** @type {Map<string, Promise<string|null>>} */
 const bookIdRequests = new Map();
 
-/** @type {WeakMap<HTMLElement, import('./field-drafts.js').FieldDraftBinding>} The entry fields on screen. */
+/** @type {WeakMap<HTMLElement, import('./field-drafts.js').FieldDraftBinding>} */
 const entryFieldBindings = new WeakMap();
 
-/** @type {Set<string>} Books whose drafts can't be kept, so the user is told only once. */
+/** @type {Set<string>} */
 const draftlessBooksWarned = new Set();
 
-/** @type {Set<string>} The ids of the books deleted on this page: a book's id is never given to another. */
+/** @type {Set<string>} */
 const deletedBookIds = new Set();
 
 /**
  * @param {string|null} thing
- * @returns {boolean} Whether the book of the entry `thing` names is deleted.
+ * @returns {boolean}
  */
 function isDraftOwnerGone(thing) {
     const match = /^book:([^:]+):/.exec(thing ?? '');
     return Boolean(match) && deletedBookIds.has(match[1]);
 }
 
-/** @type {WeakSet<object>} The embedded lorebooks (their editors' data) removed from their character on this page. */
+/** @type {WeakSet<object>} */
 const removedEmbeddedLorebooks = new WeakSet();
 
 /**
- * Drops the drafts of every entry of a deleted book, and keeps its fields still on screen from writing new ones.
  * @param {string} bookId
  */
 function forgetBookDrafts(bookId) {
@@ -3218,9 +3166,8 @@ function forgetBookDrafts(bookId) {
 }
 
 /**
- * Keeps the id a read of a book answered.
  * @param {string} name
- * @param {Response} response A `/api/worldinfo/get` response.
+ * @param {Response} response
  */
 function noteBookId(name, response) {
     const id = response.headers.get('X-ST-Book-Id');
@@ -3230,8 +3177,7 @@ function noteBookId(name, response) {
 
 /**
  * @param {string} name
- * @returns {Promise<string|null>} The id of the book named `name`: from the page's last read of the book, else from a
- * read made for it. null when it can't be read.
+ * @returns {Promise<string|null>}
  */
 function readBookId(name) {
     const known = bookIds.get(name);
@@ -3257,13 +3203,10 @@ function readBookId(name) {
 }
 
 /**
- * What an entry's drafts are kept under: its book's id (which a rename keeps), or for an embedded lorebook its
- * character, and its uid.
  * @param {string} name
  * @param {any} data
  * @param {string|number} uid
- * @returns {Promise<string|null>} null when the book's id can't be read; then typing still works but doesn't survive a
- * reload, and the user is told.
+ * @returns {Promise<string|null>}
  */
 async function entryDraftThing(name, data, uid) {
     let owner = null;
@@ -3286,13 +3229,11 @@ async function entryDraftThing(name, data, uid) {
 }
 
 /**
- * Commits one edit of an entry as one write. `apply` sets the entry's values from the edit; when the write fails, what
- * it set is set back, so the page's copy of the book holds only what is stored.
  * @param {string} name
  * @param {any} data
  * @param {string|number} uid
  * @param {(entry: any) => void|Promise<void>} apply
- * @returns {Promise<boolean>} Whether the edit is stored. A failed write has shown its error.
+ * @returns {Promise<boolean>}
  */
 async function commitEntryEdit(name, data, uid, apply) {
     const entry = data.entries?.[uid];
@@ -3320,7 +3261,7 @@ async function commitEntryEdit(name, data, uid, apply) {
 /**
  * @param {import('./field-drafts.js').FieldDraftBinding} binding
  * @param {string} stored
- * @returns {JQuery<HTMLElement>} What asks which of the two the field keeps.
+ * @returns {JQuery<HTMLElement>}
  */
 function entryDraftConflictNotice(binding, stored) {
     const draft = binding.conflict();
@@ -3337,8 +3278,6 @@ function entryDraftConflictNotice(binding, stored) {
 }
 
 /**
- * Shows a field's state: an unsaved draft is marked, and a conflict asks which to keep (the field can't be edited
- * until it's answered).
  * @param {JQuery<HTMLElement>} control
  * @param {import('./field-drafts.js').FieldDraftBinding} binding
  * @param {() => string} stored
@@ -3367,7 +3306,7 @@ function showEntryFieldState(control, binding, stored) {
 
 /**
  * @param {HTMLElement} element
- * @returns {boolean} Whether the expanded editor of `element` has focus: what's typed there is the user's.
+ * @returns {boolean}
  */
 function isExpandedEditorOf(element) {
     const active = document.activeElement;
@@ -3377,23 +3316,21 @@ function isExpandedEditorOf(element) {
 /**
  * @typedef {object} EntryFieldOptions
  * @property {JQuery<HTMLElement>} control
- * @property {string} field The field's name among the entry's drafts.
+ * @property {string} field
  * @property {import('./field-drafts.js').FieldType} type
- * @property {string} name The book's name.
+ * @property {string} name
  * @property {any} data
  * @property {string|number} uid
- * @property {string|null} thing What the entry's drafts are kept under, from {@link entryDraftThing}.
- * @property {(entry: any) => string} stored What is stored for the field, as the field shows it.
- * @property {(entry: any, text: string) => void|Promise<void>} apply Sets the entry's values from the field's text.
- * @property {() => string} [read] What the field holds; its value unless given.
- * @property {(text: string) => void} [show] Puts a text into the field; sets its value unless given.
- * @property {(text: string) => void} [live] What else on screen follows the field as it's edited.
- * @property {string} [event] The event the field's edits fire; `input` unless given.
+ * @property {string|null} thing
+ * @property {(entry: any) => string} stored
+ * @property {(entry: any, text: string) => void|Promise<void>} apply
+ * @property {() => string} [read]
+ * @property {(text: string) => void} [show]
+ * @property {(text: string) => void} [live]
+ * @property {string} [event]
  */
 
 /**
- * Binds one of an entry's fields to its draft and its commit points, shows what is stored for it, and puts back an
- * unsaved draft of it.
  * @param {EntryFieldOptions} options
  * @returns {import('./field-drafts.js').FieldDraftBinding|null}
  */
@@ -3422,7 +3359,6 @@ function bindEntryField(options) {
         commit: text => commitEntryEdit(name, data, uid, entry => options.apply(entry, text)),
         changed: () => showEntryFieldState(control, drafts, stored),
     });
-    // Once its lorebook is deleted, nothing of the entry is committed or kept any more.
     /** @type {import('./field-drafts.js').FieldDraftBinding} */
     const binding = { ...drafts, handle: event => (isDraftOwnerGone(thing) || removedEmbeddedLorebooks.has(data) ? Promise.resolve(true) : drafts.handle(event)) };
     entryFieldBindings.set(element, binding);
@@ -3432,7 +3368,6 @@ function bindEntryField(options) {
     showEntryFieldState(control, binding, stored);
 
     const event = options.event ?? 'input';
-    // `noSave`: the editor's own code filling the field. A field being taken down (its binding gone) edits nothing.
     const live = () => entryFieldBindings.get(element) === binding;
     control.on(event, function (e, arg) {
         if (arg?.noSave || !live()) return;
@@ -3512,7 +3447,6 @@ function enableKeysInputHelper({ template, entry, entryPropName, originalDataVal
             input.toggleClass('empty', !keys.length);
             if (entryPropName === 'key') setCommentPlaceholder(keys.join(', '), commentInput());
         };
-        // Each key added or removed is one edit.
         bindEntryField({
             control: input, field: entryPropName, type: 'toggle', event: 'change', name, data, uid, thing,
             stored: entryData => JSON.stringify(entryData[entryPropName] ?? []),
@@ -3529,7 +3463,6 @@ function enableKeysInputHelper({ template, entry, entryPropName, originalDataVal
             if (!arg?.skipReset) await resetScrollHeight(this);
         });
 
-        // A key half typed in the picker's search box is a draft of its own; it becomes an edit once it's added.
         const searchRef = thing ? { kind: ENTRY_DRAFT_KIND, id: thing, field: `${entryPropName}:search` } : null;
         const searchBox = () => input.next('.select2-container').find('.select2-search__field');
         const keepSearch = () => {
@@ -3598,7 +3531,6 @@ function handleMatchCheckboxHelper({ template, entry, fieldName, data, name, thi
 }
 
 /**
- * {@link bindEntryField} for a checkbox: one click is one edit.
  * @param {Omit<EntryFieldOptions, 'type'|'stored'|'apply'|'read'|'show'> & { stored: (entry: any) => boolean, apply: (entry: any, value: boolean) => void|Promise<void>, onShow?: (value: boolean) => void }} options
  */
 function bindCheckboxField({ stored, apply, onShow, ...options }) {
@@ -3649,12 +3581,9 @@ function initCharacterFilterSelect2Helper(characterFilter) {
             delay: 250,
             transport: function (params, success, failure) {
                 const query = params.data?.q?.toLowerCase() ?? '';
-                // A search typed over is aborted; its answer must not replace the newer one's.
                 let aborted = false;
 
-                // Tags first (few, always relevant). Typing the "[Tag] " the options show still finds them.
                 const tagSearch = searchTagsByName(query.replace(/^\[tag\]\s*/, ''), { pageSize: MAX_RESULTS });
-                // Characters come from the server's search over the whole library, not from what the page holds.
                 const characterSearch = characterRepository.query({ search: query }, { field: 'search' }, 1, MAX_RESULTS, ['rows'])
                     .catch((error) => {
                         console.error('Character search for the lorebook entry filter failed:', error);
@@ -3689,9 +3618,6 @@ function initCharacterFilterSelect2Helper(characterFilter) {
  * @param {object} params.entry - The entry object containing character filter data.
  */
 function fillCharacterAndTagOptionsHelper({ characterFilter, entry }) {
-    // Pre-populate only already-selected values as <option> elements. The full character+tag
-    // list is provided via select2's ajax transport (initCharacterFilterSelect2Helper) so the
-    // browser never has to create 300K DOM nodes for the unselected entries.
     const selectedNames = entry.characterFilter?.names ?? [];
     for (const name of selectedNames) {
         const option = document.createElement('option');
@@ -3700,8 +3626,6 @@ function fillCharacterAndTagOptionsHelper({ characterFilter, entry }) {
         characterFilter.append(option);
     }
 
-    // Every chosen tag gets its option at once, named once it is read: an id with no option would be dropped from the
-    // entry by the next change to the picker.
     const selectedTagIds = entry.characterFilter?.tags ?? [];
     /** @type {Map<string, HTMLOptionElement>} */
     const tagOptions = new Map();
@@ -3719,14 +3643,12 @@ function fillCharacterAndTagOptionsHelper({ characterFilter, entry }) {
         const shown = new Set();
         for (const [id, option] of tagOptions) {
             const tag = read?.tags.get(id);
-            // A tag merged into another is that tag, shown once.
             const shownId = tag ? String(tag.id) : id;
             if (shown.has(shownId)) {
                 option.remove();
                 continue;
             }
             shown.add(shownId);
-            // A new element: select2 keeps what it drew an option as on the option itself.
             const named = document.createElement('option');
             named.value = shownId;
             named.selected = option.selected;
@@ -3833,13 +3755,15 @@ function handleProbabilityInputHelper({ probabilityInput, data, entry, name, thi
 function handleProbabilityToggleHelper({ probabilityToggle, data, entry, name, probabilityInput, thing }) {
     probabilityToggle.data('uid', entry.uid);
     const uid = entry.uid;
-    /** @param {any} entryData @param {boolean} value */
+    /**
+     * @param {any} entryData
+     * @param {boolean} value
+     */
     const setUseProbability = (entryData, value) => {
         entryData.useProbability = value;
         if (value && entryData.probability === null) entryData.probability = 100;
         if (!value) entryData.probability = null;
     };
-    // The toggle is hidden and the entry is shown with it on, as upstream shows it.
     setUseProbability(data.entries[uid], true);
     probabilityInput.val(data.entries[uid].probability ?? '');
     bindCheckboxField({
@@ -4060,7 +3984,6 @@ export async function getWorldEntry(name, data, entry) {
     const positionInput = headerTemplate.find('select[name="position"]');
     positionInput.data('uid', entry.uid);
     positionInput.on('click', e => e.stopPropagation());
-    // The field's text is `position:role`: the at-depth options share a value and differ in their role.
     bindEntryField({
         control: positionInput, field: 'position', type: 'toggle', name, data, uid, thing,
         stored: entryData => `${entryData.position ?? 0}:${entryData.position === world_info_position.atDepth ? String(entryData.role ?? extension_prompt_roles.SYSTEM) : ''}`,
@@ -4116,7 +4039,6 @@ export async function getWorldEntry(name, data, entry) {
         const deleted = await deleteWorldInfoEntry(data, uid);
         if (!deleted) return;
         deleteWIOriginalDataValue(data, uid);
-        // At once, so its drafts go only once the delete is stored.
         const stored = await saveWorldInfo(name, data, true).catch(() => false);
         if (stored === true && thing) clearThingDrafts(localStorage, ENTRY_DRAFT_KIND, thing);
         updateEditor(navigation_option.previous);
@@ -4177,8 +4099,6 @@ export async function getWorldEntry(name, data, entry) {
         }
         const deleteOriginal = popupConfirm === POPUP_RESULT.CUSTOM1;
         if (deleteOriginal) {
-            // The entry moves as stored, and its drafts would go with the original: what is open is committed first,
-            // and an entry that still has unsaved edits isn't moved.
             await Promise.all(headerTemplate.find('[data-wi-draft]').get().map(element => entryFieldBindings.get(element)?.handle({ type: 'close' })));
             if (thing && hasFieldDrafts(localStorage, ENTRY_DRAFT_KIND, thing)) {
                 toastr.warning(t`'${sourceName}' has edits that aren't saved yet, so it wasn't moved. Save or undo them, then move it.`, t`Entry not moved`);
@@ -4244,7 +4164,6 @@ export async function getWorldEntry(name, data, entry) {
             probabilityInput: headerTemplate.find('input[name="probability"]'),
         });
 
-        // Comment toggle (hidden; the entry is shown with it on, as upstream shows it)
         const commentToggle = editTemplate.find('input[name="addMemo"]');
         commentToggle.data('uid', entry.uid);
         data.entries[uid].addMemo = true;
@@ -4275,7 +4194,6 @@ export async function getWorldEntry(name, data, entry) {
             },
         });
 
-        // Selective (hidden; the entry is shown with it on, as upstream shows it)
         const selectiveInput = editTemplate.find('input[name="selective"]');
         selectiveInput.data('uid', entry.uid);
         data.entries[uid].selective = true;
@@ -4318,10 +4236,8 @@ export async function getWorldEntry(name, data, entry) {
                 }
                 if (entryData.characterFilter?.names?.length > 0) {
                     const namesToCheck = entryData.characterFilter.names;
-                    // Filter names are avatar filenames without the extension; character ids are `<name>.png`.
                     const existence = await checkCharactersExistOrNull(namesToCheck.map(name => `${name}.png`));
                     if (existence === null) {
-                        // A failed/partial check must abort, not treat unresolved names as gone.
                         console.warn('World Info: skipping character-filter existence prune this run (check failed).');
                     } else {
                         entryData.characterFilter.names = namesToCheck.filter(name => existence[`${name}.png`]);
@@ -4703,7 +4619,6 @@ export function duplicateWorldInfoEntry(data, uid, name = data?.name) {
 }
 
 /**
- * An entry's properties but its uid, for a duplicate.
  * @param {any} entry
  */
 function entryCopy(entry) {
@@ -4713,12 +4628,10 @@ function entryCopy(entry) {
 }
 
 /**
- * {@link duplicateWorldInfoEntry}, then waits until the server holds the copy, as {@link createStoredWorldInfoEntry}
- * does: for the page's own Duplicate button.
  * @param {string} name
  * @param {any} data
  * @param {number} uid
- * @returns {Promise<object | undefined>} The copy, or undefined if it couldn't be created
+ * @returns {Promise<object | undefined>}
  */
 async function duplicateStoredWorldInfoEntry(name, data, uid) {
     if (!data || !('entries' in data) || !data.entries[uid]) {
@@ -4864,7 +4777,7 @@ export function getFreeWorldEntryUid(data) {
         return null;
     }
 
-    const MAX_UID = 1_000_000; // <- should be safe enough :)
+    const MAX_UID = 1_000_000;
     for (let uid = 0; uid < MAX_UID; uid++) {
         if (uid in data.entries) {
             continue;
@@ -4875,25 +4788,16 @@ export function getFreeWorldEntryUid(data) {
     return null;
 }
 
-/**
- * The server-side creation of each entry {@link createWorldInfoEntry} made in a book the server has: whether the
- * server holds it.
- * @type {WeakMap<object, Promise<boolean>>}
- */
+/** @type {WeakMap<object, Promise<boolean>>} */
 const newEntryCreations = new WeakMap();
 
-/**
- * Each book's queue of new entries being stored ({@link storeNewEntry}); the book's saves wait for it.
- * @type {Map<string, Promise<void>>}
- */
+/** @type {Map<string, Promise<void>>} */
 const entryCreates = new Map();
 
 /**
- * {@link createWorldInfoEntry}, then waits until the server holds the entry: for the page's own controls, which show
- * the entry under its final uid and report a failure. A failed creation leaves no entry in `data`.
  * @param {string} name
  * @param {any} data
- * @returns {Promise<object | undefined>} The entry, or undefined if it couldn't be created
+ * @returns {Promise<object | undefined>}
  */
 async function createStoredWorldInfoEntry(name, data) {
     const entry = createWorldInfoEntry(name, data);
@@ -4903,12 +4807,10 @@ async function createStoredWorldInfoEntry(name, data) {
 }
 
 /**
- * Stores a new entry in its book on the server, under the uid this page gave it if it's still free there. A book's
- * new entries are stored one at a time, in the order they were made, so each one asks for the uid it has by then.
  * @param {string} name
  * @param {any} data
  * @param {any} entry
- * @returns {Promise<boolean>} Whether the server holds the entry
+ * @returns {Promise<boolean>}
  */
 function storeNewEntry(name, data, entry) {
     const created = (entryCreates.get(name) ?? Promise.resolve()).then(async () => {
@@ -4943,9 +4845,6 @@ function storeNewEntry(name, data, entry) {
 }
 
 /**
- * Puts a new entry under the uid the server gave it, as another page took the one this page chose. An entry of this
- * page's under that uid can only be another new one still queued (the server holds every stored uid): the two swap,
- * and that one then asks for the freed uid. Pending single-entry saves follow their entries.
  * @param {string} name
  * @param {any} data
  * @param {any} entry
@@ -4972,11 +4871,10 @@ function moveNewEntry(name, data, entry, uid) {
 }
 
 /**
- * Shows the error toast for a World Info write that didn't reach the file, naming what wasn't saved.
- * @param {string} name Name of the book the write was for
- * @param {string|number|null} uid uid of the entry the write was for, or null for a whole-book write
- * @param {any} entryData The entry's data, for its title (only for an entry write)
- * @param {Response|unknown} reason The server's response, or the error the request failed with
+ * @param {string} name
+ * @param {string|number|null} uid
+ * @param {any} entryData
+ * @param {Response|unknown} reason
  */
 function showWorldInfoSaveFailed(name, uid, entryData, reason) {
     const entryLabel = entryData?.comment ? `${uid} (${entryData.comment})` : String(uid);
@@ -4991,12 +4889,8 @@ function showWorldInfoSaveFailed(name, uid, entryData, reason) {
 }
 
 /**
- * `saveWorldInfo` routes a book named {@link EMBEDDED_WORLD_NAME} to the embedded lorebook open in the editor,
- * never to a file, so a book can't be written under that name. Called before anything else is done for a book
- * about to be written under `name`; when it's that name, shows the error toast and returns true, and the caller
- * stops.
- * @param {string} name Name the book would be written under
- * @returns {boolean} Whether the name is refused
+ * @param {string} name
+ * @returns {boolean}
  */
 function refuseEmbeddedWorldName(name) {
     if (name !== EMBEDDED_WORLD_NAME) {
@@ -5009,19 +4903,12 @@ function refuseEmbeddedWorldName(name) {
 }
 
 /**
- * Stores the changes the page made to its copy of a book: each entry and book field that differs from the version
- * the page holds, sent with that version, so the server applies it only if nobody changed it since. An entry missing
- * from `data` that the version has is deleted; one another tab added since is kept. A change the server refuses
- * (changed elsewhere since) is listed in a warning and not applied. A book the server doesn't have is created.
- * @param {string} name - The name of the world info
- * @param {any} data - The page's copy of the book
- * @returns {Promise<boolean>} Whether every change was stored. A request the server refuses shows an error toast
- * and resolves false; a request that fails outright shows the same toast and rejects.
+ * @param {string} name
+ * @param {any} data
+ * @returns {Promise<boolean>}
  */
 async function _save(name, data) {
-    // This write carries the book's latest data, so a debounced save of the same book still pending is dropped.
     cancelWorldSaveDebounced(name);
-    // A new entry still being stored would otherwise be created twice, by this write and by its own creation.
     await entryCreates.get(name);
 
     const create = () => trackWorldWrite(name, fetch('/api/worldinfo/create', {
@@ -5040,8 +4927,6 @@ async function _save(name, data) {
 
     let response;
     try {
-        // A book the server doesn't have is created with this content; one it has (another tab made it meanwhile)
-        // gets the changes against what it has.
         const version = bookVersions.get(name)
             ?? (world_names?.includes(name) ? await trackWorldWrite(name, fetchBookVersion(name)) : null);
         response = version ? await apply(version) : await create();
@@ -5086,7 +4971,6 @@ async function _save(name, data) {
 }
 
 /**
- * The changes in a copy of a book against a version of it, as /api/worldinfo/entries/apply takes them.
  * @param {BookVersion} version
  * @param {any} data
  */
@@ -5112,9 +4996,8 @@ function changesAgainst(version, data) {
 }
 
 /**
- * Warns which changes to a book weren't stored because they were changed elsewhere since this page had them.
  * @param {string} name
- * @param {any} data The page's copy, to name the entries by.
+ * @param {any} data
  * @param {{ uid?: string, key?: string }[]} conflicts
  */
 function showWorldInfoConflicts(name, data, conflicts) {
@@ -5130,9 +5013,6 @@ function showWorldInfoConflicts(name, data, conflicts) {
 }
 
 /**
- * A book that has no file (a new name that failed its first write) mustn't stay in the cache, or
- * `loadWorldInfo` would hand it out as if the file existed. A book that has a file keeps its cached copy,
- * which holds the edits that just failed to save.
  * @param {string} name
  */
 function dropUnwrittenBookFromCache(name) {
@@ -5141,14 +5021,7 @@ function dropUnwrittenBookFromCache(name) {
     }
 }
 
-/**
- * uids with a pending single-entry save, keyed by book name. A shared debounce timer only ever fires with the arguments of its *last* call, so instead of
- * passing entry data through the debounce, this only records which entries are dirty; the flush below
- * re-reads each one from worldInfoCache, which is always current since callers update it synchronously
- * before scheduling. That's what lets edits to two different entries inside one debounce window each
- * still reach the server, without resending every entry in the book to do it.
- * @type {Map<string, Set<string|number>>}
- */
+/** @type {Map<string, Set<string|number>>} */
 let pendingEntrySaves = new Map();
 
 const flushEntrySavesDebounced = debounce(async () => {
@@ -5169,18 +5042,14 @@ const flushEntrySavesDebounced = debounce(async () => {
 }, debounce_timeout.relaxed);
 
 /**
- * A book's saves taken out of the queue by holdWorldSaves(), unsent.
  * @typedef {object} HeldWorldSaves
- * @property {any} [data] - The data of the book's pending whole-book save, if it had one.
- * @property {Set<string|number>} [entries] - uids of the book's pending single-entry saves, if it had any.
+ * @property {any} [data]
+ * @property {Set<string|number>} [entries]
  */
 
 /**
- * Takes a book's pending debounced saves (whole-book and single-entry) out of the queue, so none of them is sent
- * while its file is being deleted or renamed. The caller either sends them again with resumeWorldSaves() or has
- * written the book's latest data some other way.
- * @param {string} name - The book's name
- * @returns {HeldWorldSaves|null} What was pending, or null if nothing was.
+ * @param {string} name
+ * @returns {HeldWorldSaves|null}
  */
 function holdWorldSaves(name) {
     const book = pendingWorldSaves.get(name);
@@ -5194,11 +5063,8 @@ function holdWorldSaves(name) {
 }
 
 /**
- * holdWorldSaves(), then waits until none of the book's writes is in flight, holding the saves made meanwhile too.
- * Once it resolves, nothing of the book is pending or in flight, so a delete sent right away is the last request to
- * reach its file: a write already on its way when the delete started can't land after it and write the book back.
- * @param {string} name - The book's name
- * @returns {Promise<HeldWorldSaves|null>} Everything held, or null if nothing was pending.
+ * @param {string} name
+ * @returns {Promise<HeldWorldSaves|null>}
  */
 async function holdWorldSavesUntilSettled(name) {
     let held = holdWorldSaves(name);
@@ -5222,11 +5088,8 @@ async function holdWorldSavesUntilSettled(name) {
 }
 
 /**
- * Puts saves taken out by holdWorldSaves() back in the queue, for when the book still has its file after all.
- * The whole-book save goes out with the cached copy of the book, which holds any edit saved since the hold as
- * well as the held one, so a later save of the book is never overwritten with the older held data.
- * @param {string} name - The book's name
- * @param {HeldWorldSaves|null} held - From holdWorldSaves()
+ * @param {string} name
+ * @param {HeldWorldSaves|null} held
  */
 function resumeWorldSaves(name, held) {
     if (!held) {
@@ -5244,16 +5107,13 @@ function resumeWorldSaves(name, held) {
 }
 
 /**
- * Writes one World Info entry to its book's file.
- * @param {string} name - The name of the world info
- * @param {string|number} uid - uid of the entry
- * @param {any} entryData - The entry's data
- * @param {any} data - The full in-memory World Info data, for the WORLDINFO_UPDATED event
- * @returns {Promise<boolean>} Whether the entry was written. A write the server refuses shows an error toast
- * and resolves false; a request that fails outright shows the same toast and rejects.
+ * @param {string} name
+ * @param {string|number} uid
+ * @param {any} entryData
+ * @param {any} data
+ * @returns {Promise<boolean>}
  */
 async function _saveEntry(name, uid, entryData, data) {
-    // The entry is written where the server holds it: a new one is stored first, and may have moved meanwhile.
     await entryCreates.get(name);
     if (Number.isInteger(entryData?.uid)) uid = entryData.uid;
     let response;
@@ -5279,20 +5139,11 @@ async function _saveEntry(name, uid, entryData, data) {
 }
 
 /**
- * Saves a single World Info entry, instead of resending the whole book like `saveWorldInfo` does -
- * for edits confined to one entry (a checkbox, a text field, a duplicated entry's fields, ...), which
- * is what a WI entry editor's individual controls actually produce. Falls back to the whole-book path
- * for the embedded (card-attached) lorebook, which isn't backed by a World Info file of its own.
- *
- * This will also refresh the `worldInfoCache`, same as `saveWorldInfo`.
- *
- * @param {string} name - The name of the world info
- * @param {any} data - The full in-memory World Info data (only `data.entries[uid]` is sent)
- * @param {string|number} uid - uid of the single entry that changed
- * @param {boolean} [immediately=false] - Whether to save immediately or use debouncing
- * @return {Promise<boolean|void>} For an immediate save of an entry in a World Info file, whether it was
- * written (a failed write shows an error toast); nothing otherwise. A debounced write that fails shows the
- * same toast when it runs.
+ * @param {string} name
+ * @param {any} data
+ * @param {string|number} uid
+ * @param {boolean} [immediately=false]
+ * @return {Promise<boolean|void>}
  */
 export async function saveWorldInfoEntry(name, data, uid, immediately = false) {
     if (!name || !data || uid === undefined || uid === null) {
@@ -5306,12 +5157,9 @@ export async function saveWorldInfoEntry(name, data, uid, immediately = false) {
         return saveEmbeddedLoreDebounced(data);
     }
 
-    // Update cache immediately, so any future call (including the debounced flush above) pulls from this
     worldInfoCache.set(name, data);
 
     if (immediately) {
-        // Only drop this one entry from the pending set - flushEntrySavesDebounced's timer is shared
-        // across every book, so cancelling it here would also cancel other books' still-pending saves.
         pendingEntrySaves.get(name)?.delete(uid);
         const entryData = data.entries?.[uid];
         if (!entryData) {
@@ -5366,10 +5214,9 @@ export async function saveWorldInfo(name, data, immediately = false) {
 }
 
 /**
- * Copies a book under a new name, on the server.
  * @param {string} name
  * @param {string} newName
- * @returns {Promise<boolean>} Whether it was copied; a failure shows an error toast.
+ * @returns {Promise<boolean>}
  */
 async function duplicateWorldInfo(name, newName) {
     await flushWorldSaves(name);
@@ -5405,7 +5252,6 @@ async function renameWorldInfo(name, data) {
         return;
     }
 
-    // Asked before the rename, so the rename is one request that also moves these links when wanted.
     let linkedTotal = 0;
     try {
         linkedTotal = Number((await characterRepository.query({ world: oldName }, undefined, 1, 1, ['total'])).total) || 0;
@@ -5438,13 +5284,11 @@ async function renameWorldInfo(name, data) {
     worldInfoCache.delete(oldName);
     worldInfoCache.set(newName, cached);
     bookVersions.set(newName, versionOf(cached));
-    // A rename keeps the book's id, and so its entries' drafts.
     const renamedId = bookIds.get(oldName);
     bookIds.delete(oldName);
     if (renamedId) bookIds.set(newName, renamedId);
     takeRenamedBookLinks(oldName, newName, result);
 
-    // A chat's link to the book is in its metadata; only the open chat's moves.
     if (chat_metadata[METADATA_KEY] === oldName) {
         chat_metadata[METADATA_KEY] = newName;
         await saveMetadata();
@@ -5483,12 +5327,9 @@ async function renameWorldInfo(name, data) {
 }
 
 /**
- * Moves the page's own copies of the links a renamed book's server-side rename moved (the global selection, each
- * character's auxiliary links, every persona's lorebook), including any not saved yet, and those only the page holds
- * (the character being created).
  * @param {string} oldName
  * @param {string} newName
- * @param {{ settings: Record<string, any>, settings_hash?: number }} result The rename's answer.
+ * @param {{ settings: Record<string, any>, settings_hash?: number }} result
  */
 function takeRenamedBookLinks(oldName, newName, result) {
     const rename = (/** @type {string} */ value) => value === oldName ? newName : value;
@@ -5507,7 +5348,6 @@ function takeRenamedBookLinks(oldName, newName, result) {
     }
     takeServerSettings(result.settings ?? {}, result.settings_hash);
 
-    // The character being created isn't stored yet: its links move with the book.
     if (menu_type == 'create') {
         if (create_save.world === oldName) {
             create_save.world = newName;
@@ -5535,19 +5375,12 @@ export async function deleteWorldInfo(worldInfoName) {
 }
 
 /**
- * deleteWorldInfo() without the still-linked warning.
- * @param {string} worldInfoName - The name of the world info to delete
- * @returns {Promise<{ deleted: boolean, unlinkedAvatar: string }>} unlinkedAvatar: the open character this unlinked
- * from the book, or '' if it unlinked none.
+ * @param {string} worldInfoName
+ * @returns {Promise<{ deleted: boolean, unlinkedAvatar: string }>}
  */
 async function removeWorldInfo(worldInfoName) {
-    // A save still waiting would write the book back after the delete, and so would one already sent, if it reached
-    // the server after the delete: the waiting ones are held, and the delete is sent once the sent ones have landed.
-    // If the delete doesn't go through, or it is unknown whether it did, the book may still have its file, so the
-    // held edits are sent after all.
     let held = null;
     let deleted = false;
-    // Read before the delete, which takes the id with the book: its entries' drafts go with it.
     const bookId = await readBookId(worldInfoName);
     try {
         held = await holdWorldSavesUntilSettled(worldInfoName);
@@ -5567,11 +5400,8 @@ async function removeWorldInfo(worldInfoName) {
 }
 
 /**
- * Deletes a book's file and drops it from the cache, the lists and the editor. Leaves every link to its name as it
- * is (see unlinkWorldInfo()).
- * @param {string} worldInfoName - The name of the world info to delete
- * @returns {Promise<boolean>} Whether the server deleted it. Rejects if the request fails outright, in which case
- * whether the server deleted it, or will, is unknown.
+ * @param {string} worldInfoName
+ * @returns {Promise<boolean>}
  */
 async function deleteWorldInfoFile(worldInfoName) {
     const response = await fetch('/api/worldinfo/delete', {
@@ -5594,13 +5424,9 @@ async function deleteWorldInfoFile(worldInfoName) {
 }
 
 /**
- * Removes a deleted book's name from the global lorebook selection, the open character and the current persona,
- * as deleting a book does.
- * @param {string} worldInfoName - The deleted book's name
- * @param {{ keepOpenCharacterLink?: boolean }} [options] keepOpenCharacterLink: leave the open character linked to
- * the name (a rename, whose relink moves it to the new name).
- * @returns {{ unlinkedAvatar: string, unlinked: string[] }} unlinkedAvatar: the open character this unlinked from
- * the book, or '' if it unlinked none. unlinked: what it unlinked, escaped for HTML, for a warning to list.
+ * @param {string} worldInfoName
+ * @param {{ keepOpenCharacterLink?: boolean }} [options]
+ * @returns {{ unlinkedAvatar: string, unlinked: string[] }}
  */
 function unlinkWorldInfo(worldInfoName, { keepOpenCharacterLink = false } = {}) {
     /** @type {string[]} */
@@ -5613,13 +5439,10 @@ function unlinkWorldInfo(worldInfoName, { keepOpenCharacterLink = false } = {}) 
         unlinked.push(t`the global lorebook selection`);
     }
 
-    // Avatar of the open character unlinked below, left out of the still-linked warning: its save is debounced,
-    // so the metadata store still lists it as linked when that warning's query runs.
     let unlinkedAvatar = '';
     if (!keepOpenCharacterLink && $('#character_world').val() === worldInfoName) {
         $('#character_world').val('');
         if (menu_type != 'create') {
-            // The card links the book until this save lands; the globe shows it unlinked meanwhile.
             setWorldInfoButtonClass(undefined, false);
             unlinkedAvatar = String($('#avatar_url_pole').val());
             saveCharacterFieldDebounced(unlinkedAvatar, '#character_world', '');
@@ -5628,8 +5451,6 @@ function unlinkWorldInfo(worldInfoName, { keepOpenCharacterLink = false } = {}) 
         } else {
             unlinked.push(t`the primary lorebook of the character being created`);
         }
-        // In create mode the new character is still created with create_save.world; updateWorldInfoList() above
-        // already showed on the globe whether that names a book.
     }
 
     if (getPersonaDescriptionLorebook() === worldInfoName) {
@@ -5645,19 +5466,12 @@ function unlinkWorldInfo(worldInfoName, { keepOpenCharacterLink = false } = {}) 
 
 /**
  * @typedef {object} OverwrittenWorldInfo
- * @property {string} name - The overwritten book's name.
- * @property {Promise<boolean>} removal - Its deletion, from deleteWorldInfoFile(), or, for a book whose own file the
- * write replaces (replaceOverwrittenWorldInfo()), its pending saves being written, resolving true.
+ * @property {string} name
+ * @property {Promise<boolean>} removal
  */
 
 /**
- * Deletes a book a create or import is about to overwrite, leaving the links to its name as they are. The caller
- * waits for overwrittenWorldInfoRemoved() before it writes, so the deletion can never land after the new book and
- * remove it, then calls warnIfOverwrittenWorldInfoGone() after the write: the links to the name only go if no book
- * has that name once the write is done.
- * Before the deletion, the book's pending saves are written and its writes in flight are waited for, so none of them
- * can land after the deletion (or after the new book) and bring old content back.
- * @param {string} worldInfoName - The name of the book being overwritten
+ * @param {string} worldInfoName
  * @returns {OverwrittenWorldInfo}
  */
 function deleteOverwrittenWorldInfo(worldInfoName) {
@@ -5666,11 +5480,7 @@ function deleteOverwrittenWorldInfo(worldInfoName) {
 }
 
 /**
- * deleteOverwrittenWorldInfo() for a create or import whose write replaces the book's own file: the book isn't
- * deleted, so a write that fails leaves it as it was. Its pending saves are written and its writes in flight waited
- * for all the same, and overwrittenWorldInfoRemoved() drops (with a warning) the saves made meanwhile, so no earlier
- * save of the book lands over the new one.
- * @param {string} worldInfoName - The name of the book being overwritten
+ * @param {string} worldInfoName
  * @returns {OverwrittenWorldInfo}
  */
 function replaceOverwrittenWorldInfo(worldInfoName) {
@@ -5679,10 +5489,8 @@ function replaceOverwrittenWorldInfo(worldInfoName) {
 }
 
 /**
- * Writes a book's pending debounced saves (whole-book and single-entry) now, then waits until none of its writes is
- * in flight. A failed write has already shown its error toast.
- * @param {string} name - The book's name
- * @returns {Promise<void>} Never rejects.
+ * @param {string} name
+ * @returns {Promise<void>}
  */
 async function flushWorldSaves(name) {
     const held = holdWorldSaves(name);
@@ -5709,15 +5517,12 @@ async function flushWorldSaves(name) {
 }
 
 /**
- * After an overwritten book's deletion, drops the saves of that book made while the deletion was under way, so none
- * of them lands after the new book is written. Warns if there were any, as their changes are not saved.
- * @param {string} name - The deleted book's name
- * @param {string} actionName - 'Create' or 'Import', as passed to checkOverwriteExistingData().
- * @returns {Promise<void>} Resolves once none of the book's writes is in flight.
+ * @param {string} name
+ * @param {string} actionName
+ * @returns {Promise<void>}
  */
 async function dropWorldSavesAfterOverwrite(name, actionName) {
     if (holdWorldSaves(name)) {
-        // A save made after the deletion put the old book's data back in the cache.
         worldInfoCache.delete(name);
         const escapedName = escapeHtml(name);
         toastr.warning(t`Changes to lorebook ${escapedName} made while it was being overwritten were not saved.`, `World Info ${actionName}`, { escapeHtml: false });
@@ -5726,11 +5531,7 @@ async function dropWorldSavesAfterOverwrite(name, actionName) {
 }
 
 /**
- * For a create or import whose write replaces the existing book's own file: nothing is deleted first, so a write
- * that fails leaves the old book as it was. Drops the book's cached copy, which no longer matches its file (or, for
- * a create, is the new book that failed to be written), and reloads the editor if it shows the book, as deleting
- * it would have.
- * @param {string} worldInfoName - The book's name
+ * @param {string} worldInfoName
  */
 function forgetReplacedWorldInfo(worldInfoName) {
     worldInfoCache.delete(worldInfoName);
@@ -5740,13 +5541,9 @@ function forgetReplacedWorldInfo(worldInfoName) {
 }
 
 /**
- * Waits for an overwrite's deletion to finish before the create or import writes the new book.
- * @param {OverwrittenWorldInfo|undefined} overwritten - From deleteOverwrittenWorldInfo(), or undefined if nothing
- * is overwritten.
- * @param {string} actionName - 'Create' or 'Import', as passed to checkOverwriteExistingData().
- * @returns {Promise<boolean>} False if the deletion request failed outright: the server may still delete the name
- * after a write, so nothing is written. The deletion itself having been refused doesn't stop the write.
- * Either way, once it resolves true no earlier save of the overwritten book is pending or in flight.
+ * @param {OverwrittenWorldInfo|undefined} overwritten
+ * @param {string} actionName
+ * @returns {Promise<boolean>}
  */
 async function overwrittenWorldInfoRemoved(overwritten, actionName) {
     if (!overwritten) {
@@ -5765,26 +5562,19 @@ async function overwrittenWorldInfoRemoved(overwritten, actionName) {
     if (removed) {
         await dropWorldSavesAfterOverwrite(overwritten.name, actionName);
     } else {
-        // The server refused the deletion, so the old book may still be there: its saves are written, not dropped.
         await flushWorldSaves(overwritten.name);
     }
     return true;
 }
 
 /**
- * After a create or import that overwrote a book, if no book has the overwritten name any more (the write failed,
- * or wrote a name differing in case or accents), unlinks it as deleting a book does and warns, listing what it
- * unlinked and the characters still linked to it. If a book has the name, every link to it stays.
- * @param {OverwrittenWorldInfo|undefined} overwritten - From deleteOverwrittenWorldInfo(), or undefined if nothing
- * was overwritten.
+ * @param {OverwrittenWorldInfo|undefined} overwritten
  * @returns {Promise<void>}
  */
 async function warnIfOverwrittenWorldInfoGone(overwritten) {
     if (!overwritten) {
         return;
     }
-    // If the list can't be read, whether the name exists is unknown: nothing is unlinked, and the still-linked
-    // warning shows.
     let listed = false;
     try {
         listed = await updateWorldInfoList();
@@ -5806,17 +5596,12 @@ async function warnIfOverwrittenWorldInfoGone(overwritten) {
     await warnCharactersStillLinked(overwritten.name, unlinkedAvatar);
 }
 
-/** How many of the characters still linked to a deleted lorebook the warning names; the rest are counted. */
 const STILL_LINKED_NAMED_LIMIT = 20;
 
 /**
- * Warns about the other characters whose primary lorebook is a lorebook that was just deleted. As upstream does,
- * their links are left as they are. The warning names the first STILL_LINKED_NAMED_LIMIT of them by name and
- * counts the rest.
- * @param {string} worldInfoName Name of the deleted lorebook
- * @param {string} unlinkedAvatar Avatar of the open character deleteWorldInfo() unlinked, or '' if it unlinked none
- * @param {{ renamedTo?: string }} [options] renamedTo: the lorebook was renamed to this name, and the characters
- * warned about are the ones the rename's relink left on the old name.
+ * @param {string} worldInfoName
+ * @param {string} unlinkedAvatar
+ * @param {{ renamedTo?: string }} [options]
  * @returns {Promise<void>}
  */
 async function warnCharactersStillLinked(worldInfoName, unlinkedAvatar, { renamedTo } = {}) {
@@ -5897,7 +5682,6 @@ export async function createNewWorldInfo(worldName, { interactive = false } = {}
         return false;
     }
 
-    // Before the overwrite check, which may delete an existing book of that name.
     if (refuseEmbeddedWorldName(worldName)) {
         return false;
     }
@@ -5906,8 +5690,6 @@ export async function createNewWorldInfo(worldName, { interactive = false } = {}
 
     /** @type {OverwrittenWorldInfo|undefined} */
     let overwritten;
-    // The existing book's own file, which the write replaces in place (the server resolves both names the same
-    // way), so it isn't deleted first. A name matching only in case or accents may be another file.
     let replacesExisting = false;
     const deleteAction = (existingName) => {
         replacesExisting = existingName === worldName;
@@ -5930,10 +5712,8 @@ export async function createNewWorldInfo(worldName, { interactive = false } = {}
         await updateWorldInfoList();
     } finally {
         if (replacesExisting && !written) {
-            // saveWorldInfo() cached the empty book that wasn't written.
             forgetReplacedWorldInfo(worldName);
         }
-        // A book whose own file was written over was never deleted: its name still has a book, so every link stays.
         await warnIfOverwrittenWorldInfoGone(replacesExisting ? undefined : overwritten);
     }
 
@@ -5998,8 +5778,6 @@ async function getCharacterLore() {
         }
     }
 
-    // Fall back to the embedded character_book when extensions.world names a World that doesn't exist
-    // (common on imported cards) - otherwise a dangling link silently blocks the fallback.
     if (worldLink !== character_world_link.FILE && character?.data?.character_book?.entries?.length) {
         const converted = convertCharacterBook(character.data.character_book);
         const embeddedEntries = Object.keys(converted.entries)
@@ -6276,7 +6054,6 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
             let headerLogged = false;
             function log(...args) {
                 if (!headerLogged) {
-                    // Identity only, not the full entry - entry.content can run to paragraphs of prose.
                     if (isWorldInfoTracingEnabled()) console.debug(`[WI] Entry ${entry.uid}`, `from '${entry.world}' processing`, { uid: entry.uid, world: entry.world, comment: entry.comment });
                     headerLogged = true;
                 }
@@ -6289,7 +6066,6 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
             }
 
             if (entry.disable == true) {
-                // Not logged: fires for every disabled entry on every scan, zero diagnostic value.
                 continue;
             }
 
@@ -6564,7 +6340,6 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
             }
 
             allActivatedEntries.set(`${entry.world}.${entry.uid}`, entry);
-            // Identity only, not the full entry - see the `log()` header comment above on why.
             if (isWorldInfoTracingEnabled()) console.debug(`[WI] Entry ${entry.uid} activation successful, adding to prompt`, { uid: entry.uid, world: entry.world, comment: entry.comment });
         }
 
@@ -6850,7 +6625,6 @@ function filterGroupsByTimedEffects(groups, timedEffects, removeEntry) {
             hasStickyMap.set(key, true);
         }
 
-        // Defensive: an entry on cooldown/delay shouldn't reach the grouping phase, but filter anyway.
         const cooldownEntries = group.filter(x => timedEffects.isEffectActive('cooldown', x));
         if (cooldownEntries.length) {
             if (isWorldInfoTracingEnabled()) console.debug(`[WI] Inclusion group '${key}' has entries on cooldown. They will be removed.`, cooldownEntries);
@@ -7168,11 +6942,8 @@ export function convertCharacterBook(characterBook) {
 }
 
 /**
- * Converts entries produced by {@link convertCharacterBook} back into a v2 character_book object,
- * mirroring that function's field mapping in reverse. Used to save edits made against an embedded
- * lorebook directly back into the character card, without ever materializing a saved World file.
- * @param {{entries: Record<string, any>, originalData?: object}} data World-info-shaped entries (as edited in the WI editor) plus the character_book they were converted from
- * @returns {object} An updated v2 character_book object
+ * @param {{entries: Record<string, any>, originalData?: object}} data
+ * @returns {object}
  */
 export function convertToCharacterBook(data) {
     const book = structuredClone(data.originalData) || {};
@@ -7231,30 +7002,17 @@ export function convertToCharacterBook(data) {
     return book;
 }
 
-/** Sentinel "world name" used to route the shared World Info editor at an embedded character_book,
- * instead of a named World file. Never appears in `world_names` - `saveWorldInfo()` special-cases it
- * to write straight back into the bound character's card instead of hitting the worldinfo API. */
 export const EMBEDDED_WORLD_NAME = '__embedded__';
 
-/**
- * The character each embedded-lorebook editor's edits belong to, keyed by the data object that editor was
- * opened with (every save from it passes that same object), with the conflict baseline of that card's
- * character_book and the editor's own debounced save. Read per save instead of off the character panel or
- * the last editor opened, so edits always go to the card they were made on. `savePending` is whether that debounce
- * is still waiting to save an edit.
- * @type {WeakMap<object, {avatar: string, baseline: {hash: number|undefined}, saveDebounced: () => void, savePending: boolean}>}
- */
+/** @type {WeakMap<object, {avatar: string, baseline: {hash: number|undefined}, saveDebounced: () => void, savePending: boolean}>} */
 const embeddedLoreOwners = new WeakMap();
 
 /**
- * Debounced {@link saveEmbeddedLore}, one debounce per embedded-lorebook editor, so a pending save for one
- * character's lorebook is never absorbed by an edit to another's.
  * @param {{entries: Record<string, any>, originalData?: object}} data
  */
 function saveEmbeddedLoreDebounced(data) {
     const owner = embeddedLoreOwners.get(data);
     if (!owner) {
-        // Nothing to debounce against; saveEmbeddedLore() reports these edits as not saved.
         return saveEmbeddedLore(data);
     }
     owner.savePending = true;
@@ -7262,11 +7020,8 @@ function saveEmbeddedLoreDebounced(data) {
 }
 
 /**
- * Persists edits made to an embedded lorebook back into the card of the character they were made on
- * (never as a saved World file), whichever character the panel shows by then. Anything that can't be
- * saved is reported to the user.
- * @param {{entries: Record<string, any>, originalData?: object}} data Current WI-editor-shaped entries for the embedded lorebook
- * @returns {Promise<boolean>} Whether the edits were saved.
+ * @param {{entries: Record<string, any>, originalData?: object}} data
+ * @returns {Promise<boolean>}
  */
 async function saveEmbeddedLore(data) {
     const owner = embeddedLoreOwners.get(data);
@@ -7279,8 +7034,6 @@ async function saveEmbeddedLore(data) {
     const { avatar, baseline } = owner;
     try {
         const characterBookJson = JSON.stringify(convertToCharacterBook(data));
-        // The panel's hidden field holds the card of whichever character the panel shows; only mirror the
-        // edit into it while that is still the one these edits belong to.
         if ($('#avatar_url_pole').val() === avatar) {
             $('#character_book_json').val(characterBookJson);
         }
@@ -7294,10 +7047,7 @@ async function saveEmbeddedLore(data) {
 }
 
 /**
- * Removes the embedded lorebook open in the editor from the card of the character it belongs to, whichever
- * character the panel shows by then, once the user confirms. If it can't be removed, the user is told, the
- * editor stays open and an edit still waiting to be saved is saved.
- * @param {{entries: Record<string, any>, originalData?: object}} data The editor's embedded lorebook
+ * @param {{entries: Record<string, any>, originalData?: object}} data
  */
 async function removeEmbeddedLore(data) {
     const owner = embeddedLoreOwners.get(data);
@@ -7314,7 +7064,6 @@ async function removeEmbeddedLore(data) {
         return;
     }
 
-    // An edit still waiting out its debounce would put the lorebook back once it fired.
     const hadPendingSave = owner.savePending;
     cancelDebounce(owner.saveDebounced);
     owner.savePending = false;
@@ -7336,7 +7085,6 @@ async function removeEmbeddedLore(data) {
 
     if ($('#avatar_url_pole').val() === avatar) {
         $('#character_book_json').val('');
-        // A link to a name with no World file was a link to this book; the globe shows it gone.
         setWorldInfoButtonClass(avatar);
     }
     removedEmbeddedLorebooks.add(data);
@@ -7346,11 +7094,7 @@ async function removeEmbeddedLore(data) {
 }
 
 /**
- * Opens the shared World Info editor against a character's embedded lorebook (character_book)
- * directly, in memory - no World file gets created or saved just to look at or edit it. Any edits
- * made in the editor while it's open are written straight back into the character's own card via
- * {@link saveEmbeddedLore}.
- * @param {string} [avatarArg] Avatar of the character to edit; defaults to the one bound to `#edit_embedded_lore`
+ * @param {string} [avatarArg]
  */
 export async function openEmbeddedLoreEditor(avatarArg) {
     const avatar = avatarArg ?? $('#edit_embedded_lore').data('avatar');
@@ -7385,14 +7129,10 @@ export async function openEmbeddedLoreEditor(avatarArg) {
     await displayWorldEntries(EMBEDDED_WORLD_NAME, data);
 }
 
-/** The globe's own tooltip, kept while the globe names a missing book instead. */
 let worldButtonTitle = null;
 
 /**
- * Shows on the globe (`#world_button`) whether a character's primary lorebook link names a book that doesn't
- * exist: no World file has the name and the card embeds no lorebook. Such a link is shown in the warning color,
- * with a tooltip naming the book; any other link gets the globe's own tooltip back.
- * @param {string|null} missingName The linked name when it points at nothing, null otherwise
+ * @param {string|null} missingName
  */
 function setWorldButtonMissing(missingName) {
     const button = $('#world_button');
@@ -7406,22 +7146,18 @@ function setWorldButtonMissing(missingName) {
 }
 
 /**
- * Shows a character's primary lorebook link on the globe: linked (a World file, or the card's embedded
- * lorebook), not linked, or linked to a book that doesn't exist.
- * @param {{shallow?: boolean, data?: {extensions?: {world?: string}, character_book?: object}}|null|undefined} character The character card
+ * @param {{shallow?: boolean, data?: {extensions?: {world?: string}, character_book?: object}}|null|undefined} character
  */
 function showCharacterWorldLink(character) {
     const worldLink = getCharacterWorldLink(character);
     const worldSet = worldLink === character_world_link.FILE || worldLink === character_world_link.EMBEDDED;
     $('#set_character_world, #world_button').toggleClass('world_set', worldSet);
-    // A shallow card carries no character_book, so a link to its embedded book can't be told from a missing one.
     const missing = worldLink === character_world_link.MISSING && character?.shallow !== true;
     setWorldButtonMissing(missing ? character.data.extensions.world : null);
 }
 
 /**
- * The stored card a character reference names.
- * @param {any} chid An index into `getContext().characters`, as upstream passes, or an avatar key
+ * @param {any} chid
  */
 function storedCharacterOf(chid) {
     const avatar = resolveCharacterRef(chid)?.avatar;
@@ -7429,7 +7165,7 @@ function storedCharacterOf(chid) {
 }
 
 /**
- * @param {number|string|undefined} chid An index into `getContext().characters`, as upstream's, or an avatar key
+ * @param {number|string|undefined} chid
  * @param {boolean} [forceValue]
  */
 export function setWorldInfoButtonClass(chid, forceValue = undefined) {
@@ -7446,10 +7182,6 @@ export function setWorldInfoButtonClass(chid, forceValue = undefined) {
     showCharacterWorldLink(storedCharacterOf(chid));
 }
 
-/**
- * Brings the globe up to date with the character panel: in create mode, the link the new character will be
- * created with (`create_save.world`); otherwise the card of the character the panel was opened on.
- */
 export function updateCharacterWorldButton() {
     if (menu_type == 'create') {
         showCharacterWorldLink({ data: { extensions: { world: create_save.world } } });
@@ -7465,20 +7197,16 @@ export function updateCharacterWorldButton() {
 }
 
 /**
- * What a character's primary lorebook link points at, judged against the World files this page knows
- * of (`world_names`): no link, a World file, the card's own embedded lorebook (no file has the linked
- * name and the card has a `character_book`, whatever that book's name), or nothing.
- * @param {{data?: {extensions?: {world?: string}, character_book?: object}}|null|undefined} character The character card
- * @returns {string} One of {@link character_world_link}
+ * @param {{data?: {extensions?: {world?: string}, character_book?: object}}|null|undefined} character
+ * @returns {string}
  */
 export function getCharacterWorldLink(character) {
     return resolveCharacterWorldLink(character, (name) => world_names.includes(name));
 }
 
 /**
- * @param {number|string} [chid] An index into `getContext().characters`, as upstream's, or an avatar key; none hides
- *   the embedded-lorebook buttons
- * @returns {boolean} Whether the character has an embedded lorebook
+ * @param {number|string} [chid]
+ * @returns {boolean}
  */
 export function checkEmbeddedWorld(chid) {
     $('#import_character_info, #edit_embedded_lore').hide();
@@ -7531,7 +7259,6 @@ export async function importEmbeddedWorldInfo(skipPopup = false) {
 
     const convertedBook = convertCharacterBook(character.data.character_book);
 
-    // The card is linked, and success reported, only once the book's file is written.
     if (!await saveWorldInfo(bookName, convertedBook, true)) {
         return;
     }
@@ -7553,7 +7280,6 @@ export async function importEmbeddedWorldInfo(skipPopup = false) {
 }
 
 export function onWorldInfoChange(args, text) {
-    // Boot re-fires the #world_info change handler to re-apply the already-stored selection; don't persist a no-op.
     const previousSelectedWorldInfo = JSON.stringify(selected_world_info);
     if (args !== '__notSlashCommand__') { // if it's a slash command
         const silent = isTrueBoolean(args.silent);
@@ -7637,8 +7363,8 @@ export function onWorldInfoChange(args, text) {
 /**
  * @param {File} file
  * @param {Object} [options={}]
- * @param {boolean} [options.interactive=true] Whether to prompt before overwriting an existing World of the same name, and to switch the World Info editor to the imported World on success. Set false for a background/automated import (e.g. one of several linked lorebooks pulled in alongside a character).
- * @returns {Promise<string|false|void>} The imported World's name on success.
+ * @param {boolean} [options.interactive=true]
+ * @returns {Promise<string|false|void>}
  */
 export async function importWorldInfo(file, { interactive = true } = {}) {
     if (!file) {
@@ -7690,9 +7416,6 @@ export async function importWorldInfo(file, { interactive = true } = {}) {
     const sanitizedWorldName = await getSanitizedFilename(worldName);
     /** @type {OverwrittenWorldInfo|undefined} */
     let overwritten;
-    // The server writes the book under the file's name without its extension, sanitized. When that name needs no
-    // sanitizing and is exactly the existing book's, the write replaces that book's own file in place, so it isn't
-    // deleted first. A name matching only in case or accents, or only once sanitized, may be another file.
     let replacesExisting = false;
     const deleteAction = (existingName) => {
         replacesExisting = existingName === worldName && worldName === sanitizedWorldName;
@@ -7716,9 +7439,6 @@ export async function importWorldInfo(file, { interactive = true } = {}) {
                 cache: 'no-cache',
             });
         } catch (error) {
-            // Whether the server replaced the book is unknown, so saves of the old book made while the import was
-            // sent can't be written: they could land on the imported book. They are dropped with a warning, where
-            // forgetting the cached copy would otherwise lose them silently.
             if (replacesExisting) {
                 await dropWorldSavesAfterOverwrite(worldName, 'Import');
                 forgetReplacedWorldInfo(worldName);
@@ -7727,12 +7447,9 @@ export async function importWorldInfo(file, { interactive = true } = {}) {
         }
 
         if (!result.ok) {
-            // The server refused the import before replacing the file, so the old book and its cached copy stand.
             throw new Error(`Failed to import world info: ${result.statusText}`);
         }
         if (replacesExisting) {
-            // Saves of the old book made while the import was sent would write it back over the imported one. They
-            // are dropped with a warning, where forgetting the cached copy would otherwise lose them silently.
             await dropWorldSavesAfterOverwrite(worldName, 'Import');
             forgetReplacedWorldInfo(worldName);
         }
@@ -7833,8 +7550,6 @@ export async function moveWorldInfoEntry(sourceName, targetName, uid, { deleteOr
     }
 
     try {
-        // The server reads both books, mints the destination uid, places the entry, and writes both
-        // files itself - the client sends only the raw facts and never computes a uid of its own.
         const response = await fetch('/api/worldinfo/entry/transplant', {
             method: 'POST',
             headers: getRequestHeaders(),
@@ -7858,8 +7573,6 @@ export async function moveWorldInfoEntry(sourceName, targetName, uid, { deleteOr
         const sourceId = bookIds.get(sourceName);
         if (deleteOriginal && sourceId) clearThingDrafts(localStorage, ENTRY_DRAFT_KIND, `book:${sourceId}:${uid}`);
 
-        // Both books changed server-side; drop the client caches so the next load reflects the
-        // server's state rather than a stale in-memory copy.
         worldInfoCache.delete(sourceName);
         worldInfoCache.delete(targetName);
 
@@ -7903,11 +7616,9 @@ export async function charUpdatePrimaryWorld(name) {
         return;
     }
 
-    // Unlinking doesn't touch character_book - getCharacterLore() falls back to it directly.
 
     await saveCharacterField(String($('#avatar_url_pole').val()), '#character_world', name);
 
-    // What the card links now, as saved: a name can be linked with no book behind it.
     updateCharacterWorldButton();
 }
 
@@ -7933,13 +7644,11 @@ export function charSetAuxWorlds(fileName, books) {
 }
 
 /**
- * Applies { characterAvatar, op, books } to a charLore array, same semantics the server applies.
- * Shared by the optimistic local update and (implicitly, by construction) the server's own logic.
  * @param {Array} charLore
  * @param {string} fileName
  * @param {'add'|'set'|'remove'} op
  * @param {string[]} books
- * @returns {Array} a new charLore array
+ * @returns {Array}
  */
 function applyAuxBooksOp(charLore, fileName, op, books) {
     const idx = charLore.findIndex(e => e.name === fileName);
@@ -7960,14 +7669,12 @@ function applyAuxBooksOp(charLore, fileName, op, books) {
 }
 
 /**
- * Changes the extra books of the character being edited, or (while one is being created) those staged for it.
  * @param {string} fileName
  * @param {'add'|'set'} op
  * @param {string[]} books
  */
 async function updateAuxBooks(fileName, op, books) {
     if (menu_type === 'create') {
-        // Character doesn't exist server-side yet - stage locally, applied on actual creation.
         const current = create_save.extra_books ?? [];
         const next = op === 'add' ? [...current, ...books] : books;
         create_save.extra_books = normalizeArray(next);
@@ -7980,15 +7687,10 @@ async function updateAuxBooks(fileName, op, books) {
 }
 
 /**
- * Sends an add/remove/set of a stored character's extra books to the server as one action (the server applies the
- * op to the character's links, validates each name is a real World, and answers the extra books it has now). The
- * page's `world_info.charLore` is updated optimistically first for instant UI feedback, then reconciled with the
- * server's answer, or rolled back with an error if the server rejects it (e.g. an unknown World name). Settings
- * saves never change a character's links: this is how they change.
- * @param {string} fileName The character's file name without its extension (getCharaFilename()).
+ * @param {string} fileName
  * @param {'add'|'set'|'remove'} op
  * @param {string[]} books
- * @returns {Promise<boolean>} Whether the server applied it.
+ * @returns {Promise<boolean>}
  */
 export async function sendAuxBooksOp(fileName, op, books) {
     const previousCharLore = world_info.charLore ?? [];
@@ -8008,8 +7710,6 @@ export async function sendAuxBooksOp(fileName, op, books) {
         }
         const { extraBooks } = await response.json();
 
-        // Reconcile with the server's own confirmed result (should normally match the optimistic
-        // guess exactly, but this is the authoritative value, not a repeat of our own computation).
         const charLore = world_info.charLore ?? [];
         const idx = charLore.findIndex(e => e.name === fileName);
         if (extraBooks.length === 0) {
@@ -8030,8 +7730,6 @@ export async function sendAuxBooksOp(fileName, op, books) {
 }
 
 export function initWorldInfo() {
-    // A save, a re-read or another session's edit to the open card can link another name, or add or remove its
-    // embedded lorebook.
     charactersStore.onChange((change) => {
         if (change.op === 'reset' || (change.op === 'updated' && change.id === $('#set_character_world').data('avatar'))) {
             updateCharacterWorldButton();
@@ -8081,7 +7779,6 @@ export function initWorldInfo() {
         const selectedIndex = String($('#world_editor_select').find(':selected').val());
 
         if (selectedIndex === '') {
-            // Boot re-fires this change handler to re-apply the already-stored selection; don't persist a no-op.
             const changed = power_user.wi_last_editor_book !== '';
             power_user.wi_last_editor_book = '';
             if (changed) {
@@ -8090,7 +7787,6 @@ export function initWorldInfo() {
             await hideWorldEditor();
         } else {
             const worldName = world_names[selectedIndex];
-            // Boot re-fires this change handler to re-apply the already-stored selection; don't persist a no-op.
             const changed = power_user.wi_last_editor_book !== worldName;
             power_user.wi_last_editor_book = worldName;
             if (changed) {
@@ -8099,8 +7795,6 @@ export function initWorldInfo() {
             showWorldEditor(worldName);
         }
     });
-    // The settings are read before this runs, and the book they restored into the selector was picked with no one
-    // listening yet: show it now.
     $('#world_editor_select').trigger('change');
 
     const saveSettings = () => {

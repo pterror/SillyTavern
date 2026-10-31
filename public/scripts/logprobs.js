@@ -208,7 +208,6 @@ function renderTopLogprobs() {
         nodes.push(container);
     }
 
-    // Highlight <others> if the selected token wasn't among the top logprobs.
     if (!matched) {
         nodes[nodes.length - 1].css('background-color', 'rgba(255, 0, 0, 0.1)');
     }
@@ -227,8 +226,6 @@ function onSelectedTokenChanged(logprobs, span) {
     renderTopLogprobs();
 }
 
-// Creates a new swipe prefilled up to the selected token plus the chosen alternative, then
-// requests a `continue` completion with that prompt.
 function onAlternativeClicked(tokenLogprobs, alternative) {
     if (!checkGenerateReady()) {
         return;
@@ -313,7 +310,6 @@ function onToggleLogprobsPanel() {
 }
 
 function createSwipe(messageId, prompt) {
-    // prompt is raw model output, so it still needs trimming/macro replacements
     let cleanedPrompt = cleanUpMessage({
         getMessage: prompt,
         isImpersonate: false,
@@ -330,8 +326,6 @@ function createSwipe(messageId, prompt) {
     let shouldRerollReasoning = false;
 
     if (isReasoningAutoParsed && msgHasParsedReasoning) {
-        // reroll prompt is missing the end-of-reasoning tag, so it needs to be routed
-        // back through the reasoning handler instead of the response
         if (cleanedPrompt.includes(reasoningPrefix) && !cleanedPrompt.includes(reasoningSuffix)) {
             shouldRerollReasoning = true;
         }
@@ -361,7 +355,6 @@ function createSwipe(messageId, prompt) {
     const swipeInfo = [...(msg.swipe_info ?? [])];
 
     if (shouldRerollReasoning) {
-        // empty mes_text makes the reasoning handler parse the reasoning first
         newSwipeInfo.extra.reasoning = cleanedPrompt;
         swipes.push('');
     } else {
@@ -380,8 +373,6 @@ function toVisibleWhitespace(input) {
     return input.replace(/ /g, '·').replace(/[▁Ġ]/g, '·').replace(/[Ċ\n]/g, '↵');
 }
 
-// Inserts a zero-width space around whitespace-adjacent tokens so text can still wrap after
-// whitespace characters are replaced with a visible dot.
 function withVirtualWhitespace(text, span) {
     /** @type {NodeArray} */
     const result = [span];
@@ -394,7 +385,6 @@ function withVirtualWhitespace(text, span) {
     if (text.match(/^[▁Ġ]/)) {
         result.unshift(document.createTextNode('\u200b'));
     }
-    // Doesn't handle consecutive line breaks or ones mid-token; tokenizers don't produce those.
     if (text.match(/^\n(?:.|\n)+\n$/)) {
         result.unshift($('<br>'));
         result.push($('<br>'));
@@ -406,8 +396,6 @@ function withVirtualWhitespace(text, span) {
     return result;
 }
 
-// Must be called after the active message has been updated and rendered, or this saves to the
-// wrong message.
 export function saveLogprobsForActiveMessage(logprobs, continueFrom) {
     if (!logprobs) {
         // non-streaming APIs could return null data
@@ -462,7 +450,6 @@ function getActiveMessageLogprobData() {
 }
 
 
-// Replaces numeric token IDs with text tokens, for APIs (NovelAI) that return IDs instead of text.
 function convertTokenIdLogprobsToText(input) {
     const api = getGeneratingApi();
     if (api !== 'novel') {

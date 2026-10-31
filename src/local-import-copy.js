@@ -4,27 +4,17 @@ import fsPromises from 'node:fs/promises';
 import { getConfigValue } from './util.js';
 import { loadReflinkModule } from './reflink-support.js';
 
-/**
- * @typedef {'reflink' | 'hardlink' | 'copy'} CopyMethod
- */
+/** @typedef {'reflink' | 'hardlink' | 'copy'} CopyMethod */
 
 /**
  * @typedef {Object} CopyCharacterFileResult
- * @property {CopyMethod} method Which strategy actually produced the file at `targetPath`.
+ * @property {CopyMethod} method
  */
 
 /**
- * Tries reflink, then hardlink, then plain copy. `targetPath` must not already exist.
- * Hardlinks stay safe only because every character-data write path uses write-file-atomic (temp file + rename), never in-place mutation.
- * A file that stays (a character's image) refuses them (`hardlink: false`): it would share its inode with a source
- * outside the app, which another program may rewrite in place, changing the character's image with it. A reflink is
- * copy-on-write, so neither side ever sees the other's changes.
  * @param {string} sourcePath
  * @param {string} targetPath
- * @param {boolean|null} [allowCrossDeviceCopyFallback] `localImport.allowCrossDeviceCopyFallback`, pre-resolved
- * by the caller - `getConfigValue()` reads main-thread-only state, so a worker_threads caller (which can't call
- * it directly) must resolve this on the main thread and pass it in; `null` (the default) looks it up here,
- * for every other, main-thread caller.
+ * @param {boolean|null} [allowCrossDeviceCopyFallback]
  * @param {{ hardlink?: boolean }} [options]
  */
 export async function copyCharacterFile(sourcePath, targetPath, allowCrossDeviceCopyFallback = null, { hardlink = true } = {}) {

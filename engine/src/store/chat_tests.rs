@@ -56,14 +56,11 @@ fn opt(v: Option<u64>) -> Value {
 
 const MES_F: FieldRef = FieldRef::Code(MES);
 
-/// The time of the focused tests' records that carry one.
 const NOW: i64 = 1_700_000_000_000;
 
-/// Sessions are positions 1..=SESSIONS, users 1..=USERS; bookmarks are numbered after the sessions.
 const SESSIONS: u64 = 4;
 const USERS: u64 = 2;
 
-/// The records that make sessions and users exist: their outside keys.
 fn actors() -> Vec<Record> {
     let mut out = Vec::new();
     for s in 1..=SESSIONS {
@@ -129,7 +126,6 @@ struct Session {
     openings: BTreeMap<u64, u64>,
 }
 
-/// What the derived chat structures must show. `seq` orders events as log positions do.
 #[derive(Default, Clone)]
 struct Model {
     msgs: BTreeMap<u64, Msg>,
@@ -146,9 +142,7 @@ struct Model {
     branches: BTreeMap<u64, Vec<u64>>,
     itemized: BTreeMap<u64, (bool, Vec<u8>)>,
     seq: u64,
-    /// The time of the record being made.
     now: i64,
-    /// Per (session, tree) at the tree's root: when it got there.
     root_times: BTreeMap<(u64, u64), i64>,
 }
 
@@ -221,7 +215,6 @@ impl Model {
         ses.cursor = Some(ses.history.len() as u64);
     }
 
-    /// The entry a step from the session's cursor reaches.
     fn step_target(&self, s: u64, back: bool) -> Option<(u64, sessions::Target)> {
         let ses = self.sessions.get(&s)?;
         let c = ses.cursor?;
@@ -318,7 +311,6 @@ impl Model {
         at
     }
 
-    /// Message `m` goes: what points at it moves, its history entries are gone, its choices go.
     fn message_gone(&mut self, m: u64) {
         let msg = self.msgs.remove(&m).unwrap();
         let to = match msg.parent {
@@ -357,8 +349,6 @@ impl Model {
             .retain(|(sp, _), v| !(*sp == chat::KEYED_MESSAGE && *v == m));
     }
 
-    /// Message `r` and everything below it go: what is at them moves to `r`'s parent (sessions at an opening's to
-    /// the newest other opening), pinned bookmarks and following ones with nowhere to move go.
     fn subtree_gone(&mut self, r: u64) {
         let (tree, parent) = (self.msgs[&r].owner, self.msgs[&r].parent);
         let to = match parent {
@@ -451,7 +441,6 @@ impl Model {
     }
 
     fn check(&self, s: &Store) {
-        // Depth rewrites and subtree deletes run between commits: wait for them.
         let busy = |v: &View| Ok(sessions::any_pending(v)? || prune::any_pending(v)?);
         for _ in 0..2000 {
             if !s.derived(busy).unwrap() {
@@ -466,7 +455,6 @@ impl Model {
                     .unwrap()
                     .len()
             };
-            // The indexes a subtree delete finds positions through, and bookmark names.
             let pointers = self
                 .sessions
                 .values()
@@ -554,7 +542,6 @@ impl Model {
                     Some(self.depth(*id)),
                     "depth of {id}"
                 );
-                // Its jump is its ancestor at the jump depth, and ancestry through jumps is the model's.
                 let d = self.depth(*id);
                 let jd = sessions::jump_depth(d);
                 let mut want = Some(*id);
@@ -656,7 +643,6 @@ impl Model {
                 v.scan(&all, &key::prefix_end(&all), usize::MAX)?.len(),
                 self.keys.len()
             );
-            // Sessions.
             for s in 1..=SESSIONS {
                 let ses = self.sessions.get(&s).cloned().unwrap_or_default();
                 assert_eq!(
@@ -705,8 +691,6 @@ impl Model {
                 recent.into_iter().map(|(_, s)| s).collect::<Vec<_>>(),
                 "recent sessions"
             );
-            // Conversations: each is in the order once and is a live bookmark's or a live
-            // session's.
             let order = sessions::conversations(v, None, usize::MAX)?;
             let mut seen = BTreeSet::new();
             for (_, c) in &order {
@@ -795,7 +779,6 @@ impl Model {
                 v.scan(&all, &key::prefix_end(&all), usize::MAX)?.len(),
                 self.itemized.len()
             );
-            // Read in pages of 3, the itemized messages are the model's, in id order.
             let mut paged = Vec::new();
             let mut after = None;
             loop {
@@ -815,7 +798,6 @@ impl Model {
                 }
             }
             assert_eq!(paged, self.itemized.keys().copied().collect::<Vec<_>>());
-            // Stats: every message here is a character's, so the ones with a parent count.
             let mut total = [0i64; stats::COUNTERS];
             for o in &owners {
                 let mut want = [0i64; stats::COUNTERS];
@@ -874,7 +856,6 @@ impl Rng {
     }
 }
 
-/// An append, through `session` when given (it moves there and chooses it).
 #[allow(clippy::too_many_arguments)]
 fn append(
     model: &mut Model,
@@ -929,7 +910,6 @@ fn append(
     )
 }
 
-/// One step of a deterministic chat workload, as one commit (or none when nothing fits).
 fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
     let ids: Vec<u64> = model.msgs.keys().copied().collect();
     let pick = |rng: &mut Rng| ids[rng.below(ids.len() as u64) as usize];
@@ -1058,7 +1038,6 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
             )]
         }
         8 => {
-            // A message nothing replies to and no bookmark is at goes.
             let leaves: Vec<u64> = ids
                 .iter()
                 .copied()
@@ -1291,7 +1270,6 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
             )]
         }
         16 if i.is_multiple_of(5) && model.sessions.contains_key(&session) => {
-            // The session goes, and the test's tab takes up a new session with the same number.
             model.session_gone(session);
             let k = format!("session-{session}-{i}").into_bytes();
             model.keys.insert((chat::KEYED_SESSION, k.clone()), session);
@@ -1344,8 +1322,6 @@ fn chat_structures_follow_commits_reopens_crashes_and_cleaning() {
     chat_structures_follow_commits_reopens_crashes_and_cleaning_in(&small_pool);
 }
 
-/// `chat_structures_follow_commits_reopens_crashes_and_cleaning` simulated: background steps run as the seed picks them (`Executor::simulated`), so an interleaving
-/// that fails replays exactly with `ST_SIM_SEED`; `ST_SIM_SEEDS` sets how many seeds run (default 1).
 #[test]
 fn chat_structures_follow_commits_reopens_crashes_and_cleaning_simulated() {
     for seed in crate::keyspace::exec::sim_seeds(1) {
@@ -1355,7 +1331,6 @@ fn chat_structures_follow_commits_reopens_crashes_and_cleaning_simulated() {
 
 fn chat_structures_follow_commits_reopens_crashes_and_cleaning_in(mk: &dyn Fn() -> Arc<Pool>) {
     let dir = temp_dir("follow");
-    // `ST_MODEL_SEED` replays another seed (long runs sweep them).
     let seed = std::env::var("ST_MODEL_SEED")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -1368,14 +1343,12 @@ fn chat_structures_follow_commits_reopens_crashes_and_cleaning_in(mk: &dyn Fn() 
     drop(s);
     let s = Store::open_in(&dir, SMALL, mk()).unwrap();
     model.check(&s);
-    // As a crash would leave it.
     workload(&s, &mut model, &mut rng, 1500, 400);
     s.abandon();
     std::mem::forget(s);
     let s = Store::open_in(&dir, SMALL, mk()).unwrap();
     model.check(&s);
     workload(&s, &mut model, &mut rng, 1900, 1000);
-    // Values written over and over leave the files they were first in mostly dead.
     let ids: Vec<u64> = model.msgs.keys().copied().take(5).collect();
     for i in 0..4000u64 {
         let m = ids[(i % 5) as usize];
@@ -1397,7 +1370,6 @@ fn chat_structures_follow_commits_reopens_crashes_and_cleaning_in(mk: &dyn Fn() 
             ],
         )])
         .unwrap();
-        // Live records among them, so cleaning copies messages, values, positions, moves and choices.
         if i % 40 == 0 {
             let recs = step(&mut model, &mut rng, 5000 + i);
             if !recs.is_empty() {
@@ -1426,7 +1398,6 @@ fn chat_structures_follow_commits_reopens_crashes_and_cleaning_in(mk: &dyn Fn() 
 fn a_large_moved_subtree_gets_its_depths_in_slices_marked_meanwhile() {
     let dir = temp_dir("depth");
     let (s, mut model) = open_with_actors(&dir, small_pool());
-    // A chain longer than a slice, under one opening, and a second opening to move it under a new parent.
     let n = (sessions::DEPTH_SLICE * 3) as u64;
     let mut recs = vec![append(&mut model, 1, None, 0, "root", None, None, 1)];
     for i in 1..n {
@@ -1452,14 +1423,12 @@ fn a_large_moved_subtree_gets_its_depths_in_slices_marked_meanwhile() {
     .unwrap();
     model.moved(1, 1, 1, Some(n - 1), false);
     model.check(&s);
-    // Move message 1 (and the chain below it) under the second opening: every depth below it goes up by one.
     model.msgs.get_mut(&1).unwrap().parent = Some(n);
     s.commit_wait(vec![rec(
         "messageParent",
         vec![Value::Id(1), Value::Id(n), Value::Absent, Value::Absent],
     )])
     .unwrap();
-    // Meanwhile a reply under the chain, and a second move in the same tree, queue behind it.
     s.commit_wait(vec![append(
         &mut model,
         1,
@@ -1510,7 +1479,6 @@ fn a_depth_rewrite_cut_off_by_a_crash_resumes_on_open() {
     ));
     s.commit_wait(recs).unwrap();
     model.msgs.get_mut(&1).unwrap().parent = Some(n);
-    // Committed through the store's inner path, so no slice is queued: as a crash right after the move.
     let done = std::sync::mpsc::channel();
     let tx = done.0;
     s.inner.submit(Job::Commit(
@@ -1540,7 +1508,6 @@ fn a_depth_rewrite_cut_off_by_a_crash_resumes_on_open() {
 fn deleting_messages_and_sessions_moves_what_named_them() {
     let dir = temp_dir("gone");
     let (s, mut model) = open_with_actors(&dir, small_pool());
-    // Two openings; session 1 shows a reply to the first, session 2 the second opening; user 1 moved through both.
     let recs = vec![
         append(&mut model, 7, None, 1, "a", None, None, 1),
         append(&mut model, 7, None, 2, "b", None, Some(2), 1),
@@ -1548,7 +1515,6 @@ fn deleting_messages_and_sessions_moves_what_named_them() {
     ];
     s.commit_wait(recs).unwrap();
     model.check(&s);
-    // The reply goes: session 1 moves to its parent; its history keeps the entry, marked gone.
     model.message_gone(2);
     s.commit_wait(vec![rec(
         "messageDelete",
@@ -1561,8 +1527,6 @@ fn deleting_messages_and_sessions_moves_what_named_them() {
         s.derived(|v| sessions::session_pointer(v, 1)).unwrap(),
         Some((7, Some(0)))
     );
-    // An opening another session shows goes: that session moves to the newest other opening; the last opening
-    // going leaves pointers at the tree's root.
     model.message_gone(1);
     s.commit_wait(vec![rec(
         "messageDelete",
@@ -1590,7 +1554,6 @@ fn deleting_messages_and_sessions_moves_what_named_them() {
             .unwrap(),
         None
     );
-    // A session goes: user 1's last session in the tree falls back to their other one.
     let recs = vec![
         append(&mut model, 7, None, 10, "c", None, Some(1), 1),
         append(&mut model, 7, Some(3), 11, "c1", None, Some(2), 1),
@@ -1616,8 +1579,6 @@ fn deleting_messages_and_sessions_moves_what_named_them() {
         s.derived(|v| sessions::user_in_tree(v, 1, 7)).unwrap(),
         None
     );
-    // Its UUID is a tombstone, naming nothing; its own choices went and the user's stayed; it can't move until it
-    // is a session again.
     assert_eq!(
         s.derived(|v| chat::id_by_key(v, chat::KEYED_SESSION, b"session-1"))
             .unwrap(),
@@ -1679,7 +1640,6 @@ fn a_users_position_set_by_no_session_is_where_they_land_until_a_session_moves()
             .unwrap(),
         Some(1)
     );
-    // No session moved.
     assert_eq!(
         s.derived(|v| sessions::session_pointer(v, 1)).unwrap(),
         Some((7, Some(0)))
@@ -1688,7 +1648,6 @@ fn a_users_position_set_by_no_session_is_where_they_land_until_a_session_moves()
         s.derived(|v| sessions::session_pointer(v, 2)).unwrap(),
         None
     );
-    // A message of another tree, and a user with no key, are refused.
     for r in [position(2, 7, Some(2)), position(9, 7, Some(1))] {
         assert!(matches!(
             s.commit_wait(vec![r]),
@@ -1700,7 +1659,6 @@ fn a_users_position_set_by_no_session_is_where_they_land_until_a_session_moves()
         s.derived(|v| sessions::user_in_tree(v, 2, 7)).unwrap(),
         Some((sessions::NO_SESSION, None))
     );
-    // The message going moves it to its parent, as a session's remembered position.
     s.commit_wait(vec![position(2, 7, Some(1))]).unwrap();
     s.commit_wait(vec![rec(
         "messageDelete",
@@ -1721,7 +1679,6 @@ fn a_users_position_set_by_no_session_is_where_they_land_until_a_session_moves()
         s.derived(|v| super::chat_read::user_in_tree(v, 2, 7)).unwrap(),
         Js::Obj(ref o) if matches!(o[0], ("session", Js::Null))
     ));
-    // A session's move by the user replaces it.
     s.commit_wait(vec![rec(
         "pointerMove",
         vec![Value::Id(2), Value::Id(2), Value::Id(0)],
@@ -1739,8 +1696,6 @@ fn a_users_position_set_by_no_session_is_where_they_land_until_a_session_moves()
 fn a_bookmark_outliving_the_message_it_was_made_at_leaves_nothing_when_it_goes() {
     let dir = temp_dir("stray");
     let (s, mut model) = open_with_actors(&dir, small_pool());
-    // A following bookmark made at 0 moves to the reply 1; 1 moves under the other opening 2, so 0 can go while
-    // the bookmark lives on.
     let recs = vec![
         append(&mut model, 1, None, 1, "a", None, None, 1),
         append(&mut model, 1, None, 2, "b", None, None, 1),
@@ -1814,19 +1769,15 @@ fn a_current_chat_is_per_session_and_tree_and_changes_only_by_its_records() {
         .unwrap();
     assert_eq!(read(1, 1), None);
     s.commit_wait(vec![current(1, 1, Some(9))]).unwrap();
-    // Per (session, tree): the other tree and the other session have none.
     assert_eq!(read(1, 1), Some(9));
     assert_eq!(read(1, 2), None);
     assert_eq!(read(2, 1), None);
-    // A bookmark of another tree is refused.
     assert!(s.commit_wait(vec![current(1, 1, Some(10))]).is_err());
     assert_eq!(read(1, 1), Some(9));
-    // An append past the pinned bookmark and a bookmark made at the pointer change nothing.
     let reply = append(&mut model, 1, Some(0), 3, "a1", None, Some(1), 1);
     s.commit_wait(vec![reply, bookmark(11, FOLLOWING, 2)])
         .unwrap();
     assert_eq!(read(1, 1), Some(9));
-    // None takes no entry; the bookmark again does.
     s.commit_wait(vec![current(1, 1, None)]).unwrap();
     assert_eq!(read(1, 1), None);
     s.derived(|v| {
@@ -1837,7 +1788,6 @@ fn a_current_chat_is_per_session_and_tree_and_changes_only_by_its_records() {
     s.commit_wait(vec![current(1, 1, Some(11)), current(1, 2, Some(10))])
         .unwrap();
     assert_eq!((read(1, 1), read(1, 2)), (Some(11), Some(10)));
-    // A deleted bookmark is none; the record survives a reopen.
     s.commit_wait(vec![rec("positionDelete", vec![Value::Id(11)])])
         .unwrap();
     assert_eq!(read(1, 1), None);
@@ -1847,7 +1797,6 @@ fn a_current_chat_is_per_session_and_tree_and_changes_only_by_its_records() {
         s.derived(|v| sessions::current_chat(v, 1, 2)).unwrap(),
         Some(10)
     );
-    // A session that goes takes its entries.
     s.commit_wait(vec![rec("positionDelete", vec![Value::Id(1)])])
         .unwrap();
     s.derived(|v| {
@@ -1886,15 +1835,12 @@ fn a_conversation_name_is_per_session_and_tree_and_names_find_their_chats_in_any
     let find = |s: &Store, name: &str| s.derived(|v| chat::chats_named(v, &text(name), usize::MAX)).unwrap();
     assert_eq!(read(&s, 1, 1), None);
     s.commit_wait(vec![named(1, 1, "Ann - 2026-10-27@12h00m00s000ms")]).unwrap();
-    // Per (session, tree): the other tree and the other session have none.
     assert_eq!(read(&s, 1, 1).as_deref(), Some("Ann - 2026-10-27@12h00m00s000ms"));
     assert_eq!((read(&s, 1, 2), read(&s, 2, 1)), (None, None));
     assert_eq!(find(&s, "Ann - 2026-10-27@12h00m00s000ms"), vec![(1, 1, 1)]);
-    // A rename replaces the name in the index; the old one finds nothing.
     s.commit_wait(vec![named(1, 1, "walk")]).unwrap();
     assert_eq!(read(&s, 1, 1).as_deref(), Some("walk"));
     assert!(find(&s, "Ann - 2026-10-27@12h00m00s000ms").is_empty());
-    // A bookmark's label is in the same index, by its tree: one name, several trees, each found.
     s.commit_wait(vec![
         rec(
             "positionCreate",
@@ -1909,11 +1855,9 @@ fn a_conversation_name_is_per_session_and_tree_and_names_find_their_chats_in_any
     s.commit_wait(vec![label(9, Some("walk"))]).unwrap();
     s.commit_wait(vec![rec("positionDelete", vec![Value::Id(9)])]).unwrap();
     assert_eq!(find(&s, "walk"), vec![(1, 1, 1)]);
-    // The name survives a reopen.
     drop(s);
     let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     assert_eq!(read(&s, 1, 1).as_deref(), Some("walk"));
-    // The conversation becoming a bookmark (its current chat) takes its name out; a name given again is back.
     s.commit_wait(vec![
         rec(
             "positionCreate",
@@ -1926,7 +1870,6 @@ fn a_conversation_name_is_per_session_and_tree_and_names_find_their_chats_in_any
     assert!(find(&s, "walk").is_empty());
     s.commit_wait(vec![named(1, 1, "walk")]).unwrap();
     assert_eq!(find(&s, "walk"), vec![(1, 1, 1)]);
-    // A session that goes takes its names.
     s.commit_wait(vec![rec("positionDelete", vec![Value::Id(1)])]).unwrap();
     assert_eq!(read(&s, 1, 1), None);
     assert!(find(&s, "walk").is_empty());
@@ -1969,12 +1912,10 @@ fn conversations_are_ordered_by_the_meaningful_activity_of_the_acting_sessions_c
     let active = |b: Option<u64>, ses: Option<u64>, tree: Option<u64>| {
         rec("conversationActive", vec![opt(b), opt(ses), opt(tree)])
     };
-    // Appends through sessions: each session's conversation in its tree.
     let a = append(&mut model, 1, None, 1, "a", None, Some(1), 1);
     let b = append(&mut model, 2, None, 2, "b", None, Some(2), 1);
     s.commit_wait(vec![a, b]).unwrap();
     assert_eq!(order(&s), vec![Session(2, 2), Session(1, 1)]);
-    // A session nowhere in a tree has no conversation there: choosing a reply is only kept.
     let sibling = append(&mut model, 2, None, 3, "b2", None, None, 1);
     let sibling_id = model.next_msg - 1;
     s.commit_wait(vec![
@@ -1991,18 +1932,14 @@ fn conversations_are_ordered_by_the_meaningful_activity_of_the_acting_sessions_c
     ])
     .unwrap();
     assert_eq!(order(&s), vec![Session(2, 2), Session(1, 1)]);
-    // A bookmark made through a session is that session's act, not an entry of its own.
     s.commit_wait(vec![bookmark(9, 0)]).unwrap();
     assert_eq!(order(&s), vec![Session(1, 1), Session(2, 2)]);
-    // Switching alone is no activity; the session's conversation became the bookmark's.
     s.commit_wait(vec![current(1, 1, Some(9))]).unwrap();
     assert_eq!(order(&s), vec![Session(2, 2)]);
-    // The next act in the new current chat gives the bookmark its entry.
     let reply_id = model.next_msg;
     let reply = append(&mut model, 1, Some(0), 3, "a1", None, Some(1), 1);
     s.commit_wait(vec![reply]).unwrap();
     assert_eq!(order(&s), vec![Bookmark(9), Session(2, 2)]);
-    // Another session in the same bookmark: one row.
     s.commit_wait(vec![current(2, 1, Some(9))]).unwrap();
     let again = append(&mut model, 1, Some(reply_id), 4, "a2", None, Some(2), 1);
     s.commit_wait(vec![again]).unwrap();
@@ -2011,14 +1948,12 @@ fn conversations_are_ordered_by_the_meaningful_activity_of_the_acting_sessions_c
     assert_eq!(order(&s), vec![Session(2, 2), Bookmark(9)]);
     s.commit_wait(vec![active(Some(9), None, None)]).unwrap();
     assert_eq!(order(&s), vec![Bookmark(9), Session(2, 2)]);
-    // Neither or both is refused, as is a bookmark that isn't there.
     assert!(s.commit_wait(vec![active(None, None, None)]).is_err());
     assert!(
         s.commit_wait(vec![active(Some(9), Some(1), Some(1))])
             .is_err()
     );
     assert!(s.commit_wait(vec![active(Some(77), None, None)]).is_err());
-    // Paging: before a position.
     let first = s.derived(|v| sessions::conversations(v, None, 1)).unwrap();
     assert_eq!(first.len(), 1);
     let rest = s
@@ -2031,7 +1966,6 @@ fn conversations_are_ordered_by_the_meaningful_activity_of_the_acting_sessions_c
     drop(s);
     let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     assert_eq!(order(&s), vec![Bookmark(9), Session(2, 2)]);
-    // A deleted bookmark and a deleted session take their entries.
     s.commit_wait(vec![rec("positionDelete", vec![Value::Id(9)])])
         .unwrap();
     assert_eq!(order(&s), vec![Session(2, 2)]);
@@ -2069,15 +2003,12 @@ fn chat_writes_that_cant_apply_are_refused_and_write_nothing() {
     let mut no_session = next(None, None);
     no_session.values[8] = Value::Id(50);
     for bad in [
-        // The id is taken; the parent is in another tree; no such parent; the send key is stored; no such user;
-        // no such session.
         vec![taken],
         vec![next(Some(2), None)],
         vec![next(Some(77), None)],
         vec![next(Some(1), Some(vec![1; 16]))],
         vec![stranger],
         vec![no_session],
-        // A message with replies doesn't go; a move below itself or into another tree is refused.
         vec![rec(
             "messageDelete",
             vec![Value::Id(0), Value::Absent, Value::Absent, Value::Time(NOW)],
@@ -2090,7 +2021,6 @@ fn chat_writes_that_cant_apply_are_refused_and_write_nothing() {
             "messageParent",
             vec![Value::Id(1), Value::Id(2), Value::Absent, Value::Absent],
         )],
-        // Values of a message that doesn't exist; a bookmark at one; a mode that isn't one; a name of nothing.
         vec![rec(
             "textValue",
             vec![
@@ -2135,7 +2065,6 @@ fn chat_writes_that_cant_apply_are_refused_and_write_nothing() {
             "positionName",
             vec![Value::Id(9), Value::Text(text("n"))],
         )],
-        // A move of a session that isn't one; a choice of a reply at another fork.
         vec![rec(
             "pointerMove",
             vec![Value::Id(9), Value::Id(1), Value::Id(1)],
@@ -2153,7 +2082,6 @@ fn chat_writes_that_cant_apply_are_refused_and_write_nothing() {
         assert!(matches!(r, Err(StoreError::Refused(_))), "{r:?}");
     }
     assert_eq!(s.durable_end(), end);
-    // A key names one id, and an id has one key.
     for bad in [
         rec(
             "keyMap",
@@ -2163,7 +2091,6 @@ fn chat_writes_that_cant_apply_are_refused_and_write_nothing() {
             "keyMap",
             vec![Value::Sel(1, 1), Value::Bytes(b"other".to_vec())],
         ),
-        // A session isn't a bookmark.
         rec(
             "positionCreate",
             vec![
@@ -2180,7 +2107,6 @@ fn chat_writes_that_cant_apply_are_refused_and_write_nothing() {
             Err(StoreError::Refused(_))
         ));
     }
-    // A bookmark at a message keeps it from going.
     s.commit_wait(vec![rec(
         "positionCreate",
         vec![
@@ -2269,7 +2195,6 @@ fn a_message_text_lives_in_its_append_until_replaced_and_its_search_follows() {
         ],
     )])
     .unwrap();
-    // The edit died; the append, which still holds the message, didn't.
     assert!(dead(&s) > before);
     assert_eq!(
         s.derived(|v| chat::message_loc(v, 0)).unwrap().unwrap().pos,
@@ -2290,7 +2215,6 @@ fn a_message_text_lives_in_its_append_until_replaced_and_its_search_follows() {
 
 #[test]
 fn chat_records_round_trip_their_bytes() {
-    // A message's id after its parent's costs one byte.
     let k = kind_by_name("messageAppend").unwrap();
     let r = Record::new(
         k,
@@ -2318,7 +2242,6 @@ fn chat_records_round_trip_their_bytes() {
     r2.values[1] = Value::Id(1_000_001);
     r2.values[5] = Value::Time(1_700_000_001_000);
     crate::log::format::encode(&r2, &mut ctx, &mut buf);
-    // header 1, id 1, parent 1, owner 1, time 2, text 3, flags 1, session 1, user 1.
     assert_eq!(buf.len() - first, 12);
     let mut ctx = crate::log::format::Ctx::default();
     let mut at = 0;
@@ -2332,7 +2255,6 @@ fn chat_records_round_trip_their_bytes() {
     }
 }
 
-/// A message append with the given flags and name, through no session.
 fn append_with(
     id: u64,
     parent: Option<u64>,
@@ -2390,7 +2312,6 @@ fn msg_json(m: u64, code: u64, json: &str) -> Record {
 fn stats_count_as_today_and_place_the_owner_in_the_library() {
     let dir = temp_dir("stats");
     let (s, _) = open_with_actors(&dir, small_pool());
-    // Two characters in the library, so the stats place them in the last-chat and chat-size orders.
     let chars: Vec<Record> = [(500, "a.png"), (501, "b.png")]
         .iter()
         .map(|(e, k)| {
@@ -2406,16 +2327,12 @@ fn stats_count_as_today_and_place_the_owner_in_the_library() {
         })
         .collect();
     s.commit_wait(chars).unwrap();
-    // Send dates are their own values unless said; no `is_system` unless said.
     const USER: u64 = 1;
     const SYSTEM: u64 = 2 << chat::FLAG_IS_SYSTEM;
     const OTHER_USER: u64 = 3;
     const NO_SEND_DATE: u64 = 3 << chat::FLAG_SEND_DATE;
     let t0 = 1_700_000_000_000;
     s.commit_wait(vec![
-        // A greeting (doesn't count), two replies to it (one swipe), a user message whose send date is its time,
-        // one whose send date is another ISO time, one with an unreadable send date, one with none, a system
-        // message, and a message whose `is_user` is a truthy JSON value.
         append_with(0, None, 500, t0, "Hello there", 0, None),
         append_with(1, Some(0), 500, t0 + 1, "one two", 0, Some("Not the name")),
         append_with(2, Some(0), 500, t0 + 2, "three", 0, None),
@@ -2443,7 +2360,6 @@ fn stats_count_as_today_and_place_the_owner_in_the_library() {
     .unwrap();
     let st = s.derived(|v| stats::owner_stats(v, 500)).unwrap();
     let c = st.counters;
-    // User: 3, 4, 5, 6, 8; character: 1, 2 (0 opens the tree, 7 is a system message).
     assert_eq!(c[stats::USER_MSGS as usize], 5);
     assert_eq!(c[stats::USER_WORDS as usize], 2 + 1 + 1 + 1 + 1);
     assert_eq!(c[stats::CHAR_MSGS as usize], 2);
@@ -2451,7 +2367,6 @@ fn stats_count_as_today_and_place_the_owner_in_the_library() {
     assert_eq!(c[stats::SWIPES as usize], 1);
     assert_eq!(c[stats::GEN_MS as usize], 1500);
     assert_eq!(c[stats::GEN_UNKNOWN as usize], 1);
-    // Message 4's send date is 10 s before its time, the earliest; 5's can't be read, 6 has none.
     assert_eq!(st.first_user_at, Some(t0 + 4 - 10_000));
     assert_eq!(st.last_at, Some(t0 + 8));
     let size: i64 = [
@@ -2472,7 +2387,6 @@ fn stats_count_as_today_and_place_the_owner_in_the_library() {
     .map(|t| t.len() as i64)
     .sum();
     assert_eq!(c[stats::SIZE as usize], size);
-    // The writer read message 5's send date as earlier still.
     s.commit_wait(vec![msg_time(5, chat::SEND_AT, -20_000)])
         .unwrap();
     assert_eq!(
@@ -2481,7 +2395,6 @@ fn stats_count_as_today_and_place_the_owner_in_the_library() {
             .first_user_at,
         Some(t0 + 5 - 20_000)
     );
-    // A swipe goes away when its sibling moves elsewhere; a greeting moved under a message starts to count.
     s.commit_wait(vec![rec(
         "messageParent",
         vec![Value::Id(2), Value::Id(8), Value::Absent, Value::Absent],
@@ -2489,7 +2402,6 @@ fn stats_count_as_today_and_place_the_owner_in_the_library() {
     .unwrap();
     let c = s.derived(|v| stats::owner_stats(v, 500)).unwrap().counters;
     assert_eq!(c[stats::SWIPES as usize], 0);
-    // Deleting the earliest user message brings the next one up.
     s.commit_wait(vec![rec(
         "messageDelete",
         vec![Value::Id(2), Value::Absent, Value::Absent, Value::Time(NOW)],
@@ -2498,7 +2410,6 @@ fn stats_count_as_today_and_place_the_owner_in_the_library() {
     let st = s.derived(|v| stats::owner_stats(v, 500)).unwrap();
     assert_eq!(st.counters[stats::CHAR_MSGS as usize], 1);
     assert_eq!(st.counters[stats::GEN_UNKNOWN as usize], 1);
-    // The library orders the characters by these, as their stored places show.
     s.derived(|v| {
         for (e, last, size) in [
             (500u64, t0 + 8, stats::chat_size(v, 500)?),
@@ -2526,7 +2437,6 @@ fn stats_count_as_today_and_place_the_owner_in_the_library() {
     .unwrap();
     let totals = s.derived(stats::total_stats).unwrap();
     assert_eq!(totals.counters[stats::USER_MSGS as usize], 5);
-    // A user message whose flags change to a system message's stops counting.
     s.commit_wait(vec![msg_json(
         3,
         chat::FLAGS,
@@ -2545,7 +2455,6 @@ fn stats_count_as_today_and_place_the_owner_in_the_library() {
 fn history_steps_move_a_cursor_and_opening_choices_last_until_an_opening_is_chosen() {
     let dir = temp_dir("steps");
     let (s, mut model) = open_with_actors(&dir, small_pool());
-    // Session 1 sends a, b, c in a row (history 1..3), then goes to the root of tree 2 (4).
     let recs = vec![
         append(&mut model, 1, None, 1, "a", None, Some(1), 1),
         append(&mut model, 1, Some(0), 2, "b", None, Some(1), 1),
@@ -2568,7 +2477,6 @@ fn history_steps_move_a_cursor_and_opening_choices_last_until_an_opening_is_chos
         .unwrap();
         n
     };
-    // Back twice goes back step by step, adding no entry; forward comes back.
     assert_eq!(step(&mut model, true), 3);
     assert_eq!(step(&mut model, true), 2);
     assert_eq!(step(&mut model, false), 3);
@@ -2583,7 +2491,6 @@ fn history_steps_move_a_cursor_and_opening_choices_last_until_an_opening_is_chos
         s.derived(|v| sessions::session_pointer(v, 1)).unwrap(),
         Some((1, Some(2)))
     );
-    // A step to a gone entry is refused; a step skips gone entries.
     model.message_gone(2);
     s.commit_wait(vec![rec(
         "messageDelete",
@@ -2600,7 +2507,6 @@ fn history_steps_move_a_cursor_and_opening_choices_last_until_an_opening_is_chos
     model.check(&s);
     assert_eq!(step(&mut model, false), 4);
     assert_eq!(step(&mut model, true), 2);
-    // A new move after stepping back appends at the end: forward reaches nothing.
     model.moved(1, 1, 1, Some(0), false);
     s.commit_wait(vec![rec(
         "pointerMove",
@@ -2613,7 +2519,6 @@ fn history_steps_move_a_cursor_and_opening_choices_last_until_an_opening_is_chos
         None
     );
     assert_eq!(s.derived(|v| sessions::cursor(v, 1)).unwrap(), Some(5));
-    // A card greeting chosen for tree 2 stays until the session chooses an opening there.
     model.act(1, 2);
     model.sessions.get_mut(&1).unwrap().openings.insert(2, 3);
     s.commit_wait(vec![rec(
@@ -2633,7 +2538,6 @@ fn history_steps_move_a_cursor_and_opening_choices_last_until_an_opening_is_chos
         s.derived(|v| sessions::opening_choice(v, 1, 2)).unwrap(),
         None
     );
-    // The structures survive a reopen.
     drop(s);
     let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     model.check(&s);
@@ -2670,7 +2574,6 @@ fn a_fork_reads_its_originals_history_and_keeps_it_through_the_originals_delete(
             .collect())
     };
     let msg = sessions::Target::Message;
-    // Session 1 steps back to b; session 2 forks it there, forward entry included.
     s.commit_wait(vec![rec(
         "historyStep",
         vec![Value::Id(1), Value::Id(1), Value::UInt(2), Value::Time(NOW)],
@@ -2686,11 +2589,9 @@ fn a_fork_reads_its_originals_history_and_keeps_it_through_the_originals_delete(
         s.derived(|v| sessions::session_pointer(v, 2)).unwrap(),
         Some((1, Some(1)))
     );
-    // Only a new session forks, and only within the original's history.
     assert!(s.commit_wait(vec![fork_rec(2, 1, 3, 2)]).is_err());
     assert!(s.commit_wait(vec![fork_rec(3, 1, 4, 2)]).is_err());
     assert!(s.commit_wait(vec![fork_rec(3, 1, 3, 4)]).is_err());
-    // From then on each moves on its own.
     s.commit_wait(vec![rec(
         "pointerMove",
         vec![Value::Id(2), Value::Id(1), Value::Id(0)],
@@ -2707,12 +2608,10 @@ fn a_fork_reads_its_originals_history_and_keeps_it_through_the_originals_delete(
         s.derived(|v| sessions::session_pointer(v, 2)).unwrap(),
         Some((1, Some(0)))
     );
-    // A step back from the fork's own entry reaches the inherited ones.
     assert_eq!(
         s.derived(|v| sessions::step_target(v, 2, true)).unwrap(),
         Some((3, msg(2)))
     );
-    // A fork of the fork chains through it.
     s.commit_wait(vec![fork_rec(3, 2, 4, 4)]).unwrap();
     assert_eq!(
         s.derived(|v| targets(v, 3)).unwrap(),
@@ -2722,7 +2621,6 @@ fn a_fork_reads_its_originals_history_and_keeps_it_through_the_originals_delete(
         let p = key::id(sessions::HISTORY, ses);
         Ok(v.scan(&p, &key::prefix_end(&p), usize::MAX)?.len())
     };
-    // The original's delete keeps the entries its fork reads and drops the rest.
     s.commit_wait(vec![rec("positionDelete", vec![Value::Id(1)])])
         .unwrap();
     assert_eq!(s.derived(|v| own(v, 1)).unwrap(), 3);
@@ -2732,7 +2630,6 @@ fn a_fork_reads_its_originals_history_and_keeps_it_through_the_originals_delete(
     assert_eq!(s.derived(|v| own(v, 1)).unwrap(), 3);
     assert_eq!(s.derived(|v| own(v, 2)).unwrap(), 1);
     assert_eq!(s.derived(|v| targets(v, 3)).unwrap().len(), 4);
-    // The last fork's delete frees them all, through the chain.
     s.commit_wait(vec![rec("positionDelete", vec![Value::Id(3)])])
         .unwrap();
     for ses in 1..=3 {
@@ -2771,7 +2668,6 @@ fn a_fork_at_a_gone_entry_lands_where_a_step_back_would() {
         s.derived(|v| sessions::session_pointer(v, 2)).unwrap(),
         Some((1, Some(1)))
     );
-    // The fork survives a reopen.
     drop(s);
     let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
     assert_eq!(
@@ -2787,8 +2683,6 @@ fn a_fork_at_a_gone_entry_lands_where_a_step_back_would() {
 
 #[test]
 fn jump_depths_are_myers_skew_binary_and_reach_any_depth_in_log_steps() {
-    // The definition: a message jumps to its parent's jump's jump when the parent's two jumps are equally long,
-    // else to its parent.
     let mut j = vec![0u64];
     for n in 1..100_000u64 {
         let p = n - 1;
@@ -2796,7 +2690,6 @@ fn jump_depths_are_myers_skew_binary_and_reach_any_depth_in_log_steps() {
         j.push(if p - jp == jp - jjp { jjp } else { p });
         assert_eq!(sessions::jump_depth(n), j[n as usize], "{n}");
     }
-    // Reaching depth `d` from depth `v`: jumps that don't pass it, else parent steps.
     let mut most = 0;
     for v in (1..100_000u64).step_by(997) {
         for d in (0..v).step_by(331) {
@@ -2812,7 +2705,6 @@ fn jump_depths_are_myers_skew_binary_and_reach_any_depth_in_log_steps() {
     assert!(most <= 3 * 17, "{most}");
 }
 
-/// Commits through the store's inner path, so no slice is queued: as a crash right after the commit would leave it.
 fn commit_without_slices(s: &Store, recs: Vec<Record>) {
     let (tx, rx) = std::sync::mpsc::channel();
     s.inner.submit(Job::Commit(
@@ -2828,7 +2720,6 @@ fn commit_without_slices(s: &Store, recs: Vec<Record>) {
 fn a_subtree_being_deleted_reads_as_deleted_and_its_delete_resumes_after_a_crash() {
     let dir = temp_dir("prune");
     let (s, mut model) = open_with_actors(&dir, small_pool());
-    // An opening, a reply, and below the reply a chain longer than a slice with a side branch.
     let n = (prune::PRUNE_SLICE * 3) as u64;
     let mut recs = vec![
         append(&mut model, 1, None, 0, "root", None, None, 1),
@@ -2858,8 +2749,6 @@ fn a_subtree_being_deleted_reads_as_deleted_and_its_delete_resumes_after_a_crash
     );
     recs.push(side);
     s.commit_wait(recs).unwrap();
-    // Session 1 at the chain's end, session 2 on the side branch; a pinned bookmark in the chain, a following one
-    // at the chain's end, one at the kept reply.
     let end = n - 1;
     let side = n;
     s.commit_wait(vec![
@@ -2924,10 +2813,8 @@ fn a_subtree_being_deleted_reads_as_deleted_and_its_delete_resumes_after_a_crash
     }
     model.bookmarks.get_mut(&21).unwrap().name = Some("end".into());
     model.check(&s);
-    // What the delete drops besides messages: the pinned bookmark in it.
     let (bookmarks, _) = s.derived(|v| prune::drops(v, 1, &[2], &[])).unwrap();
     assert_eq!(bookmarks, vec![(20, 9)]);
-    // Everything below the kept reply goes; no slice runs, as after a crash.
     model.subtree_gone(2);
     commit_without_slices(
         &s,
@@ -2939,12 +2826,10 @@ fn a_subtree_being_deleted_reads_as_deleted_and_its_delete_resumes_after_a_crash
     model.act(1, 1);
     s.derived(|v| {
         assert!(prune::any_pending(v)?);
-        // The positions inside moved at once: the sessions and the following bookmark to the kept reply.
         assert_eq!(sessions::session_pointer(v, 1)?, Some((1, Some(1))));
         assert_eq!(sessions::session_pointer(v, 2)?, Some((1, Some(1))));
         assert_eq!(chat::bookmark_at(v, 21)?, Some(1));
         assert_eq!(chat::bookmark_at(v, 20)?, None);
-        // The subtree reads as deleted: no reply of its parent, a path stops above it, messages read as none.
         assert_eq!(
             sessions::followed(v, None, None, Fork::Message(1), 1)?,
             None
@@ -2955,7 +2840,6 @@ fn a_subtree_being_deleted_reads_as_deleted_and_its_delete_resumes_after_a_crash
             unreachable!()
         };
         assert!(read[0] != Js::Null && read[1..].iter().all(|m| *m == Js::Null));
-        // Search drops its messages; stats say they are estimates.
         let clauses = [crate::search::query::Clause {
             text: text("saxophone"),
             fields: None,
@@ -2991,12 +2875,10 @@ fn a_subtree_being_deleted_reads_as_deleted_and_its_delete_resumes_after_a_crash
             o.iter().find(|(k, _)| *k == "estimate").unwrap().1,
             Js::Bool(true)
         );
-        // A step back skips entries inside it.
         assert_eq!(sessions::step_target(v, 1, true)?, None);
         Ok(())
     })
     .unwrap();
-    // Writes naming its messages are refused.
     for r in [
         append(
             &mut model.clone(),
@@ -3055,7 +2937,6 @@ fn a_subtree_being_deleted_reads_as_deleted_and_its_delete_resumes_after_a_crash
             Err(StoreError::Refused(_))
         ));
     }
-    // A crash: the delete resumes on open and finishes.
     s.abandon();
     std::mem::forget(s);
     let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
@@ -3085,7 +2966,6 @@ fn a_subtree_being_deleted_reads_as_deleted_and_its_delete_resumes_after_a_crash
 fn a_delete_beside_a_move_dooms_only_its_subtree_while_depths_are_rewritten() {
     let dir = temp_dir("prune-move");
     let (s, mut model) = open_with_actors(&dir, small_pool());
-    // A chain; its tail moves up above a two-message gap that then goes, as a cut closing a gap does.
     let n = (sessions::DEPTH_SLICE * 3) as u64;
     let mut recs = vec![append(&mut model, 1, None, 0, "root", None, None, 1)];
     for i in 1..n {
@@ -3118,7 +2998,6 @@ fn a_delete_beside_a_move_dooms_only_its_subtree_while_depths_are_rewritten() {
     );
     s.derived(|v| {
         assert!(sessions::depths_pending(v, 1)? && prune::pending_in(v, 1)?);
-        // The moved tail's jumps still name the gap; it isn't being deleted.
         for m in [3, n / 2, n - 1] {
             assert!(!prune::doomed(v, 1, m)?, "{m}");
         }
@@ -3149,7 +3028,6 @@ fn a_delete_beside_a_move_dooms_only_its_subtree_while_depths_are_rewritten() {
 fn a_send_key_of_a_message_being_deleted_stores_a_new_message() {
     let dir = temp_dir("prune-send-key");
     let (s, mut model) = open_with_actors(&dir, small_pool());
-    // A chain longer than a slice, its last message sent with a key.
     let n = (prune::PRUNE_SLICE * 2) as u64;
     let key = b"send-key".to_vec();
     let mut recs = vec![append(&mut model, 1, None, 0, "root", None, None, 1)];
@@ -3180,7 +3058,6 @@ fn a_send_key_of_a_message_being_deleted_stores_a_new_message() {
             vec![Value::Id(1), Value::Absent, Value::Absent, Value::Time(NOW)],
         )],
     );
-    // While the delete is pending the key names nothing, and sending it again stores a new message.
     assert_eq!(sent(&s), Js::Arr(vec![Js::Null]));
     s.commit_wait(vec![append(
         &mut model,
@@ -3193,7 +3070,6 @@ fn a_send_key_of_a_message_being_deleted_stores_a_new_message() {
         1,
     )])
     .unwrap();
-    // The delete finishes (on open, as after a crash) and leaves the new message's key.
     s.abandon();
     std::mem::forget(s);
     let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
@@ -3229,7 +3105,6 @@ fn a_bookmark_at_a_trees_root_is_named_moves_with_a_new_opening_and_goes() {
         root(12, FOLLOWING, 8),
     ])
     .unwrap();
-    // Names are free labels: two bookmarks of a tree may share one, and the tree's index lists both.
     s.commit_wait(vec![name(11, "empty")]).unwrap();
     s.derived(|v| {
         assert_eq!(chat::bookmark_root(v, 10)?, Some(7));
@@ -3244,7 +3119,6 @@ fn a_bookmark_at_a_trees_root_is_named_moves_with_a_new_opening_and_goes() {
         Ok(())
     })
     .unwrap();
-    // An opening stored in tree 7 takes the following one along; the pinned one stays, and tree 8's is untouched.
     let opening = append(&mut model, 7, None, 5, "hello", None, None, 1);
     s.commit_wait(vec![opening]).unwrap();
     s.derived(|v| {
@@ -3256,7 +3130,6 @@ fn a_bookmark_at_a_trees_root_is_named_moves_with_a_new_opening_and_goes() {
         Ok(())
     })
     .unwrap();
-    // Deleting it takes its name and places.
     s.commit_wait(vec![rec("positionDelete", vec![Value::Id(11)])])
         .unwrap();
     s.commit_wait(vec![name(10, "kept")]).unwrap();
@@ -3323,10 +3196,8 @@ fn a_moved_bookmark_takes_its_place_and_time_in_its_tree_and_keeps_where_it_was_
         Ok(())
     })
     .unwrap();
-    // Another tree's message, or no such bookmark: refused.
     assert!(s.commit_wait(vec![mv(10, Some(2))]).is_err());
     assert!(s.commit_wait(vec![mv(99, Some(1))]).is_err());
-    // To the root: placed by the move's time.
     s.commit_wait(vec![mv(10, None)]).unwrap();
     s.derived(|v| {
         assert_eq!(chat::bookmark_at(v, 10)?, None);
@@ -3349,7 +3220,6 @@ fn a_moved_bookmark_takes_its_place_and_time_in_its_tree_and_keeps_where_it_was_
         Ok(())
     })
     .unwrap();
-    // Deleting it leaves nothing of its moves.
     s.commit_wait(vec![rec("positionDelete", vec![Value::Id(10)])])
         .unwrap();
     s.derived(|v| {
@@ -3384,7 +3254,6 @@ fn an_unowned_tree_keeps_its_messages_until_a_character_takes_its_id() {
     let b = append(&mut model, 30, Some(0), 9, "there", None, None, 1);
     s.commit_wait(vec![create(TREE, "gone"), a, b]).unwrap();
     s.derived(|v| {
-        // Kept, found by its key, in no library order or count.
         assert_eq!(library::entity_by_key(v, TREE, b"gone")?, Some(30));
         assert_eq!(library::state(v, 30)?, None);
         let counts = key::of(key::COUNT);
@@ -3395,7 +3264,6 @@ fn an_unowned_tree_keeps_its_messages_until_a_character_takes_its_id() {
         Ok(())
     })
     .unwrap();
-    // A character created with the tree's id takes it over: its messages and their stats are the character's.
     s.commit_wait(vec![
         rec("entityDelete", vec![Value::Id(30)]),
         rec(

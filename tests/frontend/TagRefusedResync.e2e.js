@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, holdCharacters } from './frontent-test-utils.js';
 
-// When the server refuses a tag create or edit, the page re-reads that tag: it takes the stored copy if there is one,
-// and otherwise drops the tag and re-reads the tags of the characters and groups it holds.
-
 /** @param {import('@playwright/test').Page} page */
 async function loadApp(page) {
     await testSetup.awaitST({ page });
@@ -30,7 +27,11 @@ async function api(page, path, body = {}) {
     }, { path, body });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<string>} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
@@ -81,7 +82,10 @@ async function openTagManagement(page) {
     await page.locator('#tag_view_list .tag_view_prune').waitFor({ state: 'visible', timeout: 10000 });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} id */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} id
+ */
 function pageTag(page, id) {
     return page.evaluate(async id => {
         const tag = (await import('/scripts/tags.js')).tagsStore.getAll().find(t => t.id === id);
@@ -89,10 +93,12 @@ function pageTag(page, id) {
     }, id);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
 function pageCharacterTagIds(page, avatar) {
     return page.evaluate(async avatar => {
-        // What the page holds, not what extensions are shown (only the current character).
         const { charactersStore } = await import('/scripts/character-store.js');
         const character = charactersStore.get(avatar);
         return character ? [...(character.tag_ids ?? [])] : null;
@@ -116,7 +122,6 @@ test.describe('A refused tag save', () => {
         await openTagManagement(page);
         expect(await pageCharacterTagIds(page, fixture.card)).toEqual([fixture.deleted]);
 
-        // Made only now, so the page has no definition of the merge target until it re-reads one.
         await createTag(page, fixture.target, `target-${stamp}`);
         await api(page, '/api/tags/delete', { id: fixture.deleted, mergeInto: fixture.target });
         expect(await pageTag(page, fixture.target)).toBeNull();
@@ -143,7 +148,6 @@ test.describe('A refused tag save', () => {
         await loadApp(page);
         await openTagManagement(page);
 
-        // The server gets a tag with the same id just before the page's own create reaches it.
         /** @type {{ id: string, sentFilterState: boolean } | null} */
         let pageCreated = null;
         await page.route('**/api/tags/create', async route => {
@@ -158,7 +162,6 @@ test.describe('A refused tag save', () => {
         await page.locator('#tag_view_list .tag_view_create').click();
         await expect.poll(() => pageCreated, { timeout: 30000 }).not.toBeNull();
         const { id, sentFilterState } = /** @type {{ id: string, sentFilterState: boolean }} */ (pageCreated);
-        // A tag's filter is this browser's, so it is not part of what the page asks the server to store.
         expect(sentFilterState).toBe(false);
 
         await expect.poll(() => pageTag(page, id), { timeout: 30000 }).toEqual({ name: storedName, filter_state: 'UNDEFINED' });

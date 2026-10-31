@@ -11,8 +11,6 @@ import { setConfigFilePath } from '../util.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
-// /text-models asks AI Horde for the model list and GitHub for model metadata. Both hosts are sent to a
-// local fake here; nothing reaches the real services.
 const canMock = typeof mock.module === 'function';
 let fakeUrl = null;
 /** @type {{ status: number, body: any }} */

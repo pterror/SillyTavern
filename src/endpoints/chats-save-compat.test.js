@@ -10,12 +10,8 @@ import { write as writeCard } from '../character-card-parser.js';
 import { setConfigFilePath } from '../util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// chats.js's import chain reads process-wide config at import time, so the config path is set first.
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
-// Upstream's whole-chat save (/api/chats/save), for code that still posts a chat array: it stores only what the
-// array names by id (a message, an alternative) and the chat's metadata; what it can't address (no id, an ambiguous
-// one) is answered as not saved, never guessed. A chat that holds nothing takes the array whole, as a new file.
 const { router: chatsRouter } = await import('./chats.js');
 const { newSessionKey } = await import('../chat-engine.js');
 const { SESSION_HEADER } = await import('../request-session.js');
@@ -97,7 +93,6 @@ test('an alternative is edited by its own id; one whose shown slot names another
     assert.deepEqual(loaded.swipes, ['A.', 'B.']);
     const otherId = loaded.swipe_info[1].node_id;
 
-    // The other alternative's text and extra, by its id; the shown one untouched; a third slot without an id left out.
     const edited = await postJson('/api/chats/save', {
         avatar_url: 'rho.png', file_name: '',
         chat: [header({}), {
@@ -111,7 +106,6 @@ test('an alternative is edited by its own id; one whose shown slot names another
     assert.deepEqual(alternatives.alternatives.map(a => a.mes), ['A.', 'B, edited.']);
     assert.equal(alternatives.alternatives[1].extra.note, 1);
 
-    // The shown slot names the other alternative while `node_id` names the first: which one is meant can't be told.
     const ambiguous = await postJson('/api/chats/save', {
         avatar_url: 'rho.png', file_name: '',
         chat: [header({}), { ...loaded, mes: 'Which?', swipe_id: 1 }],
@@ -140,7 +134,6 @@ test('an unnamed save is the tab\'s session; a save named by a message id makes 
     const tree = await treeOf(user.store, { avatar: 'qin.png' });
     const atNode = await user.store.chats.load({ tree, at: nodeId });
     assert.equal(atNode?.metadata.note_prompt, 'kept');
-    // A message id names no chat, so the save made a bookmark of that name at its last message.
     const named = (await user.store.chats.bookmarks({ tree, limit: 500 })).rows.filter(b => b.at === nodeId);
     assert.deepEqual(named.map(b => b.name), [nodeId]);
     assert.equal((await sessionPath(user.store, { avatar: 'qin.png' }, tab)).length, 1);

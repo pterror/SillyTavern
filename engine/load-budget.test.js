@@ -1,7 +1,3 @@
-// Loads through the binding (`Store.load(budget)`) bound resident growth, including the caller's batch overhead,
-// with records shaped as the conversion sends them: tags, big character cards with tags, then each character's chats
-// (a reply chain, three swipes per reply, an itemization per swipe). Needs this checkout's native build in
-// engine/dist/ (node engine/build.js).
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -16,10 +12,6 @@ after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 const engine = loadEngine().binding;
 
 const BUDGET = 256 << 20;
-/**
- * What the process may hold past its budget, the engine's allocations being held within it: this test's own
- * records (a batch of JS objects in flight, the JS heap's growth before a collection).
- */
 const SLACK = 192 << 20;
 const TAGS = 200;
 const CARDS = 6000;
@@ -36,7 +28,6 @@ const next = () => {
 const words = (n) => Array.from({ length: n }, () => `w${next() % 30000}`).join(' ');
 const text = (entity, field, t) => ({ kind: 'textValue', entity, field, text: t });
 
-/** The library's records, then the chats', in the conversion's order. */
 function* libraryRecords() {
     for (let t = 1; t <= TAGS; t++) {
         const id = BigInt(t);
@@ -89,7 +80,6 @@ test('separate library and chat loads bound resident growth without one spill pe
     const sampler = setInterval(() => { peak = Math.max(peak, process.memoryUsage().rss); }, 20);
     const results = [];
     try {
-        // The converter installs the library before it starts a separate, owner-ordered chat load.
         for (const records of [libraryRecords, chatRecords]) {
             const load = store.load(BUDGET);
             let batch = [];

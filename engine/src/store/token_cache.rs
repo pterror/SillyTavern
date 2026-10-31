@@ -1,8 +1,3 @@
-//! The token-count cache (build path 5b; design Q-C6): results of tokenizing a text, keyed by the tokenizer's
-//! identity and the text's hash, in tables (counts, token ids). Derived entries written without a record: a crash
-//! may lose the ones not yet flushed, which only costs tokenizing those texts again. Each table is kept at a cap of
-//! entries by evicting the least recently used, a bounded slice at a time.
-
 use std::collections::BTreeMap;
 
 use super::StoreError;
@@ -11,20 +6,15 @@ use super::kinds::key;
 use super::library::counter;
 use crate::keyspace::val::{get_bytes, get_u64, put_bytes, put_u64};
 
-/// Per (table, identity, hash): `[last used (ms), value bytes]`.
 pub const TOKEN_VAL: u64 = 180;
-/// Per (table, last used, identity, hash): the order eviction reads, least recently used first.
 pub const TOKEN_LRU: u64 = 181;
-/// Per table: how many entries it holds.
 pub const TOKEN_N: u64 = 182;
 
-/// One result to keep.
 pub struct Put {
     pub table: u64,
     pub identity: Vec<u8>,
     pub hash: Vec<u8>,
     pub value: Vec<u8>,
-    /// Written over a stored value; otherwise a stored value stays and is only marked used.
     pub replace: bool,
 }
 
@@ -56,7 +46,6 @@ fn encode(used: u64, value: &[u8]) -> Vec<u8> {
     v
 }
 
-/// A stored result: when it was last used, and its value.
 pub fn get(
     view: &View,
     table: u64,
@@ -68,13 +57,10 @@ pub fn get(
         .transpose()
 }
 
-/// How many entries a table holds.
 pub fn count(view: &View, table: u64) -> Result<u64, StoreError> {
     Ok(counter(view, &key::id(TOKEN_N, table))?.max(0) as u64)
 }
 
-/// Keeps results at `now`: a new key is stored; a stored one keeps its value unless `replace`, and is marked used
-/// only once it is `granularity` ms or more behind `now`.
 pub fn put(
     view: &View,
     out: &mut Out,
@@ -82,7 +68,6 @@ pub fn put(
     now: u64,
     granularity: u64,
 ) -> Result<(), StoreError> {
-    // Later puts of a key in the same batch see the earlier ones.
     let mut seen: BTreeMap<Vec<u8>, (u64, Vec<u8>)> = BTreeMap::new();
     for p in puts {
         let k = val_key(p.table, &p.identity, &p.hash);
@@ -115,8 +100,6 @@ pub fn put(
     Ok(())
 }
 
-/// Evicts up to `batch` of a table's least recently used entries while it holds more than `cap`; answers whether
-/// it still does.
 pub fn evict_step(
     view: &View,
     out: &mut Out,

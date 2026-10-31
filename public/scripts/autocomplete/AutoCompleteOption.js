@@ -14,14 +14,14 @@ export class AutoCompleteOption {
     /** @type {boolean} */ makeSelectable = false;
     /** @type {boolean} */ forceFullNameMatch = false;
 
-    /** Negative values start replacement earlier than normal (e.g. -2 to include 2 preceding chars). @type {number} */
+    /** @type {number} */
     replacementStartOffset = 0;
 
-    /** Lower values sort first. @type {number} */
+    /** @type {number} */
     sortPriority = 100;
 
 
-    /** Used as a comparison value when removing duplicates. @type {any} */
+    /** @type {any} */
     get value() {
         return this.name;
     }

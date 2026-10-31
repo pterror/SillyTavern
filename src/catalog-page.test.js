@@ -40,6 +40,5 @@ test('a list source pages by key, filters by ids and by a prefix of the name ign
     assert.deepEqual(await source.query({ ...request, cursor: 'delta' }, {}), { rows: [rows[2]], cursor: null });
     assert.deepEqual(await source.query({ ...request, search: 'ech' }, {}), { rows: [rows[2]], cursor: null });
     assert.deepEqual(await source.query({ ...request, ids: ['delta', 'nope'] }, {}), { rows: [rows[0]], cursor: null });
-    // A cursor past every key is the end.
     assert.deepEqual(await source.query({ ...request, cursor: '\uffff' }, {}), { rows: [], cursor: null });
 });

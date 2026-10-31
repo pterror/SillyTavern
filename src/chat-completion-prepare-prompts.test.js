@@ -25,7 +25,6 @@ function baseFixture() {
     return { prompts, promptOrder };
 }
 
-// (a), (b), (c), (d): combined happy-path merge + both overrides applying.
 {
     const { prompts, promptOrder } = baseFixture();
 
@@ -42,32 +41,25 @@ function baseFixture() {
 
     assert.ok(result instanceof PromptCollection, 'result should be a real PromptCollection instance');
 
-    // (a) worldInfoBefore is in the user's order with injection_depth: 7 - the merge loop must pick
-    // that up as an override onto the systemPrompts-built entry (which has no injection_depth of its own).
     const wib = result.get('worldInfoBefore');
     assert.ok(wib, 'worldInfoBefore should be present');
     assert.strictEqual(wib.injection_depth, 7, 'worldInfoBefore should inherit injection_depth from the user-configured prompt-manager entry');
     assert.strictEqual(wib.content, 'before text', 'worldInfoBefore content should come from the system-prompts build (no wiFormat configured)');
 
-    // (b) groupNudge is not present anywhere in promptOrder - should be added fresh with no override
-    // (injection_depth stays undefined, matching the systemPrompts-array entry's own default).
     assert.ok(result.has('groupNudge'), 'groupNudge should be added fresh even though it is unordered');
     const groupNudge = result.get('groupNudge');
     assert.strictEqual(groupNudge.injection_depth, undefined, 'groupNudge should have no injection_depth override applied');
 
-    // (c) main: enabled, not forbidden, override supplied -> content replaced, recorded in overriddenPrompts.
     const main = result.get('main');
     assert.ok(main, 'main should be present');
     assert.strictEqual(main.content, 'OVERRIDE MAIN CONTENT', 'main content should be replaced by systemPromptOverride');
     assert.ok(result.overriddenPrompts.includes('main'), 'overriddenPrompts should include main');
 
-    // (d) jailbreak: same as (c) but for the jailbreak override.
     const jailbreak = result.get('jailbreak');
     assert.ok(jailbreak, 'jailbreak should be present');
     assert.strictEqual(jailbreak.content, 'OVERRIDE JAILBREAK CONTENT', 'jailbreak content should be replaced by jailbreakPromptOverride');
     assert.ok(result.overriddenPrompts.includes('jailbreak'), 'overriddenPrompts should include jailbreak');
 
-    // (g) sanity: other expected identifiers from the systemPrompts build are present too.
     for (const identifier of ['worldInfoAfter', 'charDescription', 'charPersonality', 'scenario', 'impersonate', 'quietPrompt', 'bias']) {
         assert.ok(result.has(identifier), `expected identifier "${identifier}" to be present in the final collection`);
     }
@@ -75,7 +67,6 @@ function baseFixture() {
     console.log('PASS: merge + overrides happy path (a, b, c, d, g)');
 }
 
-// (e): forbid_overrides: true on main should skip the override entirely.
 {
     const { prompts, promptOrder } = baseFixture();
     const mainDef = prompts.find(p => p.identifier === 'main');
@@ -99,9 +90,6 @@ function baseFixture() {
     console.log('PASS: forbid_overrides skip (e)');
 }
 
-// (f): main disabled for this character (promptOrder enabled: false) should skip the override, even
-// though getPromptCollection()'s own "main" special case still keeps a blank-content main in the
-// collection (so this exercises the isPromptDisabledForCharacter() guard specifically, not mere absence).
 {
     const { prompts, promptOrder } = baseFixture();
     const mainOrderEntry = promptOrder[0].order.find(e => e.identifier === 'main');

@@ -270,19 +270,9 @@ import {
  */
 
 /**
- * Server-side port of `prepareOpenAIMessages(input, dryRun)` - the top-level Chat Completion
- * prompt-assembly entry point. See the module doc comment above for the full scope-boundary/
- * judgment-call list, especially (5): errors thrown while preparing/populating the prompt PROPAGATE
- * to this function's own caller rather than being swallowed into a UI toast.
- *
  * @param {PrepareOpenAIMessagesInput} input
- * @param {boolean} [dryRun] Equivalent of the client's own `dryRun` param.
+ * @param {boolean} [dryRun]
  * @returns {Promise<{chat: object[]|null, counts: Record<string, number>|false, canUseTools: boolean, canPerformToolCalls: boolean}>}
- * `canUseTools`/`canPerformToolCalls` are the real, resolved tool-capability values computed
- * internally (judgment call 14) - returned in addition to being threaded through to
- * `populateChatCompletion()`/`populateChatHistory()`, so a caller can also inspect what was decided
- * (e.g. to decide whether it's worth building a tool-definitions payload at all). On the early-return
- * path (judgment call 1) both are `false` (no capability resolution happens before that guard).
  */
 export async function prepareOpenAIMessages({
     name2,
@@ -321,9 +311,8 @@ export async function prepareOpenAIMessages({
     historyOptions = {},
     dialogueExamplesOptions = {},
 } = {}, dryRun = false) {
-    void name2; // See judgment call 13 - accepted for interface parity, never forwarded directly.
+    void name2;
 
-    // ---- Early-return guard (judgment call 1) --------------------------------------------------
     if (!hasActiveCharacter && dryRun) {
         return { chat: null, counts: false, canUseTools: false, canPerformToolCalls: false };
     }
@@ -332,11 +321,6 @@ export async function prepareOpenAIMessages({
         throw new Error('prepareOpenAIMessages: tokenHandler is required');
     }
 
-    // ---- Tool-capability resolution (judgment call 14) -----------------------------------------
-    // Real, settings-driven resolution via src/chat-completion-tool-capabilities.js, replacing what
-    // used to be a caller-pre-resolved set of plain booleans/enum values. Matches the client's own
-    // derivation in public/scripts/chat-completion-settings.js's populateChatHistory() exactly, with
-    // an optional per-value override escape hatch for callers with a genuine reason to force one.
     const canUseTools = canUseToolsOverride ?? isToolCallingSupported({ mainApi, settings, model, modelList });
     const includeSignature = includeSignatureOverride ?? isReasoningSignatureSupported(settings);
     const isToolReasoningProvider = isInterleavedReasoningProvider(settings?.chat_completion_source);
@@ -364,24 +348,7 @@ export async function prepareOpenAIMessages({
             promptOrder, characterId,
             toolBudgetTokens, continuePrefill, supportsAssistantPrefill, namesInCompletion,
             assistantPrefill, pinExamples, injectionTable, macroContext, tokenHandler,
-            // Media inlining (judgment call 15): `populateChatCompletion()` DOES have a direct
-            // top-level use for `imageInlining`/`imageQuality`/`chatCompletionSource`/`directories`
-            // (its own quiet-prompt-image wiring, chat-completion-populate.js scope boundary #2) -
-            // forwarded here directly, derived from `settings.chat_completion_source` (no separate
-            // caller-supplied param needed for that one, since `settings` already carries it and is
-            // required for tool-capability resolution above).
             imageInlining, imageQuality, chatCompletionSource, directories,
-            // `populateChatCompletion()` has no direct top-level use for `canUseTools`/
-            // `includeSignature`/`toolReasoningMode`/`includeToolReasoning`/`videoInlining`/
-            // `audioInlining` themselves - it only forwards options through to
-            // `populateChatHistory()`, and (re-verified against src/chat-completion-populate.js's
-            // real forwarding code) its auto-merge into `populateChatHistory`'s options is only
-            // `{ type, cyclePrompt, continuePrefill, tokenHandler, macroContext, ...historyOptions }`
-            // - none of these values are part of that auto-merged set. So they must be (and are)
-            // explicitly folded into `historyOptions` here, since that's what `populateChatHistory()`
-            // actually consumes for its tool-call-reconstruction and media-inlining logic. A
-            // caller-supplied `historyOptions` still wins on conflict (spread last), matching
-            // populateChatCompletion()'s own "nested options win" convention for this bag.
             historyOptions: {
                 canUseTools, includeSignature, toolReasoningMode, includeToolReasoning,
                 imageInlining, videoInlining, audioInlining, imageQuality, chatCompletionSource, directories,
@@ -390,19 +357,10 @@ export async function prepareOpenAIMessages({
             dialogueExamplesOptions,
         });
     } finally {
-        // promptManager.setChatCompletion(chatCompletion) - UI-only bookkeeping, skipped (judgment
-        // call 6). Runs even when the try block threw, matching the client's own `finally` guarantee
-        // (judgment call 5) - EXCEPT for the two steps below, which the client itself only performs
-        // when it reaches the (equivalent of the) `finally` block at all - which it always does, same
-        // as here.
         if (squashSystemMessages && dryRun == false) { // eslint-disable-line eqeqeq -- see judgment call 7: loose comparison kept verbatim from the client.
             await chatCompletion.squashSystemMessages();
         }
-        // promptManager.render(false) - pure UI rendering, skipped (judgment call 8).
     }
-
-    // eventSource.emit(CHAT_COMPLETION_PROMPT_READY, ...) - not implemented, see judgment call 10.
-    // openai_messages_count - not computed, see judgment call 11.
 
     const chat = chatCompletion.getChat();
     return { chat, counts: tokenHandler.counts, canUseTools, canPerformToolCalls: resolvedCanPerformToolCalls };

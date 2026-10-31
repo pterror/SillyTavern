@@ -9,7 +9,6 @@ import { setConfigFilePath } from './util.js';
 import { USER_DIRECTORY_TEMPLATE } from './constants.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-// user-stores.js reads the config at import time.
 setConfigFilePath(path.join(here, '..', 'config.yaml'));
 
 const { setStoreEngine, closeUserStores } = await import('./user-stores.js');
@@ -29,7 +28,6 @@ after(async () => {
 });
 
 /**
- * A user's directories under the test's data root.
  * @param {string} root
  * @param {string} handle
  * @returns {any}
@@ -39,7 +37,6 @@ function directoriesFor(root, handle) {
 }
 
 /**
- * A new user as the content manager makes one: the shipped settings and some shipped bundles in files.
  * @param {string} handle
  */
 function seedUser(handle) {
@@ -53,7 +50,6 @@ function seedUser(handle) {
 }
 
 /**
- * The user's document closed and opened again from the store, as after a restart.
  * @param {any} directories
  * @param {string} handle
  */
@@ -66,14 +62,12 @@ test('opening converts the files, moves them aside, and reads the settings from 
     const directories = seedUser('fresh');
     await openSettingsDocument(directories, 'fresh');
     assert.equal(fs.existsSync(path.join(directories.root, 'settings.json')), false);
-    // (the first read shards settings.json into settings/, which is what goes aside)
     assert.ok(fs.existsSync(path.join(directories.root, settingsStore.FILES_ASIDE, 'settings', 'power_user.json')));
     assert.deepEqual(fs.readdirSync(directories.openAI_Settings), []);
     const settings = settingsStore.readAllSettings(directories);
     assert.equal(settings.oai_settings.preset_settings_openai, SHIPPED.oai_settings.preset_settings_openai);
     assert.equal(settings.power_user.theme, SHIPPED.power_user.theme);
     assert.equal(settingsStore.readSettingsAtPaths(directories, ['power_user.theme'])['power_user.theme'], SHIPPED.power_user.theme);
-    // A user whose files are aside reads nothing from them without the document.
     setSettingsDocument(directories, undefined);
     assert.throws(() => settingsStore.readAllSettings(directories), /settings model/);
     await openSettingsDocument(directories, 'fresh');
@@ -90,7 +84,6 @@ test('a write is shown at once and kept: the reopened model gives it', async () 
     assert.equal(back.power_user.auto_swipe, true);
     assert.equal(back.oai_settings.temp_openai, 0.42);
     assert.equal(back.main_api, 'openai');
-    // A whole save, then a reset to a new user's settings.
     await settingsStore.writeNamedSettings(directories, { ...back, swipes: false });
     await reopen(directories, 'writes');
     assert.equal(settingsStore.readAllSettings(directories).swipes, false);
@@ -131,12 +124,10 @@ test('bundles are the store\'s: listed, saved, renamed and deleted, a selected o
     assert.equal(await renameBundle(directories, 'preset.openai', 'Mine2', 'Default'), 'taken');
     assert.equal(await renameBundle(directories, 'preset.openai', 'Mine2', 'Ours'), 'renamed');
     assert.equal(await readBundle(directories, 'preset.openai', 'Mine2'), null);
-    // The prompts went with it.
     assert.deepEqual((await readBundle(directories, 'preset.openai', 'Ours'))?.prompts, preset.prompts);
     assert.equal(await deleteBundle(directories, 'preset.openai', 'Ours'), true);
     assert.equal(await deleteBundle(directories, 'preset.openai', 'Ours'), false);
     assert.deepEqual((await listBundles(directories, 'preset.openai')).map(b => b.name), ['Default']);
-    // Selecting the edited preset's twin: its values are the settings', through a save.
     await writeBundle(directories, 'preset.openai', 'Warm', { ...preset, temperature: 1.7 });
     const settings = settingsStore.readAllSettings(directories);
     await settingsStore.writeNamedSettings(directories, { oai_settings: { ...settings.oai_settings, preset_settings_openai: 'Warm', temp_openai: 1.7 } });
@@ -177,12 +168,10 @@ test('a character\'s own preset and override: its context reads them, the user\'
     assert.notEqual(read({ avatar: 'Other.png' })['oai_settings.temp_openai'], 1.9);
     assert.notEqual(readUserSettings(directories, ['oai_settings.temp_openai'])['oai_settings.temp_openai'], 1.9);
 
-    // A save of the user's own settings leaves the character's.
     await settingsStore.writeSettingsKeys(directories, { 'power_user.auto_swipe': true });
     assert.equal(read({ avatar: 'Cara.png' })['oai_settings.temp_openai'], 1.9);
     await reopen(directories, 'levels');
     assert.deepEqual(Object.values(read({ avatar: 'Cara.png' })), [1.9, 0.6, 'Hot']);
-    // Unstated, the character reads the user's again.
     await settingsDocumentOf(directories).writeLevel('character:Cara.png', { bundles: { 'preset.openai': null }, delete: ['preset.openai/top_p'] });
     assert.deepEqual(read({ avatar: 'Cara.png' }), read({}));
 });
@@ -204,7 +193,6 @@ test('a save in a context goes to the range\'s top level: the character\'s, the 
         return document.saveIn(cara, range, saved);
     };
 
-    // Top: the character. The temperature and a preference change.
     await edit(all, s => {
         s.oai_settings.temp_openai = 1.3;
         s.power_user.auto_swipe = true;
@@ -214,17 +202,14 @@ test('a save in a context goes to the range\'s top level: the character\'s, the 
     assert.notEqual(document.settings.oai_settings.temp_openai, 1.3);
     assert.equal(document.settings.power_user.auto_swipe, true);
 
-    // Top: the user. Cara's still wins in her context; the user's is the fallback.
     await edit({ from: 'default', to: 'user' }, s => { s.oai_settings.temp_openai = 0.4; });
     assert.equal(document.settings.oai_settings.temp_openai, 0.4);
     assert.equal(document.view(cara).settings.oai_settings.temp_openai, 1.3);
     assert.equal(document.view({}).sources['oai_settings.temp_openai'], 'user');
 
-    // Only the character's level: what Cara sets, and nothing else.
     const caraOnly = document.view(cara, { from: 'character', to: 'character' });
     assert.deepEqual(Object.values(caraOnly.sources), ['character']);
 
-    // Top: the preset. The preset's file changes.
     await edit({ from: 'default', to: 'preset' }, s => { s.oai_settings.top_p_openai = 0.77; });
     assert.equal((await readBundle(directories, 'preset.openai', document.settings.oai_settings.preset_settings_openai))?.top_p, 0.77);
 });
@@ -245,13 +230,11 @@ test('a value past what the model allows reads as its limit, from the model list
     const paths = ['oai_settings.openai_max_context', 'oai_settings.temp_openai'];
     assert.deepEqual(readSettingsFor(directories, {}, paths), { 'oai_settings.openai_max_context': 30000, 'oai_settings.temp_openai': 1.5 });
     assert.equal(document.settings.oai_settings.temp_openai, 1.8);
-    // The source lists the model with less: the next read is within it.
     assert.equal(await rememberModelList(directories, 'mistralai', [{ id: 'm', max_context_length: 20000, description: 'x' }]), true);
     assert.equal(readUserSettings(directories, paths)['oai_settings.openai_max_context'], 20000);
     assert.equal(await rememberModelList(directories, 'mistralai', [{ id: 'm', max_context_length: 20000, description: 'y' }]), false);
     assert.equal(document.view({}, { from: 'default', to: 'user' }).settings.oai_settings.openai_max_context, 20000);
     assert.equal(document.settings.oai_settings.openai_max_context, 30000);
-    // Kept on disk: a restart reads the same.
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(directories.root, 'model-lists', 'mistralai.json'), 'utf8')), [{ id: 'm', max_context_length: 20000 }]);
 });
 
@@ -264,13 +247,11 @@ test('a write that selects another preset takes its values of the fields the ser
     await writeBundle(directories, 'preset.openai', 'Cool', { temperature: 0.4 });
     await document.writeAt({}, { from: 'default', to: 'user' }, 'oai_settings.temp_openai', 0.6);
     assert.equal(document.settings.oai_settings.temp_openai, 0.6);
-    // The page's save of the selection: what the server owns is kept as the server has it.
     const over = settingsStore.readAllSettings(directories);
     const sent = pageWrite('oai_settings', { ...over.oai_settings, preset_settings_openai: 'Cool' }, over);
     await settingsStore.writeSettingsKeys(directories, { oai_settings: sent?.value });
     assert.equal(document.settings.oai_settings.preset_settings_openai, 'Cool');
     assert.equal(document.settings.oai_settings.temp_openai, 0.4);
-    // A write that keeps the selection keeps the user's own value.
     await document.writeAt({}, { from: 'default', to: 'user' }, 'oai_settings.temp_openai', 0.7);
     await settingsStore.writeSettingsKeys(directories, { oai_settings: settingsStore.readAllSettings(directories).oai_settings });
     assert.equal(document.settings.oai_settings.temp_openai, 0.7);

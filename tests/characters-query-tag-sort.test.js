@@ -1,9 +1,6 @@
 import { describe, test, expect, jest, beforeAll, beforeEach, afterEach } from '@jest/globals';
 import path from 'node:path';
 
-// /query with included and excluded tags: the same lists as the plain rule gives, through every sort, direction and
-// fav filter, by offset pages and by cursor.
-
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
 /** @type {typeof import('./converted-user.fixture.js')} */
@@ -27,7 +24,6 @@ beforeEach(async () => {
 
 afterEach(() => user.close());
 
-// Entities with sort keys that tie, and tags: T1 on most, T2 on some, T3 on few.
 const CHARACTERS = [
     { id: 'b.png', name: 'Same', fav: true, date: 100, chat: true, tags: ['T1', 'T2'] },
     { id: 'a.png', name: 'Same', fav: false, date: 100, chat: true, tags: ['T1'] },
@@ -49,7 +45,6 @@ const message = { name: 'User', is_user: true, mes: 'a message', send_date: 'x',
 
 async function seed() {
     for (const t of ['T1', 'T2', 'T3']) await user.store.lib.writeTag({ id: t, name: t });
-    // The chats' messages are all received at one moment, so equal chats tie in time and size.
     const now = jest.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000);
     try {
         for (const c of CHARACTERS) {
@@ -69,7 +64,6 @@ async function seed() {
     await readModel();
 }
 
-/** Reads what the store holds for each entity: the sort keys and tags the expected lists are made from. */
 async function readModel() {
     const page = await user.store.lib.query({ limit: 100, wantRows: true, wantTotal: false });
     MODEL = /** @type {any[]} */ (page.rows).map(({ type, item }) => (type === 'group'
@@ -77,14 +71,9 @@ async function readModel() {
         : { type, id: item.avatar, name_fold: item.name.toLowerCase(), fav: item.fav, date: item.date_added, lastChat: item.date_last_chat, size: item.chat_size, create_date: item.create_date === undefined ? null : Date.parse(item.create_date), data_size: item.data_size, tags: item.tag_ids }));
 }
 
-/** UTF-8 byte order, as SQLite's BINARY collation. */
 const bytes = (a, b) => Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
 
 /**
- * The expected list, from the rule itself: ascending, the sort key, then characters before groups, then creation
- * order (the engine's orders break ties by entity id, not by upstream's avatar or `<id>.json`); descending, that list
- * reversed. A fav sort only picks which fav value
- * comes first, with names and ties ascending inside each.
  * @param {string} sortField
  * @param {'asc'|'desc'} sortOrder
  * @param {boolean | undefined} fav
@@ -99,7 +88,6 @@ function expected(sortField, sortOrder, fav, tags) {
         create_date: e => e.create_date, data_size: e => e.data_size,
     }[sortField];
     const byNumber = (ka, kb) => (ka === null || kb === null) ? (ka === kb ? 0 : ka === null ? -1 : 1) : ka - kb;
-    // Seeded characters first, then groups, each in list order: the order they were created in.
     const created = e => (e.type === 'group' ? CHARACTERS.length + GROUPS.findIndex(g => g.id === e.id) : CHARACTERS.findIndex(c => c.id === e.id));
     const tie = (a, b) => (a.type === b.type ? 0 : a.type === 'group' ? 1 : -1) || created(a) - created(b);
     return [...entities].sort((a, b) => {
@@ -128,7 +116,6 @@ const FILTERS = [
     { include: ['T1', 'T2'], exclude: ['T3'] },
 ];
 
-/** Every combination's list, as `/query` gives it, with the rule's. */
 async function everyList() {
     const out = [];
     for (const sortField of SORTS) {
@@ -197,13 +184,11 @@ describe('/query included and excluded tags', () => {
     test('under the work cap, a page that needs more reading comes back with more and a cursor, and following it lists everything once', async () => {
         await seed();
         {
-            // The cap bounds what a page reads past its own rows: only a list that leaves entities out can reach it.
             const reachedCap = new Set();
             for (const tags of [{ include: ['T1'], exclude: ['T3'] }, { include: ['T1', 'T2'] }, { exclude: ['T3'] }, {}]) {
                 for (const sortOrder of ['asc', 'desc']) {
                     const filter = { sortField: 'name', sortOrder, tags: { mode: 'and', ...tags } };
                     const whole = await listed(filter);
-                    // As the client does: ask for a page, follow `more` with the cursor until it's full or ends.
                     for (const pageSize of [2, 3]) {
                         const followed = [];
                         let cursor;

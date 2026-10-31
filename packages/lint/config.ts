@@ -1,12 +1,6 @@
 import path from 'node:path';
 import type { OxlintConfig } from 'vite-plus/lint';
 
-// The packages' lint rules, in one place: the repo's vite.config.ts uses them for `vp check`, and the rules' test
-// lints the fixtures with them. Globs are relative to the repo root.
-// A package reaches only what its package.json declares (`st/declared-imports`), so the old code can't be imported.
-// Network and timers are banned on the page outright: a view arrives in the answer to an action or is pushed by the
-// server, so nothing on the page fetches, polls or waits. The one module that talks to the server is exempt.
-
 const PAGE_BANNED_GLOBALS = [
     { name: '$', message: 'No jQuery in the new code.' },
     { name: 'jQuery', message: 'No jQuery in the new code.' },
@@ -30,7 +24,6 @@ export const lintConfig = {
     rules: {
         'st/declared-imports': 'error',
         'import/no-cycle': 'error',
-        // A condition is a boolean: `[] && x` and `count && x` are mistakes the types can see (after ~/git/enso's set).
         'typescript/strict-boolean-expressions': [
             'error',
             { allowString: false, allowNumber: false, allowNullableObject: true },
@@ -55,12 +48,10 @@ export const lintConfig = {
             },
         },
         {
-            // Tests stand in for the server (they replace fetch); they're not the page.
             files: ['packages/ui/test/**', 'packages/page/test/**', 'packages/areas/*/page/**/*.test.{ts,tsx}'],
             rules: { 'no-restricted-globals': 'off' },
         },
         {
-            // The client is the one place the page talks to the server (and waits to reconnect).
             files: ['packages/page/src/client.ts'],
             rules: {
                 'no-restricted-globals': [
@@ -72,5 +63,4 @@ export const lintConfig = {
     ],
 } satisfies OxlintConfig;
 
-/** The fixtures break the rules on purpose: only the rules' own test lints them. */
 export const FIXTURES = 'packages/lint/fixtures/**';

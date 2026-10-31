@@ -20,8 +20,6 @@ let SESSION_HEADER;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
-// writeCharacterData()'s DEFAULT_AVATAR_PATH fallback ('./public/img/ai4.png') is repo-root-relative, not
-// tests/-relative - same reasoning/fix as characters-cross-reflink.test.js's own chdir.
 const originalCwd = process.cwd();
 
 beforeAll(async () => {
@@ -64,8 +62,7 @@ afterEach(async () => {
 });
 
 /**
- * Two chats of Alice, each a session of its own: the tab's, and one the tests move it to (`name`).
- * @param {string} name The other chat's name.
+ * @param {string} name
  * @returns {Promise<{ tab: string, other: string }>}
  */
 async function twoChats(name) {
@@ -75,7 +72,6 @@ async function twoChats(name) {
     return { tab, other };
 }
 
-/** The messages the tab shows in Alice's tree. */
 async function shownBy(tab) {
     return (await fixture.sessionPath(user.store, { avatar: 'Alice.png' }, tab)).map(m => m.mes);
 }
@@ -164,10 +160,6 @@ describe('/edit no longer writes chat into the card file, but still updates the 
         const editResponse = await edit('Alice.png', { ch_name: 'Alice', description: 'desc', avatar_url: 'Alice.png', chat: 'Alice - Edited Chat' });
         expect(editResponse.status).toBe(200);
 
-        // Read through the authoritative seam, not off the PNG. Since the residency migration an /edit that
-        // changes no pixels does not rewrite the file at all, so the file still holds whatever /create wrote
-        // (which does include a `chat`); what must not carry a chat is the card CONTENT, which is what every
-        // reader - and every export - actually sees.
         const card = JSON.parse(await readCardContent(directories, 'Alice.png'));
         expect(card.chat).toBeUndefined();
     });
@@ -221,7 +213,6 @@ describe('/merge-attributes carves chat out the same way, and never writes it in
         const mergeResponse = await mergeAttributes({ avatar: 'Alice.png', chat: 'Alice - Merged Chat' }, tab);
         expect(mergeResponse.status).toBe(200);
 
-        // Authoritative content, not the PNG - see the /edit sibling test above for why.
         const card = JSON.parse(await readCardContent(directories, 'Alice.png'));
         expect(card.chat).toBeUndefined();
 
@@ -242,9 +233,6 @@ describe('/merge-attributes carves chat out the same way, and never writes it in
 });
 
 describe('/merge-attributes issues fresh per-field hashes instead of making the caller compute its own', () => {
-    // The client never calls getStringHash() itself for this anymore - it only ever echoes back whatever hash
-    // the server most recently handed it. These assertions cover that whole round trip through the one seam
-    // that actually issues and checks the hash: this endpoint.
 
     test('omitting _loadedFieldHashes entirely keeps the old, no-hashes response shape (opt-in, not a breaking change)', async () => {
         expect((await create({ ch_name: 'Alice', description: 'desc', file_name: 'Alice' })).status).toBe(200);
@@ -252,7 +240,6 @@ describe('/merge-attributes issues fresh per-field hashes instead of making the 
         const mergeResponse = await mergeAttributes({ avatar: 'Alice.png', description: 'no hashes requested' });
         expect(mergeResponse.status).toBe(200);
 
-        // express's sendStatus(200) body is the literal string 'OK' - not JSON, and definitely no `hashes` key.
         const text = await mergeResponse.text();
         expect(text).toBe('OK');
     });
@@ -288,8 +275,6 @@ describe('/merge-attributes issues fresh per-field hashes instead of making the 
         expect(first.status).toBe(200);
         const { hashes } = await first.json();
 
-        // Nothing recomputed locally here - `hashes['data.description']` is echoed verbatim, exactly like a
-        // client would do on its next edit round.
         const second = await mergeAttributes({
             avatar: 'Alice.png',
             data: { description: 'v3' },
@@ -315,7 +300,6 @@ describe('/merge-attributes issues fresh per-field hashes instead of making the 
         expect(body.error).toBe('conflict');
         expect(body.conflictingFields).toEqual(['data.description']);
 
-        // Rejected save must not have landed.
         const card = JSON.parse(await readCardContent(directories, 'Alice.png'));
         expect(card.data.description).toBe('v1');
     });

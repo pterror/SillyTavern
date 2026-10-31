@@ -1,6 +1,3 @@
-/**
- * Fallback for `textarea.autoSetHeight` in browsers lacking `field-sizing: content` or typed `attr()`.
- */
 import { eventSource, event_types } from './events.js';
 
 const SELECTOR = 'textarea.autoSetHeight';
@@ -9,7 +6,7 @@ const supportsTypedAttr = CSS.supports('min-height', 'calc(attr(rows type(<numbe
 
 /**
  * @param {HTMLTextAreaElement} textarea
- * @returns {number} border-box height at the `rows=` size
+ * @returns {number}
  */
 function measureRowsHeight(textarea) {
     const { height, minHeight, fieldSizing } = textarea.style;
@@ -44,7 +41,6 @@ function autosizeTextarea(textarea) {
 }
 
 /**
- * Call after setting a value programmatically. Textareas that aren't rendered are skipped.
  * @param {ParentNode|Element} [root=document]
  */
 export function autosizeTextareas(root = document) {
@@ -60,9 +56,6 @@ export function autosizeTextareas(root = document) {
     root.querySelectorAll(SELECTOR).forEach(el => autosizeTextarea(/** @type {HTMLTextAreaElement} */ (el)));
 }
 
-/**
- * Installs delegated listeners for typing, radio-tab switches and the character editor opening.
- */
 export function initAutosizeTextareas() {
     if (supportsFieldSizing && supportsTypedAttr) {
         return;

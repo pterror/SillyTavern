@@ -17,10 +17,6 @@ let user;
 /** @type {any} */
 let directories;
 
-/**
- * The real worldinfo.js router over a store converted from the synthetic old user, behind a fake auth middleware,
- * plus a stand-in for the multer middleware that attaches `req.file` ahead of `/import` in server-startup.js.
- */
 beforeAll(async () => {
     user = await (await import('./converted-user.fixture.js')).convertedUser('st-worldinfo-test-');
     directories = user.directories;
@@ -50,7 +46,6 @@ afterAll(async () => {
     await user.close();
 });
 
-/** Each test starts with no books. */
 beforeEach(async () => {
     const { lib } = await stores.userStore(directories, 'u');
     for (const book of await lib.books.list()) await lib.books.delete(book.file_id);
@@ -72,7 +67,6 @@ async function getBook(name) {
     return (await postJson('/api/worldinfo/get', { name })).json();
 }
 
-/** The stored version of a book's entity (it moves on every write to the book). */
 async function bookVersion(name) {
     const { lib } = await stores.userStore(directories, 'u');
     const [id] = await lib.ids(3, [name]);
@@ -266,7 +260,6 @@ describe('worldinfo /entry/create and /entry/edit', () => {
     test('create takes the uid the page asks for while it is free, else the lowest free one', async () => {
         await postJson('/api/worldinfo/edit', { name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha') } } });
         expect(await (await postJson('/api/worldinfo/entry/create', { name: 'Book', uid: 5 })).json()).toEqual({ ok: true, entry: { uid: 5 } });
-        // 5 is taken now (another page asked first): the lowest free uid instead.
         expect(await (await postJson('/api/worldinfo/entry/create', { name: 'Book', uid: 5 })).json()).toEqual({ ok: true, entry: { uid: 1 } });
         expect(Object.keys((await getBook('Book')).entries).sort()).toEqual(['0', '1', '5']);
     });
@@ -374,7 +367,10 @@ describe('worldinfo missing books', () => {
         jest.restoreAllMocks();
     });
 
-    /** @param {import('@jest/globals').jest.Spied<typeof console.error>} errorSpy @param {string} name */
+    /**
+     * @param {import('@jest/globals').jest.Spied<typeof console.error>} errorSpy
+     * @param {string} name
+     */
     function printsFor(errorSpy, name) {
         return errorSpy.mock.calls.filter(([message]) => String(message).includes(`${name}.json`)).length;
     }
@@ -403,7 +399,11 @@ describe('worldinfo missing books', () => {
 });
 
 describe('lorebook actions', () => {
-    /** @param {string} name @param {object} entries @param {object} [extra] */
+    /**
+     * @param {string} name
+     * @param {object} entries
+     * @param {object} [extra]
+     */
     async function writeBook(name, entries, extra = {}) {
         const res = await postJson('/api/worldinfo/create', { name, unique: false, data: { entries, ...extra } });
         expect(res.status).toBe(200);
@@ -420,7 +420,6 @@ describe('lorebook actions', () => {
         const loaded = await getBook('Apply');
         const loadedHash = uid => jsonHash(loaded.entries[uid]);
 
-        // Another tab changes entry 1 and adds entry 3 after this page loaded the book.
         await postJson('/api/worldinfo/entry/edit', { name: 'Apply', uid: 1, data: makeEntry(1, 'one, elsewhere') });
         await postJson('/api/worldinfo/entries/apply', { name: 'Apply', entries: [{ uid: 3, base_hash: null, data: makeEntry(3, 'three, elsewhere') }] });
 
@@ -476,7 +475,6 @@ describe('lorebook actions', () => {
 
     test('rename moves the book and the links naming it in settings', async () => {
         const { writeAllSettings, readSettingsAtPaths } = await import('../src/settings-store.js');
-        // A charLore given to a settings write isn't stored: characters' links are the store's.
         writeAllSettings(directories, {
             world_info_settings: { world_info: { globalSelect: ['Old', 'Other'], charLore: [{ name: 'a', extraBooks: ['Old', 'Other'] }] } },
             power_user: { persona_data: { 'p.png': { lorebook: 'Old' }, 'q.png': { lorebook: 'Other' } } },
@@ -518,7 +516,6 @@ describe('lorebook actions', () => {
         expect(await lib.extraBookNames('wi-extra.png')).toEqual(['X']);
         expect(/** @type {any} */ ((await lib.cards(['wi-extra.png']))[0]).data.extensions.world).toBe('First');
 
-        // An unknown book or character: 404, nothing written.
         const unknownBook = await op({ op: 'add', books: ['Nope'] });
         expect(unknownBook.status).toBe(404);
         expect((await unknownBook.json()).unknownBooks).toEqual(['Nope']);
@@ -569,7 +566,6 @@ describe('charLore at the settings edges', () => {
         const settings = JSON.parse(got.settings);
         expect(settings.world_info_settings.world_info.charLore).toContainEqual({ name: 'wi-lore', extraBooks: ['Q', 'R'] });
         expect(settings.world_info_settings.world_info.globalSelect).toEqual(['P']);
-        // The hashes are of the settings as stored, which hold no charLore.
         expect(got.settingsHash).toBe(getStringHash(readAllSettingsAsJson(directories)));
         expect(got.keyHashes['world_info_settings.world_info']).toBe(getStringHash(JSON.stringify({ globalSelect: ['P'] }, null, 4)));
         expect(got.keyHashes['world_info_settings.world_info.charLore']).toBeUndefined();
@@ -578,21 +574,18 @@ describe('charLore at the settings edges', () => {
         const ignored = (/** @type {any[]} */ calls) => calls.filter(c => String(c[0]).includes('charLore')).length;
         const settled = () => new Promise(resolve => setTimeout(resolve, 200));
         try {
-            // A partial save carrying another charLore: stored without it, the links unchanged, one line logged.
             const other = { globalSelect: ['Q'], charLore: [{ name: 'wi-lore', extraBooks: ['P'] }] };
             expect((await postJson('/api/settings/save-partial', { keys: { 'world_info_settings.world_info': other } })).status).toBe(200);
             await settled();
             expect(readSettingsAtPaths(directories, ['world_info_settings.world_info'])['world_info_settings.world_info']).toEqual({ globalSelect: ['Q'] });
             expect(await lib.extraBookNames('wi-lore.png')).toEqual(['Q', 'R']);
             expect(ignored(warn.mock.calls)).toBe(1);
-            // One carrying what the links are logs nothing; a key at charLore itself writes nothing.
             const same = { world_info_settings: { world_info: { globalSelect: ['P'], charLore: [{ name: 'wi-lore', extraBooks: ['Q', 'R'] }] } } };
             expect((await postJson('/api/settings/save-partial', { keys: same })).status).toBe(200);
             expect((await postJson('/api/settings/save-partial', { keys: { 'world_info_settings.world_info.charLore': [] } })).status).toBe(200);
             await settled();
             expect(ignored(warn.mock.calls)).toBe(1);
             expect(readSettingsAtPaths(directories, ['world_info_settings'])['world_info_settings']).toEqual({ world_info: { globalSelect: ['P'] } });
-            // A full save is the same.
             expect((await postJson('/api/settings/save', { ...settings, world_info_settings: { world_info: other } })).status).toBe(200);
             await settled();
             expect(ignored(warn.mock.calls)).toBe(2);

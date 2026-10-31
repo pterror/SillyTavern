@@ -1,10 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// How a tab gets its session (public/scripts/tab-session.js): no two open tabs share one. A fresh tab takes the user's
-// most recent session no tab holds, so closing a tab and opening a new one comes back to the same session; a
-// duplicated tab, or a restored one whose session another tab took meanwhile, forks it from where it was.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -17,13 +13,12 @@ async function tabState(page) {
     });
 }
 
-/** The tab's sessionStorage of its session, as a duplicate or a restore brings it back. @param {import('@playwright/test').Page} page */
+/** @param {import('@playwright/test').Page} page */
 async function tabStorage(page) {
     return page.evaluate(() => Object.fromEntries(Object.keys(sessionStorage).filter(k => k.startsWith('st:tab-')).map(k => [k, sessionStorage.getItem(k)])));
 }
 
 /**
- * A tab opened with `storage` in its sessionStorage, as a browser's duplicated or restored tab is.
  * @param {import('@playwright/test').BrowserContext} context
  * @param {Record<string, string>} storage
  */
@@ -45,7 +40,6 @@ async function freshTab(context) {
 }
 
 /**
- * Makes a character and moves the tab's session to it (its greeting chosen), waiting until the tab is told.
  * @param {import('@playwright/test').Page} page
  */
 async function moveToNewCharacter(page) {
@@ -66,7 +60,6 @@ async function moveToNewCharacter(page) {
     await expect.poll(async () => (await tabState(page)).place.length).toBe(place.length + 1);
 }
 
-/** Waits until the server has seen a closed tab's stream go. */
 const settle = () => new Promise(resolve => setTimeout(resolve, 500));
 
 test('two tabs open at once never share a session; closing one and opening a new tab comes back to it', async ({ browser, baseURL }) => {
@@ -159,7 +152,6 @@ test('a restored tab whose session another tab took resumes at its own last plac
         await page.close();
         await settle();
 
-        // Another device's new tab takes it and moves on.
         const taker = await freshTab(elsewhere);
         expect((await tabState(taker)).session).toBe(before.session);
         await moveToNewCharacter(taker);
@@ -175,7 +167,7 @@ test('a restored tab whose session another tab took resumes at its own last plac
     }
 });
 
-/** The browser gives no Web Locks (plain http to a LAN address). @param {import('@playwright/test').BrowserContext} context */
+/** @param {import('@playwright/test').BrowserContext} context */
 async function withoutWebLocks(context) {
     await context.addInitScript(() => {
         Object.defineProperty(navigator, 'locks', { configurable: true, value: undefined });
@@ -199,7 +191,6 @@ test('without Web Locks, a duplicated tab still forks: the later loaded of two t
         expect((await tabState(duplicate)).place).toEqual(before.place);
         expect((await tabStorage(duplicate))['st:tab-token']).not.toBe(storage['st:tab-token']);
 
-        // The earlier tab keeps its session and token, and each moves on its own.
         expect(await tabState(original)).toEqual(before);
         expect((await tabStorage(original))['st:tab-token']).toBe(storage['st:tab-token']);
         await moveToNewCharacter(duplicate);

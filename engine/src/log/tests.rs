@@ -23,7 +23,6 @@ fn rec(kind: &str, values: Vec<Value>) -> Record {
     Record::new(kind_by_name(kind).unwrap(), values).unwrap()
 }
 
-/// A deterministic mix of every kind, with texts from empty to several blocks long.
 fn records(n: u64) -> Vec<Record> {
     (0..n)
         .map(|i| match i % 7 {
@@ -116,7 +115,6 @@ const SMALL: Config = Config {
     file_target: 4096,
 };
 
-/// Commits `recs` in commits of 1..=5 records, waiting for each; returns each commit's positions.
 fn commit_all(log: &Log, recs: &[Record]) -> Vec<Vec<u64>> {
     let mut out = Vec::new();
     let mut i = 0;
@@ -154,7 +152,6 @@ fn records_read_together_match_their_reads_one_by_one() {
     let recs = records(400);
     let log = Log::open(&dir, SMALL).unwrap();
     let positions: Vec<u64> = commit_all(&log, &recs).concat();
-    // Every third record, last first, with some twice: only these are decoded, the ones between stepped over.
     let mut picked: Vec<usize> = (0..recs.len()).rev().filter(|i| i % 3 == 1).collect();
     picked.extend([7, 7, 250]);
     let read = log
@@ -220,14 +217,12 @@ fn copy_dir(from: &Path, to: &Path) {
 #[test]
 fn every_truncation_point_reopens_to_exactly_the_whole_groups() {
     let dir = temp_dir("torn");
-    // One file, so every byte of the log is in the file opening reads.
     let cfg = Config {
         block_size: 256,
         file_target: 1 << 20,
     };
     let recs = records(60);
     let log = Log::open(&dir, cfg).unwrap();
-    // Each commit's positions and where its group ends.
     let mut commits: Vec<(Vec<u64>, u64)> = Vec::new();
     for chunk in recs.chunks(3) {
         let p = log.append_wait(chunk.to_vec()).unwrap();
@@ -294,7 +289,6 @@ fn damage_with_whole_groups_after_it_refuses_to_open_and_changes_nothing() {
     let last_group = ends[ends.len() - 2];
     let copy = temp_dir("damage-copy");
     let (mut refused, mut opened) = (0, 0);
-    // Every byte before the last group, one at a time.
     for i in 0..last_group as usize {
         let mut damaged = original.clone();
         damaged[i] ^= 0x40;
@@ -324,7 +318,6 @@ fn damage_with_whole_groups_after_it_refuses_to_open_and_changes_nothing() {
                 assert_eq!(c.after_to, *ends.last().unwrap());
             }
             Ok(log) => {
-                // A byte in a block's unused tail: no item covers it, and nothing changed.
                 opened += 1;
                 let read = all(&log);
                 assert_eq!(
@@ -379,7 +372,6 @@ fn concurrent_commits_share_syncs_and_each_resolves_after_its_own() {
                     .map(|i| {
                         let r = vec![rec("fav", vec![Value::Id(t * 1000 + i), Value::Bit(true)])];
                         let p = log.append_wait(r.clone()).unwrap();
-                        // Durable once resolved: readable right away.
                         assert!(p[0] < log.durable_end());
                         assert_eq!(log.read(p[0]).unwrap(), r[0]);
                         p[0]
@@ -416,7 +408,6 @@ fn iterating_one_file_never_opens_the_next() {
     let recs = records(400);
     let log = Log::open(&dir, SMALL).unwrap();
     let positions: Vec<u64> = commit_all(&log, &recs).concat();
-    // As after cleaning removed file 1 before file 0.
     fs::remove_file(dir.join(file_name(&SMALL, 1))).unwrap();
     assert!(matches!(
         log.iterate_sized(0, 10_000),
@@ -436,7 +427,6 @@ fn iterating_one_file_never_opens_the_next() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
-/// SplitMix64, seeded.
 struct Rng(u64);
 
 impl Rng {
@@ -452,10 +442,6 @@ impl Rng {
     }
 }
 
-/// A log file of every kind of record, damaged at random (bytes flipped, overwritten, inserted, removed, the file
-/// cut), never panics: scanning it item by item, decoding or stepping over records, refuses or reads; opening it
-/// refuses or opens, and an opened log reads back to its end and by position, never an error after the open
-/// accepted it. `ST_FUZZ_SECS=<s>` runs it for s seconds (default 2); a failure names its seed.
 #[test]
 fn fuzz_damaged_log_files_never_panic_and_an_opened_log_reads_whole() {
     let dir = temp_dir("fuzz-src");
@@ -504,7 +490,6 @@ fn fuzz_damaged_log_files_never_panic_and_an_opened_log_reads_whole() {
         let path = copy.join(&name);
         fs::write(&path, &d).unwrap();
         let result = std::panic::catch_unwind(|| {
-            // Item by item, as opening and reads scan, with no group checks to stop at.
             let lf = LogFile::new(File::open(&path).unwrap());
             for decode in [true, false] {
                 let mut s = Scanner::new(&cfg, 0, &lf, 0, d.len() as u64);
@@ -514,7 +499,6 @@ fn fuzz_damaged_log_files_never_panic_and_an_opened_log_reads_whole() {
                     assert!(items < 1_000_000, "a scan didn't end");
                 }
             }
-            // Opened: what it accepted reads back whole.
             if let Ok(log) = Log::open(&copy, cfg) {
                 let mut from = 0;
                 let mut seen = Vec::new();
@@ -545,7 +529,6 @@ fn fuzz_damaged_log_files_never_panic_and_an_opened_log_reads_whole() {
                 .unwrap_or_default();
             panic!("log fuzz: seed {seed} panicked after {n} inputs: {msg}");
         }
-        // Opening may have cut a torn tail or written a marker: start each input from a clean copy.
         let _ = fs::remove_dir_all(&copy);
         fs::create_dir_all(&copy).unwrap();
         n += 1;

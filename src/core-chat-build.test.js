@@ -42,9 +42,6 @@ test('buildCoreChat: always keeps non-system messages', () => {
 });
 
 test('buildCoreChat: isSwipe pops the last surviving message, not the last raw message', () => {
-    // The true last element of `chat` is a system message that gets filtered out before the pop
-    // happens - the pop must remove whatever is now last (the 'b' user message), not the system
-    // message, and not blindly assume a fixed position.
     const chat = [
         { is_system: false, mes: 'a' },
         { is_system: false, mes: 'b' },
@@ -57,7 +54,7 @@ test('buildCoreChat: isSwipe pops the last surviving message, not the last raw m
 test('applyMessageTitles: no titles returns empty string', () => {
     assert.equal(applyMessageTitles({}), '');
     assert.equal(applyMessageTitles({ extra: {} }), '');
-    assert.equal(applyMessageTitles({ extra: { title: 'T' } }), ''); // no append_title
+    assert.equal(applyMessageTitles({ extra: { title: 'T' } }), '');
 });
 
 test('applyMessageTitles: top-level append_title + title included', () => {

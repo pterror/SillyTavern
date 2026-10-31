@@ -1,10 +1,4 @@
 #!/usr/bin/env node
-/**
- * Corpus stats CLI: read-only, through a running server's routes (it opens no store and reads no data file).
- *
- * Usage:
- *   node scripts/stats.js --url http://127.0.0.1:8000
- */
 
 const TOP_N = 10;
 
@@ -51,7 +45,6 @@ function table(headers, rows) {
 }
 
 /**
- * A session on the server, as the page gets one: its CSRF token and cookie.
  * @param {string} base
  */
 async function openSession(base) {
@@ -78,7 +71,6 @@ async function post(session, route, body) {
 }
 
 /**
- * A `/query` page of characters (and groups, with `includeGroups`) in JSON.
  * @param {{ base: string, token: string, cookie: string }} session
  * @param {object} filter
  * @param {{ field: string, order: string }} sort
@@ -88,7 +80,6 @@ function query(session, filter, sort, pageSize) {
     return post(session, '/api/characters/query', { filter, sort, page: 1, pageSize, want: ['rows', 'total'] });
 }
 
-/** A total as `/query` answers it: marked "~" when it is an estimate. */
 const totalOf = page => `${page.total}${page.approxTotal ? ' (~)' : ''}`;
 
 async function main() {

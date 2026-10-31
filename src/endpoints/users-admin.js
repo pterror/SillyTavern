@@ -210,7 +210,6 @@ router.post('/create', requireAdminMiddleware, async (request, response) => {
         await ensurePublicDirectoriesExist();
         const directories = getUserDirectories(newUser.handle);
         await checkForNewContent([directories], [CONTENT_TYPES.SETTINGS]);
-        // PNGs dropped into the new user's characters/ are imported without a restart.
         startDroppedWatch(directories);
         return response.json({ handle: newUser.handle });
     } catch (error) {

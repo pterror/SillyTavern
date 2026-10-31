@@ -6,17 +6,10 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// A llama.cpp text-completion send is a raw action: the server builds the prompt. The browser must not also run
-// its own prompt assembly, which counts every chat item through getTokenCountAsync() and so asks the server (and
-// the server llama.cpp) to tokenize each one. A fresh page has none of those texts cached, so the assembly shows
-// up as tokenizer requests carrying chat texts.
-
 const MODEL = 'raw-action-log-model';
 
 /**
- * A mock llama.cpp server that logs every request it gets.
- * @param {{ completion?: (n: number) => object | null, streamDelayMs?: number }} [options] The body `/completion` answers with
- * for the n-th reply (null answers with a 500 error instead), and how long a streamed reply takes to finish.
+ * @param {{ completion?: (n: number) => object | null, streamDelayMs?: number }} [options]
  * @returns {Promise<{ url: string, log: { method: string, url: string, body: string }[], close: () => Promise<void> }>}
  */
 function startMockLlamaCpp({ completion = n => ({ content: `Mock reply ${n}.` }), streamDelayMs = 0 } = {}) {
@@ -78,7 +71,6 @@ function startMockLlamaCpp({ completion = n => ({ content: `Mock reply ${n}.` })
 }
 
 /**
- * Creates a character with one greeting and returns its avatar filename.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
  * @param {string} greeting
@@ -113,7 +105,6 @@ async function openCharacter(page, avatar) {
 }
 
 /**
- * Switches to Text Completion, llama.cpp, at `url`, and connects.
  * @param {import('@playwright/test').Page} page
  * @param {string} url
  */
@@ -132,7 +123,6 @@ async function connectLlamaCpp(page, url) {
 }
 
 /**
- * Logs every request the page sends to the server's /api routes.
  * @param {import('@playwright/test').Page} page
  * @returns {{ url: string, body: any }[]}
  */
@@ -153,7 +143,6 @@ function recordApiRequests(page) {
 }
 
 /**
- * Sends `text` and waits for the reply at `mesid` and for the send to finish.
  * @param {import('@playwright/test').Page} page
  * @param {string} text
  * @param {number} mesid
@@ -194,7 +183,6 @@ test.describe('raw-action send request log', () => {
             const browserFrom = browser.length;
             const mockFrom = mock.log.length;
             await send(page, text, 2 * i + 2);
-            // The server stores token counts after it answers.
             await page.waitForTimeout(SETTLE_MS);
             sends.push({ text, browser: browser.slice(browserFrom), mock: mock.log.slice(mockFrom) });
         }
@@ -220,7 +208,6 @@ test.describe('raw-action send request log', () => {
             expect(backend.filter(r => r.url === '/props')).toHaveLength(1);
             expect(backend.filter(r => r.url === '/v1/models')).toHaveLength(0);
         }
-        // The second send's history was all in the first send's prompt, so none of it is tokenized again.
         expect(tokenized[1].filter(text => tokenized[0].includes(text))).toEqual([]);
     });
 
@@ -231,7 +218,6 @@ test.describe('raw-action send request log', () => {
             const avatar = await createCharacter(page, `RawActionUnreadable-${stamp}`, `Hello from the greeting ${stamp}.`);
             await openCharacter(page, avatar);
             await connectLlamaCpp(page, unreadable.url);
-            // Earlier tests in the same worker may have saved streaming on.
             // @ts-ignore
             await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = false; });
             await page.waitForTimeout(SETTLE_MS);
@@ -264,8 +250,6 @@ test.describe('raw-action send request log', () => {
             const generate = browser.filter(r => r.url === '/api/backends/text-completions/generate');
             expect(generate.map(r => r.body.stream === true)).toEqual([streaming, streaming]);
 
-            // The stored path to the newest message, and every stored copy of the first user message: a
-            // second write of it is stored as a sibling.
             const stored = await page.evaluate(async (first) => {
                 // @ts-ignore
                 const context = SillyTavern.getContext();
@@ -330,8 +314,6 @@ test.describe('raw-action send request log', () => {
         });
     }
 
-    // Each request sender takes on the `stored` an error answer reports, from the X-ST-Stored header or the
-    // body's `stored` field: the answers are stood in for, so only the page's reading is under test.
     const senders = [
         {
             name: 'text completion, non-streaming (sendGenerationRequest, 200 error body)', url: '**/api/backends/text-completions/generate',
@@ -427,7 +409,6 @@ test.describe('raw-action send request log', () => {
             await openCharacter(page, avatar);
             await sender.before?.(page);
 
-            // A user message the server is asked to store, as a raw-action send makes it.
             const ref = await page.evaluate(async () => {
                 const { sendMessageAsUser } = await import('/script.js');
                 const { storeRefOf } = await import('/scripts/chat-store.js');
@@ -462,8 +443,6 @@ test.describe('raw-action send request log', () => {
     }
 
     test('a send clicked after a streamed reply shows the button again, while the previous send is still finishing, goes out', async ({ page }) => {
-        // A finished stream has nothing left to wait for once the button shows, so the window comes from a
-        // stopped one: its send finishes only when the server answers the stop, held back here.
         const slow = await startMockLlamaCpp({ streamDelayMs: 5000 });
         await page.route('**/generate/stop/**', async (route) => {
             await new Promise(resolve => setTimeout(resolve, 1500));
@@ -480,8 +459,6 @@ test.describe('raw-action send request log', () => {
 
             await chatBox(page).fill(`First question ${stamp}?`);
             const second = `Second question ${stamp}?`;
-            // Clicks Send the moment the button is shown again while the send lock is still held, as a user
-            // clicking right after the reply appears would.
             const clickedInWindow = await page.evaluate(async (second) => {
                 const { userInputGenerateMutex } = await import('/script.js');
                 document.querySelector('#send_but').click();
@@ -516,8 +493,6 @@ test.describe('raw-action send request log', () => {
     });
 
     /**
-     * Sends a first streamed message, then holds the send lock as the finishing send does after the reply
-     * shows the button again, so the page stays in that gap until `release` is called.
      * @param {import('@playwright/test').Page} page
      */
     async function sendAndHoldGap(page, text) {

@@ -1,17 +1,11 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, holdCharacters } from './frontent-test-utils.js';
 
-// Restoring a tag backup adds the backup's assignments. It must never remove a tag a character already has on the
-// server, whether or not this page has loaded the character or holds a current copy of it. The backup's tag
-// definitions are stored by the restore itself.
-
 /**
- * Loads the app and waits for APP_READY.
  * @param {import('@playwright/test').Page} page
  */
 async function loadApp(page) {
     await testSetup.awaitST({ page });
-    // APP_READY is an auto-fire event: a listener added after it was emitted still runs.
     await page.evaluate(() => {
         window['__appReady'] = false;
         const { eventSource, eventTypes } = window['SillyTavern'].getContext();
@@ -35,7 +29,11 @@ async function api(page, path, body = {}) {
     }, { path, body });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<string>} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
@@ -47,7 +45,10 @@ async function createCharacter(page, name) {
     }, name);
 }
 
-/** @param {string} id @param {string} name */
+/**
+ * @param {string} id
+ * @param {string} name
+ */
 function tagDefinition(id, name) {
     return {
         id, name, folder_type: 'NONE', filter_state: 'UNDEFINED', sort_order: 1000,
@@ -55,22 +56,33 @@ function tagDefinition(id, name) {
     };
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<string>} tag id */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
 async function createTag(page, name) {
     const id = `tag-restore-${name}`;
     await api(page, '/api/tags/create', { tag: tagDefinition(id, name) });
     return id;
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} key @returns {Promise<string[]>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} key
+ * @returns {Promise<string[]>}
+ */
 async function serverTagsOf(page, key) {
     return (await api(page, '/api/tags/for', { ids: [key] }))[key];
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar @returns {Promise<string[] | null>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ * @returns {Promise<string[] | null>}
+ */
 async function residentTagsOf(page, avatar) {
     return page.evaluate(async avatar => {
-        // What the page holds, not what extensions are shown (only the current character).
         const { charactersStore } = await import('/scripts/character-store.js');
         const character = charactersStore.get(avatar);
         return character ? [...character.tag_ids].sort() : null;
@@ -78,8 +90,6 @@ async function residentTagsOf(page, avatar) {
 }
 
 /**
- * Creates the fixture data from a throwaway browser context, so the page under test learns about everything only
- * through its own boot.
  * @param {import('@playwright/test').Browser} browser
  * @param {(page: import('@playwright/test').Page) => Promise<T>} fn
  * @template T
@@ -103,11 +113,10 @@ async function openTagManagement(page) {
 }
 
 /**
- * Restores `backup` through the Manage Tags popup and waits for the result toast.
  * @param {import('@playwright/test').Page} page
  * @param {{ tags: object[], tag_map: Record<string, unknown> }} backup
  * @param {object} [options]
- * @param {boolean} [options.overwrite] Answers the prompt with "Overwrite" instead of "Keep Existing".
+ * @param {boolean} [options.overwrite]
  */
 async function restoreBackup(page, backup, { overwrite = false } = {}) {
     const chooserPromise = page.waitForEvent('filechooser');
@@ -118,12 +127,20 @@ async function restoreBackup(page, backup, { overwrite = false } = {}) {
     await expect(page.locator('.toast', { hasText: /Tags restored/ }).first()).toBeVisible({ timeout: 15000 });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} id @returns {Promise<any>} The stored tag, or undefined. */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} id
+ * @returns {Promise<any>}
+ */
 async function serverTag(page, id) {
     return (await api(page, '/api/tags/by-ids', { ids: [id] })).tags.find(tag => tag.id === id);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<{ id: string, color: string }[]>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<{ id: string, color: string }[]>}
+ */
 async function pageTagsNamed(page, name) {
     return page.evaluate(async name => (await import('/scripts/tags.js')).tagsStore.getAll()
         .filter(tag => tag.name === name)
@@ -131,7 +148,6 @@ async function pageTagsNamed(page, name) {
 }
 
 /**
- * Keeps changes to `avatar` from reaching the page.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -203,7 +219,6 @@ test.describe('Tag restore adds to what a character already has', () => {
 
         const expected = [fixture.added, fixture.kept].sort();
         expect((await serverTagsOf(page, fixture.card)).sort()).toEqual(expected);
-        // The page takes the server's result for the cards it holds.
         await expect.poll(() => residentTagsOf(page, fixture.card), { timeout: 15000 }).toEqual(expected);
     });
 
@@ -257,7 +272,6 @@ test.describe('Tag restore stores the backup\'s tag definitions', () => {
         await page.reload();
         await loadApp(page);
         await holdCharacters(page, [card]);
-        // A tag's definition is read when something shows it (holding a character doesn't): read as the page reads one.
         const read = await page.evaluate(async (id) => {
             const { readTagsForIds } = await import('/scripts/tags.js');
             const tag = (await readTagsForIds([id]))?.tags.get(id);

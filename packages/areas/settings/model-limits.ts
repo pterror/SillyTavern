@@ -1,10 +1,5 @@
 import { FIELDS, labRangeOf, rangeOf } from './protocol.ts';
 
-// What a chat completion source and model allow: the largest context, the highest temperature, and the penalties'
-// range. The old page set these on its controls when the source or model changed (chat-completion-settings.js
-// onModelChange and its get*MaxContext helpers), from the model list the source answered or from tables of model
-// names; this is that, as data and one function, so the server decides them.
-
 const K = 1000;
 const MAX = {
     '2k': 2047,
@@ -22,15 +17,12 @@ const MAX = {
     '2mil': 2000 * K,
 } as const;
 
-/** The context the user may set when they unlock it. */
 export const UNLOCKED_CONTEXT = MAX['2mil'];
 
-/** A model as its source's model list describes it (each source names its fields its own way). */
 export type ModelRecord = Record<string, unknown> & { id?: unknown };
 
 export type ModelLimits = { context: number; temperature: number; penalties: { min: number; max: number } };
 
-/** The setting that holds each source's model. */
 export const MODEL_SETTING: Record<string, string> = {
     openai: 'openai_model',
     azure_openai: 'azure_openai_model',
@@ -60,22 +52,16 @@ export const MODEL_SETTING: Record<string, string> = {
     workers_ai: 'workers_ai_model',
 };
 
-/** The first pattern the model's name matches, in order. */
 function byPattern(model: string, rules: readonly (readonly [RegExp, number])[], fallback: number): number {
     return rules.find(([pattern]) => pattern.test(model))?.[1] ?? fallback;
 }
 
-/**
- * The longest name the model's contains (a provider may prefix it). The old page took the first in order, so
- * glm-4.5v got glm-4.5's context.
- */
 function byName(model: string, rules: readonly (readonly [string, number])[], fallback: number): number {
     let best: readonly [string, number] | undefined;
     for (const rule of rules) if (model.includes(rule[0]) && (!best || rule[0].length > best[0].length)) best = rule;
     return best?.[1] ?? fallback;
 }
 
-/** A number the model list gives for the model, if it gives one. */
 function listed(models: readonly ModelRecord[], model: string, read: (record: ModelRecord) => unknown): number | null {
     const record = models.find((m) => m.id === model);
     const value = record ? read(record) : undefined;
@@ -248,10 +234,6 @@ const XAI_CONTEXT = [
 const TEMPERATURE = { openai: 2.0, claude: 1.0, mistral: 1.5, workersAi: 5.0 } as const;
 const PENALTIES = { usual: { min: -2, max: 2 }, cohere: { min: 0, max: 1 } } as const;
 
-/**
- * What a source and model allow, as the old page set them. `unlocked`: the user unlocked the context size (most
- * sources then allow UNLOCKED_CONTEXT); `models`: the source's model list as last fetched (empty when it wasn't).
- */
 export function limitsFor(
     source: string,
     model: string,
@@ -321,7 +303,6 @@ export function limitsFor(
                 TEMPERATURE.openai,
             );
         case 'ai21':
-            // Every AI21 model is a Jamba now (the old page made any other one jamba-large).
             return limits(
                 context(() => MAX['256k']),
                 TEMPERATURE.openai,
@@ -404,7 +385,6 @@ export function limitsFor(
                 TEMPERATURE.openai,
             );
         case 'minimax':
-            // Fixed by the model, unlocked or not (as the old page had it).
             return limits(model === 'M2-her' ? 65536 : 204800, TEMPERATURE.claude);
         case 'zai':
             return limits(
@@ -419,13 +399,8 @@ export function limitsFor(
     }
 }
 
-/** A source's model list, by source. */
 export type ModelLists = (source: string) => readonly ModelRecord[];
 
-/**
- * What a model record says about its limits, and nothing else: what's kept of a model list (the lists are large and
- * most of each record is the model's description and prices). Every field limitsFor reads is here.
- */
 export function limitRecord(record: ModelRecord): ModelRecord {
     const kept: ModelRecord = { id: record.id };
     for (const name of [
@@ -438,7 +413,6 @@ export function limitRecord(record: ModelRecord): ModelRecord {
     ])
         if (name in record) kept[name] = record[name];
     if (Array.isArray(record['properties']))
-        // A list from the source: an entry can be anything.
         kept['properties'] = (record['properties'] as ({ property_id?: unknown } | null)[]).filter(
             (p) => p?.property_id === 'context_window',
         );
@@ -448,7 +422,6 @@ export function limitRecord(record: ModelRecord): ModelRecord {
     return kept;
 }
 
-/** What chat completion settings (upstream's oai_settings) allow for their source and model. */
 export function limitsOfSettings(oai: Record<string, unknown>, models: ModelLists): ModelLimits {
     const text = (key: string) => {
         const value = oai[key];
@@ -464,10 +437,6 @@ export function limitsOfSettings(oai: Record<string, unknown>, models: ModelList
     );
 }
 
-/**
- * Settings with each limited value within what its source and model allow (the same object when all are). The
- * stored values stay as they are: going back to a model that allows more gives them back.
- */
 export function withinLimits<T extends Record<string, unknown>>(settings: T, models: ModelLists): T {
     const oai: unknown = settings['oai_settings'];
     if (typeof oai !== 'object' || oai === null || Array.isArray(oai)) return settings;
@@ -490,16 +459,8 @@ export function withinLimits<T extends Record<string, unknown>>(settings: T, mod
         : { ...settings, oai_settings: { ...stored, ...Object.fromEntries(bounded) } };
 }
 
-/**
- * Text generation backends that turn top K off with -1 (the rest with 0) and have no mirostat mode 1 (the old page's
- * VLLM, APHRODITE, INFERMATICAI).
- */
 export const MINUS_ONE_BACKENDS: readonly string[] = ['vllm', 'aphrodite', 'infermaticai'];
 
-/**
- * Text generation settings as their backend takes them: top K's off value is the backend's (-1 or 0), whichever one
- * is stored. The old page rewrote the stored value when the backend changed; this reads it so, and stores nothing.
- */
 export function withinBackend<T extends Record<string, unknown>>(settings: T): T {
     const textgen: unknown = settings['textgenerationwebui_settings'];
     if (typeof textgen !== 'object' || textgen === null || Array.isArray(textgen)) return settings;
@@ -511,11 +472,6 @@ export function withinBackend<T extends Record<string, unknown>>(settings: T): T
     return { ...settings, textgenerationwebui_settings: { ...stored, top_k: off } };
 }
 
-/**
- * Settings with each field whose range follows the context or response limits at most their maximum, by whether
- * the user unlocked them (power_user.max_context_unlocked). The old page lowered and saved them when the unlock
- * changed; this reads them so, and stores nothing. Lab mode's fields are left as they are.
- */
 export function withinUnlock<T extends Record<string, unknown>>(settings: T): T {
     const powerUser: unknown = settings['power_user'];
     const unlocked =
@@ -528,7 +484,6 @@ export function withinUnlock<T extends Record<string, unknown>>(settings: T): T 
         (powerUser as Record<string, unknown>)['enableLabMode'] === true;
     let out: Record<string, unknown> = settings;
     for (const field of FIELDS) {
-        // Lab mode frees what it frees from the limits too.
         if (field.limits === undefined || (lab && labRangeOf(field) !== undefined)) continue;
         const { max } = rangeOf(field, unlocked);
         const keys = field.path.split('.');
@@ -545,10 +500,6 @@ export function withinUnlock<T extends Record<string, unknown>>(settings: T): T 
     return out as T;
 }
 
-/**
- * Settings as everything reads them: within the chat completion model's limits and the context limits, and as the
- * text backend takes them.
- */
 export function withinAllowed<T extends Record<string, unknown>>(settings: T, models: ModelLists): T {
     return withinUnlock(withinBackend(withinLimits(settings, models)));
 }

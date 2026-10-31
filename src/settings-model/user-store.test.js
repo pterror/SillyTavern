@@ -39,7 +39,6 @@ function keys() {
 
 const card = name => JSON.stringify({ name, description: '', personality: '', scenario: '', first_mes: 'Hi.', mes_example: '', spec: 'chara_card_v2', spec_version: '2.0', data: { name, description: '', personality: '', scenario: '', first_mes: 'Hi.', mes_example: '', creator_notes: '', system_prompt: '', post_history_instructions: '', alternate_greetings: [], tags: [], creator: '', character_version: '', extensions: {} } });
 
-/** A settings file using every catalog and a character's statements. */
 function everything() {
     const settings = structuredClone(SHIPPED);
     const record = { description: 'd', position: 0, depth: 2, role: 0, lorebook: 'Ann lore', title: '', connections: [{ type: 'character', id: 'Bob.png' }] };
@@ -85,11 +84,9 @@ test('a user\'s model comes back from the store as it went in: assembled, the sa
     assert.deepEqual(warnings, []);
     const back = await readUserModel(lib, 'default-user');
     assert.ok(back);
-    // The tags are the tag store's (importUpstream hands them over as `elsewhere`), not the user's.
     const before = assemble({ ...JSON.parse(JSON.stringify(model)), elsewhere: {} }, { bundles }).settings;
     const after = assemble(/** @type {any} */ (back), { bundles }).settings;
     assert.ok(isDeepStrictEqual(after, before), JSON.stringify(diff(before, after)).slice(0, 2000));
-    // Bob's statements are on Bob, as ids.
     const bob = await lib.entity(TYPE.character, 'Bob.png');
     const personas = JSON.parse(bob.values.find(v => v.field === `${STATEMENT_PREFIX}personas`).json);
     assert.deepEqual(personas, [String((await lib.ids(TYPE.persona, ['a.png']))[0])]);
@@ -103,7 +100,6 @@ test('a statement at a character not in the library is kept as it came, warned',
     assert.ok(warnings.some(w => w.includes('Bob.png')));
     const back = await readUserModel(lib, 'default-user');
     assert.deepEqual(back?.statements.personasConnected, [{ holder: { type: 'character', id: 'Bob.png' }, personas: ['a.png'] }]);
-    // Warned once: a later write that still keeps them says nothing of it again.
     const again = await writeUserModel(lib, 'default-user', /** @type {any} */ (back), { previous: back ?? undefined });
     assert.ok(!again.warnings.some(w => w.includes('Bob.png')));
 });
@@ -141,8 +137,6 @@ test('the bundles\' files go into the store with the model, and assemble from th
     const expected = assemble({ ...JSON.parse(JSON.stringify(model)), elsewhere: {} }, { bundles }).settings;
     const actual = assemble(back, { bundles: fromStore }).settings;
     assert.ok(isDeepStrictEqual(actual, expected), JSON.stringify(diff(expected, actual)).slice(0, 2000));
-    // Every shipped preset is there, and gives its file back (less a chat completion preset's connection keys of
-    // other sources, which are the user's connections', §2.4.9).
     const textgen = await bundleFileFromStore(lib, 'preset.textgenerationwebui', 'Deterministic', []);
     assert.ok(textgen);
     assert.deepEqual(textgen, bundles('preset.textgenerationwebui', 'Deterministic'));

@@ -1,22 +1,11 @@
-//! The memory this crate takes: the bytes its allocator has handed out and not had back (`committed`, counted at
-//! the global allocator), and the process's resident memory as the system counts it (`Resident`).
-//!
-//! A bulk load holds itself to the first, with a margin for what the allocator takes past it (`bulk`'s
-//! `ALLOCATOR_OVERHEAD`); the second, which holds that too and the host's own allocations, is only reported: a
-//! load can't free the host's memory, so a cap on it would only make the load cut. mimalloc's own statistics
-//! don't serve as the count: on Linux they count the arenas it commits up front, and neither follow what is in use
-//! nor fall when memory is freed.
-
 use std::alloc::{GlobalAlloc, Layout};
 use std::sync::atomic::{AtomicIsize, Ordering};
 
-/// The process's resident memory, read from the system (`sysinfo`); not on wasm.
 pub struct Resident {
     #[cfg(not(target_family = "wasm"))]
     system: sysinfo::System,
     #[cfg(not(target_family = "wasm"))]
     pid: Option<sysinfo::Pid>,
-    /// The last bytes read, given again where a later read fails.
     last: Option<usize>,
 }
 
@@ -31,8 +20,6 @@ impl Resident {
         }
     }
 
-    /// The process's resident bytes now (where a read fails after one worked, the last read); None where they
-    /// can't be read.
     pub fn read(&mut self) -> Option<usize> {
         #[cfg(not(target_family = "wasm"))]
         if let Some(pid) = self.pid {
@@ -60,8 +47,6 @@ impl Default for Resident {
     }
 }
 
-/// Counts kept apart, so threads allocating at once mostly touch counts of their own; a byte freed on another
-/// thread than allocated it is taken off another count, and the sum is right.
 const STRIPES: usize = 64;
 
 #[repr(align(128))]
@@ -71,7 +56,6 @@ static COUNTS: [Stripe; STRIPES] = [const { Stripe(AtomicIsize::new(0)) }; STRIP
 
 fn stripe() -> &'static AtomicIsize {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    // Const-initialized and without a destructor, so reaching it never allocates; `STRIPES` until first used.
     thread_local! {
         static AT: std::cell::Cell<usize> = const { std::cell::Cell::new(STRIPES) };
     }
@@ -86,13 +70,11 @@ fn stripe() -> &'static AtomicIsize {
     &COUNTS[at].0
 }
 
-/// Bytes this crate's allocations hold now.
 pub fn committed() -> usize {
     let sum: isize = COUNTS.iter().map(|s| s.0.load(Ordering::Relaxed)).sum();
     sum.max(0) as usize
 }
 
-/// An allocator counting what it hands out and has back (`committed`).
 pub struct Counting<A>(pub A);
 
 // SAFETY: every call is passed on to the inner allocator as it came; only the counts are added to.

@@ -2,9 +2,6 @@ import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 import { startOpenAICompat } from './openai-mock-server.js';
 
-// The settings area's actions against the real server and settings document (packages/areas/settings/server.ts):
-// the panel isn't on the new page yet, so these go through /api/ui/action as the page's client will.
-
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} type
@@ -51,7 +48,6 @@ test.describe('settings actions', () => {
         await act(page, 'view.open', { key: 'settings' });
         const moved = settingsOf(await act(page, 'settings.range', { from: 'default', to: 'character' }));
         expect(moved.range).toEqual({ from: 'default', to: 'character' });
-        // No chat open: there's no character's level to write, so the edit is the user's.
         const answer = await act(page, 'settings.set', { path: 'oai_settings.top_p_openai', value: 0.9 });
         expect(answer.ok).toBe(true);
         expect(settingsOf(answer).sources['oai_settings.top_p_openai']).toBe('user');
@@ -67,7 +63,6 @@ test.describe('settings actions', () => {
                 const response = await fetch('/api/settings/save-partial', { method: 'POST', headers, body: JSON.stringify({ keys }) });
                 if (!response.ok) throw new Error(`seeding the source failed: ${response.status}`);
             });
-            // No list yet: Mistral's fallback.
             expect(settingsOf(await act(page, 'view.open', { key: 'settings' })).ranges.openai_max_context.max).toBe(32767);
             await page.evaluate(async (url) => {
                 // @ts-ignore

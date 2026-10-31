@@ -1,8 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import path from 'node:path';
 
-// /api/tags/create with freeName: the server names the new tag, since only it knows which names are taken.
-
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
 /** @type {typeof import('./converted-user.fixture.js')} */
@@ -57,7 +55,10 @@ async function post(urlPath, body) {
     return { status: response.status, body: parsed };
 }
 
-/** @param {string} id @returns {Promise<string>} the name the server stores for the tag */
+/**
+ * @param {string} id
+ * @returns {Promise<string>}
+ */
 async function storedName(id) {
     const { body } = await post('/api/tags/by-ids', { ids: [id] });
     return body.tags[0]?.name;

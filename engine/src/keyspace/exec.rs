@@ -1,19 +1,3 @@
-//! The engine's threads: a fixed number per process, shared by every store, so nothing per thread (stacks,
-//! allocator arenas) grows with the number of stores. Work is activities: an activity runs one bounded step per
-//! task and goes to the back of the queue if it has more, so stores take turns.
-//!
-//! Two lanes: an activity whose last step was short (a lone commit's prepare or sync) queues in the front lane,
-//! one whose step was long (a large commit, a flush, a merge) in the back lane, taken only when the front is
-//! empty. Some threads take the front lane only, so a store committing now and then never waits behind busy
-//! stores' long steps; the front lane can't starve the back for long, its steps being short by definition.
-//!
-//! Simulation (`Executor::simulated`, for tests): no threads. Steps run on the thread that waits for them, one at
-//! a time, the next one picked from everything queued (either lane) by a seeded generator, so a seed fixes the
-//! whole interleaving of steps and a failure replays exactly. Every wait in the engine (`wait`, `recv`,
-//! `Activity::wait_idle`) runs queued steps instead of blocking; one with nothing queued is a deadlock and
-//! panics. Steps are atomic there: what two steps running at once on real threads could do between each other's
-//! lines is not explored.
-
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
@@ -26,32 +10,25 @@ struct Queue {
     shut: bool,
 }
 
-/// A step at most this long keeps its activity in the front lane: a lone commit with its sync on a slow disk.
 const SHORT_STEP: std::time::Duration = std::time::Duration::from_millis(5);
 
 struct Inner {
     queue: Mutex<Queue>,
     cv: Condvar,
-    /// Under simulation: the generator picking the next step, and how many steps ran.
     sim: Option<Mutex<Sim>>,
 }
 
-/// More steps than any simulated test needs (about 15k per store at most), so a step loop without end fails.
 const SIM_STEP_LIMIT: u64 = 500_000;
 
 struct Sim {
     state: u64,
     steps: u64,
-    /// Fixed per seed, so seeds cover both prompt and lagging background work: of a back-lane step against a
-    /// front-lane one (both queued), the odds in 32 that the back one runs next; and the most extra steps a wait
-    /// runs first (`pump_some`).
     back_odds: usize,
     eager: usize,
 }
 
 impl Sim {
     fn next(&mut self, n: usize) -> usize {
-        // splitmix64
         self.state = self.state.wrapping_add(0x9e37_79b9_7f4a_7c15);
         let mut z = self.state;
         z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -61,10 +38,8 @@ impl Sim {
 }
 
 impl Inner {
-    /// Under simulation, runs one queued step picked by the seed; false when none is queued (or not simulated).
     fn pump(&self) -> bool {
         let Some(sim) = &self.sim else { return false };
-        // Unwinding (a test's crash, a failed assertion): no more steps, so a destructor waiting on one ends.
         if std::thread::panicking() {
             return false;
         }
@@ -90,8 +65,6 @@ impl Inner {
         true
     }
 
-    /// Under simulation, before a wait looks at what it waits for: a few queued steps picked by the seed (up to the
-    /// seed's `eager`), so background work lands between the caller's operations, not only where it waits on it.
     fn pump_some(&self) {
         let Some(sim) = &self.sim else { return };
         let n = {
@@ -117,13 +90,11 @@ impl Inner {
     }
 }
 
-/// The worker threads. Dropping it lets them finish what is queued and exit.
 pub struct Executor {
     inner: Arc<Inner>,
 }
 
 impl Executor {
-    /// `threads` threads, of which `front_only` take only front-lane steps.
     pub fn new(threads: usize, front_only: usize) -> Executor {
         let inner = Arc::new(Inner {
             queue: Mutex::new(Queue {
@@ -165,7 +136,6 @@ impl Executor {
         Executor { inner }
     }
 
-    /// No threads: steps run, picked by `seed`, on whichever thread waits for them (see the module's doc).
     pub fn simulated(seed: u64) -> Executor {
         Executor {
             inner: Arc::new(Inner {
@@ -194,12 +164,10 @@ impl Executor {
         self.inner.sim.is_some()
     }
 
-    /// Under simulation, runs one queued step; false when none is queued (or not simulated).
     pub fn pump(&self) -> bool {
         self.inner.pump()
     }
 
-    /// Under simulation, runs queued steps until none is left; how many ran.
     pub fn run_until_quiet(&self) -> u64 {
         let mut n = 0;
         while self.inner.pump() {
@@ -208,7 +176,6 @@ impl Executor {
         n
     }
 
-    /// Steps run so far under simulation (0 otherwise).
     pub fn sim_steps(&self) -> u64 {
         self.inner
             .sim
@@ -216,7 +183,6 @@ impl Executor {
             .map_or(0, |s| s.lock().unwrap().steps)
     }
 
-    /// Waits on `cv` for `g` (of `m`); under simulation runs a queued step instead, and returns `m` locked again.
     pub fn wait<'a, T>(
         &self,
         m: &'a Mutex<T>,
@@ -232,7 +198,6 @@ impl Executor {
         m.lock().unwrap()
     }
 
-    /// Receives from `rx`; under simulation runs queued steps until something arrives.
     pub fn recv<T>(&self, rx: &Receiver<T>) -> Option<T> {
         if self.inner.sim.is_none() {
             return rx.recv().ok();
@@ -247,7 +212,6 @@ impl Executor {
         }
     }
 
-    /// Lets time pass for something polled: sleeps `d`, or under simulation runs a queued step (none: returns).
     pub fn pause(&self, d: std::time::Duration) {
         if self.inner.sim.is_none() {
             std::thread::sleep(d);
@@ -277,7 +241,6 @@ fn spawn_on(exec: &Weak<Inner>, task: Task, front: bool) {
             q.back.push_back(task);
         }
         drop(q);
-        // A front-only thread may be the one woken: wake every idle thread for a back-lane step.
         if front {
             inner.cv.notify_one();
         } else {
@@ -288,15 +251,11 @@ fn spawn_on(exec: &Weak<Inner>, task: Task, front: bool) {
 
 #[derive(Default)]
 struct State {
-    /// Queued or running.
     busy: bool,
-    /// Kicked while busy: run again.
     again: bool,
-    /// The last step was long: queue in the back lane.
     long: bool,
 }
 
-/// Work that runs one step at a time on the executor, never two steps at once.
 pub struct Activity {
     exec: Weak<Inner>,
     step: OnceLock<Box<dyn Fn() -> bool + Send + Sync>>,
@@ -314,13 +273,10 @@ impl Activity {
         })
     }
 
-    /// Sets the step: it does one bounded piece of work and returns whether more is ready now. It must not wait
-    /// for other activities; to wait, it registers to be kicked and returns false.
     pub fn set_step(&self, step: Box<dyn Fn() -> bool + Send + Sync>) {
         let _ = self.step.set(step);
     }
 
-    /// Schedules a step, or another one after the running step if it is busy.
     pub fn kick(self: &Arc<Self>) {
         let mut s = self.state.lock().unwrap();
         if s.busy {
@@ -337,7 +293,6 @@ impl Activity {
     fn run(self: Arc<Self>) {
         let started = std::time::Instant::now();
         let more = self.step.get().is_some_and(|step| step());
-        // Under simulation nothing depends on time: an activity stays in the lane it started in.
         let simulated = self.exec.upgrade().is_some_and(|i| i.sim.is_some());
         let long = !simulated && started.elapsed() > SHORT_STEP;
         let mut s = self.state.lock().unwrap();
@@ -354,7 +309,6 @@ impl Activity {
         }
     }
 
-    /// Waits until no step is queued or running (from outside the executor only).
     pub fn wait_idle(&self) {
         let sim = self.exec.upgrade().filter(|i| i.sim.is_some());
         if let Some(inner) = &sim {
@@ -374,8 +328,6 @@ impl Activity {
     }
 }
 
-/// Tests: the seeds a simulated test runs. `ST_SIM_SEED=<s>` runs s alone (to replay a failure); otherwise
-/// `ST_SIM_SEEDS` seeds (default `default`) from `ST_SIM_BASE` (default 1).
 #[cfg(test)]
 pub fn sim_seeds(default: u64) -> Vec<u64> {
     let var = |name: &str| std::env::var(name).ok().and_then(|s| s.parse::<u64>().ok());
@@ -386,12 +338,10 @@ pub fn sim_seeds(default: u64) -> Vec<u64> {
     (base..base + var("ST_SIM_SEEDS").unwrap_or(default)).collect()
 }
 
-/// Activities waiting to be kicked when something frees up.
 #[derive(Default)]
 pub struct Waiters(Mutex<Vec<Arc<Activity>>>);
 
 impl Waiters {
-    /// Runs `ready` under the waiters' lock; if it is false, `a` is kicked at the next `wake`.
     pub fn check_or_wait(&self, a: &Arc<Activity>, ready: impl FnOnce() -> bool) -> bool {
         let mut w = self.0.lock().unwrap();
         if ready() {

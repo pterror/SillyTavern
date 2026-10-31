@@ -39,7 +39,6 @@ export class MacrosParser {
      * @returns {IterableIterator<CustomMacro>}
      */
     static [Symbol.iterator] = function* () {
-        // Exclude hidden aliases for consistency with autocomplete behavior
         for (const def of macroSystem.registry.getAllMacros({ excludeHiddenAliases: true })) {
             yield { key: def.name, description: def.description || '' };
         }
@@ -93,13 +92,11 @@ export class MacrosParser {
             value = this.sanitizeMacroValue(value);
         }
 
-        // Like the old MacrosParser, we explicitly allow overriding macros, and only warn
         if (macroSystem.registry.hasMacro(key)) {
             console.warn(`Macro ${key} is already registered`);
         }
 
         macroSystem.registry.registerMacro(key, {
-            // MacrosParser macros never took arguments: only {{key}} without arguments is valid.
             category: 'legacy',
             description: typeof description === 'string' ? description : 'Automatically registered macro from MacrosParser',
             handler: () => {

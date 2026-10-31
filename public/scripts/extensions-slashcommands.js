@@ -40,7 +40,6 @@ function getExtensionActionCallback(action) {
         if (reload) {
             toastr.info(`${action.charAt(0).toUpperCase() + action.slice(1)}ing extension ${extension.name} and reloading...`);
 
-            // Command doesn't "finish", so clear input manually and let the toast show before continuing.
             $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
             await new Promise(resolve => setTimeout(resolve, 100));
         }

@@ -19,35 +19,9 @@ import { detectFormat } from './local-import-classify.js';
 import { LocalImportWorkerPool, resolveWorkerPoolSize } from './local-import-worker-pool.js';
 import { importFailure } from './character-import-error.js';
 
-/**
- * Imports characters from directories listed under `localImport.directories` in config.yaml. This module never
- * accepts a directory path from a request, so it's never an arbitrary-path-read endpoint.
- *
- * Two discovery mechanisms feed the same per-file import logic: a periodic full-corpus scan (scanDirectory(),
- * the backstop) and an optional fs.watch/inotify watch (startWatcherFor()) that's purely a latency optimization,
- * since a dropped watch event is otherwise undetectable from JS. On Linux, a native watch
- * (attachLinuxDirectoryWatch()) also detects kernel-side overflow directly; once every configured directory has
- * that confirmed, the periodic full pass is replaced by a cheap heartbeat probe (checkWatcherHeartbeat()) that
- * falls back to a full pass on any miss.
- *
- * png/json files are read, hashed and classified by the worker pool (local-import-worker.js); the main thread builds
- * the card with buildPngImportData()/buildJsonImportData() from the browser `/import` path and stores it, a PNG's
- * image being the source file itself, reflinked (linkWithAvatar(); a JSON card's is the default avatar, which the
- * worker answers). charx/byaf/yaml are staged into
- * the uploads directory and imported via importCharacterFileHeadless(), unchanged from before the worker pool.
- *
- * Single-user only: every discovered file lands in DEFAULT_USER's library regardless of `enableUserAccounts`.
- *
- * `performance.allowExpensiveDuplicateFallback` additionally matches a newly-discovered file against already-
- * imported (including previously content-mutating-imported/"poisoned") characters by content-identity hash, not
- * just exact byte hash, since a poisoned row's content_hash isn't comparable to a fresh import's.
- */
 
-/** Debounce window for coalescing bursts of fs events for the same filename into one scan. */
 const WATCH_DEBOUNCE_MS = 300;
 
-/** Ceiling on DirectoryScanState.lastSeenMtimeMs; LRU-evicted (Map insertion order = LRU order). A cache miss
- * past this falls back to a cheap indexed SELECT, so exceeding it costs latency, never correctness. */
 export const MAX_LAST_SEEN_MTIME_ENTRIES = 200_000;
 
 /**
@@ -67,20 +41,15 @@ export function touchLastSeenMtime(state, filename, mtimeMs) {
 /**
  * @typedef {object} DirectoryScanState
  * @property {string} sourceDir
- * @property {Map<string, number>} lastSeenMtimeMs Skip-cache only, never relied on for correctness - content-hash
- * dedup makes reprocessing always safe. Bounded (MAX_LAST_SEEN_MTIME_ENTRIES); misses fall back to the persisted
- * `local_import_mtimes` table.
+ * @property {Map<string, number>} lastSeenMtimeMs
  * @property {fs.FSWatcher | { close: () => void } | null} watcher
- * @property {boolean} [watcherStarting] Guards the async gap in startWatcherFor() against a second concurrent call.
+ * @property {boolean} [watcherStarting]
  * @property {Map<string, NodeJS.Timeout>} watchTimers
- * @property {{ close: () => void } | null} overflowWatch Non-null means overflow detection is confirmed live for
- * this directory. On Linux with the native watch attached, this is a no-op-close marker (not a second handle to
- * the same underlying watcher) so stopWatcherFor() never double-closes it.
+ * @property {{ close: () => void } | null} overflowWatch
  * @property {Map<string, () => void>} pendingHeartbeats
- * @property {Map<string, Promise<void>>} [hashLocks] Lazily created.
- * @property {Map<string, Promise<void>>} [inFlightFiles] Lazily created.
- * @property {ProgressLog | null} [scanProgress] The running scan pass's console output; imports outside a pass (a
- *   watch event's single file) log nothing on success.
+ * @property {Map<string, Promise<void>>} [hashLocks]
+ * @property {Map<string, Promise<void>>} [inFlightFiles]
+ * @property {ProgressLog | null} [scanProgress]
  */
 
 /**
@@ -90,11 +59,8 @@ function allOverflowConfirmed() {
     return scanStates.length > 0 && scanStates.every(state => state.overflowWatch !== null);
 }
 
-/** How often checkWatcherHeartbeat() runs once allOverflowConfirmed() is true, replacing the periodic full pass. */
 const HEARTBEAT_INTERVAL_MS = getConfigValue('localImport.watcherHeartbeatIntervalMs', 60 * 1000, 'number');
 
-/** Deliberately generous: a false "stalled" verdict just costs one extra full pass, a false "alive" verdict
- * costs real undetected coverage. */
 const HEARTBEAT_GRACE_MS = getConfigValue('localImport.watcherHeartbeatGraceMs', 15 * 1000, 'number');
 
 /**
@@ -139,20 +105,15 @@ async function checkWatcherHeartbeat(state) {
 let scanStates = [];
 /** @type {NodeJS.Timeout | null} */
 let scanTimeout = null;
-/** @type {import('./users.js').UserDirectoryList | null} Captured at init so triggerImmediateRescan() can reach
- * the same arguments runScanCycle() needs. */
+/** @type {import('./users.js').UserDirectoryList | null} */
 let capturedUserDirectories = null;
 /** @type {number | null} */
 let capturedScanIntervalMs = null;
-/** Tells an in-flight scan cycle to stop rescheduling itself once its current pass finishes. */
 let disposed = false;
-/** True for the duration of an actual runScanCycle() pass. Without this, triggerImmediateRescan() could launch a
- * second concurrent runScanCycle() (checking stale `scanTimeout` truthiness isn't enough - it's never cleared
- * when a normally-scheduled timer fires), two passes over the same files. */
 let passInFlight = false;
-/** @type {Promise<void> | null} Exported via waitForCurrentScanPass() for tests only - production never awaits it. */
+/** @type {Promise<void> | null} */
 let currentPassPromise = null;
-/** @type {LocalImportWorkerPool | null} Created once, shared, and disposed only by disposeLocalImportScan(). */
+/** @type {LocalImportWorkerPool | null} */
 let workerPool = null;
 
 /**
@@ -166,8 +127,7 @@ function ensureWorkerPool() {
 }
 
 /**
- * @returns {string} This install's uploads staging directory, reused so a staged local-import file gets the same
- * lifecycle (deleted by the importFromX() functions) as a multer upload.
+ * @returns {string}
  */
 function getUploadsDir() {
     return path.join(globalThis.DATA_ROOT, UPLOADS_DIRECTORY);
@@ -175,7 +135,7 @@ function getUploadsDir() {
 
 /**
  * @param {string} sourcePath
- * @returns {Promise<string>} The staged file's absolute path
+ * @returns {Promise<string>}
  */
 async function stageFile(sourcePath) {
     const uploadsDir = getUploadsDir();
@@ -206,13 +166,10 @@ async function markProcessed(state, directories, sourcePath, filename, mtimeMs, 
 
 
 /**
- * Clears stale local_import_skips/local_import_mtimes rows once `filename` is known gone from `state.sourceDir`.
- * Shared by processFile()'s ENOENT branch (removed within this pass) and scanDirectory()'s post-readdir sweep
- * (removed between passes - readdir() never lists it, so processFile() never even runs for it).
  * @param {DirectoryScanState} state
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} filename
- * @returns {Promise<void>} Never throws.
+ * @returns {Promise<void>}
  */
 async function cleanupRemovedFile(state, directories, filename) {
     state.lastSeenMtimeMs.delete(filename);
@@ -229,15 +186,9 @@ async function cleanupRemovedFile(state, directories, filename) {
     }
 }
 
-/** Page size for sweepRemovedFiles()'s walk of local_import_mtimes, bounding its peak memory regardless of
- * corpus size. */
 const REMOVED_FILE_SWEEP_PAGE_SIZE = 5000;
 
 /**
- * Finds and cleans up every source file `state.sourceDir`'s persisted local_import_mtimes rows know about that
- * no longer exists on disk. Checks the filesystem directly per candidate rather than diffing against a directory
- * listing: there's no bounded-memory way to hold a full listing for an unbounded directory, and no ordering
- * guarantee between a filesystem enumeration and SQLite's own collation to merge against instead.
  * @param {DirectoryScanState} state
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<void>}
@@ -259,15 +210,11 @@ async function sweepRemovedFiles(state, directories) {
             }
         }
 
-        if (page.length < REMOVED_FILE_SWEEP_PAGE_SIZE) break; // Last page.
+        if (page.length < REMOVED_FILE_SWEEP_PAGE_SIZE) break;
     }
 }
 
 /**
- * Serializes concurrent processFile() calls sharing the same content hash within one pass, so the dedup-check-
- * then-import section never runs for two same-hash files at once (there's no UNIQUE constraint on
- * characters.content_hash, and the eventual import's own re-check has the identical race window). Different
- * hashes are never blocked by each other.
  * @param {DirectoryScanState} state
  * @param {string} hash
  * @param {() => Promise<void>} fn
@@ -277,8 +224,6 @@ function withPerHashLock(state, hash, fn) {
     if (!state.hashLocks) state.hashLocks = new Map();
     const prior = state.hashLocks.get(hash) ?? Promise.resolve();
     const run = prior.then(fn);
-    // Swallow rejection only in the map's chained copy - `run` itself still carries the real outcome to this
-    // call's own caller. Otherwise a rejection here would poison every future waiter for this hash.
     state.hashLocks.set(hash, run.catch(() => { }));
     return run;
 }
@@ -293,11 +238,6 @@ function readTagImportSetting(directories) {
 }
 
 /**
- * Per-filename in-flight guard around processFileImpl(): the periodic scan and the watcher (or two watcher
- * events) can land on the same filename concurrently, and withPerHashLock() alone doesn't cover that (a
- * duplicate-of-existing file short-circuits the same way regardless of the lock, so two concurrent calls would
- * each still run the full pipeline and each independently call markProcessed). A second concurrent
- * call for the same filename just joins the first call's promise instead.
  * @param {DirectoryScanState} state
  * @param {string} filename
  * @param {import('./users.js').UserDirectoryList} directories
@@ -326,8 +266,7 @@ async function processFile(state, filename, directories, tagImportSetting = 3, b
  * @param {string} filename
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {number} [tagImportSetting]
- * @param {Map<string, number> | null} [bulkMtimeHints] scanDirectory()'s pass-wide mtime prefetch; `null` from
- * any other caller (watcher path), which falls through to the per-file lookup instead.
+ * @param {Map<string, number> | null} [bulkMtimeHints]
  * @returns {Promise<void>}
  */
 async function processFileImpl(state, filename, directories, tagImportSetting = 3, bulkMtimeHints = null) {
@@ -365,8 +304,6 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
         return;
     }
 
-    // Gated on mtime match: a file edited since its skip was recorded falls through to reclassification instead
-    // of staying permanently skipped.
     if (format === 'json') {
         const existingSkip = await (await userStore(directories)).lib.localImportSkip(sourcePath);
         if (existingSkip && existingSkip.mtimeMs === stat.mtimeMs) {
@@ -378,13 +315,8 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
     const allowIdentityFallback = getConfigValue('performance.allowExpensiveDuplicateFallback', true, 'boolean');
 
     try {
-        // Hash/classify/identity-hash, and for png/json the eventual write, all run in the worker off the main
-        // thread. Every store call stays on this thread.
         const pipelineResult = await ensureWorkerPool().runPipeline(sourcePath, format, directories, allowIdentityFallback);
 
-        // Re-stat after the worker's read (not the pre-dispatch stat above): a file still being streamed onto
-        // disk when the trigger fired can have a mid-write pre-dispatch mtime, which would otherwise get
-        // persisted against the final bytes' hash and cause a spurious self-match "duplicate" next pass.
         try {
             const freshStat = await fsPromises.stat(sourcePath);
             stat.mtimeMs = freshStat.mtimeMs;
@@ -409,8 +341,6 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
         }
 
         if (format === 'json') {
-            // The mtime-gated check above already means any existing skip row is stale - clear it so an
-            // edited-into-importable file doesn't keep carrying a misleading skip record.
             try {
                 await (await userStore(directories)).lib.clearLocalImportSkip(sourcePath);
             } catch (clearErr) {
@@ -425,8 +355,6 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
             const alreadyImported = await lib.findByHash(HASH.content, contentHash);
             if (alreadyImported) {
                 if (pipelineResult.needsWrite) await pipelineResult.finish({ type: 'no-write' });
-                // duplicate_of is cascade-cleared if the matched character is later deleted, so the source file
-                // falls through to a fresh dedup-check next pass instead of staying wrongly skipped.
                 await markProcessed(state, directories, sourcePath, filename, stat.mtimeMs, alreadyImported);
                 return;
             }
@@ -440,21 +368,13 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                         return;
                     }
                 } catch (err) {
-                    // Non-fatal: worst case here is a missed dedup, never data loss.
                     console.debug(`[local-import] Content-identity duplicate check failed for ${sourcePath} (will still attempt an ordinary import):`, err.message);
                 }
             }
 
-            // Passed to markProcessed() below as `duplicateOf`, so local_import_mtimes ends up recording this
-            // source path against whichever character it produced - not only later-detected duplicates.
             let importedCharacterId = null;
 
             if (pipelineResult.needsWrite) {
-                // Minted up front (rather than after the build call below) so it can be threaded into
-                // buildPngImportData()/buildJsonImportData() as the character's avatar identity - they use it to
-                // key any imported sprite folder the same way runtime lookup resolves one, instead of the
-                // display name. Cheap even when the build below turns out to fail or return null: mintCharacterId
-                // only checks for an unused id, it doesn't write anything.
                 let pngName;
                 try {
                     pngName = await mintCharacterId(directories);
@@ -463,15 +383,12 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     throw mintErr;
                 }
 
-                // png/json: the worker already read/parsed the file, so build the final data here and hand it
-                // back to finish the write, reusing the same buffer - no second read of sourcePath.
                 let data;
                 try {
                     data = format === 'png'
                         ? buildPngImportData(pipelineResult.rawText, directories, pngName)
                         : buildJsonImportData(pipelineResult.rawText, directories, pngName);
                 } catch (buildErr) {
-                    // Must still call finish() here or the worker's pool slot stays stuck "busy" forever.
                     await pipelineResult.finish({ type: 'no-write' }).catch(() => { });
                     throw buildErr;
                 }
@@ -480,14 +397,11 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     await pipelineResult.finish({ type: 'no-write' });
                     console.warn(`[local-import] Failed to import ${sourcePath} (unrecognized content or import error) - will retry next pass.`);
                 } else {
-                    // Dated by its source file, as the library shows when a card arrived.
                     const writeCard = (/** @type {string} */ avatarIdentityHash) => () => lib.writeCard(directories, `${pngName}.png`, data, {
                         contentHash, avatarIdentityHash, dateAdded: Math.round(stat.mtimeMs),
                     });
                     let stored = true;
                     if (format === 'png') {
-                        // The source file itself is the card's image, reflinked (character-avatars.js): no image write.
-                        // It must still be the bytes the worker read and hashed, else it's imported again when seen.
                         await pipelineResult.finish({ type: 'no-write' });
                         if (!pipelineResult.avatarIdentityHash) throw new Error('the import worker answered no image hash');
                         stored = await linkWithAvatar(lib, directories, `${pngName}.png`, sourcePath, async () => {
@@ -495,7 +409,6 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                             return true;
                         }, { size: stat.size, mtimeMs: stat.mtimeMs }) ?? false;
                     } else {
-                        // A JSON card's image is the default avatar, made here.
                         const { image } = await pipelineResult.finish({ type: 'write' });
                         if (!image) throw new Error('the import worker answered no image');
                         await writeWithAvatar(lib, directories, `${pngName}.png`, image, writeCard(image.avatarIdentityHash));
@@ -515,7 +428,6 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     }
                 }
             } else {
-                // charx/byaf/yaml: stage+import, unchanged from before the worker pool.
                 const stagedPath = await stageFile(sourcePath);
                 const result = await importCharacterFileHeadless(stagedPath, format, directories, {
                     userHandle: DEFAULT_USER.handle,
@@ -549,18 +461,12 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
         });
     } catch (err) {
         console.error('[local-import] Will retry next pass:', importFailure(sourcePath, err));
-        // lastSeenMtimeMs deliberately not updated on failure, so a transient error gets retried, not skipped forever.
     }
 }
 
-/** Batch size for scanDirectory()'s streaming walk and its bulk mtime prefetch, bounding peak memory regardless
- * of directory size. */
 const SCAN_BATCH_SIZE = 2000;
 
 /**
- * One full pass over one configured directory: streams it in fixed-size batches, bulk-prefetching each batch's
- * persisted mtimes before dispatching through processFile(). Each card is stored as it is imported, so a restart
- * mid-pass loses nothing already imported.
  * @param {DirectoryScanState} state
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<void>}
@@ -596,9 +502,6 @@ export async function scanDirectory(state, directories) {
         };
 
         try {
-            // Not filtered by dirent.isFile(): some filesystems don't populate directory-entry file-type info at
-            // all, and opendir()'s streaming iteration has no stat-fallback for that - it would just report
-            // false for everything. processFileImpl() already stats and skips non-files itself.
             for await (const dirent of dir) {
                 batch.push(dirent.name);
                 if (batch.length >= SCAN_BATCH_SIZE) await runBatch();
@@ -611,7 +514,6 @@ export async function scanDirectory(state, directories) {
         state.hashLocks?.clear();
         const { scanProgress } = state;
         state.scanProgress = null;
-        // One imported card is a single update, which logs nothing.
         if (scanProgress && scanProgress.done > 1) {
             scanProgress.finish();
         }
@@ -619,13 +521,11 @@ export async function scanDirectory(state, directories) {
 }
 
 /**
- * Per-filename dispatch shared by every watch mechanism (Linux native watch's onEvent, and fs.watch()).
  * @param {DirectoryScanState} state
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} filename
  */
 function handleWatchEvent(state, directories, filename) {
-    // Intercept a pending heartbeat's own sentinel file before it reaches the normal import path.
     if (state.pendingHeartbeats.has(filename)) {
         const resolveHeartbeat = state.pendingHeartbeats.get(filename);
         state.pendingHeartbeats.delete(filename);
@@ -659,12 +559,9 @@ async function startWatcherFor(state, directories) {
             });
             if (handle) {
                 state.watcher = handle;
-                // Same handle does both jobs; this marker just keeps stopWatcherFor()'s two-resource close shape
-                // from double-closing the one real inotify instance.
                 state.overflowWatch = { close: () => {} };
                 return;
             }
-            // Native attach unavailable/failed: falls through to fs.watch(); overflowWatch stays null.
         }
 
         state.watcher = fs.watch(state.sourceDir, (_eventType, filename) => {
@@ -702,12 +599,9 @@ function stopWatcherFor(state) {
 }
 
 /**
- * Runs one full pass over every configured directory, then schedules the next one `scanIntervalMs` after this
- * one finishes (self-pacing, not a fixed-rate timer - a slow pass on a large corpus would otherwise overlap the
- * next tick).
  * @param {import('./users.js').UserDirectoryList} userDirectories
  * @param {number} scanIntervalMs
- * @returns {Promise<void>} Resolves once this one pass completes, not future rescheduled ones.
+ * @returns {Promise<void>}
  */
 async function runScanCycle(userDirectories, scanIntervalMs) {
     if (passInFlight) return;
@@ -782,10 +676,6 @@ export async function waitForCurrentScanPass() {
     await currentPassPromise;
 }
 
-/**
- * Runs the next pass now instead of waiting out the rest of `scanIntervalMs`. No-op if a pass is already
- * in flight or the module was never initialized.
- */
 function triggerImmediateRescan() {
     if (passInFlight || !capturedUserDirectories || capturedScanIntervalMs === null) return;
     if (scanTimeout) {
@@ -798,13 +688,10 @@ function triggerImmediateRescan() {
 }
 
 /**
- * Server-boot entry point. Reads `localImport.directories`/`enabled`/`scanIntervalMs`/`watchEnabled` from
- * config.yaml and starts the scan cycle. Deliberately not awaited by the caller - a full pass over a large
- * corpus must never block the server from listening; tests use waitForCurrentScanPass() instead.
  * @returns {Promise<void>}
  */
 export async function initializeLocalImportScan() {
-    disposeLocalImportScan(); // Idempotent re-init.
+    disposeLocalImportScan();
     disposed = false;
 
     const enabled = getConfigValue('localImport.enabled', true, 'boolean');
@@ -842,10 +729,6 @@ export async function initializeLocalImportScan() {
     });
 }
 
-/**
- * Graceful-shutdown / test-teardown counterpart to initializeLocalImportScan(): closes every watcher, stops any
- * in-flight scan cycle from rescheduling, and tears down the worker pool.
- */
 export function disposeLocalImportScan() {
     disposed = true;
     for (const state of scanStates) {
@@ -855,8 +738,6 @@ export function disposeLocalImportScan() {
     currentPassPromise = null;
     capturedUserDirectories = null;
     capturedScanIntervalMs = null;
-    // Reset unconditionally: a pass stuck (e.g. hung filesystem) past worker-pool teardown could otherwise leave
-    // passInFlight permanently true and deadlock every future pass, including the next init's own first one.
     passInFlight = false;
     if (scanTimeout) {
         clearTimeout(scanTimeout);

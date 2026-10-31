@@ -1,9 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import path from 'node:path';
 
-// A group write the store refuses must fail its request with a message and leave the group as it was: nothing
-// reports success for a group that was never stored.
-
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
 /** @type {typeof import('./converted-user.fixture.js')} */
@@ -59,7 +56,6 @@ async function postRaw(urlPath, body) {
     return { status: response.status, body: await response.json().catch(() => null) };
 }
 
-/** Makes every write to the store fail, as a full disk would. */
 function breakWrites() {
     const store = user.store.lib.store;
     commit = store.commit;

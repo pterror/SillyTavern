@@ -2,10 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { CreateRule, ESTree } from 'vite-plus/lint/plugins';
 
-// A package imports only itself and the packages its package.json names. Its folder is its boundary: a relative
-// import that leaves it, or an absolute path (the old page's `/scripts/...`), would reach code the package doesn't
-// declare, so the dependency graph would stop being the whole truth.
-
 type Package = { dir: string; dependencies: Set<string> };
 
 const packages = new Map<string, Package | null>();
@@ -32,7 +28,6 @@ function packageOf(dir: string): Package | null {
     return found;
 }
 
-/** `@scope/name/sub` → `@scope/name`; `name/sub` → `name`. */
 function packageName(specifier: string): string {
     const parts = specifier.split('/');
     return (specifier.startsWith('@') ? parts.slice(0, 2) : parts.slice(0, 1)).join('/');

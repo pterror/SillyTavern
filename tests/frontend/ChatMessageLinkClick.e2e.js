@@ -12,7 +12,7 @@ async function awaitAppReady(page) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {boolean} value
- * @returns {Promise<boolean>} The previous value.
+ * @returns {Promise<boolean>}
  */
 async function setClickToEdit(page, value) {
     return page.evaluate(async (value) => {
@@ -30,7 +30,6 @@ test.describe('Clicking a link in a chat message with click to edit on', () => {
         await awaitAppReady(page);
         await page.setViewportSize({ width: 1400, height: 900 });
         await page.evaluate(async () => {
-            // Messages on the welcome screen cannot be edited; a temporary chat's can, and it saves nothing.
             const { newAssistantChat } = await import('/script.js');
             await newAssistantChat({ temporary: true });
             const context = window['SillyTavern'].getContext();
@@ -46,7 +45,6 @@ test.describe('Clicking a link in a chat message with click to edit on', () => {
             };
             context.chat.push(message);
             context.addOneMessage(message);
-            // The link must not leave the page under test; the app's own handlers still run.
             document.addEventListener('click', (event) => {
                 if (event.target instanceof Element && event.target.closest('a')) event.preventDefault();
             }, true);

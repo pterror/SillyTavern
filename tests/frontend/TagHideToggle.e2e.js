@@ -1,16 +1,11 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// The eye toggle in Manage Tags is an action: the page asks the server to hide or show the tag, and shows the new
-// state only once the server has stored it.
-
-// Longer than the settings save debounce, so a save from opening the drawer has emitted its own SETTINGS_UPDATED.
 const SETTINGS_SAVE_SETTLE_MS = 3000;
 
 /** @param {import('@playwright/test').Page} page */
 async function loadApp(page) {
     await testSetup.awaitST({ page });
-    // APP_READY is an auto-fire event: a listener added after it was emitted still runs.
     await page.evaluate(() => {
         window['__appReady'] = false;
         window['__settingsUpdated'] = 0;
@@ -40,7 +35,6 @@ async function api(page, path, body = {}) {
  * @param {string} id
  */
 async function createTag(browser, id) {
-    // Created from a throwaway context so the page under test learns of the tag only through its own boot.
     const setupContext = await browser.newContext();
     try {
         const setup = await setupContext.newPage();
@@ -75,7 +69,7 @@ async function openTagManagement(page) {
 
 /**
  * @param {import('@playwright/test').Page} page
- * @returns {string[]} every tag or settings write the page sends from now on, as `path body`
+ * @returns {string[]}
  */
 function recordWrites(page) {
     /** @type {string[]} */

@@ -2,8 +2,6 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jes
 import path from 'node:path';
 import { Buffer } from 'node:buffer';
 
-// The tag backup file is made by the server: every tag and every character's and group's tags, whatever a page holds.
-
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
 /** @type {typeof import('./converted-user.fixture.js')} */
@@ -17,7 +15,6 @@ let baseUrl;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
-// A minimal valid 1x1 transparent PNG, enough for a card to be written into and read back from.
 const BLANK_PNG = Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
     'base64',
@@ -78,7 +75,7 @@ function cardJson(avatar) {
     });
 }
 
-/** @param {string} avatar Written as a card file and a row, as a created character is. */
+/** @param {string} avatar */
 async function seedCharacter(avatar) {
     await fixture.writeCardWithImage(user, avatar, cardJson(avatar), writeCard(BLANK_PNG, cardJson(avatar)));
 }
@@ -88,7 +85,10 @@ async function seedGroup(id) {
     await user.store.lib.writeGroup({ id, name: `Group ${id}`, members: [], fav: false });
 }
 
-/** @param {string} id @param {string[]} tagIds */
+/**
+ * @param {string} id
+ * @param {string[]} tagIds
+ */
 async function assign(id, tagIds) {
     for (const tagId of tagIds) expect((await user.store.lib.tags.assign(id, tagId)).result).toBe('ok');
 }
@@ -116,7 +116,6 @@ describe('POST /api/tags/backup', () => {
         await seedCharacter('Alice.png');
         await seedCharacter('Bob.png');
         const many = Array.from({ length: 1500 }, (_, i) => `t${String(i).padStart(4, '0')}`);
-        // One restore for all 1500 rows: assigning them one by one took most of jest's 5 s timeout under load.
         const restored = await user.store.lib.tags.restore({ tags: many.map(id => ({ id, name: id })), tagMap: { 'Alice.png': many }, overwrite: false });
         expect(restored?.undefinedTagIds).toEqual([]);
         await assign('Bob.png', ['t0001']);

@@ -17,7 +17,6 @@ import { migrateQuickReplySet } from './src/migrate-set.js';
 export { debounceAsync };
 
 
-// warn is never gated by this - warnings should always be visible.
 const _VERBOSE = false;
 export const debug = (...msg) => _VERBOSE ? console.debug('[QR2]', ...msg) : null;
 export const log = (...msg) => _VERBOSE ? console.log('[QR2]', ...msg) : null;
@@ -57,9 +56,6 @@ export let quickReplyApi;
 
 
 const loadSets = async () => {
-    // Shares the in-flight request with script.js's own getSettings() call, which the boot
-    // sequence fires around the same time (extensions init before getSettings() runs) - without
-    // this, both issued their own separate full settings/get request for the same response.
     let data;
     try {
         data = await fetchRawSettings();
@@ -72,7 +68,6 @@ const loadSets = async () => {
         migrateQuickReplySet(set);
         QuickReplySet.list.push(QuickReplySet.from(JSON.parse(JSON.stringify(set))));
     }
-    // need to load QR lists after all sets are loaded to be able to resolve context menu entries
     setList.forEach((set, idx) => {
         QuickReplySet.list[idx].qrList = set.qrList.map(it => QuickReply.from(it));
         QuickReplySet.list[idx].init();

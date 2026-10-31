@@ -25,7 +25,6 @@ const thumbnailsEnabled = !!getConfigValue('thumbnails.enabled', true, 'boolean'
 const quality = Math.min(100, Math.max(1, parseInt(getConfigValue('thumbnails.quality', 95, 'number'))));
 const pngFormat = String(getConfigValue('thumbnails.format', 'jpg')).toLowerCase().trim() === 'png';
 
-/** Originals that didn't decode as an image, by path: the `mtimeMs:size` they had then. Tried again once changed. */
 const undecodable = new Map();
 
 /**
@@ -78,8 +77,6 @@ async function originalPathOf(directories, type, file) {
 }
 
 /**
- * Version for the `?v=` param, derived from the cached thumbnail's own mtime - lets a caller build the
- * versioned URL directly and skip the redirect hop below. Null if no cached thumbnail exists yet.
  * @returns {string|null}
  */
 export function getThumbnailVersion(directories, type, file) {
@@ -230,7 +227,6 @@ async function processSingleImage(file, pathToOriginalFile, thumbnailFolder, typ
         try {
             image = await Jimp.read(fileBuffer);
         } catch (error) {
-            // Said once per version of the file: it is asked for on every list draw.
             undecodable.set(pathToOriginalFile, version);
             console.warn(`[Thumbnails] No thumbnail for ${file}, not a readable image: ${error.message}`);
             return { success: false, filename: file, error: error.message };
@@ -291,8 +287,6 @@ publicRouter.get('/', async function (request, response) {
         if (file !== rawFile) return response.sendStatus(403);
 
         const original = await originalPathOf(request.user.directories, type, file);
-        // Before the cache lookup: a character with no image of its own shows the default avatar, never a thumbnail
-        // cached from an image it had.
         if (type === 'avatar' && original === DEFAULT_AVATAR_PATH) {
             return response.sendFile(path.resolve(DEFAULT_AVATAR_PATH));
         }
@@ -302,7 +296,6 @@ publicRouter.get('/', async function (request, response) {
             const pathToOriginalFile = path.resolve(original);
             if (!fs.existsSync(pathToOriginalFile)) return response.sendStatus(404);
             invalidateFirefoxCache(pathToOriginalFile, request, response);
-            // A character's image may hold its card as imported: never sent (character-avatars.js).
             if (type === 'avatar' && path.extname(pathToOriginalFile).toLowerCase() === '.png') return sendPngWithoutText(request, response, pathToOriginalFile);
             return response.sendFile(pathToOriginalFile);
         };
@@ -340,8 +333,6 @@ publicRouter.get('/', async function (request, response) {
             const stat = fs.statSync(pathToCachedFile);
             const version = String(Math.round(stat.mtimeMs));
 
-            // immutable caching only for a request that already names the current version, since the cache
-            // key is otherwise just type+file with no hash/mtime and would pin a stale image forever.
             if (request.query.v === version) {
                 response.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
                 return response.sendFile(file, { root: thumbnailFolder, dotfiles: 'allow' });

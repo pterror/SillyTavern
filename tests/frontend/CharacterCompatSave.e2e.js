@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, openInfoTab } from './frontent-test-utils.js';
 
-// Upstream's whole-form saves, `createOrEditCharacter` and `saveCharacterDebounced`, re-exported from script.js
-// for third-party extensions: they write a #form_create input, then call one of these.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -18,7 +15,6 @@ const CHARACTER_WRITE_PATHS = new Set([
 const CHAT_ROW_WRITE_PATHS = new Set(['/api/chats/save', '/api/chats/openings/ensure']);
 
 /**
- * Every write request from here on: character writes (greeting ops included) and chat row writes, with JSON bodies.
  * @param {import('@playwright/test').Page} page
  * @returns {{path: string, body: any}[]}
  */
@@ -40,11 +36,10 @@ function recordWrites(page) {
 }
 
 /**
- * Creates a character through the API.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @param {string[]} greetings The first is the default.
- * @returns {Promise<string>} The avatar filename.
+ * @param {string[]} greetings
+ * @returns {Promise<string>}
  */
 async function createCharacter(page, name, greetings) {
     return page.evaluate(async ({ name, greetings }) => {
@@ -62,7 +57,6 @@ async function createCharacter(page, name, greetings) {
 }
 
 /**
- * Opens the character in the editor and waits for its chat's opening.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -79,7 +73,6 @@ async function openCharacter(page, avatar) {
 }
 
 /**
- * Creates a character and opens it in the editor.
  * @param {import('@playwright/test').Page} page
  * @param {string} prefix
  * @param {string[]} [greetings]
@@ -95,7 +88,7 @@ async function createAndOpen(page, prefix, greetings) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
- * @returns {Promise<any>} The card as stored on the server.
+ * @returns {Promise<any>}
  */
 async function fetchStoredCharacter(page, avatar) {
     return page.evaluate(async (avatarUrl) => {
@@ -119,7 +112,6 @@ async function deleteCharacter(page, avatar) {
 }
 
 /**
- * Sets an input's value the way an extension does: `.val()`, no event.
  * @param {import('@playwright/test').Page} page
  * @param {string} selector
  * @param {string} value
@@ -132,9 +124,8 @@ async function setInput(page, selector, value) {
 }
 
 /**
- * Rewrites #character_json_data the way an extension does: parse, change, `.val()` back.
  * @param {import('@playwright/test').Page} page
- * @param {string} fnSource Body of `(card) => void`, mutating `card`.
+ * @param {string} fnSource
  */
 async function editJsonData(page, fnSource) {
     await page.evaluate((fnSource) => {
@@ -148,7 +139,7 @@ async function editJsonData(page, fnSource) {
 
 /**
  * @param {import('@playwright/test').Page} page
- * @param {any} [eventArg] 'newChat' passes `new CustomEvent('newChat')`.
+ * @param {any} [eventArg]
  * @returns {Promise<{isPromise: boolean, resolved: any}>}
  */
 async function callCreateOrEdit(page, eventArg) {
@@ -162,9 +153,8 @@ async function callCreateOrEdit(page, eventArg) {
 }
 
 /**
- * Starts recording the given events inside the page.
  * @param {import('@playwright/test').Page} page
- * @param {string[]} eventKeys `event_types` keys.
+ * @param {string[]} eventKeys
  */
 async function recordEvents(page, eventKeys) {
     await page.evaluate((eventKeys) => {
@@ -366,7 +356,6 @@ test.describe('createOrEditCharacter in edit mode', () => {
         const avatar = await createAndOpen(page, 'CompatGreetingConflict', [g0]);
         try {
             const elsewhere = `Changed elsewhere ${s}`;
-            // Leaves #character_json_data holding the greeting as loaded, so its hash no longer matches the server's.
             const changed = await page.evaluate(async (elsewhere) => {
                 const { saveGreetingField } = await import('/script.js');
                 return saveGreetingField(elsewhere);

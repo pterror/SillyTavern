@@ -1,6 +1,5 @@
 import { describe, test, expect, jest, beforeEach } from '@jest/globals';
 
-/** One fake localforage instance per name: a Map behind localforage's async API. */
 const instances = new Map();
 jest.unstable_mockModule('../public/lib.js', () => ({
     localforage: {
@@ -21,12 +20,10 @@ jest.unstable_mockModule('../public/lib.js', () => ({
 const cache = await import('../public/scripts/query-result-cache.js');
 cache.setQueryCacheUser('tester');
 
-/** An entry whose JSON is about `kb` KiB. */
 const entryOf = (kb, token = 't') => ({ hashRows: [{ id: 'x'.repeat(kb * 1024) }], token, seq: 1 });
 const keys = () => [...(instances.get('SillyTavern_QueryCache_tester')?.data.keys() ?? [])].filter(key => key !== '__index__').sort();
 
 describe('query result cache', () => {
-    // The module keeps its store, so each test empties it rather than replacing it.
     beforeEach(() => instances.get('SillyTavern_QueryCache_tester')?.data.clear());
 
     test('a kept page is read back, and a missing one reads as null', async () => {
@@ -40,7 +37,6 @@ describe('query result cache', () => {
             await cache.writeQueryCache(key, entryOf(1200));
             await new Promise(resolve => setTimeout(resolve, 5));
         }
-        // 'a' is used again, so 'b' is now the least recently used.
         await cache.readQueryCache('a');
         await new Promise(resolve => setTimeout(resolve, 5));
         await cache.writeQueryCache('d', entryOf(1200));
@@ -83,11 +79,9 @@ describe('query result cache', () => {
 
     test('a page\'s cursor is read from its kept page, or kept alone for an answer without rows', async () => {
         void cache.writeQueryCache('page', { ...entryOf(1), cursor: 'p1' });
-        // Read behind the write just asked for.
         expect(await cache.readQueryCursor('page')).toBe('p1');
         await cache.writeQueryCursor('total-only', 'j1');
         expect(await cache.readQueryCursor('total-only')).toBe('j1');
-        // A cursor alone is no kept page.
         expect(await cache.readQueryCache('total-only')).toBeNull();
         expect(await cache.readQueryCursor('missing')).toBeNull();
     });

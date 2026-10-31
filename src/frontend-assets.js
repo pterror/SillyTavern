@@ -4,28 +4,23 @@ import path from 'node:path';
 
 import { isPathUnderParent } from './util.js';
 
-/** The query parameter that carries a frontend file's content hash. */
 export const ASSET_VERSION_PARAM = 'stv';
 
-/** URL prefix under which third-party extensions are served (user's dir first, then the global dir). */
 const THIRD_PARTY_PREFIX = '/scripts/extensions/third-party/';
 
 const SKIP_DIRECTORIES = new Set(['.git', 'node_modules']);
 
-/** File types that get a hash at all: what pages load, plus what css references. */
 const HASHED_EXTENSIONS = new Set([
     '.js', '.mjs', '.css', '.html', '.json',
     '.woff', '.woff2', '.ttf', '.otf', '.eot',
     '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ico', '.avif',
 ]);
 const MODULE_EXTENSIONS = new Set(['.js', '.mjs']);
-/** Files code fetches, links or shows at runtime by path; their hashes go to the page as a json map. */
 const RUNTIME_EXTENSIONS = new Set(['.css', '.html', '.json', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ico', '.avif']);
 
 const CSS_URL_PATTERN = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g;
 const CSS_IMPORT_STRING_PATTERN = /@import\s+(['"])([^'"]+)\1/g;
 const HTML_ATTRIBUTE_PATTERN = /(\s(?:src|href)=")([^"]+)(")/g;
-/** Files served with their references rewritten to hashed urls; each pattern's 2nd group is the reference. */
 const REWRITE_PATTERNS = {
     '.css': [CSS_URL_PATTERN, CSS_IMPORT_STRING_PATTERN],
     '.html': [HTML_ATTRIBUTE_PATTERN],
@@ -40,15 +35,15 @@ function contentHash(content) {
 }
 
 /**
- * @param {string} reference A url() / @import / src / href value
- * @returns {boolean} Whether it may point at one of our files (relative or root-relative, no query of its own)
+ * @param {string} reference
+ * @import / src / href value
+ * @returns {boolean}
  */
 function isLocalReference(reference) {
     return !/^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(reference) && !reference.includes('?');
 }
 
 /**
- * Appends the version param to a url path, keeping a #fragment after it.
  * @param {string} reference
  * @param {string} hash
  * @returns {string}
@@ -60,22 +55,16 @@ function withVersion(reference, hash) {
     return `${base}?${ASSET_VERSION_PARAM}=${hash}${fragment}`;
 }
 
-/**
- * Content hashes for every frontend file, kept current by stat: a file is re-read only when its mtime or size
- * changed. A css file's hash covers its text after its url()/@import references are rewritten to their own
- * hashed urls, so a changed font or image changes the url of every css that references it.
- */
 export class FrontendAssets {
     /**
      * @param {object} options
      * @param {string} options.publicDirectory
-     * @param {() => string|undefined} options.libraryDirectory Where the libraries' build is (packages/serve-ui)
-     * @param {() => string[]} options.libraryFiles Its file names, each served at the root, e.g. `lib.js`
+     * @param {() => string|undefined} options.libraryDirectory
+     * @param {() => string[]} options.libraryFiles
      * @param {() => string|undefined} options.globalExtensionsDirectory
      * @param {() => string|undefined} options.userCssPath
      * @param {() => boolean} options.extensionsEnabled
-     * @param {() => Record<string, string>} [options.moduleAliases] Module URLs the import map points elsewhere
-     *   (the new page's stable entry, at its built file).
+     * @param {() => Record<string, string>} [options.moduleAliases]
      */
     constructor(options) {
         this.options = options;
@@ -90,10 +79,8 @@ export class FrontendAssets {
     }
 
     /**
-     * Maps a url path to the file the server would answer it with, in the server's own order: the libraries,
-     * user.css, public/, then the user's and the global third-party extension directories.
-     * @param {string} urlPath Decoded path, starting with `/`
-     * @param {import('./users.js').UserDirectoryList|undefined} directories The requesting user's directories
+     * @param {string} urlPath
+     * @param {import('./users.js').UserDirectoryList|undefined} directories
      * @returns {string|null}
      */
     resolve(urlPath, directories) {
@@ -151,13 +138,10 @@ export class FrontendAssets {
     }
 
     /**
-     * A css or html file's text with its references to our files rewritten to hashed urls, and the hash of that
-     * text: css `url()` and `@import`, html `src`/`href`. A referenced css counts by its own rewritten text, so a
-     * changed font changes the url of every css and template above it.
      * @param {string} urlPath
      * @param {string} filePath
      * @param {import('./users.js').UserDirectoryList|undefined} directories
-     * @param {Set<string>} [visiting] Files on the current reference chain, to stop on a cycle
+     * @param {Set<string>} [visiting]
      * @returns {Promise<{body: string, hash: string}>}
      */
     async rewritten(urlPath, filePath, directories, visiting = new Set()) {
@@ -165,11 +149,10 @@ export class FrontendAssets {
         const text = await this.#textSource(filePath, stat);
         const extension = path.extname(filePath).toLowerCase();
         const patterns = REWRITE_PATTERNS[extension];
-        // An html file here is a template: code puts it into the page, so its references resolve against the page.
         const referenceBase = extension === '.html' ? '/' : urlPath;
         visiting.add(filePath);
 
-        /** @type {Map<string, string>} reference → hashed reference */
+        /** @type {Map<string, string>} */
         const rewrites = new Map();
         for (const pattern of patterns) {
             for (const match of text.matchAll(pattern)) {
@@ -216,7 +199,6 @@ export class FrontendAssets {
     }
 
     /**
-     * The hash a url path's current content has, or null when the server has no such frontend file.
      * @param {string} urlPath
      * @param {import('./users.js').UserDirectoryList|undefined} directories
      * @returns {Promise<string|null>}
@@ -233,8 +215,6 @@ export class FrontendAssets {
     }
 
     /**
-     * Every hashed frontend url path a page of this user can load, with its current hash. Walks the directories
-     * on every call (stat only; files are read again only when they changed), so an edit shows on the next load.
      * @param {import('./users.js').UserDirectoryList|undefined} directories
      * @returns {Promise<Map<string, string>>}
      */
@@ -270,8 +250,6 @@ export class FrontendAssets {
     }
 
     /**
-     * The index page for this user: its own asset references carry their hashes, an import map pins every
-     * module to its current hash, and a json map gives the hashes of what code fetches or links at runtime.
      * @param {string} indexPath
      * @param {import('./users.js').UserDirectoryList|undefined} directories
      * @returns {Promise<{body: string, buildId: string}>}
@@ -333,12 +311,6 @@ export class FrontendAssets {
 }
 
 /**
- * Serves frontend files with caching keyed by content hash:
- * - a request carrying the file's current hash is cached for good (`immutable`);
- * - one carrying an older hash gets 409 and `X-ST-Stale-Asset: 1`, so a page built against older files fails to
- *   load the file instead of running a mix of old and new code;
- * - css and html are answered with their references rewritten to hashed urls, the ETag being the hash of that text.
- * Anything else falls through to the normal handlers, which revalidate on every load.
  * @param {FrontendAssets} assets
  * @returns {import('express').RequestHandler}
  */
@@ -401,7 +373,7 @@ function decodeURIComponentSafe(value) {
 
 /**
  * @param {string} json
- * @returns {string} The json made safe inside a script element
+ * @returns {string}
  */
 function escapeScriptContent(json) {
     return json.replace(/</g, '\\u003c');
@@ -420,7 +392,6 @@ function isFile(filePath) {
 }
 
 /**
- * Relative posix paths of every file under a directory, skipping `.git` and `node_modules`.
  * @param {string} root
  * @returns {Promise<string[]>}
  */

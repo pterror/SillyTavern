@@ -17,8 +17,6 @@ function test(name, fn) {
     console.log(`ok - ${name}`);
 }
 
-// ---- getMediaDisplay ----
-
 test('getMediaDisplay: default fallback to LIST when nothing set', () => {
     assert.equal(getMediaDisplay({}), MEDIA_DISPLAY.LIST);
     assert.equal(getMediaDisplay(undefined), MEDIA_DISPLAY.LIST);
@@ -37,8 +35,6 @@ test('getMediaDisplay: invalid value falls back to LIST', () => {
     const mes = { extra: { media_display: 'bogus' } };
     assert.equal(getMediaDisplay(mes), MEDIA_DISPLAY.LIST);
 });
-
-// ---- getMediaIndex ----
 
 test('getMediaIndex: no media array -> 0', () => {
     assert.equal(getMediaIndex({}), 0);
@@ -59,14 +55,7 @@ test('getMediaIndex: out-of-bounds index clamps to 0', () => {
     assert.equal(getMediaIndex(nanIdx), 0);
 });
 
-// ---- buildChatCompletionMessages ----
-
 test('buildChatCompletionMessages: basic role assignment', () => {
-    // chat is oldest-first (chat[0] = oldest, matching the client's chat.push()-appends-newest
-    // convention - see public/script.js's `chat.push(message)` call sites). The ported loop reads
-    // chat[j] forward (j: 0 -> length-1) while writing messages[i] backward (i: length-1 -> 0), so
-    // for a 2-element chat the oldest message (chat[0]) lands at messages[1] and the newest
-    // (chat[1]) lands at messages[0] - preserved exactly from the client, not "fixed".
     const chat = [
         { is_user: true, mes: 'hi', name: 'User', extra: {} },
         { is_user: false, mes: 'hello', name: 'Bot', extra: {} },
@@ -92,14 +81,6 @@ test('buildChatCompletionMessages: narrator overrides role to system', () => {
 });
 
 test('buildChatCompletionMessages: IGNORE_SYMBOL skip leaves a gap, not a compacted array', () => {
-    // chat is oldest-first: index 0 = 'first' (oldest), index 1 = hidden, index 2 = 'third' (newest).
-    // The read cursor j walks chat forward (0, 1, 2, ...) while the write cursor i walks messages
-    // backward (length-1, ..., 0) in lockstep per *iteration* (not per write). So:
-    //   iteration 1: i=2, j=0 -> reads chat[0] ('first'), writes messages[2]; j becomes 1
-    //   iteration 2: i=1, j=1 -> reads chat[1] (IGNORE_SYMBOL) -> j becomes 2, `continue` - messages[1] is never written
-    //   iteration 3: i=0, j=2 -> reads chat[2] ('third'), writes messages[0]; j becomes 3
-    // So the gap left by the skip lands at messages[1], not shifted to compact the array, and the
-    // surviving entries end up reversed relative to chat's oldest-to-newest order.
     const chat = [
         { is_user: true, mes: 'first', name: 'User', extra: {} },
         { is_user: false, mes: 'hidden', name: 'Bot', extra: { [IGNORE_SYMBOL]: true } },
@@ -108,11 +89,9 @@ test('buildChatCompletionMessages: IGNORE_SYMBOL skip leaves a gap, not a compac
     const messages = buildChatCompletionMessages(chat, {
         name1: 'User', name2: 'Bot', namesBehavior: character_names_behavior.NONE,
     });
-    // length still reflects the highest written index + 1 (index 2 was written)
     assert.equal(messages.length, 3);
     assert.equal(messages[2].content, 'first');
     assert.equal(messages[0].content, 'third');
-    // index 1 must be a genuine hole, not an explicit undefined assignment
     assert.equal(1 in messages, false);
     assert.equal(messages[1], undefined);
 });
@@ -134,7 +113,6 @@ test('buildChatCompletionMessages: character_names_behavior.COMPLETION never pre
 });
 
 test('buildChatCompletionMessages: character_names_behavior.CONTENT prepends name unless narrator', () => {
-    // chat[0] (oldest) -> messages[1]; chat[1] (newest) -> messages[0] (see the reversal note above).
     const chat = [
         { is_user: false, mes: 'hey', name: 'Bot', extra: {} },
         { is_user: false, mes: 'narrated', name: 'Narrator', extra: { type: 'narrator' } },
@@ -233,10 +211,8 @@ test('buildChatCompletionMessages: different-model invocation cloning strips sig
         name1: 'User', name2: 'Bot', namesBehavior: character_names_behavior.NONE,
         currentApi: 'openai', currentModel: 'gpt-new',
     });
-    // Original object must be untouched
     assert.equal(originalInvocation.signature, 'sig');
     assert.equal(originalInvocation.reasoning, 'why');
-    // The result's invocation must be a different object with the fields stripped
     const resultInvocation = messages[0].invocations[0];
     assert.notEqual(resultInvocation, originalInvocation);
     assert.equal('signature' in resultInvocation, false);
@@ -288,8 +264,6 @@ test('buildChatCompletionMessages: reasoning allowed for the currently generatin
     assert.equal(messages[0].signature, 'sig123');
 });
 
-// ---- parseExampleIntoIndividual ----
-
 test('parseExampleIntoIndividual: simple 2-turn example block', () => {
     const block = '{Example Dialogue:}\nUser: hello there\nBot: hi, how are you?';
     const result = parseExampleIntoIndividual(block, { name1: 'User', name2: 'Bot' });
@@ -335,7 +309,6 @@ test('parseExampleIntoIndividual: appendNamesForGroup has no effect when isGroup
 });
 
 test('parseExampleIntoIndividual: unflushed final block still gets added', () => {
-    // Ends mid-bot-message with no following user line to trigger the flush.
     const block = '{Example Dialogue:}\nUser: question\nBot: this is the final unflushed answer';
     const result = parseExampleIntoIndividual(block, { name1: 'User', name2: 'Bot' });
     assert.equal(result.length, 2);
@@ -351,8 +324,6 @@ test('parseExampleIntoIndividual: unflushed final user block also gets added', (
     assert.equal(result[1].name, 'example_user');
 });
 
-// ---- buildChatCompletionMessageExamples ----
-
 test('buildChatCompletionMessageExamples: multiple blocks parsed independently', () => {
     const examples = [
         '<START>\nUser: hi\nBot: hello',
@@ -367,8 +338,6 @@ test('buildChatCompletionMessageExamples: multiple blocks parsed independently',
 });
 
 test('buildChatCompletionMessageExamples: <START> replaced with {Example Dialogue:} and consumed as header line', () => {
-    // If <START> were not replaced/skipped as the header line, "User: hi" would still parse fine
-    // regardless; verify indirectly by checking the case-insensitive match and \r stripping.
     const examples = ['<start>\r\nUser: hi\r\nBot: hello\r'];
     const result = buildChatCompletionMessageExamples(examples, { name1: 'User', name2: 'Bot' });
     assert.equal(result[0][0].content, 'hi');

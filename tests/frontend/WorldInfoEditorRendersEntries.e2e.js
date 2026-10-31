@@ -28,9 +28,6 @@ test.describe('World Info Editor Renders Entries', () => {
                 throw new Error(`Failed to create world info '${worldName}'`);
             }
 
-            // Seed the fresh book with a couple of entries so the panel has something to render.
-            // Entries need at least one non-empty `key` - updateWorldEntryKeyOptionsCache() only calls
-            // getSelect2OptionId() (the code path that crashed) when there's at least one key to hash.
             const data = await loadWorldInfo(worldName);
             const entry1 = await createWorldInfoEntry(worldName, data);
             entry1.key = ['alpha_keyword'];
@@ -56,11 +53,6 @@ test.describe('World Info Editor Renders Entries', () => {
             }
         }, { worldName });
 
-        // Regression guard for the 2026-08-22 "lorebook panel shows no entries" bug: getSelect2OptionId
-        // (called synchronously while building the pagination dataSource) referenced getStringHash as a
-        // bare identifier, but utils.js only re-exported it (`export { getStringHash } from './hash-utils.js'`)
-        // without importing it locally - a ReferenceError that aborted rendering silently as an unhandled
-        // promise rejection in the '#world_editor_select' change handler.
         expect(result.entryCount).toBeGreaterThan(0);
         expect(result.rendered).toBe(true);
         expect(result.listChildren).toBeGreaterThan(0);

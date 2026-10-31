@@ -6,13 +6,6 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// The server stores every reply that lands in the chat; the page never writes one. When the server
-// says it couldn't store a reply, the page shows that and offers to store it again (on the server),
-// doesn't write it itself, and doesn't let the chat continue from it until it's stored.
-//
-// The server's answer is rewritten here to look like a failed store (the node id replaced by a
-// `reply-not-saved` warning); the server side of a failed store is tested in reply-not-saved.test.js.
-
 const MODEL = 'reply-not-saved-model';
 const REPLY = 'The ship sails at dawn.';
 
@@ -55,7 +48,10 @@ function startLlamaCpp() {
     });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
@@ -69,7 +65,10 @@ async function createCharacter(page, name) {
     }, name);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
 async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
@@ -82,7 +81,10 @@ async function openCharacter(page, avatar) {
     await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} url */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} url
+ */
 async function connectLlamaCpp(page, url) {
     if (!(await page.locator('#main_api').isVisible())) {
         await page.locator('#API-status-top').click();
@@ -97,7 +99,6 @@ async function connectLlamaCpp(page, url) {
     await page.locator('#API-status-top').click();
 }
 
-/** A compact-stream frame: 0xFF, type, 4-byte big-endian length, body. */
 function frame(type, body) {
     const header = Buffer.alloc(6);
     header[0] = 0xFF;
@@ -107,8 +108,6 @@ function frame(type, body) {
 }
 
 /**
- * Turns a stream that ends with the stored reply's node frame (0x04) into one that ends with a
- * `reply-not-saved` warnings frame (0x08) instead. Returns the rewritten body and the real node id.
  * @param {Buffer} bytes
  * @param {string} generationId
  */
@@ -157,7 +156,6 @@ for (const streaming of [true, false]) {
                 }
             });
 
-            // Every message write the page sends that carries the reply.
             const pageWrites = [];
             page.on('request', (request) => {
                 const path = new URL(request.url()).pathname;
@@ -183,7 +181,6 @@ for (const streaming of [true, false]) {
             expect(marked.flag).toBe(generationId);
             expect(typeof marked.nodeId === 'string' && !marked.nodeId.startsWith('card:')).toBe(false);
 
-            // An extension's generic save doesn't write it, and the chat can't continue from it.
             await page.evaluate(async () => {
                 // @ts-ignore
                 await SillyTavern.getContext().saveChat();
@@ -195,7 +192,6 @@ for (const streaming of [true, false]) {
             await page.waitForTimeout(500);
             expect(pageWrites).toEqual([]);
 
-            // Saving again asks the server; the reply then carries the stored node.
             const retries = [];
             await page.route('**/api/generation/store/*', async (route) => {
                 retries.push(new URL(route.request().url()).pathname);

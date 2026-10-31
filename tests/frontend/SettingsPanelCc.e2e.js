@@ -1,12 +1,7 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// The chat completion fields of the AI response configuration panel, drawn by the new page from the server's settings
-// view (packages/areas/settings/page/cc.tsx): an edit is stored as the user's setting, upstream's oai_settings reads
-// it, and the old page can't write it any more.
-
 /**
- * The stored settings, as the server has them.
  * @param {import('@playwright/test').Page} page
  */
 async function stored(page) {
@@ -19,7 +14,6 @@ async function stored(page) {
 }
 
 /**
- * Edits a control as the user does (it's in a closed drawer, so by its events).
  * @param {import('@playwright/test').Page} page
  * @param {string} selector
  * @param {string} value
@@ -95,7 +89,6 @@ test.describe('chat completion settings panel', () => {
             await manager.savePreset(name, getChatCompletionPreset());
             return before;
         }, name);
-        // Back to the earlier preset, and a temperature of the user's own over it.
         await page.evaluate(async (before) => {
             // @ts-ignore
             const manager = SillyTavern.getContext().getPresetManager('openai');

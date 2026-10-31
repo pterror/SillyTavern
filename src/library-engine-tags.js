@@ -10,53 +10,31 @@ import { legacySettingsPath, settingsDirPath } from './settings-store.js';
 import { compareNameKeys, tagDerivedColumns, valuesAfter, valuesBefore } from './tag-order.js';
 import { contentHashOf, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
 
-/**
- * The tag manager on the engine: tag definitions, assignments and their change feeds, answered in the shapes the
- * old store's functions give `src/endpoints/tags.js`.
- */
-
-/** The sorts of a tag page, by the client's tag_sort_mode values. */
 export const TAG_SORTS = Object.freeze({ alphabetical: 0, by_entries: 1, manual: 2 });
 
-/** How many numbered names freeName() tries before it stops looking. */
 const FREE_NAME_TRIES = 20000;
-/** Names freeName() looks up per read. */
 const FREE_NAME_BATCH = 100;
-/** Definitions per batch of the backup's stream. */
 const BACKUP_BATCH = 1000;
-/** The most tags a page examines, and that numbering the tags with no order before a move's anchor reads. */
 const WORK_CAP = 20000;
-/** The rows a move's first window spreads when there's no room next to its anchor (tag-actions D11); it doubles. */
 const MOVE_WINDOW = 16;
-/** Tags a reorder pass writes per commit, and the pause between its commits. */
 const PASS_BATCH = 1000;
 const PASS_PAUSE_MS = 10;
-/** A reorder pass's phases (`tagPass`). */
 const PHASE = Object.freeze({ walk: 0, sweep: 1, drain: 2 });
-/** Card tag names that never become tags, and the most a card's tags make (seedCardTags()). */
 const CARD_TAGS_EXCLUDED = new Set(['ROOT', 'TAVERN']);
 const CARD_TAGS_MAX = 50;
 
-/** Tags or tag_map keys a restore or an import writes per commit, and the pause between its commits. */
 const IMPORT_BATCH = 500;
 const IMPORT_PAUSE_MS = 10;
-/**
- * `metaValue` names: the settings tags import found no source left (its time), and the store is new, so its first
- * settings tags import decides whether it gets upstream's default tags (tag-actions D34.7).
- */
 export const TAG_META = Object.freeze({ settingsImported: 'settings_tags_migrated', seedPending: 'tags_seed_pending' });
-/** The orders a reorder switches from (tag-actions D3). */
 export const TAG_REORDER_MODES = Object.freeze(['alphabetical', 'by_entries']);
 
 /**
- * A stored tag's definition: its key as `id`, its name, its folder type and every other key it was stored with.
  * @param {import('./library-engine.js').StoredEntity} entity
  * @returns {Record<string, unknown>}
  */
 export function tagDefinition(entity) {
     /** @type {Record<string, unknown>} */
     const tag = { id: entity.key };
-    // A key such as `__proto__` is set as the tag's own property, as JSON.parse() gave it.
     const set = (/** @type {string} */ key, /** @type {unknown} */ value) => Object.defineProperty(tag, key, { value, enumerable: true, writable: true, configurable: true });
     for (const v of entity.values) {
         const value = () => (v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json)));
@@ -73,19 +51,13 @@ export function tagDefinition(entity) {
  */
 
 /**
- * @typedef {{ seq: number, tag: bigint, after: boolean, anchor?: bigint, value?: string }} Queued A queued move of
- *   the manual order: `tag` next to `anchor`, or its sort_order set to `value` (JSON).
+ * @typedef {{ seq: number, tag: bigint, after: boolean, anchor?: bigint, value?: string }} Queued
  * @typedef {{ value: number | null } | { anchor: string, g: -1 | 1, i: number, valued?: number | null }} QueuedPlace
- *   Where the queue leaves a tag: at a sort order (`value`, null for none), or in the gap right before (g -1) or
- *   after (g 1) an anchor (an entity id as a string), at `i` in that gap's order; `valued` when the anchor had a
- *   queued value then, the gap being at that value's place in the stored order.
  * @typedef {{ tagId: string, tagName: string | null, anchorId: string | null, anchorName: string | null, refusedId: string, reason: string }} TagMoveFailed
  * @typedef {{ id: bigint, key: string, name: unknown, order: number | null, raw: unknown, hasRaw: boolean }} OrderInfo
- *   What a move reads of a tag: its recorded manual order, and the sort_order its definition holds.
  */
 
 /**
- * A `tagQueue` record.
  * @param {number} seq
  * @param {bigint} tag
  * @param {{ after?: boolean, anchor?: bigint, value?: unknown }} entry
@@ -102,19 +74,14 @@ function queueRecord(seq, tag, { after = false, anchor, value }) {
 }
 
 /**
- * Where the queued moves leave the tags they move, as the reorder pass's drain will apply them (tag-actions D16):
- * an entry whose tag or anchor isn't live, or whose tag is its own anchor, does nothing. A tag moved next to an
- * anchor goes in the anchor's gap on that side, nearest the anchor; one moved next to a tag in a gap joins that gap
- * right beside it. A value entry puts the tag at the order its value coerces to. A tag's later entry replaces its
- * place.
- * @param {Queued[]} entries In arrival order.
- * @param {Set<string>} live The live tags among them, as strings.
+ * @param {Queued[]} entries
+ * @param {Set<string>} live
  * @returns {Map<string, QueuedPlace>}
  */
 export function foldQueue(entries, live) {
     /** @type {Map<string, QueuedPlace>} */
     const places = new Map();
-    /** @type {Map<string, Set<string>>} Each gap's tags, by `${anchor}:${g}`. */
+    /** @type {Map<string, Set<string>>} */
     const gaps = new Map();
     const leave = (/** @type {string} */ t) => {
         const p = places.get(t);
@@ -146,7 +113,6 @@ export function foldQueue(entries, live) {
             enter(t, { anchor: ap.anchor, g: ap.g, i: besideInGap(places, members(ap.anchor, ap.g), a, g), ...('valued' in ap ? { valued: ap.valued } : {}) });
             continue;
         }
-        // Before the anchor, the newest tag is the last of its gap; after it, the first.
         const is = members(a, g).map(m => /** @type {{ i: number }} */ (places.get(m)).i);
         const i = is.length === 0 ? 0 : g === -1 ? Math.max(...is) + 1 : Math.min(...is) - 1;
         enter(t, { anchor: a, g, i, ...(ap ? { valued: /** @type {{ value: number | null }} */ (ap).value } : {}) });
@@ -155,10 +121,8 @@ export function foldQueue(entries, live) {
 }
 
 /**
- * An i for a tag placed right beside `at` in its gap: before it (g -1) or after it (g 1). When halving can't separate
- * the two neighbours any more, the gap is numbered 1, 2, 3... first.
  * @param {Map<string, QueuedPlace>} places
- * @param {string[]} gap The gap's tags.
+ * @param {string[]} gap
  * @param {string} at
  * @param {-1 | 1} g
  */
@@ -182,23 +146,17 @@ function besideInGap(places, gap, at, g) {
     return key;
 }
 
-/**
- * A place in a manual read with queued moves on top: the base order's cursor at `pos`, then the gap side and the
- * order in the gap (0 and 0 for a tag at its own place).
- * @typedef {{ pos: Buffer, g: number, i: number }} OverlayKey
- */
+/** @typedef {{ pos: Buffer, g: number, i: number }} OverlayKey */
 
-/** @param {OverlayKey} a @param {OverlayKey} b */
+/**
+ * @param {OverlayKey} a
+ * @param {OverlayKey} b
+ */
 function compareKeys(a, b) {
     return Buffer.compare(a.pos, b.pos) || a.g - b.g || a.i - b.i;
 }
 
-/**
- * A manual cursor made with queued moves on top, or under a reorder pass: the order it was made in (`base`, the
- * pass's id, or 0 for the stored order), its place, and the tag whose own place is at `pos` and still due after a
- * cursor in the gap before it.
- * @typedef {OverlayKey & { base: number, due: string | null }} OverlayCursor
- */
+/** @typedef {OverlayKey & { base: number, due: string | null }} OverlayCursor */
 
 /** @param {OverlayCursor} c */
 function encodeCursor(c) {
@@ -207,7 +165,7 @@ function encodeCursor(c) {
 
 /**
  * @param {string} cursor
- * @returns {OverlayCursor | { plain: Buffer } | null} A manual cursor of either form, or null for one that is neither.
+ * @returns {OverlayCursor | { plain: Buffer } | null}
  */
 function decodeCursor(cursor) {
     const bytes = Buffer.from(cursor, 'base64url');
@@ -230,10 +188,6 @@ function label(info) {
 
 const delay = (/** @type {number} */ ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-/**
- * Emits 'tag-changes' after a reorder pass changed definitions, 'tag-order-settled' once a pass has ended, and
- * 'tag-move-failed' with a TagMoveFailed for each queued move that couldn't be applied (tag-actions D19).
- */
 export class LibraryTags extends EventEmitter {
     /**
      * @param {import('./library-engine.js').LibraryEngine} lib
@@ -246,13 +200,10 @@ export class LibraryTags extends EventEmitter {
         this.passRun = null;
         this.passWanted = false;
         this.passStopped = false;
-        /** Tags a reorder pass writes per commit. */
         this.passBatch = PASS_BATCH;
     }
 
     /**
-     * Runs `write` after every earlier definition write, so what it reads (free names, the next sort order) stays
-     * true until it has written.
      * @template T
      * @param {() => Promise<T>} write
      * @returns {Promise<T>}
@@ -270,7 +221,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * The definitions of tag entities, in the order given; null where there is none.
      * @param {bigint[]} ids
      * @returns {Promise<(Record<string, unknown> | null)[]>}
      */
@@ -278,16 +228,11 @@ export class LibraryTags extends EventEmitter {
         return (await this.lib.entities(ids)).map(e => (e && e.type === TYPE.tag ? tagDefinition(e) : null));
     }
 
-    /**
-     * The next manual sort order, upstream's newTag(): one past the highest, and at least 1.
-     */
     async nextOrder() {
         return Math.max(0, (await this.store.tagMaxOrder()) ?? 0) + 1;
     }
 
     /**
-     * A name no live tag has, made from `base` as the page's getFreeName() makes one: `base` itself, else the first
-     * free of `base #1`, `base #2`, ... (names compared folded). Past FREE_NAME_TRIES it is `base #<a new uuid>`.
      * @param {string} base
      */
     async freeName(base) {
@@ -302,12 +247,9 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * createTagDefinition(): refused `deleted` for a deleted tag's id and `exists` for a defined one; a key only
-     * assignments named gets its definition. A tag with no own sort_order gets nextOrder().
      * @param {unknown} rawTag
-     * @param {{ freeName?: boolean }} [options] The given name is only a base: the tag gets freeName()'s.
-     * @returns {Promise<{ refused: TagRefusal[], tag?: Record<string, unknown> } | null>} null when `rawTag` isn't a
-     *   tag with a non-empty string id.
+     * @param {{ freeName?: boolean }} [options]
+     * @returns {Promise<{ refused: TagRefusal[], tag?: Record<string, unknown> } | null>}
      */
     create(rawTag, { freeName = false } = {}) {
         const given = /** @type {Record<string, unknown> | null} */ (rawTag);
@@ -321,7 +263,6 @@ export class LibraryTags extends EventEmitter {
             if (freeName) tag.name = await this.freeName(typeof given.name === 'string' ? given.name : '');
             const assignOrder = !Object.hasOwn(tag, 'sort_order');
             if (assignOrder) tag.sort_order = await this.nextOrder();
-            // While moves queue, an own order is queued too, so the last entry for a tag wins (tag-actions D28).
             const seq = !assignOrder && !(await this.settled()) ? await this.nextSeq() : null;
             await this.lib.writeTag(/** @type {any} */ (tag), seq === null ? {} : { extra: id => [queueRecord(seq, id, { value: tag.sort_order })] });
             return { refused: [], tag };
@@ -329,14 +270,9 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * seedCardTagsForSingleCharacter(): a character's card tags (`data.tags`, else `tags`: trimmed strings, not
-     * `ROOT` or `TAVERN`, the first 50) as tags it carries: each name stands for the live tag it folds to (the first
-     * created), and one with none is made (unless `onlyExisting`), with the next order as upstream's
-     * `createNewTag()` gives it.
      * @param {string} avatar
      * @param {{ onlyExisting?: boolean }} [options]
-     * @returns {Promise<{ tagIds: string[], tagDefinitions: Record<string, unknown>[] }>} The definitions beside the ids,
-     *   since the page can't resolve an id to a tag it has never seen.
+     * @returns {Promise<{ tagIds: string[], tagDefinitions: Record<string, unknown>[] }>}
      */
     async seedCardTags(avatar, { onlyExisting = false } = {}) {
         const [card] = /** @type {any[]} */ (await this.lib.cards([avatar]));
@@ -365,9 +301,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * editTagDefinition(): the patch over the stored definition, written only when that changes it. While moves
-     * queue, a patched sort_order is queued instead, after them, so the last entry for a tag wins (tag-actions D18,
-     * D28); the other fields are written at once.
      * @param {string} id
      * @param {Record<string, unknown>} patch
      * @returns {Promise<{ refused: TagRefusal[] }>}
@@ -389,15 +322,16 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * deleteTagDefinition(): the tag goes, its carriers becoming those of `mergeInto` (followed through its own
-     * merges) or carrying nothing.
      * @param {string} id
      * @param {string | null} [mergeInto]
      * @returns {Promise<{ refused: TagRefusal[], mergedInto: string | null, target: Record<string, unknown> | null }>}
      */
     delete(id, mergeInto = null) {
         return this.lane(async () => {
-            /** @param {string} tag @param {string} reason */
+            /**
+             * @param {string} tag
+             * @param {string} reason
+             */
             const refuse = (tag, reason) => ({ refused: [{ id: tag, reason }], mergedInto: null, target: null });
             const [status] = await this.status([id]);
             if (status?.state === 'gone') return refuse(id, 'deleted');
@@ -420,15 +354,13 @@ export class LibraryTags extends EventEmitter {
         });
     }
 
-    /** countUnusedTags(). */
     async countUnused() {
         return Number((await this.store.tagUnused(1)).count);
     }
 
     /**
-     * pruneUnusedTags(): deletes up to `limit` tags nothing carries. A tag assigned meanwhile is kept.
      * @param {number} limit
-     * @returns {Promise<string[]>} The deleted tags' ids.
+     * @returns {Promise<string[]>}
      */
     prune(limit) {
         return this.lane(async () => {
@@ -441,19 +373,18 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * queryTags(): one page of definitions in a sort's order under the filters.
      * @param {object} params
      * @param {keyof typeof TAG_SORTS} params.sort
-     * @param {string} [params.search] A prefix of the name, both folded.
-     * @param {string} [params.name] The whole name, both folded.
-     * @param {string} [params.contains] Text the folded name holds.
+     * @param {string} [params.search]
+     * @param {string} [params.name]
+     * @param {string} [params.contains]
      * @param {boolean} [params.counts]
      * @param {string[]} [params.ids]
      * @param {boolean} [params.used]
      * @param {boolean} [params.folders]
      * @param {string} [params.folderType]
      * @param {number} params.pageSize
-     * @param {string | null} [params.cursor] One this read returned for the same sort.
+     * @param {string | null} [params.cursor]
      * @returns {Promise<{ rows: object[], cursor: string | null, more: boolean, counts?: Record<string, number>, approximate?: string[] } | 'invalid-cursor'>}
      */
     async query(params) {
@@ -495,8 +426,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * How many characters and groups carry each tag, with the carriers of tags merged into it that haven't moved
-     * yet; `approximate` lists the tags whose count may count an entity twice meanwhile.
      * @param {bigint[]} ids
      * @param {string[]} keys
      */
@@ -514,9 +443,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * `/by-ids`: the definitions of the live tags among `ids`; `gone`, the ids no live tag has; `merged`, each
-     * deleted id whose merges lead to a live tag, mapped to it (its definition in `tags` too). With `known` (id →
-     * contentHashOf() of the caller's copy), a definition with that hash is listed in `unchanged` instead.
      * @param {unknown[]} ids
      * @param {Record<string, string>} [known]
      */
@@ -551,9 +477,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * findTagsByNames(): per distinct name, in the order given, the tag it stands for (names compared folded): a live
-     * tag with it (the first created of several), else the live tag the merges of the tag deleted last with it lead
-     * to (none when that one was deleted with no merge), else null.
      * @param {string[]} names
      * @returns {Promise<{ name: string, tag: Record<string, unknown> | null }[]>}
      */
@@ -579,9 +502,7 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * `/changes` (getTagChangesSince()): the tags whose definitions changed past `sinceSeq`, at most `limit`, each as
-     * it is now: live ones in `tags`, deleted ones in `removed` with the live tag their merges lead to.
-     * @param {unknown} sinceSeq Anything but a non-negative integer, or one past the feed's end, answers `reset`.
+     * @param {unknown} sinceSeq
      * @param {{ limit: number }} options
      */
     async changes(sinceSeq, { limit }) {
@@ -604,22 +525,16 @@ export class LibraryTags extends EventEmitter {
         return { seq, reset: false, tags, removed, hasMore: feed.more };
     }
 
-    /** getTagChangesSeq(): the tag change feed's end. */
     async changesSeq() {
         return Number((await this.store.tagFeed('tags', 0n, 0)).end);
     }
 
-    /**
-     * getEntityTagChangesEnd(). The engine has one feed for characters and groups, so both cursors are its end.
-     */
     async entityChangesEnd() {
         const end = Number((await this.store.tagFeed('entities', 0n, 0)).end);
         return { seq: end, groupsVersion: end };
     }
 
     /**
-     * `/assignment-changes` (getEntityTagChangesSince()): the characters and groups whose tags changed past the
-     * cursors, at most `limit`. Read from the lower of the two cursors, as both name a place in one feed.
      * @param {{ sinceSeq: unknown, sinceGroupsVersion: unknown }} cursors
      * @param {{ limit: number }} options
      */
@@ -640,7 +555,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * The entity each key names, by its own type (tagEntityTypeOf()); null for a key of no type or no entity.
      * @param {unknown[]} keys
      * @returns {Promise<(bigint | null)[]>}
      */
@@ -658,7 +572,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * Each tag entity's key, in the order given; null for one that has none.
      * @param {bigint[]} tags
      * @returns {Promise<(string | null)[]>}
      */
@@ -668,8 +581,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * `/for` (getEntityTagIdsForMany()): the tag ids each character or group carries, merges followed; [] for
-     * every other key. A key only assignments name is listed too.
      * @param {unknown[]} keys
      * @returns {Promise<Record<string, string[]>>}
      */
@@ -699,8 +610,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * The tag entity a key names for an assignment: the live or undefined tag with it, the live tag a deleted one's
-     * merges lead to, or a new undefined tag (no definition) for a key no tag ever had.
      * @param {string} key
      * @returns {Promise<{ id: bigint, key: string, reason: 'merged' | null, defined: boolean } | { id: null, reason: 'deleted' }>}
      */
@@ -722,9 +631,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * Runs `write` with the entities character or group keys name (null where there is none), after every earlier
-     * write to any of them. The keys are taken in one order, so two calls naming the same entities never wait on
-     * each other.
      * @template T
      * @param {string[]} keys
      * @param {(entities: (import('./library-engine.js').StoredEntity | null)[]) => Promise<T>} write
@@ -741,9 +647,7 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * assignEntityTagReporting(): `assigned` is the tag the entity got, `reason` why that isn't `tagId`, `defined`
-     * whether it has a definition.
-     * @param {string} key A character's avatar or a group's id.
+     * @param {string} key
      * @param {string} tagId
      * @returns {Promise<{ result: 'ok' | 'not_found', assigned: string | null, reason: 'merged' | 'deleted' | null, defined: boolean }>}
      */
@@ -763,9 +667,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * unassignEntityTag(): only the named tag's own assignment goes, never its merge target's. A deleted tag's
-     * carriers belong to the tag it merged into, however far its fold has got, so unassigning it removes nothing:
-     * `'deleted'`.
      * @param {string} key
      * @param {string} tagId
      * @returns {Promise<'ok' | 'deleted'>}
@@ -782,7 +683,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * The records adding `tags` to what `to` carries.
      * @param {import('./library-engine.js').StoredEntity} to
      * @param {bigint[]} tags
      */
@@ -792,7 +692,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * copyEntityTags(): adds the tags `from` carries (merges followed) to what `to` carries.
      * @param {string} from
      * @param {string} to
      * @returns {Promise<'ok' | 'not_found'>}
@@ -811,8 +710,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * moveEntityTags() (`/rename-key`): adds the tags `from` carries (merges followed) to what `to` carries and
-     * takes them off `from`, in one commit.
      * @param {string} from
      * @param {string} to
      * @returns {Promise<{ result: 'ok' | 'not_found', moved: string[] }>}
@@ -832,10 +729,7 @@ export class LibraryTags extends EventEmitter {
         });
     }
 
-    // ---- the manual order: moves, reorders and the queue ----
-
     /**
-     * Every queued move, in order.
      * @returns {Promise<Queued[]>}
      */
     async queue() {
@@ -850,13 +744,11 @@ export class LibraryTags extends EventEmitter {
         }
     }
 
-    /** The next queued move's seq. */
     async nextSeq() {
         const queue = await this.queue();
         return queue.length > 0 ? queue[queue.length - 1].seq + 1 : 1;
     }
 
-    /** Whether a move applies now: no reorder pass runs and nothing is queued. */
     async settled() {
         const [pass, queue] = await Promise.all([this.store.tagPass(), this.store.tagQueue(0, 1)]);
         return pass.mode === undefined && queue.entries.length === 0;
@@ -864,7 +756,7 @@ export class LibraryTags extends EventEmitter {
 
     /**
      * @param {bigint[]} ids
-     * @returns {Promise<OrderInfo[]>} null where there is no tag.
+     * @returns {Promise<OrderInfo[]>}
      */
     async orderInfo(ids) {
         if (ids.length === 0) return [];
@@ -876,8 +768,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * The records giving a tag `value` as its sort_order: the stored value when it differs, and its coerced order
-     * (stamped by reorder pass `pass` when given).
      * @param {OrderInfo} info
      * @param {unknown} value
      * @param {number} [pass]
@@ -894,7 +784,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * The records putting back the sort_order `info` was read with.
      * @param {OrderInfo} info
      */
     restoreRecords(info) {
@@ -906,8 +795,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * What a move refuses whatever the order: the tag as its own anchor ('same'), then per tag 'deleted' or
-     * 'missing'.
      * @param {string} key
      * @param {string} anchorKey
      * @returns {Promise<{ refused: TagRefusal[], moved?: bigint, anchor?: bigint }>}
@@ -925,7 +812,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * The tags with an order next to `from` in the manual order, nearest first: before it (`down`) or after it.
      * @param {bigint} from
      * @param {{ down: boolean, inclusive: boolean, skip: bigint | null, limit: number }} options
      * @returns {Promise<OrderInfo[]>}
@@ -944,14 +830,10 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * Gives `moved` a sort order right before or after `anchor` (which has one): the midpoint with the anchor's
-     * neighbour on that side, or past the anchor at an end of the order; failing that, it spreads a window of tags
-     * around the anchor, doubling it until there is room.
      * @param {OrderInfo} moved
      * @param {OrderInfo} anchor
      * @param {'before' | 'after'} side
-     * @returns {Promise<{ info: OrderInfo, value: number }[] | 'no-room'>} The tags whose orders change; none when the
-     *   tag is in that place already.
+     * @returns {Promise<{ info: OrderInfo, value: number }[] | 'no-room'>}
      */
     async placeNextTo(moved, anchor, side) {
         const a = /** @type {number} */ (anchor.order);
@@ -971,10 +853,8 @@ export class LibraryTags extends EventEmitter {
 
         for (let size = MOVE_WINDOW; ; size *= 2) {
             const half = size / 2;
-            // The gap is between the two sides: "before" puts the anchor first on the right, "after" last on the left.
             const left = await this.manualRows(anchor.id, { down: true, inclusive: side === 'after', skip: moved.id, limit: half + 1 });
             const right = await this.manualRows(anchor.id, { down: false, inclusive: side === 'before', skip: moved.id, limit: half + 1 });
-            // A side with more than `half` tags hasn't reached its end of the order; its extra tag is the bound.
             const leftBound = left.length > half ? left.pop() : undefined;
             const rightBound = right.length > half ? right.pop() : undefined;
             const sequence = [...left.reverse(), moved, ...right];
@@ -993,12 +873,9 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * The tags with no order from the first through `anchor`, under the work cap, numbered after the highest
-     * order (upstream newTag()'s Math.max(0, ...orders) + 1 upward); `moved` stays without one.
      * @param {OrderInfo} anchor
      * @param {OrderInfo} moved
-     * @returns {Promise<{ info: OrderInfo, value: number }[] | 'unordered' | 'no-room'>} 'unordered': the anchor is
-     *   past the work cap.
+     * @returns {Promise<{ info: OrderInfo, value: number }[] | 'unordered' | 'no-room'>}
      */
     async numberTail(anchor, moved) {
         /** @type {bigint[]} */
@@ -1027,9 +904,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * Moves tag `key` right before or after `anchorKey` in the manual order, as it stands now. An anchor with no
-     * order first gets one, with the tags with none before it, written at once (their order as shown doesn't
-     * change); the move's own records are returned for the caller to commit.
      * @param {string} key
      * @param {string} anchorKey
      * @param {'before' | 'after'} side
@@ -1072,12 +946,9 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * moveTagDefinition(): tag `key` right before or after an anchor tag in the manual order. While a reorder pass
-     * runs or moves are queued, it is queued instead, after checking what the order can't change.
      * @param {string} key
      * @param {{ before?: string, after?: string }} placement
      * @returns {Promise<{ refused: TagRefusal[], written: { id: string, sort_order: number }[], queued?: true }>}
-     *   written: every tag the move wrote, with the sort_order now stored.
      */
     moveDefinition(key, placement) {
         const side = placement.before !== undefined ? 'before' : 'after';
@@ -1092,15 +963,11 @@ export class LibraryTags extends EventEmitter {
             const result = await this.applyMove(key, anchorKey, side);
             if (result.records.length > 0) await this.store.commit(result.records);
             for (const line of result.warnings) console.warn(line);
-            // A tag written twice (its tail number, then its window's) has the later one stored.
             return { refused: result.refused, written: [...new Map(result.written.map(w => [w.id, w])).values()] };
         });
     }
 
     /**
-     * reorderTagDefinitions(): a move made while viewing `mode`'s order. A reorder pass will write every tag's
-     * sort_order in that order, then apply the queued moves, this one last; a running pass is replaced. The caller
-     * starts the pass (startPass()) once it has answered.
      * @param {string} key
      * @param {{ before?: string, after?: string }} placement
      * @param {'alphabetical' | 'by_entries'} mode
@@ -1121,16 +988,12 @@ export class LibraryTags extends EventEmitter {
         });
     }
 
-    /** Stops a running reorder pass after its current batch (the store is closing); a later open resumes it. */
     async stopPass() {
         this.passStopped = true;
         await this.passRun;
     }
 
     /**
-     * Runs the recorded reorder pass to its end, in batches with pauses between them, unless it already runs; a
-     * pass recorded meanwhile is run too. Started by a reorder, and after the server is listening for one a stop
-     * left recorded.
      * @returns {Promise<void>}
      */
     startPass() {
@@ -1152,12 +1015,7 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * One batch of the reorder pass (tag-actions D15, D16, D19, D25):
-     * 1. walk: every tag, in the pass mode's live order, gets sort_order 0, 1, 2, ...;
-     * 2. sweep: until the pass has written every live tag, those it hasn't (their place moved behind the walk, or
-     *    made meanwhile) get orders after the highest, in the mode's order;
-     * 3. drain: the queued moves apply in arrival order, one per commit, then the pass ends.
-     * @returns {Promise<boolean>} Whether there is more to do.
+     * @returns {Promise<boolean>}
      */
     async passStep() {
         const st = await this.store.tagPass();
@@ -1228,9 +1086,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * Applies the first queued move and pops it, in one commit (tag-actions D16, D18, D19). An anchored move is
-     * made as moveDefinition() makes it; a value is written as the tag's sort_order. A move whose tag is gone, or
-     * is its own anchor, is dropped; any other refusal leaves the tags as they are and is reported.
      * @param {Queued} entry
      */
     async applyQueued(entry) {
@@ -1275,8 +1130,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * What a manual read shows on top of the stored order: the queued moves, and while a reorder pass walks or
-     * sweeps, the pass mode's order in place of the stored one (tag-actions D16, D24, D26). Null when neither.
      * @returns {Promise<{ base: number, baseTag: number, queue: Queued[] } | null>}
      */
     async manualOverlay() {
@@ -1287,11 +1140,8 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * A manual page with the queued moves on top, in the stored order or a reorder pass mode's. Each moved tag shows
-     * where the queue leaves it; under a pass a queued value counts for nothing, so its tag shows at its own place
-     * (tag-actions D24). A cursor names the order it was made in, and is refused in any other.
      * @param {Parameters<LibraryTags['query']>[0]} params
-     * @param {Record<string, unknown>} q The engine query for the filters, `ids` resolved.
+     * @param {Record<string, unknown>} q
      * @param {{ base: number, baseTag: number, queue: Queued[] }} overlay
      * @param {OverlayCursor | { plain: Buffer } | null} cursor
      */
@@ -1354,13 +1204,12 @@ export class LibraryTags extends EventEmitter {
             .sort((x, y) => compareKeys(x.key, y.key));
         /** @type {{ id: bigint, key: OverlayKey, due: string | null }[]} */
         const rows = [];
-        // A cursor in the gap before a tag's own place leaves that place still to read.
         if (after?.due && after.g === -1 && !placed.has(after.due)) {
             const due = BigInt(after.due);
             const [pos] = await this.store.tagPositions(base, [{ id: due }]);
             if (pos && pos.equals(after.pos) && (await passing([due])).has(after.due)) rows.push({ id: due, key: { pos, g: 0, i: 0 }, due: null });
         }
-        /** @type {Buffer | null | undefined} undefined: not read yet; null: read to its end. */
+        /** @type {Buffer | null | undefined} */
         let rowAfter = after ? after.pos : undefined;
         let capped = false;
         let next = 0;
@@ -1377,7 +1226,6 @@ export class LibraryTags extends EventEmitter {
             const row = rows[0];
             const item = overlay[next];
             if (capped && rows.length === 0) {
-                // The work cap stopped the walk at `rowAfter`: what lies before it is read, the rest is for next time.
                 const stop = { pos: /** @type {Buffer} */ (rowAfter), g: 0, i: 0 };
                 while (overlay[next] && compareKeys(overlay[next].key, stop) < 0 && shown.length < pageSize) shown.push(overlay[next++]);
                 if (shown.length < pageSize) return this.overlayResult(params, [...shown, { id: -1n, key: stop, due: null }], baseTag, true, true);
@@ -1394,10 +1242,8 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * A manual page's answer from the places it reached: the shown tags' definitions, and the cursor at the last
-     * place.
      * @param {Parameters<LibraryTags['query']>[0]} params
-     * @param {{ id: bigint, key: OverlayKey, due: string | null }[]} reached The last may be the work cap's stop (id -1).
+     * @param {{ id: bigint, key: OverlayKey, due: string | null }[]} reached
      * @param {number} baseTag
      * @param {boolean} more
      * @param {boolean} withCursor
@@ -1412,11 +1258,7 @@ export class LibraryTags extends EventEmitter {
         return { ...result, ...(await this.counts(shownIds, rows.map(r => /** @type {string} */ (r.id)))) };
     }
 
-    // ---- restore and the settings import ----
-
     /**
-     * The tag a definition being restored or imported names: the live one with its id, else (with `byName`) the
-     * first live one with its name; and whether its id is a deleted tag's.
      * @param {string} id
      * @param {string} name
      * @param {boolean} byName
@@ -1434,8 +1276,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * Definitions in the order they are created in: those with their own sort_order as listed, then the rest by name,
-     * as upstream shows them (the list's order kept for equal names).
      * @template {{ name?: unknown }} T
      * @param {T[]} tags
      * @returns {T[]}
@@ -1449,11 +1289,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * Writes definitions in batches of IMPORT_BATCH, each batch in the lane and committed together, a pause between
-     * batches. `decide` reads the store and returns what to write for an item, if anything: the definition, the name
-     * keys it touches, a sort_order to queue while moves queue (`queue`, when present), and an order the next
-     * created tag's must come after (`bump`). An item whose id or name an earlier write of the batch touched is
-     * decided once that write is committed.
      * @template T
      * @param {T[]} sequence
      * @param {(item: T, batch: { next: number, settled: boolean }) => Promise<{ tag: Record<string, unknown> & { id: string }, names: string[], queue?: unknown, bump: number | null } | null>} decide
@@ -1491,11 +1326,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * restoreTagBackup(): a backup's definitions, then its assignments, so no assignment names a tag that isn't
-     * there. A backup tag is the live tag with its id, else the first live one with its name, and is created when
-     * there is neither; a deleted tag's id is created under a new id. `overwrite` writes the backup's fields onto the
-     * stored tag as edit() does, leaving out a name another live tag has. Created tags with no sort_order get the
-     * next orders, in name order. Assignments are added, never removed. Everything not restored is listed.
      * @param {{ tags: unknown[], tagMap: Record<string, unknown>, overwrite: boolean }} backup
      */
     async restore({ tags, tagMap, overwrite }) {
@@ -1507,7 +1337,7 @@ export class LibraryTags extends EventEmitter {
             namesTaken: /** @type {{ id: string, name: string }[]} */ ([]),
             unreadableTags: /** @type {{ id: string, name: string }[]} */ ([]),
         };
-        /** @type {Map<string, string>} Backup id → the id its tag has here, where they differ. */
+        /** @type {Map<string, string>} */
         const actualIds = new Map();
         /** @type {(Record<string, unknown> & { id: string, name: string })[]} */
         const valid = [];
@@ -1542,7 +1372,6 @@ export class LibraryTags extends EventEmitter {
                         definitions.namesTaken.push({ id, name });
                     }
                 }
-                // While moves queue, a sort_order is queued and the rest written (as edit() does).
                 const queued = Object.hasOwn(patch, 'sort_order') && !batch.settled;
                 const { sort_order: patchedOrder, ...rest } = patch;
                 const merged = { ...old, ...(queued ? rest : patch), id: existing.key };
@@ -1596,13 +1425,9 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * Adds a `{ key: tagIds }` map's assignments (importTagMap() with its definitions required), IMPORT_BATCH keys a
-     * commit, a pause between commits. A deleted tag is assigned as the live tag its merges lead to; one deleted with
-     * none, or with no definition, isn't assigned.
      * @param {Record<string, unknown>} tagMap
-     * @param {string} label Names the import in its warnings.
+     * @param {string} label
      * @returns {Promise<{ droppedKeys: string[], undefinedTagIds: { key: string, tagIds: string[] }[], notAssigned: { key: string, tagIds: string[] }[] }>}
-     *   droppedKeys: neither a character nor a group; undefinedTagIds and notAssigned per known key.
      */
     async assignMap(tagMap, label) {
         /** @type {string[]} */
@@ -1667,11 +1492,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * migrateSettingsTagsIfNeeded() on the engine: imports settings' `tags` and `tag_map` from a legacy settings.json
-     * not yet split, then from the key files settings/tags.json + settings/tag_map.json (tag-actions D33, D34). A
-     * source is imported whole or not at all; what exists is skipped, so a rerun is safe. Imported key files leave
-     * the settings store; the legacy file is never touched. Done once no source is left (TAG_META.settingsImported),
-     * until restartSettingsImport(). A new store's first run decides the default tags (TAG_META.seedPending).
      * @param {import('./users.js').UserDirectoryList} directories
      */
     async importSettingsTags(directories) {
@@ -1722,26 +1542,21 @@ export class LibraryTags extends EventEmitter {
         await this.seedDefaultTagsIfPending(seedCheck);
         if (!sourceLeft) {
             await this.store.commit([{ kind: 'metaValue', key: TAG_META.settingsImported, json: JSON.stringify(Date.now()) }]);
-            // A restore may have written a source after it was looked for, and cleared the mark before it was set.
             if ([legacyPath, ...keyFiles.map(file => file.filePath)].some(filePath => fs.existsSync(filePath))) await this.restartSettingsImport();
         }
     }
 
-    /** Makes importSettingsTags() read the settings sources again on its next run. */
     async restartSettingsImport() {
         await this.store.commit([{ kind: 'metaValue', key: TAG_META.settingsImported }]);
     }
 
-    /** Marks a store just created, so its first settings tags import decides the default tags. */
     async markSeedPending() {
         await this.store.commit([{ kind: 'metaValue', key: TAG_META.seedPending, json: 'true' }]);
     }
 
     /**
-     * One settings source: its `tags` (when it has the key), created as create() creates them, every tag not
-     * created listed; then its `tag_map`, leaving out assignments of tags with no definition.
      * @param {string} label
-     * @param {{ tags?: unknown, tag_map?: unknown }} source Only own keys are read.
+     * @param {{ tags?: unknown, tag_map?: unknown }} source
      */
     async importSettingsSource(label, source) {
         if (Object.hasOwn(source, 'tags')) {
@@ -1794,9 +1609,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * On a store marked new, decides whether it gets upstream's default tags, and clears the mark in the same commit:
-     * it gets them when every settings source was read and none has a `tags` key. They get the next orders in name
-     * order, as upstream shows them.
      * @param {{ tagsKey: boolean, unreadable: string[] }} settings
      */
     async seedDefaultTagsIfPending(settings) {
@@ -1818,7 +1630,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * The backup's `tags`: every live tag's definition, in batches, alphabetically.
      * @returns {AsyncGenerator<Record<string, unknown>[], void, undefined>}
      */
     async* backupDefinitions() {
@@ -1834,7 +1645,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * The backup's `tag_map`: each character and group carrying tags, with their ids (merges followed), in batches.
      * @returns {AsyncGenerator<{ key: string, tagIds: string[] }[], void, undefined>}
      */
     async* backupAssignments() {

@@ -1,8 +1,4 @@
 /**
- * The card values a character list row shows (`library-engine.js` reads them narrow, `listRowValues()`).
- */
-
-/**
  * @param {unknown} value
  * @param {unknown} fallback
  */
@@ -11,11 +7,8 @@ function orDefault(value, fallback) {
 }
 
 /**
- * The card values a list row shows, as the blob layout's shallow copy holds them: toShallow() of
- * getCharaCardV2(card), with V1 keys hoisted from `data` for a card with `spec`, and a card without `spec` read from
- * its V1 keys alone (convertToV2(): comma-split string tags, defaults for the rest).
  * @param {unknown} card
- * @param {boolean} includeCreatorNotes `performance.shallowCharactersIncludeCreatorNotes`
+ * @param {boolean} includeCreatorNotes
  * @returns {{ name: unknown, tags: unknown, create_date: unknown, data: { name: unknown, character_version: unknown, creator: unknown, tags: unknown, creator_notes?: unknown, world: unknown } }}
  */
 export function cardListValues(card, includeCreatorNotes) {
@@ -53,8 +46,6 @@ export function cardListValues(card, includeCreatorNotes) {
     };
 }
 
-/** The paths of a card cardListValues() reads (as the old fields layout's `card_extra` named them), besides its
- * columns and card tags. */
 export const LIST_EXTRA_PATHS = Object.freeze(['whole', 'top:spec', 'present:data', 'top:data', 'name:data', 'name:top', 'data:name', 'top:name',
     'mirror:name', 'data:tags', 'top:tags', 'mirror:tags', 'top:create_date', 'data:creator', 'data:character_version', 'top:creator',
     'present:extensions', 'data:extensions']);

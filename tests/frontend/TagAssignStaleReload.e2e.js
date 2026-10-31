@@ -2,7 +2,6 @@ import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
 /**
- * Creates and opens a throwaway character, returning its avatar key.
  * @param {import('@playwright/test').Page} page
  */
 async function openNewCharacter(page) {
@@ -11,21 +10,17 @@ async function openNewCharacter(page) {
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button_label').click();
-    // Creating a character opens it.
     await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
     await page.locator('#tagInput').waitFor({ state: 'visible', timeout: 10000 });
-    // A row whose character the page doesn't hold is read from the server before it opens.
     await expect.poll(() => page.evaluate(() => SillyTavern.getContext().characterId), { timeout: 10000 }).not.toBeUndefined();
     return await page.evaluate(() => SillyTavern.getContext().characters[SillyTavern.getContext().characterId].avatar);
 }
 
 /**
- * Adds a new tag to the open character through the tag input.
  * @param {import('@playwright/test').Page} page
  * @param {string} tag
  */
 async function addTag(page, tag) {
-    // The chat that opens with the character takes the focus when it has loaded; text filled before that is lost.
     await expect(async () => {
         await page.locator('#tagInput').fill(tag);
         await expect(page.locator('#tagInput')).toHaveValue(tag, { timeout: 500 });
@@ -34,8 +29,6 @@ async function addTag(page, tag) {
 }
 
 /**
- * Starts a reload of the character whose server response is read right away but handed to the page only
- * once `release()` is called, so the page receives data older than anything done in between.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */

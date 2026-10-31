@@ -97,7 +97,6 @@ import { POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
 import { t } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { compressRequest } from './request-compression.js';
-// Upstream's save of a group's chat, kept for extensions with the rest of the compat save.
 import { saveGroupChat } from './chat-compat-save.js';
 
 export {
@@ -107,7 +106,6 @@ export {
     hideMutedSprites,
     is_group_generating,
     group_generation_id,
-    // Upstream's export; extensions are shown only the open group.
     exposedGroups as groups,
     saveGroupField,
     saveGroupChat,
@@ -126,10 +124,6 @@ let is_group_automode_enabled = false;
 let hideMutedSprites = false;
 export { groupsStore };
 
-/**
- * Rebuilds `groupsStore` to wrap the current `groups` array reference, since `groups` is reassigned (not
- * spliced) on every reload.
- */
 function rebuildGroupsStore() {
     rebuildGroupsStoreCore();
     storedGroupFields.clear();
@@ -139,8 +133,6 @@ function rebuildGroupsStore() {
         if (change.op === 'created') noteStoredGroupFields(change.id, change.entity);
     });
 
-    // Member lists only need reprinting when `members` itself changed, not on every groupsStore change,
-    // since a full reprint resets pagination state.
     groupsStore.onChange(change => {
         if (change.op === 'updated' && change.patch && 'members' in change.patch) {
             printGroupCandidates();
@@ -202,15 +194,10 @@ async function saveGroupProperty(id, props) {
     noteStoredGroupFields(id, props);
 }
 
-/**
- * Each group's fields as the server last stored them, by group id, each as its JSON: what {@link editGroup} compares a
- * group against, so it saves only the fields changed in place since.
- * @type {Map<string, Map<string, string>>}
- */
+/** @type {Map<string, Map<string, string>>} */
 const storedGroupFields = new Map();
 
 /**
- * Records `fields` (field → value) as stored for group `id`.
  * @param {string} id
  * @param {object} fields
  */
@@ -221,13 +208,10 @@ function noteStoredGroupFields(id, fields) {
 }
 
 /**
- * Edits a group by ID, as upstream's does: saves the group as it is in `groups` now, so a change an extension made to
- * it in place is stored. Only the fields that differ from what the server last stored for it are sent
- * ({@link saveGroupField}), so another session's change to any other field is kept.
- * @param {string} id Group ID to edit
- * @param {boolean} immediately Whether to save immediately
- * @param {boolean} reload Whether to reload the groups after saving
- * @returns {Promise<void>} Promise that resolves when the group is edited
+ * @param {string} id
+ * @param {boolean} immediately
+ * @param {boolean} reload
+ * @returns {Promise<void>}
  */
 export async function editGroup(id, immediately, reload = true) {
     const group = groupsStore.get(id);
@@ -244,14 +228,11 @@ export async function editGroup(id, immediately, reload = true) {
 }
 
 /**
- * Saves a single group property via saveGroupProperty(), then optionally reloads characters.
- * @param {string} id Group ID
- * @param {object} props Properties to merge into the stored group
- * @param {boolean} reload Whether to reload characters after saving
+ * @param {string} id
+ * @param {object} props
+ * @param {boolean} reload
  * @param {object} [options]
- * @param {boolean} [options.silentGroups=false] - If true and `reload` is true, suppresses the reload's
- * generic groupsStore.reset() - pass this when the caller already reported the specific field change itself
- * via groupsStore.update() before calling save (see saveGroupField()).
+ * @param {boolean} [options.silentGroups=false]
  */
 async function _saveProperty(id, props, reload = true, { silentGroups = false } = {}) {
     await saveGroupProperty(id, props);
@@ -260,37 +241,14 @@ async function _saveProperty(id, props, reload = true, { silentGroups = false } 
     }
 }
 
-/**
- * Per-(group id + field-set) debounce timers for saveGroupField's debounced (`immediately: false`)
- * path, replacing a single shared `debounce()` timer that used to reuse ONE timeout across every
- * debounced call site. Plain `debounce()` replaces any pending call's args with the latest call's
- * args, so if two DIFFERENT fields were edited within the debounce window (e.g. typing the group
- * name, then immediately typing the auto-mode delay) via two different debounced saveGroupField()
- * calls sharing that one timer, the second call's args used to silently replace the first's -
- * dropping the first edit even though the UI already showed it applied. This mirrors
- * QuickReplySet.js's `_qrUpdateTimers` fix (a Map of per-QR-id timers instead of one shared timer -
- * see e227206e3) for the identical class of bug.
- *
- * Every call site left debounced below (see saveGroupField's callers) is a genuinely CONTINUOUS,
- * in-progress edit (typing into a text field/textarea, or nudging a number input) where each call
- * from that one site always saves the exact same fixed set of field names every time - so keying by
- * "group id + the sorted set of field names in this call" is enough to guarantee only successive
- * edits to the SAME field(s) coalesce, while two different debounced fields (even from the same
- * handler, like the join-prefix/join-suffix textareas sharing one handler) always get independent,
- * non-colliding timers. Discrete, single-gesture actions (a click, a checkbox toggle, a <select>
- * change) were moved to `immediately: true` instead of being debounced at all - see saveGroupField's
- * call sites for the discrete/continuous classification.
- * @type {Map<string, ReturnType<typeof setTimeout>>}
- */
+/** @type {Map<string, ReturnType<typeof setTimeout>>} */
 const _groupFieldSaveTimers = new Map();
 
 /**
- * Debounced dispatch for saveGroupField's `immediately: false` path - see _groupFieldSaveTimers for
- * why this is keyed per (id, field-set) instead of using one shared debounce timer.
- * @param {string} id Group ID
- * @param {object} props Properties to merge into the stored group
- * @param {boolean} reload Whether to reload characters after saving
- * @param {object} options See _saveProperty()
+ * @param {string} id
+ * @param {object} props
+ * @param {boolean} reload
+ * @param {object} options
  */
 function savePropertyDebounced(id, props, reload, options) {
     const key = `${id}:${Object.keys(props).sort().join(',')}`;
@@ -302,16 +260,12 @@ function savePropertyDebounced(id, props, reload, options) {
 }
 
 /**
- * Field-level replacement for the retired whole-object editGroup()/_save() path: saves only `props` via
- * saveGroupProperty() (POST /api/groups/save-partial, a true server-side merge) instead of resolving and
- * re-uploading the entire group object. Debouncing/reload/silentGroups semantics match the old editGroup().
- * @param {string} id Group ID to save fields for
- * @param {object} props Properties to merge into the stored group
- * @param {boolean} immediately Whether to save immediately (true) or debounce (false)
- * @param {boolean} [reload=true] Whether to reload the groups after saving
+ * @param {string} id
+ * @param {object} props
+ * @param {boolean} immediately
+ * @param {boolean} [reload=true]
  * @param {object} [options]
- * @param {boolean} [options.silentGroups=false] - See _saveProperty() - pass true when the caller already
- * reported the specific field change itself via groupsStore.update() before calling this.
+ * @param {boolean} [options.silentGroups=false]
  * @returns {Promise<void>}
  */
 async function saveGroupField(id, props, immediately, reload = true, { silentGroups = false } = {}) {
@@ -385,10 +339,6 @@ async function findLegacyMemberByName(name) {
 }
 
 /**
- * Resolves a list of group member entries (avatars, or legacy display names) to characters, returning an
- * explicit resolved/unresolved split (order follows `members`) instead of `undefined` holes. Tries the
- * resident/legacy-name lookup first; whatever misses falls to `characterRepository.getMany()` for ids that
- * are valid but not currently resident.
  * @param {string[]} members
  * @returns {Promise<{resolved: Character[], unresolved: string[]}>}
  */
@@ -427,14 +377,11 @@ async function resolveGroupMembers(members) {
     return { resolved, unresolved };
 }
 
-/** The open group's members this page has asked for since the group was opened, so one that can't be read isn't asked for on every change. */
 let askedOpenGroupMembers = new Set();
 /** @type {string|null} */
 let askedForGroupId = null;
 
 /**
- * Makes the page hold the open group's members: they are on screen, and generation reads them from what the page
- * holds. A member that can't be read stays out.
  * @returns {Promise<void>}
  */
 export function holdOpenGroupMembers() {
@@ -442,7 +389,6 @@ export function holdOpenGroupMembers() {
     return openGroupHold;
 }
 
-/** Each hold of the open group's members runs after the one before, so awaiting the latest awaits them all. */
 let openGroupHold = Promise.resolve();
 
 async function holdMissingOpenGroupMembers() {
@@ -468,8 +414,6 @@ async function holdMissingOpenGroupMembers() {
     }
 }
 
-// A member added to the open group, here or in another tab, arrives through a groups store change; groupsStore is
-// rebuilt on every refetch, so look a turn later.
 onAnyEntityStoreChange(store => {
     queueMicrotask(() => {
         if (store === groupsStore) void holdOpenGroupMembers();
@@ -491,17 +435,14 @@ export async function validateGroup(group) {
     const membersArray = Array.isArray(group.members) ? group.members : [];
     const needsExistenceCheck = membersArray.filter(member => !findGroupMemberCharacter(member));
 
-    // checkCharactersExistOrNull() returns null rather than an all-false map on failure, so "could not verify" is never misread as "gone"
     /** @type {Record<string, boolean>|null} */
     let existsResult = await checkCharactersExistOrNull(needsExistenceCheck);
 
-    // A response missing a requested id is as dangerous to treat as "gone" as a failed check would be
     if (existsResult !== null && needsExistenceCheck.some(member => !(member in existsResult))) {
         console.warn('Group member existence check returned a partial answer; leaving group members unchanged', group.id);
         existsResult = null;
     }
 
-    // A member that is no character's avatar may be a legacy entry stored by display name.
     /** @type {Set<string>} */
     const foundByName = new Set();
     if (existsResult !== null) {
@@ -516,8 +457,6 @@ export async function validateGroup(group) {
         }
     }
 
-    // Viewing writes nothing: a member whose card can't be found stays in the group, shown as missing with a way
-    // to remove it (renderMissingMembers()), since a card that is only unreadable for now must not cost its place.
     const missing = existsResult === null
         ? []
         : membersArray.filter(member => !findGroupMemberCharacter(member) && !existsResult[member] && !foundByName.has(member));
@@ -540,12 +479,8 @@ export async function getGroupChat(groupId, reload = false) {
 }
 
 /**
- * Opens a group's conversation (POST /api/chats/open) and draws it. A chat with no messages yet shows each
- * member's greeting, unsaved: the greetings are stored when the first message is (chat-store.js ensureOpeningRow()).
  * @param {string} groupId
  * @param {{ chat?: string|null, makeCurrent?: boolean, reload?: boolean, opened?: import('../script.js').ChatOpenAnswer|null }} [options]
- * `chat`: open this chat when the group has it, else the group's current one; `makeCurrent`: and make it the group's
- * current chat; `reload`: also redraw the group's panel; `opened`: an answer already in hand, drawn as it is.
  * @returns {Promise<void>}
  */
 async function openGroupConversation(groupId, { chat: requested = null, makeCurrent = false, reload = false, opened = null } = {}) {
@@ -573,7 +508,6 @@ async function openGroupConversation(groupId, { chat: requested = null, makeCurr
     const metadata = answer.chat_metadata ?? {};
     const freshChat = !metadata.tainted && !data.length;
 
-    // A message's itemization is read when its "Prompt" view is opened; the event keeps upstream's timing.
     await eventSource.emit(event_types.ITEMIZED_PROMPTS_LOADED, { chatId: getCurrentChatId() });
 
     if (group && Array.isArray(group.members) && freshChat) {
@@ -603,7 +537,6 @@ async function openGroupConversation(groupId, { chat: requested = null, makeCurr
         chatElement.find('.mes').remove();
         await printMessages();
     }
-    // What the page now holds is what is stored (the compat save compares against it).
     _snapshotMessages();
 
     updateChatMetadata(metadata, true);
@@ -628,11 +561,8 @@ export function getGroupMembers(groupId = selected_group) {
 }
 
 /**
- * Retrieves the members of a group, resolved and split explicitly: a non-resident member is looked up, and one that
- * still doesn't resolve lands in `unresolved` rather than becoming an `undefined` hole.
- * @param {string} [groupId=selected_group] - The ID of the group to retrieve members from. Defaults to the currently selected group.
- * @returns {Promise<{resolved: Character[], unresolved: string[]}>} Resolved characters (in member order) plus
- * the member entries that didn't resolve. Both are empty if the group isn't found.
+ * @param {string} [groupId=selected_group]
+ * @returns {Promise<{resolved: Character[], unresolved: string[]}>}
  */
 export async function getGroupMembersResolved(groupId = selected_group) {
     const group = groupsStore.get(groupId);
@@ -641,11 +571,8 @@ export async function getGroupMembersResolved(groupId = selected_group) {
 }
 
 /**
- * Synchronous, resident-only counterpart to `getGroupMembers()`, for the slash-command autocomplete enum
- * provider which cannot await a lookup.
  * @param {string} [groupId=selected_group]
- * @returns {Character[]} Resolved members only, in member order - unresolved entries are silently dropped
- * rather than left as `undefined` holes, since a sync caller has no channel for an explicit unresolved list.
+ * @returns {Character[]}
  */
 export function getGroupMembersResident(groupId = selected_group) {
     const group = groupsStore.get(groupId);
@@ -741,8 +668,6 @@ export function findGroupMemberId(arg, full = false) {
 }
 
 /**
- * The avatar of the character a group function's `characterId` names: an index into `getContext().characters`, as
- * upstream passes, or an avatar key, as this fork's callers do.
  * @param {number|string|undefined} characterId
  * @returns {string|undefined}
  */
@@ -934,7 +859,6 @@ async function getFirstCharacterMessage(character) {
         character.avatar != 'none'
             ? getThumbnailUrl('avatar', character.avatar)
             : default_avatar;
-    // Unstored, as a solo chat's card greeting is: ensureOpeningRow() (chat-store.js) stores it when it's needed.
     mes.node_id = provisionalNodeId(mes.name, mes.mes);
     return mes;
 }
@@ -964,7 +888,6 @@ export async function renameGroupMember(oldAvatar, newAvatar, newName) {
                 continue;
             }
 
-            // The member's avatar id, changed in place on the server.
             if (newAvatar !== oldAvatar) {
                 const response = await fetch('/api/groups/members', {
                     method: 'POST',
@@ -976,8 +899,6 @@ export async function renameGroupMember(oldAvatar, newAvatar, newName) {
                 groupsStore.update(group.id, { members, disabled_members });
             }
 
-            // Every group is tree-stored (forced-migrated at server startup) - one server-side
-            // statement renames the member across every chat under this group's anchor.
             const response = await fetch('/api/chats/tree/rename-group-member', {
                 method: 'POST',
                 headers: getRequestHeaders(),
@@ -1042,7 +963,6 @@ async function fetchGroups({ silent }) {
                         .filter(x => x)
                         .filter(onlyUnique);
                 } catch (error) {
-                    // Left as names, which still resolve by name later; dropping them would lose members.
                     console.warn('Could not convert legacy group members to avatars', group.id, error);
                 }
             }
@@ -1092,8 +1012,6 @@ export function getGroupBlock(group) {
     template.find('.group_select_counter').text(count + ' ' + (count != 1 ? t`characters` : t`character`));
     template.find('.group_select_block_list').text(namesList.join(', '));
 
-    // Resolves this row's tag pills straight from `group.tag_ids` instead of printTagList()'s default
-    // getTagsList() lookup, which prioritizes a resident-entity lookup a group id can never satisfy.
     const tagsElement = template.find('.tags');
     const rowTags = Array.isArray(group.tag_ids)
         ? heldTagsForIds(group.tag_ids).sort(compareTagsForSort)
@@ -1143,12 +1061,10 @@ function isValidImageUrl(url) {
  * @returns {JQuery<HTMLElement>} Group avatar element
  */
 function getGroupAvatar(group) {
-    // loading="lazy" throughout: a broad list render can fire hundreds of avatar thumbnail requests at once otherwise
     if (!group) {
         return $(`<div class="avatar"><img src="${default_avatar}" loading="lazy"></div>`);
     }
     if (isValidImageUrl(group.avatar_url)) {
-        // Built, not written as HTML: a name's quotes would end the attribute.
         const avatar = $('<div class="avatar"><img loading="lazy"></div>').attr('title', group.name);
         avatar.find('img').attr('src', group.avatar_url);
         return avatar;
@@ -1157,8 +1073,6 @@ function getGroupAvatar(group) {
     const memberAvatars = [];
     if (group && Array.isArray(group.members) && group.members.length) {
         for (const member of group.members) {
-            // The page holds only some characters, and a member is its avatar key: drawn from the key itself. A
-            // member stored by display name (old group data) has no image name to draw from.
             const memberAvatar = charactersStore.get(member)?.avatar ?? (/\.(png|webp|jpe?g|gif)$/i.test(member) ? member : undefined);
             if (memberAvatar && memberAvatar !== 'none') {
                 memberAvatars.push(getThumbnailUrl('avatar', memberAvatar));
@@ -1280,8 +1194,6 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
         const activationStrategy = Number(group.activation_strategy ?? group_activation_strategy.NATURAL);
         const enabledMembers = group.members.filter(x => !group.disabled_members.includes(x));
         let activatedMembers = [];
-        // Upstream throws a TypeError where it first reads a forced member that isn't there, so a miss keeps a
-        // placeholder member to reach those same two points.
         let forcedChidMissing = false;
         const forcedChidMissError = () => new TypeError(`force_chid ${params.force_chid} does not name a character`);
 
@@ -1351,7 +1263,6 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
             if (power_user.show_group_chat_queue) {
                 printGroupMembers();
             }
-            // Upstream's payload: the member's index in `characters`.
             await eventSource.emit(event_types.GROUP_MEMBER_DRAFTED, exposedIndexOf(avatar));
 
             // Wait for generation to finish
@@ -1618,8 +1529,6 @@ async function deleteGroup(id) {
         removeEntityTags(id);
         resetChatState();
         await printMessages();
-        // `group` (captured above, before the delete fetch went out) is already in hand - report it
-        // specifically instead of the reload's generic reset(), same as characters' deleteCharacter.
         await getCharacters({ silentGroups: true });
         if (group) {
             groupsStore.reportRemoved(id, group);
@@ -1637,7 +1546,6 @@ async function deleteGroup(id) {
  * @returns {Promise<void>} Promise that resolves when all group members are unshallowed
  */
 export async function unshallowGroupMembers(groupId) {
-    // The open group's members are held as full cards once read; wait for that read.
     if (groupId === selected_group) {
         await holdOpenGroupMembers();
     }
@@ -1675,10 +1583,9 @@ async function groupChatAutoModeWorker() {
     await generateGroupWrapper(true, 'auto', { signal: groupAutoModeAbortController.signal });
 }
 
-/** Members of each group whose card couldn't be found when it was last opened, by group id. @type {Map<string, Set<string>>} */
+/** @type {Map<string, Set<string>>} */
 const missingGroupMembers = new Map();
 
-/** Lists the open group's members whose card can't be found, each with a button to remove it from the group. */
 function renderMissingMembers() {
     $('#rm_group_missing_members').remove();
     const group = openGroupId ? groupsStore.get(openGroupId) : null;
@@ -1701,11 +1608,10 @@ function renderMissingMembers() {
 }
 
 /**
- * Changes one member of a stored group on the server (POST /api/groups/members), and takes on the members it answers.
  * @param {string} groupId
  * @param {'add'|'remove'|'up'|'down'|'mute'|'unmute'} op
  * @param {string} avatar
- * @returns {Promise<boolean>} Whether it was stored; a failure shows an error toast.
+ * @returns {Promise<boolean>}
  */
 async function changeGroupMember(groupId, op, avatar) {
     try {
@@ -1748,9 +1654,6 @@ async function modifyGroupMember(groupId, groupMember, isDelete) {
     }
 
     if (!thisGroup) {
-        // No existing group yet (still on the "create new group" screen, mutating newGroupMembers directly) -
-        // there's no groupsStore entity to update/report, so the groupsStore.onChange subscriber
-        // (rebuildGroupsStore()) that normally reprints these lists won't fire. Reprint directly.
         printGroupCandidates();
         printGroupMembers();
     }
@@ -1803,7 +1706,6 @@ async function reorderGroupMember(groupId, groupMember, direction) {
         }
     }
 
-    // No group stored yet (the "create new group" screen): only the page's list changes.
     printGroupMembers();
 }
 
@@ -1811,7 +1713,6 @@ async function onGroupActivationStrategyInput(e) {
     if (openGroupId) {
         const activation_strategy = Number(e.target.value);
         groupsStore.update(openGroupId, { activation_strategy });
-        // A <select> 'change' event fires once per discrete selection, not per keystroke - dispatch immediately.
         await saveGroupField(openGroupId, { activation_strategy }, true, false);
     }
 }
@@ -1820,7 +1721,6 @@ async function onGroupGenerationModeInput(e) {
     if (openGroupId) {
         const generation_mode = Number(e.target.value);
         const change = groupsStore.update(openGroupId, { generation_mode });
-        // A <select> 'change' event fires once per discrete selection, not per keystroke - dispatch immediately.
         await saveGroupField(openGroupId, { generation_mode }, true, false);
 
         toggleHiddenControls(change?.entity);
@@ -1831,7 +1731,6 @@ async function onGroupAutoModeDelayInput(e) {
     if (openGroupId) {
         const auto_mode_delay = Number(e.target.value);
         groupsStore.update(openGroupId, { auto_mode_delay });
-        // A number input fires 'input' per keystroke/spinner-nudge - continuous, keep debounced.
         await saveGroupField(openGroupId, { auto_mode_delay }, false, false);
         setAutoModeWorker();
     }
@@ -1842,10 +1741,6 @@ async function onGroupGenerationModeTemplateInput(e) {
         const prop = $(e.target).attr('setting');
         const value = String(e.target.value);
         groupsStore.update(openGroupId, { [prop]: value });
-        // Shared handler for both the join-prefix and join-suffix textareas - 'input' fires per
-        // keystroke while typing, continuous, so keep debounced. Since `prop` (the field name) is
-        // part of savePropertyDebounced's key, typing in one textarea then quickly switching to the
-        // other still gets two independent, non-colliding timers instead of one clobbering the other.
         await saveGroupField(openGroupId, { [prop]: value }, false, false);
     }
 }
@@ -1855,7 +1750,6 @@ async function onGroupNameInput() {
         const name = $(this).val();
         const change = groupsStore.update(openGroupId, { name });
         $('#rm_button_selected_ch').children('h2').text(change?.entity?.name);
-        // A text input fires 'input' per keystroke - continuous, keep debounced.
         await saveGroupField(openGroupId, { name }, false, true, { silentGroups: true });
     }
 }
@@ -1935,18 +1829,15 @@ export async function getGroupCharacters({ doFilter = false, onlyMembers = false
     const thisGroup = openGroupId && groupsStore.get(openGroupId);
     const membersArray = thisGroup?.members ?? newGroupMembers;
 
-    // Candidates (non-members): the entire non-member library as a pagination dataSource (§4.1).
     if (!onlyMembers) {
         const { filter, sort: wantedSort } = buildGroupCandidateQuery(membersArray, { doFilter });
         const { sort, result: rows } = await queryWithSortFallback(filter, wantedSort,
             trySort => characterRepository.queryAll(filter, trySort));
         let results = rows.map((x) => ({ item: x, id: x.avatar, type: 'character' }));
         if (sort?.field === 'random') {
-            // queryAll() asks for its pages unsorted when the sort is random.
             results.sort((a, b) => compareByRandomSeed(`${a.type}.${a.id}`, `${b.type}.${b.id}`, sort.seed));
         }
         if (doFilter) {
-            // The server applied the search, tag and fav filters; the rest (Groups, Folders) never match a character.
             results = groupCandidatesFilter.applyFilters(results, {
                 tempOverrides: {
                     [FILTER_TYPES.SEARCH]: '',
@@ -1959,7 +1850,6 @@ export async function getGroupCharacters({ doFilter = false, onlyMembers = false
         return results;
     }
 
-    // Members: bounded by the group's own member count, resolved authoritatively (see doc comment above).
     const { resolved } = await resolveGroupMembers(membersArray);
     const results = resolved.map((x) => ({ item: x, id: x.avatar, type: 'character' }));
     return handleMembers(results, thisGroup);
@@ -1999,9 +1889,6 @@ async function printGroupMembers() {
     const storageKey = 'GroupMembers_PerPage';
     const pageSize = Number(accountStorage.getItem(storageKey)) || 5;
     const sizeChangerOptions = [5, 10, 25, 50, 100, 200, 500, 1000];
-    // Resolved once and reused across every `.rm_group_members_pagination` element below (there is normally
-    // only one, but the original sync version re-called `getGroupCharacters()` per element too - keep that
-    // shape rather than fetching once and assuming there is exactly one).
     const dataSource = await getGroupCharacters({ doFilter: true, onlyMembers: true });
     $('.rm_group_members_pagination').each(function () {
         let that = this;
@@ -2045,8 +1932,6 @@ function getGroupCharacterBlock(character) {
     template.data('id', character.avatar);
     template.find('.avatar img').attr({ 'src': avatar, 'title': character.avatar });
     template.find('.ch_name').text(character.name);
-    // data-avatar mirrors template.data('id') above as a real DOM attribute, so CSS-selector consumers
-    // (e.g. slash-commands.js performGroupMemberAction) can match this row by avatar too.
     template.attr({ 'data-avatar': character.avatar });
     template.find('.ch_fav').val(String(isFav));
     template.toggleClass('is_fav', isFav);
@@ -2111,7 +1996,6 @@ async function onFavoriteGroupClick() {
     updateFavButtonState(!fav_grp_checked);
     if (openGroupId) {
         groupsStore.update(openGroupId, { fav: fav_grp_checked });
-        // A single discrete click - dispatch immediately.
         await saveGroupField(openGroupId, { fav: fav_grp_checked }, true, false);
         favsToHotswap();
     }
@@ -2121,7 +2005,6 @@ async function onGroupSelfResponsesClick() {
     if (openGroupId) {
         const value = $(this).prop('checked');
         groupsStore.update(openGroupId, { allow_self_responses: value });
-        // A single discrete checkbox click - dispatch immediately.
         await saveGroupField(openGroupId, { allow_self_responses: value }, true, false);
     }
 }
@@ -2129,7 +2012,6 @@ async function onGroupSelfResponsesClick() {
 async function onHideMutedSpritesClick(value) {
     if (openGroupId) {
         groupsStore.update(openGroupId, { hideMutedSprites: value });
-        // A single discrete click - dispatch immediately.
         await saveGroupField(openGroupId, { hideMutedSprites: value }, true, false);
         await eventSource.emit(event_types.GROUP_UPDATED);
     }
@@ -2340,8 +2222,6 @@ async function onGroupActionClick(event) {
     }
 
     if (action === 'speak') {
-        // Resolve by avatar (member.data('id'), the stable id already set in getGroupCharacterBlock), the
-        // only identifier a group member row carries.
         const avatar = member.data('id');
         if (charactersStore.has(avatar)) {
             Generate('normal', { force_avatar: avatar });
@@ -2413,8 +2293,6 @@ async function openCharacterDefinition(characterSelect) {
         return;
     }
 
-    // Resolve by avatar (characterSelect.data('id'), the stable id already set in getGroupCharacterBlock),
-    // the only identifier a group member row carries.
     const avatar = characterSelect.data('id');
 
     if (!charactersStore.has(avatar)) {
@@ -2479,8 +2357,6 @@ async function createGroup() {
         newGroupMembers = [];
         const data = await createGroupResponse.json();
         createTagMapFromList('#groupTagList', data.id);
-        // The new group's id is already known (data.id) - report it specifically instead of the reload's
-        // generic reset(), same as characters' duplicateCharacter/createCharacterFromCreateSave.
         await getCharacters({ silentGroups: true });
         groupsStore.reportCreated(String(data.id));
         select_rm_info('group_create', data.id);
@@ -2504,7 +2380,6 @@ export async function createNewGroupChat(groupId, { replace = null } = {}) {
 
     await clearChat({ clearData: true });
 
-    // One request: the new chat, the one it replaces deleted, and the new one opened.
     const response = await fetch('/api/chats/new', {
         method: 'POST',
         headers: getRequestHeaders(),
@@ -2540,9 +2415,6 @@ export async function getGroupPastChats(groupId) {
         return [];
     }
 
-    // One request for the whole group, asked of the store, rather than one request per chat id asked of the
-    // filesystem. The per-chat version could only ever report chats the group's own descriptor happens to
-    // name, and reported nothing at all for a chat whose file had moved into the tree.
     try {
         const response = await fetch('/api/chats/group/branches', {
             method: 'POST',
@@ -2597,8 +2469,6 @@ export async function renameGroupChat(groupId, oldChatId, newChatId) {
     }
 
     if (group.chat_id === oldChatId) {
-        // Same node under a new label, not a different node - carry the current integrity forward
-        // rather than clearing to unknown (see _setCurrentTarget()'s own doc comment).
         _setCurrentTarget(newChatId, chat_metadata.integrity, { group_id: groupId });
     }
 
@@ -2622,7 +2492,6 @@ export async function deleteGroupChatByName(groupId, chatName) {
         return;
     }
 
-    // The group's last chat is replaced by a new one, in one request.
     if (group.chat_id === chatName && group.chats.length === 1) {
         const response = await fetch('/api/chats/new', {
             method: 'POST',
@@ -2648,7 +2517,6 @@ export async function deleteGroupChatByName(groupId, chatName) {
             console.error('Group chat could not be deleted');
             return;
         }
-        // The server moved the group's current chat when it was this one.
         const { chats, chat_id } = await response.json();
         if (group.chat_id === chatName) _setCurrentTarget(chat_id, null, { group_id: groupId });
         groupsStore.update(group.id, { chats, chat_id });
@@ -2672,7 +2540,6 @@ export async function deleteGroupChat(groupId, chatId, { jumpToNewChat = true } 
         return;
     }
 
-    // The last chat is replaced by a new one, opened, in one request (createNewGroupChat() fires the event).
     if (jumpToNewChat && group.chats.length === 1) {
         await createNewGroupChat(groupId, { replace: chatId });
         return;
@@ -2711,9 +2578,6 @@ export async function deleteGroupChat(groupId, chatId, { jumpToNewChat = true } 
  * @returns {Promise<string[]>} List of imported file names
  */
 export async function importGroupChat(formData, { refresh = true } = {}) {
-    // The import lands under whichever group is open - the same group this function attaches the returned
-    // chat id to below. The server needs to know that before it writes, not after: an imported chat has to
-    // be ingested under its owner, or it becomes a file sitting in a directory nothing reads any more.
     formData.append('group_id', selected_group);
 
     const fetchResult = await fetch('/api/chats/group/import', {
@@ -2795,14 +2659,8 @@ export async function saveGroupBookmarkChat(groupId, name, metadata, mesId, chat
     }
 
     const data = await response.json().catch(() => null);
-    // The server may have renamed this to stay unique (only asked for via `unique`) - adopt whatever
-    // it actually saved under instead of assuming the id this call proposed.
     const savedId = (data && typeof data.chat_id === 'string' && data.chat_id) ? data.chat_id : name;
 
-    // /api/chats/group/save already registered savedId in the group's own persisted `chats` list
-    // server-side (it's the one place that knows whether the id was actually new) - only the local
-    // reactive mirror needs updating here, not a second /api/groups/save-partial round trip to persist
-    // what the server has already written.
     group.chats.push(savedId);
     groupsStore.update(group.id, { chats: group.chats });
 
@@ -2871,7 +2729,6 @@ jQuery(() => {
     $(document).on('click', '.group_select', async function () {
         const groupId = $(this).attr('data-grid');
         await openGroupById(groupId);
-        // Picking a group is picking its conversation: it comes to the front, over a fullscreen list.
         if (selected_group === groupId) bringChatForward();
     });
     $('#rm_group_filter').on('input', filterGroupMembers);

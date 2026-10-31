@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// A swipe with the chat at its end keeps it there: the swipe sets the scroll position once, from the alternative it
-// drew. Quick swipes in one direction skip the slide animation, so nothing waits between them.
-
 test('quick swipes at the end of the chat keep it at its end', async ({ page }) => {
     await page.setViewportSize({ width: 1400, height: 900 });
     await testSetup.awaitST({ page });

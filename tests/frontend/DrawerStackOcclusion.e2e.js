@@ -1,10 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, setStackedDrawers, stackMismatches } from './frontent-test-utils.js';
 
-// With stacked drawers on, each layer shows (and takes clicks) exactly where no layer above it covers it, with the
-// covering layer's rounded corners, whatever the drawer and however its size changes; a layer hidden whole shows
-// nothing; and a window that appears is never under what is already shown.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -27,7 +23,6 @@ async function openAliceChat(page) {
     await expect(page.locator('#chatDrawerIcon')).toHaveClass(/stackFront/);
 }
 
-/** Lets a slide or fade finish. */
 const settle = (/** @type {import('@playwright/test').Page} */ page) => page.waitForTimeout(700);
 
 for (const { layout, width, height } of [
@@ -68,7 +63,6 @@ for (const { layout, width, height } of [
                 heights.push(await page.locator('#rm_api_block').evaluate(el => el.getBoundingClientRect().height));
                 expect(await stackMismatches(page)).toEqual([]);
             }
-            // The height did change both ways.
             expect(heights[1]).toBeGreaterThan(heights[0]);
             expect(heights[2]).toBeLessThan(heights[1]);
         });
@@ -103,7 +97,6 @@ test.describe('desktop', () => {
     test('a layer hidden whole shows none of its parts, even one still fading its own visibility', async ({ page }) => {
         await openCharacterManagementDrawer(page);
         await expect(page.locator('#right-nav-panel')).toHaveClass(/galleryFullscreen/);
-        // As anything with `transition: all` does when the panel hides: its own visibility lags behind.
         await page.locator('#right-nav-panel .right_menu_button').first().evaluate(el => { el.style.transition = 'all 10s'; });
         await page.locator('#chatDrawerIcon').click();
         await expect(page.locator('#right-nav-panel')).toHaveClass(/stackCovered/);
@@ -123,12 +116,10 @@ test.describe('desktop', () => {
 
     test('a zoomed avatar that appears over a shown drawer comes in front of it', async ({ page }) => {
         await openAliceChat(page);
-        // Character management in front, covering the left space where the avatar shows.
         await page.locator('#rightNavDrawerIcon').click();
         await settle(page);
         await expect(page.locator('#right-nav-panel')).toHaveClass(/galleryFullscreen/);
         await expect(page.locator('#right-nav-panel')).not.toHaveClass(/stackCovered/);
-        // As a click on a message's avatar opens it.
         await page.locator('#chat .mes[is_user="true"] .avatar img').first().evaluate(el => el.click());
         const zoom = page.locator('body > .zoomed_avatar.draggable');
         await expect(zoom).toBeVisible();

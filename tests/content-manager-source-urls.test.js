@@ -3,10 +3,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-// The import sources' URL parsing: a RisuRealm link with a query string or fragment (a shared link's) still names
-// its character, and a Perchance card's stored source link (its `data` the slug alone) still parses, so "Replace
-// from URL" works on cards imported from Perchance.
-
 /** @type {typeof import('../src/endpoints/content-manager.js')} */
 let contentManager;
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'st-content-manager-urls-'));
@@ -44,7 +40,6 @@ describe('Perchance slugs', () => {
     test.each([
         [`https://perchance.org/ai-character-chat?data=Personality_Advisor~${slug}`, slug],
         [`Personality_Advisor~${slug}`, slug],
-        // The link a stored card's source makes (character-list.js getCharacterSource).
         [`https://perchance.org/ai-character-chat?data=${slug}`, slug],
         ['https://perchance.org/ai-character-chat', ''],
         ['https://perchance.org/ai-character-chat?data=nothing', ''],

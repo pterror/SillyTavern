@@ -1,21 +1,9 @@
-// Which macros a preview may fill in, and the text it renders with each macro's value in its place. The values come
-// from the server (macro-values.js), which fills in the prompts too. A leaf module, so importing it never adds an
-// import cycle; the server imports it as well.
-
 const VALUE_START = '\ue000';
 const PLACEHOLDER_END = '\ue001';
 const VALUE_REGEX = new RegExp(`${VALUE_START}(\\d+)${PLACEHOLDER_END}`, 'g');
 
-/**
- * {{trim}} with the line breaks either side of it, which the macro engine removes once the other macros are filled in
- * (it reaches outside its own braces). A preview removes it first.
- */
 export const TRIM_MACRO = /(?:\r?\n)*{{trim}}(?:\r?\n)*/gi;
 
-/**
- * Macros that read state and have no side effects and no randomness, so a preview may fill them in on every redraw.
- * Lowercase. Anything else, built-in or from an extension, is shown as written.
- */
 const SAFE_MACRO_NAMES = new Set([
     'char', 'user', 'group', 'groupnotmuted', 'notchar', 'charifnotgroup',
     'description', 'chardescription', 'personality', 'charpersonality', 'scenario', 'charscenario',
@@ -40,9 +28,7 @@ function isSafeMacroName(name) {
 }
 
 /**
- * The name a macro's text starts with: `{{ name::args }}`, `{{name:arg}}`, `{{name args}}`. Variable shorthand
- * (`{{.x}}`, `{{$x}}`) has no name.
- * @param {string} inner The text between `{{` and `}}`.
+ * @param {string} inner
  * @returns {string | null}
  */
 function macroName(inner) {
@@ -54,9 +40,8 @@ function macroName(inner) {
 }
 
 /**
- * The top-level `{{…}}` spans of a text, nested macros inside each.
  * @param {string} text
- * @returns {{ start: number, end: number }[]} `end` is exclusive.
+ * @returns {{ start: number, end: number }[]}
  */
 export function topLevelMacroSpans(text) {
     /** @type {{ start: number, end: number }[]} */
@@ -78,8 +63,7 @@ export function topLevelMacroSpans(text) {
 }
 
 /**
- * Whether a macro and every macro nested in it may be evaluated.
- * @param {string} macroText The whole `{{…}}`.
+ * @param {string} macroText
  * @returns {boolean}
  */
 export function isSafeMacro(macroText) {
@@ -91,20 +75,17 @@ export function isSafeMacro(macroText) {
     return true;
 }
 
-/** For each mention, the macro whose value is its card's text: who it names' description, its macros filled in. */
-// A character's card shows its creator's notes (what the character list shows of it), a persona its description.
 const MENTION_ABOUT = Object.freeze({ user: '{{persona}}', char: '{{charCreatorNotes}}', charifnotgroup: '{{charCreatorNotes}}' });
 
 /**
  * @param {string} macroName
- * @returns {string | undefined} The macro whose value is the card text of the mention by that name.
+ * @returns {string | undefined}
  */
 export function mentionAboutMacro(macroName) {
     return MENTION_ABOUT[/** @type {keyof typeof MENTION_ABOUT} */ (macroName.toLowerCase())];
 }
 
 /**
- * Who a mention names, their card text as filled in (its macros' values); none until it is known.
  * @template {{ about: string }} P
  * @param {P | null} person
  * @param {string} macroName
@@ -120,14 +101,12 @@ export function withFilledAbout(person, macroName, valueOf) {
 
 /**
  * @typedef {import('./macro-pill.js').MacroShown} MacroShown
- * @typedef {(source: string) => string | null | undefined} MacroValueOf A macro's value by its `{{…}}`: null when it
- * is filled in only when sent, undefined when it isn't known yet. Either is shown as written.
+ * @typedef {(source: string) => string | null | undefined} MacroValueOf
  */
 
 /**
- * The top-level macros of a text, as a preview fills them in.
  * @param {string} text
- * @returns {string[]} Each one's `{{…}}`.
+ * @returns {string[]}
  */
 export function macrosIn(text) {
     const trimmed = text.replace(TRIM_MACRO, '');
@@ -135,8 +114,6 @@ export function macrosIn(text) {
 }
 
 /**
- * The text with a placeholder where each top-level macro was, which survives markdown and sanitizing, so it can be
- * rendered before {@link insertMacroPlaceholders} puts what shows each macro in its place.
  * @param {string} text
  * @param {MacroValueOf} valueOf
  * @returns {{ text: string, macros: MacroShown[] }}
@@ -157,8 +134,6 @@ export function withMacroPlaceholders(text, valueOf) {
 }
 
 /**
- * Plain text with each macro's value in its place, and every macro with none as written: for counting a field's
- * tokens.
  * @param {string} text
  * @param {MacroValueOf} valueOf
  * @returns {string}
@@ -176,7 +151,6 @@ export function withMacroValues(text, valueOf) {
 }
 
 /**
- * Puts what `render` gives for each macro in place of its placeholder.
  * @param {string} html
  * @param {(index: number) => string} render
  * @returns {string}

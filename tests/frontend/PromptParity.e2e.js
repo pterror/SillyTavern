@@ -7,10 +7,6 @@ import { startLlamaCpp, connectLlamaCpp, openCharacter } from './llamacpp-mock.j
 import { startOpenAICompat, connectOpenAICompat } from './openai-mock.js';
 import { PARITY_CASES, applyChatMetadata, applyPersona, applyPowerUser, createLorebook } from './prompt-parity-cases.js';
 
-// The prompt sent for a chat is the prompt upstream builds for it: upstream's page built each case's prompt
-// (tests/prompt-goldens.mjs, kept in prompt-goldens/), and both the server's (what a backend is sent) and this page's
-// own (a dry run of Generate()) must be the same. Any difference is a bug.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -25,9 +21,8 @@ test.beforeEach(async ({ page }) => {
     await testSetup.awaitST({ page });
 });
 
-/** @type {Record<string, unknown> | null} The settings the case replaced. */
+/** @type {Record<string, unknown> | null} */
 let restore = null;
-/** Whether the case gave the persona a description, to clear once it's done. */
 let clearPersona = false;
 
 test.afterEach(async ({ page }) => {
@@ -53,9 +48,8 @@ async function saveSettings(page) {
 }
 
 /**
- * Makes a character from card fields and opens its chat.
  * @param {import('@playwright/test').Page} page
- * @param {Record<string, string>} card Create form fields.
+ * @param {Record<string, string>} card
  */
 async function openCard(page, card) {
     const avatar = await page.evaluate(async (card) => {
@@ -70,7 +64,6 @@ async function openCard(page, card) {
 }
 
 /**
- * Runs slash commands as typed.
  * @param {import('@playwright/test').Page} page
  * @param {string} commands
  */
@@ -82,7 +75,6 @@ async function slash(page, commands) {
 }
 
 /**
- * The prompt this page builds for a generation of `type` now, without sending it.
  * @param {import('@playwright/test').Page} page
  * @param {string} type
  * @returns {Promise<string>}
@@ -92,7 +84,6 @@ async function pagePrompt(page, type) {
         // @ts-ignore
         const { eventSource, eventTypes } = SillyTavern.getContext();
         const { Generate } = await import('/script.js');
-        // The combined text completion prompt, as both upstream's and this page's Generate() give it.
         let prompt = '';
         const take = (/** @type {{ prompt: string, dryRun: boolean }} */ data) => { if (data.dryRun) prompt = data.prompt; };
         eventSource.on(eventTypes.GENERATE_AFTER_COMBINE_PROMPTS, take);
@@ -105,11 +96,9 @@ async function pagePrompt(page, type) {
     }, type);
 }
 
-/** The slash command that sends a generation of each type the server builds. */
 const SEND = { normal: '/trigger', continue: '/continue', impersonate: '/impersonate' };
 
 /**
- * The prompt the server builds for the same generation, as the backend gets it.
  * @param {import('@playwright/test').Page} page
  * @param {string} type
  * @returns {Promise<string>}
@@ -123,8 +112,6 @@ async function serverPrompt(page, type) {
 }
 
 /**
- * Sets a case's chat up, after the connection: its lorebook and character, its settings, its messages, its metadata and
- * its persona.
  * @param {import('@playwright/test').Page} page
  * @param {import('./prompt-parity-cases.js').ParityCase} parityCase
  */
@@ -132,7 +119,6 @@ async function setUp(page, parityCase) {
     if (parityCase.lorebook) await page.evaluate(createLorebook, parityCase.lorebook);
     await openCard(page, parityCase.card);
     if (parityCase.powerUser) {
-        // Put back once the case is done: the cases in a worker share its server's settings.
         restore = await page.evaluate(applyPowerUser, parityCase.powerUser);
         await saveSettings(page);
     }
@@ -170,7 +156,6 @@ test.describe('chat completion', () => {
         await openai.close();
     });
 
-    // What upstream's server sends: the messages, after its own processing of them.
     for (const parityCase of PARITY_CASES.filter(c => c.name.startsWith('cc-'))) {
         test(`${parityCase.name}`, async ({ page }) => {
             const expected = JSON.parse(fs.readFileSync(path.join(goldens, `${parityCase.name}.json`), 'utf8'));

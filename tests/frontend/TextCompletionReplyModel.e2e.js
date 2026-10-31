@@ -7,14 +7,9 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// A reply from a text completion backend with no model chosen in the settings (KoboldCpp, which has no model
-// setting; Generic, Ooba and TabbyAPI left empty) records the model the backend says it runs as `extra.model`, as
-// upstream's getGeneratingModel() does with the model its status check found.
-
 const MODEL = 'reply-model-backend-model';
 
 /**
- * A mock OpenAI-compatible completions server: `/v1/models` names MODEL, `/v1/completions` answers whole.
  * @returns {Promise<{ url: string, close: () => Promise<void> }>}
  */
 function startCompletionsServer() {
@@ -65,14 +60,12 @@ for (const type of ['koboldcpp', 'generic']) {
             await page.locator('#API-status-top').click();
             // @ts-ignore
             await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = false; });
-            // The server reads the backend from the saved settings; give the saves time to land.
             await page.waitForTimeout(2500);
 
             await chatBox(page).fill(`Question ${stamp}`);
             await page.locator('#send_but').click();
             await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText('A reply.', { timeout: 30000 });
 
-            // What the server stored, as the chat opens.
             const stored = await page.evaluate(async (avatar) => {
                 // @ts-ignore
                 const headers = SillyTavern.getContext().getRequestHeaders();

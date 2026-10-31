@@ -48,7 +48,6 @@ async function postJson(urlPath, body) {
 let counter = 0;
 
 /**
- * A character whose stored openings are `texts`, in order. Resolves to its avatar and their row ids.
  * @param {string[]} texts
  */
 async function ownerWithOpenings(texts) {
@@ -56,7 +55,6 @@ async function ownerWithOpenings(texts) {
     const avatar = `land-owner-${counter}.png`;
     const contents = texts.map(mes => ({ name: 'Char', is_user: false, is_system: false, send_date: 'd0', mes, extra: {} }));
     await user.store.lib.writeCard(user.directories, avatar, JSON.stringify({ name: 'Char', data: { name: 'Char' } }));
-    // Each text an opening of its own: a message with no parent.
     const ids = [];
     for (const content of contents) ids.push(...await fixture.seedMessages(user.store, { avatar }, null, [content]));
     return { avatar, ids };
@@ -102,7 +100,6 @@ describe('POST /api/chats/openings/land', () => {
     });
 
     test('no openings at all answers with no opening', async () => {
-        // A character with no greeting and no stored opening (an avatar no character has is an unknown chat, 404).
         await user.store.lib.writeCard(user.directories, 'land-nobody.png', JSON.stringify({ name: 'Nobody', data: { name: 'Nobody' } }));
         const res = await postJson('/api/chats/openings/land', { avatar_url: 'land-nobody.png', shown_text: 'gone', index: 0 });
         expect(res.status).toBe(200);

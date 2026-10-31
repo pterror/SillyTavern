@@ -50,7 +50,6 @@ export function setConfigFilePath(configFilePath) {
 }
 
 /**
- * The config file path set by setConfigFilePath(), so a worker thread can set the same one.
  * @returns {string | null}
  */
 export function getConfigFilePath() {
@@ -184,7 +183,6 @@ export function delay(ms) {
 }
 
 /**
- * Writes `chunk` to `response`, awaiting 'drain' when the socket's write buffer is full.
  * @param {import('express').Response} response
  * @param {string} chunk
  * @returns {Promise<void>}
@@ -196,16 +194,10 @@ export async function writeBackpressured(response, chunk) {
 }
 
 /**
- * Runs `fn` over `items` with at most `concurrency` calls in flight at once.
- *
- * `items` can be a plain array or an async-iterable (e.g. what `fs.opendir()` yields). Array input preserves
- * result order (workers claim indices, write `results[index]`). Async-iterable input does NOT preserve order
- * relative to iteration (workers pull from one shared iterator and append as they complete).
  * @template T, R
  * @param {T[] | AsyncIterable<T>} items
  * @param {number} concurrency
- * @param {(item: T, index: number) => Promise<R>} fn `index` is the array index for array input, or a monotonic
- * counter unrelated to iteration position for async-iterable input.
+ * @param {(item: T, index: number) => Promise<R>} fn
  * @returns {Promise<R[]>}
  */
 export async function mapWithConcurrency(items, concurrency, fn) {
@@ -621,15 +613,15 @@ export function uuidv7() {
     for (let i = 0; i < 6; i++) {
         bytes[i] = Number((unixMs >> BigInt(40 - i * 8)) & 0xffn);
     }
-    bytes[6] = (bytes[6] & 0x0f) | 0x70; // version
-    bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant
+    bytes[6] = (bytes[6] & 0x0f) | 0x70;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
     const hex = bytes.toString('hex');
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 /**
- * @param {string} value A candidate character id / filename stem
- * @returns {boolean} True if `value` is shaped like a UUID (any version, case-insensitive).
+ * @param {string} value
+ * @returns {boolean}
  */
 export function isUuidLike(value) {
     return typeof value === 'string' && UUID_LIKE_REGEX.test(value);
@@ -637,22 +629,15 @@ export function isUuidLike(value) {
 
 export { humanizedDateTime } from '../public/scripts/humanized-date.js';
 
-// Mirrors public/scripts/utils.js's parseTimestamp() regex list; duplicated here since that module is
-// browser-only. Keep both lists in sync.
 const HUMANIZED_DATE_PATTERNS = [
-    // 2024-07-12@01h31m37s123ms
     /^(\d{4})-(\d{1,2})-(\d{1,2})@(\d{1,2})h(\d{1,2})m(\d{1,2})s(\d{1,3})ms$/,
-    // 2024-7-12@01h31m37s
     /^(\d{4})-(\d{1,2})-(\d{1,2})@(\d{1,2})h(\d{1,2})m(\d{1,2})s$/,
-    // 2024-6-5 @14h 56m 50s 682ms
     /^(\d{4})-(\d{1,2})-(\d{1,2}) @(\d{1,2})h (\d{1,2})m (\d{1,2})s (\d{1,3})ms$/,
 ];
 
 /**
- * Parses a character card's own self-reported `create_date` field (an arbitrary, card-authored string) into
- * epoch milliseconds. Must fail closed (`null`, never throw or return NaN) since the value can be anything.
  * @param {string | number | null | undefined} value
- * @returns {number | null} Epoch ms, or `null` if `value` is empty/missing or unparseable.
+ * @returns {number | null}
  */
 export function parseCreateDateToEpochMs(value) {
     if (value === null || value === undefined || value === '') return null;

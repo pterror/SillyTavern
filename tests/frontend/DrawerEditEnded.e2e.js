@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, setStackedDrawers } from './frontent-test-utils.js';
 
-// With stacked drawers on, a character info field being edited is kept in front; once its edit has ended, a drawer
-// brought forward goes over character info like over any other drawer.
-
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise(resolve => {
         const { eventSource, eventTypes } = window['SillyTavern'].getContext();
@@ -12,7 +9,6 @@ async function awaitAppReady(page) {
 }
 
 /**
- * Makes a character and opens it in character info, with character management closed.
  * @param {import('@playwright/test').Page} page
  */
 async function openNewCharacter(page) {
@@ -51,7 +47,6 @@ test.describe('A drawer brought forward after a field edit goes over character i
         await page.setViewportSize({ width: 1400, height: 900 });
     });
 
-    // The data root is shared by the worker's later tests, which expect the defaults.
     test.afterEach(async ({ page }) => {
         await setStackedDrawers(page, false);
     });

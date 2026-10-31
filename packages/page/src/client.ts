@@ -2,33 +2,18 @@ import type { Accessor } from 'solid-js';
 import { createStore, produce, reconcile } from 'solid-js/store';
 import type { ActionAnswer, ChatOwner, ViewFrame, ViewPush } from '@st/protocol';
 
-// The one place the page talks to the server (packages/README.md): it sends actions and keeps, for each view this
-// tab shows, the newest the server sent, whether in an answer or a push. Nothing else here is state.
-// A new value is merged into the one shown (Solid's reconcile): list items are matched by their `id`, so an item
-// that's still there keeps its place on the page and only what changed in it is redrawn.
-
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
 export type Client = {
-    /** What an action did. A refusal's reason is for the user; the views it changed are applied either way. */
     send(type: string, payload: unknown, file?: File): Promise<ActionResult>;
-    /** The view under `key`, opened on the server the first time it's asked for (undefined until it arrives). */
     view<T>(key: string): Accessor<T | undefined>;
-    /** A push from the server (the old page's stream hands them over). */
     receive(push: ViewPush): void;
-    /**
-     * The tab's stream (re)connected: the server may not know what this tab shows (it restarted, or the tab has a new
-     * session), so the tab says its chat and opens every view again, and the answers bring them up to date.
-     */
     reconnected: (chat: ChatOwner | null) => Promise<void>;
-    /** Reads a view again (for an extension that changed it through an old route). */
     reread: (key: string) => Promise<void>;
-    /** The version of the view held now (0: none yet): what a copy kept elsewhere is of. */
     version: (key: string) => number;
 };
 
 export type ClientOptions = {
-    /** The headers every request needs (the session and the CSRF token): the old page knows them. */
     headers: () => Record<string, string>;
 };
 
@@ -37,14 +22,12 @@ const ENDPOINT = '/api/ui/action';
 const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === 'object' && value !== null && !Array.isArray(value);
 
-/** A patch applied: objects merged key by key (in place, so what didn't change keeps its place), anything else replaced. */
 function merged(held: unknown, change: unknown): unknown {
     if (!isRecord(held) || !isRecord(change)) return change;
     for (const [key, value] of Object.entries(change)) held[key] = merged(held[key], value);
     return held;
 }
 
-/** A body's lines, as they arrive. */
 async function* readLines(body: ReadableStream<Uint8Array>): AsyncGenerator<string, void, undefined> {
     const reader = body.getReader();
     const decoder = new TextDecoder();
@@ -93,7 +76,6 @@ export function createClient({ headers }: ClientOptions): Client {
     const apply = (frames: ViewFrame[]) => {
         for (const frame of frames) {
             const target = entry(frame.key);
-            // An answer and a push can cross: the newer wins whichever arrives last.
             if (frame.version <= target.version) continue;
             target.version = frame.version;
             if ('patch' in frame) target.patch(frame.patch);
@@ -101,7 +83,6 @@ export function createClient({ headers }: ClientOptions): Client {
         }
     };
 
-    /** An answer, whatever came back: a network failure or a body that isn't one is a refusal with no views. */
     const post = async (type: string, payload: unknown, file?: File): Promise<ActionAnswer> => {
         try {
             const answer = (await request(type, payload, file, apply)) as {
@@ -121,10 +102,6 @@ export function createClient({ headers }: ClientOptions): Client {
         }
     };
 
-    /**
-     * The answer's body. An answer in parts (NDJSON: views read in parts) is the first line; each later line's views go
-     * to `later` as they arrive.
-     */
     const request = async (
         type: string,
         payload: unknown,
@@ -139,7 +116,6 @@ export function createClient({ headers }: ClientOptions): Client {
             form.set('payload', JSON.stringify(payload));
             form.set('avatar', file);
             body = form;
-            // The browser sets the multipart boundary.
             delete head['Content-Type'];
         } else {
             body = JSON.stringify({ type, payload });
@@ -176,7 +152,6 @@ export function createClient({ headers }: ClientOptions): Client {
         view<T>(key: string) {
             const known = views.has(key);
             const target = entry(key);
-            // A view that doesn't come now comes when the stream (re)connects: reconnected() opens it again.
             if (!known) void open(key);
             return target.get as Accessor<T | undefined>;
         },
@@ -184,7 +159,6 @@ export function createClient({ headers }: ClientOptions): Client {
             apply(Array.isArray(push.views) ? push.views : []);
         },
         async reconnected(chat) {
-            // The server's versions may have started over (a restart): what it sends now is the newest there is.
             for (const target of views.values()) target.version = 0;
             apply((await post(chat ? 'chat.show' : 'chat.close', chat ?? {})).views);
             await Promise.all([...views.keys()].map((key) => open(key)));

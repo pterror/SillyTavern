@@ -2,15 +2,12 @@ import { createRoot } from 'solid-js';
 import { afterEach, expect, test } from 'vite-plus/test';
 import { createClient } from '../src/client.ts';
 
-// The client against a stand-in server: what it sends, and what it does with what comes back.
-
 type Sent = { type: string; payload: unknown };
 const realFetch = globalThis.fetch;
 afterEach(() => {
     globalThis.fetch = realFetch;
 });
 
-/** A server that answers each action with `answer(sent)`, recording what was sent. */
 function server(answer: (sent: Sent) => unknown) {
     const sent: Sent[] = [];
     globalThis.fetch = (async (_url: string, init: { body: string }) => {
@@ -46,7 +43,6 @@ test('after a reconnect it says its chat first, then opens its views, and takes 
     await client.reconnected({ avatar: 'cara.png' });
     expect(sent.map((s) => s.type)).toEqual(['chat.show', 'view.open']);
     expect(sent[0]?.payload).toEqual({ avatar: 'cara.png' });
-    // The server's versions started over: its view is the newest there is.
     expect(view()).toBe('fresh');
 });
 
@@ -69,7 +65,6 @@ test("a refusal's views are still taken", async () => {
 });
 
 test('an answer in parts (NDJSON): the first part is the answer, each later one is applied as it comes; a patch merges into what is held', async () => {
-    /** Releases the answer's later lines. */
     let release = () => {};
     const held = new Promise<void>((resolve) => {
         release = resolve;
@@ -84,7 +79,6 @@ test('an answer in parts (NDJSON): the first part is the answer, each later one 
                 line({ ok: true, views: [frame(10, { counts: { a: 1 }, done: false })] });
                 await held;
                 line({ views: [{ key: 'k', version: 11, patch: { counts: { b: 2 } } }] });
-                // An older part is ignored, as any older view is.
                 line({ views: [{ key: 'k', version: 9, patch: { counts: { c: 3 } } }] });
                 line({ views: [{ key: 'k', version: 12, patch: { done: true } }] });
                 controller.close();

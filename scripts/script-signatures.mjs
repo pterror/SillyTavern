@@ -1,52 +1,7 @@
-// Signatures of public/script.js's and the public/scripts modules' exports, for scripts/script-exports.mjs.
-//
-// An upstream export's signature is recorded in `.upstream-script-signatures` (script.js) and
-// `.upstream-module-signatures` (the same line, after its module's path), one line per export:
-//
-//   <name> <kind> <param> <param> ...
-//
-// <kind> is `value` (not callable), `opaque` (its kind isn't read; only the name is checked), `fn`
-// (sync callable) or `async` (async callable). Params follow `fn`/`async` only:
-//   name / name?            a plain param, `?` when optional
-//   ...name                 a rest param
-//   jsdoc{prop,prop?}       a destructured object; `jsdoc` is its JSDoc @param name, `_` without one;
-//                           `?` after `}` when the param itself is optional
-//   [] / []?                a destructured array
-// A param is optional when it has a default, is a rest param, or its JSDoc is `@param [x]`; a
-// property when it has a default or its JSDoc is `@param [x.prop]`.
-//
-// A plain param keeps upstream's name, or marks it unused (`_name`); an upstream name starting with `_`
-// is unused there and binds ours to no name.
-//
-// Names are resolved through `import` bindings and `export * from` to the declaring module. Variable initializers:
-//   arrow / function expression      fn or async, with its params
-//   literal, object or array literal value
-//   known wrapper call (table below) fn or async by what the wrapper returns, with the params of
-//                                    its first argument (an arrow, function expression, or a
-//                                    function declaration it resolves to); opaque otherwise
-//   f.bind(thisArg, a1..an)          f's kind and params minus the first n; `obj.m` where obj is
-//                                    `new C(...)` resolves to class C's method m; opaque if f
-//                                    can't be resolved
-//   = otherName                      otherName's signature, followed through chains; opaque on a
-//                                    cycle or when it has no declaration
-//   other call, new, property read,  opaque
-//   binary or conditional expression,
-//   no initializer, class, generator
-//   let/var bound to a function      opaque, since it can be reassigned
-// Anything else fails as unhandled.
-//
-// When unsure about upstream's side, it is opaque (presence only). When upstream's side is a
-// function, ours must be a callable with compatible params.
-//
-// A computed key in ours' destructured param is an extra optional property that carries no
-// upstream property name, so it is left out of ours' signature; it must have a default. A computed
-// key without a default, or one on upstream's side, fails as unhandled.
-
 import path from 'node:path';
 
 export const SIGNATURES_FILE = '.upstream-script-signatures';
 
-/** Function-wrapping helpers: each forwards its arguments to its first argument. */
 const WRAPPERS = new Map([
     ['public/scripts/utils.js#debounce', 'fn'],
     ['public/scripts/utils.js#debounceAsync', 'async'],
@@ -60,11 +15,10 @@ const NAME_PATTERN = /^[A-Za-z_$][\w$]*$/;
 export class SignatureError extends Error {}
 
 /**
- * Computes signatures of `names` exported by public/script.js in one tree.
- * @param {any} ts The typescript module.
- * @param {(relPath: string) => string} read Returns a repo-relative file's text; throws SignatureError.
- * @param {string} label Describes the tree in messages.
- * @param {{ ours?: boolean }} [options] `ours` for our tree, whose computed destructured keys are extras.
+ * @param {any} ts
+ * @param {(relPath: string) => string} read
+ * @param {string} label
+ * @param {{ ours?: boolean }} [options]
  */
 export function createAnalyzer(ts, read, label, { ours = false } = {}) {
     const modules = new Map();
@@ -127,7 +81,6 @@ export function createAnalyzer(ts, read, label, { ours = false } = {}) {
         return name.elements.flatMap(element => (ts.isOmittedExpression(element) ? [] : bindingNames(element.name)));
     }
 
-    /** Resolves `name` exported by module `rel` to `{ mod, node }`, or null when it can't be. */
     function resolveExport(rel, name, seen) {
         if (rel === null) return null;
         const key = `${rel}#export#${name}`;
@@ -136,7 +89,6 @@ export function createAnalyzer(ts, read, label, { ours = false } = {}) {
         const mod = loadModule(rel);
         const entry = mod.exports.get(name);
         if (!entry) {
-            // `export * from` re-exports every name but `default` of its module.
             if (name === 'default') return null;
             for (const from of mod.stars) {
                 const resolved = resolveExport(from, name, seen);
@@ -148,7 +100,6 @@ export function createAnalyzer(ts, read, label, { ours = false } = {}) {
         return resolveLocal(mod, entry.local, seen);
     }
 
-    /** Resolves a name in module scope to its declaration, through imports. */
     function resolveLocal(mod, name, seen) {
         const key = `${mod.rel}#local#${name}`;
         if (seen.has(key)) return null;
@@ -204,7 +155,6 @@ export function createAnalyzer(ts, read, label, { ours = false } = {}) {
         const optional = Boolean(param.initializer || param.questionToken || bracketed);
         if (ts.isArrayBindingPattern(param.name)) return { type: 'array', name: '[]', optional };
         const jsdoc = tags.length > 0 ? checkedName(mod, param, exportName, tags[0].name.getText(mod.sf)) : '_';
-        // TypeScript nests `@param [x.prop]` under `@param {object} x` when the root has an object type.
         const rootType = tags[0]?.typeExpression;
         const literal = rootType && (ts.isJSDocTypeLiteral(rootType) ? rootType : rootType.type && ts.isJSDocTypeLiteral(rootType.type) ? rootType.type : undefined);
         const nested = literal?.jsDocPropertyTags ?? [];
@@ -236,7 +186,6 @@ export function createAnalyzer(ts, read, label, { ours = false } = {}) {
             || (ts.isPrefixUnaryExpression(node) && (node.operator === ts.SyntaxKind.MinusToken || node.operator === ts.SyntaxKind.PlusToken) && ts.isNumericLiteral(node.operand));
     }
 
-    /** The signature of a resolved declaration. */
     function declarationSignature(resolved, exportName, seen) {
         if (!resolved) return OPAQUE;
         const { mod, node } = resolved;
@@ -303,7 +252,6 @@ export function createAnalyzer(ts, read, label, { ours = false } = {}) {
         return OPAQUE;
     }
 
-    /** The signature of a `.bind` target, or null when it can't be resolved. */
     function bindTarget(mod, target, exportName, seen) {
         if (ts.isIdentifier(target)) {
             const signature = declarationSignature(resolveLocal(mod, target.text, seen), exportName, seen);
@@ -325,7 +273,6 @@ export function createAnalyzer(ts, read, label, { ours = false } = {}) {
     }
 
     return {
-        /** The signature of `name` as exported by module `rel` (public/script.js by default). */
         signature(name, rel = 'public/script.js') {
             const seen = new Set();
             return declarationSignature(resolveExport(rel, name, seen), name, seen);
@@ -333,7 +280,6 @@ export function createAnalyzer(ts, read, label, { ours = false } = {}) {
     };
 }
 
-/** Maps an import specifier to a repo-relative path, or null for a bare specifier. */
 function resolveSpecifier(fromRel, specifier) {
     if (specifier.startsWith('/')) return path.posix.join('public', specifier);
     if (specifier.startsWith('./') || specifier.startsWith('../')) return path.posix.join(path.posix.dirname(fromRel), specifier);
@@ -381,7 +327,6 @@ function parseParam(token) {
     return NAME_PATTERN.test(name) ? { type: 'plain', name, optional } : null;
 }
 
-/** Parses one `<name> <kind> <param>...` line; `bad(why)` builds the error it throws. */
 function parseSignatureLine(line, bad) {
     const [name, kind, ...tokens] = line.split(' ');
     if (!name || !NAME_PATTERN.test(name)) throw bad('no export name');
@@ -402,7 +347,6 @@ function parseRecordHeader(text, label) {
     return { commit, lines };
 }
 
-/** Parses the record file; throws SignatureError when it is malformed. */
 export function parseSignatures(text, label) {
     const { commit, lines } = parseRecordHeader(text, label);
     const entries = lines.map((line, i) => {
@@ -414,18 +358,15 @@ export function parseSignatures(text, label) {
     return { text, commit, entries };
 }
 
-/** A module record line's sort key: its module, then its export name. */
 function moduleKey(rel, name) {
     return `${rel}\0${name}`;
 }
 
-/** Formats the module record file: `<module> <name> <kind> <param>...` per export, sorted by module then name. */
 export function formatModuleSignatures(commit, entries) {
     const sorted = [...entries].sort((a, b) => compareNames(moduleKey(a[0], a[1]), moduleKey(b[0], b[1])));
     return [commit, ...sorted.map(([rel, name, signature]) => `${rel} ${formatSignature(name, signature)}`)].join('\n') + '\n';
 }
 
-/** Parses the module record file into `[rel, name, signature]` entries; throws SignatureError when it is malformed. */
 export function parseModuleSignatures(text, label) {
     const { commit, lines } = parseRecordHeader(text, label);
     let previous;
@@ -443,7 +384,6 @@ export function parseModuleSignatures(text, label) {
     return { text, commit, entries };
 }
 
-/** Problems with `ours` against upstream's recorded `up` signature of `name`. */
 export function compareSignature(name, up, ours) {
     const show = (s) => formatSignature(name, s);
     const problem = (why) => `${name}: ${why}\n    upstream: ${show(up)}\n    ours:     ${show(ours)}`;
@@ -481,8 +421,6 @@ export function compareSignature(name, up, ours) {
             problems.push(problem(`param ${i + 1} \`${paramToken(u)}\` is renamed to \`${paramToken(o)}\`.`));
             continue;
         }
-        // An upstream name starting with `_` marks the param unused there, so it names no contract; ours may mark
-        // upstream's name unused the same way (`_line` for `line`).
         if (u.type === 'plain' && u.name !== o.name && !u.name.startsWith('_') && o.name !== `_${u.name}`) {
             problems.push(problem(`param ${i + 1} \`${u.name}\` is renamed to \`${o.name}\`.`));
         }

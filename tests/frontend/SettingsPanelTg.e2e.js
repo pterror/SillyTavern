@@ -1,12 +1,7 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// The text generation fields of the AI response configuration panel, drawn by the new page from the server's settings
-// view (packages/areas/settings/page/tg.tsx): edits, Neutralize, the backend's top K, and the sampler select, which
-// the server keeps (the old page kept it in the browser).
-
 /**
- * The stored settings, as the server has them.
  * @param {import('@playwright/test').Page} page
  */
 async function stored(page) {
@@ -19,7 +14,6 @@ async function stored(page) {
 }
 
 /**
- * Saves settings keys as the old page does (for what isn't the panel's, like the backend).
  * @param {import('@playwright/test').Page} page
  * @param {Record<string, unknown>} keys
  */
@@ -33,7 +27,6 @@ async function savePartial(page, keys) {
 }
 
 /**
- * Edits a control as the user does (it's in a closed drawer, so by its events).
  * @param {import('@playwright/test').Page} page
  * @param {string} selector
  * @param {string} value
@@ -47,12 +40,10 @@ async function edit(page, selector, value) {
 }
 
 /**
- * Shows the panel's text generation fields for a backend.
  * @param {import('@playwright/test').Page} page
  * @param {string} backend
  */
 async function useBackend(page, backend) {
-    // The server pushes the settings view when an old route writes settings.
     await savePartial(page, { main_api: 'textgenerationwebui', 'textgenerationwebui_settings.type': backend });
 }
 
@@ -79,7 +70,6 @@ test.describe('text generation settings panel', () => {
         await expect(page.locator('#top_k_textgenerationwebui')).toHaveValue('-1');
         await useBackend(page, 'llamacpp');
         await expect(page.locator('#top_k_textgenerationwebui')).toHaveValue('0');
-        // Stored as it was set: the backend reads it.
         expect((await stored(page)).textgenerationwebui_settings.top_k).toBe(-1);
     });
 
@@ -96,7 +86,6 @@ test.describe('text generation settings panel', () => {
         await expect(dialog).toHaveCount(0);
         await expect(page.locator('#temp_textgenerationwebui')).toBeAttached();
         await expect(page.locator('#top_p_textgenerationwebui')).toHaveCount(0);
-        // The old page's own block (not chosen) hides too.
         await expect(page.locator('#logit_bias_block_ooba')).toBeHidden();
         await page.reload();
         await testSetup.awaitST({ page });

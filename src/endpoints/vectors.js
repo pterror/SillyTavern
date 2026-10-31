@@ -42,16 +42,7 @@ const SOURCES = [
     'workers_ai',
 ];
 
-/**
- * Per-source vectorizer dispatch table. Each entry bundles the three pieces of per-source behavior that
- * getVector/getBatchVector/getSourceSettings used to hand-write in three separate switches over the same
- * source labels: how to embed one text, how to embed a batch, and how to build sourceSettings from a request.
- * @type {Record<string, {
- *   getVector: (text: string, sourceSettings: object, isQuery: boolean, directories: import('../users.js').UserDirectoryList) => Promise<number[]>|number[],
- *   getBatchVector: (batch: string[], sourceSettings: object, isQuery: boolean, directories: import('../users.js').UserDirectoryList) => Promise<number[][]>|number[][],
- *   getSettings: (request: object) => object,
- * }>}
- */
+/** @type {Record<string, { getVector: (text: string, sourceSettings: object, isQuery: boolean, directories: import('../users.js').UserDirectoryList) => Promise<number[]>|number[], getBatchVector: (batch: string[], sourceSettings: object, isQuery: boolean, directories: import('../users.js').UserDirectoryList) => Promise<number[][]>|number[][], getSettings: (request: object) => object, }>} */
 const VECTOR_SOURCES = {
     nomicai: {
         getVector: (text, sourceSettings, isQuery, directories) => getNomicAIVector(text, 'nomicai', directories),

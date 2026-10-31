@@ -1,9 +1,3 @@
-/**
- * Text completion's connections: the backend types, and the defaults of each type's model, URL and options. Kept apart
- * from textgen-settings.js so the server reads the same values (must stay importable outside a browser DOM).
- */
-
-/** Text completion backend types. */
 export const textgen_types = {
     OOBA: 'ooba',
     MANCER: 'mancer',
@@ -22,7 +16,6 @@ export const textgen_types = {
     GENERIC: 'generic',
 };
 
-/** Each backend type's connection settings' defaults. */
 export const textgen_connection_defaults = Object.freeze({
     mancer_model: 'mytholite',
     togetherai_model: 'Gryphe/MythoMax-L2-13b',

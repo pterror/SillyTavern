@@ -189,11 +189,9 @@ function getFilterStorageKey(filterHelper) {
 }
 
 /**
- * Keeps the name of a tag a list is filtered by next to the saved filter, so the filter can still be named to the
- * user when the tag was deleted while this browser had no tab open to see it.
  * @param {string} storagePrefix
  * @param {string} tagId
- * @param {string} state The filter's state; a state that filters nothing drops the name.
+ * @param {string} state
  * @param {string} [name]
  */
 function saveTagFilterName(storagePrefix, tagId, state, name) {
@@ -214,31 +212,28 @@ function isMainCharacterList(filterHelper) {
     return filterHelper === entitiesFilter;
 }
 
-/**
- * What this file last put in each held tag's `filter_state`: the filter this browser has saved for the tag on the
- * main character list. A different value on the object is a change an extension made.
- * @type {WeakMap<Tag, string>}
- */
+/** @type {WeakMap<Tag, string>} */
 const tagFilterStatesShown = new WeakMap();
 
 /**
  * @param {string} tagId
- * @returns {string} the filter this browser has saved for the tag on the main character list
+ * @returns {string}
  */
 function savedMainListTagFilterState(tagId) {
     const state = accountStorage.getItem(`${getFilterStorageKey(entitiesFilter)}_tag_${tagId}`);
     return state && Object.hasOwn(FILTER_STATES, state) ? state : DEFAULT_FILTER_STATE;
 }
 
-/** @param {Tag} tag @param {string} state */
+/**
+ * @param {Tag} tag
+ * @param {string} state
+ */
 function setTagFilterState(tag, state) {
     tag.filter_state = state;
     tagFilterStatesShown.set(tag, state);
 }
 
 /**
- * Gives a tag object this browser's saved filter. A `filter_state` that came with the object is not this browser's:
- * upstream stores the field with the definition, which every browser shares.
  * @param {Tag} tag
  */
 function showSavedTagFilterState(tag) {
@@ -246,14 +241,11 @@ function showSavedTagFilterState(tag) {
 }
 
 /**
- * Takes in a change an extension made to a held tag's `filter_state`: it becomes the tag's filter on the main
- * character list, as a click on the tag there does.
  * @param {Tag} tag
  */
 function takeInTagFilterState(tag) {
     const shown = tagFilterStatesShown.get(tag);
     if (shown === undefined) {
-        // An object an extension put in place of the one this file held.
         showSavedTagFilterState(tag);
         return;
     }
@@ -276,8 +268,7 @@ function takeInTagFilterState(tag) {
 
 /**
  * @param {Tag} tag
- * @returns {Tag} `tag` as the server is given it. `filter_state` is left out: it is this browser's, and a stored
- *   definition is every browser's.
+ * @returns {Tag}
  */
 function tagDefinitionToStore(tag) {
     const definition = { ...tag };
@@ -323,9 +314,8 @@ function getTagFilterVisibility(type) {
 }
 
 /**
- * Sets the tag filter visibility state for a given context.
- * @param {number} type - The tag_filter_type
- * @param {boolean} visible - Whether tag filters should be shown
+ * @param {number} type
+ * @param {boolean} visible
  */
 function setTagFilterVisibility(type, visible) {
     const settingKey = getTagFilterVisibilitySetting(type);
@@ -349,15 +339,6 @@ export const tag_sort_mode = {
     BY_ENTRIES: 'by_entries',
 };
 
-/**
- * A collection of global actionable tags for the filter panel.
- *
- * Tags with `filter_state` property (FAV, GROUP, FOLDER) maintain persistent state:
- * - Each context (character list, group candidates, group members) saves state independently
- * - Main character list also maintains tag.filter_state for backward compatibility
- *
- * Tags without `filter_state` (VIEW, HINT, UNFILTER) are action buttons only.
- */
 const ACTIONABLE_TAGS = {
     FAV: { id: '1', sort_order: 1, name: 'Show only favorites', color: 'rgba(255, 255, 0, 0.5)', filter_state: undefined, action: filterByFav, icon: 'fa-solid fa-star', class: 'filterByFavorites' },
     GROUP: { id: '0', sort_order: 2, name: 'Show only groups', color: 'rgba(100, 100, 100, 0.5)', filter_state: undefined, action: filterByGroups, icon: 'fa-solid fa-users', class: 'filterByGroups' },
@@ -367,15 +348,11 @@ const ACTIONABLE_TAGS = {
     UNFILTER: { id: '5', sort_order: 6, name: 'Clear all filters', action: onClearAllFiltersClick, icon: 'fa-solid fa-filter-circle-xmark', class: 'clearAllFilters' },
 };
 
-/**
- * Built lazily: tags.js and filters.js import each other, so a top-level reference here
- * could run before filters.js's own exports have initialized.
- * @type {Map<string, string>|null}
- */
+/** @type {Map<string, string>|null} */
 let TAG_ID_TO_FILTER_TYPE = null;
 
 /**
- * @returns {Map<string, string>} Map of tag IDs to their corresponding filter types.
+ * @returns {Map<string, string>}
  */
 function getTagIdToFilterType() {
     if (TAG_ID_TO_FILTER_TYPE === null) {
@@ -388,24 +365,21 @@ function getTagIdToFilterType() {
     return TAG_ID_TO_FILTER_TYPE;
 }
 
-/** @type {{[key: string]: Tag}} An optional list of actionables that can be utilized by extensions */
+/** @type {{[key: string]: Tag}} */
 const InListActionable = {
 };
 
 /**
- * @typedef FolderType Bogus folder type
- * @property {string} icon - The icon as a string representation / character
- * @property {string} class - The class to apply to the folder type element
- * @property {string} [fa_icon] - Optional font-awesome icon class representing the folder type element
- * @property {string} [tooltip] - Optional tooltip for the folder type element
- * @property {string} [color] - Optional color for the folder type element
- * @property {string} [size] - A string representation of the size that the folder type element should be
+ * @typedef FolderType
+ * @property {string} icon
+ * @property {string} class
+ * @property {string} [fa_icon]
+ * @property {string} [tooltip]
+ * @property {string} [color]
+ * @property {string} [size]
  */
 
-/**
- * @type {{ OPEN: FolderType, CLOSED: FolderType, NONE: FolderType, [key: string]: FolderType }}
- * The list of all possible tag folder types
- */
+/** @type {{ OPEN: FolderType, CLOSED: FolderType, NONE: FolderType, [key: string]: FolderType }} */
 const TAG_FOLDER_TYPES = {
     OPEN: { icon: '✔', class: 'folder_open', fa_icon: 'fa-folder-open', tooltip: 'Open Folder (Show all characters even if not selected)', color: 'green', size: '1' },
     CLOSED: { icon: '👁', class: 'folder_closed', fa_icon: 'fa-eye-slash', tooltip: 'Closed Folder (Hide all characters unless selected)', color: 'lightgoldenrodyellow', size: '0.7' },
@@ -414,56 +388,32 @@ const TAG_FOLDER_TYPES = {
 const TAG_FOLDER_DEFAULT_TYPE = 'NONE';
 
 /**
- * @typedef {object} Tag - Object representing a tag
- * @property {string} id - The id of the tag (As a kind of has string. This is used whenever the tag is referenced or linked, as the name might change)
- * @property {string} name - The name of the tag
- * @property {string} [folder_type] - The bogus folder type of this tag (based on `TAG_FOLDER_TYPES`)
- * @property {string} [filter_state] - The saved state of the filter chosen of this tag (based on `FILTER_STATES`)
- * @property {number} [sort_order] - A custom integer representing the sort order if tags are sorted
- * @property {string} [color] - The background color of the tag
- * @property {string} [color2] - The foreground color of the tag
- * @property {number} [create_date] - A number representing the date when this tag was created
- * @property {boolean} [is_hidden_on_character_card] - Whether this tag is hidden on the character card
- *
- * @property {function} [action] - An optional function that gets executed when this tag is an actionable tag and is clicked on.
- * @property {string} [class] - An optional css class added to the control representing this tag when printed. Used for custom tags in the filters.
- * @property {string} [icon] - An optional css class of an icon representing this tag when printed. This will replace the tag name with the icon. Used for custom tags in the filters.
- * @property {string} [title] - An optional title for the tooltip of this tag. If there is no tooltip specified, and "icon" is chosen, the tooltip will be the "name" property.
+ * @typedef {object} Tag
+ * @property {string} id
+ * @property {string} name
+ * @property {string} [folder_type]
+ * @property {string} [filter_state]
+ * @property {number} [sort_order]
+ * @property {string} [color]
+ * @property {string} [color2]
+ * @property {number} [create_date]
+ * @property {boolean} [is_hidden_on_character_card]
+ * @property {function} [action]
+ * @property {string} [class]
+ * @property {string} [icon]
+ * @property {string} [title]
  */
 
-/**
- * The tag definitions this tab holds: those something on screen or a held character or group needs (see
- * sweepHeldTags()). Always the same array.
- * @type {Tag[]}
- */
+/** @type {Tag[]} */
 const tags = [];
 
-/**
- * Upstream's export `tags`, and a plain array like upstream's, so it can be cloned, posted to a worker or put in
- * IndexedDB. Here it holds the tags of the characters and groups extensions are shown (the current character, or the
- * open group and its members, as `tag_map` and `getContext().characters` do), and the tags an extension put into it.
- * Always the same array: it is refilled in place, with the same objects `tags` holds.
- *
- * Extensions change it directly, and a plain array can't report that. What they changed is found by comparing it
- * with exportedIndex, what this file last put in it (see takeInTagsExportWrites()). That comparison runs when a
- * settings save is asked for, which is how upstream's extensions get `tags` stored, whenever `tag_map` is read or
- * written, and before every refill. A tag put in is then created on the server, and a changed field is stored with
- * the settings save itself (see storeTagChangesMadeThroughExport()). A tag taken out is not deleted: deleting a tag
- * on the server also takes it off every character and group, which upstream's removal from this array doesn't, so a
- * tag put back later would have lost them. It is put back instead, with a warning.
- * @type {Tag[]}
- */
+/** @type {Tag[]} */
 const exportedTags = [];
 
-/**
- * What this file last put in `exportedTags`, by id. A difference from it is an extension's change.
- * @type {Map<string, Tag>}
- */
+/** @type {Map<string, Tag>} */
 const exportedIndex = new Map();
 
 /**
- * A tag an extension put into the exported `tags` is not in the index until it is taken in. Lookups by id find it all
- * the same.
  * @extends {EntityStore<Tag>}
  */
 class TagStore extends EntityStore {
@@ -472,7 +422,10 @@ class TagStore extends EntityStore {
         super(array, tag => tag.id);
     }
 
-    /** @param {string} id @returns {Tag|undefined} */
+    /**
+     * @param {string} id
+     * @returns {Tag|undefined}
+     */
     get(id) {
         const indexed = super.get(id);
         if (indexed) return indexed;
@@ -481,32 +434,24 @@ class TagStore extends EntityStore {
         return this.array.find(tag => isTagObject(tag) && tag.id === id);
     }
 
-    /** @param {string} id @returns {boolean} */
+    /**
+     * @param {string} id
+     * @returns {boolean}
+     */
     has(id) {
         return this.get(id) !== undefined;
     }
 }
 
-/**
- * A cache of all cut-off tag lists that got expanded until the last reload. They will be printed expanded again.
- * It contains the key of the entity.
- * @type {string[]} ids
- */
+/** @type {string[]} */
 let expanded_tags_cache = [];
 
-/**
- * Wraps the same `tags` array in place, so other call sites reading `tags` directly keep working unchanged.
- * @type {EntityStore<Tag>}
- */
+/** @type {EntityStore<Tag>} */
 let tagsStore = new TagStore(tags);
 
 /**
- * Resolves an entity key (character avatar or group id) to that entity's own, resident `tag_ids` array -
- * both characters and groups carry their tag assignments as a server-stamped field on the entity itself (see
- * `stampDbTagIds()` in characters.js and its group-side counterpart in groups.js), so there's no separate map
- * for this to keep in sync with.
  * @param {string} key
- * @returns {string[]|undefined} undefined if `key` isn't a currently-resident character or group
+ * @returns {string[]|undefined}
  */
 function resolveTagIdsArray(key) {
     const character = charactersStore.get(key);
@@ -522,7 +467,6 @@ function resolveTagIdsArray(key) {
     return undefined;
 }
 
-/** Every currently-resident character/group key paired with its live `tag_ids` array. */
 function* allTagIdsEntries() {
     for (const character of charactersStore.getAll()) {
         if (!character.avatar) continue;
@@ -537,9 +481,7 @@ function* allTagIdsEntries() {
 }
 
 /**
- * The keys of the characters and groups whose tags something on screen may show: every one the page holds, and the
- * character rows on screen the page doesn't hold.
- * @param {Map<string, string[]>} unheldRows - getUnheldRowTagIds()
+ * @param {Map<string, string[]>} unheldRows
  * @returns {string[]}
  */
 function onScreenEntityKeys(unheldRows) {
@@ -549,40 +491,36 @@ function onScreenEntityKeys(unheldRows) {
     return keys;
 }
 
-/** @param {string} key @returns {string[]} */
+/**
+ * @param {string} key
+ * @returns {string[]}
+ */
 function getTagIdsForKey(key) {
     return resolveTagIdsArray(key) ?? [];
 }
 
-/** @param {string} key @param {string} tagId @returns {boolean} */
+/**
+ * @param {string} key
+ * @param {string} tagId
+ * @returns {boolean}
+ */
 function isTagAssignedToKey(key, tagId) {
     return getTagIdsForKey(key).includes(tagId);
 }
 
-/**
- * The last tag save started for each entity key, so the saves of one entity reach the server in the order they were
- * made: an assign and an unassign of the same tag sent side by side could land in either order.
- * @type {Map<string, Promise<void>>}
- */
+/** @type {Map<string, Promise<void>>} */
 const tagSaveChains = new Map();
 
-/** Tag saves started and not yet answered. */
 let tagSavesPending = 0;
 
-/**
- * Assigns and unassigns the server did not store, kept until every pending save is answered so they are reported
- * together.
- * @type {{ key: string, tagId: string, assign: boolean }[]}
- */
+/** @type {{ key: string, tagId: string, assign: boolean }[]} */
 const tagSavesNotStored = [];
 
 /**
- * Marks a local tag change on `key` as unsaved right away (see tag-fetch-stamps.js), and returns the task that
- * saves it. The task waits for the saves queued for `key` before it.
  * @template T
  * @param {string} key
  * @param {() => Promise<T>} save
- * @returns {() => Promise<T>} the task, answering what `save` answered
+ * @returns {() => Promise<T>}
  */
 function queueTagSave(key, save) {
     const saved = beginLocalTagChange(key);
@@ -609,24 +547,17 @@ function queueTagSave(key, save) {
     };
 }
 
-/**
- * Assigns of a tag the server turned out not to have any more, because someone else deleted it: the entity got the
- * tag it was merged into (`assigned`), nothing (null), or the tag's id with no tag behind it (`tagId`). Kept until
- * every pending save is answered so they are reported together.
- * @type {{ key: string, tagId: string, tagName: string, assigned: string | null }[]}
- */
+/** @type {{ key: string, tagId: string, tagName: string, assigned: string | null }[]} */
 const tagAssignsNotAsAsked = [];
 
-/** @param {string} key @returns {string} the name of the character or group, or `key` when this tab doesn't hold it */
+/**
+ * @param {string} key
+ * @returns {string}
+ */
 function nameOfKey(key) {
     return charactersStore.get(key)?.name ?? groupsStore.get(key)?.name ?? key;
 }
 
-/**
- * Tells the user which assigns named a tag that was deleted, and what the entity got instead. Drops those tags
- * from this tab and re-reads the entities' tags first, so this tab shows what the server has and the message can
- * name the tag they got.
- */
 async function reportTagAssignsNotAsAsked() {
     const notAsAsked = tagAssignsNotAsAsked.splice(0);
     if (!notAsAsked.length) return;
@@ -649,10 +580,6 @@ async function reportTagAssignsNotAsAsked() {
     toastr.warning(lines.join('<br />'), t`Tag was deleted`, { escapeHtml: false, timeOut: 0, extendedTimeOut: 0 });
 }
 
-/**
- * Tells the user which assigns and unassigns the server did not store, then re-reads the tags of the entities they
- * were for. Each has already been undone in this tab, which stands if the re-read fails too.
- */
 function reportTagSavesNotStored() {
     reportTagAssignsNotAsAsked().catch(error => console.error('Could not report assigns of deleted tags:', error));
     const notStored = tagSavesNotStored.splice(0);
@@ -670,9 +597,9 @@ function reportTagSavesNotStored() {
 }
 
 /**
- * Gives `key` the tag in this tab only.
- * @param {string} key @param {string} tagId
- * @returns {boolean} false if `key` doesn't resolve, or it already had `tagId`
+ * @param {string} key
+ * @param {string} tagId
+ * @returns {boolean}
  */
 function assignTagLocally(key, tagId) {
     const ids = resolveTagIdsArray(key);
@@ -685,9 +612,9 @@ function assignTagLocally(key, tagId) {
 }
 
 /**
- * Takes the tag off `key` in this tab only.
- * @param {string} key @param {string} tagId
- * @returns {boolean} false if `key` doesn't resolve, or it didn't have `tagId`
+ * @param {string} key
+ * @param {string} tagId
+ * @returns {boolean}
  */
 function unassignTagLocally(key, tagId) {
     const ids = resolveTagIdsArray(key);
@@ -702,9 +629,8 @@ function unassignTagLocally(key, tagId) {
 }
 
 /**
- * Redraws everything that shows the tags of `key` after tag `tagId` was put on it or taken off it outside a user
- * action's own redraw.
- * @param {string} key @param {string} tagId
+ * @param {string} key
+ * @param {string} tagId
  */
 function redrawTagsOfKey(key, tagId) {
     redrawAfterTagChange([tagId], new Set([key]));
@@ -715,17 +641,14 @@ function redrawTagsOfKey(key, tagId) {
 }
 
 /**
- * Sends the assign of `tagId` to `key`. If the server doesn't store it, the tag is taken off `key` in this tab
- * again and the failure is reported once every pending save is answered.
- * @param {string} key @param {string} tagId
- * @returns {() => Promise<boolean>} the task, answering whether the server gave `key` the tag as asked
+ * @param {string} key
+ * @param {string} tagId
+ * @returns {() => Promise<boolean>}
  */
 function queueAssignSave(key, tagId) {
     return queueTagSave(key, async () => {
         const answer = await assignTagOnServer(key, tagId);
         if (answer?.assigned === tagId) {
-            // A tag this tab took for stored, that the server has no definition of: it was deleted. The assignment is
-            // stored all the same, so it is not undone here.
             if (!answer.defined && storedTagFields.has(tagId)) {
                 tagAssignsNotAsAsked.push({ key, tagId, tagName: String(tagsStore.get(tagId)?.name ?? tagId), assigned: tagId });
             }
@@ -737,8 +660,6 @@ function queueAssignSave(key, tagId) {
             tagSavesNotStored.push({ key, tagId, assign: true });
         }
         if (!resolveTagIdsArray(key)) {
-            // An entity this tab doesn't hold, given the tag through `tag_map`: a failed assign is sent again with the
-            // next take-in.
             if (answer) return false;
             const sent = unheldTagMapSent.get(key);
             if (sent?.includes(tagId)) sent.splice(sent.indexOf(tagId), 1);
@@ -750,16 +671,14 @@ function queueAssignSave(key, tagId) {
 }
 
 /**
- * Sends the unassign of `tagId` from `key`. If the server doesn't store it, the tag is put back on `key` in this
- * tab and the failure is reported once every pending save is answered.
- * @param {string} key @param {string} tagId
- * @returns {() => Promise<boolean>} the task, answering whether the server stored it
+ * @param {string} key
+ * @param {string} tagId
+ * @returns {() => Promise<boolean>}
  */
 function queueUnassignSave(key, tagId) {
     return queueTagSave(key, async () => {
         if (await unassignTagOnServer(key, tagId)) return true;
         tagSavesNotStored.push({ key, tagId, assign: false });
-        // The tag may be gone from this tab by now, deleted along with its assignments.
         if (!tagsStore.has(tagId)) return false;
         if (assignTagLocally(key, tagId)) redrawTagsOfKey(key, tagId);
         return false;
@@ -767,9 +686,8 @@ function queueUnassignSave(key, tagId) {
 }
 
 /**
- * The tag ids of a character or group, held or not: a held one's own `tag_ids`, else the server's.
  * @param {string} key
- * @returns {Promise<string[] | null>} null if the server could not be asked
+ * @returns {Promise<string[] | null>}
  */
 async function readEntityTagIds(key) {
     const held = resolveTagIdsArray(key);
@@ -781,10 +699,8 @@ async function readEntityTagIds(key) {
 }
 
 /**
- * The tag ids of characters and groups, held or not: held ones' own `tag_ids`, the rest from the server.
  * @param {string[]} keys
- * @returns {Promise<Map<string, string[]> | null>} by key; a key the server doesn't know has no entry. null if the
- *   server could not be asked.
+ * @returns {Promise<Map<string, string[]> | null>}
  */
 export async function readEntitiesTagIds(keys) {
     /** @type {Map<string, string[]>} */
@@ -806,12 +722,10 @@ export async function readEntitiesTagIds(keys) {
 }
 
 /**
- * Puts tags on, or takes them off, characters and groups, held or not. A held one changes here at once and is saved
- * as addTagsToEntity() and removeTagFromEntity() save; one this tab doesn't hold is changed on the server only.
  * @param {string[]} keys
  * @param {string[]} tagIds
  * @param {boolean} assign
- * @returns {Promise<void>} settled once every save is answered
+ * @returns {Promise<void>}
  */
 export async function saveTagsOnKeys(keys, tagIds, assign) {
     /** @type {Set<string>} */
@@ -846,12 +760,10 @@ export async function saveTagsOnKeys(keys, tagIds, assign) {
 }
 
 /**
- * Puts tags on, or takes them off, a character or group this tab doesn't hold, on the server only, one tag at a
- * time. The character list's page is drawn again once the saves are answered.
  * @param {string} key
  * @param {string[]} tagIds
  * @param {boolean} assign
- * @returns {Promise<boolean>} whether the server stored at least one change as asked
+ * @returns {Promise<boolean>}
  */
 async function saveTagsOnUnheldKey(key, tagIds, assign) {
     const current = await readEntityTagIds(key);
@@ -870,9 +782,9 @@ async function saveTagsOnUnheldKey(key, tagIds, assign) {
 }
 
 /**
- * Assigns `tagId` to `key` in this tab at once and sends it to the server.
- * @param {string} key @param {string} tagId
- * @returns {boolean} false if `key` doesn't resolve, or it already had `tagId` (no-op)
+ * @param {string} key
+ * @param {string} tagId
+ * @returns {boolean}
  */
 function assignTagToKey(key, tagId) {
     const change = assignTagLocally(key, tagId);
@@ -881,9 +793,9 @@ function assignTagToKey(key, tagId) {
 }
 
 /**
- * Unassigns `tagId` from `key` in this tab at once and sends it to the server.
- * @param {string} key @param {string} tagId
- * @returns {boolean} false if `key` doesn't resolve, or it didn't have `tagId` (no-op)
+ * @param {string} key
+ * @param {string} tagId
+ * @returns {boolean}
  */
 function unassignTagFromKey(key, tagId) {
     const change = unassignTagLocally(key, tagId);
@@ -891,7 +803,6 @@ function unassignTagFromKey(key, tagId) {
     return change;
 }
 
-/** Replaces the full set of tag ids for `key`, persisting exactly the delta server-side. No-op if `key` doesn't resolve. */
 function setKeyTagIds(key, tagIds) {
     const ids = resolveTagIdsArray(key);
     if (!ids) return;
@@ -911,7 +822,6 @@ function setKeyTagIds(key, tagIds) {
     runWithConcurrency(tasks, task => task());
 }
 
-/** Clears `key`'s tag ids (the entity itself isn't removed). No-op if `key` doesn't resolve. */
 function removeKeyTagIds(key) {
     const ids = resolveTagIdsArray(key);
     if (!ids) return;
@@ -920,64 +830,35 @@ function removeKeyTagIds(key) {
     noteOwnTagIdsChange(ids, () => []);
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
-    // Usually redundant with the server's own deletion cascade, but harmless (unassign tolerates unknown ids).
     runWithConcurrency(removedIds.map(tagId => queueUnassignSave(key, tagId)), task => task());
 }
 
-/**
- * Upstream's export of the same name: entity key to tag ids. A plain object of plain arrays like upstream's, so it
- * can be cloned, posted to a worker or put in IndexedDB. Here it has an entry only for the characters and groups
- * extensions are shown (the current character, or the open group and its members: see exposedTagKeys()). Each of
- * those entries is a getter and setter handing out the entity's own tag id array.
- *
- * Extensions change it directly. Reading or assigning an entry is noticed, and what changed in the arrays handed
- * out is sent once the code that did it has finished its turn. A plain object can't report a key being added or
- * deleted; those are found when a settings save is asked for, which is how upstream's extensions get `tag_map`
- * stored, and whenever the characters or groups shown change. A key the extension was given no entry for only ever
- * adds tags, since the extension never saw what that entity has. A change goes to the server as one assign or
- * unassign per tag id that actually changed.
- * @type {{[key: string]: string[]}}
- */
+/** @type {{[key: string]: string[]}} */
 const tag_map = {};
 
-/**
- * The getter of each entry of `tag_map` this file made, by key: the characters and groups the page held when it
- * last looked. A key in here that `tag_map` no longer has, or has with something else in its place, was changed by
- * an extension.
- * @type {Map<string, () => string[]|undefined>}
- */
+/** @type {Map<string, () => string[]|undefined>} */
 const tagMapEntryGetters = new Map();
 
-/**
- * The tag id arrays handed out through `tag_map`, each with the entity it belongs to and what it held when this
- * file last wrote it. A difference from that is an extension's change.
- * @type {Map<string[], {key: string, stored: string[]}>}
- */
+/** @type {Map<string[], {key: string, stored: string[]}>} */
 const tagMapHandedOut = new Map();
 
-/**
- * For each key an extension gave `tag_map` that the page doesn't hold, the tag ids already sent for it. The page
- * doesn't know what the server has for such a key, so its tags are only ever added.
- * @type {Map<string, string[]>}
- */
+/** @type {Map<string, string[]>} */
 const unheldTagMapSent = new Map();
 
 let tagExportTakeInQueued = false;
 let tagMapKeysToCheck = false;
 
 /**
- * Records a change this file made to `ids` itself, so it isn't taken for an extension's.
  * @param {string[]} ids
  * @param {(stored: string[]) => string[]} change
  */
 function noteOwnTagIdsChange(ids, change) {
     const handed = tagMapHandedOut.get(ids);
     if (handed) handed.stored = change(handed.stored);
-    // Which tags the exported `tags` holds may change with it.
     queueTagExportTakeIn(false);
 }
 
-/** @param {boolean} checkKeys - whether keys may have been added to `tag_map` or deleted from it */
+/** @param {boolean} checkKeys */
 function queueTagExportTakeIn(checkKeys) {
     tagMapKeysToCheck ||= checkKeys;
     if (tagExportTakeInQueued) return;
@@ -985,15 +866,10 @@ function queueTagExportTakeIn(checkKeys) {
     queueMicrotask(takeInTagExportWrites);
 }
 
-/**
- * To call when `tags` or `tag_map` may have been changed from outside this file: what changed is found and sent
- * once the calling code has finished its turn.
- */
 export function noteTagExportsMayHaveChanged() {
     queueTagExportTakeIn(true);
 }
 
-// groupsStore is rebuilt on every refetch, so a listener on the store itself would be lost.
 onAnyEntityStoreChange(store => {
     if (store === tagsStore) return;
     queueTagExportTakeIn(true);
@@ -1005,8 +881,6 @@ onExposedEntitiesChange(() => {
 });
 
 /**
- * The keys `tag_map` has an entry for: the characters and groups extensions are shown (D17), the same ones
- * `getContext().characters` and `groups` hold.
  * @returns {string[]}
  */
 function exposedTagKeys() {
@@ -1016,10 +890,6 @@ function exposedTagKeys() {
     ];
 }
 
-/**
- * Sends what an extension changed in the exported `tags` and `tag_map` now, rather than when the queued check runs:
- * before something reads the server's copy over the page's (a characters sync), so the change counts as this tab's.
- */
 export function takeInExtensionTagWrites() {
     takeInTagExportWrites();
 }
@@ -1032,8 +902,6 @@ function takeInTagExportWrites() {
 }
 
 /**
- * Takes tags the server no longer has out of the exported `tags`, after taking in what an extension changed in it, so
- * their going is not taken for an extension removing them.
  * @param {Set<string>} ids
  */
 function dropFromExportedTags(ids) {
@@ -1049,10 +917,6 @@ function dropFromExportedTags(ids) {
     }
 }
 
-/**
- * Refills the exported `tags` in place with what it holds now (see exportedTags), after taking in what an extension
- * changed in it.
- */
 function refillExportedTags() {
     takeInTagsExportWrites();
     /** @type {Set<string>} */
@@ -1071,7 +935,6 @@ function refillExportedTags() {
 }
 
 function takeInTagMapWrites() {
-    // A tag put into `tags` has to exist on the server before it is assigned.
     if (tagCreatesInFlight.size) {
         Promise.allSettled([...tagCreatesInFlight]).then(takeInTagMapWrites);
         return;
@@ -1083,13 +946,15 @@ function takeInTagMapWrites() {
     sendTagMapChanges();
 }
 
-/** @param {string} key @param {string[]} ids */
+/**
+ * @param {string} key
+ * @param {string[]} ids
+ */
 function noteTagIdsHandedOut(key, ids) {
     if (!tagMapHandedOut.has(ids)) tagMapHandedOut.set(ids, { key, stored: [...ids] });
 }
 
 /**
- * Gives `tag_map` its entry for a character or group the page holds.
  * @param {string} key
  */
 function defineTagMapEntry(key) {
@@ -1106,7 +971,6 @@ function defineTagMapEntry(key) {
         set(value) {
             const ids = resolveTagIdsArray(key);
             if (!ids) {
-                // The page no longer holds it, so this is now a key an extension gave.
                 tagMapEntryGetters.delete(key);
                 Object.defineProperty(tag_map, key, { value, writable: true, enumerable: true, configurable: true });
                 queueTagExportTakeIn(true);
@@ -1124,10 +988,6 @@ function defineTagMapEntry(key) {
     tagMapEntryGetters.set(key, get);
 }
 
-/**
- * Takes in the keys an extension added to `tag_map`, replaced in it or deleted from it, then gives an entry to each
- * character and group the page holds and drops the entries of those it no longer holds.
- */
 function takeInTagMapKeys() {
     /** @type {(() => Promise<void>)[]} */
     const unheldSaves = [];
@@ -1156,12 +1016,10 @@ function takeInTagMapKeys() {
 
         unheldTagMapSent.delete(key);
         if (ownGetter) {
-            // The extension could read what the entity had, so what it put in its place is the whole set.
             noteTagIdsHandedOut(key, held);
             held.length = 0;
             held.push(...wanted);
         } else {
-            // `tag_map` had no entry for it, so the extension never saw what the entity has: its tags only add.
             for (const id of wanted) assignTagToKey(key, id);
         }
         defineTagMapEntry(key);
@@ -1169,7 +1027,6 @@ function takeInTagMapKeys() {
 
     for (const key of [...tagMapEntryGetters.keys()]) {
         if (Object.hasOwn(tag_map, key)) continue;
-        // Deleted by an extension, which in upstream leaves the entity with no tags.
         tagMapEntryGetters.delete(key);
         const held = resolveTagIdsArray(key);
         if (held) {
@@ -1195,16 +1052,11 @@ function takeInTagMapKeys() {
     if (unheldSaves.length) runWithConcurrency(unheldSaves, save => save());
 }
 
-/**
- * Sends what an extension changed in the arrays handed out through `tag_map`, as one assign or unassign per tag id
- * that actually changed, so a clear followed by a refill sends only the difference.
- */
 function sendTagMapChanges() {
     /** @type {(() => Promise<void>)[]} */
     const unheldSaves = [];
     for (const [ids, { key, stored }] of [...tagMapHandedOut]) {
         const held = resolveTagIdsArray(key);
-        // The entity got another array, or the page no longer holds it: nothing reads this one any more.
         if (held !== ids) tagMapHandedOut.delete(ids);
 
         const after = ids.filter(id => typeof id === 'string').filter(onlyUnique);
@@ -1213,7 +1065,6 @@ function sendTagMapChanges() {
         if (!added.length && !removed.length) continue;
 
         if (held === ids) {
-            // The assign and unassign below make the change themselves, from what the array held before it.
             ids.length = 0;
             ids.push(...stored);
         }
@@ -1227,31 +1078,39 @@ function sendTagMapChanges() {
     if (unheldSaves.length) runWithConcurrency(unheldSaves, save => save());
 }
 
-/**
- * What this tab last knew the server to store for each tag it holds, by id. `filter_state` belongs to this browser
- * and is left out. A tag's fields are compared against this to find what an extension changed on the object.
- * @type {Map<string, Record<string, any>>}
- */
+/** @type {Map<string, Record<string, any>>} */
 const storedTagFields = new Map();
 
-/** @param {any} tag @returns {tag is Tag} */
+/**
+ * @param {any} tag
+ * @returns {tag is Tag}
+ */
 function isTagObject(tag) {
     return !!tag && typeof tag === 'object' && typeof tag.id === 'string' && tag.id !== '';
 }
 
-/** @param {any} value @returns {boolean} whether a settings save could carry it */
+/**
+ * @param {any} value
+ * @returns {boolean}
+ */
 function isStorableTagValue(value) {
     return value !== undefined && typeof value !== 'function' && typeof value !== 'symbol';
 }
 
-/** @param {any} a @param {any} b */
+/**
+ * @param {any} a
+ * @param {any} b
+ */
 function sameTagValue(a, b) {
     if (a === b) return true;
     if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false;
     return JSON.stringify(a) === JSON.stringify(b);
 }
 
-/** @param {Record<string, any>} fields @returns {Record<string, any>} */
+/**
+ * @param {Record<string, any>} fields
+ * @returns {Record<string, any>}
+ */
 function copyTagFields(fields) {
     /** @type {Record<string, any>} */
     const copy = {};
@@ -1262,13 +1121,12 @@ function copyTagFields(fields) {
     return copy;
 }
 
-/** @param {Tag} tag - as the server stores it */
+/** @param {Tag} tag */
 function noteStoredTag(tag) {
     if (isTagObject(tag)) storedTagFields.set(tag.id, copyTagFields(tag));
 }
 
 /**
- * Puts a tag the server stores into `tags`, indexed at once so it isn't taken for one an extension put in.
  * @param {Tag} tag
  */
 function addStoredTag(tag) {
@@ -1280,19 +1138,13 @@ function addStoredTag(tag) {
     queueTagExportTakeIn(false);
 }
 
-/**
- * Ids of the tags an extension put into `tags` in this tab. They stay held: an extension that put a tag in expects
- * to find it there.
- * @type {Set<string>}
- */
+/** @type {Set<string>} */
 const tagIdsPutInByExtension = new Set();
 
-/** How long after the last take-in or change of what is on screen the held tags are swept. */
 const TAG_SWEEP_DELAY_MS = 2000;
 /** @type {ReturnType<typeof setTimeout> | null} */
 let tagSweepTimer = null;
 
-/** Sweeps the held tags (sweepHeldTags()) once things have settled. */
 function scheduleTagSweep() {
     if (tagSweepTimer !== null) return;
     tagSweepTimer = setTimeout(() => {
@@ -1302,9 +1154,6 @@ function scheduleTagSweep() {
 }
 
 /**
- * The ids of the tags something needs held: the tags of the characters and groups the page holds; every tag drawn
- * on screen (pills, Manage Tags rows, folder tiles); the tags the filters are set on; and the tags an extension put
- * into `tags`, or that are being created.
  * @returns {Set<string>}
  */
 function tagIdsInUse() {
@@ -1327,12 +1176,7 @@ function tagIdsInUse() {
     return ids;
 }
 
-/**
- * Lets go of the held tags nothing needs (tagIdsInUse()), keeping one an extension changed and hasn't stored yet.
- * `tags` and its index change in the same turn, so letting go is never taken for an extension removing a tag.
- */
 function sweepHeldTags() {
-    // What an extension changed in `tags` is taken in first.
     takeInTagsExportWrites();
     const inUse = tagIdsInUse();
     /** @type {string[]} */
@@ -1353,7 +1197,10 @@ function sweepHeldTags() {
     refillExportedTags();
 }
 
-/** @param {string} id @param {Record<string, any>} fields - the fields the server now stores */
+/**
+ * @param {string} id
+ * @param {Record<string, any>} fields
+ */
 function noteStoredTagFields(id, fields) {
     const stored = storedTagFields.get(id);
     if (stored) Object.assign(stored, copyTagFields(fields));
@@ -1361,8 +1208,7 @@ function noteStoredTagFields(id, fields) {
 
 /**
  * @param {Tag} tag
- * @returns {{ patch: Record<string, any> | null, lacksStoredField: boolean }} patch: the fields of `tag` that differ
- *   from what the server stores. A field `tag` doesn't have is never part of it: the server keeps its own.
+ * @returns {{ patch: Record<string, any> | null, lacksStoredField: boolean }}
  */
 function tagFieldsChangedOnObject(tag) {
     const stored = storedTagFields.get(tag.id);
@@ -1379,10 +1225,7 @@ function tagFieldsChangedOnObject(tag) {
     return { patch, lacksStoredField };
 }
 
-/**
- * Tags put into `tags` through the export whose create the server hasn't stored yet.
- * @type {Map<string, Tag>}
- */
+/** @type {Map<string, Tag>} */
 const tagsAddedThroughExport = new Map();
 
 /** @type {Set<Promise<void>>} */
@@ -1390,12 +1233,6 @@ const tagCreatesInFlight = new Set();
 /** @type {Set<string>} */
 const tagIdsBeingCreated = new Set();
 
-/**
- * Works out what an extension put into the exported `tags` and took out of it, by comparing it with exportedIndex,
- * what this file last put in. A tag put in joins the held tags and, unless the server has it, is created. A tag taken
- * out is put back. A clear followed by a refill takes out only the tags the refill left out, and a tag put back as a
- * new object with the same id takes that object's place.
- */
 function takeInTagsExportWrites() {
     let differs = exportedTags.length !== exportedIndex.size;
     for (let i = 0; !differs && i < exportedTags.length; i++) {
@@ -1454,7 +1291,7 @@ function takeInTagsExportWrites() {
 /**
  * @param {string} path
  * @param {object} body
- * @returns {Promise<{ id: string, reason: string }[] | null>} what the server refused, or null if the request failed
+ * @returns {Promise<{ id: string, reason: string }[] | null>}
  */
 async function postTagWrite(path, body) {
     try {
@@ -1483,10 +1320,6 @@ function warnRefusedExportTagChanges(title, refused) {
     toastr.warning(lines.join('<br />'), title, { escapeHtml: false, timeOut: 0, extendedTimeOut: 0 });
 }
 
-/**
- * Sends a create for every tag added through the export that isn't being created already. A failed create stays
- * in tagsAddedThroughExport and is sent again with the next settings save.
- */
 function sendTagsAddedThroughExport() {
     /** @type {Tag[]} */
     const toCreate = [];
@@ -1519,7 +1352,6 @@ function sendTagsAddedThroughExport() {
         warnRefusedExportTagChanges(t`Tags an extension added were not saved`, refused);
         for (const { id } of refused) await resyncRefusedTag(id);
         if (!storedIds.length) return;
-        // The server gave each new tag its sort_order.
         await takeStoredFieldsTagsLack(storedIds);
         await eventSource.emit(event_types.SETTINGS_UPDATED);
     })().catch(error => console.error('Error storing tags added through the tags export:', error));
@@ -1529,8 +1361,6 @@ function sendTagsAddedThroughExport() {
 }
 
 /**
- * Gives each of the tags `ids` the fields the server stores for it that its object here doesn't have. Fields the
- * object does have are left as they are, so a change an extension has made since isn't undone.
  * @param {string[]} ids
  */
 async function takeStoredFieldsTagsLack(ids) {
@@ -1551,10 +1381,6 @@ async function takeStoredFieldsTagsLack(ids) {
 let storingTagExportChanges = false;
 let tagExportChangesArrivedWhileStoring = false;
 
-/**
- * Stores the fields extensions changed on the objects in the exported `tags` since the last settings save, as edits
- * of just those fields. Upstream stores `tags` with the settings, so this runs with every settings save.
- */
 export async function storeTagChangesMadeThroughExport() {
     if (storingTagExportChanges) {
         tagExportChangesArrivedWhileStoring = true;
@@ -1613,7 +1439,6 @@ async function storeTagExportChangesOnce() {
         toastr.error(t`They are sent again with the next settings save.`, t`Some tag changes an extension made could not be saved`);
     }
 
-    // A tag object an extension put in place of another may lack fields the server stores.
     await takeStoredFieldsTagsLack(toReread);
 
     if (storedAny) {
@@ -1622,10 +1447,9 @@ async function storeTagExportChangesOnce() {
 }
 
 /**
- * Removes `tagId` from every resident key, putting `replaceWithId` in its place when given. Sends nothing to the
- * server.
- * @param {string} tagId @param {{replaceWithId?: string}} [options]
- * @returns {string[]} Every key that had `tagId` removed
+ * @param {string} tagId
+ * @param {{replaceWithId?: string}} [options]
+ * @returns {string[]}
  */
 function removeTagIdLocally(tagId, { replaceWithId } = {}) {
     const affectedKeys = [];
@@ -1642,11 +1466,6 @@ function removeTagIdLocally(tagId, { replaceWithId } = {}) {
     return affectedKeys;
 }
 
-/**
- * Rebuilds `tagsStore` to wrap the current `tags` reference and re-registers its subscribers - needed whenever
- * that reference is reassigned (e.g. `loadTagsSettings`), since a store built against the old reference would
- * keep indexing stale data and a fresh instance carries no subscribers of its own.
- */
 function rebuildTagStores() {
     tagsStore = new TagStore(tags);
 
@@ -1673,8 +1492,8 @@ const TAG_REFUSAL_REASONS = {
 };
 
 /**
- * @param {{ id: string, reason: string }[]} refused - from /api/tags/create or /api/tags/edit
- * @param {Tag} tag - the tag the request was about; refused entries carry only its id
+ * @param {{ id: string, reason: string }[]} refused
+ * @param {Tag} tag
  * @param {string} title
  */
 function warnRefusedTags(refused, tag, title) {
@@ -1684,17 +1503,12 @@ function warnRefusedTags(refused, tag, title) {
 }
 
 /**
- * Asks the server to create `tag`, which this tab doesn't have yet, and puts it into `tags` once the server has
- * stored it.
  * @param {Tag} tag
  * @param {object} [options]
- * @param {boolean} [options.freeName] `tag.name` is only a base: the server picks a name no other tag has, and
- *   `tag` takes that name and the rest of what the server stored.
- * @returns {Promise<'stored' | 'refused' | 'failed'>} 'refused': the user has been told why. If the server already
- *   has a tag with that id, this tab now has the server's copy of it.
+ * @param {boolean} [options.freeName]
+ * @returns {Promise<'stored' | 'refused' | 'failed'>}
  */
 async function createTagOnServer(tag, { freeName = false } = {}) {
-    // Until this answers, the tag changes feed leaves the id alone: the tag is put into `tags` here.
     tagIdsBeingCreated.add(tag.id);
     try {
         const response = await fetch('/api/tags/create', {
@@ -1729,25 +1543,15 @@ async function createTagOnServer(tag, { freeName = false } = {}) {
     }
 }
 
-/**
- * Field edits made in this tab's own UI that the server hasn't answered yet, by `${id}\n${field}`. `wanted` is the
- * latest value asked for.
- * @type {Map<string, { wanted: any }>}
- */
+/** @type {Map<string, { wanted: any }>} */
 const tagFieldEditsInFlight = new Map();
 
 /**
- * Stores `value` as `field` of tag `id`, for an edit made in this tab's own UI. The tag's copy here takes the value
- * only once the server has stored it. A value given while an earlier one is on its way replaces any other waiting
- * and is sent once that one is answered, so edits of one field reach the server in order and one at a time.
  * @param {string} id
  * @param {string} field
  * @param {any} value
- * @param {(stored: any) => void} [onStored] - run with each value the server stored, before it is drawn
- * @returns {Promise<'stored' | 'refused' | 'failed' | 'unchanged' | 'waiting'>} what became of the last value sent.
- *   'unchanged': the tag already had the value, so nothing was sent. 'refused': the user has been told why and this
- *   tab's copy has been made to match the server's. 'failed' is the caller's to tell. 'waiting': an earlier call is
- *   still sending and will send this value after; that call gets the outcome.
+ * @param {(stored: any) => void} [onStored]
+ * @returns {Promise<'stored' | 'refused' | 'failed' | 'unchanged' | 'waiting'>}
  */
 async function storeTagField(id, field, value, onStored) {
     const key = `${id}\n${field}`;
@@ -1783,7 +1587,7 @@ async function storeTagField(id, field, value, onStored) {
 
 /**
  * @param {string} id
- * @param {string} notSaved - what was not saved, as a sentence
+ * @param {string} notSaved
  */
 function tellTagEditFailed(id, notSaved) {
     const name = tagsStore.get(id)?.name ?? id;
@@ -1791,13 +1595,11 @@ function tellTagEditFailed(id, notSaved) {
 }
 
 /**
- * Upstream keeps tags in the settings, so extensions hear of a stored tag change through SETTINGS_UPDATED; it is
- * emitted here once the server has stored one.
  * @param {string} id
- * @param {Partial<Tag>} patch - only the changed fields
- * @param {Tag} tag - for its name in a refusal warning
- * @param {() => void} [applyStored] - run once the server has stored the patch, before this tab's copy is cached
- * @returns {Promise<'stored' | 'refused' | 'failed'>} 'refused': this tab's copy has been made to match the server's.
+ * @param {Partial<Tag>} patch
+ * @param {Tag} tag
+ * @param {() => void} [applyStored]
+ * @returns {Promise<'stored' | 'refused' | 'failed'>}
  */
 async function editTagOnServer(id, patch, tag, applyStored) {
     try {
@@ -1828,15 +1630,11 @@ async function editTagOnServer(id, patch, tag, applyStored) {
     }
 }
 
-/** At most this many distinct ids per /api/tags/for and /api/tags/by-ids request; more is a 400. */
 const TAG_READ_MAX_IDS = 500;
 
 /**
- * One read of /api/tags/query.
  * @param {object} body
  * @returns {Promise<{ rows?: Tag[], cursor?: string | null, more?: boolean, counts?: Record<string, number>, approximate?: string[], hash?: string, unchanged?: boolean, rest?: { count: number, more: boolean } } | 'invalid-cursor' | null>}
- *   null if the request failed. 'invalid-cursor': the server no longer takes the cursor. `unchanged` (only with
- *   `ifHash` in the body): the page is what it was, and the answer has no rows.
  */
 async function postTagQuery(body) {
     try {
@@ -1859,11 +1657,9 @@ async function postTagQuery(body) {
 }
 
 /**
- * For extensions: one page of the whole tag list from the server, since `tags` and `tag_map` are partial. The body is /api/tags/query's (sort mode, filter, page size,
- * `cursor` from the previous answer).
  * @param {object} query
  * @returns {Promise<{ rows: Tag[], cursor: string | null, more: boolean, counts?: Record<string, number>, approximate?: string[] }>}
- * @throws {Error} if the server can't answer or no longer takes the cursor
+ * @throws {Error}
  */
 export async function queryTags(query) {
     const answer = await postTagQuery({ ...query, ifHash: undefined });
@@ -1876,7 +1672,7 @@ export async function queryTags(query) {
 /**
  * @param {string} path
  * @param {object} body
- * @returns {Promise<any>} the parsed answer, or null if the request failed
+ * @returns {Promise<any>}
  */
 async function postTagsRead(path, body) {
     const response = await fetch(path, {
@@ -1894,7 +1690,6 @@ async function postTagsRead(path, body) {
     return answer;
 }
 
-/** Tag fields whose value is drawn on screen, each with what redraws it. */
 const TAG_FIELD_REDRAWS = {
     /** @param {Tag} tag */
     name: (tag) => {
@@ -1936,8 +1731,6 @@ function redrawTagColorField(tag, colorField, cssProperty) {
 }
 
 /**
- * After the server refused a create or edit of tag `id`, makes this tab's copy match the server's again: replaces
- * it with the stored definition, or drops it if the server no longer has one.
  * @param {string} id
  */
 async function resyncRefusedTag(id) {
@@ -1957,8 +1750,6 @@ async function resyncRefusedTag(id) {
 }
 
 /**
- * Makes `local` hold the server's definition, in place. filter_state belongs to this browser, not to the stored
- * definition, so `local` keeps its own.
  * @param {Tag} local
  * @param {Tag} serverTag
  */
@@ -1975,10 +1766,8 @@ function takeServerTagFields(local, serverTag) {
 }
 
 /**
- * Reads the definitions of `ids` from the server into `tags`: a tag this tab has takes the server's fields, one it
- * doesn't is added. Draws nothing.
  * @param {string[]} ids
- * @returns {Promise<boolean>} false if a read failed; what was read before it is kept.
+ * @returns {Promise<boolean>}
  */
 async function readTagDefinitionsFromServer(ids) {
     let changed = false;
@@ -1996,7 +1785,6 @@ async function readTagDefinitionsFromServer(ids) {
                 }
                 changed = true;
             }
-            // Per chunk: the next chunk's tagsStore.get() must see the tags this one added.
             tagsStore.reindex();
         }
         return true;
@@ -2034,12 +1822,9 @@ async function replaceTagFromServer(id, serverTag) {
 }
 
 /**
- * Takes tag `fromId` out of every tag filter holding it. With `toId`, that tag takes its place and state, unless it
- * already has a state of its own in that filter.
  * @param {string} fromId
  * @param {string} [toId]
- * @returns {{ held: boolean, moved: boolean }} held: a filter held `fromId`. moved: every filter that did now holds
- *   `toId` in the same state.
+ * @returns {{ held: boolean, moved: boolean }}
  */
 function moveTagFilters(fromId, toId) {
     let held = false;
@@ -2080,12 +1865,8 @@ function moveTagFilters(fromId, toId) {
 }
 
 /**
- * Removes tags from this tab only (the server already has no such tags), then re-reads the tags of the characters
- * and groups that carried them, so what the server gave them in their place shows up.
- * @param {{ id: string, replaceWithId?: string }[]} drops - replaceWithId: the tag the server merged `id` into.
- *   Resident entities and tag filters get it in `id`'s place at once, ahead of the re-read.
- * @returns {Promise<Map<string, { held: boolean, moved: boolean }>>} by id, what became of the tag filters on it
- *   (moveTagFilters())
+ * @param {{ id: string, replaceWithId?: string }[]} drops
+ * @returns {Promise<Map<string, { held: boolean, moved: boolean }>>}
  */
 async function dropTagsLocally(drops) {
     /** @type {Map<string, { held: boolean, moved: boolean }>} */
@@ -2095,7 +1876,7 @@ async function dropTagsLocally(drops) {
     const affectedRowKeys = needsFullRedraw ? null : getRenderedKeysWithAnyTag(new Set(drops.map(({ id }) => id)));
 
     const dropped = new Set(drops.map(({ id }) => id));
-    /** @type {Set<string>} Characters and groups on screen that carried a dropped tag: their tags are read again. */
+    /** @type {Set<string>} */
     const carriers = new Set(getRenderedKeysWithAnyTag(dropped));
     let heldDefinition = false;
     for (const { id, replaceWithId } of drops) {
@@ -2120,7 +1901,6 @@ async function dropTagsLocally(drops) {
     }
 
     for (const { id } of drops) {
-        // An unsaved name has no tag left to go to.
         writeTagNameDraft(id, null);
         $(`.tag[id="${id}"]`).remove();
         $(`.tag_view_item[id="${id}"]`).remove();
@@ -2157,7 +1937,6 @@ async function dropTagLocally(id, { replaceWithId } = {}) {
  */
 const tagRereadsWaiting = new Set();
 
-/** Re-reads the entities a re-read left out while this tab's own tag saves for them were pending. */
 function rereadEntitiesLeftWaiting() {
     if (!tagRereadsWaiting.size) return;
     const keys = [...tagRereadsWaiting];
@@ -2166,16 +1945,10 @@ function rereadEntitiesLeftWaiting() {
 }
 
 /**
- * Replaces the tag ids of characters and groups on screen with the server's where they differ, and fetches any tag
- * definition the new ids need that this tab doesn't have: a held entity's own, and a character row on screen the
- * page doesn't hold (drawn again with them). Stops at the first failed request, keeping what it already applied.
- * An entity with a tag save of this tab's still unanswered keeps what it shows and is re-read once the saves are
- * answered.
- * @param {string[]} [onlyKeys] - the entities to re-read; every one on screen (onScreenEntityKeys()) when left out
- * @returns {Promise<boolean>} false if a request failed
+ * @param {string[]} [onlyKeys]
+ * @returns {Promise<boolean>}
  */
 async function rereadResidentEntityTagIds(onlyKeys) {
-    // What an extension changed through `tag_map` is sent before the server's copy is read over it.
     tagMapKeysToCheck = true;
     takeInTagExportWrites();
     const unheldRows = getUnheldRowTagIds();
@@ -2226,7 +1999,6 @@ async function rereadResidentEntityTagIds(onlyKeys) {
                 const removed = ids.filter(tagId => !serverSet.has(tagId));
                 ids.splice(0, ids.length, ...serverIds);
                 noteOwnTagIdsChange(ids, () => [...serverIds]);
-                // The same tags in another order draw the same.
                 if (!added.length && !removed.length) continue;
                 changedKeys.add(key);
                 for (const tagId of [...added, ...removed]) changedTagIds.add(tagId);
@@ -2244,7 +2016,6 @@ async function rereadResidentEntityTagIds(onlyKeys) {
         }
         return true;
     } finally {
-        // Drawn once the definitions they need are read, or with what there is when that read failed.
         for (const [key, { serverIds, fetchStamp }] of unheldRowsToRedraw) setUnheldRowTagIds(key, serverIds, fetchStamp);
         if (unheldRowsToRedraw.size && !changedKeys.size) {
             if (tagChangeAffectsCurrentView([...changedTagIds])) printCharactersDebounced();
@@ -2254,7 +2025,6 @@ async function rereadResidentEntityTagIds(onlyKeys) {
             invalidateCharactersFuseIndex();
             invalidateGroupsFuseIndex();
             redrawAfterTagChange([...changedTagIds], changedKeys);
-            // Which tags are used may have changed with them.
             refreshUsedTagBars();
             const openKey = getTagKey();
             if (openKey !== null && changedKeys.has(String(openKey))) {
@@ -2289,7 +2059,6 @@ async function takeInEntityTagChanges() {
 
         const rowsLeft = (page.endSeq - page.seq) + (page.endGroupsVersion - page.groupsVersion);
         if (page.reset || (page.hasMore && rowsLeft > onScreenEntityKeys(getUnheldRowTagIds()).length)) {
-            // The logs' ends as read before the tags are, so nothing written while they are read is missed.
             if (await rereadResidentEntityTagIds()) {
                 entityTagChangesCursor = { sinceSeq: page.endSeq, sinceGroupsVersion: page.endGroupsVersion };
             }
@@ -2302,8 +2071,6 @@ async function takeInEntityTagChanges() {
         const held = (Array.isArray(page.ids) ? page.ids : []).filter(key => typeof key === 'string' && (resolveTagIdsArray(key) || unheldRows.has(key)));
         if (held.length && !await rereadResidentEntityTagIds(held)) return;
         entityTagChangesCursor = { sinceSeq: page.seq, sinceGroupsVersion: page.groupsVersion };
-        // Manage Tags shows counts and the filter bars the used tags, which cover the characters and groups this tab
-        // doesn't hold too.
         if (Array.isArray(page.ids) && page.ids.length) {
             refreshViewTagList();
             refreshUsedTagBars();
@@ -2312,11 +2079,6 @@ async function takeInEntityTagChanges() {
     }
 }
 
-/**
- * The tags of characters or groups may have changed on the server (a character change message or 'groups-changed' on
- * the changes stream), or the stream is back after a break that may have swallowed such a message. Any number of
- * calls while one ask is waiting its turn make one ask.
- */
 export function onEntityTagsChanged() {
     if (!tagsLoadedOnce || entityTagChangesAskQueued) return;
     entityTagChangesAskQueued = true;
@@ -2574,14 +2336,10 @@ function isBogusFolderOpen() {
     return getOpenBogusFolders().length > 0 || (shownCase !== null && shownCase !== 'none');
 }
 
-/** Set by the character list: shows a closed-folder case ('none' or a closed folder's tag id). */
 let showFolderCase = /** @type {((folderCase: string) => void) | null} */ (null);
-/** Set by the character list: the closed-folder case shown, null while "Tags as Folders" is off. */
 let readShownFolderCase = /** @type {() => string | null} */ (() => null);
 
 /**
- * Lets chooseBogusFolder() and isBogusFolderOpen() reach the character list's folder switcher, which this module
- * can't import.
  * @param {{ show: (folderCase: string) => void, read: () => string | null }} handlers
  */
 export function registerFolderCaseHandlers({ show, read }) {
@@ -2597,14 +2355,12 @@ export function registerFolderCaseHandlers({ show, read }) {
  * @param {boolean} remove Whether the given tag should be removed (otherwise it is added/chosen)
  */
 function chooseBogusFolder(source, tagId, remove = false) {
-    // A closed folder is a case of the list's folder switcher, not a tag filter.
     const shownCase = readShownFolderCase();
     if (showFolderCase && tagId === 'back' && shownCase !== null && shownCase !== 'none') {
         showFolderCase('none');
         return;
     }
     if (showFolderCase && shownCase !== null && tagId !== 'back' && !tagsStore.get(tagId)) {
-        // The page holds only the tags on screen: read this one to tell a closed folder from an open one.
         void readTagsForIds([tagId]).then(answer => {
             if (answer?.tags.get(tagId)?.folder_type === 'CLOSED') showFolderCase?.(remove ? 'none' : tagId);
             else chooseTagFilterFolder(source, tagId, remove);
@@ -2619,10 +2375,9 @@ function chooseBogusFolder(source, tagId, remove = false) {
 }
 
 /**
- * Opens or closes an open folder: selects or clears its tag in the tag filter bar.
- * @param {*} source The jQuery element clicked when choosing the folder
- * @param {string} tagId The tag id that is behind the chosen folder, or 'back'
- * @param {boolean} remove Whether the given tag should be removed (otherwise it is added/chosen)
+ * @param {*} source
+ * @param {string} tagId
+ * @param {boolean} remove
  */
 function chooseTagFilterFolder(source, tagId, remove) {
     // If we are here via the 'back' action, we implicitly take the last filtered folder as one to remove
@@ -2638,7 +2393,6 @@ function chooseTagFilterFolder(source, tagId, remove) {
     // We search inside which filter block we are located in and use that one
     const FILTER_SELECTOR = ($(source).closest('#rm_characters_block') ?? $(source).closest('#rm_group_chats_block')).find('.rm_tag_filter');
     let tagElement = $(FILTER_SELECTOR).find(`.tag[id=${tagId}]`);
-    // The bar draws a page of the used tags, which this folder's tag may not be on.
     const tag = tagsStore.get(tagId);
     if (!tagElement.length && tag) {
         appendTagToList($(FILTER_SELECTOR), tag, { isFilter: true, isGeneralList: true });
@@ -2774,16 +2528,6 @@ function filterByFolder(filterHelper) {
 }
 
 /**
- * Loads tag *definitions* from the server (POST /api/tags/get). A fetch failure reuses the last-known-good
- * cache. The server adds upstream's default tags to a new store, so the page never makes up tags. Assignments aren't loaded separately - they live on each character/
- * group's own `tag_ids` field, already resident by the time `characters`/`groups` are populated.
- */
-/**
- * With neither `tags` nor `tag_map` in `settings`, reads the tag definitions from the server.
- *
- * Upstream passes the settings object and takes both from it. Given here, they are taken in as an extension's
- * writes to `tags` and `tag_map` are, and `tags` holds the given tags when this returns. The given `tag_map` only
- * adds: upstream's replaces the whole map, which would take every tag off each character it doesn't name.
  * @param {{ tags?: Tag[], tag_map?: Record<string, string[]> }} [settings]
  * @returns {Promise<void>}
  */
@@ -2793,7 +2537,6 @@ function loadTagsSettings(settings) {
     if (!givenTags && !givenMap) return loadTagsFromServer();
 
     if (givenTags) {
-        // As an extension's clear and refill of the exported `tags`.
         exportedTags.length = 0;
         for (const tag of givenTags) exportedTags.push(tag);
     }
@@ -2817,17 +2560,11 @@ async function loadTagsFromServer() {
     try {
         await loadTagDefinitionsFromServer();
     } finally {
-        // What changed between the manifest read, which set the cursor, and now.
         tagsLoadedOnce = true;
         onTagsChanged();
     }
 }
 
-/**
- * Reads where this tab's tags are current to in the server's change logs, before anything is drawn, so nothing that
- * changes from here on is missed. No tag definition is read: each is read by id when something on screen shows it
- * (heldTagsForIds()).
- */
 async function loadTagDefinitionsFromServer() {
     if (!tagStoresBuilt) {
         rebuildTagStores();
@@ -2847,8 +2584,6 @@ async function loadTagDefinitionsFromServer() {
         }
         const { changesSeq, assignmentChanges } = await manifestResponse.json();
         tagChangesSeq = typeof changesSeq === 'number' ? changesSeq : null;
-        // Only the first one, read before the characters and groups are: a later one would skip what changed
-        // since this tab last asked.
         if (!entityTagChangesCursor && typeof assignmentChanges?.seq === 'number' && typeof assignmentChanges?.groupsVersion === 'number') {
             entityTagChangesCursor = { sinceSeq: assignmentChanges.seq, sinceGroupsVersion: assignmentChanges.groupsVersion };
         }
@@ -2857,21 +2592,13 @@ async function loadTagDefinitionsFromServer() {
     }
 }
 
-/** Whether rebuildTagStores() has given `tagsStore` its subscribers. */
 let tagStoresBuilt = false;
 
-/**
- * Each entity carries its own `tag_ids` (server-stamped, see `resolveTagIdsArray()`), so there's nothing to
- * reindex here. This redraws now that real assignments are visible: the initial render ran before
- * `characters`/`groups` were populated.
- * Must run after both `characters` and `groups` are populated.
- */
 async function reindexTagAssignments() {
     try {
         invalidateCharactersFuseIndex();
         invalidateGroupsFuseIndex();
 
-        // The initial render already ran before real assignments were resident - redraw now that they are.
         printCharactersDebounced();
         printTagFilters(tag_filter_type.character);
         printTagFilters(tag_filter_type.group_members_list);
@@ -2888,7 +2615,6 @@ function createTagMapFromList(listElement, key) {
 }
 
 /**
- * Resolves tag ids to tag objects via `tagsStore`, dropping unknown ids.
  * @param {string[]} tagIds
  * @param {boolean} sort
  * @returns {Tag[]}
@@ -2914,7 +2640,6 @@ function getTagsList(key, sort = true, residencyFallbackTagIds = undefined) {
         return [];
     }
 
-    // A resident character or group carries its own live, server-stamped tag_ids field.
     const character = charactersStore.get(key);
     if (character) {
         const tagIds = Array.isArray(character.tag_ids) ? character.tag_ids : [];
@@ -2926,8 +2651,6 @@ function getTagsList(key, sort = true, residencyFallbackTagIds = undefined) {
         return tagIdsToTagList(tagIds, sort);
     }
 
-    // Under lazyLoadCharacters, most list/search rows are non-resident query rows with their own correct
-    // tag_ids - a caller already holding such a row's tag_ids passes it here instead.
     if (Array.isArray(residencyFallbackTagIds)) {
         return tagIdsToTagList(residencyFallbackTagIds, sort);
     }
@@ -2980,15 +2703,13 @@ export function getTagKeyForEntity(entityOrKey) {
     // Next lets check if its a valid character or character id, so we can swith it to its tag
     let character;
     if (!character && characters.indexOf(x) >= 0) character = x; // Check for char object
-    if (!character && !isNaN(parseInt(entityOrKey))) character = exposedCharacters[x]; // check if its a char id
-    if (!character) character = charactersStore.get(x); // check if its a char key
+    if (!character && !isNaN(parseInt(entityOrKey))) character = exposedCharacters[x];
+    if (!character) character = charactersStore.get(x);
 
     if (character) {
         x = character.avatar;
     }
 
-    // A resolvable key is one resolveTagIdsArray() can find a live tag_ids array for - a resident character
-    // (guarded against a falsy avatar here first) or group.
     if (x && resolveTagIdsArray(x)) {
         return x;
     }
@@ -3061,7 +2782,7 @@ export function addTagsToEntity(tag, entityId, { tagListSelector = null, tagList
 
     let result = false;
 
-    /** @type {Set<string>} The resolved entity keys (avatar / group id) actually touched by this call */
+    /** @type {Set<string>} */
     const affectedKeys = new Set();
 
     // Add tags to the map
@@ -3077,12 +2798,9 @@ export function addTagsToEntity(tag, entityId, { tagListSelector = null, tagList
     redrawAfterTagChange(tags.map(t => t.id), affectedKeys);
     tagListOptions.addTag = tags;
 
-    // add tag to the UI and internal map - we reprint so sorting and new markup is done correctly
     if (tagListSelector) printTagList(tagListSelector, tagListOptions);
     const inlineSelector = getInlineListSelector();
     if (inlineSelector) {
-        // Reprint with its own read-only tagOptions so an edit-panel affordance (e.g. remove) doesn't leak
-        // onto the read-only list row.
         printTagList($(inlineSelector), { ...tagListOptions, tagOptions: { isCharacterList: true } });
     }
 
@@ -3090,19 +2808,8 @@ export function addTagsToEntity(tag, entityId, { tagListSelector = null, tagList
 }
 
 /**
- * Checks whether a tag mutation (affecting the given tag ids) could change what the currently displayed
- * character/group list looks like - i.e. whether a full `printCharactersDebounced()` re-render is actually
- * needed, or whether it's enough to patch the affected row(s) in place.
- *
- * The current list view depends on tag content when:
- * - "Tags as folders" is enabled, since folders are themselves derived from tags (a tag change can create,
- *   empty, or change the contents of a folder, at any nesting level currently in view).
- * - There's an active search term, since the Fuse index used for fuzzy search includes each entity's tag
- *   names as a searchable field (see `getTagsList` usage in the `#tags` key getter for `fuzzySearchCharacters`).
- * - There's an active tag filter (selected/excluded) that references one of the tags being changed.
- *
- * @param {string[]} tagIds - The ids of the tags being added/removed
- * @returns {boolean} Whether the current view depends on this change
+ * @param {string[]} tagIds
+ * @returns {boolean}
  */
 function tagChangeAffectsCurrentView(tagIds) {
     if (power_user.bogus_folders) {
@@ -3123,13 +2830,8 @@ function tagChangeAffectsCurrentView(tagIds) {
 }
 
 /**
- * Redraws whatever needs to be redrawn after a tag assignment change for the given tag ids / entity keys.
- * See `tagChangeAffectsCurrentView` for what "needs a full re-render" means here.
- * @param {string[]} tagIds - The ids of the tags that were added/removed
- * @param {Set<string>} affectedKeys - The entity keys (avatar / group id) that were actually touched
- *
- * The filter bars are not redrawn here: which tags are used is the server's to say, and the bars read it again once
- * this tab's tag saves are answered (queueTagSave()).
+ * @param {string[]} tagIds
+ * @param {Set<string>} affectedKeys
  */
 export function redrawAfterTagChange(tagIds, affectedKeys) {
     if (tagChangeAffectsCurrentView(tagIds)) {
@@ -3141,14 +2843,10 @@ export function redrawAfterTagChange(tagIds, affectedKeys) {
 }
 
 /**
- * Patches the tag pills of any currently-rendered character/group list rows for the given entity keys, without
- * touching the rest of the list.
- * @param {Iterable<string>} keys - entity keys (character avatar or group id)
+ * @param {Iterable<string>} keys
  */
 function updateEntityRowTags(keys) {
     for (const key of keys) {
-        // A key is either a character's avatar or a group's id, and only rows of its own kind carry it, so both
-        // selectors can be tried without first asking which kind it is.
         const escapedKey = CSS.escape(String(key));
         const $row = $(`#rm_print_characters_block .character_select[data-avatar="${escapedKey}"], #rm_print_characters_block .group_select[data-grid="${escapedKey}"]`);
 
@@ -3156,7 +2854,6 @@ function updateEntityRowTags(keys) {
             printTagList($row.find('.tags'), { forEntityOrKey: key, tagOptions: { isCharacterList: true } });
         }
 
-        // The group editor's member and candidate rows of the character.
         $(`.group_member[data-avatar="${escapedKey}"] .tags`).each((_, element) => {
             printTagList($(element), { forEntityOrKey: key, tagOptions: { isCharacterList: true } });
         });
@@ -3164,9 +2861,6 @@ function updateEntityRowTags(keys) {
 }
 
 /**
- * Entity keys of currently-rendered character/group list rows carrying the given tag - for a tag-level change
- * (the tag itself was edited or deleted) where the affected entities aren't already known, unlike
- * `redrawAfterTagChange`'s per-entity assign/unassign callers.
  * @param {string} tagId
  * @returns {string[]}
  */
@@ -3176,7 +2870,7 @@ function getRenderedKeysWithTag(tagId) {
 
 /**
  * @param {Set<string>} tagIds
- * @returns {string[]} the key of every currently-rendered character/group list row carrying any of `tagIds`
+ * @returns {string[]}
  */
 function getRenderedKeysWithAnyTag(tagIds) {
     const keys = [];
@@ -3192,9 +2886,6 @@ function getRenderedKeysWithAnyTag(tagIds) {
 }
 
 /**
- * Entity keys of every currently-rendered character/group list row, for a change that can touch any row's own
- * tag pills (e.g. tag display order) without changing which rows are shown - so patching all of them in place
- * is enough, and still bounded to the current page rather than the whole list.
  * @returns {string[]}
  */
 function getAllRenderedEntityKeys() {
@@ -3217,7 +2908,7 @@ export function removeTagFromEntity(tag, entityId, { tagListSelector = null, tag
     let result = false;
     const entityIds = Array.isArray(entityId) ? entityId : [entityId];
 
-    /** @type {Set<string>} The resolved entity keys (avatar / group id) actually touched by this call */
+    /** @type {Set<string>} */
     const affectedKeys = new Set();
 
     // Remove tag from the map
@@ -3257,17 +2948,9 @@ function removeTagFromMap(tagId, characterId = null) {
     return !!unassignTagFromKey(key, tagId);
 }
 
-/**
- * Caps how many tag rows get rendered for a single search term, in the tag input autocomplete and the tag
- * management view list - both render one DOM element per match with no cap of their own, and an empty
- * search term matches nearly every tag, so an uncapped result renders thousands of DOM nodes at once.
- */
 const FIND_TAG_RESULT_LIMIT = 50;
 
 /**
- * The tag input's suggestions: names holding what was typed, in the tag sort mode's order, leaving out the tags
- * already on the list. The typed text itself comes first when no tag has that name, so it can be created; when the
- * tag with that name is already on the list, nothing is offered for it.
  * @param {{ term: string }} request
  * @param {(names: string[]) => void} resolve
  * @param {string} listSelector
@@ -3317,10 +3000,8 @@ function selectTag(event, ui, listSelector, { tagListOptions = {}, onTagChosen =
 
     // Optional, check for multiple character ids being present.
     const characterData = event.target.closest('#bulk_tags_div')?.dataset.characters;
-    // Settled now: a new tag is added once the server has stored it, and another entity may be open by then.
     const entityIds = characterData ? JSON.parse(characterData).characterIds : getTagKey();
 
-    // unfocus and clear the input
     $(event.target).val('').trigger('input');
 
     /** @param {Tag} tag */
@@ -3411,7 +3092,6 @@ async function importTags(character, { importSetting = null, suppressSuccessToas
 async function handleTagImport(character, { importSetting = null } = {}) {
     /** @type {string[]} */
     const alreadyAssignedTags = (await readEntityTagIds(character.avatar)) ?? [];
-    // Enough names that the first ANTI_TROLL_MAX_TAGS not assigned yet are among them.
     const candidateNames = character.tags.map(t => t.trim()).filter(t => t)
         .filter(t => !IMPORT_EXLCUDED_TAGS.includes(t))
         .slice(0, ANTI_TROLL_MAX_TAGS + alreadyAssignedTags.length);
@@ -3522,15 +3202,11 @@ function getTag(tagName) {
     return tags.find(t => equalsIgnoreCaseAndAccents(t.name, tagName));
 }
 
-/** At most this many distinct names per /api/tags/by-names request; more is a 400. */
 const TAG_BY_NAMES_MAX = 100;
 
 /**
- * The tag each name stands for on the server, as getTag() matches names, and a tag being deleted with a merge target
- * standing for that target. A tag found that this tab doesn't have is added to `tags`. If the server can't be asked,
- * the names are looked up in the tags this tab has.
  * @param {string[]} names
- * @returns {Promise<Map<string, Tag | null>>} for each name as given
+ * @returns {Promise<Map<string, Tag | null>>}
  */
 export async function findTagsByNames(names) {
     /** @type {Map<string, Tag | null>} */
@@ -3558,17 +3234,15 @@ export async function findTagsByNames(names) {
 
 /**
  * @param {string} name
- * @returns {Promise<Tag | null>} the tag the name stands for (findTagsByNames())
+ * @returns {Promise<Tag | null>}
  */
 async function findTagByName(name) {
     return (await findTagsByNames([name])).get(name) ?? null;
 }
 
 /**
- * The definitions of `ids`: the ones this tab has, and the rest read from the server into `tags`.
  * @param {string[]} ids
- * @returns {Promise<{ tags: Map<string, Tag>, gone: Set<string> } | null>} `gone`: ids no tag has. An id in neither is a
- *   tag whose stored definition can't be read. null if a read failed.
+ * @returns {Promise<{ tags: Map<string, Tag>, gone: Set<string> } | null>}
  */
 export async function readTagsForIds(ids) {
     /** @type {Map<string, Tag>} */
@@ -3597,26 +3271,16 @@ export async function readTagsForIds(ids) {
     return { tags: found, gone };
 }
 
-/**
- * Ids of tags the server has no readable definition for (no tag has the id, or its stored copy can't be read). A draw
- * that meets one doesn't ask for it again.
- * @type {Set<string>}
- */
+/** @type {Set<string>} */
 const tagIdsWithoutDefinition = new Set();
 
-/**
- * Tag ids something on screen was drawn without, because this tab has no definition for them yet. Read together once
- * the turn that drew them has finished.
- * @type {Set<string>}
- */
+/** @type {Set<string>} */
 const missingTagIds = new Set();
 let missingTagReadQueued = false;
 /** @type {Promise<void>} */
 let missingTagReads = Promise.resolve();
 
 /**
- * The definitions this tab holds of `tagIds`, in that order. An id it has none for is read from the server: every
- * draw in the same turn joins one request, and what was drawn is drawn again once the definitions arrive.
  * @param {string[]} tagIds
  * @returns {Tag[]}
  */
@@ -3643,7 +3307,6 @@ function noteMissingTagDefinition(id) {
     });
 }
 
-/** Reads the definitions noteMissingTagDefinition() collected, and draws again what shows tags. */
 async function readMissingTagDefinitions() {
     missingTagReadQueued = false;
     const ids = [...missingTagIds].filter(id => !tagsStore.has(id));
@@ -3652,7 +3315,6 @@ async function readMissingTagDefinitions() {
     for (let i = 0; i < ids.length; i += TAG_READ_MAX_IDS) {
         const chunk = ids.slice(i, i + TAG_READ_MAX_IDS);
         const answer = await postTagsRead('/api/tags/by-ids', { ids: chunk });
-        // Not marked: the next draw asks again.
         if (!answer || !Array.isArray(answer.tags)) break;
         const answered = new Set(answer.tags.filter(isTagObject).map(tag => tag.id));
         for (const id of chunk) {
@@ -3666,10 +3328,6 @@ async function readMissingTagDefinitions() {
     if (readAny) redrawTagsOnScreen();
 }
 
-/**
- * Draws again everything on screen that shows the tags of a character or group: the list's rows, the group editor's
- * member rows, the open character's or group's tag list and the chat's messages.
- */
 function redrawTagsOnScreen() {
     const keys = new Set(getAllRenderedEntityKeys());
     document.querySelectorAll('.group_member[data-avatar]').forEach(el => keys.add(el.getAttribute('data-avatar')));
@@ -3682,22 +3340,19 @@ function redrawTagsOnScreen() {
     applyCharacterTagsToMessageDivs();
 }
 
-/** The order tag suggestions and pickers list tags in: the tag sort mode's. */
 function tagQuerySortField() {
     const mode = power_user.tag_sort_mode;
     return Object.values(tag_sort_mode).includes(mode) ? mode : tag_sort_mode.MANUAL;
 }
 
 /**
- * One page of the tags whose names hold `term` anywhere, in the tag sort mode's order. The tags are not added to
- * `tags`.
- * @param {string} term - empty: every tag
+ * @param {string} term
  * @param {object} [options]
  * @param {number} [options.pageSize]
- * @param {string | null} [options.cursor] - where an earlier page said the next one starts
- * @param {boolean} [options.used] - only tags some character or group carries
- * @param {'OPEN'|'CLOSED'} [options.folderType] - only folders of this type
- * @returns {Promise<{ rows: Tag[], cursor: string | null } | null>} null if the read failed
+ * @param {string | null} [options.cursor]
+ * @param {boolean} [options.used]
+ * @param {'OPEN'|'CLOSED'} [options.folderType]
+ * @returns {Promise<{ rows: Tag[], cursor: string | null } | null>}
  */
 export async function searchTagsByName(term, { pageSize = FIND_TAG_RESULT_LIMIT, cursor = null, used = false, folderType = undefined } = {}) {
     const contains = String(term ?? '').trim();
@@ -3714,14 +3369,11 @@ export async function searchTagsByName(term, { pageSize = FIND_TAG_RESULT_LIMIT,
     return { rows: answer.rows.filter(isTagObject), cursor: answer.cursor ?? null };
 }
 
-/** Reads a name search may make when the server's work cap keeps cutting its pages short. */
 const TAG_SEARCH_READS_MAX = 5;
 
 /**
- * The tag `/random` picks from: a tag some character or group carries whose name is `name`, else one whose name
- * starts with it, else one whose name holds it; the first in the tag sort mode's order, ignoring case and accents.
  * @param {string} name
- * @returns {Promise<string | undefined>} its id; undefined when no used tag matches or the server can't be read
+ * @returns {Promise<string | undefined>}
  */
 export async function findUsedTagIdByName(name) {
     const term = String(name ?? '').trim();
@@ -3743,16 +3395,13 @@ export async function findUsedTagIdByName(name) {
 }
 
 /**
- * Makes a single-choice select a search over tag names (searchTagsByName()), with more results loaded as its list is
- * scrolled. An option's value is the tag's id and its text the tag's name.
  * @param {JQuery<HTMLElement>} select
  * @param {object} options
  * @param {string} options.placeholder
  * @param {JQuery<HTMLElement>} [options.dropdownParent]
- * @param {string} [options.leaveOut] - a tag id not to offer
+ * @param {string} [options.leaveOut]
  */
 function initTagSearchSelect(select, { placeholder, dropdownParent, leaveOut }) {
-    /** Where each search's next page starts, by page number and search text. */
     const pageCursors = new Map();
     select.select2({
         width: '50%',
@@ -3764,7 +3413,6 @@ function initTagSearchSelect(select, { placeholder, dropdownParent, leaveOut }) 
             data: (params) => ({ term: params.term ?? '', page: params.page ?? 1 }),
             transport: (params, success, failure) => {
                 const { term, page } = params.data;
-                // A search typed over is aborted; its answer must not replace the newer one's.
                 let aborted = false;
                 searchTagsByName(term, { cursor: pageCursors.get(`${page}\n${term}`) ?? null }).then((answer) => {
                     if (aborted) return;
@@ -3832,7 +3480,6 @@ async function createNewTags(tagNames) {
             { escapeHtml: false },
         );
     }
-    // Upstream's callers save the settings after creating a tag, which is how extensions hear of it.
     if (storedAny) await eventSource.emit(event_types.SETTINGS_UPDATED);
 
     return results.filter(Boolean);
@@ -4089,8 +3736,6 @@ function onTagFilterClick(listElement) {
 
     const filterHelper = getFilterHelper($(listElement));
 
-    // Deliberately not calling saveSettingsDebounced() here - persistence is via accountStorage below.
-    // A full settings resave on every tag filter click is a real perf cost once there are lots of tags/entities.
     if (existingTag && isMainCharacterList(filterHelper)) {
         setTagFilterState(existingTag, state);
     }
@@ -4140,8 +3785,6 @@ function loadFilterStatesForContext(filterHelper, storagePrefix) {
     }
 
     // Load regular tag filter states
-    // Found from the saved keys, not from the tags this tab holds: a saved filter doesn't depend on its tag having
-    // been read.
     const tagFilterData = filterHelper.getFilterData(FILTER_TYPES.TAG);
     const keyPrefix = `${storagePrefix}_tag_`;
     for (const storageKey of accountStorage.keysWithPrefix(keyPrefix)) {
@@ -4180,7 +3823,6 @@ function toggleTagThreeState(element, { stateOverride = undefined, simulateClick
     const targetStateIndex = overrideKey !== undefined ? getStateIndex(overrideKey, DEFAULT_FILTER_STATE) : (currentStateIndex + 1) % states.length;
 
     if (simulateClick) {
-        // Calculate how many clicks are needed to go from the current state to the target state
         let clickCount = 0;
         if (targetStateIndex >= currentStateIndex) {
             clickCount = targetStateIndex - currentStateIndex;
@@ -4194,7 +3836,6 @@ function toggleTagThreeState(element, { stateOverride = undefined, simulateClick
     } else {
         element.attr('data-toggle-state', states[targetStateIndex]);
 
-        // Update css class and remove all others
         states.forEach(state => {
             element.toggleClass(FILTER_STATES[state].class, state === states[targetStateIndex]);
         });
@@ -4208,8 +3849,6 @@ function runTagFilters(listElement) {
     const tagIds = [...($(listElement).find('.tag.selected:not(.actionable)').map((_, el) => $(el).attr('id')))];
     const excludedTagIds = [...($(listElement).find('.tag.excluded:not(.actionable)').map((_, el) => $(el).attr('id')))];
     const filterHelper = getFilterHelper($(listElement));
-    // A filter whose tag has no pill here (its definition isn't read yet, or can't be) is not one the pills can
-    // speak for: it stays as it is.
     const drawn = new Set($(listElement).find('.tag:not(.actionable)').map((_, el) => $(el).attr('id')).get());
     const current = filterHelper.getFilterData(FILTER_TYPES.TAG);
     const undrawn = (/** @type {string[]} */ ids) => (Array.isArray(ids) ? ids : []).filter(id => !drawn.has(id));
@@ -4219,43 +3858,33 @@ function runTagFilters(listElement) {
     });
 }
 
-/** How many used tags a filter bar draws until it is expanded, and how many the first read asks for. */
 const USED_TAG_BAR_FIRST = 50;
-/** How many more used tags a click on a bar's "more" pill reads. */
 const USED_TAG_BAR_MORE = 100;
-/** After a read for the filter bars failed, redraws don't ask again for this long. A click on the pill that says so does. */
 const USED_TAG_BAR_RETRY_MS = 10000;
 
 /**
- * @typedef {object} UsedTagChunk One answer of /api/tags/query for the filter bars.
- * @property {string | null} from The cursor it was read from.
- * @property {number} size The page size asked for.
- * @property {string[]} ids The tags on it, in the server's order.
- * @property {string | null} cursor Where the next chunk starts; null at the end of the list.
- * @property {string} hash The server's hash of the answer, sent back so an unchanged chunk isn't downloaded again.
+ * @typedef {object} UsedTagChunk
+ * @property {string | null} from
+ * @property {number} size
+ * @property {string[]} ids
+ * @property {string | null} cursor
+ * @property {string} hash
  */
 
-/**
- * The tags some character or group carries, as far as they have been read, in the tag sort mode. The three filter
- * bars draw the same list, so it is read once for all of them, and only while one of them is on screen.
- */
 const usedTagBar = {
-    /** @type {string | null} The tag_sort_mode `chunks` are in. */
+    /** @type {string | null} */
     sort: null,
     /** @type {UsedTagChunk[]} */
     chunks: [],
-    /** The server may have something else by now. */
     stale: true,
-    /** The next read also reads one chunk past the last. */
     wantMore: false,
     queued: false,
-    /** When the last read failed, 0 if it didn't. */
     failedAt: 0,
     /** @type {Promise<void>} */
     chain: Promise.resolve(),
 };
 
-/** @returns {Tag[]} the used tags read so far, in the server's order */
+/** @returns {Tag[]} */
 function usedTagsRead() {
     const seen = new Set();
     const list = [];
@@ -4270,7 +3899,7 @@ function usedTagsRead() {
     return list;
 }
 
-/** @returns {boolean} whether a filter bar that shows its tags is on screen */
+/** @returns {boolean} */
 function isUsedTagBarOnScreen() {
     return [
         [tag_filter_type.character, CHARACTER_FILTER_SELECTOR],
@@ -4286,8 +3915,7 @@ function printAllTagFilters() {
 }
 
 /**
- * Reads the used tags again, chunk by chunk as far as they were read before, and one chunk further when asked to.
- * @returns {Promise<boolean>} whether what the bars draw may have changed
+ * @returns {Promise<boolean>}
  */
 async function readUsedTags() {
     const sort = power_user.tag_sort_mode;
@@ -4314,7 +3942,6 @@ async function readUsedTags() {
             ifHash: before?.hash ?? '',
         });
         if (answer === 'invalid-cursor' && !restarted) {
-            // The manual order the cursors were made in is being rewritten: read from the start.
             restarted = true;
             old = [];
             chunks.length = 0;
@@ -4346,10 +3973,6 @@ async function readUsedTags() {
     return changed || hadFailed;
 }
 
-/**
- * Reads the used tags if what is held is stale, in another sort mode, or a further chunk was asked for, and a bar is
- * on screen to draw them. Any number of calls while one read is waiting its turn make one read.
- */
 function readUsedTagsIfNeeded() {
     if (usedTagBar.queued) return;
     if (!usedTagBar.stale && !usedTagBar.wantMore && usedTagBar.sort === power_user.tag_sort_mode) return;
@@ -4365,14 +3988,12 @@ function readUsedTagsIfNeeded() {
 
 const readUsedTagsSoon = debounce(() => readUsedTagsIfNeeded(), debounce_timeout.standard);
 
-/** Which tags are used, their order or what they look like may have changed on the server. */
 function refreshUsedTagBars() {
     usedTagBar.stale = true;
     usedTagBar.failedAt = 0;
     readUsedTagsSoon();
 }
 
-/** A bar coming on screen reads the used tags if they are stale: they are not read for a bar nobody sees. */
 function watchTagFilterBars() {
     const observer = new IntersectionObserver((entries) => {
         if (entries.some(entry => entry.isIntersecting)) readUsedTagsIfNeeded();
@@ -4383,7 +4004,6 @@ function watchTagFilterBars() {
     }
 }
 
-/** The click on a bar's "more" pill: draws the used tags already read that the bar leaves out, or reads further. */
 function onUsedTagBarMoreClick(_filterHelper, event) {
     event.stopPropagation();
     const bar = $(this).closest('.rm_tag_filter');
@@ -4397,7 +4017,6 @@ function onUsedTagBarMoreClick(_filterHelper, event) {
     readUsedTagsIfNeeded();
 }
 
-/** The click on the pill that says the tags could not be loaded. */
 function onUsedTagBarRetryClick(_filterHelper, event) {
     event.stopPropagation();
     usedTagBar.failedAt = 0;
@@ -4407,21 +4026,13 @@ function onUsedTagBarRetryClick(_filterHelper, event) {
     readSavedFilterTagsIfNeeded();
 }
 
-/**
- * The saved tag filters whose tag this tab doesn't hold are read by id, so each has a pill.
- */
 const savedFilterTagReads = {
-    /** @type {Set<string>} Ids of tags the server has but can't read the definition of: not asked for again. */
+    /** @type {Set<string>} */
     unreadable: new Set(),
     reading: false,
-    /** When the last read failed, 0 if it didn't. */
     failedAt: 0,
 };
 
-/**
- * Reads the tags of saved filters this tab doesn't hold. A filter is removed only when the server says its tag is
- * gone, never because the tag is unused or a read failed.
- */
 function readSavedFilterTagsIfNeeded() {
     const reads = savedFilterTagReads;
     if (reads.reading) return;
@@ -4467,7 +4078,6 @@ async function readSavedFilterTags(ids) {
             } else if (drops.get(id) === undefined) {
                 gone.push(id);
             } else {
-                // A filter on a merged tag becomes a filter on its target, as the tag change feed moves it.
                 moveTagFilters(id, /** @type {string} */ (drops.get(id)));
             }
         }
@@ -4478,7 +4088,6 @@ async function readSavedFilterTags(ids) {
 }
 
 /**
- * Removes the saved filters on tags the server says are gone, and tells the user which.
  * @param {string[]} goneIds
  */
 function removeGoneTagFilters(goneIds) {
@@ -4507,7 +4116,6 @@ function removeGoneTagFilters(goneIds) {
             accountStorage.removeItem(`${storagePrefix}_tagname_${id}`);
             return false;
         });
-        // New lists, so the helper sees the change and the list it filters is drawn again.
         const next = { selected: kept(data?.selected), excluded: kept(data?.excluded) };
         if (removedAny) helper.setFilterData(FILTER_TYPES.TAG, next);
     }
@@ -4520,8 +4128,6 @@ function removeGoneTagFilters(goneIds) {
 }
 
 /**
- * What a saved filter's pill shows while this tab has no definition of its tag (it hasn't been read, or a read
- * failed): the name kept with the filter, or the tag's id when none was kept. Not put in `tags`.
  * @param {string|undefined} storagePrefix
  * @param {string} id
  * @returns {Tag}
@@ -4532,10 +4138,9 @@ function savedFilterStandIn(storagePrefix, id) {
 }
 
 /**
- * @param {Tag[]} shown The used tags a bar draws.
- * @param {FilterHelper} filterHelper The bar's filter.
- * @returns {Tag[]} `shown`, followed by the tags the bar is filtered by that aren't among them: a filter always has
- *   a pill, which is how it is seen and cleared.
+ * @param {Tag[]} shown
+ * @param {FilterHelper} filterHelper
+ * @returns {Tag[]}
  */
 function withSavedFilterTags(shown, filterHelper) {
     const data = filterHelper.getFilterData(FILTER_TYPES.TAG);
@@ -4546,7 +4151,6 @@ function withSavedFilterTags(shown, filterHelper) {
     for (const [state, ids] of /** @type {[string, string[]][]} */ ([['SELECTED', data?.selected], ['EXCLUDED', data?.excluded]])) {
         for (const id of Array.isArray(ids) ? ids : []) {
             const held = tagsStore.get(id);
-            // The name kept with the filter follows a rename.
             if (held && storagePrefix) saveTagFilterName(storagePrefix, id, state, held.name);
             const tag = held ?? savedFilterStandIn(storagePrefix, id);
             if (shownIds.has(id)) continue;
@@ -4557,11 +4161,7 @@ function withSavedFilterTags(shown, filterHelper) {
     return extra.length ? [...shown, ...extra.sort(compareTagsForSort)] : shown;
 }
 
-/**
- * What each filter bar last drew, so printTagFilters(), which runs on every render, redraws the pills only when they
- * differ.
- * @type {Map<number, string>}
- */
+/** @type {Map<number, string>} */
 const tagFilterRenderCache = new Map();
 
 function printTagFilters(type = tag_filter_type.character) {
@@ -4613,8 +4213,6 @@ function printTagFilters(type = tag_filter_type.character) {
         }
     }
 
-    // With folders on, the list has no folder rows for "Show only folders" to keep, so the pill is left out;
-    // with them off it stays as the way to turn folders on.
     let actionTags = Object.values(ACTIONABLE_TAGS);
     if (power_user.bogus_folders) {
         actionTags = actionTags.filter(x => x !== ACTIONABLE_TAGS.FOLDER);
@@ -4628,18 +4226,14 @@ function printTagFilters(type = tag_filter_type.character) {
 
     const inListActionTags = Object.values(InListActionable);
 
-    // Only the action pills are removed and drawn again here; the tag pills are printBigTagFilterList()'s.
     const actionAndInListTags = [...Object.values(ACTIONABLE_TAGS), ...inListActionTags];
     for (const tag of actionAndInListTags) {
         $filterContainer.find(`.tag[id="${tag.id}"]`).remove();
     }
 
-    // Built into the real attached container, not a detached scratch div - getFilterHelper() resolves the
-    // correct FilterHelper by walking up from the element at build time, which needs a real ancestor.
     printTagList($filterContainer, { empty: false, sort: false, tags: actionTags, tagActionSelector: tag => tag.action, tagOptions: { isGeneralList: true } });
     printTagList($filterContainer, { empty: false, sort: false, tags: inListActionTags, tagActionSelector: tag => tag.action, tagOptions: { isGeneralList: true } });
 
-    // Move them from the end (where appending puts them) back to the front, preserving relative order.
     for (const tag of [...actionAndInListTags].reverse()) {
         $filterContainer.find(`.tag[id="${tag.id}"]`).prependTo($filterContainer);
     }
@@ -4653,24 +4247,19 @@ function printTagFilters(type = tag_filter_type.character) {
         printTagList(bogusDrilldown, { tags: navigatedTags, tagOptions: { removable: true } });
     }
 
-    // Not calling runTagFilters here: it would overwrite the loaded filter states with current DOM state,
-    // which already matches from loadFilterStatesForContext.
     updateTagFilterVisibility(type, FILTER_SELECTOR);
 }
 
 /**
- * Draws a filter bar's tag pills, in the order given, unless they are what the bar drew last.
  * @param {tag_filter_type} type
  * @param {string} FILTER_SELECTOR
  * @param {Tag[]} tagsToDisplay
- * @param {string[]} inactiveTags - ids of tags in tagsToDisplay that should be marked inactive
- * @param {'more' | 'failed' | null} tail - the pill after the tags: more can be shown, or they could not be loaded
+ * @param {string[]} inactiveTags
+ * @param {'more' | 'failed' | null} tail
  */
 function printBigTagFilterList(type, FILTER_SELECTOR, tagsToDisplay, inactiveTags, tail) {
     const $container = $(FILTER_SELECTOR);
     const drawn = JSON.stringify([tagsToDisplay.map(tag => tag.id), inactiveTags, tail]);
-    // Folder pills can need drawing again for other reasons than which tags are shown, so with folders on the bar
-    // is always drawn again.
     if (!power_user.bogus_folders && tagFilterRenderCache.get(type) === drawn && $container.find('.tag:not(.actionable)').length) return;
 
     $container.find('.tag:not(.actionable)').remove();
@@ -4691,11 +4280,8 @@ function printBigTagFilterList(type, FILTER_SELECTOR, tagsToDisplay, inactiveTag
 }
 
 /**
- * Applies the saved tag-list-visibility setting for a filter context to its DOM (the "show tag list" toggle),
- * and refreshes the filter indicator. Split out from printTagFilters() so the tagFilterRenderCache early-return
- * can still keep this bit up to date without needing to rebuild any tag pills.
- * @param {tag_filter_type} type - The filter type
- * @param {string} FILTER_SELECTOR - The resolved selector for this filter type's tag list container
+ * @param {tag_filter_type} type
+ * @param {string} FILTER_SELECTOR
  */
 function updateTagFilterVisibility(type, FILTER_SELECTOR) {
     const shouldShowTags = getTagFilterVisibility(type);
@@ -4867,7 +4453,6 @@ async function onViewTagsListClick() {
     const $search = html.find('#tag_view_search');
     $search.on('input', debounce(() => reloadViewTagList(), debounce_timeout.standard));
 
-    // A re-read that waited for the user to finish typing into a row runs once the focus has left the rows.
     tagContainer.on('focusout', (evt) => {
         if (state.stale && !(evt.relatedTarget instanceof Node && tagContainer[0].contains(evt.relatedTarget))) {
             setTimeout(refreshViewTagList, 0);
@@ -4889,8 +4474,6 @@ async function onViewTagsListClick() {
 }
 
 function redrawAfterTagSortOrderChange() {
-    // Sort order only changes pill order within a row (and the filter bar), never which rows/folders are
-    // shown, so patching every currently-rendered row's own pills covers it without a full reprint.
     printTagFilters(tag_filter_type.character);
     printTagFilters(tag_filter_type.group_members_list);
     printTagFilters(tag_filter_type.group_candidates_list);
@@ -4903,9 +4486,7 @@ function tagNameForWarning(id) {
 }
 
 /**
- * The warning for a tag move the server refused. Says what public/script.js's tagMoveFailedText() says for the same
- * refusal of a queued move.
- * @param {string} id The moved tag.
+ * @param {string} id
  * @param {string} anchorId
  * @param {{ id: string, reason: string }} refusal
  */
@@ -4924,16 +4505,12 @@ function tagMoveRefusedText(id, anchorId, refusal) {
     }
 }
 
-// Tag moves go to the server one at a time, in the order made: each anchor means a place in the order the move
-// before it left. A re-read of the tags joins the same chain, so it never lands in the middle of a move.
 let tagOrderChain = Promise.resolve();
 
 /**
- * Sends one reorder as an action and shows the server's answer. In Manual the tag is moved; in another sort mode the
- * server first makes that mode's order the manual one, then moves it.
- * @param {string} id The moved tag.
- * @param {{ before: string } | { after: string }} placement The tag it was put next to.
- * @param {string} mode The tag sort mode the move was made in.
+ * @param {string} id
+ * @param {{ before: string } | { after: string }} placement
+ * @param {string} mode
  */
 async function moveTagOnServer(id, placement, mode) {
     const manual = mode === tag_sort_mode.MANUAL;
@@ -4973,8 +4550,6 @@ async function moveTagOnServer(id, placement, mode) {
         saveSettingsDebounced('power_user.tag_sort_mode');
     }
 
-    // The rows are where the user put them. Manage Tags reads on in the manual order, from its last row: the move
-    // may have renumbered the tags around it.
     if (viewTagList) {
         viewTagList.sort = tag_sort_mode.MANUAL;
         viewTagList.endCursor = undefined;
@@ -4982,7 +4557,6 @@ async function moveTagOnServer(id, placement, mode) {
 
     refreshUsedTagBars();
 
-    // A queued move has written no sort_order yet; the tag changes feed brings the order once it is applied.
     if (answer.queued) return;
 
     let changed = false;
@@ -4999,11 +4573,6 @@ async function moveTagOnServer(id, placement, mode) {
 }
 
 /**
- * Takes the server's definitions of `serverTags` into the tags this tab holds, in place: a held tag keeps its object
- * and takes the server's fields. A tag it doesn't hold is left out, unless something was drawn without it because the
- * server had none (it is taken in and drawn now); whatever else shows it reads it when drawn. Redraws
- * each drawn field that changed except the order. Left as they are: a field an extension changed on the object that
- * hasn't been stored yet.
  * @param {Tag[]} serverTags
  * @returns {{ anyChanged: boolean, sortOrderChanged: boolean }}
  */
@@ -5016,8 +4585,6 @@ function takeInServerTagDefinitions(serverTags) {
         const local = tagsStore.get(serverTag.id);
         if (local === serverTag) continue;
         if (!local) {
-            // Something was drawn without it while the server had none: it is taken in and drawn now. Any other tag
-            // this tab doesn't hold is left out; a draw that meets it reads it then.
             if (tagIdsWithoutDefinition.delete(serverTag.id)) {
                 addStoredTag(serverTag);
                 anyChanged = true;
@@ -5048,10 +4615,7 @@ function takeInServerTagDefinitions(serverTags) {
 }
 
 /**
- * Makes the tag definitions this tab holds match the server's, in place: `tags` stays the same array and a tag that
- * is still there stays the same object. Each held tag is read by id, sending a hash of the copy held, so only what
- * changed is downloaded; a tag the server no longer has is dropped.
- * @returns {Promise<boolean>} false if the server couldn't be read; what was read before that is kept.
+ * @returns {Promise<boolean>}
  */
 async function rereadTagDefinitions() {
     const ids = tags.filter(tag => isTagObject(tag) && storedTagFields.has(tag.id)).map(tag => tag.id);
@@ -5079,22 +4643,11 @@ async function rereadTagDefinitions() {
     return readAll;
 }
 
-/**
- * Where in the server's tag change log (/api/tags/changes) this tab's tags are current to. null: not known, so the
- * next ask is answered with a re-read.
- * @type {number | null}
- */
+/** @type {number | null} */
 let tagChangesSeq = null;
-// Set once loadTagsFromServer() has filled `tags`; until then the feed is not asked, and the load asks once it ends.
 let tagsLoadedOnce = false;
 let tagChangesAskQueued = false;
 
-/**
- * Brings this tab's tags up to the server's tag change log: asks what changed past this tab's cursor, page by page,
- * and takes each changed tag's definition in or drops it. When the server can't say what changed (a background
- * pass or a reorder rewrote many, or the cursor is of no use to it), re-reads the tags this tab holds instead. A
- * failed request leaves the cursor where it was, so the next ask covers the same changes.
- */
 async function takeInTagChanges() {
     for (;;) {
         const page = await postTagsRead('/api/tags/changes', { sinceSeq: tagChangesSeq });
@@ -5107,14 +4660,11 @@ async function takeInTagChanges() {
         const changedTags = Array.isArray(page.tags) ? page.tags : [];
         const removed = Array.isArray(page.removed) ? page.removed : [];
         const { sortOrderChanged } = takeInServerTagDefinitions(changedTags);
-        // Every removal, not only those of tags this tab holds a definition of: a character or group it holds can
-        // carry a tag whose definition it never read (nothing drew it), and a merge gives it the target.
         const drops = removed
             .filter(removal => typeof removal?.id === 'string')
             .map(({ id, mergedInto }) => ({ id, replaceWithId: typeof mergedInto === 'string' ? mergedInto : undefined }));
         await dropTagsLocally(drops);
         if (sortOrderChanged) redrawAfterTagSortOrderChange();
-        // Manage Tags and the filter bars show tags this tab may not hold.
         if (changedTags.length || removed.length) {
             refreshViewTagList();
             refreshUsedTagBars();
@@ -5124,11 +4674,6 @@ async function takeInTagChanges() {
     }
 }
 
-/**
- * The server's tag definitions changed ('tags-changed' or 'tag-order-settled' on the changes stream), or the stream
- * is back after a break that may have swallowed such a message. Any number of calls while one ask is waiting its
- * turn make one ask.
- */
 export function onTagsChanged() {
     if (!tagsLoadedOnce || tagChangesAskQueued) return;
     tagChangesAskQueued = true;
@@ -5142,7 +4687,6 @@ function makeTagListDraggable(tagContainer) {
     // @ts-ignore
     $(tagContainer).sortable({
         delay: getSortableDelay(),
-        // 'update', not 'stop': a row dropped back where it was changed nothing, so nothing is sent.
         update: (_event, ui) => {
             const id = ui.item.attr('id');
             const next = ui.item.next('.tag_view_item').attr('id');
@@ -5158,7 +4702,6 @@ function makeTagListDraggable(tagContainer) {
         start: () => {
             if (viewTagList) viewTagList.dragging = true;
         },
-        // Reads that waited for the drag to end run now.
         stop: () => {
             const state = viewTagList;
             if (!state) return;
@@ -5217,8 +4760,8 @@ function compareTagsForSort(a, b, counts = null) {
 }
 
 /**
- * @param {object} result - the answer of /api/tags/restore
- * @returns {string[]} one line per thing the restore did not apply
+ * @param {object} result
+ * @returns {string[]}
  */
 function tagRestoreReportLines(result) {
     const lines = [];
@@ -5252,7 +4795,6 @@ function tagRestoreReportLines(result) {
     return lines;
 }
 
-/** Sends the chosen backup to the server, which restores it, then reads back what the restore changed. */
 async function onTagRestoreFileSelect(e) {
     const file = e.target.files[0];
 
@@ -5273,8 +4815,6 @@ async function onTagRestoreFileSelect(e) {
         return;
     }
 
-    // Prompt user if they want to overwrite existing tags. The page holds only some of the tags, so the server is
-    // asked whether it has any; when it can't say, the question is asked.
     const firstPage = await postTagQuery({ sort: { field: tagQuerySortField() }, pageSize: 1 });
     const serverHasTags = firstPage === null || firstPage === 'invalid-cursor' || (firstPage.rows?.length ?? 0) > 0 || firstPage.more === true;
     let overwrite = false;
@@ -5319,8 +4859,6 @@ async function onTagRestoreFileSelect(e) {
 
     await rereadResidentEntityTagIds();
 
-    // A restore can touch an arbitrary number of tags across an arbitrary number of characters/groups - not a
-    // known small set, so there's no smaller-than-full update to target here.
     printCharactersDebounced();
     refreshViewTagList();
     refreshUsedTagBars();
@@ -5333,7 +4871,6 @@ function onBackupRestoreClick() {
         .trigger('click');
 }
 
-/** Downloads the server's tag backup file: every tag and every character's and group's tags. */
 async function onTagsBackupClick() {
     const timestamp = new Date().toISOString().split('T')[0].replace(/-/g, '');
     const filename = `tags_${timestamp}.json`;
@@ -5346,7 +4883,6 @@ async function onTagsBackupClick() {
         });
         if (!response.ok) throw new Error(response.statusText);
         const blob = await response.blob();
-        // A backup cut off mid-stream doesn't parse: it is not handed out as if it were whole.
         JSON.parse(await blob.text());
         download(blob, filename, 'application/json');
     } catch (error) {
@@ -5355,12 +4891,9 @@ async function onTagsBackupClick() {
     }
 }
 
-/** Server-side cap on /api/tags/prune's `limit`. */
 const TAG_PRUNE_BATCH_SIZE = 500;
 
 async function onTagsPruneClick() {
-    // Only the server can say a tag is unused: this page may not have every card loaded, may not have synced
-    // other clients' assignments, and its own usage counts may have failed to load.
     let unusedCount;
     try {
         const response = await fetch('/api/tags/unused-count', { method: 'POST', headers: getRequestHeaders(), body: '{}', cache: 'no-cache' });
@@ -5383,7 +4916,6 @@ async function onTagsPruneClick() {
         return;
     }
 
-    // The server re-checks usage as it deletes; never delete more than the user confirmed.
     let remaining = unusedCount;
     let failed = false;
     const prunedIds = new Set();
@@ -5407,7 +4939,6 @@ async function onTagsPruneClick() {
         failed = true;
     }
 
-    // Already deleted server-side, so they only need dropping here.
     if (prunedIds.size) {
         let write = 0;
         for (const tag of tags) {
@@ -5425,8 +4956,6 @@ async function onTagsPruneClick() {
         invalidateGroupsFuseIndex();
     }
 
-    // Pruned tags are unused by definition - no character/group row displays one, so only the filter buttons
-    // (which a pruned tag could still be sitting in) need to drop them, not the character list itself.
     printTagFilters(tag_filter_type.character);
     printTagFilters(tag_filter_type.group_members_list);
     printTagFilters(tag_filter_type.group_candidates_list);
@@ -5438,18 +4967,15 @@ async function onTagsPruneClick() {
 }
 
 async function onTagCreateClick() {
-    // The server names it: only it knows which names are taken, and it gives the tag its place in the manual order.
     const tag = newTagWithoutOrder('New Tag');
     const outcome = await createTagOnServer(tag, { freeName: true });
     if (outcome === 'failed') {
         toastr.error(t`Check the server connection and try again.`, t`Tags could not be created`);
     }
     if (outcome !== 'stored') return;
-    // Upstream's create saves the settings, which is how extensions hear of the new tag.
     await eventSource.emit(event_types.SETTINGS_UPDATED);
     await showOwnTagInViewList(tag.id, { scrollTo: true });
 
-    // A brand new tag isn't assigned to any character/group yet - nothing in the character list can show it.
     printTagFilters(tag_filter_type.character);
     printTagFilters(tag_filter_type.group_members_list);
     printTagFilters(tag_filter_type.group_candidates_list);
@@ -5512,7 +5038,6 @@ function appendViewTagToList(list, tag, count) {
 
     list.append(template);
 
-    // Prevents Escape on the color pickers from also closing the popup, unless hit twice.
     let lastHit = 0;
     template.on('keydown', (evt) => {
         if (evt.key === 'Escape') {
@@ -5540,7 +5065,10 @@ async function onTagHideToggleClick(id) {
     }
 }
 
-/** @param {JQuery<HTMLElement>} hideToggle @param {Tag} tag */
+/**
+ * @param {JQuery<HTMLElement>} hideToggle
+ * @param {Tag} tag
+ */
 function drawTagHideToggle(hideToggle, tag) {
     hideToggle.toggleClass('fa-eye-slash', tag.is_hidden_on_character_card);
     hideToggle.toggleClass('fa-eye', !tag.is_hidden_on_character_card);
@@ -5590,12 +5118,9 @@ async function onTagDeleteClick() {
     const popupContent = $(await renderTemplateAsync('deleteTag', {}));
 
     appendTagToList(popupContent.find('#tag_to_delete'), tag);
-    // Read from popupContent, not the document: the popup has left the DOM by the time its promise resolves. The
-    // select is one of popupContent's own top-level nodes, which find() alone doesn't search.
     const mergeSelect = popupContent.find('#merge_tag_select').addBack('#merge_tag_select');
 
     const result = await callGenericPopup(popupContent, POPUP_TYPE.CONFIRM, '', {
-        // The popup is a modal dialog: a picker list put anywhere else would be drawn under it.
         onOpen: (popup) => initTagSearchSelect(mergeSelect, {
             placeholder: t`Search for a tag to merge into`,
             dropdownParent: $(popup.dlg),
@@ -5609,7 +5134,6 @@ async function onTagDeleteClick() {
     const mergeTagId = mergeSelect.val() ? String(mergeSelect.val()) : null;
 
     const title = t`Delete Tag`;
-    // The name the picker showed: this tab may have dropped the tag since.
     const mergeTagName = mergeTagId ? (mergeSelect.find('option:selected').text() || mergeTagId) : null;
 
     const answer = await deleteTagOnServer(id, mergeTagId);
@@ -5634,7 +5158,6 @@ async function onTagDeleteClick() {
     if (target) mergeServerTagDefinitions([target]);
     const filters = await dropTagLocally(id, { replaceWithId: mergedInto ?? undefined });
     await eventSource.emit(event_types.SETTINGS_UPDATED);
-    // The merge target now counts what carried the deleted tag.
     refreshViewTagList();
 
     const lines = [mergedInto ? t`'${tag.name}' deleted and merged into '${target.name}'.` : t`'${tag.name}' deleted.`];
@@ -5652,10 +5175,8 @@ async function onTagDeleteClick() {
 const TAG_NAME_DRAFT_KEY_PREFIX = 'TagNameDraft:';
 
 /**
- * A name typed into a tag's row in Manage Tags that the server hasn't stored, kept so it survives a reload. In plain
- * localStorage, not accountStorage, whose write is a debounced network save that may not land before a reload.
  * @param {string} id
- * @returns {string | null} null if the tag has no unsaved name
+ * @returns {string | null}
  */
 function readTagNameDraft(id) {
     try {
@@ -5665,7 +5186,10 @@ function readTagNameDraft(id) {
     }
 }
 
-/** @param {string} id @param {string | null} name - null: the tag has no unsaved name any more */
+/**
+ * @param {string} id
+ * @param {string | null} name
+ */
 function writeTagNameDraft(id, name) {
     try {
         if (name === null) localStorage.removeItem(TAG_NAME_DRAFT_KEY_PREFIX + id);
@@ -5676,8 +5200,6 @@ function writeTagNameDraft(id, name) {
 }
 
 /**
- * Draws a tag's name field in Manage Tags: its unsaved name if it has one, marked as unsaved, else its stored name.
- * Text the field already shows is not set again, which would move the cursor.
  * @param {JQuery<HTMLElement>} nameElement
  * @param {Tag} tag
  */
@@ -5694,7 +5216,6 @@ function drawTagViewName(nameElement, tag) {
     }
 }
 
-/** Typing only changes the field: the name is sent when the field is left or Enter is pressed (commitTagRename()). */
 function onTagRenameInput() {
     const id = $(this).closest('.tag_view_item').attr('id');
     const tag = tagsStore.get(id);
@@ -5706,7 +5227,6 @@ function onTagRenameInput() {
 
 /** @param {JQuery.KeyDownEvent} evt */
 function onTagRenameKeydown(evt) {
-    // An Enter that confirms an input method's composition is not the user finishing the name.
     if (evt.key !== 'Enter' || evt.originalEvent?.isComposing) return;
     evt.preventDefault();
     const nameElement = /** @type {HTMLElement} */ (evt.currentTarget);
@@ -5715,8 +5235,6 @@ function onTagRenameKeydown(evt) {
 }
 
 /**
- * Sends the name typed into a tag's row in Manage Tags. If it isn't stored, the field keeps what was typed, marked
- * as unsaved, and leaving the field or pressing Enter in it sends it again.
  * @param {HTMLElement} nameElement
  */
 async function commitTagRename(nameElement) {
@@ -5727,7 +5245,6 @@ async function commitTagRename(nameElement) {
     if (name === null) return;
 
     const outcome = await storeTagField(id, 'name', name, (stored) => {
-        // Typed further since this name was sent: that text is still unsaved.
         if (readTagNameDraft(id) === stored) writeTagNameDraft(id, null);
     });
     if (outcome === 'failed') {
@@ -5755,12 +5272,10 @@ function onTagColorize(evt, colorField, cssProperty) {
     let newColor = evt.detail.rgba;
     if (isDefaultColor) newColor = '';
 
-    // The picker also fires `change` when it is first given its colour, in its own `rgba(...)` spelling.
     const waiting = tagFieldEditsInFlight.get(`${id}\n${colorField}`);
     const currentColor = waiting ? waiting.wanted : (tagsStore.get(id)?.[colorField] ?? '');
     if (isSameCssColor(currentColor, newColor)) return;
 
-    // The row previews the colour being picked; the tag takes it everywhere else once the server has stored it.
     $(evt.target).closest('.tag_view_item').find('.tag_view_name').css(cssProperty, newColor);
     storeTagColor(id, colorField, newColor);
 }
@@ -5774,7 +5289,6 @@ async function storeTagColor(id, colorField, newColor) {
     const outcome = await storeTagField(id, colorField, newColor);
     if (outcome !== 'refused' && outcome !== 'failed') return;
 
-    // Not stored: the row and its picker go back to the colour the server has.
     const tag = tagsStore.get(id);
     if (!tag) return;
     TAG_FIELD_REDRAWS[colorField](tag);
@@ -5787,8 +5301,6 @@ async function storeTagColor(id, colorField, newColor) {
 }
 
 /**
- * Whether two CSS colour strings are the same colour, whatever notation each is written in. An empty string is
- * "no colour" and only equals another empty string.
  * @param {string} a
  * @param {string} b
  * @returns {boolean}
@@ -5798,7 +5310,6 @@ function isSameCssColor(a, b) {
     if (!a || !b) return false;
     const context = document.createElement('canvas').getContext('2d');
     const canonical = (color) => {
-        // An invalid colour leaves fillStyle at whatever it was, so reset it to a known value first.
         context.fillStyle = '#000000';
         context.fillStyle = color;
         return context.fillStyle;
@@ -5880,9 +5391,11 @@ function renameTagKey(oldKey, newKey) {
         .catch(error => console.error(`Error moving tags from ${oldKey} to ${newKey}:`, error));
 }
 
-/** @param {string} oldKey @param {string} newKey */
+/**
+ * @param {string} oldKey
+ * @param {string} newKey
+ */
 async function moveTagsToKey(oldKey, newKey) {
-    // What an extension changed through `tag_map` is sent before the server moves what it has.
     tagMapKeysToCheck = true;
     takeInTagExportWrites();
     if (tagCreatesInFlight.size) await Promise.allSettled([...tagCreatesInFlight]);
@@ -5904,12 +5417,10 @@ async function moveTagsToKey(oldKey, newKey) {
         console.error(`Error moving tags from ${oldKey} to ${newKey}:`, error);
         const nameOfKey = (/** @type {string} */ key) => escapeHtml(String(charactersStore.get(key)?.name ?? groupsStore.get(key)?.name ?? key));
         toastr.error(t`The tags of ${nameOfKey(oldKey)} could not be moved to ${nameOfKey(newKey)}.`, t`Tags could not be saved`, { escapeHtml: false });
-        // The server adds before it takes off, so a move that failed part way has lost nothing.
         await rereadResidentEntityTagIds([oldKey, newKey]);
         return;
     }
 
-    // An entry an extension gave `tag_map` for a key the page doesn't hold: upstream's rename deletes it.
     if (!resolveTagIdsArray(oldKey) && Object.hasOwn(tag_map, oldKey)) {
         delete tag_map[oldKey];
         unheldTagMapSent.delete(oldKey);
@@ -5919,9 +5430,7 @@ async function moveTagsToKey(oldKey, newKey) {
 }
 
 /**
- * Clears all tags assigned to a given entity key.
- * Exported so other modules (BulkEditOverlay.js) don't need to reach into `setKeyTagIds()` directly.
- * @param {string} key - entity key (character avatar or group id)
+ * @param {string} key
  */
 export function clearEntityTags(key) {
     setKeyTagIds(key, []);
@@ -5937,17 +5446,11 @@ export function removeEntityTags(key) {
     removeKeyTagIds(key);
 }
 
-/** How many tags Manage Tags asks the server for at a time. */
 const VIEW_TAG_PAGE_SIZE = 100;
-/** The most list rows Manage Tags keeps drawn: scrolling on removes the rows furthest behind. */
 const VIEW_TAG_MAX_ROWS = 300;
-/** The most one /api/tags/query request may ask for. */
 const VIEW_TAG_MAX_PAGE_SIZE = 500;
-/** How many removed stretches of rows Manage Tags can scroll back through one by one; further back starts at the top. */
 const VIEW_TAG_TRAIL_MAX = 100;
-/** How many reads in a row may come back cut short by the server's work cap with no tag found before the user is asked whether to go on. */
 const VIEW_TAG_EMPTY_READS = 5;
-/** The most tags created or renamed in Manage Tags that are kept in view at the top when their place is elsewhere. */
 const VIEW_TAG_KEPT_MAX = 50;
 
 /**
@@ -5977,15 +5480,21 @@ const VIEW_TAG_KEPT_MAX = 50;
  * @property {IntersectionObserver | null} observer
  */
 
-/** @type {ViewTagList | null} null while Manage Tags is closed. */
+/** @type {ViewTagList | null} */
 let viewTagList = null;
 
-/** @param {ViewTagList} state @returns {JQuery<HTMLElement>} the list rows, without the kept rows */
+/**
+ * @param {ViewTagList} state
+ * @returns {JQuery<HTMLElement>}
+ */
 function viewTagListRows(state) {
     return state.container.children('.tag_view_item:not(.tag_view_item_kept)');
 }
 
-/** @param {ViewTagList} state @returns {HTMLElement | null} the element Manage Tags scrolls in */
+/**
+ * @param {ViewTagList} state
+ * @returns {HTMLElement | null}
+ */
 function viewTagScroller(state) {
     for (let element = state.container[0]?.parentElement; element; element = element.parentElement) {
         const overflowY = getComputedStyle(element).overflowY;
@@ -5995,9 +5504,8 @@ function viewTagScroller(state) {
 }
 
 /**
- * Changes the rows while `anchorRow` stays where it is on screen.
  * @param {ViewTagList} state
- * @param {HTMLElement | undefined} anchorRow A row the change leaves in the list.
+ * @param {HTMLElement | undefined} anchorRow
  * @param {() => void} change
  */
 function changeViewTagRowsInPlace(state, anchorRow, change) {
@@ -6015,7 +5523,10 @@ function changeViewTagRowsInPlace(state, anchorRow, change) {
  */
 function setViewTagStatus(state, kind) {
     const status = state.status.empty().attr('data-status', kind);
-    /** @param {string} label @param {string} read */
+    /**
+     * @param {string} label
+     * @param {string} read
+     */
     const button = (label, read) => $('<div class="menu_button menu_button_icon"></div>').text(label).on('click', () => askForViewTags(read));
     switch (kind) {
         case 'loading':
@@ -6034,15 +5545,13 @@ function setViewTagStatus(state, kind) {
 }
 
 /**
- * One read of /api/tags/query in the list's sort mode.
  * @param {ViewTagList} state
  * @param {object} read
  * @param {string | null} [read.cursor]
  * @param {number} read.pageSize
- * @param {string[]} [read.ids] Only these tags, whatever the search text; else the tags matching it.
+ * @param {string[]} [read.ids]
  * @param {boolean} [read.counts]
  * @returns {Promise<{ rows: Tag[], cursor: string | null, more: boolean, counts?: Record<string, number>, approximate?: string[] } | 'invalid-cursor' | null>}
- *   null if the request failed. 'invalid-cursor': the server no longer takes the cursor.
  */
 async function queryViewTags(state, { cursor = null, pageSize, ids, counts = true }) {
     const filter = ids ? { ids } : state.contains ? { contains: state.contains } : {};
@@ -6052,19 +5561,15 @@ async function queryViewTags(state, { cursor = null, pageSize, ids, counts = tru
 /**
  * @param {ViewTagList} state
  * @param {string} id
- * @returns {Promise<string | null | undefined>} the cursor right after tag `id` in the list's sort mode. null: the
- *   server has no such tag. undefined: it could not be read.
+ * @returns {Promise<string | null | undefined>}
  */
 async function viewTagCursorAfter(state, id) {
-    // A page the tag fills comes back with the cursor at the tag's own place.
     const answer = await queryViewTags(state, { ids: [id], pageSize: 1, counts: false });
     if (!answer || answer === 'invalid-cursor') return undefined;
     return answer.rows.length && typeof answer.cursor === 'string' ? answer.cursor : null;
 }
 
 /**
- * Makes rows for the tags of a query answer, after taking the ones this tab doesn't hold into `tags`: a row's
- * controls work on the tag this tab holds.
  * @param {{ rows: Tag[], counts?: Record<string, number>, approximate?: string[] }} answer
  * @param {(id: string) => boolean} [wanted]
  * @returns {HTMLElement[]}
@@ -6082,7 +5587,7 @@ function makeViewTagRows(answer, wanted = () => true) {
 /**
  * @param {{ counts?: Record<string, number>, approximate?: string[] }} answer
  * @param {string} id
- * @returns {string} how many characters and groups carry the tag; `~` marks a count that may be too high.
+ * @returns {string}
  */
 function viewTagCountText(answer, id) {
     const count = answer.counts?.[id] ?? 0;
@@ -6090,8 +5595,6 @@ function viewTagCountText(answer, id) {
 }
 
 /**
- * Draws a kept row for each tag created or renamed here that has no list row, and removes the kept row of each that
- * has one or is gone.
  * @param {ViewTagList} state
  */
 async function syncKeptViewTags(state) {
@@ -6120,15 +5623,17 @@ async function syncKeptViewTags(state) {
     });
 }
 
-/** @param {ViewTagList} state @returns {boolean} whether the user is typing into a row or dragging one */
+/**
+ * @param {ViewTagList} state
+ * @returns {boolean}
+ */
 function isViewTagListInUse(state) {
     return state.dragging || (!!document.activeElement && state.container[0].contains(document.activeElement));
 }
 
 /**
- * Reads the list from its start in the current sort mode and under the search box's text, and draws that.
  * @param {ViewTagList} state
- * @returns {Promise<boolean>} whether rows were drawn
+ * @returns {Promise<boolean>}
  */
 async function reloadViewTags(state) {
     state.sort = power_user.tag_sort_mode;
@@ -6155,9 +5660,8 @@ async function reloadViewTags(state) {
 }
 
 /**
- * Reads the rows after the last list row and draws them. Past VIEW_TAG_MAX_ROWS, the rows at the top are removed.
  * @param {ViewTagList} state
- * @returns {Promise<boolean>} whether there may be more to read right away
+ * @returns {Promise<boolean>}
  */
 async function loadViewTagsAfter(state) {
     if (state.endCursor === null || state.dragging) return false;
@@ -6171,7 +5675,6 @@ async function loadViewTagsAfter(state) {
             const lastId = viewTagListRows(state).last().attr('id');
             if (!lastId) return reloadViewTags(state);
             cursor = await viewTagCursorAfter(state, lastId);
-            // The last row's tag is gone: the rows no longer say where the list goes on.
             if (cursor === null) {
                 setViewTagStatus(state, '');
                 return refreshViewTags(state);
@@ -6221,10 +5724,8 @@ async function loadViewTagsAfter(state) {
 }
 
 /**
- * Reads the stretch of rows before the first list row and draws it. Past VIEW_TAG_MAX_ROWS, the rows at the bottom
- * are removed.
  * @param {ViewTagList} state
- * @returns {Promise<boolean>} whether there may be more to read right away
+ * @returns {Promise<boolean>}
  */
 async function loadViewTagsBefore(state) {
     if (state.beforeFirstId === null || state.dragging) return false;
@@ -6246,7 +5747,6 @@ async function loadViewTagsBefore(state) {
             cursor = found;
             break;
         }
-        // That tag is gone: the stretch before it is read together with this one.
         state.trail.pop();
         afterId = null;
     }
@@ -6261,7 +5761,6 @@ async function loadViewTagsBefore(state) {
     const reachesFirst = reachesRows !== -1 || answer.rows.at(-1)?.id === state.beforeFirstId;
     state.beforeFirstId = afterId;
     if (!reachesFirst) {
-        // What was read stops short of the rows drawn: the rows read take their place.
         const rows = makeViewTagRows(answer);
         listRows.remove();
         state.container.append(rows);
@@ -6284,10 +5783,8 @@ async function loadViewTagsBefore(state) {
 }
 
 /**
- * Reads the rows drawn again from the server and draws what it answers: the same stretch of the list, as it is now.
- * Waits while the user is typing into a row or dragging one, so neither is cut off.
  * @param {ViewTagList} state
- * @returns {Promise<boolean>} whether rows were read
+ * @returns {Promise<boolean>}
  */
 async function refreshViewTags(state) {
     if (isViewTagListInUse(state)) {
@@ -6300,7 +5797,6 @@ async function refreshViewTags(state) {
     if (state.beforeFirstId !== null) {
         const found = await viewTagCursorAfter(state, state.beforeFirstId);
         if (found === undefined) return false;
-        // The tag the rows started after is gone.
         if (found === null) return reloadViewTags(state);
         cursor = found;
     }
@@ -6336,10 +5832,8 @@ async function refreshViewTags(state) {
 }
 
 /**
- * Asks for one read of the open Manage Tags list. Reads run one at a time in the order asked, and a kind of read
- * that is already waiting its turn is not asked for twice.
- * @param {string} kind 'reload', 'refresh', 'after' or 'before'
- * @returns {Promise<void>} settles once the read has run; at once if Manage Tags is closed
+ * @param {string} kind
+ * @returns {Promise<void>}
  */
 function askForViewTags(kind) {
     const state = viewTagList;
@@ -6357,8 +5851,6 @@ function askForViewTags(kind) {
 }
 
 /**
- * Has the edges report again whether they are in view: an edge that stayed in view through a read reports nothing
- * on its own.
  * @param {ViewTagList} state
  */
 function recheckViewTagEdges(state) {
@@ -6370,7 +5862,6 @@ function recheckViewTagEdges(state) {
 }
 
 /**
- * Starts reading more rows whenever an end of the drawn rows comes near the part of the list in view.
  * @param {ViewTagList} state
  */
 function watchViewTagEdges(state) {
@@ -6385,23 +5876,19 @@ function watchViewTagEdges(state) {
     state.observer.observe(state.status[0]);
 }
 
-/** Reads the open Manage Tags list from its start: the sort mode or the search text changed. */
 function reloadViewTagList() {
     viewTagList?.ownIds.clear();
     return askForViewTags('reload');
 }
 
-/** Reads the rows of the open Manage Tags list again: tags or their counts changed on the server. */
 function refreshViewTagList() {
     return askForViewTags('refresh');
 }
 
 /**
- * A tag was created or renamed in Manage Tags: reads its rows again and keeps the tag in view, as a kept row at the
- * top if its place in the list is not among the rows drawn.
  * @param {string} id
  * @param {object} [options]
- * @param {boolean} [options.scrollTo] Scroll the tag's row into view.
+ * @param {boolean} [options.scrollTo]
  */
 async function showOwnTagInViewList(id, { scrollTo = false } = {}) {
     const state = viewTagList;
@@ -6419,9 +5906,8 @@ async function showOwnTagInViewList(id, { scrollTo = false } = {}) {
 }
 
 /**
- * The id of a group with `name`, matched ignoring case and accents, asked of the server.
  * @param {string} name
- * @returns {Promise<string|null>} null when there is none or the server could not be asked
+ * @returns {Promise<string|null>}
  */
 async function findGroupIdByName(name) {
     const answer = await postTagsRead('/api/characters/find', { type: 'group', name });
@@ -6430,9 +5916,6 @@ async function findGroupIdByName(name) {
 }
 
 /**
- * The key of the character or group a tag command's `name` argument names, held or not: with no name, the open group
- * or the current character; else a character with that name or avatar key, else a group with that name. Warns when
- * there is none.
  * @param {string?} name
  * @returns {Promise<string|null>}
  */
@@ -6471,7 +5954,11 @@ function registerTagsSlashCommands() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'tag-add',
         returns: 'true/false - Whether the tag was added or was assigned already',
-        /** @param {{name: string}} namedArgs @param {string} tagName @returns {Promise<string>} */
+        /**
+         * @param {{name: string}} namedArgs
+         * @param {string} tagName
+         * @returns {Promise<string>}
+         */
         callback: async ({ name }, tagName) => {
             const key = await findTagCommandEntityKey(name);
             if (!key) return 'false';
@@ -6519,7 +6006,11 @@ function registerTagsSlashCommands() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'tag-remove',
         returns: 'true/false - Whether the tag was removed or wasn\'t assigned already',
-        /** @param {{name: string}} namedArgs @param {string} tagName @returns {Promise<string>} */
+        /**
+         * @param {{name: string}} namedArgs
+         * @param {string} tagName
+         * @returns {Promise<string>}
+         */
         callback: async ({ name }, tagName) => {
             const key = await findTagCommandEntityKey(name);
             if (!key) return 'false';
@@ -6566,7 +6057,11 @@ function registerTagsSlashCommands() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'tag-exists',
         returns: 'true/false - Whether the given tag name is assigned to the character',
-        /** @param {{name: string}} namedArgs @param {string} tagName @returns {Promise<string>} */
+        /**
+         * @param {{name: string}} namedArgs
+         * @param {string} tagName
+         * @returns {Promise<string>}
+         */
         callback: async ({ name }, tagName) => {
             const key = await findTagCommandEntityKey(name);
             if (!key) return 'false';
@@ -6615,7 +6110,10 @@ function registerTagsSlashCommands() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'tag-list',
         returns: 'Comma-separated list of all assigned tags',
-        /** @param {{name: string}} namedArgs @returns {Promise<string>} */
+        /**
+         * @param {{name: string}} namedArgs
+         * @returns {Promise<string>}
+         */
         callback: async ({ name }) => {
             const key = await findTagCommandEntityKey(name);
             if (!key) return '';
@@ -6914,10 +6412,9 @@ function updateTagsDivPreview() {
 }
 
 /**
- * Resolves a computed `inset()` clip-path into pixel insets for a box of the given size.
- * @param {string} clipPath Computed clip-path value
- * @param {number} width Border-box width
- * @param {number} height Border-box height
+ * @param {string} clipPath
+ * @param {number} width
+ * @param {number} height
  * @returns {{top: number, right: number, bottom: number, left: number}}
  */
 function resolveInsetClipPath(clipPath, width, height) {
@@ -6937,16 +6434,10 @@ function resolveInsetClipPath(clipPath, width, height) {
     };
 }
 
-/** Re-applies the tags panel's and the tag dropdowns' underlay clipping after power_user.stacked_drawers changes. */
 export function refreshTagsDrawerUnderlayClip() {
     refreshUnderlayClips();
 }
 
-/**
- * The open tags panel overlays the form without reflowing it and is see-through. With stacked drawers on,
- * everything it covers is clipped away by cutting the panel's currently visible rectangle out of each covered
- * element - frame by frame while the panel's clip-path transition runs.
- */
 function initTagsDrawerUnderlayClip() {
     const drawer = document.getElementById('tags_div');
     const panel = drawer?.querySelector(':scope > .inline-drawer-content');
@@ -6992,7 +6483,6 @@ function initTagsDrawerUnderlayClip() {
 
 
 export function initTags() {
-    // A page of the list may show fewer tags than the one before it.
     eventSource.on(event_types.CHARACTER_PAGE_LOADED, scheduleTagSweep);
     initTagsDrawerUnderlayClip();
     createTagInput('#tagInput', '#tagList', { tagOptions: { removable: true } });
@@ -7004,7 +6494,6 @@ export function initTags() {
     $(document).on('click', '#rm_button_create', onCharacterCreateClick);
     $(document).on('click', '#rm_button_group_chats', onGroupCreateClick);
     $(document).on('click', '.tag_remove', onTagRemoveClick);
-    // A tag whose name is cut short shows the whole name on hover; a tag with a title of its own keeps that.
     $(document).on('mouseenter', '.tag', function () {
         const name = this.querySelector('.tag_name');
         if (!(name instanceof HTMLElement) || name.classList.length > 1) return;

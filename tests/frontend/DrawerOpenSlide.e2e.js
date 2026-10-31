@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// Fullscreen character management and character info slide open like the other drawers, instead of appearing at
-// full height.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -20,7 +17,6 @@ async function loadApp(page) {
 }
 
 /**
- * Opens a closed drawer by its classes and records its height every frame until it settles.
  * @param {import('@playwright/test').Page} page
  * @param {string} id
  * @returns {Promise<number[]>}
@@ -52,7 +48,6 @@ test.describe('drawers slide open', () => {
         const heights = await openingHeights(page, 'right-nav-panel');
         const full = heights.at(-1);
         expect(full).toBeGreaterThan(400);
-        // Some frame shows it part way open.
         expect(heights.some(h => h > 120 && h < full - 20)).toBe(true);
     });
 

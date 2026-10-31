@@ -6,11 +6,6 @@ import { character_world_link, resolveCharacterWorldLink } from '../public/scrip
 
 setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
-// A card exported from upstream carries both a link name (data.extensions.world) and the embedded book
-// (character_book) under that name. Importing it here never makes a book from the embedded book, so
-// the link names a book that doesn't exist; prompts use the embedded book instead. Such a link counts as a
-// link to the embedded book: nothing reads the name as a book or prints "doesn't exist" for it.
-
 /** @type {typeof import('../src/endpoints/worldinfo.js')} */
 let worldinfo;
 /** @type {typeof import('../src/world-info/candidate-resolution.js')} */
@@ -34,7 +29,6 @@ afterAll(async () => {
     await user.close();
 });
 
-/** Each test starts with no books. */
 beforeEach(async () => {
     const { lib } = user.store;
     for (const book of await lib.books.list()) await lib.books.delete(book.file_id);
@@ -52,7 +46,6 @@ async function writeWorld(name, entries) {
     await user.store.lib.books.write(name, { entries });
 }
 
-/** Counts the book reads of one name from now on. */
 function countReads(name) {
     const spy = jest.spyOn(user.store.lib.books, 'read');
     return () => spy.mock.calls.filter(([n]) => n === name).length;
@@ -182,7 +175,6 @@ describe('card save (charaFormatData) with a link to the embedded book', () => {
         return { ch_name: 'Keeper', world, json_data: JSON.stringify(cardJson) };
     }
 
-    /** Counts the synchronous whole-book reads from now on. */
     async function countBookReads() {
         const { engineStoreHere } = await import('../src/user-stores.js');
         const spy = jest.spyOn(engineStoreHere(directories), 'worldBookSync');

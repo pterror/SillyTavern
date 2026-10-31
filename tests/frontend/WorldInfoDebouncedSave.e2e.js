@@ -1,15 +1,10 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// A debounced whole-book save (saveWorldInfo without `immediately`) waits per book: a save of one book never
-// absorbs or cancels another book's pending save, so every book's edits reach its file. An immediate save of a
-// book still replaces that same book's pending debounced save, so the book is written once, with its latest data.
-
 /**
- * Creates each book, and records every write of a whole book the page makes from now on by the book name it writes.
  * @param {import('@playwright/test').Page} page
  * @param {string[]} names
- * @returns {Promise<string[]>} The live list of written book names, in request order
+ * @returns {Promise<string[]>}
  */
 async function createBooksAndRecordWrites(page, names) {
     await page.evaluate(async ({ names }) => {
@@ -31,7 +26,6 @@ async function createBooksAndRecordWrites(page, names) {
 }
 
 /**
- * The comment of entry 0 in the book's file on the server.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
  * @returns {Promise<string>}
@@ -125,7 +119,6 @@ test.describe('debounced World Info book saves', () => {
                 if (!await saveWorldInfo(name, data, true)) {
                     throw new Error(`Could not save '${name}'`);
                 }
-                // Past the debounce window: a save still pending would have been sent by now.
                 await new Promise(resolve => setTimeout(resolve, 2000));
             }, { name });
 

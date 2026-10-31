@@ -1,8 +1,5 @@
 import { beforeEach, describe, expect, jest, test } from '@jest/globals';
 
-// The client's token counts and tokenizer-name shims ask the server's /api/tokenizers/current/*
-// routes, sending the on-screen state and never a tokenizer.
-
 const tokenizerIds = {
     NONE: 0, GPT2: 1, OPENAI: 2, LLAMA: 3, NERD: 4, NERD2: 5, API_CURRENT: 6, MISTRAL: 7, YI: 8,
     API_TEXTGENERATIONWEBUI: 9, API_KOBOLD: 10, CLAUDE: 11, LLAMA3: 12, GEMMA: 13, JAMBA: 14, QWEN2: 15,
@@ -18,7 +15,7 @@ const settings = {
 
 /** @type {Array<{url: string, async: boolean, body: any, headers?: Record<string, string>}>} */
 let requests;
-/** @type {(url: string, body: any) => any} Answers a request; throwing makes it fail. */
+/** @type {(url: string, body: any) => any} */
 let respond;
 const storeItems = new Map([['tokenCache', { some_chat: { 'x-1+0': 5 } }]]);
 const eventHandlers = new Map();
@@ -143,7 +140,6 @@ beforeEach(async () => {
 });
 
 /**
- * Loads the module with `api` as main_api (a mocked module export is fixed when it loads).
  * @param {string} api
  */
 async function useApi(api) {

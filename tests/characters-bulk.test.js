@@ -1,10 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import path from 'node:path';
 
-// /api/characters/bulk/*: a selection held as rules over the character list (every character a filter matches,
-// position ranges of the list, characters picked or left out one by one) is fixed on the server as a job, counted,
-// and acted on a batch at a time, with no list of every selected character on the page or in one request.
-
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
 let TYPE;
@@ -58,14 +54,21 @@ async function post(route, body) {
     return { status: response.status, body: parsed, text };
 }
 
-/** @param {string} route @param {object} body @returns {Promise<any[]>} the NDJSON lines */
+/**
+ * @param {string} route
+ * @param {object} body
+ * @returns {Promise<any[]>}
+ */
 async function postLines(route, body) {
     const { status, text } = await post(route, body);
     expect(status).toBe(200);
     return text.split('\n').filter(Boolean).map(line => JSON.parse(line));
 }
 
-/** @param {string} avatar @param {boolean} isFav */
+/**
+ * @param {string} avatar
+ * @param {boolean} isFav
+ */
 async function seedCharacter(avatar, isFav = false) {
     const name = avatar.replace(/\.png$/, '');
     const cardJson = JSON.stringify({
@@ -76,12 +79,10 @@ async function seedCharacter(avatar, isFav = false) {
     await user.store.lib.writeCard(directories, avatar, cardJson);
 }
 
-/** Avatars C0000.png .. C{n-1}.png; every third one a favorite. */
 async function seedMany(n) {
     /** @type {string[]} */
     const avatars = [];
     for (let i = 0; i < n; i++) avatars.push(`C${String(i).padStart(4, '0')}.png`);
-    // Written in one batch of commits, as an import writes a library.
     user.store.lib.beginBatch();
     try {
         for (let i = 0; i < n; i += 100) {
@@ -93,10 +94,12 @@ async function seedMany(n) {
     return avatars;
 }
 
-/** The list the page shows: every character, by name. */
 const LIST = { filter: { includeGroups: true }, sort: { field: 'name', order: 'asc' } };
 
-/** @param {object} selection @returns {Promise<string[]>} every avatar the selection holds */
+/**
+ * @param {object} selection
+ * @returns {Promise<string[]>}
+ */
 async function jobAvatars(selection) {
     const avatars = [];
     let after = '';
@@ -177,7 +180,6 @@ describe('POST /api/characters/bulk/run', () => {
             { type: 'item', avatar: 'C0000.png', fav: false },
             { type: 'item', avatar: 'C0001.png', fav: true },
         ]);
-        // A progress line after each chunk of the run list (1,000 characters).
         expect(lines.filter(line => line.type === 'progress')).toEqual([
             { type: 'progress', done: 1000, failed: 0 },
             { type: 'progress', done: 1200, failed: 0 },
@@ -235,7 +237,6 @@ describe('POST /api/characters/bulk/run', () => {
     test('a run without a selection, or with an unknown action, is a 400', async () => {
         await seedMany(1);
         const selection = { include: ['C0000.png'] };
-        // No jobs: the page sends its selection with each request.
         const noSelection = await post('/bulk/run', { job: 'nope', action: 'fav' });
         expect(noSelection.status).toBe(400);
         expect(noSelection.body.reason).toBe('selection-required');

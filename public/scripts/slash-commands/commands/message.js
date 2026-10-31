@@ -38,8 +38,8 @@ function trimEndCallback(_, value) {
 }
 
 /**
- * @param {{switch?: string}} args - named arguments
- * @param {string} value - The swipe text to add (unnamed argument)
+ * @param {{switch?: string}} args
+ * @param {string} value
  */
 async function addSwipeCallback(args, value) {
     const lastMessageId = chat.length - 1;
@@ -65,8 +65,6 @@ async function addSwipeCallback(args, value) {
         return '';
     }
 
-    // Messages are deep-frozen; mutating in place throws "object is not extensible", so build new
-    // arrays and hand them to updateMessage() instead.
     const hadSlots = Array.isArray(lastMessage.swipes);
     const swipes = hadSlots ? [...lastMessage.swipes] : [lastMessage.mes];
     const swipeInfo = Array.isArray(lastMessage.swipe_info)
@@ -94,7 +92,6 @@ async function addSwipeCallback(args, value) {
 
     const newSwipeId = swipes.length - 1;
 
-    // Recorded before the switch check below, since selecting onto it needs the row's node_id already set.
     const createdId = await chatOpAddAlternative(lastMessageId, value).catch(error => {
         console.error('Could not save the new swipe as an alternative:', error);
         return null;
@@ -108,7 +105,6 @@ async function addSwipeCallback(args, value) {
     if (isTrueBoolean(args.switch)) {
         await swipe(null, SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.SLASH_COMMAND, repeated: false, forceMesId: lastMessageId, forceSwipeId: newSwipeId });
     } else {
-        // Re-read: updateMessage() above replaced the message, so the copy captured earlier is stale.
         await updateSwipeCounter(lastMessageId, { message: chat[lastMessageId] });
         refreshSwipeButtons();
     }
@@ -117,7 +113,6 @@ async function addSwipeCallback(args, value) {
 }
 
 async function deleteSwipeCallback(_, arg) {
-    // Take the provided argument. Null if none provided, which will target the current swipe.
     const swipeId = arg && !isNaN(Number(arg)) ? (Number(arg) - 1) : null;
 
     const newSwipeId = await deleteSwipe(swipeId);
@@ -126,10 +121,8 @@ async function deleteSwipeCallback(_, arg) {
 }
 
 async function askCharacter(args, text) {
-    // Prevent generate recursion
     $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
 
-    // Not supported in group chats
     if (selected_group) {
         toastr.warning(t`Cannot run /ask command in a group chat!`);
         return '';
@@ -140,8 +133,6 @@ async function askCharacter(args, text) {
         return '';
     }
 
-    // Captured by avatar, not this_chid: this_chid is an array index that can go stale by the time
-    // restoreCharacter runs, since it's only called back after the async Generate() below.
     const prevCharacter = getCurrentCharacter();
     const prevAvatar = prevCharacter?.avatar;
 
@@ -153,7 +144,6 @@ async function askCharacter(args, text) {
 
     if (text) {
         const mesText = getRegexedString(text.trim(), regex_placement.SLASH_COMMAND);
-        // Sending implicitly saves the chat, so this must happen before changing the character
         await sendMessageAsUser(mesText, '');
     }
 
@@ -169,7 +159,6 @@ async function askCharacter(args, text) {
         }
 
         if (prevAvatar !== undefined) {
-            // The page may have let go of it while the other character was selected; the object kept here is taken in again.
             setCharacterId(charactersStore.get(prevAvatar) ?? prevCharacter);
             setCharacterName(getCurrentCharacter()?.name);
         } else {
@@ -177,7 +166,6 @@ async function askCharacter(args, text) {
             setCharacterName(neutralCharacterName);
         }
 
-        // Only force the new avatar if the character name matches
         const lastMessage = chat[chat.length - 1];
         if (lastMessage && lastMessage?.name === name) {
             updateMessage(chat.length - 1, { force_avatar, original_avatar });
@@ -195,7 +183,6 @@ async function askCharacter(args, text) {
         console.error('Error running /ask command', error);
     } finally {
         if (getCurrentCharacter()?.avatar === prevAvatar) {
-            // The reply is stored by the server; the avatar it is shown with is an edit of it.
             const last = chat.length - 1;
             if (chat[last]?.name === name && chat[last]?.force_avatar === force_avatar) {
                 await chatOpEdit(last).catch(error => console.error('/ask: the reply\'s avatar was not saved', error));
@@ -248,7 +235,6 @@ async function triggerGenerationCallback(args, value) {
             return '';
         }
 
-        // Prevent generate recursion
         $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
 
         let avatar = undefined;
@@ -280,7 +266,6 @@ async function sendUserMessageCallback(args, text) {
     let insertAt = Number(args?.at);
 
     if (!isNaN(insertAt) && (insertAt < 0 || Object.is(insertAt, -0))) {
-        // Negative depth counts back from chat length (e.g. 8 messages, depth 1 = index 7)
         insertAt = chat.length + insertAt;
     }
 
@@ -341,7 +326,6 @@ async function continueChatCallback(args, prompt) {
         }
 
         try {
-            // Prevent infinite recursion
             $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
 
             const options = prompt?.trim() ? { quiet_prompt: prompt.trim(), quietToLoud: true } : {};
@@ -443,14 +427,12 @@ async function setNarratorName(_, text) {
 }
 
 /**
- * @param {string} role - Role to change to.
- *
- * @returns {Promise<string>} The updated message role.
+ * @param {string} role
+ * @returns {Promise<string>}
  */
 async function messageRoleCallback(args, role) {
     let modifyAt = Number(args?.at ?? (chat.length - 1));
     if (!isNaN(modifyAt) && (modifyAt < 0 || Object.is(modifyAt, -0))) {
-        // Negative depth counts back from chat length (e.g. 8 messages, depth 1 = index 7)
         modifyAt = chat.length + modifyAt;
     }
 
@@ -490,14 +472,12 @@ async function messageRoleCallback(args, role) {
 }
 
 /**
- * @param {string} name - Name to change to.
- *
- * @returns {Promise<string>} The updated message name.
+ * @param {string} name
+ * @returns {Promise<string>}
  */
 async function messageNameCallback(args, name) {
     let modifyAt = Number(args?.at ?? (chat.length - 1));
     if (!isNaN(modifyAt) && (modifyAt < 0 || Object.is(modifyAt, -0))) {
-        // Negative depth counts back from chat length (e.g. 8 messages, depth 1 = index 7)
         modifyAt = chat.length + modifyAt;
     }
 
@@ -576,7 +556,6 @@ async function sendCommentMessage(args, text) {
     let insertAt = Number(args.at);
 
     if (!isNaN(insertAt) && (insertAt < 0 || Object.is(insertAt, -0))) {
-        // Negative depth counts back from chat length (e.g. 8 messages, depth 1 = index 7)
         insertAt = chat.length + insertAt;
     }
 
@@ -584,8 +563,6 @@ async function sendCommentMessage(args, text) {
 
     if (!isNaN(insertAt) && insertAt >= 0 && insertAt <= chat.length) {
         chat.splice(insertAt, 0, message);
-        // Mid-chain insert is a graft, not a diff-engine-visible change — see sendMessageAsUser()'s
-        // own insertAt branch for the same reasoning.
         await storeSentMessage(insertAt, { graft: true });
         await eventSource.emit(event_types.MESSAGE_SENT, insertAt);
         await reloadCurrentChat();

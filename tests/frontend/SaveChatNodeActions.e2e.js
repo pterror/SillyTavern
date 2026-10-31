@@ -5,12 +5,10 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// Upstream's saveChat() as extensions use it: they change `chat` themselves (in place, as upstream's code does) and
-// ask for a save. Each change goes to the server as an action addressed by node id, never the chat array: a message's
-// `mes` and `extra`, a swipe added and edited, a swipe chosen, messages pushed and popped. Checked against what the
-// server stores after each step, across a branch switch and a reload.
-
-/** @param {import('@playwright/test').Page} page @param {string} name */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
@@ -24,7 +22,10 @@ async function createCharacter(page, name) {
     }, name);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
 async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
@@ -38,8 +39,6 @@ async function openCharacter(page, avatar) {
 }
 
 /**
- * What the server stores: the chat the character opens on (each message's text and `extra.note`), and the
- * alternatives beside message `mesId` of the page's chat.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  * @param {number} mesId
@@ -61,7 +60,7 @@ function stored(page, avatar, mesId) {
     }, { avatar, mesId });
 }
 
-/** What the page shows and holds. @param {import('@playwright/test').Page} page */
+/** @param {import('@playwright/test').Page} page */
 function shown(page) {
     return page.evaluate(() => {
         // @ts-ignore
@@ -97,7 +96,6 @@ test('an extension\'s changes to chat are stored by saveChat() as node-addressed
         await SillyTavern.getContext().saveChat();
     });
 
-    // Messages pushed: appended after the stored greeting.
     await page.evaluate(() => {
         // @ts-ignore
         const { chat } = SillyTavern.getContext();
@@ -108,7 +106,6 @@ test('an extension\'s changes to chat are stored by saveChat() as node-addressed
     await save();
     expect(await stored(page, avatar, 2)).toMatchObject({ opensOn: ['Hello.', 'U1', 'C1'], alternatives: ['C1'] });
 
-    // Changed in place, as upstream's code changes a message: its text and its extra.
     await page.evaluate(() => {
         // @ts-ignore
         const { chat } = SillyTavern.getContext();
@@ -118,7 +115,6 @@ test('an extension\'s changes to chat are stored by saveChat() as node-addressed
     await save();
     expect(await stored(page, avatar, 2)).toMatchObject({ opensOn: ['Hello.', 'U1 edited', 'C1'], notes: [null, null, 'noted'] });
 
-    // A swipe added beside C1, then edited by its own id; C1 itself untouched.
     await page.evaluate(() => {
         // @ts-ignore
         const { chat } = SillyTavern.getContext();
@@ -136,7 +132,6 @@ test('an extension\'s changes to chat are stored by saveChat() as node-addressed
     await save();
     expect(await stored(page, avatar, 2)).toMatchObject({ opensOn: ['Hello.', 'U1 edited', 'C1'], alternatives: ['C1', 'C1 alt edited'] });
 
-    // The swipe chosen on the last message, and a message pushed after it: the chat goes on below that swipe.
     await page.evaluate(() => {
         // @ts-ignore
         const { chat } = SillyTavern.getContext();
@@ -149,7 +144,6 @@ test('an extension\'s changes to chat are stored by saveChat() as node-addressed
     await save();
     expect(await stored(page, avatar, 2)).toMatchObject({ opensOn: ['Hello.', 'U1 edited', 'C1 alt edited', 'U2'], alternatives: ['C1', 'C1 alt edited'] });
 
-    // Back to C1 (the app's own swipe): its branch has nothing below. A save then deletes nothing of the other.
     await page.evaluate(async () => {
         const { reloadCurrentChat } = await import('/script.js');
         await reloadCurrentChat();
@@ -162,7 +156,6 @@ test('an extension\'s changes to chat are stored by saveChat() as node-addressed
     await page.locator('#chat .mes[mesid="2"] .swipe_right').click();
     await expect.poll(() => shown(page), { timeout: 10000 }).toEqual(['Hello.', 'U1 edited', 'C1 alt edited', 'U2']);
 
-    // A message popped: cut from the chat.
     await page.evaluate(() => {
         // @ts-ignore
         SillyTavern.getContext().chat.pop();
@@ -170,7 +163,6 @@ test('an extension\'s changes to chat are stored by saveChat() as node-addressed
     await save();
     expect(await stored(page, avatar, 2)).toMatchObject({ opensOn: ['Hello.', 'U1 edited', 'C1 alt edited'] });
 
-    // After a reload the page shows what was stored.
     await page.reload();
     await testSetup.awaitST({ page });
     await openCharacter(page, avatar);
@@ -202,7 +194,6 @@ test('what saveChat() can\'t address is refused with a warning naming it, and no
     });
     expect(await stored(page, avatar, 2)).toMatchObject({ opensOn: ['Hello.', 'U1', 'C1'] });
 
-    // Two messages naming one stored message (a copy pushed by an extension): which is meant can't be told.
     const warning = await page.evaluate(async () => {
         // @ts-ignore
         const context = SillyTavern.getContext();
@@ -239,7 +230,6 @@ test('a change an extension made in place without asking for a save is stored by
     });
     expect(await stored(page, avatar, 1)).toMatchObject({ opensOn: ['Hello.', 'U1'] });
 
-    // Changed in place, no save asked for: /forcesave stores it.
     await page.evaluate(async () => {
         // @ts-ignore
         const context = SillyTavern.getContext();
@@ -248,7 +238,6 @@ test('a change an extension made in place without asking for a save is stored by
     });
     expect(await stored(page, avatar, 1)).toMatchObject({ opensOn: ['Hello.', 'U1, forced'] });
 
-    // Changed again, then the chat reloaded (its button): stored first, so the reload shows it.
     await page.evaluate(() => {
         // @ts-ignore
         SillyTavern.getContext().chat[1].mes = 'U1, before the reload';

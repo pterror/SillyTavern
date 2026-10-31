@@ -8,14 +8,12 @@ import { SlashCommandEnumValue } from '../SlashCommandEnumValue.js';
 import { findCharAsync } from '../../utils.js';
 
 /**
- * Copium for running group actions when the member is offscreen.
- * @param {string} avatar - character avatar
- * @param {string} action - one of 'enable', 'disable', 'up', 'down', 'view', 'remove'
+ * @param {string} avatar
+ * @param {string} action
  * @returns {void}
  */
 function performGroupMemberAction(avatar, action) {
     const memberSelector = `.group_member[data-avatar="${CSS.escape(avatar)}"]`;
-    // Do not optimize. Paginator gets recreated on every action
     const paginationSelector = '#rm_group_members_pagination';
     const pageSizeSelector = '#rm_group_members_pagination select';
     let wasOffscreen = false;
@@ -187,12 +185,7 @@ async function addGroupMemberCallback(_, name) {
     }
 
     group.members.push(avatar);
-    // group.members is already mutated above; this just notifies groupsStore subscribers to reprint.
     groupsStore.update(selected_group, { members: group.members });
-    // Adding a member is a single discrete command, not a continuous edit - save immediately, same as
-    // modifyGroupMember()'s own member-list add/remove (group-chats.js). The previous saveGroupChat()
-    // call here never actually persisted this: /group/save only writes chat messages/metadata, never
-    // group.members, so this command silently relied on in-memory state alone until a real reload wiped it.
     await saveGroupField(selected_group, { members: group.members }, true, false);
     return character.name;
 }

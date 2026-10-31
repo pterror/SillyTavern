@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, chatBox } from './frontent-test-utils.js';
 
-// Places that offer character names to pick from search the server, so they find a character the page doesn't hold.
-// Each test makes its characters after the page has loaded and keeps the page from hearing of them.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -20,10 +17,9 @@ async function loadApp(page) {
 }
 
 /**
- * Creates a character the page doesn't hold, and waits until the server's search finds it.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @returns {Promise<string>} its avatar key
+ * @returns {Promise<string>}
  */
 async function createUnheldCharacter(page, name) {
     const avatar = await page.evaluate(async (name) => {
@@ -76,7 +72,6 @@ test.describe('character names searched on the server', () => {
             const input = chatBox(page);
             await input.click();
             await input.pressSequentially(`/char-find Autocompletee${stamp.slice(0, 6)}`);
-            // An optional argument's options show when asked for.
             await input.press('Control+Space');
             await expect(page.locator('.autoComplete .item', { hasText: name })).toBeVisible();
         } finally {
@@ -89,7 +84,6 @@ test.describe('character names searched on the server', () => {
         const first = `Staleone${stamp}`;
         const avatar = await createUnheldCharacter(page, first);
         try {
-            // The search for the first text is answered only after the search for the text typed after it.
             let laterAnswered;
             const later = new Promise(resolve => { laterAnswered = resolve; });
             let searches = 0;

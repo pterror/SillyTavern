@@ -5,10 +5,10 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// A new character's greetings, typed in the greeting field before it exists: the first, and one more from the
-// pager's add button, are what it is created with.
-
-/** @param {import('@playwright/test').Page} page @param {string} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
 function fetchStoredCharacter(page, avatar) {
     return page.evaluate(async (avatarUrl) => {
         // @ts-ignore
@@ -18,7 +18,10 @@ function fetchStoredCharacter(page, avatar) {
     }, avatar);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
 async function deleteCharacter(page, avatar) {
     await page.evaluate(async (avatarUrl) => {
         // @ts-ignore
@@ -27,7 +30,6 @@ async function deleteCharacter(page, avatar) {
     }, avatar);
 }
 
-/** Types into the greeting field through its edit toggle, and confirms. */
 async function typeGreeting(page, text) {
     const toggle = page.locator('.field_edit_toggle[data-for="greeting_field"]');
     if (await toggle.isVisible()) await toggle.click();
@@ -92,7 +94,6 @@ test.describe('creating a character with greetings', () => {
         expect((await createRequest).postData()).toContain(tagId);
         const avatar = await (await createResponse).text();
         try {
-            // Created, the character opens with its tag.
             await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar, { timeout: 10000 });
             await expect(page.locator('#tagList .tag', { hasText: `tag-${s}` })).toHaveCount(1);
             await page.reload();
@@ -110,7 +111,6 @@ test.describe('creating a character with greetings', () => {
         await page.locator('#rm_button_create').click();
         await page.locator('#character_name_pole').fill(`InlineFirst-${s}`);
         await openInfoTab(page, 'greeting');
-        // New greeting on an empty list writes the first greeting, not a second one after a blank.
         await page.locator('.greeting-pager-add').click();
         await page.locator('#charInfoTab_greeting .cm-content').click();
         await page.keyboard.type(`First ${s}`);
@@ -122,9 +122,7 @@ test.describe('creating a character with greetings', () => {
             $('#create_button').click();
         });
         const avatar = await (await createResponse).text();
-        // The create opens the new character; the next create starts once it has.
         await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar, { timeout: 10000 });
-        // A character created with no greeting gets its first one in the inline editor.
         const createResponse2 = page.waitForResponse(response => new URL(response.url()).pathname === '/api/characters/create');
         await openCharacterManagementDrawer(page);
         await page.locator('#rm_button_create').click();
@@ -139,7 +137,6 @@ test.describe('creating a character with greetings', () => {
             expect(first.data.first_mes).toBe(`First ${s}`);
             expect(first.data.alternate_greetings).toEqual([]);
 
-            // The create opens the new character.
             await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar2, { timeout: 10000 });
             await openInfoTab(page, 'greeting');
             await page.locator('.field_edit_toggle[data-for="greeting_field"]').click();

@@ -11,7 +11,6 @@ import { showFontAwesomePicker } from '../../utils.js';
 
 async function setBackgroundCallback(_, bg) {
     if (!bg) {
-        // Report the background name when called without args
         return background_settings.name;
     }
 

@@ -1,11 +1,7 @@
 import { newUi } from './new-ui-page.js';
 
-// Upstream's backgrounds module, kept for extensions that import it: the backgrounds are the new page's now
-// (packages/areas/backgrounds/page). Each name reads the new page's, which the server keeps current.
-
 const compat = () => newUi().backgrounds;
 
-/** Upstream's settings object: reads the server's view; a write is sent as the action it means. */
 export const background_settings = new Proxy(/** @type {Record<string, unknown>} */ ({}), {
     get: (_target, key) => Reflect.get(compat().background_settings, key),
     set: (_target, key, value) => Reflect.set(compat().background_settings, key, value),
@@ -41,9 +37,7 @@ export function getActiveBackgroundTab() {
     return compat().getActiveBackgroundTab();
 }
 
-// Not upstream's: for the old page's own /bg and its suggestions, which read the backgrounds from the new page.
-
-/** @returns {{ file: string, chat: boolean }[]} Every background there is to pick: the system's, then the chat's. */
+/** @returns {{ file: string, chat: boolean }[]} */
 export function listBackgroundFiles() {
     return compat().listBackgroundFiles();
 }

@@ -1,9 +1,3 @@
-/**
- * Dims a character info tab's heading when the tab holds nothing: there is no point opening it.
- * Any text counts as something, whitespace included.
- */
-
-/** The field each tab shows, by the tab's `charInfoTabs_tab` radio value. */
 const TAB_FIELDS = {
     creatorNotes: 'creator_notes_textarea',
     description: 'description_textarea',
@@ -16,7 +10,7 @@ const TAB_FIELDS = {
     exampleMessages: 'mes_example_textarea',
 };
 
-/** @type {() => boolean} Whether a greeting other than the one in `greeting_field` has text. */
+/** @type {() => boolean} */
 let anotherGreetingHasText = () => false;
 
 export function refreshCharInfoTabDimming() {
@@ -30,11 +24,10 @@ export function refreshCharInfoTabDimming() {
 }
 
 /**
- * @param {() => boolean} anotherGreetingHasTextCheck Whether a greeting other than the one in `greeting_field` has text.
+ * @param {() => boolean} anotherGreetingHasTextCheck
  */
 export function initCharInfoTabDimming(anotherGreetingHasTextCheck) {
     anotherGreetingHasText = anotherGreetingHasTextCheck;
-    // jQuery, so that `.trigger('input')` after a programmatic write is heard too.
     $('#charInfoTabs').on('input', refreshCharInfoTabDimming);
     refreshCharInfoTabDimming();
 }

@@ -11,8 +11,6 @@ let storedTagDefinitions;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
-// Upstream's DEFAULT_TAGS (upstream/staging:public/scripts/tags.js), in the order upstream shows tags with no
-// sort_order: alphabetical, case-insensitive (compareTagsForSort).
 const SIX_IN_ORDER = ['AliChat', 'Boostyle', 'OpenAI', 'Plain Text', 'PList', 'W++'];
 
 beforeAll(async () => {
@@ -43,13 +41,15 @@ async function tagRows() {
     return (await storedTagDefinitions(user.store.lib)).map(tag => ({ id: tag.id, data: tag, sort_order: tag.sort_order ?? null }));
 }
 
-/** @param {string} key @param {unknown} value */
+/**
+ * @param {string} key
+ * @param {unknown} value
+ */
 function writeKeyFile(key, value) {
     fs.mkdirSync(path.join(directories.root, 'settings'), { recursive: true });
     fs.writeFileSync(path.join(directories.root, 'settings', `${key}.json`), JSON.stringify(value, null, 4));
 }
 
-/** The settings tags import, which decides the default tags of a new store. */
 async function runImportPasses() {
     await user.store.lib.tags.importSettingsTags(directories);
 }
@@ -78,7 +78,6 @@ describe('the six default tags', () => {
         }
         expect(await metaValue('tags_seed_pending')).toBeUndefined();
 
-        // Decided once: a later run, even with the pass restarted, never seeds again.
         await user.store.lib.tags.restartSettingsImport();
         await runImportPasses();
         expect(await tagRows()).toHaveLength(6);
@@ -119,14 +118,12 @@ describe('the six default tags', () => {
         expect(await metaValue('tags_seed_pending')).toBeUndefined();
         expect(logged(warn, error)).toMatch(new RegExp(`default tags[^\\n]*${legacyPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
 
-        // The file becomes readable with no tags key on a later boot: still no seed.
         fs.writeFileSync(legacyPath, JSON.stringify({ power_user: {} }));
         await runImportPasses();
         expect(await tagRows()).toEqual([]);
     });
 
     test('an existing store gets none of the six', async () => {
-        // A store that was there before: it is not marked new.
         await user.store.lib.store.commit([{ kind: 'metaValue', key: 'tags_seed_pending' }]);
         await runImportPasses();
 

@@ -1298,9 +1298,6 @@ export function getAudioDurationFromDataURL(dataUrl) {
 }
 
 /**
- * The avatar a character reference names: an index (upstream's form) resolves through `getContext().characters`, and
- * one that misses yields undefined; an avatar key is used as given, since the page holds only some characters and
- * can't tell here whether one exists.
  * @param {any} ref
  * @returns {string|undefined}
  */
@@ -2619,7 +2616,6 @@ export function findPersona({ name = null, allowAvatar = true, insensitive = tru
         }
     }
 
-    // Search for matching personas by name - the store is keyed by avatar id, not name, so this still needs a scan
     /** @type {PersonaViewModel[]} */
     const personas = Object.entries(personaStore.getAll()).map(([avatar, record]) => toViewModel(avatar, record));
     const matchingPersonas = personas.filter(a => matches(a));
@@ -2647,7 +2643,6 @@ function findCharMatchers({ name = null, allowAvatar = true, insensitive = true,
 }
 
 /**
- * findChar()'s preference for the current character, or the current group's members: the first of them matching.
  * @param {{ name?: string?, allowAvatar?: boolean, insensitive?: boolean, filteredByTags?: string[]?, quiet?: boolean }} options
  * @returns {Character|undefined}
  */
@@ -2710,17 +2705,13 @@ export function findChar({ name = null, allowAvatar = true, insensitive = true, 
 
 
 /**
- * findChar() over the whole library: the same options, rules and answer, for a character the page may not hold.
- * The current character or group's members are preferred from what the page holds; the rest is the server's
- * `/api/characters/find`. A miss is `null`. If the server can't answer, it answers as findChar() does from what the
- * page holds, and says so in the console.
  * @param {object} [options={}]
- * @param {string?} [options.name=null] - The name to search for
- * @param {boolean} [options.allowAvatar=true] - Whether to allow searching by avatar
- * @param {boolean} [options.insensitive=true] - Whether the search should be case insensitive
- * @param {string[]?} [options.filteredByTags=null] - Tags to filter characters by (AND'd together)
- * @param {boolean} [options.preferCurrentChar=true] - Whether to prefer the current character(s)
- * @param {boolean} [options.quiet=false] - Whether to suppress warnings
+ * @param {string?} [options.name=null]
+ * @param {boolean} [options.allowAvatar=true]
+ * @param {boolean} [options.insensitive=true]
+ * @param {string[]?} [options.filteredByTags=null]
+ * @param {boolean} [options.preferCurrentChar=true]
+ * @param {boolean} [options.quiet=false]
  * @returns {Promise<Character?>}
  */
 export async function findCharAsync({ name = null, allowAvatar = true, insensitive = true, filteredByTags = null, preferCurrentChar = true, quiet = false } = {}) {
@@ -2761,9 +2752,7 @@ export async function findCharAsync({ name = null, allowAvatar = true, insensiti
     if (answer.ids.length === 0) {
         return null;
     }
-    // Imported when used: character-repository.js imports script.js, which imports this module.
     const { characterRepository } = await import('./character-repository.js');
-    // The whole card, as findChar() returns: callers read any field, and may select it.
     return (await characterRepository.full(answer.ids[0])) ?? null;
 }
 
@@ -3071,12 +3060,8 @@ export async function importFromExternalUrl(url, { preserveFileName = null } = {
 }
 
 /**
- * Imports the Chub lorebooks linked to a just-imported character (one request per path - see
- * importChubLorebookByPath on the server) and binds each as an additional World for that
- * character. Best-effort: a path that fails to resolve (unlisted/private/deleted/etc) is skipped,
- * not fatal to the others or to the character import that already succeeded.
- * @param {string} characterAvatar Avatar filename of the character to bind the Worlds to
- * @param {string[]} relatedLorebookPaths Chub "lorebooks/creator/project-name" paths
+ * @param {string} characterAvatar
+ * @param {string[]} relatedLorebookPaths
  */
 async function importChubLinkedLorebooks(characterAvatar, relatedLorebookPaths) {
     const importedNames = [];

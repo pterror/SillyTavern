@@ -31,8 +31,6 @@ describe('settings-store: writeSettingsKeys never touches unrelated key files', 
         const extensionSettingsFile = path.join(settingsDir(), 'extension_settings.json');
         const before = fs.statSync(extensionSettingsFile).mtimeMs;
 
-        // Force the clock forward enough that a real rewrite would produce a detectably different mtime on any
-        // filesystem's mtime resolution (some are as coarse as ~1s).
         fs.utimesSync(extensionSettingsFile, new Date(0), new Date(0));
 
         store.writeSettingsKeys(directories, { power_user: { theme: 'light' } });
@@ -119,15 +117,10 @@ describe('settings-store: deleteAllSettings', () => {
 
 describe('settings-store: isValidSettingsKey / key-name safety', () => {
     test('a key literally named "__proto__" is handled as an ordinary filename, never a prototype swap', () => {
-        // Object literal syntax `{ '__proto__': x }` doesn't create an own property at all (it sets the
-        // object's prototype) - going through JSON.parse, the way an Express request body actually arrives,
-        // is what produces a genuine own enumerable property named '__proto__', same as a real client request.
         const keys = JSON.parse('{"__proto__": {"polluted": true}}');
         expect(() => store.writeSettingsKeys(directories, keys)).not.toThrow();
 
         const result = store.readAllSettings(directories);
-        // Object.getOwnPropertyDescriptor, unlike `result.__proto__`, can't be fooled by the same special-case -
-        // this is the actual assertion that it landed as a real own property, not a prototype swap.
         const descriptor = Object.getOwnPropertyDescriptor(result, '__proto__');
         expect(descriptor).toBeDefined();
         expect(descriptor.enumerable).toBe(true);

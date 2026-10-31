@@ -1,7 +1,4 @@
-// Test-only reads of a user's tag store, for asserting what is stored. No request path reads tags this way.
-
 /**
- * Every live tag definition, in manual order.
  * @param {import('../src/library-engine.js').LibraryEngine} lib
  * @returns {Promise<any[]>}
  */
@@ -20,8 +17,6 @@ export async function storedTagDefinitions(lib) {
 }
 
 /**
- * How many characters and groups carry each of `ids`, as /api/tags/query's `counts: true` answers it. Only ids with a
- * live definition are counted.
  * @param {import('../src/library-engine.js').LibraryEngine} lib
  * @param {string[]} ids
  * @returns {Promise<{ counts: Record<string, number>, approximate: string[] }>}
@@ -33,7 +28,6 @@ export async function tagCounts(lib, ids) {
 }
 
 /**
- * The count of each live tag, `{ tagId: count }`, zero counts included.
  * @param {import('../src/library-engine.js').LibraryEngine} lib
  * @returns {Promise<Record<string, number>>}
  */

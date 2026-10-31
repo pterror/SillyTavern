@@ -1,14 +1,8 @@
-//! Tokens: a token is a run of alphanumeric characters (tantivy's default tokenizer's boundaries), folded as
-//! upstream's `includesIgnoreCaseAndAccents` folds: decomposed (NFD), combining marks U+0300–U+036F dropped,
-//! lowercased (character by character, so a final sigma folds as any sigma). No token is dropped for its length.
-
 use unicode_normalization::UnicodeNormalization;
 
-/// Prefix terms are a token's first 2 to 20 characters.
 pub const GRAM_MIN: usize = 2;
 pub const GRAM_MAX: usize = 20;
 
-/// Folds one token. Can be empty (a token of combining marks only).
 pub fn fold(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for c in raw.nfd() {
@@ -20,8 +14,6 @@ pub fn fold(raw: &str) -> String {
     out
 }
 
-/// Calls `f` with each folded token of `text`, in order. A token of ASCII letters and digits is lowercased in
-/// place, with no allocation; any other is decomposed and folded.
 pub fn for_each_token(text: &[u8], mut f: impl FnMut(&str)) {
     let mut raw = String::new();
     let mut ascii = true;
@@ -73,22 +65,18 @@ pub fn for_each_token(text: &[u8], mut f: impl FnMut(&str)) {
     flush(&mut raw, &mut ascii);
 }
 
-/// The folded tokens of `text`, in order.
 pub fn tokens(text: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     for_each_token(text, |t| out.push(t.to_string()));
     out
 }
 
-/// Whether `phrase` occurs in `text` (its tokens adjacent and in order, the last one a prefix when `prefix`), and
-/// how many of the text's tokens match the last one (by prefix when `prefix_count`, else whole).
 pub fn phrase_in(text: &[u8], phrase: &[String], prefix: bool, prefix_count: bool) -> (bool, u64) {
     let n = phrase.len();
     if n == 0 || n > 64 {
         return (false, 0);
     }
     let last = &phrase[n - 1];
-    // Bit i: the phrase's first i + 1 tokens end at the current token.
     let (mut state, mut found, mut count) = (0u64, false, 0u64);
     for_each_token(text, |t| {
         let mut m = 0u64;
@@ -113,14 +101,11 @@ pub fn phrase_in(text: &[u8], phrase: &[String], prefix: bool, prefix_count: boo
     (found, count)
 }
 
-/// How many times `phrase` occurs in `text` (its tokens adjacent and in order, the last one a prefix when
-/// `prefix`), overlapping occurrences each counted: a phrase's count in one value, as a word's is its tokens'.
 pub fn phrase_count(text: &[u8], phrase: &[String], prefix: bool) -> u64 {
     let n = phrase.len();
     if n == 0 || n > 64 {
         return 0;
     }
-    // Bit i: the phrase's first i + 1 tokens end at the current token.
     let (mut state, mut count) = (0u64, 0u64);
     for_each_token(text, |t| {
         let mut m = 0u64;
@@ -140,7 +125,6 @@ pub fn phrase_count(text: &[u8], phrase: &[String], prefix: bool) -> u64 {
     count
 }
 
-/// A token's prefix terms: its first `GRAM_MIN..=GRAM_MAX` characters.
 pub fn grams(token: &str) -> impl Iterator<Item = &str> {
     token
         .char_indices()
@@ -150,7 +134,6 @@ pub fn grams(token: &str) -> impl Iterator<Item = &str> {
         .map(move |end| &token[..end])
 }
 
-/// A string's first `n` characters.
 pub fn first_chars(s: &str, n: usize) -> &str {
     match s.char_indices().nth(n) {
         Some((i, _)) => &s[..i],
@@ -162,7 +145,6 @@ pub fn char_len(s: &str) -> usize {
     s.chars().count()
 }
 
-/// A token of a text, folded, with where it is in the text in UTF-16 units (JavaScript's string positions).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Spanned {
     pub token: String,
@@ -170,7 +152,6 @@ pub struct Spanned {
     pub end: u32,
 }
 
-/// The folded tokens of `text` with their places, by the same boundaries and folding as `for_each_token`.
 pub fn spanned_tokens(text: &str) -> Vec<Spanned> {
     let mut out = Vec::new();
     let mut raw = String::new();
@@ -201,8 +182,6 @@ pub fn spanned_tokens(text: &str) -> Vec<Spanned> {
     out
 }
 
-/// One clause of a search, as the chat search reads it: its words (folded here), whether the last one is a prefix
-/// (the query's last word, not in closed quotes), and whether the text must not have it.
 #[derive(Debug, Clone)]
 pub struct MatchClause {
     pub text: String,
@@ -210,9 +189,6 @@ pub struct MatchClause {
     pub negate: bool,
 }
 
-/// Whether `text` matches every clause (each positive one's words occur together and in order; no negated one's
-/// do), and if so the places of the words the positive clauses matched, as `[start, end)` in UTF-16 units, in
-/// order. A clause with no words matches anything. None: it doesn't match.
 pub fn match_spans(text: &str, clauses: &[MatchClause]) -> Option<Vec<(u32, u32)>> {
     let spanned = spanned_tokens(text);
     let mut spans: Vec<(u32, u32)> = Vec::new();
@@ -222,8 +198,6 @@ pub fn match_spans(text: &str, clauses: &[MatchClause]) -> Option<Vec<(u32, u32)
             continue;
         }
         let n = words.len();
-        // A one-character last word would match nearly everything as a prefix: it's matched whole, as the chat
-        // search's prefix terms start at `GRAM_MIN` characters.
         let prefix = clause.prefix && char_len(&words[n - 1]) >= GRAM_MIN;
         let mut found = false;
         if spanned.len() >= n {
@@ -269,20 +243,14 @@ mod tests {
         let text = "The big Sister went home. A big dog.";
         assert_eq!(match_spans(text, &[c("big sister", false, false)]), Some(vec![(4, 7), (8, 14)]));
         assert_eq!(match_spans(text, &[c("big", false, false)]), Some(vec![(4, 7), (28, 31)]));
-        // The last word a prefix only when the clause says so.
         assert_eq!(match_spans(text, &[c("sis", false, false)]), None);
         assert_eq!(match_spans(text, &[c("sis", true, false)]), Some(vec![(8, 14)]));
-        // A one-character prefix is a whole word.
         assert_eq!(match_spans(text, &[c("a", true, false)]), Some(vec![(26, 27)]));
-        // Every clause, and none of the negated.
         assert_eq!(match_spans(text, &[c("big", false, false), c("cat", false, false)]), None);
         assert_eq!(match_spans(text, &[c("home", false, false), c("dog", false, true)]), None);
         assert_eq!(match_spans(text, &[c("home", false, false), c("cat", false, true)]), Some(vec![(20, 24)]));
-        // Words in order and together.
         assert_eq!(match_spans(text, &[c("sister big", false, false)]), None);
-        // Accents and case fold as the search's do.
         assert_eq!(match_spans("Café crème", &[c("CAFE creme", false, false)]), Some(vec![(0, 4), (5, 10)]));
-        // No words: anything matches.
         assert_eq!(match_spans(text, &[c("...", false, false)]), Some(vec![]));
     }
 
@@ -301,7 +269,6 @@ mod tests {
             ["foo", "bar", "o", "neil", "char"]
         );
         assert_eq!(t("ÇA ÉTÉ 2024x"), ["ca", "ete", "2024x"]);
-        // A combining mark isn't alphanumeric: decomposed accents are boundaries.
         assert_eq!(t("e\u{301}t\u{301}e"), ["e", "t", "e"]);
         assert_eq!(t("東京タワー tower"), ["東京タワー", "tower"]);
         let long = "a".repeat(60);

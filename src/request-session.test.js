@@ -1,4 +1,3 @@
-// A request's session as the routes act through it, and what the answer tells the tab (build path 5f).
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -32,7 +31,6 @@ for (const kind of ['native', 'wasm']) {
         try {
             const chats = await ChatEngine.open(store, people);
 
-            // A caller with no tab: the deterministic session, told nothing.
             const third = await requestSession(chats, request(undefined), tree);
             assert.equal(third.identifier, defaultSessionKey('u', tree));
             assert.deepEqual(third.actor(), { user: 'u', session: defaultSessionKey('u', tree) });
@@ -40,7 +38,6 @@ for (const kind of ['native', 'wasm']) {
             third.answer(res, { moved: true });
             assert.deepEqual(res.headers, {});
 
-            // A tab with none: reads land through the cascade; a write makes a session, which the answer hands over.
             const fresh = await requestSession(chats, request('none'), tree);
             assert.deepEqual(fresh.reader(), { user: 'u', session: null });
             assert.equal(fresh.identifier, defaultSessionKey('u', tree));
@@ -52,7 +49,6 @@ for (const kind of ['native', 'wasm']) {
             assert.deepEqual(res.headers, { [SESSION_MOVED_HEADER]: made });
             assert.equal((await chats.nameSession({ session: made, name: 'Made', actor: fresh.actor() })).ok, true);
 
-            // The tab's own session: told it moved only when the write moved it.
             const own = await requestSession(chats, request(made), tree);
             assert.deepEqual(own.actor(), { user: 'u', session: made });
             res = response();
@@ -61,7 +57,6 @@ for (const kind of ['native', 'wasm']) {
             own.answer(res, { moved: true });
             assert.deepEqual(res.headers, { [SESSION_MOVED_HEADER]: made });
 
-            // A deleted session: the tab is told, and acts as a tab with none.
             assert.deepEqual(await chats.deleteSession(made), { ok: true });
             const stale = await requestSession(chats, request(made), tree);
             assert.deepEqual(stale.reader(), { user: 'u', session: null });

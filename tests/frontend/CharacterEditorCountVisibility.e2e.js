@@ -1,23 +1,13 @@
 import { test, expect } from './fixtures.js';
 import { openInfoTab, setStackedDrawers, testSetup } from './frontent-test-utils.js';
 
-// NixOS host: the Playwright-managed Chromium download is missing system libs, so fall back
-// to the system-provided Chrome (only when explicitly pointed at it) rather than requiring a
-// FHS-compatible browser install.
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// Character editor token counts are requested only while the editor is showing: #char-info-panel open,
-// not covered, with the editor as its menu. Internal triggers that fire while it is hidden wait for it to
-// show. The exported forceCharacterEditorTokenize() still counts right away, as upstream's does.
-
-// Longer than the editor's 1000 ms count debounce, so a count that is going to be sent has been sent.
 const QUIET_MS = 2500;
 
 /**
- * Makes the page record, at send time, every tokenizer request and whether the editor was showing then.
- * Runs before the app's scripts on every load.
  * @param {import('@playwright/test').Page} page
  */
 async function recordTokenizerSends(page) {
@@ -54,7 +44,6 @@ async function recordTokenizerSends(page) {
 }
 
 /**
- * The recorded tokenizer requests that count the marker.
  * @param {import('@playwright/test').Page} page
  * @param {string} marker
  * @returns {Promise<{ url: string, showing: boolean }[]>}
@@ -64,7 +53,6 @@ async function countsOf(page, marker) {
 }
 
 /**
- * Creates and selects a character whose description holds a fresh marker, then closes every drawer.
  * @param {import('@playwright/test').Page} page
  * @returns {Promise<{ name: string, marker: string }>}
  */
@@ -75,13 +63,11 @@ async function createCharacterAndCloseEditor(page) {
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button').evaluate(el => el.click());
-    // Creating a character opens it.
     await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
     await openInfoTab(page, 'description');
     await page.locator('.field_edit_toggle[data-for="description_textarea"]').click();
     await page.locator('#description_textarea').fill(`A test character. ${marker}`);
     await page.locator('.field_edit_done[data-for="description_textarea"]').click();
-    // A click on the chat closes every unpinned drawer.
     await page.locator('#chat').click({ position: { x: 10, y: 10 } });
     await expect(page.locator('#char-info-panel')).toBeHidden();
     await expect(page.locator('#right-nav-panel')).toBeHidden();
@@ -89,11 +75,9 @@ async function createCharacterAndCloseEditor(page) {
     return { name, marker };
 }
 
-// With no connection, best match (the default) counts with Llama, so on a fresh page nothing is cached for GPT-2.
 const GPT2_TOKENIZER = 1;
 
 /**
- * Switches the tokenizer setting to GPT-2 through its change handler.
  * @param {import('@playwright/test').Page} page
  */
 async function switchToGpt2Tokenizer(page) {
@@ -101,7 +85,6 @@ async function switchToGpt2Tokenizer(page) {
 }
 
 /**
- * Sets fullscreen character management through its toggle and waits until the change is saved.
  * @param {import('@playwright/test').Page} page
  * @param {boolean} on
  */
@@ -117,8 +100,6 @@ async function setGalleryFullscreen(page, on) {
 }
 
 /**
- * Makes the server's /current/count and /current/tokenizer answers say the model is unknown to the map
- * (basis `unknown`, an estimate), keeping every count a plain number.
  * @param {import('@playwright/test').Page} page
  */
 async function answerUnknownTokenizer(page) {
@@ -176,15 +157,11 @@ test.describe('character editor counts while showing', () => {
     });
 
     test('a covering drawer closing over the editor counts a change made while it was covered', async ({ page }) => {
-        // Only stacked drawers cover a pinned right-side panel (off, the default as upstream, opening one closes the
-        // other), and only non-fullscreen character management covers all of it: fullscreen starts below the drawer
-        // bar, so the editor's top stays showing.
         await setStackedDrawers(page, true);
         await setGalleryFullscreen(page, false);
         const { marker } = await createCharacterAndCloseEditor(page);
         await page.locator('#charInfoDrawerIcon').click();
         await expect(page.locator('#char-info-panel')).toBeVisible();
-        // Pinned, so opening character management covers the editor instead of closing it.
         const pin = page.locator('#charInfo_button_panel_pin');
         if (!(await pin.isChecked())) {
             await pin.evaluate(el => el.click());
@@ -215,7 +192,6 @@ test.describe('character editor counts while showing', () => {
         const before = (await countsOf(page, marker)).length;
         await page.evaluate(async (tokenizer) => {
             const { power_user, forceCharacterEditorTokenize } = await import('/scripts/power-user.js');
-            // Set without the setting's change handler, so the forced count is the only trigger.
             power_user.tokenizer = tokenizer;
             forceCharacterEditorTokenize();
         }, GPT2_TOKENIZER);
@@ -228,7 +204,6 @@ test.describe('character editor counts while showing', () => {
         await answerUnknownTokenizer(page);
         const before = (await countsOf(page, marker)).length;
 
-        // A new state, so the answer is asked again and the editor recounts when it opens.
         await switchToGpt2Tokenizer(page);
         await page.locator('#charInfoDrawerIcon').click();
         await expect(page.locator('#char-info-panel')).toBeVisible();

@@ -19,11 +19,6 @@ let baseUrl;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
-/**
- * Mounts the real characters.js router behind a fake auth middleware, mirroring characters-manifest.test.js's
- * setup - the middleware reads the current test's user at request time, so beforeEach can point every test at a fresh
- * store without needing a new server per test.
- */
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
@@ -48,7 +43,6 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
-/** A fresh user with an empty store; the requests are this user's from now on. */
 async function makeUser() {
     user = await fixture.emptyUser('st-characters-query-test-');
     directories = user.directories;
@@ -56,7 +50,6 @@ async function makeUser() {
     return user;
 }
 
-/** Users made by a test besides the one beforeEach made. */
 const otherUsers = [];
 
 beforeEach(async () => {
@@ -78,8 +71,6 @@ async function postJson(urlPath, body) {
 }
 
 /**
- * The character changes `/changes` lists after a `/query` answer's `seq` (a place in the change feed characters and
- * groups share, so a group write moves it).
  * @param {number} seq
  */
 async function characterChangesSince(seq) {
@@ -87,11 +78,8 @@ async function characterChangesSince(seq) {
 }
 
 /**
- * Seeds one row directly through the phase-1 write-path hook (the same one characters.js's real write routes
- * call), rather than writing a real PNG - /query never touches the filesystem, so this is the right layer to
- * seed at for these tests.
  * @param {string} avatar
- * @param {object} overrides Shallow-merged onto a minimal valid Spec V2 card
+ * @param {object} overrides
  */
 async function seedCharacter(avatar, overrides = {}) {
     const card = {
@@ -111,10 +99,8 @@ async function seedCharacter(avatar, overrides = {}) {
 }
 
 /**
- * Like seedCharacter(), but the card has the shape the app stores in card_json (see /create): a spec'd V2 card
- * whose top-level fields mirror `data.*`, with no fav.
  * @param {string} avatar
- * @param {object} data Merged onto the card's `data`
+ * @param {object} data
  */
 async function seedStoredCharacter(avatar, data = {}) {
     const name = avatar.replace(/\.png$/, '');
@@ -140,11 +126,8 @@ async function seedStoredCharacter(avatar, data = {}) {
 }
 
 /**
- * Like seedCharacter(), but also writes a real (parseable) PNG to `directories.characters` - needed for the
- * `filter.search` tests below, since search (characters-search-index.js) reads full character data straight off
- * disk to build its index, unlike plain `/query` which never touches the filesystem.
  * @param {string} avatar
- * @param {object} overrides Shallow-merged onto a minimal valid Spec V2 card
+ * @param {object} overrides
  */
 async function seedCharacterWithFile(avatar, overrides = {}) {
     const baseImage = await fs.promises.readFile(path.join(process.cwd(), '..', 'public', 'img', 'ai4.png'));
@@ -175,11 +158,8 @@ async function assignTags(characterId, tagIds) {
 }
 
 /**
- * Seeds one group directly through the real write path (the group JSON file plus the phase-3 write-path hook,
- * the same two things groups.js's /create route does) - mirrors seedCharacter()'s "seed at the layer /query
- * actually reads from" approach.
  * @param {string} id
- * @param {object} overrides Shallow-merged onto a minimal group object
+ * @param {object} overrides
  */
 async function seedGroup(id, overrides = {}) {
     const own = { ...overrides };
@@ -188,10 +168,9 @@ async function seedGroup(id, overrides = {}) {
 }
 
 /**
- * Stores a chat of one message in a group's tree.
  * @param {string} id
  * @param {string} name
- * @returns {Promise<number>} The group's chat size now.
+ * @returns {Promise<number>}
  */
 async function seedGroupChat(id, name) {
     await fixture.saveBranch(user.store, { group: id }, name, [{}, { name: 'User', is_user: true, mes: 'a message', send_date: 'x', extra: {} }]);
@@ -206,9 +185,9 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
 
         const response = await postJson('/api/characters/query', { page: 1, pageSize: 10 });
         const body = await response.json();
-        expect(body.total).toBe(1); // the group is not counted
+        expect(body.total).toBe(1);
         expect(body.rows).toEqual([expect.objectContaining({ avatar: 'Alice.png' })]);
-        expect(body.rows[0].type).toBeUndefined(); // still a bare Character, not {type, item}
+        expect(body.rows[0].type).toBeUndefined();
     });
 
     test('merges characters and groups into one {type, item}[] page, sorted by name together', async () => {
@@ -225,7 +204,6 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
             ['group', 'Middle Group'],
             ['character', 'Zebra'],
         ]);
-        // A group's hydrated item carries the metadata-row-sourced fields, not a stale/absent value off the raw file.
         expect(body.rows[1].item.id).toBe('g1');
         expect(typeof body.rows[1].item.date_added).toBe('number');
     });
@@ -256,21 +234,18 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
         const response = await postJson('/api/characters/query', { filter: { includeGroups: true }, sort: { field: 'date_added', order: 'asc' }, page: 1, pageSize: 10 });
         const body = await response.json();
         expect(body.rows.length).toBe(3);
-        // Old.png and g-mid seeded before New.png/-created-later - New must sort last.
         expect(body.rows[body.rows.length - 1].item.avatar ?? body.rows[body.rows.length - 1].item.id).toBe('New.png');
     });
 
     test('each sort field orders characters and groups together: create_date (2026-08 regression - a group interleaves by its real date_added, not parked at one end by a TEXT/INTEGER type mismatch)', async () => {
         await seedCharacter('Old.png', { name: 'Old', create_date: '2020-01-01T00:00:00.000Z', data: { name: 'Old', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-        await seedGroup('g-mid'); // no create_date of its own - its date_added (seeded "now") stands in for it
+        await seedGroup('g-mid');
         await seedCharacter('New.png', { name: 'New', create_date: '2030-01-01T00:00:00.000Z', data: { name: 'New', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
 
         const response = await postJson('/api/characters/query', { filter: { includeGroups: true }, sort: { field: 'create_date', order: 'asc' }, page: 1, pageSize: 10 });
         expect(response.status).toBe(200);
         const body = await response.json();
         expect(body.rows.length).toBe(3);
-        // Old (2020) first, New (2030) last - the group's own date_added (seeded at test run time, i.e. 2026)
-        // genuinely falls in between the two, so it must land in the middle, not clustered at either end.
         expect(body.rows.map(r => r.type)).toEqual(['character', 'group', 'character']);
         expect(body.rows[0].item.avatar).toBe('Old.png');
         expect(body.rows[2].item.avatar).toBe('New.png');
@@ -283,7 +258,6 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
 
         const response = await postJson('/api/characters/query', { filter: { includeGroups: true }, sort: { field: 'date_last_chat', order: 'desc' }, page: 1, pageSize: 10 });
         const body = await response.json();
-        // The group (which has a real date_last_chat) sorts before the character (date_last_chat 0) descending.
         expect(body.rows[0].type).toBe('group');
         expect(body.rows[1].type).toBe('character');
     });
@@ -323,7 +297,6 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
 
         expect(first.total).toBe(8);
         expect(first.rows.map(r => r.item.id ?? r.item.avatar)).toEqual(second.rows.map(r => r.item.id ?? r.item.avatar));
-        // Not simply "all characters then all groups" - proves the hash genuinely interleaves the two types.
         const typeSequence = first.rows.map(r => r.type);
         expect(new Set(typeSequence)).toEqual(new Set(['character', 'group']));
     });
@@ -397,8 +370,6 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
     test('filter.search + includeGroups + create_date puts a group between characters just older and just newer than it, ascending and descending reversed', async () => {
         await seedGroup('VampireGroup', { name: 'Vampire Group' });
         const groupDate = (await user.store.lib.entity(TYPE.group, 'VampireGroup')).added;
-        // More than 2048 ms either side: tantivy reports an ascending character's order rounded to a multiple of
-        // 2048 at these magnitudes, so closer dates tie with the group.
         const cardFor = (name, createDate) => ({ name, create_date: new Date(createDate).toISOString(), data: { name, description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
         await seedCharacterWithFile('VampireOlder.png', cardFor('Vampire Older', groupDate - 5000));
         await seedCharacterWithFile('VampireNewer.png', cardFor('Vampire Newer', groupDate + 5000));
@@ -429,7 +400,6 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
         ['desc', ['Same', 'Same.png', 'Alexandre', 'Alexandra.png', 'Alexander.png', 'Alexanda.png']],
     ])('filter.search sorted by name %s through the search index comes back in full name order, ascending ties characters before groups, descending reversed', async (order, expected) => {
         const cardFor = name => ({ name, data: { name, description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
-        // The first three share their first 6 letters, which the old index sort key couldn't tell apart.
         for (const name of ['Alexandra', 'Alexander', 'Alexanda']) await seedCharacterWithFile(`${name}.png`, cardFor(`Vampire ${name}`));
         await seedCharacterWithFile('Same.png', cardFor('Vampire same'));
         await seedGroup('Alexandre', { name: 'Vampire Alexandre' });
@@ -444,8 +414,6 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
 
 describe('POST /api/characters/query - random sort is per user', () => {
     /**
-     * Seeds two characters (with card files, so search can index them) and one group into the current user.
-     * Every user gets the same number of each, so both users' change seq and groups version line up.
      * @param {string} prefix
      */
     async function seedUser(prefix) {
@@ -498,7 +466,6 @@ describe('POST /api/characters/query', () => {
     });
 
     test('never reads the filesystem - characters not yet reconciled/indexed are simply absent, not read live', async () => {
-        // A PNG dropped on disk with no metadata-db row at all (no write-path hook, no reconcile pass run).
         fs.writeFileSync(path.join(directories.characters, 'Ghost.png'), 'not a real card');
         const response = await postJson('/api/characters/query', { page: 1, pageSize: 10 });
         const body = await response.json();
@@ -688,7 +655,6 @@ describe('POST /api/characters/query', () => {
 });
 
 /**
- * The token of a hash-mode (`want: ['hashes']`) response: its trailer, after the last row.
  * @param {ArrayBuffer} buffer
  * @returns {string | null}
  */
@@ -700,14 +666,12 @@ function hashResponseToken(buffer) {
         const isGroup = (view.getUint8(offset) & 0b1) !== 0;
         offset += 1;
         offset += 2 + view.getUint16(offset, true);
-        // A group's three digests, or a character's version.
         offset += (isGroup ? 4 + 4 + 4 : 8 + 4) + 8 + 8 + 8 + 8 + 8;
         offset += 2 + view.getUint16(offset, true);
     }
     const tokenLen = view.getUint16(offset, true); offset += 2;
     const token = tokenLen > 0 ? new TextDecoder().decode(new Uint8Array(buffer, offset, tokenLen)) : null;
     offset += tokenLen;
-    // After the token: the cursor (header bit 3), then a search's tag matches (header bit 4).
     const flags = view.getUint8(0);
     if (flags & 0b1000) offset += 2 + view.getUint16(offset, true);
     if (flags & 0b10000) {
@@ -748,7 +712,6 @@ describe('POST /api/characters/query - the freshness token (token / ifToken)', (
 
 
     /**
-     * Repeats `request` until two answers in a row have the same token, so the indexes have settled.
      * @param {object} request
      */
     async function settledQuery(request) {
@@ -780,7 +743,6 @@ describe('POST /api/characters/query - the freshness token (token / ifToken)', (
         const again = await (await postJson('/api/characters/query', { ...request, ifToken: first.token })).json();
         expect(again).toEqual({ seq: first.seq, token: first.token, unchanged: true });
 
-        // A group tag write: no character changed.
         await user.store.lib.tags.assign('g1', 'folder-1');
         const afterWrite = await (await postJson('/api/characters/query', { ...request, ifToken: first.token })).json();
         expect(afterWrite.unchanged).toBeUndefined();
@@ -862,7 +824,6 @@ describe('POST /api/characters/query - sort.field "random" (design doc §5.3, de
             await seedCharacter(`Char${i}.png`);
         }
         await seedGroup('g1');
-        // A seed no other test uses: the random-sort id cache is process-wide.
         const request = { filter: { includeGroups: true }, sort: { field: 'random', seed: 918273 }, page: 1, pageSize: 20 };
         const ids = (body) => body.rows.map(r => r.type === 'group' ? r.item.id : r.item.avatar).sort();
 
@@ -875,7 +836,6 @@ describe('POST /api/characters/query - sort.field "random" (design doc §5.3, de
         expect(await characterChangesSince(first.seq)).toEqual([]);
         expect(ids(added)).toEqual(['Char0.png', 'Char1.png', 'Char2.png', 'Char3.png', 'g1', 'g2']);
 
-        // The group that sorts first, so a page read from ids that still hold it misses the one that sorts last.
         const { getStringHash } = await import('../public/scripts/hash-utils.js');
         const gone = getStringHash('g1', request.sort.seed) < getStringHash('g2', request.sort.seed) ? 'g1' : 'g2';
         const kept = gone === 'g1' ? 'g2' : 'g1';
@@ -902,7 +862,6 @@ describe('POST /api/characters/query - filter.search (design doc §5.1/§5)', ()
         const body = await response.json();
         expect(body.rows.map(r => r.avatar)).toEqual(['Vampire.png']);
         expect(body.total).toBe(1);
-        // One search engine answers every search, so no answer names one.
         expect(body.searchBackend).toBeUndefined();
     });
 
@@ -910,21 +869,11 @@ describe('POST /api/characters/query - filter.search (design doc §5.1/§5)', ()
         await seedCharacterWithFile('Vampire.png', { name: 'Vampire Lord', data: { name: 'Vampire Lord', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
         await seedCharacterWithFile('Werewolf.png', { name: 'Werewolf', data: { name: 'Werewolf', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
 
-        // Prime the search index against the pre-toggle state, same as a real server that already answered a
-        // search before the user ever favorited anything - this is the from-scratch build every handle's first
-        // search pays, not the incremental path this test is actually about.
         await postJson('/api/characters/query', { filter: { search: 'vampire' }, page: 1, pageSize: 10 });
 
-        // The store-authoritative fav write path - deliberately never
-        // touches Vampire.png's card file, so a search index that (wrongly) rebuilt its `fav` field from the card
-        // would never see this, whether by a full rebuild or an incremental catch-up.
         const updated = await user.store.lib.setFav(TYPE.character, 'Vampire.png', true);
         expect(updated).toBe(true);
 
-        // The search index worker catches up on its own tick (about once a second) and no request waits for it,
-        // so the fix is verified by polling follow-up requests, the same way a real client's next render/search
-        // would eventually observe it, never by calling the explicit POST /api/characters/search-index/rebuild
-        // repair endpoint.
         let body;
         const deadline = Date.now() + 5000;
         do {
@@ -1048,13 +997,9 @@ describe('POST /api/characters/query - sort.field "search" applies filters insid
     const cardFor = (name, description = '') => ({ name, data: { name, description, personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
     const rowId = (r) => r.type === 'group' ? r.item.id : (r.avatar ?? r.item?.avatar);
 
-    // With pageSize 1 the search engine is asked for 1 + pageOverFetch(1) = 6 hits, so six hits ranked above the
-    // kept one fill that whole window.
     const aboveCharacterIds = ['above0.png', 'above1.png', 'above2.png', 'above3.png', 'above4.png', 'above5.png'];
     const aboveGroupIds = ['grp-above0', 'grp-above1', 'grp-above2', 'grp-above3', 'grp-above4', 'grp-above5'];
 
-    /** Six characters with the term in their name (boost 20), and kept.png with it only in its description
-     * (boost 3), so the six rank above kept.png. */
     async function seedCharacters() {
         for (const id of aboveCharacterIds) {
             await seedCharacterWithFile(id, cardFor('Zephyr'));
@@ -1062,8 +1007,6 @@ describe('POST /api/characters/query - sort.field "search" applies filters insid
         await seedCharacterWithFile('kept.png', cardFor('Plain', 'zephyr'));
     }
 
-    /** Six groups with the term in their name (boost 20), and grp-kept with it only in its members (boost 15),
-     * so the six rank above grp-kept. */
     async function seedGroups(aboveOverrides = {}) {
         for (const id of aboveGroupIds) {
             await seedGroup(id, { name: 'Zephyr', ...aboveOverrides });
@@ -1179,7 +1122,6 @@ describe('POST /api/characters/search-index/rebuild', () => {
         expect(response.status).toBe(200);
         expect(await response.json()).toEqual({ ok: true });
 
-        // The character written before is found, rebuild or not.
         const searchResponse = await postJson('/api/characters/query', { filter: { search: 'Rebuildable' }, page: 1, pageSize: 10 });
         const searchBody = await searchResponse.json();
         expect(searchBody.rows.map(r => r.avatar)).toEqual(['Rebuildable.png']);
@@ -1250,7 +1192,6 @@ describe('POST /api/characters/changes', () => {
 
         const response = await postJson('/api/characters/changes', { sinceSeq: 0 });
         const body = await response.json();
-        // Collapsed to the latest op for that id within the window (see getChangesSince()'s doc comment).
         expect(body.changes).toEqual([{ id: 'A.png', op: 'delete' }]);
     });
 
@@ -1303,7 +1244,6 @@ describe('/query relevance pages read from the ranking', () => {
         }
         expect(followed).toEqual(whole.rows.map(key));
 
-        // A page number with no cursor gives the same page.
         const third = await (await postJson('/api/characters/query', { ...request, page: 3, pageSize: 3 })).json();
         expect(third.rows.map(key)).toEqual(whole.rows.map(key).slice(6, 9));
     });

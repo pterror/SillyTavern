@@ -14,26 +14,6 @@ import { regexPresetsFromUpstream, regexPresetsToUpstream, regexScriptsFromUpstr
 import { dataBankFromUpstream, dataBankToUpstream, globalVariablesFromUpstream, globalVariablesToUpstream } from './user-data.js';
 import { setListFromUpstream, setListToUpstream } from './quick-replies.js';
 
-/**
- * The compat edge (the settings model §2): upstream's settings file made into the model's statements and entities
- * (`importUpstream`), and the model laid out in upstream's shape again (`assemble`). Compiled from the lists the page
- * itself uses (settingsToUpdate, PRESET_EXCLUDED_KEYS, THEME_FIELDS, …), so a key the page adds lands where its list
- * says.
- *
- * Every upstream path is one of:
- * - a **bundle field** (a sampler preset's, a template's, the theme's): the user level states the selected bundle, and
- *   an override only where the live value isn't the bundle's (an unsaved edit). Field ids are `<group>/<field>`,
- *   the field as the bundle's file names it;
- * - a **selection** (`preset_settings_openai`, `.preset`, `theme`, …): the bundle statement;
- * - a **connection** or **catalog** entry, through its module;
- * - a **preference**, an override at its upstream path (`power_user.auto_swipe`), its value as it came;
- * - an **extension's settings** not modeled: `ext:<key>`, as it came;
- * - **derived** (from the persona, the model, the session) or the **device's**: not stored;
- * - **dead** (nothing reads it): dropped, warned;
- * - anything else **unknown**: `key:<path>`, as it came, warned.
- */
-
-/** The sampler preset families, their live objects and the key naming the selected preset. */
 const FAMILIES = Object.freeze({
     openai: { object: 'oai_settings', selected: 'preset_settings_openai' },
     textgenerationwebui: { object: 'textgenerationwebui_settings', selected: 'preset' },
@@ -41,21 +21,14 @@ const FAMILIES = Object.freeze({
     kobold: { object: 'kai_settings', selected: 'preset_settings' },
 });
 
-/** The template kinds, and the key of `power_user[kind]` naming the selected template. */
 const TEMPLATE_SELECTED = Object.freeze({ instruct: 'preset', context: 'preset', sysprompt: 'name', reasoning: 'name' });
 
-/** KoboldAI's "no preset": its own settings. */
 const KOBOLD_NO_PRESET = 'gui';
 
-/** A chat completion preset key → its `oai_settings` key, for the preset's own (not connection) keys. */
 const CC_PRESET_KEYS = Object.freeze(Object.fromEntries(Object.entries(settingsToUpdate)
     .filter(([, [, , , isConnection]]) => !isConnection)
     .map(([presetKey, [, settingKey]]) => [presetKey, settingKey])));
 
-/**
- * An override stating the app's default (the page's own value) for a field, over a bundle that holds the field:
- * assembled as nothing at its path, so the page's default applies.
- */
 export const APP_DEFAULT = Object.freeze({ $default: true });
 
 /**
@@ -65,18 +38,15 @@ export function isAppDefault(value) {
     return Boolean(value) && typeof value === 'object' && /** @type {any} */ (value).$default === true && Object.keys(/** @type {object} */ (value)).length === 1;
 }
 
-/** Paths nothing reads: dropped on import, warned. */
 export const DEAD_PATHS = Object.freeze([
     'selected_button', 'extension_settings.note.wiAddition', 'extension_settings.quickReply',
     'power_user.auto_sort_tags', 'power_user.charGalleryView', 'power_user.guidance_scale', 'power_user.import_card_tags',
     'power_user.negative_prompt', 'power_user.stscript.autocomplete_style', 'power_user.world_import_dialog',
     'power_user.instruct.derived', 'power_user.instruct.separator_sequence', 'power_user.instruct.system_prompt',
     'power_user.reasoning.preset', 'power_user.sysprompt.preset', 'textgenerationwebui_settings.stopping_strings',
-    // movingUI is gone from this fork (626f824b0).
     'power_user.movingUI', 'power_user.movingUIState', 'power_user.movingUIPreset',
 ]);
 
-/** Paths derived from something else (the persona, the model, the session) or the device's own: not stored. */
 export const DERIVED_PATHS = Object.freeze([
     'accountStorage', 'background.url', 'power_user.chat_template_hash',
     'power_user.context_size_derived', 'power_user.persona_description', 'power_user.persona_description_depth',
@@ -84,33 +54,28 @@ export const DERIVED_PATHS = Object.freeze([
     'world_info_settings.charLore', 'world_info_settings.world_info.charLore',
 ]);
 
-/** Top-level keys other stores own (the tag store): handed over as they came. */
 const ELSEWHERE = Object.freeze(['tags', 'tag_map']);
 
-/** Top-level keys that are preferences as a whole (their values as they came). */
 const TOP_PREFERENCES = Object.freeze(['firstRun', 'currentVersion', 'swipes', 'active_character', 'active_group']);
 
 /**
  * @typedef {import('./entity-draft.js').EntityDraft} EntityDraft
- * @typedef {(group: string, name: string) => Record<string, any> | undefined} BundleFiles A bundle's upstream file
- *   by its group (`preset.<family>`, `template.<kind>`, `theme`) and name.
- * @typedef {object} UserModel What an upstream settings file is in the model.
+ * @typedef {(group: string, name: string) => Record<string, any> | undefined} BundleFiles
+ * @typedef {object} UserModel
  * @property {{ level: 'user', bundles: Record<string, string>, overrides: Record<string, unknown> }} user
- * @property {EntityDraft[]} entities Its catalogs' entries (connections, proxies, profiles, personas, …).
- * @property {Record<string, unknown>} ext `extension_settings` keys no module models, as they came.
- * @property {Record<string, unknown>} unknown Paths not modeled, as they came.
- * @property {Record<string, unknown>} elsewhere Keys other stores own.
- * @property {Record<string, any>} statements The statements the catalog modules made (connections' slots,
- *   capabilities, personas' character-level lists, …).
+ * @property {EntityDraft[]} entities
+ * @property {Record<string, unknown>} ext
+ * @property {Record<string, unknown>} unknown
+ * @property {Record<string, unknown>} elsewhere
+ * @property {Record<string, any>} statements
  * @property {{ connection: string, value: string }[]} secrets
  * @property {string[]} warnings
- * @property {string[]} [kept] As read from the store: the characters and groups not in the library whose statements
- *   are kept as they came (already warned of).
+ * @property {string[]} [kept]
  */
 
 /**
  * @param {Record<string, any>} object
- * @param {string} path Dotted.
+ * @param {string} path
  */
 function at(object, path) {
     return path.split('.').reduce((value, key) => (value && typeof value === 'object' ? value[key] : undefined), object);
@@ -154,15 +119,13 @@ function same(a, b) {
 }
 
 /**
- * Each bundle group's fields in a settings object: `[group, field, path]`, the field as the bundle's file names it
- * and the path of its live value. A group's selection path is listed apart.
  * @param {Record<string, any>} settings
  * @returns {{ fields: [string, string, string][], selections: [string, string, string][] }}
  */
 function bundleLayout(settings) {
     /** @type {[string, string, string][]} */
     const fields = [];
-    /** @type {[string, string, string][]} selections `[group, path, family or kind]` */
+    /** @type {[string, string, string][]} */
     const selections = [];
     for (const [family, { object, selected }] of Object.entries(FAMILIES)) {
         const group = `preset.${family}`;
@@ -191,7 +154,6 @@ function bundleLayout(settings) {
 }
 
 /**
- * The bundle a group's selection names, as a key of its catalog.
  * @param {string} group
  * @param {string} name
  */
@@ -210,7 +172,6 @@ function bundleName(group, ref) {
 }
 
 /**
- * The bundle's fields by field id, a text preset's lengths as the settings they are.
  * @param {BundleFiles} files
  * @param {string} group
  * @param {string} ref
@@ -230,7 +191,6 @@ function bundleFields(files, group, ref) {
 }
 
 /**
- * The text family whose preset carries `amount_gen` and `max_context`: the selected API's, when it's a text API.
  * @param {unknown} mainApi
  */
 function lengthFamily(mainApi) {
@@ -239,7 +199,6 @@ function lengthFamily(mainApi) {
 }
 
 /**
- * Upstream's settings file in the model.
  * @param {Record<string, any>} upstream
  * @param {{ bundles: BundleFiles, newKey: (hint: string) => string }} options
  * @returns {UserModel}
@@ -260,12 +219,10 @@ export function importUpstream(upstream, { bundles, newKey }) {
     }
     for (const path of DERIVED_PATHS) drop(settings, path);
 
-    // Bundles: the selection, then an override per field whose live value isn't the bundle's.
     const { fields, selections } = bundleLayout(settings);
     for (const [group, path] of selections) {
         const name = at(settings, path);
         drop(settings, path);
-        // KoboldAI's own settings are a choice of no preset: kept as stated (absent, the page reads a fallback).
         if (group === 'preset.kobold' && name === KOBOLD_NO_PRESET) {
             user.overrides[path] = name;
             continue;
@@ -285,8 +242,6 @@ export function importUpstream(upstream, { bundles, newKey }) {
         const held = ref !== undefined ? bundleFields(bundles, group, ref) : undefined;
         if (!held || !same(held[`${group}/${field}`], value)) user.overrides[`${group}/${field}`] = value;
     }
-    // A field the settings lack is the page's default, not the selected bundle's (upstream applies a bundle's values
-    // only when it's selected): stated as the app's default, over the bundle.
     for (const [group, ref] of Object.entries(user.bundles)) {
         for (const id of Object.keys(bundleFields(bundles, group, ref) ?? {})) {
             if (!id.includes('/') || id === `${group}/name` || seen.has(id)) continue;
@@ -305,7 +260,6 @@ export function importUpstream(upstream, { bundles, newKey }) {
         delete settings[setting];
     }
 
-    // Connections and capabilities.
     const ext = settings.extension_settings ?? {};
     const fromConnections = connectionsFromUpstream({
         main_api: settings.main_api,
@@ -319,7 +273,6 @@ export function importUpstream(upstream, { bundles, newKey }) {
     entities.push(...fromConnections.connections);
     statements.textGeneration = fromConnections.textGeneration;
     statements.remembered = fromConnections.remembered;
-    // The connection keys go; the chat completion preference keys among them stay, preferences like any other.
     for (const key of COVERED.chat.filter(k => !CC_PREFERENCE_KEYS.includes(k))) drop(settings, `oai_settings.${key}`);
     for (const key of [...COVERED.text, 'type']) drop(settings, `textgenerationwebui_settings.${key}`);
     drop(settings, 'kai_settings.api_server');
@@ -334,7 +287,6 @@ export function importUpstream(upstream, { bundles, newKey }) {
     Object.assign(ext, fromCapabilities.settings);
     statements.secrets = fromConnections.secrets;
 
-    // Catalogs.
     const proxies = proxiesFromUpstream(settings.proxies, settings.selected_proxy);
     entities.push(...proxies.proxies);
     statements.proxy = proxies.selected;
@@ -344,7 +296,6 @@ export function importUpstream(upstream, { bundles, newKey }) {
 
     const servers = serverHistoryFromUpstream(at(settings, 'power_user.servers'));
     entities.push(...servers.servers);
-    // Arrays upstream keeps in an order of their own, kept: a catalog reads in key order.
     statements.order = { serverHistory: servers.servers.map(e => e.key) };
     warnings.push(...servers.warnings);
     drop(settings, 'power_user.servers');
@@ -430,7 +381,6 @@ export function importUpstream(upstream, { bundles, newKey }) {
         drop(settings, 'oai_settings.bias_presets');
     }
 
-    // What's left: preferences at their paths, extensions' own settings, keys other stores own, and the unknown.
     /** @type {Record<string, unknown>} */
     const extOut = {};
     for (const [key, value] of Object.entries(ext)) extOut[key] = value;
@@ -450,7 +400,6 @@ export function importUpstream(upstream, { bundles, newKey }) {
             user.overrides[key] = value;
         } else if (value && typeof value === 'object' && !Array.isArray(value) && ['power_user', 'oai_settings', 'textgenerationwebui_settings', 'nai_settings', 'kai_settings', 'world_info_settings', 'background'].includes(key)) {
             for (const [inner, innerValue] of Object.entries(value)) {
-                // A template object's leftovers are its own unknown keys; any other object's are preferences.
                 if (key === 'power_user' && Object.hasOwn(TEMPLATE_SELECTED, inner) && innerValue && typeof innerValue === 'object') {
                     for (const [k, v] of Object.entries(innerValue)) user.overrides[`power_user.${inner}.${k}`] = v;
                     continue;
@@ -466,7 +415,6 @@ export function importUpstream(upstream, { bundles, newKey }) {
 }
 
 /**
- * The user's own connections (`statements.sources`); every connection when the model doesn't say.
  * @param {UserModel} model
  */
 export function userConnections(model) {
@@ -474,21 +422,12 @@ export function userConnections(model) {
     return model.entities.filter(e => e.type === TYPE.connection && (!sources || sources.has(e.key)));
 }
 
-/**
- * The statements one level makes of the bundle groups (a character's or group's, §1.1).
- * @typedef {{ level: 'character', name?: 'character' | 'group' | 'chat', bundles?: Record<string, string>, overrides?: Record<string, unknown> }} ContextLevel
- *   `name`: which of the closer levels it is, for where a value comes from (`sources`).
- */
+/** @typedef {{ level: 'character', name?: 'character' | 'group' | 'chat', bundles?: Record<string, string>, overrides?: Record<string, unknown> }} ContextLevel */
 
 /**
- * The model laid out as upstream's settings file, for a context: the levels closer than the user's (a speaking
- * character's, then its group's), the user's, the app's default.
  * @param {UserModel} model
- * @param {{ bundles: BundleFiles, extrasApiKey?: string, levels?: ContextLevel[] }} options `bundles` holds every
- *   bundle a level states.
- * @returns {{ settings: Record<string, any>, warnings: string[], sources: Record<string, string> }} `sources`: the
- *   level each bundle field's and selection's value comes from, by path ('preset' for the user's bundle's, 'user'
- *   for the user's own, a closer level's name).
+ * @param {{ bundles: BundleFiles, extrasApiKey?: string, levels?: ContextLevel[] }} options
+ * @returns {{ settings: Record<string, any>, warnings: string[], sources: Record<string, string> }}
  */
 export function assemble(model, { bundles, extrasApiKey, levels: closer = [] }) {
     /** @type {string[]} */
@@ -498,8 +437,6 @@ export function assemble(model, { bundles, extrasApiKey, levels: closer = [] }) 
     const { user, entities, statements } = model;
     const byType = (/** @type {number} */ type) => entities.filter(e => e.type === type);
 
-    // Connections first: the bundles and preferences then lay over the objects they fill. The user's own; a preset's
-    // connection of its own isn't the user's choice for its source.
     const connections = userConnections(model);
     const flat = connectionsToUpstream(connections, { textGeneration: statements.textGeneration, remembered: statements.remembered, extrasApiKey });
     const mainApi = flat.main_api;
@@ -507,20 +444,17 @@ export function assemble(model, { bundles, extrasApiKey, levels: closer = [] }) 
     for (const object of ['oai_settings', 'textgenerationwebui_settings', 'kai_settings', 'nai_settings', 'horde_settings']) settings[object] = flat[object];
     settings.extension_settings = { ...flat.extras };
 
-    // Bundles through the cascade: the context's closer levels, the user's, then the default.
     const { fields, selections } = bundleLayout({});
     const family = lengthFamily(mainApi);
     /** @type {import('../settings-cascade.js').Catalog} */
     const catalog = {
         groupOf: field => (field.includes('/') ? field.slice(0, field.indexOf('/')) : Object.values(TEXT_PRESET_LENGTH_KEYS).includes(field) && family ? `preset.${family}` : null),
-        // The theme is the reader's (a chat or character doesn't change it); the rest is generation's.
         kindOf: field => (field.startsWith('theme/') ? 'reader' : 'generation'),
         bundle: (ref, group) => bundleFields(bundles, group, ref),
         profile: () => undefined,
     };
     const levels = [...closer, user, { level: 'default' }];
     const stating = [...closer, user];
-    /** The bundle a group resolves to: the closest level's that may state it. */
     const statedFor = (/** @type {string} */ group) => stating
         .filter(l => group !== 'theme' || l === user)
         .map(l => l.bundles?.[group])
@@ -535,7 +469,7 @@ export function assemble(model, { bundles, extrasApiKey, levels: closer = [] }) 
     };
     /**
      * @param {string} id
-     * @param {string} [path] Where the value goes, to note its source.
+     * @param {string} [path]
      */
     const resolved = (id, path) => {
         const r = resolveField(levels, id, catalog);
@@ -543,7 +477,6 @@ export function assemble(model, { bundles, extrasApiKey, levels: closer = [] }) 
         return r.value;
     };
     const layoutPaths = new Map(fields.map(([group, field, path]) => [`${group}/${field}`, path]));
-    // A bundle's fields the settings object didn't list (the page's own keys of a text family are the file's).
     for (const [group, ref] of stating.flatMap(l => Object.entries(l.bundles ?? {}))) {
         for (const id of Object.keys(bundleFields(bundles, group, ref) ?? {})) {
             if (layoutPaths.has(id) || !id.includes('/')) continue;
@@ -576,14 +509,12 @@ export function assemble(model, { bundles, extrasApiKey, levels: closer = [] }) 
         if (value !== undefined && !isAppDefault(value)) settings[setting] = value;
     }
 
-    // Preferences at their paths.
     for (const [path, value] of Object.entries(user.overrides)) {
         if (path.includes('/') || path.startsWith('ext:') || Object.values(TEXT_PRESET_LENGTH_KEYS).includes(path)) continue;
         put(settings, path, structuredClone(value));
     }
     if (user.overrides['ext:variables']) settings.extension_settings.variables = structuredClone(user.overrides['ext:variables']);
 
-    // Catalogs.
     const { proxies, selected_proxy } = proxiesToUpstream(byType(TYPE.proxy), statements.proxy);
     settings.proxies = proxies;
     if (selected_proxy) settings.selected_proxy = selected_proxy;
@@ -593,7 +524,6 @@ export function assemble(model, { bundles, extrasApiKey, levels: closer = [] }) 
     };
     const servers = ordered(TYPE.serverHistory, statements.order?.serverHistory);
     if (servers.length) put(settings, 'power_user.servers', serverHistoryToUpstream(servers));
-    // Empty when there are none, as the page holds it.
     put(settings, 'power_user.model_templates_mappings', Object.fromEntries(byType(TYPE.modelTemplateBinding).map(b => [b.key, bindingToUpstream(b)])));
     const profileEntities = ordered(TYPE.connectionProfile, statements.order?.connectionProfile);
     if (profileEntities.length || statements.profile !== undefined) {
@@ -622,7 +552,6 @@ export function assemble(model, { bundles, extrasApiKey, levels: closer = [] }) 
     const biasLists = byType(TYPE.biasList);
     if (biasLists.length) settings.oai_settings.bias_presets = Object.fromEntries(biasLists.map(list => [list.key, biasListToUpstream(list)]));
 
-    // Extensions' own settings, with the capabilities' provider fields.
     const caps = capabilitiesToUpstream(/** @type {any} */ (model.ext), statements.capabilities ?? {}, connections);
     warnings.push(...caps.warnings);
     Object.assign(settings.extension_settings, caps.settings);
@@ -632,10 +561,8 @@ export function assemble(model, { bundles, extrasApiKey, levels: closer = [] }) 
     return { settings, warnings, sources };
 }
 
-/** The containers whose keys are each one preference (`power_user.<key>`, …), as import stores them. */
 const PREFERENCE_CONTAINERS = Object.freeze(['power_user', 'oai_settings', 'textgenerationwebui_settings', 'nai_settings', 'kai_settings', 'world_info_settings', 'background']);
 
-/** Paths a catalog module holds: a write to one is the catalog's, not a field's. */
 const CATALOG_PATHS = Object.freeze([
     'proxies', 'selected_proxy', 'power_user.servers', 'power_user.model_templates_mappings', 'power_user.personas',
     'power_user.persona_descriptions', 'power_user.persona_data', 'power_user.default_persona', 'user_avatar', 'username',
@@ -645,10 +572,8 @@ const CATALOG_PATHS = Object.freeze([
 ]);
 
 /**
- * What an upstream path is in the model: the unit a write to it (or to anything under it) changes.
- * @param {string[]} keys The path's keys.
+ * @param {string[]} keys
  * @returns {{ kind: 'field', field: string, path: string } | { kind: 'selection', group: string, path: string } | { kind: 'connection', path: string } | { kind: 'catalog', path: string } | { kind: 'ext', key: string } | { kind: 'ignored', path: string } | { kind: 'unknown', key: string } | { kind: 'container' }}
- *   A container holds units of its own (`power_user`, `power_user.instruct`, `extension_settings`).
  */
 export function unitOfPath(keys) {
     const dotted = keys.join('.');
@@ -691,28 +616,16 @@ export function unitOfPath(keys) {
     return { kind: 'unknown', key: top };
 }
 
-/**
- * @typedef {{ op: 'set' | 'delete', field: string, value?: unknown }
- *   | { op: 'bundle', group: string, ref: string | undefined, drop: string[] }
- *   | { op: 'ext', key: string, value: unknown }
- *   | { op: 'unknown', key: string, value: unknown }
- *   | { op: 'connection' | 'catalog', path: string, value: unknown }} ModelWrite
- *   `set`/`delete` an override at the user level; `bundle` a statement, dropping the level's overrides of the fields
- *   the bundle holds (selecting a preset discards its unsaved edits, as upstream); `connection`/`catalog` hand the
- *   changed value to that module.
- */
+/** @typedef {{ op: 'set' | 'delete', field: string, value?: unknown } | { op: 'bundle', group: string, ref: string | undefined, drop: string[] } | { op: 'ext', key: string, value: unknown } | { op: 'unknown', key: string, value: unknown } | { op: 'connection' | 'catalog', path: string, value: unknown }} ModelWrite */
 
 /**
- * A full save routed: each path whose value isn't what `assemble` gives now, as the writes it is (Q13: only changed
- * paths are routed, so a save made from a stale copy changes only what its sender changed).
  * @param {UserModel} model
- * @param {Record<string, any>} saved The upstream-shaped settings saved.
+ * @param {Record<string, any>} saved
  * @param {{ bundles: BundleFiles, extrasApiKey?: string }} options
  * @returns {ModelWrite[]}
  */
 export function routeSave(model, saved, options) {
     const { settings: current } = assemble(model, options);
-    // The bundles the save selects: its field values are compared with these, as the page loaded them.
     /** @type {Record<string, string | undefined>} */
     const bundlesAfter = { ...model.user.bundles };
     for (const [group, path] of bundleLayout({}).selections) {
@@ -762,8 +675,6 @@ export function routeSave(model, saved, options) {
                 writes.set(`${unit.kind}:${unit.path}`, { op: unit.kind, path: unit.path, value: at(saved, unit.path) });
                 return;
             case 'selection': {
-                // The new bundle's fields replace the level's edits of them; a field it doesn't hold keeps its value,
-                // as upstream keeps a live value the preset lacks.
                 const ref = bundlesAfter[unit.group];
                 const held = ref !== undefined ? bundleFields(options.bundles, unit.group, ref) ?? {} : {};
                 const drop = Object.keys(model.user.overrides).filter(field => field.startsWith(`${unit.group}/`) && Object.hasOwn(held, field));
@@ -777,7 +688,6 @@ export function routeSave(model, saved, options) {
                     if (Object.hasOwn(model.user.overrides, field)) writes.set(`field:${field}`, { op: 'delete', field });
                     return;
                 }
-                // An override equal to what the user's bundle gives is not stored (§1.1 Edits).
                 const group = field.includes('/') ? field.slice(0, field.indexOf('/')) : undefined;
                 const ref = group ? bundlesAfter[group] : undefined;
                 const held = ref !== undefined && group ? bundleFields(options.bundles, group, ref) : undefined;
@@ -790,7 +700,6 @@ export function routeSave(model, saved, options) {
         }
     };
     walk(current, saved, []);
-    // A selection first: it drops the overrides its bundle replaces, and the fields' writes then state what differs.
     const dropped = new Set([...writes.values()].flatMap(write => (write.op === 'bundle' ? write.drop : [])));
     return [...writes.values()]
         .filter(write => !(write.op === 'delete' && dropped.has(write.field)))
@@ -807,7 +716,6 @@ function unitPath(unit) {
 }
 
 /**
- * Equal as JSON, whatever the key order.
  * @param {unknown} a
  * @param {unknown} b
  */
@@ -816,8 +724,6 @@ function canonicalSame(a, b) {
 }
 
 /**
- * The model with writes applied (the user level and the extensions' own settings; connection and catalog writes are
- * their modules').
  * @param {UserModel} model
  * @param {ModelWrite[]} writes
  * @returns {UserModel}
@@ -842,15 +748,10 @@ export function applyWrites(model, writes) {
     return next;
 }
 
-/**
- * The two-way translation's documented losses (§2.4) at a path: why a value there may come back otherwise.
- * @type {Readonly<Record<string, string>>}
- */
+/** @type {Readonly<Record<string, string>>} */
 export const DOCUMENTED_LOSSES = Object.freeze({});
 
 /**
- * The leaves of upstream settings that `back` (assembled) doesn't give back as they were, less the dead, derived and
- * documented-lossy paths and the keys other stores own; key order aside (§2.4.7).
  * @param {Record<string, any>} settings
  * @param {Record<string, any>} back
  * @returns {{ path: string[], before: unknown, after: unknown }[]}
@@ -878,7 +779,6 @@ export function lostLeaves(settings, back) {
 }
 
 /**
- * The bundles upstream settings select, by group and name (KoboldAI's own settings none).
  * @param {Record<string, any>} settings
  * @returns {{ group: string, name: string }[]}
  */

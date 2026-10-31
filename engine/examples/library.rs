@@ -1,12 +1,3 @@
-//! Measures the library on a synthetic one: per action, the record and derived bytes and the device bytes of
-//! an isolated commit; list pages at a size; and list pages after a bulk load of the same library (`bulk`).
-//!
-//!   cargo run --release --example library -- <dir> <cards> [actions|pages|bulk]
-//!
-//! `dir` is created and removed. Device bytes are `/proc/diskstats` sector deltas of the device holding `dir`
-//! (`ST_DISK`, e.g. nvme0n1p5), less an idle window of the same length taken just before. With `ST_KEEP` set, `dir`
-//! is kept; with `ST_REUSE` set, a kept `dir` is measured again without loading.
-
 use std::path::Path;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -116,7 +107,6 @@ fn card(r: &mut Rng, e: u64) -> Vec<Record> {
             vec![Value::Id(e), Value::Id(1 + r.below(TAGS)), Value::Bit(true)],
         ));
     }
-    // After the values, as the writer does, so the card enters the orders once.
     recs.push(rec(
         "entityCreate",
         vec![
@@ -178,7 +168,6 @@ fn load(s: &Store, cards: u64) {
     );
 }
 
-/// The same library as `load`, through a bulk load (as the conversion one-off writes a store).
 fn bulk_load(s: &Store, cards: u64) {
     let mut r = Rng(1);
     let started = Instant::now();
@@ -209,7 +198,6 @@ fn bulk_load(s: &Store, cards: u64) {
     );
 }
 
-/// How many of the generator's cards have a data size in `[lo, hi]`.
 fn data_size_count(cards: u64, lo: u64, hi: u64) -> u64 {
     let mut r = Rng(1);
     let mut n = 0;
@@ -237,10 +225,7 @@ fn disk_sectors(dev: &str) -> u64 {
     panic!("no device {dev}");
 }
 
-/// Commits `n` single actions one at a time; returns per action: record bytes, entries, entry bytes, device
-/// bytes (idle window subtracted), and ms.
 fn isolated(s: &Store, dev: &str, n: u64, mut action: impl FnMut(u64) -> Vec<Record>) -> [f64; 5] {
-    // Idle window of the same length as the run, first.
     let probe = Instant::now();
     for i in 0..5 {
         s.commit_wait(action(i)).unwrap();
@@ -704,7 +689,6 @@ fn pages(s: &Store) {
             p.total.unwrap_or(0),
             if p.total_exact { "" } else { " ~" },
         );
-        // A deep page: through cursors to the 20th.
         if name == "name A-Z, first page" {
             let mut q2 = q.clone();
             q2.count = false;
@@ -751,7 +735,6 @@ fn main() {
                     data_size_count(cards, 1025, 1100)
                 );
             }
-            // Cold-ish: everything flushed, reopened.
             s.close();
             drop(s);
             let s = Store::open(dir, StoreConfig::default()).unwrap();

@@ -3,59 +3,8 @@ import { substituteParams } from './macro-substitution.js';
 import { computeLogitBias } from './endpoints/tokenizers.js';
 import { createStoredEncoder } from './token-count-store.js';
 
-/**
- * Server-side port of public/scripts/chat-completion-settings.js's createGenerationParameters() -
- * builds the sampler/request-shape payload for every chat-completion source. This does NOT decide
- * which source to use (settings.chat_completion_source is an input, same as the client function);
- * it only shapes the payload given one.
- *
- * The server's per-vendor dispatch functions in src/endpoints/backends/chat-completions.js
- * (sendClaudeRequest, etc.) already independently re-derive some model-capability flags (e.g.
- * Claude's thinking/verbosity detection via regex on request.body.model) - this port does not try
- * to reconcile that overlap; it's a faithful port of the client function as its own piece, flagged
- * for a later pass to de-duplicate against the existing dispatch functions.
- *
- * logitBias is now computed for real: the client's calculateLogitBias() (public/scripts/chat-
- * completion-settings.js) turned out to do no computation of its own - it just POSTs
- * bias_presets[bias_preset_selected] to the server's existing `/api/backends/chat-completions/bias`
- * route (src/endpoints/backends/chat-completions.js), which does the actual tokenizer-based work
- * in-process. That route's core logic is now extracted into src/endpoints/tokenizers.js's exported
- * computeLogitBias(), which this module calls directly given a `biasPresetEntries` context param
- * (the same bias_presets[bias_preset_selected]-shaped array the client sends) - so the previously
- * "not portable, needs the server's own tokenizer access" characterization was wrong: the server
- * already has full tokenizer access via src/endpoints/tokenizers.js. A pre-resolved `logitBias`
- * override is still accepted (and takes priority) for callers that already have one, mirroring the
- * `toolsPayload` escape-hatch convention used elsewhere in this module.
- *
- * Deliberately taken as explicit context parameters instead of ported (each needs its own
- * server-side capability that doesn't exist yet, or is genuinely external/live data):
- * - getStoppingStrings(limit) - a function, not a flat array, because the original calls
- *   getCustomStoppingStrings() with a DIFFERENT limit per source (default openai_max_stop_strings,
- *   unlimited for Claude/Mistral/Chutes, 5 for MakerSuite/VertexAI/Cohere, 1 for ZAI) - a flat
- *   array can't represent that. getCustomStoppingStrings() itself depends on macro substitution
- *   (ported, ported callers should use src/macro-substitution.js) plus an "ephemeral stopping
- *   strings" concept that isn't ported anywhere yet (same gap as the textgen port).
- * - groupNames - getGroupNames() reads the live group/character store.
- * - useLogprobs - power_user.request_token_probabilities, a plain setting the caller already
- *   resolves for other reasons.
- * - electronHubReasoningEfforts - ELECTRONHUB's supported_reasoning_efforts lookup depends on
- *   model_list, a live list fetched from the provider - not server-stored data.
- * - toolsPayload - tool-calling registration (ToolManager.registerFunctionToolsOpenAI) depends on
- *   isToolCallingSupported()'s model_list lookup (live provider data) and extension-registered tool
- *   definitions (no server registry exists, same category as MacrosParser-registered macros). This
- *   function only replicates the pure `!canMultiSwipe` gate; the caller resolves whether tools
- *   should be sent at all and what they contain.
- * - reverseProxyValidated - validateReverseProxy() shows a user confirmation popup for an unusual
- *   proxy URL; that UX belongs to whoever collects reverse_proxy/proxy_password as a setting, not
- *   here. This just uses settings.reverse_proxy/proxy_password as given.
- * - macroContext - passed through to substituteParams() for assistant_prefill/custom_include_body/etc.
- * - chatId - getCurrentChatId(), only used for FIREWORKS's chat_id field; the caller already knows
- *   which chat this generation belongs to.
- */
-
 const openaiMaxStopStrings = 4;
 
-// "OpenAI-like" sources.
 const gptSources = [CHAT_COMPLETION_SOURCES.OPENAI, CHAT_COMPLETION_SOURCES.AZURE_OPENAI, CHAT_COMPLETION_SOURCES.OPENROUTER];
 
 const seedSupportedSources = [
@@ -78,8 +27,6 @@ const logprobsSupportedSources = [
     CHAT_COMPLETION_SOURCES.AIMLAPI, CHAT_COMPLETION_SOURCES.CHUTES,
 ];
 
-// Exported so a caller can replicate the client's gating decision for whether to compute a bias at
-// all (bias_preset_selected && logitBiasSources.includes(source) && non-empty bias_presets entry).
 export const logitBiasSources = [
     CHAT_COMPLETION_SOURCES.OPENAI, CHAT_COMPLETION_SOURCES.AZURE_OPENAI, CHAT_COMPLETION_SOURCES.OPENROUTER,
     CHAT_COMPLETION_SOURCES.ELECTRONHUB, CHAT_COMPLETION_SOURCES.CHUTES, CHAT_COMPLETION_SOURCES.CUSTOM,
@@ -103,7 +50,6 @@ export const verbosity_levels = { auto: 'auto', low: 'low', medium: 'medium', hi
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 
-/** Mirrors getReasoningEffort() in public/scripts/chat-completion-settings.js. */
 function getReasoningEffort(settings, model, { electronHubReasoningEfforts = null } = {}) {
     if (!reasoningEffortSources.includes(settings.chat_completion_source)) {
         return settings.reasoning_effort;
@@ -178,7 +124,6 @@ function getReasoningEffort(settings, model, { electronHubReasoningEfforts = nul
     return reasoningEffort;
 }
 
-/** Mirrors getVerbosity() in public/scripts/chat-completion-settings.js. */
 function getVerbosity(settings) {
     if (settings.verbosity === verbosity_levels.auto) return undefined;
     return settings.verbosity;
@@ -187,31 +132,25 @@ function getVerbosity(settings) {
 /**
  * @typedef {object} ChatCompletionGenerationContext
  * @property {object} [jsonSchema]
- * @property {object} [logitBias] Escape hatch: an already-computed token-id-keyed bias map to use
- * as-is instead of computing one from `biasPresetEntries`. Takes priority when provided.
- * @property {{text?: string, value?: number}[]} [biasPresetEntries] Raw bias-preset entries -
- * settings.bias_presets[settings.bias_preset_selected] client-side - used to compute `logit_bias`
- * via computeLogitBias() (src/endpoints/tokenizers.js) when `logitBias` isn't given.
- * @property {string[]} [droppedBiasEntries] Receives the text of each `biasPresetEntries` entry left out
- * because the model has no tokenizer.
- * @property {(limit?: number) => string[]} [getStoppingStrings] Mirrors getCustomStoppingStrings(limit) - called with a different limit per source
+ * @property {object} [logitBias]
+ * @property {{text?: string, value?: number}[]} [biasPresetEntries]
+ * @property {string[]} [droppedBiasEntries]
+ * @property {(limit?: number) => string[]} [getStoppingStrings]
  * @property {string[]} [groupNames]
  * @property {boolean} [useLogprobs]
  * @property {string[]} [electronHubReasoningEfforts]
- * @property {object} [toolsPayload] Already-resolved tool-calling fields to merge in when !canMultiSwipe, or undefined for none
+ * @property {object} [toolsPayload]
  * @property {{name1?: string, name2?: string}} [macroContext]
- * @property {string} [chatId] getCurrentChatId() - only used for FIREWORKS's chat_id field
- * @property {import('./users.js').UserDirectoryList} [directories] For a custom URL that is llama.cpp: the custom key
- * @property {import('./llamacpp-props.js').LlamaCppPropsCheck} [llamaCppProps] The send's `/props` check for a
- * custom URL that is llama.cpp (see ChatCompletionConnection).
- * @property {import('./token-count-store.js').PendingTokenRows} [tokenCountRows] The request's rows: with
- * `directories`, the bias entries are encoded through the token tables and their rows added here.
+ * @property {string} [chatId]
+ * @property {import('./users.js').UserDirectoryList} [directories]
+ * @property {import('./llamacpp-props.js').LlamaCppPropsCheck} [llamaCppProps]
+ * @property {import('./token-count-store.js').PendingTokenRows} [tokenCountRows]
  */
 
 /**
- * @param {object} settings oai_settings (or an equivalent object, e.g. a merged preset)
+ * @param {object} settings
  * @param {string} model
- * @param {string} type 'quiet'/'impersonate'/'continue'/'normal'
+ * @param {string} type
  * @param {{role: string, content: any}[]} messages
  * @param {ChatCompletionGenerationContext} [context]
  * @returns {Promise<{generate_data: object, stream: boolean, canMultiSwipe: boolean}>}
@@ -257,10 +196,6 @@ export async function createGenerationParameters(settings, model, type, messages
     const noMultiSwipeTypes = ['quiet', 'impersonate', 'continue'];
     const canMultiSwipe = settings.n > 1 && !noMultiSwipeTypes.includes(type) && multiswipeSources.includes(settings.chat_completion_source);
 
-    // Mirrors the original: defaults to {} (not undefined). Uses a pre-resolved override if given,
-    // else computes a real bias map from biasPresetEntries - gated on the same
-    // bias-preset-selected (non-empty entries array, standing in for it) + logitBiasSources
-    // condition the client checks before calling calculateLogitBias().
     let logit_bias = {};
     if (logitBiasOverride !== undefined) {
         logit_bias = logitBiasOverride;

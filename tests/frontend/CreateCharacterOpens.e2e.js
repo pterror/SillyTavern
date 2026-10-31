@@ -1,10 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// Creating a character opens it (its info and its chat), as picking it in the list does, and reads only its own card:
-// the list isn't searched page by page for it (on a large library that took minutes), and no toast says what's on
-// screen.
-
 test('a created character opens at once, without searching the list for it', async ({ page }) => {
     await testSetup.awaitST({ page });
     const name = `Opened-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
@@ -29,7 +25,6 @@ test('a created character opens at once, without searching the list for it', asy
         // @ts-ignore
         await expect.poll(() => page.evaluate(() => SillyTavern.getContext().name2)).toBe(name);
         await expect(page.locator('#toast-container .toast', { hasText: 'Character Created' })).toHaveCount(0);
-        // No read of the list a thousand rows at a time to find the new row.
         expect(listReads.filter(body => /"(?:pageSize|limit|perPage)"\s*:\s*1000\b/.test(body))).toEqual([]);
     } finally {
         await page.evaluate(async (avatarUrl) => {

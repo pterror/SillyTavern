@@ -200,8 +200,6 @@ class PinnedChatsManager {
 }
 
 /**
- * The avatar of the character set as the welcome page assistant, or the default one's. Not checked against the
- * library: the page holds only some characters. {@link loadPermanentAssistant} checks it.
  * @returns {string}
  */
 export function getPermanentAssistantAvatar() {
@@ -209,10 +207,7 @@ export function getPermanentAssistantAvatar() {
 }
 
 /**
- * The welcome page assistant's full card. A chosen assistant that no longer exists is forgotten, and the default
- * one is used instead.
- * @returns {Promise<Character|undefined>} undefined when the assistant doesn't exist (the default one not yet
- *   created). Throws when the server can't answer.
+ * @returns {Promise<Character|undefined>}
  */
 async function loadPermanentAssistant() {
     const avatar = getPermanentAssistantAvatar();
@@ -277,7 +272,7 @@ function getAssistantGreeting(character) {
     return getRegexedString(character.first_mes || '', regex_placement.AI_OUTPUT, { depth: 0 }) || defaultGreeting;
 }
 
-/** @param {Character|undefined} character The assistant, if it exists */
+/** @param {Character|undefined} character */
 function sendAssistantMessage(character) {
     const name = character ? character.name : neutralCharacterName;
     const avatar = character ? getThumbnailUrl('avatar', character.avatar) : system_avatar;
@@ -306,12 +301,10 @@ function sendWelcomePrompt() {
     addOneMessage(message, { scroll: false });
 }
 
-/** The recent chats the welcome panel shows, oldest last. @type {RecentChat[]} */
+/** @type {RecentChat[]} */
 let shownRecentChats = [];
-/** Where the next page of older recent chats starts (`/api/chats/recent`'s `next`); null when there is none. */
 let recentChatsNext = null;
 
-/** Adds the next page of older chats to the welcome panel's recent chats, and draws it again where it is. */
 async function loadOlderRecentChats() {
     if (recentChatsNext === null) return;
     const older = await getRecentChats({ before: recentChatsNext });
@@ -402,7 +395,6 @@ async function sendWelcomePanel(chats, expand = false, { replace = false } = {})
         });
         fragment.querySelectorAll('button.openTemporaryChat').forEach((button) => {
             button.addEventListener('click', async () => {
-                // newAssistantChat() doesn't clear a prior selection, so without this the chat saves for real.
                 await closeCurrentChat();
                 await newAssistantChat({ temporary: true });
                 if (sendTextArea instanceof HTMLTextAreaElement) {
@@ -478,7 +470,6 @@ async function sendWelcomePanel(chats, expand = false, { replace = false } = {})
                 await refreshWelcomeScreen({ flashChat: recentChat });
             });
         });
-        // Drawn again in place (older chats loaded), else added.
         const drawn = chatElement.querySelector('.welcomePanel');
         if (drawn && replace) drawn.replaceWith(fragment.firstChild);
         else chatElement.append(fragment.firstChild);
@@ -501,7 +492,6 @@ async function sendWelcomePanel(chats, expand = false, { replace = false } = {})
  */
 async function openRecentCharacterChat(avatarId, fileName) {
     try {
-        // Reads the character when the page doesn't hold it, and reports one that doesn't exist.
         await selectCharacterByAvatar(avatarId);
         if (getCurrentCharacter()?.avatar !== avatarId) {
             return;
@@ -548,7 +538,7 @@ async function openRecentGroupChat(groupId, fileName) {
 
 /**
  * @param {string} avatarId
- * @returns {Promise<boolean>} false when the character doesn't exist, or the server can't say
+ * @returns {Promise<boolean>}
  */
 async function recentChatCharacterExists(avatarId) {
     try {
@@ -790,8 +780,7 @@ async function openRecentChatsSettingsPopup() {
  * @property {boolean} pinned Indicates if the chat is pinned
  */
 /**
- * A page of recent chats, the most recent first; the page after it is remembered (`recentChatsNext`).
- * @param {{ before?: string | null }} [options] `before`: where the page starts (a page's `next`); null for the first
+ * @param {{ before?: string | null }} [options]
  * @returns {Promise<RecentChat[]>}
  */
 async function getRecentChats({ before = null } = {}) {
@@ -818,7 +807,6 @@ async function getRecentChats({ before = null } = {}) {
         return [];
     }
 
-    // The page holds only some characters; the ones these chats belong to are read in one request.
     const avatars = [...new Set(data.map(chat => chat.avatar).filter(avatar => typeof avatar === 'string' && avatar !== ''))];
     /** @type {Map<string, Character>} */
     let charactersByAvatar = new Map();
@@ -841,7 +829,6 @@ async function getRecentChats({ before = null } = {}) {
                 return 1;
             }
 
-            // The server's order (by last activity) stands.
             return 0;
         });
 
@@ -854,7 +841,6 @@ async function getRecentChats({ before = null } = {}) {
         chat.display_name = chat.label ?? chat.char_name;
         chat.char_thumbnail = character ? getThumbnailUrl('avatar', character.avatar) : system_avatar;
         chat.is_group = !!group;
-        // A page of older chats comes in shown: the user asked for it.
         chat.hidden = before === null && index >= settings.collapsedDisplayed;
         chat.avatar = chat.avatar || '';
         chat.group = chat.group || '';

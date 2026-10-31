@@ -34,7 +34,7 @@ describe('EntityStore', () => {
         const listener = jest.fn();
         store.onChange(listener);
         const change = store.update('a', { name: 'Updated' });
-        expect(array[0]).toBe(before); // same object, mutated
+        expect(array[0]).toBe(before);
         expect(array[0].name).toBe('Updated');
         expect(change).toEqual({ op: 'updated', id: 'a', entity: before, patch: { name: 'Updated' } });
         expect(listener).toHaveBeenCalledWith(change);
@@ -85,12 +85,11 @@ describe('EntityStore', () => {
 
     test('reset() re-syncs the id index from the array and emits a single reset', () => {
         const { array, store } = makeStore([{ id: 'a' }]);
-        // simulate the array being rebuilt out from under the store (e.g. a full refetch)
         array.length = 0;
         array.push({ id: 'a' }, { id: 'z' });
         const listener = jest.fn();
         store.onChange(listener);
-        expect(store.has('z')).toBe(false); // index is stale before reset()
+        expect(store.has('z')).toBe(false);
         const change = store.reset();
         expect(store.has('z')).toBe(true);
         expect(change).toEqual({ op: 'reset' });
@@ -178,7 +177,6 @@ describe('onAnyEntityStoreChange', () => {
         store.reindex();
         expect(heard.length).toBe(4);
 
-        // A rebuilt store is heard without subscribing again.
         const rebuilt = new EntityStore([], e => e.id);
         expect(heard[4]).toBe(rebuilt);
 
@@ -308,14 +306,6 @@ describe('DictEntityStore', () => {
     });
 });
 
-/**
- * These mirror the exact store-construction pattern each migrated subsystem uses (same getId functions / backing
- * shapes as tags.js, script.js, group-chats.js, power-user.js), to pin down the invariant each migration actually
- * depends on: a mutation on the store surfaces via onChange() with enough detail that a subscriber needs no
- * before/after diff to know what to invalidate. This doesn't import those modules directly - they pull in the
- * full app entry point (script.js) with DOM/jQuery side effects that aren't set up for node/jest - so this is
- * scoped to the store-wiring contract itself, not a full integration test of e.g. tags.js's DOM handlers.
- */
 describe('migrated-subsystem store wiring', () => {
     test('characters: EntityStore keyed by avatar, as wired in script.js', () => {
         const characters = [{ avatar: 'char1.png', name: 'Alice' }];
@@ -323,9 +313,6 @@ describe('migrated-subsystem store wiring', () => {
         const listener = jest.fn();
         charactersStore.onChange(listener);
 
-        // a rename changes the id-bearing field itself - the array is spliced in place by the caller and the
-        // store is told about it after the fact via reindex()+reportRenamed(), same as EntityStore.reportRenamed's
-        // documented contract for "backing array already rebuilt out from under this store".
         characters[0].avatar = 'char1-renamed.png';
         charactersStore.reindex();
         const change = charactersStore.reportRenamed('char1.png', 'char1-renamed.png');
@@ -352,8 +339,6 @@ describe('migrated-subsystem store wiring', () => {
         const listener = jest.fn();
         personaStore.onChange(listener);
 
-        // a persona avatar rename must move the entry under the store's rename(), not a delete+create pair -
-        // otherwise a subscriber keyed on 'created'/'removed' would treat it as losing then gaining a persona.
         const change = personaStore.rename('user1.png', 'user1-renamed.png');
         expect(change.op).toBe('renamed');
         expect(Object.hasOwn(persona_data, 'user1.png')).toBe(false);

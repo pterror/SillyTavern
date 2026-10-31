@@ -2,32 +2,24 @@ import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
 import { getStoppingStrings } from './stopping-strings.js';
 
 /**
- * Server-side port of public/script.js's cleanUpMessage() for a generated reply (never an impersonation: those
- * aren't stored), run on the reply before it is stored. Upstream's page ran it on every reply before parsing its
- * reasoning, so src/reply-reasoning.js runs it first, in the same order.
- *
- * Every setting is read once when the generation starts (readReplyFinishSettings()); this module reads nothing.
- */
-
-/**
  * @typedef {object} ReplyCleanupSettings
  * @property {string} mainApi
  * @property {string} name1
  * @property {string} name2
- * @property {string} replyBias "Start Reply With", macros substituted.
- * @property {object} stoppingStringsParams What getStoppingStrings() takes, minus isImpersonate/isContinue/api/chat.
+ * @property {string} replyBias
+ * @property {object} stoppingStringsParams
  * @property {object[]} regexScripts
  * @property {boolean} regexEnabled
  * @property {{name1: string, name2: string}} macroContext
- * @property {boolean} collapseNewlines `power_user.collapse_newlines`
- * @property {boolean} allowName1Display `power_user.allow_name1_display`
- * @property {boolean} allowName2Display `power_user.allow_name2_display`
- * @property {{enabled?: boolean, stop_sequence?: string, input_sequence?: string, output_sequence?: string, last_output_sequence?: string, sequences_as_stop_strings?: boolean}} instruct `power_user.instruct`
+ * @property {boolean} collapseNewlines
+ * @property {boolean} allowName1Display
+ * @property {boolean} allowName2Display
+ * @property {{enabled?: boolean, stop_sequence?: string, input_sequence?: string, output_sequence?: string, last_output_sequence?: string, sequences_as_stop_strings?: boolean}} instruct
  * @property {boolean} isGroup
- * @property {string[]} groupMemberNames The group's members' names.
- * @property {boolean} disableGroupTrimming `power_user.disable_group_trimming`
- * @property {boolean} trimSentences `power_user.trim_sentences`
- * @property {boolean} trimSpaces `power_user.trim_spaces`
+ * @property {string[]} groupMemberNames
+ * @property {boolean} disableGroupTrimming
+ * @property {boolean} trimSentences
+ * @property {boolean} trimSpaces
  */
 
 /** @param {string} string */
@@ -36,7 +28,6 @@ function escapeRegex(string) {
 }
 
 /**
- * Port of public/scripts/utils.js trimToEndSentence().
  * @param {string} input
  * @returns {string}
  */
@@ -67,7 +58,6 @@ export function trimToEndSentence(input) {
 }
 
 /**
- * The stopping strings of this reply, as upstream's getStoppingStrings(false, isContinue, main_api) gives them.
  * @param {ReplyCleanupSettings} settings
  * @param {{isContinue: boolean, lastIsUser: boolean}} reply
  */
@@ -80,11 +70,9 @@ export function replyStoppingStrings(settings, { isContinue, lastIsUser }) {
 }
 
 /**
- * Port of cleanUpMessage({ getMessage, isImpersonate: false, isContinue, displayIncompleteSentences: false }).
- * @param {string} text The reply's text (a continue's: the message's text and the generated text).
+ * @param {string} text
  * @param {ReplyCleanupSettings} settings
- * @param {{isContinue: boolean, lastIsUser?: boolean, keepSpaces?: boolean}} reply `keepSpaces`: the prompt ended
- *   inside a reasoning block (PromptReasoning.getLatestPrefix()), so the text isn't trimmed.
+ * @param {{isContinue: boolean, lastIsUser?: boolean, keepSpaces?: boolean}} reply
  * @returns {string}
  */
 export function cleanUpReply(text, settings, { isContinue, lastIsUser = false, keepSpaces = false }) {

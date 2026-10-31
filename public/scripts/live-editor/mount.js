@@ -12,54 +12,40 @@ const { EditorState, Compartment, Annotation, Prec } = cmState;
 const { EditorView, placeholder: placeholderExtension, keymap, drawSelection, tooltips } = cmView;
 const { history, historyKeymap, defaultKeymap, deleteCharForward } = cmCommands;
 
-/**
- * Shift+Delete as in a text box: with a selection the browser cuts it; with none it deletes forward. Left to the
- * browser, it cuts with nothing selected too, and CodeMirror then cuts the whole line: in a field of one paragraph,
- * all of it.
- * @type {import('@codemirror/view').Command}
- */
+/** @type {import('@codemirror/view').Command} */
 const shiftDelete = view => view.state.selection.ranges.every(range => range.empty) && deleteCharForward(view);
 
 /**
  * @typedef {object} LiveEditorOptions
- * @property {Element} [mountAfter] Where the editor goes; the textarea itself by default.
- * @property {import('./grammar.js').GrammarOptions} [grammar] How the field's text is read (chat's options for it).
- * @property {(text: string) => string} [render] The field's render function; without one the text is only styled.
- * @property {import('./macros.js').MacroOptions} [macros] Filling in macros and suggesting them; without it macros
- *   are left as written and nothing is suggested.
- * @property {import('./formatting.js').FormattingOptions | false} [formatting] The toolbar and formatting keys; on unless
- *   false.
- * @property {import('./search.js').SearchOptions | false} [search] Find and replace and its presets; on unless false.
- * @property {string} [contentClass] Classes the field's preview has, so theme CSS styles the editor's text the same.
- * @property {string} [editorClass] Classes for the editor's root, for field-specific CSS.
+ * @property {Element} [mountAfter]
+ * @property {import('./grammar.js').GrammarOptions} [grammar]
+ * @property {(text: string) => string} [render]
+ * @property {import('./macros.js').MacroOptions} [macros]
+ * @property {import('./formatting.js').FormattingOptions | false} [formatting]
+ * @property {import('./search.js').SearchOptions | false} [search]
+ * @property {string} [contentClass]
+ * @property {string} [editorClass]
  */
 
 /**
  * @typedef {object} LiveEditor
  * @property {import('@codemirror/view').EditorView} view
  * @property {Record<'grammar'|'render'|'macros'|'toolbar'|'paste'|'search'|'sync', import('@codemirror/state').Compartment>} compartments
- *   One per feature, so each can be swapped without rebuilding the editor.
- * @property {() => void} destroy Takes the editor away; the textarea is shown again and keeps the text.
- * @property {() => void} takeFocus Moves focus into the editor. If the textarea had it, the field keeps focus as far as
- *   anything listening on the textarea can tell: no blur, focusout, focus or focusin is seen for the move.
+ * @property {() => void} destroy
+ * @property {() => void} takeFocus
  */
 
-/** Marks a transaction that came from code writing the textarea, so it isn't copied back as the user's input. */
 const fromTextarea = Annotation.define();
 
-/** Events copied onto the textarea before the editor handles them, so listeners on it run as they did. */
 const FORWARDED = ['keydown', 'keyup', 'keypress', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu', 'copy', 'cut', 'paste'];
 
-/** @param {KeyboardEvent} event Whether it's the paste picker's Ctrl+Alt+V (Cmd+Option+V on a Mac). */
+/** @param {KeyboardEvent} event */
 const isPasteCycleKey = (event) => (event.ctrlKey || event.metaKey) && event.altKey && !event.shiftKey && event.code === 'KeyV';
 
-/** Keys the open suggestion list takes. */
 const LIST_KEYS = new Set(['Escape', 'Enter', 'Tab', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown']);
 
-/** The originals stop at the editor, so code outside sees each one once, as the textarea's. */
 const STOPPED = [...FORWARDED, 'input', 'beforeinput', 'focusin', 'focusout', 'compositionstart', 'compositionupdate', 'compositionend'];
 
-/** What the editor takes from the textarea's own look (inline style, classes, theme CSS by id), so it looks the same. */
 const COPIED_STYLE = [
     'font-family', 'font-size', 'font-weight', 'font-style', 'line-height', 'letter-spacing', 'word-spacing',
     'word-break', 'overflow-wrap', 'color', 'caret-color', 'background-color', 'background-image', 'transition', 'border-top',
@@ -71,7 +57,7 @@ const textareaValue = /** @type {PropertyDescriptor} */ (Object.getOwnPropertyDe
 
 /**
  * @param {Event} event
- * @returns {Event} A copy of the event for the textarea.
+ * @returns {Event}
  */
 function copyEvent(event) {
     const base = { bubbles: true, cancelable: true, composed: true };
@@ -96,8 +82,6 @@ function copyEvent(event) {
 }
 
 /**
- * The smallest change that turns `from` into `to`, so a write from code keeps the cursor and the undo history where
- * the text didn't change.
  * @param {string} from
  * @param {string} to
  * @returns {{ from: number, to: number, insert: string } | null}
@@ -117,8 +101,6 @@ function diffText(from, to) {
 }
 
 /**
- * Mounts an editor in place of a textarea. The textarea stays in the page, hidden, with its id, value and events:
- * code reading or writing it, focusing it or listening on it works as it did.
  * @param {HTMLTextAreaElement} textarea
  * @param {LiveEditorOptions} [options]
  * @returns {LiveEditor}
@@ -138,27 +120,20 @@ export function mountLiveEditor(textarea, options = {}) {
 
     const forwardHandlers = Object.fromEntries(FORWARDED.map(type => [type, (/** @type {Event} */ event, /** @type {EditorView} */ editorView) => {
         if (event.defaultPrevented) return false;
-        // While the suggestion list is open, its keys belong to it (Escape closes it, Enter takes a suggestion).
         if (event instanceof KeyboardEvent && LIST_KEYS.has(event.key) && editorView.dom.querySelector('.cm-tooltip-autocomplete')) return false;
-        // Escape goes to an open panel or the paste picker first, not to the field's own Escape (ending the edit).
         if (event instanceof KeyboardEvent && event.key === 'Escape' && editorView.dom.querySelector(EDITOR_ESCAPE_TAKERS)) return false;
-        // The paste picker's key switches the paste; it isn't the field's.
         if (event instanceof KeyboardEvent && isPasteCycleKey(event) && editorView.dom.querySelector('.live-paste-picker')) return false;
         const copy = copyEvent(event);
         markEditorEvent(copy);
         textarea.dispatchEvent(copy);
         if (copy.defaultPrevented) {
             event.preventDefault();
-            // Stopped here, not only at view.dom: what handled the copy may take the editor away (Ctrl+Enter ending an
-            // edit) before the original gets there, and code outside would see the key a second time.
             event.stopPropagation();
             return true;
         }
         return false;
     }]));
 
-    // An editor in the chat (a message being edited) keeps the chat where it was as it grows or shrinks, as the
-    // message edit textarea does: the chat's scroll is read before each change and put back after a height change.
     let chatScrollBefore = null;
     const keepChatScroll = [
         EditorState.transactionExtender.of(() => {
@@ -185,7 +160,6 @@ export function mountLiveEditor(textarea, options = {}) {
     const view = new EditorView({
         state: EditorState.create({
             doc: textareaValue.get.call(textarea),
-            // Where the textarea's cursor was, so typing goes on where it was.
             selection: initialSelection(textarea),
             extensions: [
                 compartments.grammar.of(chatMarkdownLanguage(options.grammar)),
@@ -198,14 +172,9 @@ export function mountLiveEditor(textarea, options = {}) {
                 history(),
                 keymap.of([{ key: 'Shift-Delete', run: shiftDelete }, ...defaultKeymap, ...historyKeymap]),
                 EditorView.lineWrapping,
-                // Where the editor's tooltips may go: the part of the window that what holds the editor doesn't clip (the
-                // chat column cuts off what overflows it).
                 tooltips({ tooltipSpace: view => unclippedSpace(view.dom) }),
-                // The editor draws its cursor where it measures the text (the browser's own lands above a lone
-                // placeholder in Firefox).
                 drawSelection(),
                 EditorView.editorAttributes.of({ class: options.editorClass ? `live-editor ${options.editorClass}` : 'live-editor' }),
-                // First, so listeners on the textarea get every event before the editor's own handlers.
                 Prec.highest(EditorView.domEventHandlers(forwardHandlers)),
                 sync,
                 keepChatScroll,
@@ -232,10 +201,8 @@ export function mountLiveEditor(textarea, options = {}) {
         macroSuggestions: Boolean(options.macros),
     });
 
-    // While focus moves from the textarea into its own editor, the field doesn't lose or gain focus.
     let movingFocusIn = false;
 
-    // Focus moving into or out of the editor is the textarea gaining or losing focus, at the same moment.
     const onContentFocus = (/** @type {FocusEvent} */ event) => {
         if (movingFocusIn) return;
         const pair = event.type === 'focus' ? [['focus', false], ['focusin', true]] : [['blur', false], ['focusout', true]];
@@ -254,8 +221,6 @@ export function mountLiveEditor(textarea, options = {}) {
     textarea.classList.add('live-editor-textarea');
     const restoreTextarea = proxyTextarea(textarea, view);
 
-    // Code that writes the value through the prototype's setter (going around the textarea's own `value`) and then
-    // fires `input`, as some extensions do, still reaches the editor.
     const onOutsideInput = (/** @type {Event} */ event) => {
         if (isEditorEvent(event)) return;
         const change = diffText(view.state.doc.toString(), textareaValue.get.call(textarea));
@@ -263,9 +228,6 @@ export function mountLiveEditor(textarea, options = {}) {
     };
     textarea.addEventListener('input', onOutsideInput, true);
 
-    // Inline styles and classes set on the textarea later (fonts, themes) still reach the editor. The hiding class
-    // changes none of the properties copied, so the textarea can be read while hidden. So does a changed placeholder
-    // (the chat box's says whether an API is connected).
     const observer = new MutationObserver((mutations) => {
         applyLook(view, readLook(textarea));
         if (mutations.some(m => m.attributeName === 'placeholder')) {
@@ -274,9 +236,6 @@ export function mountLiveEditor(textarea, options = {}) {
     });
     observer.observe(textarea, { attributes: true, attributeFilter: ['style', 'class', 'placeholder'] });
 
-    // Its tooltips (macro suggestions and their info, the paste picker) float over the page from inside it, where
-    // nothing outside watches: the page is told when one comes or goes, or a part of one does (a suggestion's info,
-    // drawn once its value is in).
     const tooltipWatcher = new MutationObserver(() => {
         watchTooltips();
         view.dom.dispatchEvent(new Event(OVERLAYS_CHANGED_EVENT, { bubbles: true }));
@@ -363,10 +322,9 @@ function applyLook(view, look) {
 }
 
 /**
- * Makes the textarea's value, selection and focus read and write the editor.
  * @param {HTMLTextAreaElement} textarea
  * @param {EditorView} view
- * @returns {() => void} Puts the textarea's own behaviour back.
+ * @returns {() => void}
  */
 function proxyTextarea(textarea, view) {
     /** @param {string} text */
@@ -376,7 +334,11 @@ function proxyTextarea(textarea, view) {
         if (change) view.dispatch({ changes: change, annotations: fromTextarea.of(true) });
     };
     const clamp = (/** @type {number} */ n) => Math.max(0, Math.min(view.state.doc.length, Number(n) || 0));
-    /** @param {number} start @param {number} end @param {string} [direction] */
+    /**
+     * @param {number} start
+     * @param {number} end
+     * @param {string} [direction]
+     */
     const select = (start, end, direction) => {
         const from = clamp(start);
         const to = Math.max(from, clamp(end));

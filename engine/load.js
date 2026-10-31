@@ -12,14 +12,12 @@ export class EngineLoadError extends Error {}
 let loaded = null;
 
 /**
- * Loads this checkout's engine from engine/dist/: the native build for this platform, else the wasm build.
  * @param {object} [options]
- * @param {string|null} [options.platform] targets.json native platform, or null to load the wasm
+ * @param {string|null} [options.platform]
  * @param {string} [options.distDir]
  * @returns {{ kind: 'native'|'wasm', file: string, binding: any }}
  */
 export function loadEngine({ platform = currentPlatform(), distDir = DIST_DIR } = {}) {
-    // Tests only: a scratch build (a `.node` or `.wasm` file) in place of engine/dist/, which a running server uses.
     const override = process.env.ST_ENGINE_PATH;
     if (override) {
         if (!fs.existsSync(override)) throw new EngineLoadError(`ST_ENGINE_PATH names no file: ${override}`);
@@ -42,7 +40,7 @@ export function loadEngine({ platform = currentPlatform(), distDir = DIST_DIR } 
 }
 
 /**
- * @returns {any} The loaded engine binding
+ * @returns {any}
  */
 export function getEngine() {
     if (!loaded) throw new EngineLoadError('The engine is not loaded.');

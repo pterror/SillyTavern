@@ -1,15 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-/**
- * The standard test user, written into a store through the app's own write paths: varied cards (V1, V2, V3, odd
- * dates, lone surrogates, an embedded book, lorebook links to present and missing books), tags with a merge and a key
- * no definition has, groups, world books, and chats with swipes, forks, bookmarks (a repeated label, a pinned
- * checkpoint, one at a tree's root), metadata and variables, a lorebook link in metadata, an itemization, a send key
- * and a chosen card greeting.
- */
 
-/** The card PNG of a character: its image bytes (card reads take the card from the store). */
 const png = (/** @type {number} */ n) => Buffer.from(`PNG-${n % 3}`);
 
 /**
@@ -27,20 +19,16 @@ const entry = (uid, text) => ({ uid, key: ['k' + uid, 'shared'], keysecondary: [
 const msg = (name, isUser, mes, more = {}) => ({ name, is_user: isUser, is_system: false, send_date: '2024-05-01T10:00:00.000Z', mes, extra: {}, ...more });
 
 /**
- * Writes the standard user into an empty store.
- * @param {{ directories: any, store: import('../src/user-stores.js').UserStore, handle?: string }} user `handle`: the
- * user whose sessions hold the chats' places (default `u`).
+ * @param {{ directories: any, store: import('../src/user-stores.js').UserStore, handle?: string }} user
  */
 export async function buildStandardUser({ directories, store, handle = 'u' }) {
     const { lib, chats } = store;
     const { defaultSessionKey, MODE } = await import('../src/chat-engine.js');
 
-    // ---- world books ----
     await lib.books.write('Lore A', { name: 'Lore A', entries: { 0: entry(0, 'alpha'), 7: entry(7, 'lone \ud800 surrogate') } });
     await lib.books.write('Lore V2', { name: 'Lore V2', entries: { 3: entry(3, 'from a sidecar') }, extensions: { x: 1 } });
     await lib.books.write('Lore V1', { name: 'Lore V1', entries: { 1: entry(1, 'from the old sidecar') } });
 
-    // ---- characters ----
     const card = async (/** @type {string} */ avatar, /** @type {object} */ c, /** @type {number} */ n) => {
         fs.writeFileSync(path.join(directories.characters, avatar), png(n));
         await lib.writeCard(directories, avatar, JSON.stringify(c));
@@ -50,20 +38,17 @@ export async function buildStandardUser({ directories, store, handle = 'u' }) {
     await card('Bob.png', { name: 'Bob', description: 'A V1 card.', first_mes: 'Bob here.', tags: 'a, b', create_date: 'garbage', creatorcomment: 'old' }, 1);
     await card('Cara.png', { spec: 'chara_card_v3', spec_version: '3.0', data: { name: 'Cara \udc00', description: 'lone surrogate', first_mes: 'Greetings.', alternate_greetings: ['Second greeting.'], group_only_greetings: ['g'], extensions: { fav: false, world: 'Lore/Missing?' } } }, 2);
     await lib.setFav(0, 'Bob.png', true);
-    // Each card's file recorded as converted, as in a converted store: a rescan leaves it.
     const { convertedFileKey } = await import('../src/library-codes.js');
     for (const avatar of ['Alice.png', 'Bob.png', 'Cara.png']) {
         const st = fs.statSync(path.join(directories.characters, avatar));
         await lib.store.commit([{ kind: 'metaValue', key: convertedFileKey(avatar), json: JSON.stringify([st.size, st.mtimeMs]) }]);
     }
 
-    // ---- groups ----
     const groupId = '1700000000001';
     await lib.writeGroup({ id: groupId, name: 'Party', members: ['Alice.png', 'Bob.png'], disabled_members: [], avatar_url: '', allow_self_responses: false, activation_strategy: 0, generation_mode: 0, chat_id: 'Party chat', chats: ['Party chat', 'Dropped empty', 'Dropped twin'], fav: true, past_metadata: {} });
     const damagedId = '1700000000002';
     await lib.writeGroup({ id: damagedId, name: 'Damaged', members: ['Alice.png'], chats: ['c1'], chat_id: 'c1' });
 
-    // ---- tags: definitions, assignments, one deleted into another, a key no definition has ----
     await lib.tags.create({ id: 'tag-red', name: 'Red', color: '#f00', sort_order: 2 });
     await lib.tags.create({ id: 'tag-blue', name: 'Blue', folder_type: 'OPEN', sort_order: 0.5 });
     await lib.tags.create({ id: 'tag-old', name: 'Old' });
@@ -72,7 +57,6 @@ export async function buildStandardUser({ directories, store, handle = 'u' }) {
     }
     await lib.tags.delete('tag-old', 'tag-red');
 
-    // ---- chats ----
     const header = (/** @type {object} */ chatMetadata) => ({ user_name: 'You', character_name: 'x', chat_metadata: chatMetadata });
     /** @param {{ avatar?: string, group?: string }} owner */
     const treeOf = async owner => {
@@ -86,8 +70,6 @@ export async function buildStandardUser({ directories, store, handle = 'u' }) {
         return r;
     };
     /**
-     * A chat (`[header, ...messages]`) stored from the tree's root as the session's conversation, the session at its
-     * end: each message's node in `assigned_node_ids`.
      * @param {{ tree: bigint, treeSpeaker: any, actor: { user: string, session: string } }} who
      * @param {any[]} chat
      */
@@ -97,8 +79,6 @@ export async function buildStandardUser({ directories, store, handle = 'u' }) {
         return { assigned_node_ids: imported.node_ids.map((/** @type {string} */ node_id, /** @type {number} */ index) => ({ index, node_id })) };
     };
 
-    // Alice: a chat with swipes, metadata with variables and a lorebook, a fork, a bookmark whose suggested label was
-    // taken (named the next free one), an itemization, a send key and a chat with no name.
     const alice = await treeOf({ avatar: 'Alice.png' });
     const saved = await storeConversation(alice, [
         header({}),
@@ -122,14 +102,12 @@ export async function buildStandardUser({ directories, store, handle = 'u' }) {
         ok(await chats.createBookmark({ ...alice, node_id: sent[1], name, suggested: true }));
     }
 
-    // Bob: a checkpoint, and his card greeting chosen.
     const bob = await treeOf({ avatar: 'Bob.png' });
     const bobChat = await storeConversation(bob, [header({}), msg('Bob', false, 'Bob here.'), msg('You', true, 'Hi Bob.')]);
     const bobEnd = bobChat.assigned_node_ids[bobChat.assigned_node_ids.length - 1].node_id;
     ok(await chats.createBookmark({ ...bob, node_id: bobEnd, name: 'Bob - Checkpoint #1', mode: MODE.pinned }));
     ok(await chats.chooseCardGreeting({ ...bob, index: 0 }));
 
-    // The group: a chat, a second bookmark where it ends, and one at the root.
     const party = await treeOf({ group: groupId });
     const partyChat = await storeConversation(party, [
         header({}),
@@ -143,7 +121,6 @@ export async function buildStandardUser({ directories, store, handle = 'u' }) {
     ok(await chats.createBookmark({ ...party, node_id: partyEnd, name: 'Party chat' }));
     ok(await chats.createBookmark({ ...party, node_id: partyEnd, name: 'Dropped twin' }));
 
-    // A second group: a greeting, then a chat with swipes whose first message is another greeting.
     const damaged = await treeOf({ group: damagedId });
     ok(await chats.addOpenings({ ...damaged, contents: [{ name: 'Alice', is_user: false, mes: 'm2b', send_date: 'd2', extra: {} }] }));
     const c1 = await storeConversation(damaged, [

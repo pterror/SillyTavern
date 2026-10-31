@@ -8,35 +8,11 @@ import { mock } from 'node:test';
 import express from 'express';
 
 import { write as writeCard } from '../../character-card-parser.js';
-// text-completions.js -> text-completion-generation-input.js pulls in src/endpoints/characters.js
-// (via readCardContent), which (via character-shallow.js) reads process-wide config at import
-// time - the config path must be set before that import chain runs, same as
-// text-completion-generation-input.test.js/character-card-fields.test.js.
 import { setConfigFilePath } from '../../util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 
-// This route handler (src/endpoints/backends/text-completions.js) has no existing route-level
-// Express-integration-test convention anywhere else in this codebase (no sibling
-// src/endpoints/backends/*.test.js at all) - so, per this session's task, the REQUEST-BUILDING
-// portion of the new raw-action /generate branch (everything before `request.body = {...}` and
-// the fall-through to the existing, unchanged backend-dispatch code) was extracted into a small,
-// Express-independent, directly-testable function - buildRawActionTextCompletionRequest() - and is
-// exercised here directly with real on-disk fixtures, the same way text-completion-generation-
-// input.test.js and text-completion-prompt-orchestrator.test.js test their own real logic.
-//
-// The assistant-reply-persistence follow-up (this session) DOES need a real route-level exercise -
-// there is no way to observe `pendingAssistantPersist` being read from outside the route handler
-// otherwise. Since this file still has no pre-existing route-integration harness to reuse, a
-// minimal one is built here: mount the real `router` on a real `express` app (with a tiny
-// middleware standing in for auth middleware's `request.user.directories`), listen on an ephemeral
-// port, and point a SECOND real `http` server (standing in for the text-completion backend) at it
-// via `server_urls.generic` in the settings fixture below - both real network I/O, no mocking
-// framework, matching this file's existing "real on-disk fixtures over mocks" convention.
-//
-// OpenRouter's server URL is fixed, so settings can't point it at a local backend; node-fetch is
-// rerouted instead. Needs --experimental-test-module-mocks.
 const canMockOpenRouter = typeof mock.module === 'function';
 /** @type {string|null} */
 let openRouterFakeBackendUrl = null;
@@ -61,14 +37,9 @@ const { writeAllSettings } = await import('../../settings-store.js');
 const { importWorldInfoFromRaw } = await import('../worldinfo.js');
 const { writeSecret, deleteSecret, SECRET_KEYS } = await import('../secrets.js');
 const { writeBack, tokenKeyHash } = await import('../../token-count-store.js');
-// The client-side compact-stream decoder (public/scripts/llamacpp-compact-stream.js) has no browser-
-// only dependencies (just TextDecoder/Uint8Array, both real Node globals), so it's imported directly
-// here rather than re-implementing a second copy of the decode logic for this test file.
 const { CompactStreamDecoder } = await import('../../../public/scripts/llamacpp-compact-stream.js');
 const { SentencePieceProcessor } = await import('@agnai/sentencepiece-js');
 
-// Every sentencepiece encode this process makes, by model file. Installed before anything encodes,
-// so a tokenizer loaded by an earlier case is still attributed to its file.
 const sentencepieceEncodes = [];
 {
     const load = SentencePieceProcessor.prototype.load;
@@ -94,7 +65,6 @@ globalThis.DATA_ROOT = user.dataRoot;
 const { newSessionKey } = await import('../../chat-engine.js');
 
 /**
- * The chat context a request naming `nodeId` acts in: the session of the branch holding it, else a new one.
  * @param {string} avatar
  * @param {unknown} nodeId
  */
@@ -103,7 +73,6 @@ async function chatOf(avatar, nodeId) {
 }
 
 /**
- * Messages appended after `after` (null: opening the tree) through the session of the branch holding it.
  * @param {string} avatar
  * @param {string | null} after
  * @param {Record<string, any>[]} contents
@@ -149,14 +118,12 @@ async function writeCharacter(avatar, overrides = {}) {
     return avatar;
 }
 
-/** Real settings.json fixture - only the keys resolveTextGenBackend()/resolveTokenizer()/resolveTextCompletionGenerationInput() actually read. */
 function buildSettingsFixture() {
     return {
         username: 'Tester',
         amount_gen: 100,
         max_context: 4096,
         power_user: {
-            // No tokenizer setting: best match.
             tokenizer: undefined,
             instruct: { enabled: false },
             context: {},
@@ -174,7 +141,6 @@ function buildSettingsFixture() {
     };
 }
 
-/** Deterministic fake local encoder, injected via tokenizerOptions so no real tokenizer model files or network calls are needed. */
 const fakeTokenizerOptions = {
     encodeLocal: async (_key, text) => Array.from(String(text ?? '')).map(ch => ch.codePointAt(0)),
 };
@@ -188,11 +154,6 @@ async function run() {
     });
 
     const ownerId = avatar;
-    // `branchName` here is ONLY the chat store's own label/bookmark concept (saveChatToTree()'s
-    // `chatName` param, loadBranch()'s lookup key) - a real, still-supported, unrelated primitive.
-    // It is NOT a raw-action request field anymore (see buildRawActionTextCompletionRequest()'s own
-    // ADDRESSING MODEL doc comment) - every raw-action call below resolves and passes the real
-    // `node_id` (a leaf id from `loadBranch()`) instead.
     const branchName = 'main-chat';
     await saveBranch(user.store, { avatar: ownerId }, branchName, [
         { chat_metadata: {} },
@@ -203,7 +164,6 @@ async function run() {
     const mainBranchInfo = await loadBranch(user.store, { avatar: ownerId }, branchName);
     const mainLeafId = mainBranchInfo.branch.leaf_id;
 
-    // --- happy path: a new user message on an existing conversation, addressed by its real node_id ---
     const built = await buildRawActionTextCompletionRequest(directories, {
         characterAvatar: avatar, chat: await chatOf(avatar, mainLeafId), nodeId: mainLeafId,
         type: 'normal', userMessageText: 'What happens next, Rex?',
@@ -225,7 +185,6 @@ async function run() {
     assert.ok(built.params.prompt.includes('Hello there, traveler.'), 'the real loaded chat history made it into the assembled prompt');
     assert.ok(built.params.prompt.includes('What happens next, Rex?'), 'the raw user_message made it into the assembled prompt');
 
-    // --- persistence: the anchorNodeId this function resolves is really appendable-after ---
     const appendResult = await appendThrough(ownerId, built.anchorNodeId, [
         { name: built.name1, is_user: true, mes: 'What happens next, Rex?', extra: {}, send_date: Date.now() },
     ]);
@@ -234,8 +193,6 @@ async function run() {
     assert.equal(branchAfterAppend.messages.length, 4, 'the persisted user message is now part of the real loaded branch');
     assert.equal(branchAfterAppend.messages[3].mes, 'What happens next, Rex?');
 
-    // --- continue/swipe: no userMessageText, still resolves and assembles from the real history,
-    // addressed by the real current leaf's node_id ---
     const continued = await buildRawActionTextCompletionRequest(directories, {
         characterAvatar: avatar, chat: await chatOf(avatar, branchAfterAppend.branch.leaf_id), nodeId: branchAfterAppend.branch.leaf_id, type: 'continue', isContinue: true,
         tokenizerOptions: fakeTokenizerOptions,
@@ -244,9 +201,6 @@ async function run() {
     assert.equal(continued.anchorNodeId, branchAfterAppend.branch.leaf_id, 'the continue anchor is the real current leaf');
     assert.equal(continued.anchorContent?.mes, 'What happens next, Rex?', 'anchorContent is the anchor\'s real, current, unmodified content (the real leaf at this point in the test, appended above) - exactly what the route\'s is_continue edit needs as "oldText"');
 
-    // --- quiet prompt: a quiet generation's instruction (`/sysgen`, generateQuietPrompt()) ends the prompt (outside
-    // instruct mode upstream appends it as is and adds no name line), and an /impersonate <prompt>'s goes in loud,
-    // before the user's name line ---
     const quietLeafId = branchAfterAppend.branch.leaf_id;
     const quiet = await buildRawActionTextCompletionRequest(directories, {
         characterAvatar: avatar, chat: await chatOf(avatar, quietLeafId), nodeId: quietLeafId, type: 'quiet',
@@ -261,7 +215,6 @@ async function run() {
     });
     assert.match(impersonated.params.prompt, /\nTester waves\.\nTester:$/, 'an /impersonate prompt goes in before the user\'s name line');
 
-    // --- error handling: unknown character ---
     await assert.rejects(
         async () => buildRawActionTextCompletionRequest(directories, {
             characterAvatar: 'NoSuchCharacter.png', chat: await chatOf(avatar, mainLeafId), nodeId: mainLeafId,
@@ -270,7 +223,6 @@ async function run() {
         /Character not found/,
     );
 
-    // --- error handling: unknown node ---
     await assert.rejects(
         async () => buildRawActionTextCompletionRequest(directories, {
             characterAvatar: avatar, chat: await chatOf(avatar, 'no-such-node-id'), nodeId: 'no-such-node-id',
@@ -279,10 +231,6 @@ async function run() {
         /Chat node not found/,
     );
 
-    // --- error handling: node_id key entirely absent (not even explicit null) - the corrected
-    // model's own "loud failure instead of a silent wrong-guess" requirement: `undefined` (the
-    // route handler's stand-in for "the JSON body never had this key at all") must be rejected,
-    // distinctly from an explicit `null`. ---
     await assert.rejects(
         async () => buildRawActionTextCompletionRequest(directories, {
             characterAvatar: avatar, chat: await chatOf(avatar, undefined),
@@ -291,9 +239,6 @@ async function run() {
         /node_id is required \(pass null explicitly for a brand-new, empty conversation\)/,
     );
 
-    // --- error handling: node_id: null on an owner that ALREADY has real history - the corrected
-    // model's central safety rule: the server must NOT silently guess "the current leaf" once real,
-    // possibly-since-changed history exists; this must be a real, reportable error instead. ---
     await assert.rejects(
         async () => buildRawActionTextCompletionRequest(directories, {
             characterAvatar: avatar, chat: await chatOf(avatar, null), nodeId: null,
@@ -302,10 +247,6 @@ async function run() {
         /node_id is required: this chat is not at its start/,
     );
 
-    // --- happy path: node_id: null on a GENUINELY BRAND-NEW character with zero prior messages -
-    // the ONLY case where omitting a real node id is safe, since there is no real point for the
-    // caller to have disagreed about. Resolves via the owner's own anchor (auto-created, no name
-    // required at all) to an empty chat, and still produces a real, appendable anchorNodeId. ---
     const freshAvatar = await writeCharacter('Fresh.png', {
         name: 'Fresh',
         description: 'Fresh is a brand-new character with no chat history yet.',
@@ -324,8 +265,6 @@ async function run() {
     ]);
     assert.equal(freshAppendResult.ok, true, 'the anchor-resolved node id for a brand-new conversation is a real, appendable node - not a fake/synthetic id');
 
-    // --- error handling: missing character/group (nodeId irrelevant here - the character/group
-    // check runs first) ---
     await assert.rejects(
         () => buildRawActionTextCompletionRequest(directories, {
             nodeId: mainLeafId,
@@ -334,11 +273,6 @@ async function run() {
         /character_avatar or group_id is required/,
     );
 
-    // --- route-level: non-streaming raw-action /generate persists the assistant reply for real ---
-    // A minimal, real (no mocking framework) harness: a real `http` server standing in for the
-    // text-completion backend, and the real `router` mounted on a real `express` app standing in
-    // for the actual server (with a tiny middleware substituting for auth middleware's
-    // `request.user.directories`).
     async function startFakeBackend(handler) {
         const server = http.createServer((req, res) => {
             let body = '';
@@ -377,10 +311,6 @@ async function run() {
             const data = await res.json();
             return { status: res.status, data };
         } finally {
-            // Without forcing idle keep-alive sockets closed, server.close() only resolves once the
-            // client's persistent HTTP/1.1 connection times out on its own (Node's default
-            // keepAliveTimeout) - which would otherwise stall every subsequent test in this same
-            // process for several seconds each, for no reason relevant to what's under test here.
             server.closeAllConnections?.();
             await new Promise(resolve => server.close(resolve));
         }
@@ -392,7 +322,6 @@ async function run() {
         writeAllSettings(directories, settings);
     }
 
-    /** Same as pointBackendAt(), but resolves to the OLLAMA backend type/URL/model instead of GENERIC. */
     function pointOllamaBackendAt(url) {
         const settings = buildSettingsFixture();
         settings.textgenerationwebui_settings.type = 'ollama';
@@ -401,7 +330,6 @@ async function run() {
         writeAllSettings(directories, settings);
     }
 
-    /** Same as pointBackendAt(), but resolves to the LLAMACPP backend type/URL instead of GENERIC. */
     function pointLlamaCppBackendAt(url) {
         const settings = buildSettingsFixture();
         settings.textgenerationwebui_settings.type = 'llamacpp';
@@ -409,7 +337,6 @@ async function run() {
         writeAllSettings(directories, settings);
     }
 
-    /** Polls `check()` until it returns truthy or `timeoutMs` elapses - streaming persistence completes asynchronously, after the HTTP response to the client has already fully ended, so tests observe it by polling rather than assuming a fixed ordering. */
     async function waitFor(check, { timeoutMs = 2000, intervalMs = 10 } = {}) {
         const deadline = Date.now() + timeoutMs;
         for (; ;) {
@@ -422,7 +349,6 @@ async function run() {
         }
     }
 
-    /** Starts a fake backend that emits a real OpenAI-text-completions-shaped SSE stream, chunked exactly as given, ending with `data: [DONE]\n\n`. */
     async function startFakeSseBackend(textChunks) {
         const sseBody = textChunks.map(text => `data: ${JSON.stringify({ choices: [{ text }] })}\n\n`).join('') + 'data: [DONE]\n\n';
         return { ...await startFakeBackend((_req, res) => {
@@ -431,13 +357,6 @@ async function run() {
         }), expectedBody: sseBody };
     }
 
-    /**
-     * Starts a fake backend emitting `choices[0].text`/`choices[0].reasoning` SSE chunks with a real
-     * delay between each `res.write()` (forcing them to arrive as separate TCP reads instead of racing
-     * to find out whether Node coalesces same-tick writes into one segment - same rationale as the
-     * pre-existing Ollama fake backend below), so the server's own coalescing/timer logic actually has
-     * more than one upstream event to coalesce across.
-     */
     async function startFakeSseBackendPaced(chunks, delayMs = 3) {
         return await startFakeBackend((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'text/event-stream' });
@@ -453,7 +372,6 @@ async function run() {
         });
     }
 
-    /** Like postGenerate(), but for a streaming request: returns the raw response bytes (not decoded as UTF-8 text) - required for the compact binary protocol, whose control-frame bytes are not valid UTF-8 on their own. */
     async function postGenerateStreamBytes(app, body) {
         const server = app.listen(0, '127.0.0.1');
         await new Promise(resolve => server.once('listening', resolve));
@@ -472,11 +390,6 @@ async function run() {
         }
     }
 
-    /**
-     * Decodes a full compact-stream byte buffer (using the real client-side CompactStreamDecoder) into
-     * the same shape public/scripts/textgen-settings.js's own streamData() consumer builds: the main
-     * `text`, any `swipes[]` (index > 0), accumulated `reasoning`, and the final `assistantNodeId`.
-     */
     function decodeCompactStream(bytes) {
         const decoder = new CompactStreamDecoder();
         const events = [...decoder.push(new Uint8Array(bytes)), ...decoder.flush()];
@@ -510,8 +423,6 @@ async function run() {
         return { text, reasoning, swipes, assistantNodeId, itemization, warnings };
     }
 
-    // (a) a real non-streaming generation appends the assistant's reply onto the tree, chained
-    // after the just-persisted user message, with the correct name/is_user.
     {
         const fakeBackend = await startFakeBackend((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -543,8 +454,6 @@ async function run() {
         assert.equal(assistantMsg.name, 'Rex', 'the assistant message uses name2 (the character\'s display name), not name1');
     }
 
-    // (b) a failed backend response (non-2xx) does NOT append an assistant reply (the user message,
-    // already committed as "the user really sent this" before dispatch, is unaffected either way).
     {
         const fakeBackend = await startFakeBackend((_req, res) => {
             res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -570,8 +479,6 @@ async function run() {
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].is_user, true);
     }
 
-    // Non-streaming raw-action sends on backends whose reply isn't `choices[0].text`: by the time the
-    // answer returns, both the user message and the reply are stored and the answer names the reply's node.
     const nonStreamReplyFailures = [];
     async function nonStreamReplyCase(name, fn) {
         try {
@@ -584,9 +491,8 @@ async function run() {
     }
 
     /**
-     * Sends one non-streaming raw-action message on a fresh branch and checks what is stored when the answer returns.
      * @param {string} chatName
-     * @param {string} replyText The text the backend's answer carries.
+     * @param {string} replyText
      */
     async function assertNonStreamSendStored(chatName, replyText) {
         await saveBranch(user.store, { avatar: ownerId }, chatName, [
@@ -717,8 +623,6 @@ async function run() {
 
     assert.deepEqual(nonStreamReplyFailures, [], 'non-streaming reply storage cases');
 
-    // `stored`: the node the user message was stored at, under the `user_message_ref` the page sent - a
-    // field on a non-streaming answer, the first control frame of a stream.
     const storedRefFailures = [];
     /**
      * @param {string} name
@@ -806,9 +710,6 @@ async function run() {
 
     assert.deepEqual(storedRefFailures, [], 'stored ref cases');
 
-    // An error answer after the user message was stored still reports it: a body the route builds
-    // carries `stored`, and every error answer carries the X-ST-Stored header. A backend's own error
-    // passed on from a stream keeps its status and body exactly.
     const storedErrorFailures = [];
     /**
      * @param {string} name
@@ -896,9 +797,6 @@ async function run() {
 
     assert.deepEqual(storedErrorFailures, [], 'stored error cases');
 
-    // (c) is_impersonate: true - NEITHER the (spuriously passed) user_message NOR the generated
-    // reply may ever land on the tree, even though the backend call succeeds and returns real text.
-    // The generated text must still reach the client unchanged.
     {
         const fakeBackend = await startFakeBackend((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -914,8 +812,6 @@ async function run() {
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: leafBefore,
             type: 'impersonate', is_impersonate: true,
-            // Deliberately included even though a real client never sends this for impersonate - the
-            // route must defensively ignore it regardless.
             user_message: { is_user: true, name: 'User', mes: 'This should never be persisted.' },
             stream: false,
         });
@@ -929,8 +825,6 @@ async function run() {
         assert.equal(branchAfter.branch.leaf_id, leafBefore, 'the branch leaf/ancestor path is completely unchanged');
     }
 
-    // (d) type: 'quiet' - same assertion as (c): no tree mutation on either side, response still
-    // forwarded to the client unchanged.
     {
         const fakeBackend = await startFakeBackend((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -946,8 +840,6 @@ async function run() {
         const { status, data } = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: leafBefore,
             type: 'quiet',
-            // Also deliberately included to verify the defensive skip - a real quiet call has no
-            // fresh user text to send either.
             user_message: { is_user: true, name: 'User', mes: 'This should never be persisted.' },
             stream: false,
         });
@@ -961,10 +853,6 @@ async function run() {
         assert.equal(branchAfter.branch.leaf_id, leafBefore, 'the branch leaf/ancestor path is completely unchanged');
     }
 
-    // (e) is_swipe: true - the reply must land as a real SIBLING alongside the swiped message (under
-    // ITS real parent), not a CHILD chained after it, and the new sibling must become the active path
-    // (selectDefaultChild()). Uses its own small, dedicated branch so it isn't coupled to the mutating
-    // shared `branchName` state above.
     {
         const swipeBranch = 'swipe-chat';
         await saveBranch(user.store, { avatar: ownerId }, swipeBranch, [
@@ -1001,7 +889,6 @@ async function run() {
         assert.notEqual(branchAfter.branch.leaf_id, swipedNodeId, 'the branch is now positioned on a DIFFERENT node - the new alternative');
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'Greetings, traveler!', '(a) the new alternative is now the active/default path, showing the newly generated text');
 
-        // (a) a new SIBLING was added under the correct parent - not a child of the swiped message.
         const newNodeId = branchAfter.branch.leaf_id;
         const newAncestry = (await user.store.chats.load({ tree: await treeOf(user.store, { avatar: ownerId }), at: newNodeId })).messages;
         assert.equal(newAncestry.length, swipedAncestry.length, 'the new alternative sits at the SAME depth as the swiped message (a sibling), not one deeper (a child)');
@@ -1012,16 +899,10 @@ async function run() {
         assert.ok(alternatives.alternatives.some(a => a.node_id === swipedNodeId && a.mes === 'Hello there!'), '(b) the swiped message\'s own original content is completely unchanged');
         assert.ok(alternatives.alternatives.some(a => a.node_id === newNodeId && a.mes === 'Greetings, traveler!'));
 
-        // (c) selectDefaultChild() really was called - the parent's default_child_id now points at
-        // the new alternative, which is exactly what branchAfter.branch.leaf_id resolving to newNodeId
-        // (via descendDefaultSync, asserted above) already demonstrates; double-checked directly here.
         const parentAlternatives = await user.store.chats.alternatives({ node_id: newNodeId });
         assert.equal(parentAlternatives.selected, parentAlternatives.alternatives.findIndex(a => a.node_id === newNodeId), 'the new alternative is the one getAlternatives() reports as currently selected');
     }
 
-    // (f) type: 'regenerate' maps onto the SAME is_swipe-driven persistence as 'swipe' - a real
-    // client sends `is_swipe: true` for both (see public/script.js's own `isSwipe` local), so the
-    // route never distinguishes between the two literal `type` strings for persistence purposes.
     {
         const regenBranch = 'regenerate-chat';
         await saveBranch(user.store, { avatar: ownerId }, regenBranch, [
@@ -1053,9 +934,6 @@ async function run() {
         assert.equal(alternatives.total, 2, 'regenerate did not chain a child - the original message still has exactly one real sibling');
     }
 
-    // (g) is_continue: true - the reply must EDIT the existing leaf node's text in place (oldText +
-    // newText), on the SAME node id, at the SAME position in the tree - never a new node - and no
-    // user-message node may be created.
     {
         const continueBranch = 'continue-chat';
         await saveBranch(user.store, { avatar: ownerId }, continueBranch, [
@@ -1094,9 +972,6 @@ async function run() {
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].is_user, false);
     }
 
-    // Continue clicked with text left in the box: the text is stored as the user's message, and the page
-    // continues that message (as upstream does), so the reply is stored once, as an edit of it. The
-    // assistant message before it is untouched.
     {
         const continueWithUserTextBranch = 'continue-with-user-text-chat';
         await saveBranch(user.store, { avatar: ownerId }, continueWithUserTextBranch, [
@@ -1137,13 +1012,6 @@ async function run() {
         assert.equal(originalNode.mes, 'Once upon a time,', 'the assistant message before it is unchanged');
     }
 
-    // (j) GROUP CHAT support (this session's own task): `character_avatar` (the specific responding
-    // member) AND `group_id` (the group's own addressing) given TOGETHER - the shape
-    // public/script.js's widened raw-action gate now sends for a group turn. Real on-disk fixtures
-    // throughout: a real group.json (matching the exact shape src/endpoints/groups.js's own
-    // `/create` route writes), a real chat branch OWNED BY THE GROUP'S id (not either member's
-    // avatar), and two real member character cards with deliberately distinct `description`s so a
-    // wrong-member mixup would be detectable.
     {
         const nova = await writeCharacter('Nova.png', {
             name: 'Nova',
@@ -1158,7 +1026,6 @@ async function run() {
 
         const groupId = 'test-group-1';
         const groupChatId = 'test-group-1-chat';
-        /** Exact shape src/endpoints/groups.js's own POST /create route writes to <id>.json. */
         const groupMetadata = {
             id: groupId,
             name: 'Adventuring Party',
@@ -1167,7 +1034,6 @@ async function run() {
             allow_self_responses: false,
             activation_strategy: 0,
             generation_mode: 0,
-            // Zephyr muted: {{groupNotMuted}} leaves Zephyr out, {{group}} doesn't.
             disabled_members: [zephyr],
             fav: false,
             chat_id: groupChatId,
@@ -1178,20 +1044,11 @@ async function run() {
         };
         await user.store.lib.writeGroup(groupMetadata);
 
-        // Enable names_as_stop_strings so groupMemberNames' real effect (not just its presence in the
-        // resolver's return value) is observable in the assembled generate_data.
         const groupSettings = buildSettingsFixture();
         groupSettings.power_user.context.names_as_stop_strings = true;
-        // Real default story-string template (public/scripts/power-user.js's own `defaultStoryString`)
-        // so `description` actually reaches the assembled prompt - the base fixture's `context: {}`
-        // has no template at all, so `description` would never appear regardless of which
-        // character's card was resolved, defeating this test's own "reflects the RIGHT member's card"
-        // assertion below.
         groupSettings.power_user.context.story_string = '{{#if description}}{{description}}\n{{/if}}';
         writeAllSettings(directories, groupSettings);
 
-        // A chat branch owned by the GROUP's own id - not either member's avatar - with one message
-        // from each member already in history, matching a real multi-member group conversation.
         await saveBranch(user.store, { group: groupId }, groupChatId, [
             { chat_metadata: {} },
             { name: 'Tester', is_user: true, mes: 'Hello, party!', send_date: 1, extra: {} },
@@ -1199,9 +1056,6 @@ async function run() {
         ]);
         const groupLeafId = (await loadBranch(user.store, { group: groupId }, groupChatId)).branch.leaf_id;
 
-        // --- assembly: buildRawActionTextCompletionRequest() with BOTH characterAvatar (Nova, the
-        // member actually responding this turn) AND groupId (the group) set together, addressed by
-        // the group chat's real node_id. ---
         const builtGroup = await buildRawActionTextCompletionRequest(directories, {
             characterAvatar: nova, groupId, chat: await chatContextOf(user.store, { group: groupId }, await sessionAt(user.store, groupLeafId)), nodeId: groupLeafId,
             type: 'normal', userMessageText: 'Nova, status report?',
@@ -1214,22 +1068,11 @@ async function run() {
         assert.ok(!builtGroup.params.prompt.includes('Zephyr is a chaotic weather spirit.'), 'the assembled prompt does NOT pull in a DIFFERENT member\'s (Zephyr\'s) own character-card description - only Nova\'s, the one actually responding this turn');
         assert.ok(builtGroup.params.prompt.includes('Winds are shifting!'), 'the real group chat HISTORY (including the other member\'s prior turn) is still loaded from the group\'s own owner id');
 
-        // groupMemberNames really does include EVERY OTHER group member (not just the responding
-        // one) - observed via its real, documented effect (namesAsStopStrings), not just resolver
-        // plumbing. src/stopping-strings.js's own getStoppingStrings() deliberately EXCLUDES name2
-        // itself from this list (`.filter(name => name !== name2)` - the responding member is
-        // already covered by its own `charString`/`userString` stop-string logic above), so Nova
-        // (name2, the responding member) is correctly ABSENT here while Zephyr (a non-responding
-        // member) is correctly PRESENT - proving groupMemberNames really carries the whole roster,
-        // not just the responding member, exactly as resolveSpeakers()'s own doc
-        // comment describes.
         const stopStrings = builtGroup.params.stop ?? builtGroup.params.stopping_strings ?? [];
         assert.ok(Array.isArray(stopStrings) && stopStrings.length > 0, 'stop strings were assembled at all');
         assert.ok(stopStrings.some(s => s.includes('Zephyr')), 'namesAsStopStrings-derived stop strings include the NON-responding member (Zephyr) - groupMemberNames covers the whole roster, not just the responding member');
         assert.ok(!stopStrings.some(s => s.includes('Nova')), 'the responding member (Nova/name2) is correctly excluded from the groupMemberNames-derived entries (already covered by the separate name2-specific stop string)');
 
-        // --- persistence: a real, route-level raw-action /generate call persists BOTH sides against
-        // the GROUP's own owner_id, chained under the group's real chat branch. ---
         const branchBeforeGroup = await loadBranch(user.store, { group: groupId }, groupChatId);
         const messageCountBeforeGroup = branchBeforeGroup.messages.length;
 
@@ -1259,21 +1102,10 @@ async function run() {
         assert.equal(assistantMsg.is_user, false);
         assert.equal(assistantMsg.name, 'Nova', 'the persisted assistant message is attributed to the SPECIFIC RESPONDING MEMBER (name2/Nova), not the group\'s own name or the other member (Zephyr)');
 
-        // Sanity: none of this leaked into either single-character owner namespace used elsewhere in
-        // this file (Rex's own branch, keyed by his own avatar as ownerId).
         const rexBranchUnaffected = await loadBranch(user.store, { avatar: ownerId }, branchName);
         assert.ok(rexBranchUnaffected.messages.every(m => m.mes !== 'All systems nominal, Captain.'), 'the group turn did not leak into an unrelated single-character owner namespace');
     }
 
-    // (i) STREAMING raw-action, plain reply: the GENERIC api_type is now routed through
-    // forwardAndPersistCompactStream() (text-completions.js), which re-encodes the upstream OpenAI-
-    // text-completions-shaped SSE stream (`data: {"choices":[{"text":"..."}]}`) into the compact
-    // binary wire format instead of forwarding the SSE-JSON bytes as-is. Asserts the response
-    // declares `X-ST-Stream-Format: compact-v1`, the decoded byte stream reconstructs the exact
-    // original text, AND the full concatenated text lands on the tree afterward (persistence happens
-    // asynchronously, after the HTTP response to the client has already ended - see
-    // forwardAndPersistCompactStream()'s own doc comment in text-completions.js - so this polls via
-    // waitFor() rather than asserting immediately after the fetch resolves).
     {
         const streamBranch = 'stream-plain-chat';
         await saveBranch(user.store, { avatar: ownerId }, streamBranch, [
@@ -1313,17 +1145,6 @@ async function run() {
         assert.equal(assistantMsg.node_id, decoded.assistantNodeId, 'the node id sent to the client in the compact stream\'s assistant_node_id frame is the exact node the reply actually landed on');
     }
 
-    // (i-2) STREAMING raw-action, is_swipe: true - same SSE teeing, but must land as a real
-    // SIBLING alternative (addAlternatives() + selectDefaultChild()), exactly like the
-    // non-streaming swipe case (e) above - proving persistAssistantReply() drives the streaming
-    // path through the exact same shared branching, not a re-implementation of it.
-    // Uses its own DISTINCT preceding message text (not reused from any other branch in this file) -
-    // the chat store structurally SHARES nodes across different branches for the same owner
-    // whenever their preceding content is byte-identical (a real, intentional git-like DAG feature),
-    // and `addAlternatives()`/`selectDefaultChild()` mutate a "which sibling is the default" pointer
-    // on the shared PARENT itself - so reusing another swipe test's exact text here would make this
-    // test observe (and mutate) that OTHER test's own tree state instead of a clean fixture (see
-    // test (f)'s own distinct text, for the exact same reason, predating this session).
     {
         const streamSwipeBranch = 'stream-swipe-chat';
         await saveBranch(user.store, { avatar: ownerId }, streamSwipeBranch, [
@@ -1362,11 +1183,6 @@ async function run() {
         assert.ok(alternatives.alternatives.some(a => a.mes === 'Hello there, streaming swipe test!'), 'the original swiped message is unchanged');
     }
 
-    // (i-3) STREAMING raw-action, is_continue: true - same SSE teeing, but must EDIT the existing
-    // leaf in place (oldText + newText) via editMessage(), exactly like the non-streaming continue
-    // case (g) above. Uses its own DISTINCT preceding text - see (i-2)'s own comment above on why
-    // (continue's editMessage() mutates a potentially-SHARED leaf node in place, so reusing (g)/(h)'s
-    // exact text here would edit THEIR fixture's node instead of a clean one of this test's own).
     {
         const streamContinueBranch = 'stream-continue-chat';
         await saveBranch(user.store, { avatar: ownerId }, streamContinueBranch, [
@@ -1404,11 +1220,6 @@ async function run() {
         assert.equal(branchAfter.branch.leaf_id, leafBefore, 'the SAME node is still the leaf');
     }
 
-    // (i-4) STREAMING raw-action via OLLAMA: real Ollama-shaped JSON-lines chunks (`{"response":
-    // "...","done":false}`, no SSE framing) through parseOllamaStream() - proves the per-chunk
-    // `json.response` text it already parses is now re-encoded into the same compact binary wire
-    // format every other raw-action streaming path uses (instead of OpenAI-completions-style SSE),
-    // and accumulated/persisted once the stream ends.
     {
         const ollamaBranch = 'stream-ollama-chat';
         await saveBranch(user.store, { avatar: ownerId }, ollamaBranch, [
@@ -1419,12 +1230,6 @@ async function run() {
         const ollamaChunks = ['Hello ', 'from ', 'Ollama, ', 'streamed.'];
         const fakeBackend = await startFakeBackend((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
-            // parseOllamaStream() (this file's own pre-existing, unmodified parser) tries
-            // JSON.parse() on the WHOLE accumulated buffer rather than splitting on newlines - it
-            // relies on each real Ollama chunk arriving as its own separate 'data' event. A small
-            // delay between writes here forces that same separation over the real loopback socket,
-            // instead of racing to find out whether Node coalesces back-to-back synchronous writes
-            // into a single TCP segment.
             (async () => {
                 for (const text of ollamaChunks) {
                     res.write(JSON.stringify({ response: text, done: false }));
@@ -1463,10 +1268,6 @@ async function run() {
         assert.equal(assistantMsg.node_id, decoded.assistantNodeId, 'the node id sent to the client in the compact stream\'s assistant_node_id frame is the exact node the reply actually landed on');
     }
 
-    // (i-5) STREAMING raw-action via LLAMACPP's own compact wire format: pipeLlamaCppCompactStream()
-    // already fully JSON-parses every upstream SSE event (to re-encode it into the compact format) -
-    // this proves `data.content` is now also accumulated and persisted, with the prompt's itemization
-    // stored at the reply's node instead of sent down the stream.
     {
         const llamaCppBranch = 'stream-llamacpp-chat';
         await saveBranch(user.store, { avatar: ownerId }, llamaCppBranch, [
@@ -1512,21 +1313,12 @@ async function run() {
         assert.ok(String(stored?.entry.rawPrompt).includes('Say hi via llama.cpp.'), 'with the server\'s breakdown of the prompt it built');
     }
 
-    // (i-6) A NON-raw-action streaming request (no owner_id/character_avatar, so neither raw-action
-    // branch runs and pendingAssistantPersist stays null throughout) still goes through
-    // forwardAndPersistCompactStream()'s compact-v1 re-encoding - only persistence is skipped, per
-    // this session's gap-1 conversion. Verified here by decoding the client-facing bytes as a compact
-    // stream and asserting the reconstructed text matches the fake backend's SSE chunks exactly, with
-    // no assistantNodeId frame (nothing was persisted).
     {
         const fakeBackend = await startFakeSseBackend(['This ', 'is ', 'a ', 'plain ', 'legacy ', 'stream.']);
         pointBackendAt(fakeBackend.url);
 
         const app = buildTestApp();
         const { status, headers, bytes } = await postGenerateStreamBytes(app, {
-            // No owner_id/character_avatar/group_id/connection_profile_id - falls through to the
-            // legacy/default branch, which only resolves api_type/api_server from settings and
-            // otherwise dispatches request.body completely unchanged.
             prompt: 'Legacy raw prompt, no raw-action fields.', stream: true,
         });
         fakeBackend.server.close();
@@ -1538,15 +1330,6 @@ async function run() {
         assert.equal(decoded.assistantNodeId, null, 'nothing is persisted for a non-raw-action stream, so no assistant_node_id frame is emitted');
     }
 
-    // (i-6b) STREAMING raw-action, TOKEN COALESCING + reasoning: a real fake backend emits many small
-    // `choices[0].text`/`choices[0].reasoning` SSE chunks with a real delay between each write (see
-    // startFakeSseBackendPaced()'s own comment), giving forwardAndPersistCompactStream()'s ~40ms/
-    // ~256-byte coalescing logic more than one real upstream event to actually coalesce across. Proves
-    // (a) the decoded text AND reasoning reconstruct exactly despite the coalescing, (b) the client
-    // received meaningfully fewer network reads than upstream chunks were sent (the whole point of
-    // coalescing over one binary frame per token), and (c) the reasoning/content ordering survives -
-    // the reasoning chunks were interleaved with the FIRST few text chunks upstream, so a bug that
-    // reordered a reasoning frame relative to already-buffered content would show up as garbled text.
     {
         const coalesceBranch = 'stream-compact-coalesce-chat';
         await saveBranch(user.store, { avatar: ownerId }, coalesceBranch, [
@@ -1606,30 +1389,11 @@ async function run() {
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(user.store, { avatar: ownerId }, coalesceBranch);
             const leaf = branch.messages[branch.messages.length - 1];
-            // Stored cleaned up as upstream's page cleans a reply up: trimmed (trim_spaces is on by default).
             return leaf.mes === textChunks.join('').trim() ? branch : null;
         });
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].node_id, decoded.assistantNodeId);
     }
 
-    // (i-6c) STREAMING raw-action, CLIENT DISCONNECT MID-STREAM: mirrors kobold.test.js's own real-
-    // TCP-close disconnect test (see that file's comment on the same pattern) - a real AbortController
-    // closes the real client-side TCP socket while the fake backend still has more (unsent) content
-    // queued up. Proves forwardAndPersistCompactStream()'s createBackpressureWriter() guard
-    // (`res.writableEnded` check) actually prevents the write-after-end crash class this session
-    // already found and fixed once elsewhere (kobold.js) - if that guard were missing/broken, the
-    // attempted write to the already-closed socket after disconnect would throw/emit an unhandled
-    // error and take this whole test process down, not just fail one assertion.
-    //
-    // UPDATED for real resumability (this session's own later task): a client disconnect no longer
-    // aborts the upstream generation - see text-completions.js's own `request.socket.on('close', ...)`
-    // comment (`if (pendingAssistantPersist) return;`) for why: it's what lets a client reconnect via
-    // GET /generate/resume/:id and get the live continuation instead of a truncated partial. So the
-    // fake backend's post-disconnect content, which used to be discarded, is now genuinely still
-    // consumed into the resumable generation buffer and persisted once the backend finishes - this
-    // test now asserts the FULL text (both pre- and post-disconnect) lands on the tree, not just the
-    // pre-disconnect fragment. resume-stream.test.js is the dedicated, focused test for the
-    // resume-endpoint mechanics themselves.
     {
         const disconnectBranch = 'stream-compact-disconnect-chat';
         await saveBranch(user.store, { avatar: ownerId }, disconnectBranch, [
@@ -1643,8 +1407,6 @@ async function run() {
         const fakeBackend = await startFakeBackend((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'text/event-stream' });
             res.write(`data: ${JSON.stringify({ choices: [{ text: 'Partial before disconnect.' }] })}\n\n`);
-            // Deliberately NOT res.end()'d yet - a real in-progress generation, giving the test a real
-            // window to disconnect the client before the upstream response completes on its own.
             streamGate.then(() => {
                 try {
                     res.write(`data: ${JSON.stringify({ choices: [{ text: ' Still generated after disconnect.' }] })}\n\n`);
@@ -1678,8 +1440,6 @@ async function run() {
             const { value: firstChunk } = await reader.read();
             assert.ok(firstChunk && firstChunk.length > 0, 'a real chunk was received before the client disconnects, proving generation was genuinely underway');
 
-            // Closes the real TCP socket between this test's fetch() and the route's server, firing
-            // the route's real response.socket 'close' handler under completely real conditions.
             controller.abort();
             releaseStream();
         } finally {
@@ -1688,9 +1448,6 @@ async function run() {
             await new Promise(resolve => server.close(resolve));
         }
 
-        // If the process is still alive to run this assertion at all, no write-after-end exception
-        // escaped uncaught - that's the primary thing this test proves. The generation kept running
-        // after the disconnect and its FULL text (pre- and post-disconnect) was persisted.
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(user.store, { avatar: ownerId }, disconnectBranch);
             const leaf = branch.messages[branch.messages.length - 1];
@@ -1700,11 +1457,6 @@ async function run() {
         assert.equal(assistantMsg.mes, 'Partial before disconnect. Still generated after disconnect.', 'the full text - including what the backend generated AFTER the client disconnected - was persisted, since the upstream generation is no longer aborted on disconnect');
     }
 
-    // (i-7) ROUTE-LEVEL: a raw-action request whose body never includes the `node_id` key at all
-    // gets a real 400, distinct from an explicit `node_id: null` - proving the "absent key" vs.
-    // "explicit null" distinction survives all the way from the real HTTP JSON body, through
-    // Express's own body-parser, to buildRawActionTextCompletionRequest()'s own validation (not just
-    // when calling that function directly, as the earlier in-process assertion already covers).
     {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
@@ -1715,8 +1467,6 @@ async function run() {
         assert.match(data.message, /node_id is required/, 'the error names the real, specific problem');
     }
 
-    // (i-8) ROUTE-LEVEL: `node_id: null` on a character that already has real history is a real 400 -
-    // the server does not silently pick "the current leaf" once real, possibly-stale history exists.
     {
         const app = buildTestApp();
         const { status, data } = await postGenerate(app, {
@@ -1727,11 +1477,6 @@ async function run() {
         assert.match(data.message, /is not at its start/, 'the error explains why null was rejected here');
     }
 
-    // (i-9) ROUTE-LEVEL: a real `user_message_extra` file-attachment reference, forwarded on a raw-
-    // action request, is (a) persisted onto the new user message's real `extra` (via loadBranch(),
-    // matching this file's own existing convention) and (b) actually inlined - via the already-
-    // generic file-attachment-inline.js machinery - into the real prompt text the fake backend
-    // receives, not just carried through as inert data.
     {
         fs.writeFileSync(path.join(directories.files, 'raw-action-attach.txt'), 'The password is hunter2.');
 
@@ -1770,9 +1515,6 @@ async function run() {
         );
     }
 
-    // (i-10) ROUTE-LEVEL: a garbage-shaped user message `extra` (unexpected top-level field, a
-    // non-string url, an out-of-enum media type) doesn't crash the request: the prompt reads it through
-    // sanitizeUserMessageExtra()'s allowlist (user-message-extra.js), and the message is stored as sent.
     {
         const fakeBackend = await startFakeBackend((_req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1786,12 +1528,8 @@ async function run() {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', stream: false,
             user_message: { is_user: true, name: 'User', mes: 'This has a garbage attachment payload.', extra: {
-                // Not a real allowlisted field - must be dropped entirely, not stored.
                 evil_script: '<script>alert(1)</script>',
-                // A file entry missing `url` (wrong type) - the whole entry must be dropped, not
-                // partially kept.
                 files: [{ url: 12345, name: 'not-a-real-url.txt' }],
-                // A media entry with an out-of-enum `type` - the whole entry must be dropped.
                 media: [{ url: '/user/files/whatever.png', type: 'application/x-not-a-real-media-type' }],
                 media_index: 'not-a-number',
                 inline_image: 'yes',
@@ -1806,50 +1544,6 @@ async function run() {
         assert.equal(persistedUserMsg.extra.evil_script, '<script>alert(1)</script>', 'the message is stored as the page sent it; only the prompt reads its attachments, through the allowlist');
     }
 
-    // --- REGRESSION: the "double-append on raw-action sends" bug this session fixed (see
-    // public/script.js's Generate() - specifically its `willUseRawAction`/`skipTreePersistence`
-    // fix, threaded into sendMessageAsUser()) ---
-    // Root cause: for a real send, sendMessageAsUser() (public/script.js) used to UNCONDITIONALLY
-    // call chatOpAppend() (public/scripts/chat-store.js) whenever `chat_metadata?._tree_stored`,
-    // which POSTs the client's own message object (built via `_messageContent()`'s shallow spread
-    // - `{...msg, mes: text}`) to /api/chats/message/append -> this SAME appendMessages() function.
-    // That client message object carries `persona: avatar` (an avatar id/filename, set on
-    // `message` inside sendMessageAsUser() itself). Separately, whenever the raw-action gate in
-    // Generate() fires for that same send, this route's own handler (buildRawActionTextCompletion-
-    // Request()'s caller) ALSO independently calls appendMessages() for the SAME logical message,
-    // then built server-side (the request now carries the page's own message) as `{ name: built.name1, is_user: true, mes: userMessageText, ... }` -
-    // built.name1 being a DISPLAY NAME (e.g. "Tester"), and crucially with NO `persona` field at
-    // all. Both calls target the exact SAME anchor: Generate() captures `lastMessage`/its
-    // `node_id` at the very top of the function, BEFORE sendMessageAsUser() ever runs, and passes
-    // that same pre-existing leaf as the raw-action request's own `node_id` - so this isn't a
-    // parent/child relationship, it's two independent appendMessages() calls at the identical
-    // parent for what a human would call "one message".
-    // appendMessages()'s own dedup-by-identity_hash exists precisely to make a retry/double-send
-    // land on the same row (see its "a retry/double-send that matches an existing sibling lands on
-    // that row instead of duplicating" comment above) - but nodeIdentityKey() computes a user
-    // message's speaker as `'u' + (o?.persona ?? o?.name ?? '')`. The client's own append has a
-    // real `persona` (an avatar id); the server's re-append has none, so it falls back to
-    // `o?.name` (a display name) - two different strings almost always - so the identity hashes
-    // essentially NEVER match in a real setup, the "twin" lookup fails, and a genuine duplicate
-    // sibling node is created under the same parent for one logical user turn.
-    //
-    // This is a CLIENT-behavior bug (sendMessageAsUser() deciding whether to persist at all) - no
-    // route-level test alone can invoke the real public/script.js browser code (there is no
-    // browser test harness in this repo), so it was invisible to this file's own existing
-    // route/request-builder tests, which only ever exercise the SERVER's one appendMessages()
-    // call in isolation and never modeled the client's own separate, concurrent append. What CAN
-    // be verified here, and is verified below, is both halves of the real bug:
-    //   1. Reproduce the ORIGINAL failure mode exactly: the client's own append (with `persona`)
-    //      and the server's own raw-action re-append (with no `persona`, `name` fallback) at the
-    //      SAME anchor produce two DIFFERENT identity hashes and therefore two sibling nodes.
-    //   2. Prove the fix's actual server-observable guarantee: once the client's own append is
-    //      skipped (the real fix - a client-only change, see Generate()'s own `willUseRawAction`
-    //      doc comment in public/script.js), the raw-action route's own appendMessages() call is
-    //      the SOLE writer, and by itself it produces exactly ONE user-message node for one
-    //      logical send - trivially true of a single call, but this documents precisely what the
-    //      fix relies on server-side, and is exactly what this file's other route-level tests
-    //      already implicitly exercise (a single append per real send) once the client stops
-    //      making its own redundant, differently-keyed append call.
     {
         const dupAvatar = await writeCharacter('DupBug.png', {
             name: 'DupBug',
@@ -1864,15 +1558,11 @@ async function run() {
         const dupBranchInfo = await loadBranch(user.store, { avatar: dupOwnerId }, dupBranchName);
         const dupParentLeafId = dupBranchInfo.branch.leaf_id;
 
-        // (1) Simulates the client's own sendMessageAsUser() -> chatOpAppend() call, BEFORE this
-        // session's fix - a real `persona` field, a display `name`, same text.
         const clientSideAppend = await appendThrough(dupOwnerId, dupParentLeafId, [
             { name: 'Tester', is_user: true, mes: 'What happens next?', persona: 'user-default.png', extra: {}, send_date: Date.now() },
         ]);
         assert.equal(clientSideAppend.ok, true);
 
-        // Simulates the raw-action route independently resolving the SAME anchor for the SAME send
-        // (exactly buildRawActionTextCompletionRequest()'s own real resolution, exercised for real).
         const dupBuilt = await buildRawActionTextCompletionRequest(directories, {
             characterAvatar: dupAvatar, chat: await chatOf(dupAvatar, dupParentLeafId), nodeId: dupParentLeafId,
             type: 'normal', userMessageText: 'What happens next?',
@@ -1880,8 +1570,6 @@ async function run() {
         });
         assert.equal(dupBuilt.anchorNodeId, dupParentLeafId, 'the raw-action route resolves the SAME pre-existing leaf as its anchor - not the client\'s just-appended node - reproducing the real concurrent-append shape');
 
-        // (2) Simulates this SAME route handler's own re-append of the identical logical message -
-        // `built.name1`, no `persona` - this is the exact call the real route handler makes.
         const serverSideAppend = await appendThrough(dupOwnerId, dupBuilt.anchorNodeId, [
             { name: dupBuilt.name1, is_user: true, mes: 'What happens next?', extra: {}, send_date: Date.now() },
         ]);
@@ -1894,11 +1582,6 @@ async function run() {
         const dupAlternatives = await user.store.chats.alternatives({ node_id: clientSideAppend.node_ids[0] });
         assert.equal(dupAlternatives.total, 2, 'ORIGINAL BUG: two sibling user-message nodes now exist under the same parent for what a user experiences as one single message send');
 
-        // --- THE FIX, verified: once sendMessageAsUser() is told to skip its own tree-append
-        // (`skipTreePersistence: true`, set from Generate()'s hoisted `willUseRawAction` - see
-        // public/script.js), the raw-action route's own appendMessages() call above becomes the
-        // ONLY writer for this message. Proven here on a fresh anchor: with only that ONE append
-        // performed (never the client-side one), exactly one node exists - no duplicate sibling. ---
         const fixedAvatar = await writeCharacter('FixedBug.png', {
             name: 'FixedBug',
             data: { name: 'FixedBug', description: '', first_mes: 'Hi.' },
@@ -1917,8 +1600,6 @@ async function run() {
             type: 'normal', userMessageText: 'What happens next?',
             tokenizerOptions: fakeTokenizerOptions,
         });
-        // Post-fix reality: this is the ONLY appendMessages() call for this send - the client's own
-        // chatOpAppend() never ran (skipped by sendMessageAsUser()'s `skipTreePersistence`).
         const onlyAppend = await appendThrough(fixedOwnerId, fixedBuilt.anchorNodeId, [
             { name: fixedBuilt.name1, is_user: true, mes: 'What happens next?', extra: {}, send_date: Date.now() },
         ]);
@@ -1927,17 +1608,6 @@ async function run() {
         assert.equal(fixedAlternatives.total, 1, 'THE FIX: exactly one user-message node exists for one logical send once the client no longer makes its own redundant, differently-keyed append');
     }
 
-    // NOTE: a dedicated test for the "continue/swipe on an empty chat" guard (see
-    // buildRawActionTextCompletionRequest()'s own `if ((isContinue || isSwipe) && ...chat.length
-    // === 0)` check) is deliberately NOT included here - the chat store's own invariants make a
-    // real EMPTY labeled branch/node impossible to construct through its public API (a branch label
-    // can only attach to a real message node created by at least one actual saveChatToTree()/
-    // appendMessages() call - see saveChatToTree()'s `else if (firstId)` gate, which never labels
-    // anything when zero messages are given). The guard is still real defensive code for whatever
-    // future/edge case might reach it with a genuinely empty resolved chat - just not exercisable
-    // with this module's own current tree invariants.
-
-    // --- Tokenizer resolution on server-built sends ---
     const tokenizerCaseFailures = [];
     async function tokenizerCase(name, fn) {
         try {
@@ -2026,8 +1696,6 @@ async function run() {
             type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Go on.' }, stream: false,
         });
         fakeBackend.server.close();
-        // The route sends a generic backend only OpenAI-compatible fields, so the bans are read off
-        // the built request.
         const built = await buildRawActionTextCompletionRequest(directories, {
             characterAvatar: entryAvatar, chat: await chatOf(entryAvatar, entryBranch.branch.leaf_id), nodeId: entryBranch.branch.leaf_id,
             type: 'continue', isContinue: true,
@@ -2047,7 +1715,7 @@ async function run() {
 
     await tokenizerCase('over budget on an unmapped model: trimmed by the estimate, silently', async () => {
         const trimAvatar = await writeCharacter('TrimEst.png', { name: 'TrimEst', data: { name: 'TrimEst', first_mes: 'Hi.' } });
-        const line = 'abcdefghij'.repeat(20); // 200 bytes: 60 estimated tokens, 200 per-character ones
+        const line = 'abcdefghij'.repeat(20);
         const history = Array.from({ length: 40 }, (_, i) => ({ name: i % 2 ? 'Tester' : 'TrimEst', is_user: i % 2 === 1, mes: `m${String(i).padStart(2, '0')} ${line}`, send_date: i + 1, extra: {} }));
         await saveBranch(user.store, { avatar: trimAvatar }, 'trim-chat', [{ chat_metadata: {} }, ...history]);
         const trimBranch = await loadBranch(user.store, { avatar: trimAvatar }, 'trim-chat');
@@ -2073,7 +1741,6 @@ async function run() {
         assert.deepEqual((built.warnings ?? null), [], 'no warnings: estimate trims are silent');
     });
 
-    /** A llama.cpp backend whose `/tokenize` answers 500 and whose `/completion` streams `reply`. */
     async function startFailingTokenizeLlamaCpp(reply) {
         const paths = [];
         const backend = await startFakeBackend((req, res) => {
@@ -2124,7 +1791,6 @@ async function run() {
         assert.ok(sentencepieceEncodes.filter(file => /[\\/]gemma\.model$/.test(file ?? '')).length > gemmaBefore, 'encoded with the gemma copy');
         const decoded = decodeCompactStream(bytes);
         assert.equal(decoded.text, 'ok');
-        // Whether llama.cpp adds BOS to the prompt depends on the loaded gguf, so no copy counts the prompt start.
         assert.deepEqual(decoded.warnings.map(w => w.kind), ['fallback-copy', 'trim-estimate']);
         assert.ok(decoded.warnings[0].message.includes('Gemma'), decoded.warnings[0].message);
     });
@@ -2202,18 +1868,12 @@ async function run() {
         const promptStart = tokenizeBodies.filter(body => body.add_special === true);
         const fields = tokenizeBodies.filter(body => !('add_special' in body));
         assert.equal(promptStart.length + fields.length, tokenizeBodies.length, 'add_special is only ever true');
-        // The two baselines (the story string is empty here; on continue the second holds the continued
-        // message) and the whole-prompt size check.
         assert.deepEqual(promptStart.map(body => body.content), ['', 'Tester: Tell me one.', 'BosCount: Hi.\n\nTester: Tell me one.']);
         assert.deepEqual(fields, [{ model: 'gemma-2-9b-it', content: 'BosCount: Hi.\n' }], 'a message is counted with upstream\'s { model, content }');
         assert.ok(built.params.prompt.endsWith('Tell me one.'));
         assert.deepEqual(built.warnings ?? [], []);
     });
 
-    /**
-     * A llama.cpp backend recording each request's URL, headers and body: `/props` answers `props` (500 when null),
-     * `/v1/models` lists `modelsId`, and `/tokenize` one token per UTF-8 byte (500 when `failTokenize`).
-     */
     async function startPropsLlamaCpp({ props, modelsId = 'from-v1-models', failTokenize = false }) {
         const requests = [];
         const backend = await startFakeBackend((req, res, body) => {
@@ -2237,7 +1897,6 @@ async function run() {
     }
 
     let propsChats = 0;
-    /** Builds a raw-action continue on a new two-message chat against `backend` with the given model setting. */
     async function buildOnPropsLlamaCpp(backend, model) {
         const name = `PropsCheck${++propsChats}`;
         const avatar = await writeCharacter(`${name}.png`, { name, data: { name, first_mes: 'Hi.' } });
@@ -2297,7 +1956,6 @@ async function run() {
     });
 
     await tokenizerCase('raw-action on llama.cpp, model_alias equal to model_path: the map gets the file name after the last /', async () => {
-        // The whole path maps to no tokenizer; the file name maps to gemma.
         const modelPath = '/models/Meta-Llama-3-8B-Instruct/gemma-2-9b-it.gguf';
         const backend = await startPropsLlamaCpp({ props: { model_alias: modelPath, model_path: modelPath, build_info: 'b1' }, failTokenize: true });
         const built = await buildOnPropsLlamaCpp(backend, '');
@@ -2369,7 +2027,6 @@ async function run() {
         writeAllSettings(directories, settings);
 
         const keyOf = body => JSON.stringify([body.content, body.add_special ?? null]);
-        /** One generation; returns it and the /tokenize bodies it sent. */
         const generate = async () => {
             const start = tokenizeBodies().length;
             const leaf = (await loadBranch(user.store, { avatar: avatar }, 'store-chat')).branch.leaf_id;
@@ -2415,7 +2072,6 @@ async function run() {
         }
     });
 
-    /** The keys (hex text hashes) the user's token cache was given to store, per tokenizer identity and table. */
     const written = new Map();
     const realWriteBack = user.store.tokens.writeBack.bind(user.store.tokens);
     user.store.tokens.writeBack = async (pending, now) => {
@@ -2427,18 +2083,12 @@ async function run() {
         }
         return realWriteBack(pending, now);
     };
-    /** Rows stored under `identity` in token_counts and token_ids together (each case's identity is new to it). */
     async function storedRowsUnder(identity) {
         const w = written.get(identity);
         return w ? w.token_counts.size + w.token_ids.size : 0;
     }
 
     let writeBackChats = 0;
-    /**
-     * A new chat on a llama.cpp backend whose `/props` gives `props` and whose `/tokenize` answers; `onCompletion(req,
-     * res, body)` answers `/completion`. Returns the backend, the URLs it was asked, each request's URL and body, and the
-     * request body for its generation.
-     */
     async function setUpWriteBackGeneration(props, onCompletion) {
         const name = `WriteBack${++writeBackChats}`;
         const avatar = await writeCharacter(`${name}.png`, { name, data: { name, description: `${name} tends the garden.`, first_mes: 'Hello.' } });
@@ -2595,14 +2245,11 @@ async function run() {
             const ids = storedHashes('token_ids');
 
             const from = requests.length;
-            // Same anchor as the first generation, so the history before the new user message is all stored.
             const warm = await postGenerate(buildTestApp(), { ...body, user_message: { is_user: true, name: 'User', mes: 'Any daisies?' } });
             assert.equal(warm.status, 200);
             const sent = requests.slice(from);
             assert.equal(sent.filter(r => r.url.startsWith('/props')).length, 1, 'one /props');
             assert.equal(sent.filter(r => r.url === '/v1/models').length, 0, 'no /v1/models');
-            // A count and an encode send the same body, so a text without add_special was stored only when it is
-            // stored under both.
             const wasStored = ({ content, add_special }) => add_special === true
                 ? counts.has(tokenKeyHash('prompt', content))
                 : counts.has(tokenKeyHash('text', content)) && ids.has(tokenKeyHash('ids', content));

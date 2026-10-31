@@ -2,9 +2,6 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jes
 import path from 'node:path';
 import { storedTagDefinitions, tagCounts } from './tag-store-reads.js';
 
-// A tag deleted with a merge target: its carriers carry the target, every read follows the merge, and the writes that
-// name the deleted tag act on the target.
-
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
 /** @type {typeof import('./converted-user.fixture.js')} */
@@ -97,9 +94,6 @@ async function tagsFor(ids) {
     return (await post('/api/tags/for', { ids })).json();
 }
 
-/**
- * Characters: c1 has x, c2 has x and y, c3 has y, c4 has z, c5 has d. Groups: g1 has x, g2 has z.
- */
 async function seedLibrary() {
     await saveTags(['x', 'y', 'z', 'd']);
     for (const c of ['c1', 'c2', 'c3', 'c4', 'c5']) await seedCharacter(`${c}.png`);
@@ -215,7 +209,6 @@ describe('entity tag lists read a deleted tag as its merge target', () => {
         const answer = await (await post('/api/tags/by-ids', { ids: ['x', 'd'] })).json();
         expect(answer.merged).toEqual({ x: 'z' });
         expect(answer.gone).toEqual(['d']);
-        // The target's definition comes with it, though it wasn't asked for; nothing nameless is a definition.
         expect(answer.tags.map(tag => tag.id)).toEqual(['z']);
         expect(answer.tags.every(tag => typeof tag.name === 'string')).toBe(true);
     });
@@ -281,7 +274,6 @@ describe('usage counts', () => {
         const { counts, approximate } = read;
         expect(counts.x).toBeUndefined();
         expect(counts.d).toBeUndefined();
-        // c1, c2 (which carried both), c3 and g1.
         expect(counts.y).toBe(4);
         expect(counts.z).toBe(2);
         expect(approximate).toEqual([]);

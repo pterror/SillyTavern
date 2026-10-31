@@ -13,8 +13,6 @@ async function awaitAppReady(page) {
 }
 
 /**
- * Records every list query as `window.__queries` ({ filter, sort }), answering with an empty page. The favorites bar
- * (RossAscends-mods.js) asks too; its queries aren't the list's, so they aren't recorded.
  * @param {import('@playwright/test').Page} page
  */
 async function recordQueries(page) {
@@ -51,7 +49,6 @@ test.describe('character view', () => {
             entitiesFilter.setFilterData(FILTER_TYPES.SEARCH, 'by:alice castle');
         });
 
-        // The list asks with the field's canonical name, which the server reads the same as the alias.
         await expect.poll(async () => (await lastQuery(page))?.filter).toMatchObject({ fav: true, search: 'creator:alice castle' });
         const view = await page.evaluate(async () => (await import('/scripts/character-list.js')).getCharacterView());
         expect(view).toMatchObject({
@@ -135,7 +132,6 @@ test.describe('character view', () => {
         });
 
         /**
-         * Makes tags on the server, named like their ids, and returns the ids.
          * @param {import('@playwright/test').Page} page
          * @param {string[]} names
          */

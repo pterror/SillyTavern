@@ -1,15 +1,3 @@
-//! Runs: immutable sorted files of entries, each with its own multi-level index.
-//!
-//! A run file is its blocks, then a 64-byte footer. Data blocks hold the entries; each index block holds, per
-//! child block, the child's last key and its handle (`Val::Put` of varint offset, varint length). Index blocks
-//! are written as soon as they fill, so writing a run of any size holds one block per level in memory, and the
-//! top index block is a single block, the only part of a run kept in memory while it is open.
-//!
-//! Footer: magic, top block offset (u64) and length (u32), index levels (u32), entries (u64), the log position
-//! the run covers (u64), the first and last flush it holds (u64 each), CRC-32C of the bytes before it (u32),
-//! then the run's deletions (u32, saturating; outside the CRC, as only merge scheduling reads it, and zero in a
-//! run written before it was kept); all little-endian.
-
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::fs::{self, File, OpenOptions};
@@ -25,14 +13,10 @@ use super::{KsError, KsResult};
 use crate::log::format::{get_uvarint, put_uvarint};
 
 const MAGIC: &[u8; 8] = b"st-run\0\x01";
-/// A run that says which kinds of key it holds (`Kinds`): the set and its checksum just before the footer.
 const MAGIC_KINDS: &[u8; 8] = b"st-run\0\x02";
 const FOOTER: usize = 64;
 const KINDS_BYTES: usize = 36;
 
-/// The kinds of key a run holds, by a key's first part (`keyspace::val::put_u64`, the structure it belongs to):
-/// bit k for kind k below 255, bit 255 for every kind from 255 on. A read skips a run that holds none of its kinds.
-/// A run written before runs said so holds every kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Kinds([u64; 4]);
 
@@ -40,7 +24,6 @@ impl Kinds {
     pub const ALL: Kinds = Kinds([u64::MAX; 4]);
     pub const NONE: Kinds = Kinds([0; 4]);
 
-    /// A key's kind bit; None for a key whose first part doesn't decode (its run then holds every kind).
     fn bit(key: &[u8]) -> Option<usize> {
         let n = usize::from(*key.first()?);
         let b = key.get(1..1 + n).filter(|_| n <= 8)?;
@@ -61,7 +44,6 @@ impl Kinds {
         }
     }
 
-    /// Whether some key in `[from, to]` may be of a kind held.
     fn may_hold(&self, from: &[u8], to: &[u8]) -> bool {
         let (Some(a), Some(b)) = (Kinds::bit(from), Kinds::bit(to)) else {
             return true;
@@ -103,7 +85,6 @@ impl Handle {
         Val::Put(b)
     }
 
-    /// A handle from its `Val::Put` bytes.
     fn from_bytes(b: &[u8]) -> Option<Handle> {
         let mut at = 0;
         let offset = get_uvarint(b, &mut at).ok()?;
@@ -116,7 +97,6 @@ pub fn run_name(lo: u64, hi: u64) -> String {
     format!("run-{lo:016x}-{hi:016x}.run")
 }
 
-/// The flushes a run file's name says it holds.
 pub fn parse_run_name(name: &str) -> Option<(u64, u64)> {
     let mid = name.strip_prefix("run-")?.strip_suffix(".run")?;
     let (lo, hi) = mid.split_once('-')?;
@@ -127,10 +107,6 @@ pub fn parse_run_name(name: &str) -> Option<(u64, u64)> {
     (lo <= hi && run_name(lo, hi) == name).then_some((lo, hi))
 }
 
-// ---- reading a file from any thread ----
-
-/// A run file's read handle. Under wasm a file descriptor belongs to the thread that opened it, so each thread
-/// opens its own (a few kept per thread). A run built in memory (`RunWriter::in_memory`) is read from its bytes.
 enum RunFile {
     #[cfg(not(target_family = "wasm"))]
     File(File),
@@ -139,7 +115,6 @@ enum RunFile {
     Memory(Memory),
 }
 
-/// A run's bytes in memory, until `Run::write_out` writes them to the run's file: reads go there from then on.
 struct Memory {
     bytes: RwLock<Option<Box<[u8]>>>,
     file: OnceLock<Box<RunFile>>,
@@ -226,7 +201,6 @@ impl RunFile {
         }
     }
 
-    /// Whether the run has a file (to remove once it is obsolete).
     fn on_disk(&self) -> bool {
         match self {
             RunFile::Memory(m) => m.file.get().is_some(),
@@ -259,19 +233,14 @@ fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> io::Result
 
 static NEXT_UID: AtomicU64 = AtomicU64::new(1);
 
-/// Blocks fetched by lookups and page reads, counted for measurement.
 #[derive(Default)]
 pub struct ReadCounts {
-    /// Index and data blocks fetched (from the cache or the file); top blocks are resident and not counted.
     pub blocks: AtomicU64,
-    /// Of those, read from the file.
     pub file_reads: AtomicU64,
 }
 
-/// Data blocks a range estimate reads between its two ends, per run.
 const ESTIMATE_SAMPLES: u64 = 4;
 
-/// A data block's entries before a key, and in all.
 #[derive(Debug, Default, Clone, Copy)]
 struct Split {
     before: f64,
@@ -286,17 +255,12 @@ pub struct Run {
     pub hi: u64,
     pub covered: u64,
     pub entries: u64,
-    /// The file's size.
     pub bytes: u64,
     levels: u32,
-    /// Deletions among its entries (0 when not known: a run written before they were counted).
     pub dels: u64,
     top: Arc<Block>,
-    /// The run's largest key (empty for a run with no entries).
     pub max_key: Vec<u8>,
-    /// The kinds of key it holds.
     pub kinds: Kinds,
-    /// Set once a merge has replaced this run: its file is removed when the last reader lets go of it.
     pub obsolete: AtomicBool,
 }
 
@@ -316,8 +280,6 @@ impl Run {
         Run::read(path, RunFile::open(path)?, lo, hi)
     }
 
-    /// The run `RunWriter::in_memory` wrote, `bytes`, read from memory until `write_out`. `path` is where
-    /// `write_out` puts it, and stands for it in errors.
     pub fn in_memory(path: &Path, bytes: Vec<u8>, lo: u64, hi: u64) -> KsResult<Run> {
         let len = bytes.len() as u64;
         let m = Memory {
@@ -328,13 +290,10 @@ impl Run {
         Run::read(path, RunFile::Memory(m), lo, hi)
     }
 
-    /// Whether the run's bytes are in memory.
     pub fn in_memory_now(&self) -> bool {
         matches!(&self.file, RunFile::Memory(m) if m.file.get().is_none())
     }
 
-    /// Writes a run held in memory to its file (`path`), which reads go to from then on, and lets its bytes go;
-    /// returns how many. Nothing for a run on disk already. One thread at a time writes a given run out.
     pub fn write_out(&self) -> KsResult<u64> {
         let RunFile::Memory(m) = &self.file else {
             return Ok(0);
@@ -380,7 +339,6 @@ impl Run {
         if (&f[..8] != MAGIC && &f[..8] != MAGIC_KINDS) || crc32c::crc32c(&f[..56]) != u32_at(56) {
             return Err(corrupt("footer doesn't check out".into()));
         }
-        // The blocks end before the footer, and before the kinds when the run has them.
         let (kinds, blocks_end) = if &f[..8] == MAGIC_KINDS {
             if bytes < (FOOTER + KINDS_BYTES) as u64 {
                 return Err(corrupt("shorter than a footer and its kinds".into()));
@@ -435,7 +393,6 @@ impl Run {
         })
     }
 
-    /// Whether the run may hold a key in `[from, to]`, by the kinds of key it holds.
     pub fn may_hold(&self, from: &[u8], to: &[u8]) -> bool {
         self.kinds.may_hold(from, to)
     }
@@ -491,7 +448,6 @@ impl Run {
             .ok_or_else(|| self.corrupt("index entry isn't a handle".into()))
     }
 
-    /// Every data block's last key and place, in order.
     pub fn data_blocks(&self) -> KsResult<Vec<(Vec<u8>, Handle)>> {
         let mut level: Vec<(Vec<u8>, Handle)> = Vec::new();
         let mut c = Cursor::first(self.top.clone()).map_err(|e| self.corrupt(e))?;
@@ -514,7 +470,6 @@ impl Run {
         Ok(level)
     }
 
-    /// The children of an index block: each one's last key and place.
     fn children(&self, b: Arc<Block>) -> KsResult<Vec<(Vec<u8>, Handle)>> {
         let mut out = Vec::new();
         let mut c = Cursor::first(b).map_err(|e| self.corrupt(e))?;
@@ -525,8 +480,6 @@ impl Run {
         Ok(out)
     }
 
-    /// The data block `key` falls in, or None for a key past the run's last: its place, and how many of its
-    /// entries lie before `key` and in all.
     fn data_block_at(
         &self,
         key: &[u8],
@@ -561,7 +514,6 @@ impl Run {
         Ok(None)
     }
 
-    /// The data block holding byte `at` of the file, or the nearest one before it: its entries and its length.
     fn data_block_holding(
         &self,
         at: u64,
@@ -571,7 +523,6 @@ impl Run {
         let mut block = self.top.clone();
         for level in (0..self.levels).rev() {
             let ks = self.children(block)?;
-            // An index block follows its children's data in the file; a data block's place is its own.
             let i = if level == 0 {
                 ks.partition_point(|(_, h)| h.offset <= at)
                     .saturating_sub(1)
@@ -597,9 +548,6 @@ impl Run {
         Ok((0.0, 0.0))
     }
 
-    /// About how many entries the run holds in `[lo, hi)`, reading a few blocks: the data blocks the range starts
-    /// and ends in are counted, and the data blocks between them, which lie between those two in the file, by
-    /// their bytes, at the entries per byte of a few data blocks found at even steps through those bytes.
     pub fn estimate(
         &self,
         lo: &[u8],
@@ -615,7 +563,6 @@ impl Run {
         };
         let (last, l) = match self.data_block_at(hi, cache, counts)? {
             Some(b) => b,
-            // Past the run's last key: through the end of its last data block.
             None => {
                 let (h, mut s) = self
                     .data_block_at(&self.max_key, cache, counts)?
@@ -647,8 +594,6 @@ impl Run {
             })
     }
 
-    /// The run's value for each of `keys`, in ascending order: a data block found for one key serves the keys
-    /// after it that it holds, without going down the index again.
     pub fn get_sorted(
         &self,
         keys: &[&[u8]],
@@ -656,7 +601,6 @@ impl Run {
         counts: &ReadCounts,
     ) -> KsResult<Vec<Option<Val>>> {
         let mut out = vec![None; keys.len()];
-        // The data block read last, and its last key.
         let mut held: Option<(Arc<Block>, Vec<u8>)> = None;
         for (i, key) in keys.iter().enumerate() {
             if *key > self.max_key.as_slice() {
@@ -692,7 +636,6 @@ impl Run {
         Ok(out)
     }
 
-    /// The run's value for `key`.
     pub fn get(&self, key: &[u8], cache: &Cache, counts: &ReadCounts) -> KsResult<Option<Val>> {
         if key > self.max_key.as_slice() || !self.may_hold(key, key) {
             return Ok(None);
@@ -721,19 +664,14 @@ impl Run {
 }
 
 thread_local! {
-    /// The key `Run::get` decodes into, kept per thread so a lookup allocates nothing for it.
     static SEEK_KEY: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-// ---- iterating ----
-
-/// A sorted stream of entries, the current one at `key()`.
 pub trait Source {
     fn key(&self) -> Option<&[u8]>;
     fn val(&self) -> KsResult<Val>;
     fn advance(&mut self) -> KsResult<()>;
 
-    /// For a source in ascending order: on to the first entry at or after `target`, if it is behind it.
     fn seek(&mut self, target: &[u8]) -> KsResult<()> {
         while self.key().is_some_and(|k| k < target) {
             self.advance()?;
@@ -742,18 +680,14 @@ pub trait Source {
     }
 }
 
-/// A run's entries from a key on, in order.
 pub struct RunIter<'a> {
     run: Arc<Run>,
     cache: Option<&'a Cache>,
     counts: Option<&'a ReadCounts>,
-    /// One cursor per level, top first; the last is in a data block.
     path: Vec<Cursor>,
 }
 
 impl<'a> RunIter<'a> {
-    /// At the first entry at or after `from`. Without a cache, blocks are read from the file and not kept
-    /// (merges read whole runs once).
     pub fn new(
         run: Arc<Run>,
         from: &[u8],
@@ -772,14 +706,11 @@ impl<'a> RunIter<'a> {
         Ok(it)
     }
 
-    /// Fills the path below its last cursor, seeking `from` (or taking each block's first entry); moves on to
-    /// the next child wherever a block has nothing at or after `from`.
     fn descend(&mut self, mut from: Option<&[u8]>) -> KsResult<()> {
         loop {
             let depth = self.path.len();
             let last = self.path.last().unwrap();
             if !last.valid {
-                // This block is done: step its parent on, or end.
                 self.path.pop();
                 let Some(parent) = self.path.last_mut() else {
                     return Ok(());
@@ -829,8 +760,6 @@ impl Source for RunIter<'_> {
         self.descend(None)
     }
 
-    /// Stays in the blocks held down to the lowest index entry at or after `target` (an index entry's key is
-    /// its child's last key), and reads blocks only below it.
     fn seek(&mut self, target: &[u8]) -> KsResult<()> {
         if self.key().is_none_or(|k| k >= target) {
             return Ok(());
@@ -857,21 +786,15 @@ impl Source for RunIter<'_> {
     }
 }
 
-/// A run's entries before a key and from a lower bound on, last first. Each level holds a reverse cursor, which
-/// decodes one restart segment's keys at a time and a value only when it is asked for; it stops at the first
-/// entry below the bound, without stepping back into the blocks before it.
 pub struct RunRevIter<'a> {
     run: Arc<Run>,
     cache: Option<&'a Cache>,
     counts: Option<&'a ReadCounts>,
-    /// Entries below it are past the end.
     start: Vec<u8>,
-    /// One cursor per level, top first; the last is in a data block while the iterator holds an entry.
     path: Vec<RevCursor>,
 }
 
 impl<'a> RunRevIter<'a> {
-    /// At the last entry before `before`, down to `start`.
     pub fn new(
         run: Arc<Run>,
         before: &[u8],
@@ -892,15 +815,11 @@ impl<'a> RunRevIter<'a> {
         Ok(it)
     }
 
-    /// Fills the path below its last cursor, positioning each block at `before` (or at its last entry); steps
-    /// back to the child before wherever a block has nothing before it. Ends at an entry below `start`, or an
-    /// index entry whose child ends below it (an index entry is its child's last key).
     fn descend(&mut self, mut before: Option<&[u8]>) -> KsResult<()> {
         loop {
             let depth = self.path.len();
             let last = self.path.last().unwrap();
             if !last.valid {
-                // This block is done: step its parent back, or end.
                 self.path.pop();
                 let Some(parent) = self.path.last_mut() else {
                     return Ok(());
@@ -959,8 +878,6 @@ impl Source for RunRevIter<'_> {
     }
 }
 
-/// Merges sources ordered last first, the first source the newest: yields each key once, with its values
-/// folded newest first.
 pub struct MergeRev<'a> {
     sources: Vec<Box<dyn Source + 'a>>,
     heap: BinaryHeap<(Vec<u8>, Reverse<usize>)>,
@@ -1009,7 +926,6 @@ impl<'a> MergeRev<'a> {
     }
 }
 
-/// Entries held in memory, in order.
 pub struct VecSource {
     entries: Vec<(Vec<u8>, Val)>,
     at: usize,
@@ -1036,11 +952,8 @@ impl Source for VecSource {
     }
 }
 
-/// Merges sources, the first the newest: yields each key once, with its values folded newest first. A merge of
-/// one kind of source (`S`) is `Send` when that source is, so it can be kept between steps.
 pub struct Merge<'a, S: Source + ?Sized + 'a = dyn Source + 'a> {
     sources: Vec<Box<S>>,
-    /// Each source's current key with its index, least first.
     heap: BinaryHeap<Reverse<(Vec<u8>, usize)>>,
     started: bool,
     _life: std::marker::PhantomData<&'a ()>,
@@ -1067,13 +980,11 @@ impl<'a, S: Source + ?Sized + 'a> Merge<'a, S> {
         }
     }
 
-    /// The next key, left to `next_entry`.
     pub fn peek(&mut self) -> Option<&[u8]> {
         self.start();
         self.heap.peek().map(|Reverse((k, _))| k.as_slice())
     }
 
-    /// On to the first key at or after `target`: each source behind it seeks it.
     pub fn seek(&mut self, target: &[u8]) -> KsResult<()> {
         self.start();
         while let Some(Reverse((k, _))) = self.heap.peek()
@@ -1089,13 +1000,11 @@ impl<'a, S: Source + ?Sized + 'a> Merge<'a, S> {
         Ok(())
     }
 
-    /// The next key and its values' fold.
     pub fn next_entry(&mut self) -> KsResult<Option<(Vec<u8>, Val)>> {
         self.start();
         let Some(Reverse((key, first))) = self.heap.pop() else {
             return Ok(None);
         };
-        // Sources holding the key, newest (lowest index) first.
         let mut at = vec![first];
         while let Some(Reverse((k, _))) = self.heap.peek()
             && *k == key
@@ -1117,10 +1026,6 @@ impl<'a, S: Source + ?Sized + 'a> Merge<'a, S> {
     }
 }
 
-// ---- writing ----
-
-/// Rewrites a run file's footer to hold other flushes and another covered position (a bulk load's run, named
-/// once it is installed), and syncs it.
 pub fn restamp(path: &Path, covered: u64, lo: u64, hi: u64) -> io::Result<()> {
     let file = OpenOptions::new().read(true).write(true).open(path)?;
     let bytes = file.metadata()?.len();
@@ -1148,12 +1053,10 @@ pub fn restamp(path: &Path, covered: u64, lo: u64, hi: u64) -> io::Result<()> {
 
 pub struct RunWriter {
     out: RunOut,
-    /// The file written, for the fault seam (`crate::faults`); none in memory.
     path: Option<PathBuf>,
     offset: u64,
     block_size: usize,
     data: BlockBuilder,
-    /// Index builders, lowest level first, with the blocks each has written.
     index: Vec<(BlockBuilder, u64)>,
     entries: u64,
     dels: u64,
@@ -1164,7 +1067,6 @@ pub struct RunWriter {
 mod writer_tests {
     use super::*;
 
-    /// A key of kind `kind` (`keyspace::val::put_u64`) and then `rest`.
     fn kinded(kind: u64, rest: u32) -> Vec<u8> {
         let mut k = Vec::new();
         crate::keyspace::val::put_u64(&mut k, kind);
@@ -1183,18 +1085,15 @@ mod writer_tests {
         let run = Run::in_memory(Path::new("kinds.run"), bytes.clone(), 0, 0).unwrap();
         let cache = Cache::new(1 << 20);
         let counts = ReadCounts::default();
-        // Another kind, below and inside the run's key range: answered with no block read.
         for other in [kinded(18, 5), kinded(33, 0), kinded(300, 1)] {
             assert_eq!(run.get(&other, &cache, &counts).unwrap(), None);
         }
         assert_eq!(counts.blocks.load(Ordering::Relaxed), 0);
         assert!(!run.may_hold(&kinded(18, 0), &kinded(31, 0)));
         assert!(run.may_hold(&kinded(18, 0), &kinded(40, 0)));
-        // Its own keys are found as before.
         for k in &mine {
             assert_eq!(run.get(k, &cache, &counts).unwrap(), Some(Val::Add(1)));
         }
-        // A run written before runs said their kinds holds every kind: its reads go down its index.
         let mut old = bytes;
         let at = old.len() - FOOTER;
         old[at..at + 8].copy_from_slice(MAGIC);
@@ -1221,7 +1120,6 @@ mod writer_tests {
             let mut writer = RunWriter::in_memory(256, 0);
             for key in &keys {
                 writer.add(key, &Val::Add(1)).unwrap();
-                // Catch non-reducing index levels before close could loop forever.
                 assert!(writer.index.len() <= 7);
             }
             let bytes = writer.finish_in_memory(0, 0, 0).unwrap();
@@ -1252,7 +1150,6 @@ impl RunWriter {
         Ok(w)
     }
 
-    /// A writer of a run kept in memory (`finish_in_memory`), its buffer allocated for `capacity` bytes.
     pub fn in_memory(block_size: usize, capacity: usize) -> RunWriter {
         RunWriter::to(RunOut::Memory(Vec::with_capacity(capacity)), block_size)
     }
@@ -1275,7 +1172,6 @@ impl RunWriter {
         self.entries
     }
 
-    /// Bytes written so far.
     pub fn offset(&self) -> u64 {
         self.offset
     }
@@ -1301,16 +1197,12 @@ impl RunWriter {
         Ok(h)
     }
 
-    /// Adds a child's last key and handle to the index level `level`, writing that level's block first if it
-    /// is full.
     fn push_index(&mut self, level: usize, key: &[u8], h: Handle) -> io::Result<()> {
         if self.index.len() == level {
             self.index.push((BlockBuilder::default(), 0));
         }
         let v = h.val();
         let b = &self.index[level].0;
-        // Each full index block must reduce the number of children. With only one
-        // oversized key per block, closing the run would grow levels forever.
         if b.len() >= 2 && b.size() + key.len() + 32 > self.block_size {
             self.flush_index(level)?;
         }
@@ -1333,8 +1225,6 @@ impl RunWriter {
         self.push_index(0, &last, h)
     }
 
-    /// Appends every data block of `run` as it is (its keys all after this writer's), as a merge's outputs over
-    /// disjoint key ranges are joined into one run.
     pub fn append_run(&mut self, run: &Run) -> KsResult<()> {
         if !self.data.is_empty() {
             self.flush_data()?;
@@ -1351,7 +1241,6 @@ impl RunWriter {
         Ok(())
     }
 
-    /// Adds an entry; keys must come in increasing order.
     pub fn add(&mut self, key: &[u8], val: &Val) -> io::Result<()> {
         if !self.data.is_empty()
             && self.data.size() + key.len() + val.payload_len() + 24 > self.block_size
@@ -1367,7 +1256,6 @@ impl RunWriter {
         Ok(())
     }
 
-    /// Writes the rest and the footer.
     fn close(&mut self, covered: u64, lo: u64, hi: u64) -> io::Result<()> {
         if !self.data.is_empty() {
             self.flush_data()?;
@@ -1375,7 +1263,6 @@ impl RunWriter {
         if self.index.is_empty() {
             self.index.push((BlockBuilder::default(), 0));
         }
-        // Every level but the highest has written blocks; the highest has not, and its block is the top.
         let mut level = 0;
         while level + 1 < self.index.len() {
             if !self.index[level].0.is_empty() {
@@ -1404,7 +1291,6 @@ impl RunWriter {
         Ok(())
     }
 
-    /// Writes the rest and the footer, and syncs the file. Returns the file's size.
     pub fn finish(mut self, covered: u64, lo: u64, hi: u64) -> io::Result<u64> {
         self.close(covered, lo, hi)?;
         match self.out {
@@ -1420,7 +1306,6 @@ impl RunWriter {
         Ok(self.offset)
     }
 
-    /// `finish` for a writer `in_memory`: the run's bytes, for `Run::in_memory`.
     pub fn finish_in_memory(mut self, covered: u64, lo: u64, hi: u64) -> io::Result<Vec<u8>> {
         self.close(covered, lo, hi)?;
         match self.out {

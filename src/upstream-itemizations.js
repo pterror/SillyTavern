@@ -1,34 +1,21 @@
 import { TYPE } from './library-engine.js';
 import { importedChatBookmarks } from './upstream-import.js';
 
-/**
- * Upstream's itemized prompts, which a browser kept per chat (the `SillyTavern_Prompts` IndexedDB store, keyed by
- * the chat id `getCurrentChatId()` gave, each a list of entries whose `mesId` is the message's position in the chat),
- * go onto the messages they belong to. A chat id names the bookmark the upstream import made for that chat file
- * (`upstream-import.json`); without one, a character's chat named so: upstream names a character's chat
- * `<name> - <date>`, so the characters named by what comes before a ` - ` in the id are looked at for a bookmark
- * labelled with the whole id. A chat id naming no chat, or more than one, is left out whole, with why.
- */
-
-/** Characters looked at per name a chat id could start with. */
 const NAMED_CAP = 20;
 
 /**
  * @typedef {object} UpstreamItemizationResult
  * @property {string} chat_id
- * @property {'stored' | 'not-found' | 'ambiguous'} status `stored`: the chat was found and every entry that could be
- * placed is stored (or was already); the others leave every entry out.
+ * @property {'stored' | 'not-found' | 'ambiguous'} status
  * @property {number} stored
  * @property {number} unchanged
- * @property {{ entry: number, mesId: unknown, why: string }[]} unmatched The entries left out of a found chat (`entry`
- * its index in the chat's `entries`), with why.
- * @property {string} [why] Why a chat that isn't `stored` was left out.
+ * @property {{ entry: number, mesId: unknown, why: string }[]} unmatched
+ * @property {string} [why]
  */
 
 /**
- * Stores each chat's entries on its messages.
  * @param {import('./user-stores.js').UserStore} store
- * @param {string} root The user directory.
+ * @param {string} root
  * @param {{ chat_id: string, entries: Record<string, unknown>[] }[]} chats
  * @returns {Promise<UpstreamItemizationResult[]>}
  */
@@ -54,7 +41,6 @@ export async function importUpstreamItemizations(store, root, chats) {
 }
 
 /**
- * The bookmark an import map entry names (`b<id>`, as the chat import writes it), or null.
  * @param {string} entry
  * @returns {bigint | null}
  */
@@ -64,9 +50,8 @@ function importedBookmarkOf(entry) {
 }
 
 /**
- * The chat an upstream chat id names: its tree and its bookmark's message.
  * @param {import('./user-stores.js').UserStore} store
- * @param {Map<string, string[]>} mapped {@link importedChatBookmarks}
+ * @param {Map<string, string[]>} mapped
  * @param {string} chatId
  * @returns {Promise<{ tree: bigint, at: string | null } | { status: 'not-found' | 'ambiguous', why: string }>}
  */
@@ -94,7 +79,6 @@ async function chatOf(store, mapped, chatId) {
 }
 
 /**
- * The bookmarks labelled `chatId` in the trees of the characters named by what comes before a ` - ` in it.
  * @param {import('./user-stores.js').UserStore} store
  * @param {string} chatId
  * @returns {Promise<{ tree: bigint, bookmark: bigint }[]>}

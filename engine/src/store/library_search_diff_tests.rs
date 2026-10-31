@@ -1,10 +1,3 @@
-//! Searched library pages against the reference (`search::brute`), on random libraries and queries: every match
-//! reached once through the pages, in relevance order (through `next` and through offsets) and in the list's
-//! orders (through cursors), whatever the work limits. The limits are set small so a test library runs past them
-//! as a large one does: a phrase over every field has far more candidates than the same phrase in names alone.
-//! Phrases of up to four words, closed or ending in a prefix, over every field, one, or a list field's values;
-//! with pairs indexed from the start, indexed by their pass after the library was written, or not at all.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
@@ -70,7 +63,6 @@ fn set(e: u64, f: u64, s: &str) -> Record {
     )
 }
 
-/// xorshift64.
 struct Rng(u64);
 
 impl Rng {
@@ -97,22 +89,16 @@ const WORDS: &[&str] = &[
 const TAG_NAMES: [&str; 3] = ["dark knight", "sea", "misc"];
 const TAGS: [u64; 3] = [1, 2, 3];
 
-/// The writers' field codes (`search::LIBRARY_FIELDS` order index → code), for the text fields the test fills.
 const NAME: (u32, u64) = (0, 1);
 const DESCRIPTION: (u32, u64) = (1, 10);
 const SCENARIO: (u32, u64) = (3, 12);
 const CREATOR: (u32, u64) = (7, 2);
-/// A list field: each alternate greeting is a value of its own, which a phrase never spans.
 const ALTERNATE: (u32, u64) = (9, 0);
 
-/// When the library's pairs are indexed (`search::pairs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pairs {
-    /// Never: phrases are read through their whole words.
     No,
-    /// From the start: written with the words.
     Written,
-    /// By their pass, over the library once written.
     Built,
 }
 
@@ -192,7 +178,6 @@ fn build(dir: &PathBuf, seed: u64, n: u64, pairs: Pairs) -> Lib {
         let mut fields: Vec<Vec<Vec<u8>>> = vec![Vec::new(); Scope::LIBRARY.fields().len()];
         fields[NAME.0 as usize].push(name.as_bytes().to_vec());
         if kind == CHARACTER {
-            // Long descriptions full of the same few words: a phrase over every field has many candidates.
             for (f, len) in [
                 (DESCRIPTION, 8 + r.below(40)),
                 (SCENARIO, r.below(6)),
@@ -223,7 +208,6 @@ fn build(dir: &PathBuf, seed: u64, n: u64, pairs: Pairs) -> Lib {
                 fields[ALTERNATE.0 as usize].push(v.into_bytes());
             }
         } else {
-            // A group's id is its own field (its key).
             fields[11].push(key.as_bytes().to_vec());
         }
         recs.push(rec("fav", vec![Value::Id(e), Value::Bit(fav)]));
@@ -266,7 +250,6 @@ fn build(dir: &PathBuf, seed: u64, n: u64, pairs: Pairs) -> Lib {
     }
 }
 
-/// The reference's matches of the clauses (relevance scores), under the list's filter.
 fn expected(lib: &Lib, clauses: &[Clause], f: &Filter) -> BTreeMap<u64, f64> {
     let q = query::Query {
         scope: Scope::LIBRARY,
@@ -308,8 +291,6 @@ fn query(f: Filter, sort: Sort, limit: usize, cap: u64) -> Query {
     }
 }
 
-/// Every relevance page by `next` (`by_offset`: by offsets), as entities; the first page's total and whether
-/// it's exact. Pages after one with nothing on it and `more` are a failure: the search can't go on.
 fn relevance_pages(
     lib: &Lib,
     q: &Query,
@@ -362,7 +343,6 @@ fn relevance_pages(
     Err("pages don't end".into())
 }
 
-/// Every list page by cursor; pages with nothing on them are passed (the walk's cap cut them short).
 fn list_pages(lib: &Lib, q: &Query, c: &[Clause]) -> Result<(Vec<u64>, u64, bool), String> {
     let mut q = q.clone();
     let mut out = Vec::new();
@@ -402,7 +382,6 @@ fn clause(text: String, fields: Option<Vec<u32>>, negate: bool, quoted: bool) ->
 fn random_clause(r: &mut Rng) -> Clause {
     let n = 1 + r.below(4);
     let mut t = words(r, n);
-    // Sometimes the last word cut short: a prefix (unless the phrase is closed).
     if r.chance(4) {
         let keep = t.len()
             - (t.len() - t.rfind(' ').map_or(0, |i| i + 1))
@@ -448,7 +427,6 @@ fn random_case(r: &mut Rng) -> Case {
     }
 }
 
-/// What's wrong with the pages of a case, if anything.
 fn check(lib: &Lib, case: &Case) -> Option<String> {
     let want = expected(lib, &case.clauses, &case.filter);
     let want_ids: BTreeSet<u64> = want.keys().copied().collect();
@@ -548,7 +526,6 @@ fn check(lib: &Lib, case: &Case) -> Option<String> {
     None
 }
 
-/// The case made simpler while it still fails: clauses dropped, the filter emptied, the page made larger.
 fn minimize(lib: &Lib, mut case: Case) -> Case {
     loop {
         let mut tries = Vec::new();
@@ -582,7 +559,6 @@ fn minimize(lib: &Lib, mut case: Case) -> Case {
     }
 }
 
-/// Runs random cases under the limits; panics with the seed and a minimized case on the first failure.
 fn run(seed: u64, n: u64, cases: usize, limits: Option<Limits>, pairs: Pairs) {
     let dir = temp_dir(&format!("s{seed}"));
     let lib = build(&dir, seed, n, pairs);
@@ -616,7 +592,6 @@ fn run(seed: u64, n: u64, cases: usize, limits: Option<Limits>, pairs: Pairs) {
     fs::remove_dir_all(&dir).unwrap();
 }
 
-/// Small enough that a phrase over every field runs past them at a few hundred cards, and its names alone don't.
 const TIGHT: Limits = Limits {
     enumerate: 4_000,
     ranked: 4_000,
@@ -624,7 +599,6 @@ const TIGHT: Limits = Limits {
     tags: 60_000,
 };
 
-/// One case of a library, checked under the tight limits.
 fn regression(seed: u64, case: Case) {
     let dir = temp_dir(&format!("reg{seed}"));
     let lib = build(&dir, seed, 400, Pairs::No);
@@ -636,9 +610,6 @@ fn regression(seed: u64, case: Case) {
     fs::remove_dir_all(&dir).unwrap();
 }
 
-/// Found by the random cases (seed 11): a relevance walk that ran past the work limit before its first match gave
-/// an empty page saying more follow, with nowhere to go on from, and every later page started the walk over and
-/// stopped in the same place: the matches past it were never reached.
 #[test]
 fn a_relevance_walk_past_the_work_limit_goes_on_where_it_stopped() {
     regression(
@@ -660,8 +631,6 @@ fn a_relevance_walk_past_the_work_limit_goes_on_where_it_stopped() {
     );
 }
 
-/// Found by the random cases (seed 12): a page by offset past the matches tied by a tag's name started the
-/// matches below them by the tied ones' estimated count, so some of those were never on a page.
 #[test]
 fn an_offset_past_the_tied_matches_skips_their_exact_number() {
     regression(

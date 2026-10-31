@@ -27,7 +27,11 @@ const FAV_CASES = [
     ['"yes"', 'yes', false],
 ];
 
-/** @param {object} target @param {unknown} value @returns {object} */
+/**
+ * @param {object} target
+ * @param {unknown} value
+ * @returns {object}
+ */
 function withFav(target, value) {
     if (value !== MISSING) target.fav = value;
     return target;
@@ -73,24 +77,28 @@ async function postJson(urlPath, body) {
     });
 }
 
-/** @param {string} id @returns {Promise<Record<string, any>>} The group as stored. */
+/**
+ * @param {string} id
+ * @returns {Promise<Record<string, any>>}
+ */
 async function readGroupJson(id) {
     return /** @type {any} */ ((await user.store.lib.groups([id]))[0]);
 }
 
-/** The group's fav and the digest of it the list rows carry (over the group as the routes send it). */
 async function columnAndDigest(id) {
     const group = await readGroupJson(id);
     return { fav: (await user.store.lib.entity(TYPE.group, id))?.fav ? 1 : 0, digestFav: groupDigestFavHash(group) };
 }
 
-/** @param {boolean} expected @returns {{ fav: number, digestFav: number }} */
+/**
+ * @param {boolean} expected
+ * @returns {{ fav: number, digestFav: number }}
+ */
 function columnAndDigestFor(expected) {
     return { fav: expected ? 1 : 0, digestFav: groupDigestFavHash({ fav: expected }) };
 }
 
 /**
- * Decodes `/query`'s binary hash-mode body (layout: serializeQueryHashesBinary() in src/endpoints/characters.js).
  * @param {ArrayBuffer} buffer
  * @returns {{ id: string, isGroup: boolean, favHash: number }[]}
  */
@@ -112,7 +120,7 @@ function decodeHashRows(buffer) {
     return rows;
 }
 
-/** @returns {Promise<Map<string, number>>} group id -> favHash from hash-mode /query */
+/** @returns {Promise<Map<string, number>>} */
 async function hashModeGroupFavHashes() {
     const response = await postJson('/api/characters/query', {
         filter: { includeGroups: true }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 50, want: ['hashes', 'total'],
@@ -123,8 +131,7 @@ async function hashModeGroupFavHashes() {
 }
 
 /**
- * The groups search index is maintained by a worker that rebuilds on its own tick; polls until `check` passes.
- * @param {object} body /api/characters/all request body
+ * @param {object} body
  * @param {(body: any) => boolean} check
  */
 async function pollSearch(body, check) {
@@ -165,7 +172,6 @@ describe('group writers store the normalized fav, and the digest of it is the sa
     });
 
     test.each(FAV_CASES)('POST /api/groups/save-partial: %s', async (_label, value, expected) => {
-        // A save naming no fav leaves the stored one: it starts at what the case expects.
         const created = await (await postJson('/api/groups/create', { name: 'Partial', fav: value === MISSING ? expected : !expected })).json();
         const props = value === MISSING ? { name: 'Partial 2' } : { fav: value };
         const response = await postJson('/api/groups/save-partial', { id: created.id, props });

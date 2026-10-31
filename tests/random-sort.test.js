@@ -7,7 +7,6 @@ import {
     compareByRandomSeed,
 } from '../public/scripts/random-sort.js';
 
-/** Minimal in-memory stand-in for accountStorage's `{ getItem, setItem }` surface. */
 function makeStorage(initial = {}) {
     const state = { ...initial };
     return {
@@ -87,7 +86,6 @@ describe('compareByRandomSeed', () => {
         const fullOrder = [...keys].sort((a, b) => compareByRandomSeed(a, b, seed));
         const narrowed = keys.filter(k => k !== 'character.b' && k !== 'group.1');
         const narrowedOrder = [...narrowed].sort((a, b) => compareByRandomSeed(a, b, seed));
-        // The narrowed order should just be the full order with the removed keys dropped out.
         expect(narrowedOrder).toEqual(fullOrder.filter(k => narrowed.includes(k)));
     });
 });

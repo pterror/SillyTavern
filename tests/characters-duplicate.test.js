@@ -2,8 +2,6 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } fr
 import path from 'node:path';
 import { Buffer } from 'node:buffer';
 
-// A minimal valid 1x1 transparent PNG - just enough of a real PNG for png-chunks-extract to parse, so
-// character-card-parser.js's write()/read() can attach and later re-read a `chara` tEXt chunk on it.
 const BLANK_PNG = Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
     'base64',
@@ -23,17 +21,6 @@ let router;
 let server;
 let baseUrl;
 
-/**
- * Mounts the real characters.js router behind a fake auth middleware, same pattern as
- * characters-query.test.js - the middleware reads `directories` from this file's outer-scope `let` at
- * request time, so beforeEach can point every test at a fresh temp directory.
- *
- * Regression coverage for the /duplicate wedge bug (docs/design/character-data-residency-redesign.md
- * §9, phase 0c): a `_<digits>` suffix that's long enough to exceed Number.MAX_SAFE_INTEGER used to make
- * `suffix++` stop advancing in float precision, so the collision loop spun forever on a synchronous
- * `existsSync`. See src/endpoints/characters.js's `/duplicate` handler for the fix (a length-capped
- * regex plus an iteration-count guard).
- */
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
@@ -65,9 +52,6 @@ beforeEach(async () => {
 
 afterEach(() => user.close());
 
-/**
- * Writes a card PNG to `directories.characters/<name>` and its row; the row is what makes the character exist.
- */
 async function writeTestCharacter(name, data = { name: 'Ghost', spec: 'chara_card_v2' }) {
     const buffer = writeCard(BLANK_PNG, JSON.stringify(data));
     await fixture.writeCardWithImage(user, name, JSON.stringify(data), buffer);
@@ -93,21 +77,14 @@ describe('/api/characters/duplicate', () => {
     });
 
     test('does not wedge on a suffix long enough to lose float precision', async () => {
-        // 24 nines: well past Number.MAX_SAFE_INTEGER (16 digits). Before the fix, the second duplicate
-        // of this file would collide with a `_1e+22`-style filename produced by the first and spin
-        // forever incrementing a suffix stuck in float precision.
         const hugeDigitName = `Ghost_${'9'.repeat(24)}.png`;
         await writeTestCharacter(hugeDigitName);
 
         const first = await duplicate(hugeDigitName);
         expect(first.status).toBe(200);
         const firstBody = await first.json();
-        // The digit run is too long to be treated as a suffix at all (regex caps at 15 digits), so the
-        // whole original name is kept literal and a small, safe suffix is appended.
         expect(firstBody.path).toBe(`${hugeDigitName.replace('.png', '')}_1.png`);
 
-        // Duplicating the *original* file again must also terminate quickly rather than colliding with
-        // whatever the first duplicate produced and spinning.
         const second = await duplicate(hugeDigitName);
         expect(second.status).toBe(200);
         const secondBody = await second.json();

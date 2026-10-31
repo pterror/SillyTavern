@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// The page lets go of a tag once nothing needs it: nothing on screen draws it, no character or group it holds
-// carries it, no filter is set on it, and no extension put it into `tags`.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -33,12 +30,19 @@ async function api(page, path, body = {}) {
     }, { path, body });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} id */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} id
+ */
 async function createTag(page, id) {
     await api(page, '/api/tags/create', { tag: { id, name: id, folder_type: 'NONE', is_hidden_on_character_card: false, color: '', color2: '', create_date: 1 } });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<string>} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
@@ -50,7 +54,11 @@ async function createCharacter(page, name) {
     }, name);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} id @returns {Promise<boolean>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} id
+ * @returns {Promise<boolean>}
+ */
 async function holds(page, id) {
     return page.evaluate(async (id) => {
         const { tagsStore } = await import('/scripts/tags.js');
@@ -58,7 +66,10 @@ async function holds(page, id) {
     }, id);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} term */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} term
+ */
 async function openTagManagementOn(page, term) {
     await openCharacterManagementDrawer(page);
     await page.locator('.rm_tag_filter .manageTags:visible').first().click();
@@ -66,7 +77,6 @@ async function openTagManagementOn(page, term) {
     await page.locator('#tag_view_search').fill(term);
 }
 
-// Past the sweep's delay after the last change.
 const SWEEP_TIMEOUT_MS = 10000;
 
 test.describe('letting go of tags', () => {
@@ -116,7 +126,6 @@ test.describe('letting go of tags', () => {
             saveSettingsDebounced();
         }, id);
         await expect.poll(async () => (await api(page, '/api/tags/by-ids', { ids: [id] })).tags.length).toBe(1);
-        // Long enough for a sweep to have run after the create was taken in.
         await page.waitForTimeout(5000);
         expect(await holds(page, id)).toBe(true);
     });

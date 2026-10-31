@@ -9,28 +9,23 @@ import { isStoredNodeId } from './node-identity.js';
 import { applyChanges, baselineAfter, baselineOf, changesStateHere, metadataChanges, replaceInPlace, unsavedVariables } from './state-sync.js';
 import { jsonHash } from './hash-utils.js';
 
-/**
- * Each chat metadata key's value as JSON, as the page last had it from the server or last stored it.
- * @type {Map<string, string>}
- */
+/** @type {Map<string, string>} */
 let _metadataBaseline = new Map();
 
-/** Changes sent to the server under a ref, until it says it stored them. @type {Map<string, MetadataChanges>} */
+/** @type {Map<string, MetadataChanges>} */
 const _sentMetadataChanges = new Map();
 
 /** @typedef {{ set: Record<string, unknown>, unset: string[] }} MetadataChanges */
 
 
 /**
- * What changed in `chat_metadata` since the page last had it from the server, per key and per variable.
- * @returns {import('./state-sync.js').MetadataChanges|null} Null when nothing changed.
+ * @returns {import('./state-sync.js').MetadataChanges|null}
  */
 export function changedMetadata() {
     return metadataChanges(chat_metadata, _metadataBaseline);
 }
 
 /**
- * Takes on changes the server stored.
  * @param {import('./state-sync.js').MetadataChanges} changes
  */
 export function noteMetadataChangesStored(changes) {
@@ -38,7 +33,6 @@ export function noteMetadataChangesStored(changes) {
 }
 
 /**
- * Takes on the server's state at the pointer (the pointer moved, or another tab changed it), in place.
  * @param {ChatMetadata} state
  */
 export function takeServerState(state) {
@@ -47,9 +41,7 @@ export function takeServerState(state) {
 }
 
 /**
- * A save of `changes` the server refused or that failed: the page takes the server's state back, and an error names
- * the variables not saved.
- * @param {ChatMetadata} state The server's state at the pointer.
+ * @param {ChatMetadata} state
  * @param {import('./state-sync.js').MetadataChanges} changes
  */
 export function metadataChangesNotSaved(state, changes) {
@@ -59,8 +51,6 @@ export function metadataChangesNotSaved(state, changes) {
 }
 
 /**
- * Whether a state change recorded at `at` (null: the tree's root) changes the state shown here, so the page reads
- * it again.
  * @param {string|null} at
  */
 export function stateChangedHere(at) {
@@ -68,16 +58,13 @@ export function stateChangedHere(at) {
 }
 
 /**
- * Takes on chat metadata the server stored whole (a compat chat save), so it is what the page last had from the
- * server and isn't saved again unchanged.
- * @param {ChatMetadata} metadata What was sent.
+ * @param {ChatMetadata} metadata
  */
 export function noteMetadataStored(metadata) {
     _metadataBaseline = baselineOf(metadata);
 }
 
 /**
- * Remembers changes sent under `ref`, so they count as stored once the server says so.
  * @param {string} ref
  * @param {import('./state-sync.js').MetadataChanges} changes
  */
@@ -85,7 +72,6 @@ export function noteMetadataSent(ref, changes) {
     _sentMetadataChanges.set(ref, changes);
 }
 
-// Read again where the page is: the messages the answer stored have their ids by now.
 setStateChangedListener(() => void onStateChanged({ tree: null, at: null }));
 
 setMetadataStoredListener(({ ref, node_id: at, integrity, notSaved }) => {
@@ -103,7 +89,6 @@ setMetadataStoredListener(({ ref, node_id: at, integrity, notSaved }) => {
 });
 
 /**
- * The open chat's owner as chat routes name it, or null.
  * @returns {{ avatar_url: string } | { group_id: string } | null}
  */
 function openOwner() {
@@ -112,7 +97,7 @@ function openOwner() {
     return typeof avatar === 'string' && avatar !== '' ? { avatar_url: avatar } : null;
 }
 
-/** @returns {string | null} The last message of the open chat that is stored (null: none, the tree's root). */
+/** @returns {string | null} */
 function openPosition() {
     for (let i = chat.length - 1; i >= 0; i--) {
         if (isStoredNodeId(chat[i]?.node_id)) return chat[i].node_id;
@@ -121,8 +106,6 @@ function openPosition() {
 }
 
 /**
- * Whose macros the page shows (src/endpoints/macros.js): the open chat's, at its last stored message. In a group, the
- * character the page has current (if any) too, for its card.
  * @returns {import('./macro-values.js').MacroScope}
  */
 export function openChatMacroScope() {
@@ -136,9 +119,6 @@ export function openChatMacroScope() {
 }
 
 /**
- * Reads the server's state again after a change elsewhere (the changes stream's `state-changed`: `tree` the
- * character's avatar or group's id, null when every page reads again; `at` the message it hangs on, null at the
- * root) when it changes what this page shows. This page's own changes not saved yet stay on top of it.
  * @param {{ tree: string | null, at: string | null }} frame
  */
 export async function onStateChanged({ tree, at }) {
@@ -155,7 +135,6 @@ export async function onStateChanged({ tree, at }) {
         });
         if (!response.ok) return;
         const answer = await response.json();
-        // The page may have opened another chat meanwhile.
         if (!answer?.state || JSON.stringify(openOwner()) !== JSON.stringify(owner)) return;
         const pending = changedMetadata();
         takeServerState(answer.state);
@@ -166,7 +145,6 @@ export async function onStateChanged({ tree, at }) {
 }
 
 /**
- * The server's state at a message of the open chat (null: its root), or null when it can't be read.
  * @param {string|null} at
  * @returns {Promise<ChatMetadata|null>}
  */
@@ -194,20 +172,11 @@ function _hasHttpStatus(error) {
     return error instanceof Error && typeof (/** @type {*} */ (error).status) === 'number';
 }
 
-/**
- * Forgets what was sent and not answered yet, and takes `chat_metadata` as it is now as what the server has (the
- * chat was opened or replaced whole).
- */
 export function _resetMetadataSaveSnapshot() {
     _metadataBaseline = baselineOf(chat_metadata);
     _sentMetadataChanges.clear();
 }
 
-// Retries the SAME direct op on a transient failure (network error, 5xx) instead of falling through
-// to a different, generic persistence mechanism - a dropped write is still that exact write. A 4xx
-// is a real, immediate refusal and is never retried, since a retry can't change it. Mirrors
-// chat-store.js's own _retryTransient(), for the one caller here (_postChatMetadata()) that posts
-// directly instead of going through a chatOp*().
 /**
  * @template T
  * @param {() => Promise<T>} fn
@@ -231,13 +200,9 @@ async function _retryOp(fn, { attempts = 3, baseDelayMs = 500 } = {}) {
     throw lastError;
 }
 
-// Saves are chained: one built while another is in flight waits for it, so it diffs against what that one stored.
 let _metadataSaveChain = Promise.resolve();
 
 /**
- * Saves what changed in `chat_metadata` (`changedMetadata()`) as state changes where the request's session is, with
- * the same retry-then-toast policy for solo and group chats. A refusal takes the server's state back and names the
- * variables not saved.
  * @param {{avatar_url: string}|{group_id: string}} owner
  */
 export async function _postChatMetadata(owner) {
@@ -270,12 +235,10 @@ export async function _postChatMetadata(owner) {
     };
 
     const chained = _metadataSaveChain.then(run, run);
-    // Never let one failed/aborted link break the chain for saves queued after it.
     _metadataSaveChain = chained.catch(() => { });
     return chained;
 }
 
-/** Saves what changed in `chat_metadata` (upstream's `saveMetadata()`), where this tab's session is. */
 export async function saveMetadata() {
     const owner = openOwner();
     if (!owner) return;

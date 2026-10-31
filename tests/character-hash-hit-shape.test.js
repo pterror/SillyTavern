@@ -3,18 +3,11 @@ import path from 'node:path';
 import process from 'node:process';
 import lodash from 'lodash';
 
-// Hash-mode /query (character-repository.js) resolves a row from the client's character cache when the row's
-// version matches, and fetches it from /batch otherwise. Consumers get the row either way and can't tell which, so
-// a hit must be the same row object a miss is. Real client modules against the real server routes; only what can't
-// load in node is replaced: IndexedDB (localforage) by an in-memory store that structured-clones like
-// IndexedDB does, and the DOM-bound modules character-list.js imports.
-
-// writeCharacterData()'s DEFAULT_AVATAR_PATH ('./public/img/...') is repo-root-relative.
 const originalCwd = process.cwd();
 
 const USER_HANDLE = 'hash-hit-shape-test-user';
 
-/** @type {Map<string, Map<string, any>>} localforage instance name -> key -> record */
+/** @type {Map<string, Map<string, any>>} */
 const localforageStores = new Map();
 
 function createFakeLocalforageInstance({ name }) {
@@ -38,7 +31,6 @@ function createFakeLocalforageInstance({ name }) {
     };
 }
 
-// One stable array, mutated in place: the mocked module's export is bound once.
 const residentCharacters = [];
 const noop = () => {};
 
@@ -54,7 +46,6 @@ jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({ favsT
 jest.unstable_mockModule('../public/scripts/character-store.js', () => ({
     characters: residentCharacters,
     charactersStore: { get: () => undefined, has: () => false, onChange: () => noop, reindex: noop, reset: noop },
-    // The real resolveCharacterRef over this mock's stores: charactersStore.get() always misses.
     resolveCharacterRef: ref => residentCharacters[ref],
     this_avatar: undefined,
 }));
@@ -128,14 +119,11 @@ const FULL_CARD = {
         extensions: { talkativeness: 0.5, world: 'Lore', depth_prompt: { depth: 4, prompt: 'dp', role: 'system' } },
     },
 };
-// No character_version/creator/tags/creator_notes/world, so the server's shallow projection fills in its defaults.
 const SPARSE_CARD = {
     spec: 'chara_card_v2', spec_version: '2.0', name: 'Sparse',
     data: { name: 'Sparse', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', extensions: {} },
 };
-// Not even data.name.
 const BARE_CARD = { spec: 'chara_card_v2', spec_version: '2.0', name: 'Bare', data: { extensions: {} } };
-// Top-level V1 mirrors disagreeing with data.*.
 const DRIFT_CARD = {
     spec: 'chara_card_v2', spec_version: '2.0', name: 'Old name', tags: ['old'],
     data: {
@@ -143,7 +131,6 @@ const DRIFT_CARD = {
         character_version: '', creator: '', tags: ['new'], creator_notes: 'n', extensions: { world: '' },
     },
 };
-// No spec at all.
 const V1_CARD = { name: 'Legacy', description: 'd', creatorcomment: 'legacy notes', creator: 'c', tags: ['a', 'b'] };
 
 const CARDS = [['full', FULL_CARD], ['sparse', SPARSE_CARD], ['bare', BARE_CARD], ['drifted', DRIFT_CARD], ['V1', V1_CARD]];
@@ -162,14 +149,12 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
     beforeAll(async () => {
         process.env.SILLYTAVERN_PERFORMANCE_SHALLOWCHARACTERSINCLUDECREATORNOTES = String(creatorNotes);
         process.env.SILLYTAVERN_PERFORMANCE_LAZYLOADCHARACTERS = String(lazy);
-        // Both settings are read at module load, so each mode gets its own module instances.
         jest.resetModules();
 
         const { setConfigFilePath } = await import('../src/util.js');
         setConfigFilePath(path.join(originalCwd, '..', 'default', 'config.yaml'));
 
         const fixture = await import('./converted-user.fixture.js');
-        // The routes' own module instance: clientResolve() resets modules between tests.
         const stores = await import('../src/user-stores.js');
         const { router } = await import('../src/endpoints/characters.js');
         const characterList = await import('../public/scripts/character-list.js');
@@ -204,7 +189,6 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         globalThis.DATA_ROOT = user.dataRoot;
         clearClientCaches();
         toastrError.mockClear();
-        // The client issues root-relative URLs; route them to the test server.
         globalThis.fetch = jest.fn((url, init) => realFetch(String(url).startsWith('/') ? `${mode.baseUrl}${url}` : url, init));
     });
 
@@ -219,8 +203,6 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
     }
 
     /**
-     * One hash-mode /query for `id` through a freshly imported repository, so its per-request response cache is
-     * empty and the row is resolved against the character cache.
      * @param {string} id
      * @returns {Promise<{row: object, batched: boolean}>}
      */
@@ -242,7 +224,6 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         const miss = await clientResolve('Char.png');
         expect(miss.batched).toBe(true);
 
-        // Hit on the record the miss cached.
         const hitOnMissRecord = await clientResolve('Char.png');
         expect(hitOnMissRecord.batched).toBe(false);
         expect(hitOnMissRecord.row).toStrictEqual(miss.row);

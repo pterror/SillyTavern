@@ -1,10 +1,7 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// A message being edited, and a reasoning block being edited, edit in the live editor.
-
 /**
- * Opens a chat with Seraphina and sends a user message; returns that message's id.
  * @param {import('@playwright/test').Page} page
  * @param {string} text
  */
@@ -22,7 +19,10 @@ async function chatWithUserMessage(page, text) {
     }, text);
 }
 
-/** @param {import('@playwright/test').Page} page @param {number} id */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {number} id
+ */
 async function storedMessage(page, id) {
     await page.waitForTimeout(300);
     return page.evaluate((id) => {
@@ -31,7 +31,10 @@ async function storedMessage(page, id) {
     }, id);
 }
 
-/** @param {import('@playwright/test').Page} page @param {boolean} on */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {boolean} on
+ */
 async function setAutoSave(page, on) {
     await page.evaluate(async (on) => {
         const { power_user } = await import('/scripts/power-user.js');
@@ -121,7 +124,6 @@ test.describe('message edits in the live editor', () => {
         await expect(reasoningEditor).toBeVisible();
         await reasoningEditor.locator('.cm-content').click();
         await page.keyboard.type('Thinking *hard*');
-        // While the message is being edited, its Done also accepts the reasoning edit.
         await mes.locator('.mes_edit_done').click();
         await expect(page.locator('#chat .reasoning_edit_textarea')).toHaveCount(0);
         await expect(page.locator('#chat .cm-editor')).toHaveCount(0);
@@ -167,7 +169,6 @@ test.describe('message edits in the live editor', () => {
 test.describe('an edit sends only what changed', () => {
     test.beforeEach(testSetup.awaitST);
 
-    /** The message as the server stores it, read by its node. */
     const serverCopy = (/** @type {import('@playwright/test').Page} */ page, /** @type {string} */ nodeId) => page.evaluate(async (nodeId) => {
         // @ts-ignore
         const ctx = SillyTavern.getContext();
@@ -180,7 +181,6 @@ test.describe('an edit sends only what changed', () => {
         const id = await chatWithUserMessage(page, 'Before.');
         // @ts-ignore
         const nodeId = await page.evaluate((id) => SillyTavern.getContext().chat[id].node_id, id);
-        // Another writer sets a field this tab's copy doesn't have.
         await page.evaluate(async (nodeId) => {
             // @ts-ignore
             const ctx = SillyTavern.getContext();

@@ -11,8 +11,6 @@ async function awaitAppReady(page) {
 }
 
 /**
- * Loads `/` and records which requests for frontend files went to the server (anything not answered from the
- * browser's cache), until the app is ready and the network is quiet.
  * @param {import('@playwright/test').Page} page
  * @returns {Promise<{network: string[], cached: number}>}
  */
@@ -35,14 +33,10 @@ async function loadAndRecord(page) {
 
     await page.goto('/');
     await awaitAppReady(page);
-    // The changes stream stays open, so the network never goes idle; what boot loads lazily has settled by then.
     // eslint-disable-next-line playwright/no-wait-for-timeout
     await page.waitForTimeout(3000);
     await session.detach();
 
-    // User data (avatars, backgrounds, thumbnails) and API calls aren't frontend files. `img/five.png` (the system
-    // avatar) and `img/ai4.png` (`default_avatar`, a character's with none) are upstream exports written as-is into
-    // messages and the DOM, so they keep revalidating.
     const userData = /^\/(?:api|characters|backgrounds|thumbnail|User%20Avatars|user)(?:\/|$)/;
     const frontend = [...seen.values()].filter(({ url }) => {
         const { pathname } = new URL(url);
@@ -87,7 +81,7 @@ test.describe('frontend cache and extensions', () => {
     /**
      * @param {string} dataRoot
      * @param {string} name
-     * @returns {string} The extension's directory
+     * @returns {string}
      */
     function writeProbeExtension(dataRoot, name) {
         const directory = path.join(dataRoot, 'default-user', 'extensions', name);
@@ -129,7 +123,6 @@ test.describe('frontend cache and extensions', () => {
         expect(await page.evaluate(() => JSON.parse(document.querySelector('script[type="importmap"]').textContent).imports['/scripts/extensions/third-party/CacheProbeBefore/index.js'])).toMatch(/\?stv=/);
         expect(await importProbe(page, 'CacheProbeBefore')).toEqual({ sameInstance: true, error: null });
 
-        // Installed while the page is open: not in its import map, so it loads unversioned, and still shares modules.
         created.push(writeProbeExtension(stServer.dataRoot, 'CacheProbeAfter'));
         expect(await importProbe(page, 'CacheProbeAfter')).toEqual({ sameInstance: true, error: null });
     });
@@ -142,7 +135,6 @@ test.describe('frontend cache and extensions', () => {
         await expect(page.locator('body')).not.toHaveAttribute('data-frontend-outdated', 'true');
 
         writeProbeExtension(stServer.dataRoot, 'CacheProbeStale');
-        // A distinct mtime, so the server sees the change even within the same millisecond.
         const later = new Date(Date.now() + 5000);
         fs.utimesSync(path.join(directory, 'index.js'), later, later);
 

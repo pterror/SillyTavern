@@ -4,11 +4,6 @@ import path from 'node:path';
 import process from 'node:process';
 import lodash from 'lodash';
 
-// `/query`'s `filter.group`, the character list's Groups filter (upstream's FILTER_TYPES.GROUP): `true` keeps only
-// groups, `false` only characters. Rows keep the shape `filter.includeGroups` asks for, and `want: 'hidden'` still
-// counts every entity, as upstream's "N hidden" does. Checked in JSON, in hash mode (through the real client
-// repository) and with a search term.
-
 const originalCwd = process.cwd();
 const noop = () => {};
 
@@ -94,7 +89,7 @@ afterEach(async () => {
 
 /**
  * @param {string} avatar
- * @param {{ name?: string, fav?: boolean, file?: boolean }} [options] file: also write the PNG, which search indexes.
+ * @param {{ name?: string, fav?: boolean, file?: boolean }} [options]
  */
 async function seedCharacter(avatar, { name = avatar.replace(/\.png$/, ''), fav = false, file = false } = {}) {
     const card = JSON.stringify({
@@ -112,7 +107,10 @@ async function seedCharacter(avatar, { name = avatar.replace(/\.png$/, ''), fav 
     await user.store.lib.writeCard(directories, avatar, card);
 }
 
-/** @param {string} id @param {{ name?: string, fav?: boolean }} [options] */
+/**
+ * @param {string} id
+ * @param {{ name?: string, fav?: boolean }} [options]
+ */
 async function seedGroup(id, { name = id, fav = false } = {}) {
     const group = { id, name, members: [], chats: [], fav };
     await user.store.lib.writeGroup(group);
@@ -129,7 +127,6 @@ async function queryJson(body) {
     return response.json();
 }
 
-/** Repeats the request until the search indexes have caught up: two answers in a row agree. */
 async function settledQuery(body) {
     let previous = JSON.stringify(await queryJson(body));
     const deadline = Date.now() + 10000;
@@ -147,7 +144,6 @@ const rowKey = row => {
     return type === 'group' ? `group:${item.id}` : item.avatar;
 };
 
-/** Five characters (two favs) and two groups (one fav). */
 async function seedLibrary() {
     for (const [avatar, fav] of [['A.png', true], ['B.png', true], ['C.png', false], ['D.png', false], ['E.png', false]]) {
         await seedCharacter(avatar, { fav });
@@ -171,7 +167,6 @@ describe('/query filter.group', () => {
         expect(characters.rows.map(rowKey)).toEqual(['A.png', 'B.png', 'C.png', 'D.png', 'E.png']);
         expect(characters).toMatchObject({ total: 5, hidden: 2 });
 
-        // With the other filters.
         const favGroups = await queryJson({ filter: { includeGroups: true, group: true, fav: true }, sort: NAME_ASC, page: 1, pageSize: 10, want: ['rows', 'total'] });
         expect(favGroups.rows.map(rowKey)).toEqual(['group:g1']);
         expect(favGroups.total).toBe(1);
@@ -179,12 +174,10 @@ describe('/query filter.group', () => {
         expect(favCharacters.rows.map(rowKey)).toEqual(['A.png', 'B.png']);
         expect(favCharacters.total).toBe(2);
 
-        // No Groups filter: both kinds.
         const both = await queryJson({ filter: { includeGroups: true }, sort: NAME_ASC, page: 1, pageSize: 10, want: ['rows', 'total'] });
         expect(both.rows.map(rowKey)).toEqual(['A.png', 'B.png', 'C.png', 'D.png', 'E.png', 'group:g1', 'group:g2']);
         expect(both.total).toBe(7);
 
-        // Only characters, without groups asked for: the plain characters-only list.
         const plain = await queryJson({ filter: { group: false }, sort: NAME_ASC, page: 1, pageSize: 10, want: ['rows', 'total'] });
         expect(plain.rows.map(row => row.avatar)).toEqual(['A.png', 'B.png', 'C.png', 'D.png', 'E.png']);
 
@@ -217,7 +210,6 @@ describe('/query filter.group', () => {
         ['name order', NAME_ASC],
         ['relevance order', { field: 'search' }],
     ])('with a search term, in %s', async (_, sort) => {
-        // Names differ in their first letters: a search's name order compares only a short prefix.
         await seedCharacter('Vlad.png', { name: 'Vlad the Vampire', file: true });
         await seedCharacter('Anna.png', { name: 'Anna the Vampire', file: true });
         await seedCharacter('Human.png', { name: 'Human', file: true });

@@ -45,8 +45,6 @@ async function openCharacter(page, avatar) {
 }
 
 /**
- * Swipes message 0 to `swipeId` while sampling, every animation frame, what message 0 shows, where its block is
- * slid to, and how many messages are on screen.
  * @param {import('@playwright/test').Page} page
  * @param {number} swipeId
  * @param {number} [duration]
@@ -83,10 +81,8 @@ async function swipeSampled(page, swipeId, duration = 400) {
 }
 
 /**
- * Splits sampled frames into the slide-out (block moving off towards `outSign`) and the slide-in (coming back from
- * the other side).
  * @param {{text: string, tx: number, count: number}[]} frames
- * @param {number} outSign -1 for a right swipe (slides left), 1 for a left swipe.
+ * @param {number} outSign
  */
 function phases(frames, outSign) {
     const outFrames = [];
@@ -126,7 +122,6 @@ test.describe('Swipe animation order', () => {
     test('what follows the swiped message changes once, at the swap', async ({ page }) => {
         const avatar = await createCharacter(page, `SwipeOrderCont ${Date.now()}`);
         await openCharacter(page, avatar);
-        // A user reply stores greeting 0 and hangs a message under it.
         await page.evaluate(async () => {
             // @ts-ignore
             await SillyTavern.getContext().executeSlashCommandsWithOptions('/send A reply under the first greeting');
@@ -138,14 +133,12 @@ test.describe('Swipe animation order', () => {
             return chat.length === 2 && !String(chat[0].node_id).startsWith('card:') && typeof chat[1].node_id === 'string';
         }), { timeout: 10000 }).toBe(true);
 
-        // Away from greeting 0: its reply stays on screen while sliding out, and is gone when sliding in.
         const away = phases(await swipeSampled(page, 1), -1);
         expect(away.outFrames.length).toBeGreaterThan(0);
         expect(away.inFrames.length).toBeGreaterThan(0);
         expect(away.outFrames.every(f => f.text === GREETINGS[0] && f.count === 2)).toBe(true);
         expect(away.inFrames.every(f => f.text === GREETINGS[1] && f.count === 1)).toBe(true);
 
-        // Back to greeting 0 (stored): the reply comes back only with the new text.
         const back = phases(await swipeSampled(page, 0), 1);
         expect(back.outFrames.length).toBeGreaterThan(0);
         expect(back.inFrames.length).toBeGreaterThan(0);
@@ -168,7 +161,6 @@ test.describe('Swipe animation order', () => {
         })).toBe(GREETINGS[3]);
         await expect(page.locator('#chat .mes.last_mes')).toHaveAttribute('mesid', '0');
 
-        // Past the last greeting opens a fresh empty slot in the editor; cancelling it goes back to the last greeting.
         await page.evaluate(async () => {
             const { swipe } = await import('/script.js');
             const { SWIPE_DIRECTION, SWIPE_SOURCE } = await import('/scripts/constants.js');

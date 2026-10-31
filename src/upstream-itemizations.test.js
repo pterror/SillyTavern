@@ -1,5 +1,3 @@
-// Upstream's itemized prompts, kept per chat id in a browser, go onto the messages at their positions in the chat the
-// id names; what can't be placed is listed with why, and a second run stores nothing again.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -38,7 +36,6 @@ const write = (/** @type {string} */ rel, /** @type {string} */ text) => {
 const NIA_CHAT = 'Nia - 2024-01-01@10h00m00s';
 const GROUP_ID = '1700000000000';
 
-/** The itemizations on the chat labelled `name`, by position. */
 async function itemizationsOf(owner, name) {
     const tree = await treeOf(store, owner);
     const [b] = await store.lib.store.chatRead('bookmarksNamed', { tree, name });

@@ -5,8 +5,6 @@ import { buildConnectApiMap, getConnectApiMapAllowedSelected } from '../public/s
 const CONNECT_API_MAP = buildConnectApiMap(TEXTGEN_TYPES, CHAT_COMPLETION_SOURCES);
 
 /**
- * Mirrors ConnectionManagerRequestService.getProfile()/validateProfile() in
- * public/scripts/extensions/shared.js.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} profileId
  * @returns {{profile: object, selectedApiMap: {selected: string, type?: string, source?: string}}}

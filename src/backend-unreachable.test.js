@@ -1,5 +1,3 @@
-// A text completion backend nobody is listening on (llama.cpp not running) is said once, in one line: not once per
-// request made to it (its props, its model, each text tokenized), and with no stack trace.
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import path from 'node:path';
@@ -17,7 +15,7 @@ const { lookupBackendModel } = await import('./backend-status.js');
 const { lookupCustomLlamaCppModel } = await import('./custom-llamacpp.js');
 const { encodeWithTokenizer, resolveTokenizer } = await import('./tokenizer-resolve.js');
 
-/** @returns {Promise<string>} The URL of a port nothing listens on. */
+/** @returns {Promise<string>} */
 function closedPortUrl() {
     return new Promise((resolve, reject) => {
         const probe = net.createServer();
@@ -30,7 +28,6 @@ function closedPortUrl() {
 }
 
 /**
- * Runs `fn` with the console's output collected, line by line.
  * @param {() => Promise<void>} fn
  * @returns {Promise<string[]>}
  */

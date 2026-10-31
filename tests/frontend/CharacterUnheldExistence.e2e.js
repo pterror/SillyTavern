@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// Deleting and existence checks act on the library, not on the characters the page holds. Each test makes its
-// characters after the page has loaded and keeps the page from hearing of them.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -20,10 +17,9 @@ async function loadApp(page) {
 }
 
 /**
- * Creates a character the page doesn't hold.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @returns {Promise<string>} its avatar key
+ * @returns {Promise<string>}
  */
 async function createUnheldCharacter(page, name) {
     const avatar = await page.evaluate(async (name) => {
@@ -45,7 +41,7 @@ async function createUnheldCharacter(page, name) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
- * @returns {Promise<boolean>} whether the server has the character
+ * @returns {Promise<boolean>}
  */
 async function existsOnServer(page, avatar) {
     return page.evaluate(async (avatar) => {
@@ -79,7 +75,6 @@ test.describe('characters the page does not hold', () => {
         const avatar = await createUnheldCharacter(page, `DeleteLookupFails ${Date.now()}`);
         await page.route('**/api/characters/query', route => route.fulfill({ status: 500 }));
 
-        // The toast shows while the call is still finishing its UI refresh, so it is awaited alongside the call.
         const toast = expect(page.locator('.toast-error', { hasText: 'Nothing was deleted' })).toBeVisible();
         const deleted = await page.evaluate(async (avatar) => {
             const { deleteCharacter } = await import('./script.js');

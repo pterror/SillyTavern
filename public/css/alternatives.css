@@ -1,8 +1,4 @@
-/* The alternatives of a message (packages/areas/alternatives): one list, every alternative rendered as the chat
- * renders it. */
-
 :root {
-    /* What a search matched, in any list that marks it. Custom CSS can set it. */
     --match-color: color-mix(in srgb, var(--SmartThemeQuoteColor, #e69500) 45%, transparent);
 }
 
@@ -12,8 +8,6 @@ mark.match {
     border-radius: 2px;
 }
 
-/* The dialog looks like the old page's popups without their class: `.popup` comes with a `:has()` rule, and a
- * `:has()` on an ancestor recomputes the style of everything under it on each change, thousands of rows here. */
 dialog.alternatives {
     color: var(--SmartThemeBodyColor);
     text-align: left;
@@ -122,7 +116,6 @@ body.no-blur dialog.alternatives::backdrop {
     list-style: none;
     overflow-y: auto;
     position: relative;
-    /* The markers sit beside the scrollbar, which never comes and goes under them. */
     scrollbar-gutter: stable;
 }
 
@@ -131,13 +124,10 @@ body.no-blur dialog.alternatives::backdrop {
     border-radius: 5px;
     margin-top: 5px;
     padding: 5px 7px;
-    /* A row off screen isn't laid out or painted; the size it last had holds its place. */
     content-visibility: auto;
     contain-intrinsic-size: auto 12em;
 }
 
-/* A search: what doesn't match is hidden (the list says it's searching; a row, that it matches). Folded away rather
- * than taken out of the layout (display: none): its rendering is kept, so hiding and showing thousands is cheap. */
 .alternatives-list.filtering > .alternative:not(.matched, .alternatives-new) {
     content-visibility: hidden;
     contain-intrinsic-size: none;
@@ -201,8 +191,6 @@ body.no-blur dialog.alternatives::backdrop {
     gap: 4px;
 }
 
-/* A row's buttons look like the old page's menu buttons, without its class: that class makes keyboard.js take
- * every one of thousands of rows' buttons in hand (they're buttons: the keyboard has them already). */
 .alternative-button {
     color: var(--SmartThemeBodyColor);
     filter: grayscale(0.5);
@@ -286,7 +274,6 @@ body.no-blur dialog.alternatives::backdrop {
     height: 4px;
 }
 
-/* Fingers: every control big enough to hit. */
 @media (pointer: coarse) {
     .alternatives .menu_button,
     .alternative-button,

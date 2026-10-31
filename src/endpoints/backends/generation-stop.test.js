@@ -14,9 +14,6 @@ import { setConfigFilePath } from '../../util.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 
-// An explicit stop (POST /generate/stop/:id) aborts the upstream request of a raw-action generation,
-// and what is stored is exactly what the server streamed up to the stop. A disconnect without a stop
-// still lets the generation run to the end.
 const { router: textRouter } = await import('./text-completions.js');
 const { router: chatRouter } = await import('./chat-completions.js');
 const { writeAllSettings } = await import('../../settings-store.js');
@@ -76,11 +73,6 @@ function chatSettings(source, url) {
     };
 }
 
-/**
- * A fake backend that streams `count` pieces, one every `delayMs`, and records whether its connection
- * was closed before it finished. `format` builds one SSE event from a piece; `/props` and `/tokenize`
- * answer llama.cpp's probes; with `nonStream` it answers once with JSON after `count * delayMs`.
- */
 async function startPacedBackend({ count = 30, delayMs = 60, format, finalJson = null, nonStream = false }) {
     const state = { written: 0, closedEarly: false, closedAt: 0, finished: false, started: false };
     const server = http.createServer((req, res) => {
@@ -151,13 +143,10 @@ async function closeApp(server) {
 let branches = 0;
 
 /**
- * A new conversation of `avatar`'s, its greeting stored through a session of its own: what a generate request's
- * session continues.
  * @param {string} avatar
  */
 async function newBranch(avatar) {
     const session = newSessionKey();
-    // A greeting of its own: one with the same text would be the stored one, and so would the messages after it.
     const [greeting] = await seedMessages(user.store, { avatar }, null, [{ name: 'Rex', is_user: false, mes: `Hello there. (${++branches})`, send_date: 1, extra: {} }], { session });
     return { session, leaf: greeting, messages: await sessionPath(user.store, { avatar }, session) };
 }
@@ -174,10 +163,6 @@ async function waitFor(check, timeoutMs = 3000) {
     }
 }
 
-/**
- * Streams a generation, stops it after the first content arrives, and checks the upstream was closed
- * at once, the stop answered with the stored text and node, and the page's stream ends with that same text.
- */
 async function stopMidStreamCase({ label, router, settings, format, avatar }) {
     const backend = await startPacedBackend({ format });
     writeAllSettings(directories, settings(backend.url));
@@ -230,7 +215,6 @@ async function stopMidStreamCase({ label, router, settings, format, avatar }) {
         take(decoder.flush());
 
         assert.ok(stop.mes && stop.node_id, `${label}: the stop answers with the stored text and node`);
-        // The stored reply is the streamed text cleaned up as upstream's page cleaned it (trimmed, trim_spaces being on).
         assert.equal(text.trim(), stop.mes, `${label}: the page's stream ends with exactly the stored text`);
         assert.equal(nodeId, stop.node_id, `${label}: the stream's last frame names the same node`);
         const after = await shown(avatar, branch);
@@ -253,7 +237,6 @@ async function run() {
     await stopMidStreamCase({ label: 'chat-custom', router: chatRouter, settings: url => chatSettings('custom', url), format: chatFormat, avatar });
     await stopMidStreamCase({ label: 'chat-mistral', router: chatRouter, settings: url => chatSettings('mistralai', url), format: chatFormat, avatar });
 
-    // Non-streaming: the stop aborts the upstream request and nothing is stored as a reply.
     {
         const backend = await startPacedBackend({ count: 30, delayMs: 60, nonStream: true, finalJson: { choices: [{ text: 'never sent' }] }, format: genericFormat });
         writeAllSettings(directories, textSettings('generic', backend.url));
@@ -285,7 +268,6 @@ async function run() {
         }
     }
 
-    // A disconnect without a stop still runs to the end and stores the whole reply.
     {
         const backend = await startPacedBackend({ count: 8, delayMs: 30, format: genericFormat });
         writeAllSettings(directories, textSettings('generic', backend.url));
@@ -316,7 +298,6 @@ async function run() {
         }
     }
 
-    // An unknown id answers 404.
     {
         const { server, base } = await startApp(textRouter);
         try {

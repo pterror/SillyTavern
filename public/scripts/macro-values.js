@@ -1,17 +1,10 @@
-// The values the page shows in macros' places (pills, previews, token counts), from the server, which fills in the
-// prompts with the same engine and the same facts (src/endpoints/macros.js): the page never fills in macros for
-// itself. A preview asks for the values its text needs before it renders, so it renders once, with them.
-// What only the page knows of what the macros read is given to it (setPageMacroFacts()), so importing it never adds
-// an import cycle.
-
 import { getRequestHeaders } from './request-headers.js';
 import { macrosIn, mentionAboutMacro } from './safe-macros.js';
 
-/** @type {() => import('../../src/macro-facts.js').PageMacroFacts} What only the page knows, sent with each request. */
+/** @type {() => import('../../src/macro-facts.js').PageMacroFacts} */
 let pageMacroFacts = () => ({});
 
 /**
- * Called as the page's macros load.
  * @param {() => import('../../src/macro-facts.js').PageMacroFacts} facts
  */
 export function setPageMacroFacts(facts) {
@@ -19,8 +12,7 @@ export function setPageMacroFacts(facts) {
 }
 
 /**
- * @typedef {object} MacroScope Whose macros: the chat's (`avatar_url`, `group_id`) at the message `at` (none: no chat);
- * `name2` names the character instead.
+ * @typedef {object} MacroScope
  * @property {string} [avatar_url]
  * @property {string} [group_id]
  * @property {string | null} [at]
@@ -28,14 +20,14 @@ export function setPageMacroFacts(facts) {
  */
 
 /**
- * @typedef {object} Batch Macros asked for in one task with the same scope, sent as one request.
+ * @typedef {object} Batch
  * @property {MacroScope} scope
  * @property {boolean} all
  * @property {string[]} macros
- * @property {Promise<(string | null)[]>} answer All the batch's values, in order.
+ * @property {Promise<(string | null)[]>} answer
  */
 
-/** @type {Map<string, Batch>} The batches not sent yet, by scope. */
+/** @type {Map<string, Batch>} */
 const batches = new Map();
 
 /**
@@ -43,7 +35,6 @@ const batches = new Map();
  * @returns {Promise<(string | null)[]>}
  */
 async function send(batch) {
-    // Every macro asked for in this task joins the batch first.
     await Promise.resolve();
     batches.delete(JSON.stringify([batch.scope, batch.all]));
     const { macros, scope, all } = batch;
@@ -63,9 +54,6 @@ async function send(batch) {
 }
 
 /**
- * Each macro's value, in order: null for one that is filled in only when sent. With `all`, each is a text whose every
- * macro is filled in, nothing a macro sets kept. Values that can't be read are all null. Those asked for in the same
- * task with the same scope go in one request.
  * @param {string[]} macros
  * @param {MacroScope} scope
  * @param {{ all?: boolean }} [options]
@@ -86,23 +74,18 @@ export async function fetchMacroValues(macros, scope, { all = false } = {}) {
     return values.slice(start, start + macros.length);
 }
 
-/**
- * The values of the macros one place shows (an editor, a preview), asked for as it finds them. Those learned for
- * another scope (another chat, a message since) are forgotten.
- */
 export class MacroValues {
-    /** @param {() => MacroScope} scope Read at each use. */
+    /** @param {() => MacroScope} scope */
     constructor(scope) {
         this.scope = scope;
         /** @type {Map<string, string | null>} */
         this.values = new Map();
         /** @type {Map<string, Promise<void>>} */
         this.asked = new Map();
-        /** The scope the values are for. */
         this.scopeKey = '';
     }
 
-    /** @returns {MacroScope} The scope now, the values forgotten if it changed. */
+    /** @returns {MacroScope} */
     currentScope() {
         const scope = this.scope();
         const key = JSON.stringify(scope);
@@ -115,42 +98,37 @@ export class MacroValues {
     }
 
     /**
-     * @param {string} source A macro's `{{…}}`.
-     * @returns {string | null | undefined} Its value; null when it is filled in only when sent; undefined when it
-     * isn't known yet.
+     * @param {string} source
+     * @returns {string | null | undefined}
      */
     get(source) {
         this.currentScope();
         return this.values.get(source);
     }
 
-    /** A function reading this store's values, as safe-macros.js takes one. */
     get valueOf() {
         return (/** @type {string} */ source) => this.get(source);
     }
 
     /**
-     * Asks for the values not known yet of the macros a text has.
      * @param {string} text
-     * @returns {Promise<boolean>} Whether a value was learned.
+     * @returns {Promise<boolean>}
      */
     async want(text) {
         return this.wantMacros(macrosIn(text));
     }
 
     /**
-     * @param {string[]} sources Macros' `{{…}}`.
-     * @returns {Promise<boolean>} Whether a value was learned.
+     * @param {string[]} sources
+     * @returns {Promise<boolean>}
      */
     async wantMacros(sources) {
-        // A mention's card shows who it names' description, filled in too.
         sources = [...sources, ...sources.map(source => mentionAboutMacro(/^\{\{\s*([^\s:{}]+)\s*\}\}$/.exec(source)?.[1] ?? '')).filter(Boolean)];
         const scope = this.currentScope();
         const { values: learned, asked } = this;
         const missing = [...new Set(sources)].filter(source => !this.values.has(source) && !this.asked.has(source));
         const waiting = [...new Set(sources)].map(source => this.asked.get(source)).filter(Boolean);
         if (missing.length > 0) {
-            // Kept where they were asked for: another scope's values are not this one's.
             const asking = fetchMacroValues(missing, scope).then((values) => {
                 missing.forEach((source, i) => {
                     learned.set(source, values[i]);
@@ -165,8 +143,7 @@ export class MacroValues {
     }
 
     /**
-     * Asks for every known value again (the time has moved on, a variable changed).
-     * @returns {Promise<boolean>} Whether a value changed.
+     * @returns {Promise<boolean>}
      */
     async refresh() {
         const scope = this.currentScope();
@@ -185,7 +162,6 @@ export class MacroValues {
 }
 
 /**
- * The values of a text's macros, asked for at once.
  * @param {string} text
  * @param {MacroScope} scope
  * @returns {Promise<MacroValues>}

@@ -4,14 +4,13 @@ import { readPageMacroFacts } from './macro-facts.js';
 import { readPageInjections } from './page-injections.js';
 
 /**
- * @typedef {object} PageMessages Messages on the page that no action has stored, each with the ref the page gave it.
+ * @typedef {object} PageMessages
  * @property {string[]} refs
  * @property {object[]} messages
  */
 
 /**
- * @typedef {object} PageMetadata Chat metadata keys (and chat variables) the page changed since it last had the
- * chat's metadata from the server.
+ * @typedef {object} PageMetadata
  * @property {string} ref
  * @property {Record<string, unknown>} [set]
  * @property {string[]} [unset]
@@ -32,19 +31,10 @@ function pageMessagesOf(value) {
 }
 
 /**
- * Stores what a generate request carries from the page before anything is generated, so the prompt is built from
- * it, each through the request's session (it moves to what is stored): the chat's opening greetings when none is
- * stored yet (`opening`), the messages after the last stored one that no action stored (`page_messages`, e.g. one an
- * extension added), and the chat metadata keys and variables the page changed (`page_metadata`), as state changes
- * at the message the generation goes on from. Each is recorded under its ref for the answer's `stored`.
- *
- * When something can't be stored, answers the request with an error itself and returns null, so nothing is
- * generated on a chat the server doesn't have.
  * @param {import('express').Response} response
  * @param {import('./chat-request.js').ChatContext} chat
- * @param {any} body The request body.
- * @returns {Promise<{ nodeId: string|null|undefined }|null>} The message to generate from: the request's `node_id`,
- * or the last message this stored when it stored any.
+ * @param {any} body
+ * @returns {Promise<{ nodeId: string|null|undefined }|null>}
  */
 export async function applyPageWrites(response, chat, body) {
     const { store, tree, treeSpeaker, session } = chat;
@@ -95,11 +85,8 @@ export async function applyPageWrites(response, chat, body) {
 }
 
 /**
- * A generate request's quiet prompt: upstream `Generate()`'s `quiet_prompt` (already macro-substituted by the page),
- * `quietToLoud`, `quietName` and `quietImage`, sent as `quiet_prompt`, `quiet_to_loud`, `quiet_name`, `quiet_image`.
- * Each is absent when the request carries none.
  * @typedef {{ quietPrompt?: string, quietToLoud?: boolean, quietName?: string, quietImage?: string }} QuietPrompt
- * @param {any} body The request body.
+ * @param {any} body
  * @returns {QuietPrompt}
  */
 export function quietOf(body) {
@@ -113,9 +100,7 @@ export function quietOf(body) {
 }
 
 /**
- * The response length a generate request asks for in place of the setting's (a quiet or raw generation's own, sent
- * as `response_length`), or undefined.
- * @param {any} body The request body.
+ * @param {any} body
  * @returns {number | undefined}
  */
 export function responseLengthOf(body) {
@@ -124,13 +109,10 @@ export function responseLengthOf(body) {
 }
 
 /**
- * What a raw-action generate request generates from: stores what it carries from the page (applyPageWrites()),
- * reads the user message it sends, its quiet prompt (quietOf()) and its response length (responseLengthOf()).
  * @param {import('express').Response} response
  * @param {import('./chat-request.js').ChatContext} chat
- * @param {any} body The request body.
+ * @param {any} body
  * @returns {Promise<{ nodeId: string|null|undefined, userMessageText: string|undefined, userMessageExtra: object, userMessage: Record<string, any>|null, quiet: QuietPrompt, responseLength: number|undefined, pageFacts: import('./macro-facts.js').PageMacroFacts, pageInjections: import('./extension-prompt-table.js').ExtensionPromptTable }|null>}
- * Null when the request has been answered with a failure.
  */
 export async function generateTurnOf(response, chat, body) {
     const written = await applyPageWrites(response, chat, body);
@@ -149,8 +131,6 @@ export async function generateTurnOf(response, chat, body) {
 }
 
 /**
- * A quiet prompt as the text-completion orchestrator's input takes it (`quiet_prompt`, `quietToLoud`, `quietName`),
- * to merge into its resolved input; nothing for a request without one.
  * @param {QuietPrompt} quiet
  * @returns {Record<string, any>}
  */

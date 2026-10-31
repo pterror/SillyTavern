@@ -14,7 +14,7 @@ async function awaitAppReady(page) {
 
 /**
  * @param {import('@playwright/test').Page} page
- * @returns {Promise<{ has: boolean, value: unknown }>} The key as settings.json on the server holds it.
+ * @returns {Promise<{ has: boolean, value: unknown }>}
  */
 async function storedAutoFix(page) {
     return page.evaluate(async () => {

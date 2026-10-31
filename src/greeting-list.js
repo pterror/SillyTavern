@@ -1,19 +1,8 @@
-/**
- * Sole first_mes-aware module: converts between a card's split `first_mes`/`data.alternate_greetings`
- * fields and a single ordered greeting list with a nullable default index (see {@link GreetingsModel}).
- * Mirrors the client's `cardToGreetingsModel()`/`greetingsModelToCardFields()` in public/script.js.
- */
-
 export const GREETING_DEFAULT_POSITION_KEY = 'greeting_default_position';
 
-/**
- * @typedef {{greetings: string[], defaultIndex: number|null}} GreetingsModel Ordered greeting list,
- *   independent of which one (if any) is the default; `defaultIndex` is where the default sits in
- *   that order, or null when the card has no default greeting at all.
- */
+/** @typedef {{greetings: string[], defaultIndex: number|null}} GreetingsModel */
 
 /**
- * Reads a character card into a {@link GreetingsModel}.
  * @param {{first_mes?: string, data?: {alternate_greetings?: string[], extensions?: Record<string, any>}}} card
  * @returns {GreetingsModel}
  */
@@ -36,7 +25,6 @@ export function cardToGreetingsModel(card) {
 }
 
 /**
- * Inverse of {@link cardToGreetingsModel}.
  * @param {GreetingsModel} model
  * @returns {{firstMes: string, alternateGreetings: string[], greetingDefaultPosition: number|null}}
  */
@@ -51,8 +39,6 @@ export function greetingsModelToCardFields({ greetings, defaultIndex }) {
 }
 
 /**
- * Reindexes the default after removing `removedIndex`. Removing the default itself clears it (null)
- * rather than guessing a successor.
  * @param {number|null} defaultIndex
  * @param {number} removedIndex
  */
@@ -63,8 +49,6 @@ export function reindexDefaultAfterRemoval(defaultIndex, removedIndex) {
 }
 
 /**
- * Reindexes the default after a move: one element removed from `sourceIndex`, reinserted at
- * `finalTargetIndex` (already adjusted for the removal).
  * @param {number|null} defaultIndex
  * @param {number} sourceIndex
  * @param {number} finalTargetIndex
@@ -79,9 +63,6 @@ export function reindexDefaultAfterMove(defaultIndex, sourceIndex, finalTargetIn
 }
 
 /**
- * Writes a {@link GreetingsModel} onto a card object in place, through {@link greetingsModelToCardFields}.
- * Deletes the default-position extension key entirely when there is no default, rather than writing
- * null, so a stale marker can't trip up {@link cardToGreetingsModel}'s fallback later.
  * @param {object} card
  * @param {GreetingsModel} model
  */
@@ -89,8 +70,6 @@ export function applyGreetingsModelToCard(card, model) {
     const { firstMes, alternateGreetings, greetingDefaultPosition } = greetingsModelToCardFields(model);
     card.first_mes = firstMes;
     card.data = card.data ?? {};
-    // Write both v1 and v2 copies: reads reconcile by taking v2 and overwriting v1 with it
-    // (character-card-normalize.js), so writing only v1 would silently discard the edit.
     card.data.first_mes = firstMes;
     card.data.alternate_greetings = alternateGreetings;
     if (greetingDefaultPosition === null) {

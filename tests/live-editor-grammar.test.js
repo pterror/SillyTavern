@@ -4,9 +4,6 @@ import showdown from 'showdown';
 import * as lezerMarkdown from '@lezer/markdown';
 import * as lezerHighlight from '@lezer/highlight';
 
-// The editor's grammar has to find the same constructs, at the same places, as chat's marked setup. This compares
-// the two on a corpus covering each of our extensions and their edge cases.
-
 jest.unstable_mockModule('../public/lib.js', () => ({ Marked, showdown }));
 jest.unstable_mockModule('../public/live-editor-lib.js', () => ({ lezerMarkdown, lezerHighlight }));
 
@@ -32,7 +29,6 @@ const INLINE_NAMES = {
 };
 
 /**
- * Constructs the grammar finds: top-level blocks, and inline constructs in top-level paragraphs and headings.
  * @param {string} text
  * @param {object} [options]
  * @returns {string[]}
@@ -50,7 +46,6 @@ function lezerConstructs(text, options) {
         const cursor = block.cursor();
         while (cursor.next() && cursor.from < block.to) {
             const inline = INLINE_NAMES[cursor.name];
-            // An image's URL is part of the image, as in marked.
             if (inline && !(cursor.name === 'URL' && cursor.node.parent?.name !== block.name && cursor.node.parent?.name !== 'Emphasis' && cursor.node.parent?.name !== 'StrongEmphasis' && cursor.node.parent?.name !== 'Strikethrough')) {
                 found.push(`${inline} ${cursor.from}-${cursor.to}`);
             }
@@ -64,7 +59,6 @@ const MARKED_BLOCKS = { heading: 'heading', code: 'code', blockquote: 'blockquot
 const MARKED_INLINE = { em: 'em', strong: 'strong', del: 'del', codespan: 'codespan', link: 'link', image: 'image', emoji: 'emoji', html: 'html' };
 
 /**
- * The same constructs from marked's tokens, positioned by their `raw` text.
  * @param {string} text
  * @returns {string[]}
  */
@@ -96,7 +90,6 @@ function markedConstructs(text) {
     const blocks = (list, start) => {
         let at = start;
         for (const token of list) {
-            // A markdown="1" block: its opening and closing tags and the blocks between, as the grammar has them.
             if (token.type === 'htmlBlockMarkdown') blocks(token.tokens, at);
             else block(token, at);
             at += token.raw.length;
@@ -122,10 +115,7 @@ function markedConstructs(text) {
     return found.sort();
 }
 
-/**
- * Constructs where the two are known to differ, and why.
- * @type {Record<string, { lezerOnly?: string[], markedOnly?: string[], why: string }>}
- */
+/** @type {Record<string, { lezerOnly?: string[], markedOnly?: string[], why: string }>} */
 const KNOWN_DIFFERENCES = {
     'macros': {
         markedOnly: ['emoji 33-36'],
@@ -189,7 +179,11 @@ describe('the editor grammar reads markdown as chat does', () => {
 });
 
 describe('nodes only the editor needs', () => {
-    /** @param {string} text @param {string} node @param {object} [options] */
+    /**
+     * @param {string} text
+     * @param {string} node
+     * @param {object} [options]
+     */
     const spans = (text, node, options) => {
         const tree = grammar.chatMarkdownParser(options).parse(text);
         /** @type {string[]} */

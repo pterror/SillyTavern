@@ -42,16 +42,11 @@ router.post('/rename', async function (request, response) {
     }
 });
 
-/**
- * Merges a value into a preset's `extensions` object at the given lodash path, without touching the rest
- * of the preset. Mirrors the settings-store /save-partial pattern.
- */
 router.post('/save-partial', async function (request, response) {
     const group = groupOfApi(request.body.apiId);
     if (!group || !sanitize(String(request.body.name ?? ''))) {
         return response.sendStatus(400);
     }
-    // None, or a file that isn't JSON: nothing to merge into.
     const preset = await readBundle(request.user.directories, group, request.body.name);
     if (!preset) {
         return response.sendStatus(404);

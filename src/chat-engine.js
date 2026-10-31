@@ -15,32 +15,19 @@ import { humanizedDateTime, humanizedTail } from '../public/scripts/humanized-da
 
 export { SPACE };
 
-/**
- * Chats on the engine (build path 5b): each character's or group's messages as a tree, sessions and bookmarks as
- * positions in it, the state (`chat_metadata`) at each message. Upstream's chat concepts exist only at the edges:
- * a "chat" read is a position's path assembled in upstream's shape.
- *
- * Ids outside: a message is named by its outside key, a UUID (the id it had before the engine, else one made with it);
- * a session by its UUID; a user by their handle. Writes to one tree run one after
- * another, so each reads what the one before it stored.
- */
 
 const zstdCompress = promisify(zlib.zstdCompress);
 const zstdDecompress = promisify(zlib.zstdDecompress);
 
-/** The namespace of a user's deterministic session in a tree (UUID v5 of `<handle>\0<tree id>`). */
 export const SESSION_NAMESPACE = 'b3c3d5a0-6b5e-4f61-9d2e-5a0c1f7e9e21';
 
-/** Bookmark modes. */
 export const MODE = Object.freeze({ following: 1, pinned: 2 });
 
-/** Characters of context a message search's snippet shows on each side of the match. */
 const SNIPPET_CONTEXT = 80;
 
 /**
- * A message's text around the first of `needles` it holds (lower-cased match), else its start.
  * @param {string} text
- * @param {string[]} needles Lower-cased.
+ * @param {string[]} needles
  */
 function snippetOf(text, needles) {
     const low = text.toLowerCase();
@@ -53,14 +40,12 @@ function snippetOf(text, needles) {
 
 const DECIMAL = /^(0|[1-9][0-9]*)$/;
 
-/** Alternatives a load sends with their text on each side of the shown one; the rest are holes, read on demand. */
 const ALTERNATIVE_WINDOW = 5;
 
 /**
- * The alternatives a load sends with text: `[from, to)` of a message's siblings.
- * @param {number} count The siblings.
- * @param {number} shown The shown one's place among them.
- * @param {boolean} full Every one.
+ * @param {number} count
+ * @param {number} shown
+ * @param {boolean} full
  * @returns {[number, number]}
  */
 function alternativeWindow(count, shown, full) {
@@ -71,10 +56,8 @@ function alternativeWindow(count, shown, full) {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * When a session was made, from its UUID: a v7 UUID begins with its time (`newSessionKey()`); null for any other
- * (a caller's deterministic v5 one).
  * @param {string} uuid
- * @returns {number | null} Milliseconds.
+ * @returns {number | null}
  */
 export function sessionTime(uuid) {
     if (!UUID.test(uuid) || uuid[14] !== '7') return null;
@@ -82,8 +65,6 @@ export function sessionTime(uuid) {
 }
 
 /**
- * The first free chat name from `name`: itself, else, when it ends with a time as chat names do
- * (`humanizedDateTime()`), that time a millisecond later until one is free; else ` (2)`, ` (3)` … appended.
  * @param {string} name
  * @param {(name: string) => Promise<boolean>} taken
  * @returns {Promise<string>}
@@ -98,8 +79,6 @@ export async function freeName(name, taken) {
 }
 
 /**
- * A chat's name as upstream names a new one: `<character name> - <time>` in a character's tree, `<time>` in a
- * group's (`humanizedDateTime()`, this server's clock and zone).
  * @param {{ group: boolean, name: string }} owner
  * @param {number} time
  */
@@ -107,26 +86,15 @@ export function chatNameAt(owner, time) {
     return owner.group ? humanizedDateTime(time) : `${owner.name} - ${humanizedDateTime(time)}`;
 }
 
-/** State change author kinds (`state.rs`), and the bit naming a variable. */
 export const AUTHOR = Object.freeze({ user: 0, script: 1, model: 2, rule: 3, migration: 4 });
 const VARIABLE = 8;
-/** The author bit marking a change made while producing the message it hangs on (`state::PRODUCED`). */
 const PRODUCED = 16;
 
-/** `chat_metadata` keys the engine derives (`integrity` is the session's UUID): never stored, set or removed. */
 const DERIVED_METADATA = new Set(['integrity', 'main_chat', 'fork_point', '_tree_stored']);
 
-/**
- * The chat-bound lorebook (`chat_metadata.world_info`): a name is recorded as a link to the book its key finds, so it
- * follows the book's renames: `LINK`, the book's id, then a space and the name's JSON when the name isn't the key
- * itself (JSON text never starts with `LINK`). Any other value is recorded as it is.
- */
 const WORLD_INFO = 'world_info';
 const LINK = '\u0001';
 
-/**
- * A new session's UUID (v7: its time, then random bits).
- */
 export function newSessionKey() {
     const b = crypto.randomBytes(16);
     const ms = BigInt(Date.now());
@@ -138,7 +106,6 @@ export function newSessionKey() {
 }
 
 /**
- * A UUID v5.
  * @param {string} namespace
  * @param {string} name
  */
@@ -152,7 +119,6 @@ export function uuidV5(namespace, name) {
 }
 
 /**
- * A user's deterministic session in a tree: what a caller with no session lands through.
  * @param {string} handle
  * @param {bigint} tree
  */
@@ -161,14 +127,11 @@ export function defaultSessionKey(handle, tree) {
 }
 
 /**
- * @typedef {{ key: string, variable?: boolean, value?: unknown }} StateOp A key set to a value, or removed (no
- * `value`); `variable`: the key is a chat variable's name.
- * @typedef {{ key: string, variable: boolean, json: string | null }} ProducedChange A change as recorded: the value's
- * JSON, null for a removal.
+ * @typedef {{ key: string, variable?: boolean, value?: unknown }} StateOp
+ * @typedef {{ key: string, variable: boolean, json: string | null }} ProducedChange
  */
 
 /**
- * A state key's place in a map of the state: a variable and a metadata key of the same name are different keys.
  * @param {boolean} variable
  * @param {string} key
  */
@@ -177,8 +140,6 @@ function stateKey(variable, key) {
 }
 
 /**
- * The changes `ops` record against `state` (updated with them): each that changes a key's value, in order. The keys
- * the engine derives are never set.
  * @param {StateOp[] | null | undefined} ops
  * @param {Map<string, string>} state
  * @returns {ProducedChange[]}
@@ -200,10 +161,7 @@ function producedChanges(ops, state) {
 }
 
 /**
- * What an edit (`editMessages()`) turns a stored message into: its `content`, or the message as stored with its
- * `patch` fields replaced and its `unset` fields removed (`extra.<key>` one key of `extra`); null when it states
- * neither.
- * @param {Record<string, any>} now The message as stored.
+ * @param {Record<string, any>} now
  * @param {{ content?: unknown, patch?: unknown, unset?: unknown }} edit
  * @returns {Record<string, any> | null}
  */
@@ -212,7 +170,6 @@ function patchedContent(now, edit) {
     const patch = edit.patch && typeof edit.patch === 'object' && !Array.isArray(edit.patch) ? edit.patch : null;
     const unset = Array.isArray(edit.unset) ? edit.unset.filter(k => typeof k === 'string') : [];
     if (patch === null && unset.length === 0) return null;
-    // `extra.<key>` sets or removes one key of `extra`, keeping the others.
     const inExtra = (/** @type {string} */ k) => k.startsWith('extra.') && k.length > 6;
     const next = { ...now };
     for (const [k, v] of Object.entries(patch ?? {})) if (!inExtra(k)) next[k] = v;
@@ -228,7 +185,6 @@ function patchedContent(now, edit) {
 }
 
 /**
- * A message's identity among its siblings: who said it and its text (a user's by persona, else by name).
  * @param {Record<string, any>} m
  */
 function identityOf(m) {
@@ -237,8 +193,6 @@ function identityOf(m) {
 }
 
 /**
- * Whether a message is a tool-call turn (its tool calls and their results in `extra.tool_invocations`): each is its own
- * message, never taken as another with the same text.
  * @param {Record<string, any>} m
  */
 function isToolTurn(m) {
@@ -246,8 +200,6 @@ function isToolTurn(m) {
 }
 
 /**
- * A message as it is stored: without what reads derive (ids, swipe arrays, `branches`, `bookmark_link`, the
- * itemized flag, a token count).
  * @param {Record<string, any>} msg
  * @returns {Record<string, any>}
  */
@@ -262,9 +214,6 @@ export function storedForm(msg) {
 }
 
 /**
- * A message of upstream's chat array as the alternatives it stands for, each as stored: its `swipes` (a hole is one
- * the page wasn't sent, left out; the shown one's text is `mes`), with their `swipe_info`, and which is shown, and
- * the id each claims (`swipe_info[i].node_id`, the shown one's also `node_id`).
  * @param {Record<string, any>} msg
  * @returns {{ contents: Record<string, any>[], selected: number, nodeIds: (string | null)[] }}
  */
@@ -276,8 +225,6 @@ function alternativesOf(msg) {
     const rawInfo = Array.isArray(msg.swipe_info) ? msg.swipe_info : [];
     const kept = [];
     const slotId = (/** @type {any} */ info) => (info && typeof info === 'object' && info.node_id != null ? info.node_id : null);
-    // The message's id stands for the shown slot only when no other slot is that message: a slot without an id beside
-    // the one that has it (a swipe not stored yet) is a new alternative, never an overwrite of its sibling.
     const claimedElsewhere = msg.node_id != null && rawInfo.some((info, i) => i !== rawSel && slotId(info) === msg.node_id);
     for (let i = 0; i < rawSwipes.length; i++) {
         if (typeof rawSwipes[i] !== 'string') continue;
@@ -310,9 +257,8 @@ function alternativesOf(msg) {
 }
 
 /**
- * An alternative as the alternatives and openings lists show it.
  * @param {string} nodeId
- * @param {Record<string, any>} o The message.
+ * @param {Record<string, any>} o
  * @param {boolean} itemized
  */
 function alternativeEntry(nodeId, o, itemized) {
@@ -324,36 +270,33 @@ function alternativeEntry(nodeId, o, itemized) {
 
 /**
  * @typedef {import('./chat-codec.js').Speaker} Speaker
- * @typedef {object} People Who speaks: characters by entity id and by avatar.
+ * @typedef {object} People
  * @property {(ids: bigint[]) => Promise<Map<bigint, Speaker>>} speakers
  * @property {(avatars: string[]) => Promise<Map<string, Speaker>>} byAvatar
- * @property {(ids: bigint[]) => Promise<Map<bigint, { group: boolean, name: string, created: number }>>} owners Each
- * tree's character or group, as chats there are named after it.
- * @property {Books} [books] World books, for lorebook links (without: a lorebook name is an ordinary value).
+ * @property {(ids: bigint[]) => Promise<Map<bigint, { group: boolean, name: string, created: number }>>} owners
+ * @property {Books} [books]
  */
 
 /**
  * @typedef {object} Books
- * @property {<T>(keys: string[], fn: () => Promise<T>) => Promise<T>} lane Runs `fn` in these book keys' lanes.
- * @property {(key: string) => Promise<bigint | null>} find The book (or unresolved name) a key finds.
- * @property {() => bigint} newId An entity id for an unresolved name made here.
- * @property {(ids: bigint[]) => Promise<({ key: string | null } | null)[]>} resolved Each book as it resolves.
+ * @property {<T>(keys: string[], fn: () => Promise<T>) => Promise<T>} lane
+ * @property {(key: string) => Promise<bigint | null>} find
+ * @property {() => bigint} newId
+ * @property {(ids: bigint[]) => Promise<({ key: string | null } | null)[]>} resolved
  */
 
 /**
- * @typedef {object} Actor Who acts, and through which session (none: the change moves no pointer).
- * @property {string} user The user's handle.
- * @property {string | null} [session] The session's UUID.
+ * @typedef {object} Actor
+ * @property {string} user
+ * @property {string | null} [session]
  */
 
 /**
- * @typedef {object} EditRequest A deleting edit of a tree.
+ * @typedef {object} EditRequest
  * @property {bigint} tree
  * @property {Actor} actor
- * @property {boolean} [preview] Answers what the edit would drop besides the messages, writing nothing.
- * @property {{ bookmarks?: string[], changes?: string[] } | 'any'} [confirm] The ids of what it drops besides the
- * messages, as a preview named them: an edit dropping anything else is refused. `'any'`: a caller that can't confirm
- * (upstream's compat paths) applies it whatever it drops, and the answer lists the drops.
+ * @property {boolean} [preview]
+ * @property {{ bookmarks?: string[], changes?: string[] } | 'any'} [confirm]
  */
 
 /**
@@ -363,9 +306,9 @@ function alternativeEntry(nodeId, o, itemized) {
 
 export class ChatEngine {
     /**
-     * @param {any} store The engine's `Store`.
+     * @param {any} store
      * @param {People} people
-     * @param {import('./actor-ids.js').NextIds} next The store's id counters, shared with its other writers.
+     * @param {import('./actor-ids.js').NextIds} next
      */
     constructor(store, people, next) {
         this.store = store;
@@ -379,15 +322,13 @@ export class ChatEngine {
     /**
      * @param {any} store
      * @param {People} people
-     * @param {import('./actor-ids.js').NextIds} [next] The store's id counters (`LibraryEngine.next`); read here when
-     * nothing else writes the store.
+     * @param {import('./actor-ids.js').NextIds} [next]
      */
     static async open(store, people, next) {
         return new ChatEngine(store, people, next ?? await store.chatRead('nextIds', {}));
     }
 
     /**
-     * Runs `write` after every earlier write to the same tree (or session, named `session:<uuid>`) has settled.
      * @template T
      * @param {bigint | string} tree
      * @param {() => Promise<T>} write
@@ -405,10 +346,8 @@ export class ChatEngine {
         return run;
     }
 
-    // ---- ids ----
 
     /**
-     * The integer of each outside message id, or null.
      * @param {string[]} externals
      * @returns {Promise<(bigint | null)[]>}
      */
@@ -417,7 +356,6 @@ export class ChatEngine {
     }
 
     /**
-     * Gives a message made in this write its outside id: a new UUID, in the write's records.
      * @param {object[]} records
      * @param {bigint} id
      */
@@ -426,8 +364,6 @@ export class ChatEngine {
     }
 
     /**
-     * A message's outside id. Every stored message has a key (a UUID made at its append, or the old id the converter
-     * mapped), so a message without one is a bug, never answered with its decimal id.
      * @param {{ id: bigint, oldKey: string | null }} stored
      */
     externalId(stored) {
@@ -436,18 +372,16 @@ export class ChatEngine {
     }
 
     /**
-     * The id of an outside key in a space, and the records making it when it names nothing yet.
      * @param {number} space
      * @param {string} key
      * @param {'position' | 'user'} counter
-     * @param {object[]} records Gets the `keyMap` record of a new id.
+     * @param {object[]} records
      */
     async idOf(space, key, counter, records) {
         return idOf(this.store, this.next, space, key, counter, records);
     }
 
     /**
-     * The actor's ids, making the user's and session's keys when they have none.
      * @param {Actor} actor
      * @param {object[]} records
      */
@@ -455,20 +389,11 @@ export class ChatEngine {
         return actorIds(this.store, this.next, actor, records);
     }
 
-    // ---- sessions ----
 
     /**
-     * The session a request acts through, and the identifier upstream's compat values name it by
-     * (`getCurrentChatId()`, `characters[].chat`, `group.chat_id`):
-     * - an `X-ST-Session` header's UUID: that session;
-     * - `none` (a tab with no session yet), or a deleted session's UUID (`gone` says so): no session, so the tree is
-     *   landed in through the cascade, and the identifier is the user's deterministic one in the tree; a write then
-     *   acts through a new session (`newSessionKey()`), which the tab keeps;
-     * - no header (a caller with no tab): the user's last session in the tree, else the deterministic one, made on
-     *   its first move.
      * @param {object} p
      * @param {bigint} p.tree
-     * @param {string} p.user The user's handle.
+     * @param {string} p.user
      * @param {string | null | undefined} p.header
      * @returns {Promise<{ session: string | null, identifier: string, gone?: true }>}
      */
@@ -490,10 +415,7 @@ export class ChatEngine {
     }
 
     /**
-     * A session's current chat in a tree (upstream's open chat file): the bookmark it last switched to there while
-     * that bookmark is in the tree, else null (none: its own conversation). Only explicit switches change it
-     * (`setCurrentChat()`), never appends or moves.
-     * @param {string | null | undefined} session The session's UUID.
+     * @param {string | null | undefined} session
      * @param {bigint} tree
      * @returns {Promise<bigint | null>}
      */
@@ -503,8 +425,6 @@ export class ChatEngine {
     }
 
     /**
-     * The chat id upstream's routes give each of these bookmarks, by the bookmark's id as a string: its label, as
-     * upstream names a chat by its file name (unique in its scope, `nameTaken()`). Every bookmark has one.
      * @param {bigint} _tree
      * @param {(bigint | number | string)[]} bookmarks
      * @returns {Promise<Map<string, string>>}
@@ -522,15 +442,13 @@ export class ChatEngine {
     /**
      * @param {bigint} tree
      * @param {bigint | number | string} bookmark
-     * @returns {Promise<string>} `bookmarkChatIds()` of one bookmark.
+     * @returns {Promise<string>}
      */
     async bookmarkChatId(tree, bookmark) {
         return /** @type {string} */ ((await this.bookmarkChatIds(tree, [bookmark])).get(String(BigInt(bookmark))));
     }
 
     /**
-     * The chat id of each chat list row of a tree: a bookmark's label (`bookmarkChatIds()`), a session's conversation's
-     * name (`conversationName()`), in the rows' order.
      * @param {bigint} tree
      * @param {{ bookmark?: bigint | string | null, session?: string | null }[]} rows
      * @returns {Promise<string[]>}
@@ -545,7 +463,6 @@ export class ChatEngine {
     }
 
     /**
-     * The character or group a tree is, as chats there are named after it.
      * @param {bigint} tree
      */
     async owner(tree) {
@@ -555,9 +472,6 @@ export class ChatEngine {
     }
 
     /**
-     * Whether a chat name is taken in a tree's scope by a chat other than `except`: in a character's tree, by a
-     * bookmark or a session's conversation of the tree; in a group's, by one of any group's (a group route may name a
-     * chat with no group id).
      * @param {bigint} tree
      * @param {string} name
      * @param {{ bookmark: bigint } | { session: bigint } | null} [except]
@@ -571,12 +485,8 @@ export class ChatEngine {
     }
 
     /**
-     * The name of a session's conversation in a tree (its own chat there, with no current chat): the one stored at
-     * its first write (`claimConversation()`), else the one it is shown by until then: `chatNameAt()` the session's
-     * time (`sessionTime()`), or for a caller's deterministic session the tree's creation, the next free one in its
-     * scope (`freeName()`). Writes nothing.
-     * @param {string | null | undefined} session The session's UUID, when it has one stored or made.
-     * @param {string} identifier The UUID the conversation is named by (the session's, or the caller's deterministic one).
+     * @param {string | null | undefined} session
+     * @param {string} identifier
      * @param {bigint} tree
      */
     async conversationName(session, identifier, tree) {
@@ -591,13 +501,10 @@ export class ChatEngine {
     }
 
     /**
-     * Stores the name of the actor's conversation in the tree with the write that is its first there
-     * (`conversationName`): the name it was shown by until then (`conversationName()`). Nothing when the write acts
-     * through no session, the session has a current chat there (the write is its bookmark's), or the name is stored.
-     * @param {object[]} records The write's records, which get the name's.
+     * @param {object[]} records
      * @param {bigint} tree
      * @param {Actor} actor
-     * @param {{ user: bigint, session: bigint | null }} ids The actor's ids (`actorIds()`).
+     * @param {{ user: bigint, session: bigint | null }} ids
      */
     async claimConversation(records, tree, actor, ids) {
         if (ids.session === null || !actor.session || !records.some(r => /** @type {any} */ (r).kind !== 'keyMap')) return;
@@ -608,11 +515,8 @@ export class ChatEngine {
     }
 
     /**
-     * Upstream's compat chat id of a session's conversation in a tree (`getCurrentChatId()`, `characters[].chat`,
-     * `group.chat_id`): its current chat's label (`bookmarkChatIds()`), else its conversation's name
-     * (`conversationName()`).
-     * @param {string | null | undefined} session The session's UUID, when it has one stored or made.
-     * @param {string} identifier The UUID the conversation is named by (the session's, or the caller's deterministic one).
+     * @param {string | null | undefined} session
+     * @param {string} identifier
      * @param {bigint} tree
      */
     async compatChatId(session, identifier, tree) {
@@ -621,12 +525,10 @@ export class ChatEngine {
     }
 
     /**
-     * Switches a session's current chat in a tree (an explicit switch: opening a chat, a new chat, a branch opened):
-     * to a bookmark of the tree, or none (null). Writes nothing when it is already so.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {bigint | string | null} p.bookmark
-     * @param {Actor} p.actor Through a session.
+     * @param {Actor} p.actor
      */
     setCurrentChat({ tree, bookmark, actor }) {
         return this.serialized(tree, async () => {
@@ -645,12 +547,10 @@ export class ChatEngine {
     }
 
     /**
-     * Makes a message (its outside id; null: the tree's root) the user's remembered position in the tree, where the
-     * user lands there with no position of a session's own (the user tier of landing). No session moves.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string | null} p.at
-     * @param {string} p.user The user's handle.
+     * @param {string} p.user
      * @returns {Promise<{ ok: true } | { ok: false, reason: 'unknown node' }>}
      */
     rememberUserPosition({ tree, at, user }) {
@@ -667,8 +567,6 @@ export class ChatEngine {
     }
 
     /**
-     * Where a session's pointer is: its tree and the message's outside id (null: the tree's root); null for a
-     * session that hasn't moved.
      * @param {string} session
      */
     async pointer(session) {
@@ -680,8 +578,6 @@ export class ChatEngine {
     }
 
     /**
-     * Where a session is in its history: how many entries it has and which one its cursor is at (0: none); null for
-     * a session not stored.
      * @param {string} session
      * @returns {Promise<{ length: number, cursor: number } | null>}
      */
@@ -693,7 +589,6 @@ export class ChatEngine {
     }
 
     /**
-     * The session's current chats, a page at a time: `{ tree, bookmark }`, the bookmark's id as a decimal string.
      * @param {string} session
      * @returns {AsyncGenerator<{ tree: bigint, bookmark: string }[]>}
      */
@@ -713,15 +608,12 @@ export class ChatEngine {
     }
 
     /**
-     * Forks a session for a tab that finds another tab holding it: a new session whose history is `from`'s first
-     * `length` entries (read through `from`, not copied), at the `cursor`-th, and whose current chats are `chats` (a
-     * bookmark gone since is none). `length` 0: no history.
      * @param {object} p
      * @param {string} p.from
      * @param {number} p.length
      * @param {number} p.cursor
      * @param {{ tree: bigint, bookmark: string }[]} p.chats
-     * @param {string} p.user The user's handle.
+     * @param {string} p.user
      * @returns {Promise<{ ok: true, session: string } | { ok: false, reason: string }>}
      */
     forkSession({ from, length, cursor, chats, user }) {
@@ -742,10 +634,9 @@ export class ChatEngine {
     }
 
     /**
-     * A new session whose one move is to where `from` is.
-     * @param {bigint} from The session's id.
-     * @param {string} user The user's handle.
-     * @returns {Promise<string>} The new session's UUID.
+     * @param {bigint} from
+     * @param {string} user
+     * @returns {Promise<string>}
      */
     async sessionAt(from, user) {
         const session = newSessionKey();
@@ -765,7 +656,6 @@ export class ChatEngine {
     }
 
     /**
-     * A page of the user's sessions by their last move, newest first: `{ position, session }` (the session's UUID).
      * @param {object} p
      * @param {bigint} [p.before]
      * @param {number} p.limit
@@ -777,8 +667,6 @@ export class ChatEngine {
     }
 
     /**
-     * The one session labelled exactly `name` (its UUID), or null when none or several are. A session's name is a
-     * free label; its identity is its UUID.
      * @param {string} name
      * @returns {Promise<string | null>}
      */
@@ -789,10 +677,8 @@ export class ChatEngine {
         return row?.key ?? null;
     }
 
-    // ---- reads ----
 
     /**
-     * Stored messages by id (absent ones left out).
      * @param {bigint[]} ids
      * @returns {Promise<Map<bigint, any>>}
      */
@@ -803,7 +689,6 @@ export class ChatEngine {
     }
 
     /**
-     * Each stored message's upstream object.
      * @param {any[]} stored
      * @returns {Promise<Record<string, any>[]>}
      */
@@ -820,7 +705,6 @@ export class ChatEngine {
     }
 
     /**
-     * Every reply of a message (null: the tree's openings), in order.
      * @param {bigint} tree
      * @param {bigint | null} parent
      * @returns {Promise<bigint[]>}
@@ -837,8 +721,6 @@ export class ChatEngine {
     }
 
     /**
-     * The speaker of a message about to be stored: the character named by its `original_avatar`, else (a
-     * character's message in a character's tree) the tree's character.
      * @param {Record<string, any>} content
      * @param {Speaker | null} treeSpeaker
      */
@@ -853,7 +735,6 @@ export class ChatEngine {
     }
 
     /**
-     * The actor's ids where they have them (nothing is made).
      * @param {Actor} actor
      * @returns {Promise<{ user: bigint | null, session: bigint | null }>}
      */
@@ -863,11 +744,8 @@ export class ChatEngine {
         return { user, session };
     }
 
-    // ---- alternatives and openings ----
 
     /**
-     * The alternatives at a message: every reply sharing its parent (the tree's openings for an opening), in order,
-     * a window of them, and the message's index.
      * @param {object} p
      * @param {string} p.node_id
      * @param {number} [p.offset]
@@ -890,7 +768,6 @@ export class ChatEngine {
     }
 
     /**
-     * The tree's openings in order, each stored and as upstream's object.
      * @param {bigint} tree
      */
     async openings(tree) {
@@ -901,13 +778,10 @@ export class ChatEngine {
     }
 
     /**
-     * The card's greetings that no stored opening already is (same speaker and text), as stored.
-     * @param {{ message: Record<string, any> }[]} rows The stored openings.
+     * @param {{ message: Record<string, any> }[]} rows
      * @param {Record<string, any>[]} cardGreetings
      */
     unstoredGreetings(rows, cardGreetings) {
-        // Spaces and line breaks around the text don't show, and an edit in the chat trims them off: a greeting
-        // differing from a stored opening only by them is that opening.
         const shownIdentity = (/** @type {Record<string, any>} */ m) => identityOf({ ...m, mes: typeof m?.mes === 'string' ? m.mes.trim() : m?.mes });
         const seen = new Set(rows.map(r => shownIdentity(r.message)));
         const out = [];
@@ -922,10 +796,6 @@ export class ChatEngine {
     }
 
     /**
-     * The openings a tree can start on: its stored openings, then the card's greetings no stored opening already is
-     * (`node_id` null), windowed around the default (or around `around`, a stored opening with that speaker and
-     * text). The default is the opening of where the actor's session lands in the tree; at the tree's root, the card
-     * greeting the session chose there (`default_chosen`), else the first.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Actor} p.actor
@@ -933,7 +803,6 @@ export class ChatEngine {
      * @param {Record<string, any>[]} [p.cardGreetings]
      */
     async openingAlternatives({ tree, actor, range = {}, cardGreetings = [] }) {
-        // Anything saved: the tree stores a message (upstream's meaning: a chat file exists).
         const hasSavedChats = (await this.store.chatRead('children', { tree, limit: 1 })).ids.length > 0;
         const rows = await this.openings(tree);
         const virtual = this.unstoredGreetings(rows, cardGreetings);
@@ -946,7 +815,6 @@ export class ChatEngine {
             ...virtual.map(o => alternativeEntry(/** @type {any} */ (null), o, false)),
         ];
         let defaultNodeId = rows.length ? this.externalId(rows[defaultIndex].stored) : null;
-        // At the root, a card greeting the session chose shows the text the card has at its position now.
         const choice = lands === null && session !== null ? await this.store.chatRead('openingChoice', { session, tree }) : null;
         let chosen = false;
         const cardTexts = (Array.isArray(cardGreetings) ? cardGreetings : []).map(g => g?.mes).filter(t => typeof t === 'string');
@@ -982,11 +850,9 @@ export class ChatEngine {
     }
 
     /**
-     * Where an actor's session is, or lands, in a tree: its last position there, else its user's, else the end of
-     * the followed path from the root; null for the tree's root (nothing shown yet).
      * @param {bigint} tree
      * @param {Actor} actor
-     * @returns {Promise<string | null>} The message's outside id.
+     * @returns {Promise<string | null>}
      */
     async landingOf(tree, actor) {
         const { user, session } = await this.knownActorIds(actor);
@@ -995,16 +861,10 @@ export class ChatEngine {
     }
 
     /**
-     * Where a chat showing a card greeting lands among the tree's openings (stored first, then the card's
-     * greetings no stored opening already is), from the whole list:
-     * 1. the first opening with exactly the shown text (so a stored one before a card greeting);
-     * 2. else, when this page's own edit took the shown text elsewhere, the first opening with the edit's new text,
-     *    or with the text now at the edit's card position;
-     * 3. else the opening at the index the chat was on, clamped to the openings there are now.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Record<string, any>[]} p.cardGreetings
-     * @param {string[]} p.cardTexts The card's greeting list, by card position.
+     * @param {string[]} p.cardTexts
      * @param {{ shownText: string, index: number, edits: { from: string, to: string, index?: number }[] }} p.request
      * @returns {Promise<{ index: number, opening: Record<string, any> | null }>}
      */
@@ -1028,11 +888,8 @@ export class ChatEngine {
         return { index: target, opening: alternativeEntry(this.externalId(row.stored), row.message, !!row.stored.itemized) };
     }
 
-    // ---- writes ----
 
     /**
-     * Makes sure these openings exist in the tree, each as stored, without showing them to anyone: one with the
-     * same speaker and text as a stored opening is that opening; one with blank text is left out (`null`).
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Speaker | null} p.treeSpeaker
@@ -1081,23 +938,16 @@ export class ChatEngine {
     }
 
     /**
-     * Stores messages after a message (null: as the tree's openings), each after the one before, each with the state
-     * changes made while producing it (hung on it, marked as its own). A message whose send key the tree already
-     * stored is not stored again. A message matching a reply already there (same speaker and text) is that reply, so
-     * nothing is recorded twice; for a `regenerated` reply the changes made while producing it must be the same too,
-     * and the same text with other changes is stored as an alternative of its own. A tool-call turn is always stored.
-     * Through a session, the session moves to each and chooses it.
      * @param {object} p
      * @param {bigint} p.tree
-     * @param {Speaker | null} p.treeSpeaker The tree's character (null for a group).
-     * @param {string | null} p.after The outside id of the message to reply to.
-     * @param {Record<string, any>[]} p.contents Messages as stored today (after `sanitizeForStorage()`).
+     * @param {Speaker | null} p.treeSpeaker
+     * @param {string | null} p.after
+     * @param {Record<string, any>[]} p.contents
      * @param {(string | null)[]} [p.sendKeys]
-     * @param {(StateOp[] | null | undefined)[]} [p.changes] Per message, the state changes made while producing it,
-     * in order (as `changeState`'s ops: a key whose value is already that records nothing).
-     * @param {number} [p.author] The changes' author kind.
-     * @param {string | null} [p.ref] The changes' author reference.
-     * @param {boolean} [p.regenerated] The messages are a reply generated again (a swipe or a regenerate).
+     * @param {(StateOp[] | null | undefined)[]} [p.changes]
+     * @param {number} [p.author]
+     * @param {string | null} [p.ref]
+     * @param {boolean} [p.regenerated]
      * @param {Actor} p.actor
      * @returns {Promise<{ ok: boolean, reason?: string, node_ids: string[], already_stored?: string[] }>}
      */
@@ -1120,7 +970,6 @@ export class ChatEngine {
             const ids = [];
             const already = [];
             const now = this.now();
-            // The state at the cursor, while it is a message made in this write (null: read it from the store).
             /** @type {Map<string, string> | null} */
             let state = null;
             for (const [i, content] of contents.entries()) {
@@ -1169,7 +1018,6 @@ export class ChatEngine {
     }
 
     /**
-     * The state at a message (null: the tree's root) as shown, each key (`stateKey()`) to its value's JSON.
      * @param {bigint} tree
      * @param {bigint | null} at
      */
@@ -1179,7 +1027,6 @@ export class ChatEngine {
     }
 
     /**
-     * The records choosing `reply` at its fork and moving the session to it.
      * @param {bigint} session
      * @param {bigint} user
      * @param {bigint | null} fork
@@ -1193,12 +1040,10 @@ export class ChatEngine {
     }
 
     /**
-     * A reply of `parent` (null: an opening of the tree) with the same speaker and text as `content`, or null.
-     * With `produced`, the reply's own changes (those made while producing it) must be those too.
      * @param {bigint} tree
      * @param {bigint | null} parent
      * @param {Record<string, any>} content
-     * @param {bigint[]} written Ids made earlier in this write (not stored yet: they can't be twins).
+     * @param {bigint[]} written
      * @param {ProducedChange[]} [produced]
      */
     async twinOf(tree, parent, content, written, produced) {
@@ -1221,7 +1066,6 @@ export class ChatEngine {
     }
 
     /**
-     * Each id's outside id; a message that isn't stored (gone) is answered by null: a decimal never names a message.
      * @param {bigint[]} ids
      * @returns {Promise<(string | null)[]>}
      */
@@ -1234,7 +1078,6 @@ export class ChatEngine {
     }
 
     /**
-     * The records turning a stored message into `content`: only the values that differ.
      * @param {any} stored
      * @param {Record<string, any>} content
      * @param {Speaker | null} speaker
@@ -1246,7 +1089,6 @@ export class ChatEngine {
         const beforeText = stored.texts.find(t => t.field === TOP.mes)?.text;
         const enc = encodeMessage(content, stored.time, speaker);
         const records = [];
-        // The append's fixed slots are never rewritten: a change of them is a value of its own.
         if (enc.flags !== stored.flags) enc.values.set(META.flags, JSON.stringify(enc.flags));
         const appendSpeaker = stored.speaker;
         if (enc.speaker !== appendSpeaker) enc.values.set(META.speaker, JSON.stringify(enc.speaker === null ? null : Number(enc.speaker)));
@@ -1275,17 +1117,12 @@ export class ChatEngine {
     }
 
     /**
-     * Replaces messages' contents, each its own outside id; refuses one that would blank stored text or match a
-     * sibling, and reports it. An edit is its whole `content`, or a `patch`: the fields it sets (each replaced whole)
-     * and the fields it `unset`s, the rest of the message as stored. An edit's `changes` are the state changes made
-     * while producing it (a reply continued), hung on the message as its own, as `appendMessages()` hangs a reply's, in
-     * the same commit.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Speaker | null} p.treeSpeaker
      * @param {{ node_id: string, content?: Record<string, any>, patch?: Record<string, any>, unset?: string[], changes?: StateOp[] | null }[]} p.edits
-     * @param {number} [p.author] The changes' author kind.
-     * @param {string | null} [p.ref] The changes' author reference.
+     * @param {number} [p.author]
+     * @param {string | null} [p.ref]
      * @param {Actor} p.actor
      */
     editMessages({ tree, treeSpeaker, edits, author = AUTHOR.user, ref = null, actor }) {
@@ -1354,9 +1191,6 @@ export class ChatEngine {
     }
 
     /**
-     * Chooses a reply at its fork through a session (the route resolves which): swiping. The choice is recorded, and
-     * the session goes down that branch along the fork choices (its own, else its user's, else anyone's last, else the
-     * newest reply) to its end, so swiping back restores the conversation: no choice made below is dropped.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string} p.node_id
@@ -1378,8 +1212,6 @@ export class ChatEngine {
     }
 
     /**
-     * Moves a session to a message of the tree (null: its root, nothing shown yet), as opening a search result
-     * does. Nothing is written when it is there already.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string | null} p.node_id
@@ -1407,8 +1239,6 @@ export class ChatEngine {
     }
 
     /**
-     * Steps a session back (or forward) in its history: its pointer goes to the nearest entry in that direction whose
-     * target is still there, and no entry is added.
      * @param {object} p
      * @param {boolean} p.back
      * @param {Actor} p.actor
@@ -1431,9 +1261,6 @@ export class ChatEngine {
     }
 
     /**
-     * Chooses, for a session, the card greeting at `index` in the card's greeting list, with no message stored: the
-     * session goes to the tree's root and shows that greeting's text as the card has it, until a reply is sent from
-     * it (which stores it) or a stored opening is chosen.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {number} p.index
@@ -1457,7 +1284,6 @@ export class ChatEngine {
     }
 
     /**
-     * Inserts a message between `after` and its reply `before`, which moves under it.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Speaker | null} p.treeSpeaker
@@ -1482,7 +1308,6 @@ export class ChatEngine {
             if (!sa || sa.owner !== tree) return { ok: false, reason: 'unknown after node' };
             if (!sb || sb.owner !== tree) return { ok: false, reason: 'unknown before node' };
             if (sb.parent !== a) return { ok: false, reason: 'not adjacent' };
-            // A session at `before` or below it shows the grafted message where it is; any other goes to `before`.
             const [now] = session === null ? [null] : await this.store.chatRead('sessions', { ids: [session] });
             const moves = session !== null && !(now?.tree === tree && now.at !== null && await this.store.chatRead('within', { message: b, at: now.at }));
             let id = await this.twinOf(tree, a, content, []);
@@ -1505,7 +1330,6 @@ export class ChatEngine {
 
 
     /**
-     * The reply followed below a message by a session and user.
      * @param {bigint} tree
      * @param {bigint} at
      * @param {bigint | null} session
@@ -1517,7 +1341,6 @@ export class ChatEngine {
     }
 
     /**
-     * Swaps a message and its reply (the reply moves up, and the message under it).
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string} p.upper
@@ -1551,19 +1374,8 @@ export class ChatEngine {
         });
     }
 
-    // ---- deletes and cuts ----
-    //
-    // An operation on a path removes only what belongs to it alone; a message another branch passes through stays.
-    // Deleting a subtree is one `subtreeDelete` record per root, carried out in slices by the engine; what is at its
-    // messages moves to the root's parent, except pinned bookmarks (and following ones with nowhere to move), which
-    // go. Whatever goes besides the messages (those bookmarks, the state changes on the messages) is the answer of a
-    // `preview`, and a delete that drops any of it is refused unless `confirm` names exactly those, so the warning
-    // the page shows lists exactly what goes even when someone else changed the tree meanwhile.
 
     /**
-     * What deleting the subtrees of `roots` drops besides the messages (the subtrees of `keep` left out: they move
-     * away first), and with `root` what clearing the tree's root state drops: bookmarks (`id`, `name`, the message
-     * it is at) and state changes (`id`, `key`, whether a variable's, the message it hangs on, null at the root).
      * @param {bigint} tree
      * @param {bigint[]} roots
      * @param {bigint[]} keep
@@ -1583,15 +1395,11 @@ export class ChatEngine {
     }
 
     /**
-     * Previews or applies a planned edit: `records` first (copies, moves, choices, a pointer move), then a
-     * `subtreeDelete` of each root, then with `root` a `rootStateClear` of the tree.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {{ roots: bigint[], keep?: bigint[], records?: object[], root?: boolean, rootBookmarks?: { id: string, name: string | null }[], copies?: [bigint, bigint][] }} p.plan
-     * `rootBookmarks`: bookmarks at the tree's root that `records` delete, listed with the drops. `copies`: the
-     * messages `records` copy (original, copy), answered applied as `copied` (outside ids).
      * @param {{ user: bigint, session: bigint | null }} p.who
-     * @param {object[]} p.keys The actor's new outside keys.
+     * @param {object[]} p.keys
      * @param {boolean} [p.preview]
      * @param {{ bookmarks?: string[], changes?: string[] }} [p.confirm]
      * @returns {Promise<EditAnswer>}
@@ -1616,7 +1424,6 @@ export class ChatEngine {
     }
 
     /**
-     * Copied messages' outside ids, the original's to its copy's.
      * @param {[bigint, bigint][]} copies
      * @returns {Promise<Record<string, string>>}
      */
@@ -1626,7 +1433,6 @@ export class ChatEngine {
     }
 
     /**
-     * A message of the tree, stored, or null.
      * @param {bigint} tree
      * @param {string} nodeId
      */
@@ -1637,7 +1443,6 @@ export class ChatEngine {
     }
 
     /**
-     * The path a session shows in the tree (root to its pointer), or null when it isn't in the tree.
      * @param {bigint} tree
      * @param {bigint | null} session
      * @returns {Promise<bigint[] | null>}
@@ -1650,7 +1455,6 @@ export class ChatEngine {
     }
 
     /**
-     * Runs an edit of the tree: `plan` gets the actor's ids and answers the edit, or a refusal.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Actor} p.actor
@@ -1670,7 +1474,6 @@ export class ChatEngine {
     }
 
     /**
-     * Deletes this message and everything below it ("delete this swipe and all descendants").
      * @param {EditRequest & { node_id: string }} p
      */
     deleteSubtree(p) {
@@ -1681,8 +1484,6 @@ export class ChatEngine {
     }
 
     /**
-     * Deletes every alternative at this message's position and everything below them ("delete all swipes from
-     * here and all descendants"); at an opening, every opening: the whole tree.
      * @param {EditRequest & { node_id: string }} p
      */
     deleteAlternatives(p) {
@@ -1693,9 +1494,6 @@ export class ChatEngine {
     }
 
     /**
-     * Deletes a whole tree (its character or group deleted with its chats): every opening and everything below, the
-     * bookmarks at its root and the state changes hanging there. Applied whatever it drops; the answer lists the
-     * drops.
      * @param {{ tree: bigint, actor: Actor }} p
      */
     deleteTree({ tree, actor }) {
@@ -1720,8 +1518,6 @@ export class ChatEngine {
     }
 
     /**
-     * Deletes everything below this message, every branch; the message stays ("delete all descendants but keep
-     * swipe").
      * @param {EditRequest & { node_id: string }} p
      */
     deleteBelow(p) {
@@ -1732,9 +1528,6 @@ export class ChatEngine {
     }
 
     /**
-     * Deletes the session's path from this message down to its end, only the messages no other branch uses: from
-     * the end up to the first message with another branch under it ("delete this path"). The path is what the
-     * session shows (root to its pointer); replies below the pointer are other branches.
      * @param {EditRequest & { node_id: string }} p
      */
     deletePath(p) {
@@ -1754,11 +1547,6 @@ export class ChatEngine {
     }
 
     /**
-     * Cuts `first` .. `last` out of the session's path ("cut from this path", upstream's `/cut`): the path forks at
-     * the message before the cut and goes on as a new branch without it; messages after the cut that other branches
-     * share get their own copies on the new branch (with the state changes in effect on them), and those only this
-     * path uses move under them; other paths are untouched; the cut messages go only where nothing else passes
-     * through them.
      * @param {EditRequest & { first: string, last: string }} p
      */
     cutFromPath(p) {
@@ -1769,7 +1557,6 @@ export class ChatEngine {
             const end = path.length - 1;
             const stored = await this.stored(path);
             const replies = (/** @type {number} */ i) => stored.get(path[i]).replies;
-            // Messages from `k` to the end are this path's alone (none after a cut that reaches the end).
             let k = end + 1;
             if (li < end && replies(end) === 0) {
                 k = end;
@@ -1800,7 +1587,6 @@ export class ChatEngine {
             if (newEnd !== path[end]) {
                 records.push(newEnd === null ? { kind: 'pointerRoot', session, user, tree: p.tree, time: this.now() } : { kind: 'pointerMove', session, user, target: newEnd });
             }
-            // The cut messages nothing else passes through once the tail moved away: from the cut's last up.
             const moved = k === li + 1 && k <= end;
             if (replies(li) - (moved ? 1 : 0) > 0) return { roots: [], records, copies };
             let t = li;
@@ -1810,10 +1596,6 @@ export class ChatEngine {
     }
 
     /**
-     * Cuts the messages named (outside ids) out of the session's shown path, as `cutFromPath()` cuts: each run of them
-     * adjacent on the path is one cut, the last run first, applied whatever it drops (`confirm: 'any'`: the answer
-     * lists the drops). A message the path doesn't hold is cut nowhere and answered in `not_on_path`. `copied` maps
-     * each message the path now shows a copy of to its last copy.
      * @param {{ tree: bigint, actor: Actor, node_ids: string[] }} p
      * @returns {Promise<{ ok: true, not_on_path: string[], refused: { node_id: string, reason: string }[], copied: Record<string, string>, drops: Drops }>}
      */
@@ -1846,7 +1628,6 @@ export class ChatEngine {
                 drops.bookmarks.push(...answer.drops.bookmarks);
                 drops.changes.push(...answer.drops.changes);
             }
-            // A copy made by an earlier cut may be copied again by this one: the chat's message is the last copy.
             const now = answer.copied ?? {};
             for (const [from, to] of Object.entries(copied)) if (now[to] !== undefined) copied[from] = now[to];
             for (const [from, to] of Object.entries(now)) if (!Object.values(copied).includes(from)) copied[from] = to;
@@ -1855,8 +1636,6 @@ export class ChatEngine {
     }
 
     /**
-     * Cuts `first` .. `last` out of the tree ("cut everywhere"): every path through them closes the gap, each reply
-     * of theirs that isn't the next of them moving under the message before the cut, and they go.
      * @param {EditRequest & { first: string, last: string }} p
      */
     cutEverywhere(p) {
@@ -1881,7 +1660,6 @@ export class ChatEngine {
     }
 
     /**
-     * The session's path and the places of `first` and `last` on it, or a refusal.
      * @param {EditRequest & { first: string, last: string }} p
      * @param {bigint | null} session
      * @returns {Promise<{ path: bigint[], fi: number, li: number } | { ok: false, reason: string }>}
@@ -1898,8 +1676,6 @@ export class ChatEngine {
     }
 
     /**
-     * The records of a copy of a stored message under `parent` (null: an opening), made by `user`: its append, every
-     * value, text and time it holds, its itemization and the state changes in effect on it. Nothing is shown by it.
      * @param {any} s
      * @param {bigint} id
      * @param {bigint | null} parent
@@ -1934,12 +1710,8 @@ export class ChatEngine {
         return records;
     }
 
-    // ---- bookmarks ----
 
     /**
-     * Makes a bookmark at a message, or at the tree's root (`node_id` null), labelled `name`: a chat's name, unique in
-     * its scope (`nameTaken()`). A name the user gave is refused when taken; a `suggested` one (or none: `chatNameAt()`
-     * now) becomes the next free one (`freeName()`).
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string | null} p.node_id
@@ -1969,12 +1741,10 @@ export class ChatEngine {
     }
 
     /**
-     * Names the actor's conversation in the tree (its own chat there, with no current chat): `name` as given, refused
-     * when taken in its scope; null names it as a new chat is named (`chatNameAt()` now, the next free one).
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string | null} p.name
-     * @param {Actor} p.actor Through a session.
+     * @param {Actor} p.actor
      * @returns {Promise<{ ok: true, name: string } | { ok: false, reason: 'name taken' | 'a current chat' }>}
      */
     nameConversation({ tree, name, actor }) {
@@ -1996,9 +1766,6 @@ export class ChatEngine {
     }
 
     /**
-     * Starts a new chat in the tree through the actor's session, as upstream starts a new chat file: the session goes
-     * to `node_id` (a stored opening), else a character's first greeting or a group's root; it has no current chat
-     * there; and its conversation is named anew (`nameConversation()`).
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Actor} p.actor
@@ -2013,21 +1780,15 @@ export class ChatEngine {
     }
 
     /**
-     * Stores an imported chat: its messages from the tree's root as a branch of their own, each replying to the shown
-     * one before it, every message with its alternatives (upstream's `swipes`, alternativesOf(); one with a stored
-     * reply's speaker and text is that reply), moving no session; and a bookmark labelled `name` at the last message,
-     * at the root for none (none with `bookmark` false: the caller puts a session on it); the chat's `metadata` the
-     * state there.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Speaker | null} p.treeSpeaker
      * @param {string | null} p.name
-     * @param {Record<string, any>[]} p.messages Upstream's chat messages, `swipes`, `swipe_id` and `swipe_info` included.
-     * @param {Record<string, unknown>} [p.metadata] The chat's `chat_metadata`.
-     * @param {Actor} p.actor The bookmark's maker, through a session.
+     * @param {Record<string, any>[]} p.messages
+     * @param {Record<string, unknown>} [p.metadata]
+     * @param {Actor} p.actor
      * @param {boolean} [p.bookmark]
      * @returns {Promise<{ ok: true, bookmark: bigint | null, name: string | null, node_ids: string[] } | { ok: false, reason: string }>}
-     * `node_ids`: each message's shown alternative.
      */
     async importChat({ tree, treeSpeaker, name, messages, metadata, actor, bookmark = true }) {
         const shown = await this.serialized(tree, async () => {
@@ -2066,21 +1827,16 @@ export class ChatEngine {
             await this.mergeMetadata({ tree, at: last, set: metadata, unset: [], actor });
         }
         if (!bookmark) return { ok: true, bookmark: null, name: null, node_ids: shown };
-        // An imported chat's name (its file's) is a suggestion: one already taken becomes the next free one.
         const made = await this.createBookmark({ tree, node_id: last, name, suggested: true, actor });
         if (!made.ok) return made;
         return { ok: true, bookmark: made.bookmark, name: made.name, node_ids: shown };
     }
 
     /**
-     * What a route's chat identifier names in the tree: a live session by its UUID; else the chat of that name there
-     * (`chatsNamed`): a bookmark, or a session's conversation (`derived`); else the asking session's own conversation
-     * by the name it is shown by before its first write (`own`, `conversationName()`); else the one session in the
-     * store labelled so. None, or several, is nothing (upstream's "not found").
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string} p.name
-     * @param {{ session: string | null, identifier: string }} [p.own] The asking session (`RequestSession.reader()`).
+     * @param {{ session: string | null, identifier: string }} [p.own]
      * @returns {Promise<{ bookmark: bigint } | { session: string, derived?: true } | null>}
      */
     async resolveChatName({ tree, name, own }) {
@@ -2099,8 +1855,6 @@ export class ChatEngine {
     }
 
     /**
-     * The group tree a chat name names with no tree given (a group route with no `group_id`): the one group with a
-     * chat of that name (names are unique among all groups' chats), or a live session's UUID the tree it is in.
      * @param {string} id
      * @returns {Promise<bigint | null>}
      */
@@ -2117,8 +1871,6 @@ export class ChatEngine {
     }
 
     /**
-     * The replies of a message (null: the tree's openings) as upstream's objects, kept current while a save adds to
-     * and edits them.
      * @param {bigint} tree
      * @param {bigint | null} parent
      */
@@ -2131,7 +1883,6 @@ export class ChatEngine {
         return {
             stored,
             byId,
-            /** The reply other than `except` with the speaker and text of `content`, or null. */
             twin: (/** @type {Record<string, any>} */ content, /** @type {bigint | null} */ except) => {
                 const want = identityOf(content);
                 for (const [id, m] of byId) if (id !== except && identityOf(m) === want) return id;
@@ -2142,20 +1893,16 @@ export class ChatEngine {
         };
     }
 
-    // ---- state ----
 
     /**
-     * Records state changes at a position (state layer 1), each a key set to a value or removed (`value`
-     * absent), a chat variable when `variable`; a change that leaves its key as it is isn't recorded.
      * @param {object} p
      * @param {bigint} p.tree
-     * @param {string | null} p.at The message (null: the tree's root).
+     * @param {string | null} p.at
      * @param {{ key: string, variable?: boolean, value?: unknown }[]} p.ops
      * @param {Actor} p.actor
      * @param {number} [p.author]
-     * @param {string | null} [p.ref] The author's reference (a command, a macro, an extension).
-     * @returns {Promise<{ ok: true, changes: string[] } | { ok: false, reason: string }>} The ids of the changes
-     * recorded.
+     * @param {string | null} [p.ref]
+     * @returns {Promise<{ ok: true, changes: string[] } | { ok: false, reason: string }>}
      */
     changeState({ tree, at, ops, actor, author = AUTHOR.user, ref = null }) {
         return this.serialized(tree, async () => {
@@ -2197,13 +1944,12 @@ export class ChatEngine {
     }
 
     /**
-     * Reverts a recorded change (or a revert, restoring what it reverted): the state is as if it never happened.
      * @param {object} p
-     * @param {string} p.change The change's id.
+     * @param {string} p.change
      * @param {Actor} p.actor
      * @param {number} [p.author]
      * @param {string | null} [p.ref]
-     * @returns {Promise<{ ok: true, change: string } | { ok: false, reason: string }>} The revert's own id.
+     * @returns {Promise<{ ok: true, change: string } | { ok: false, reason: string }>}
      */
     async revertChange({ change, actor, author = AUTHOR.user, ref = null }) {
         if (!DECIMAL.test(change)) return { ok: false, reason: 'unknown change' };
@@ -2225,8 +1971,6 @@ export class ChatEngine {
     }
 
     /**
-     * Where a committed `stateChange` record hangs: its tree and message (`at`, its outside id; null: the tree's
-     * root); `tree` null for a `stateRevert`, whose place isn't in its record; null for a message that's gone.
      * @param {Record<string, any>} record
      * @returns {Promise<{ tree: bigint | null, at: string | null } | null>}
      */
@@ -2238,15 +1982,12 @@ export class ChatEngine {
     }
 
     /**
-     * The state at a position as `chat_metadata` with its hash (`jsonHash()`, as the page hashes its copy), or
-     * `unchanged` when it is `ifHash`.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string | null} p.at
-     * @param {string | null} [p.session] Adds `integrity`.
+     * @param {string | null} [p.session]
      * @param {number} [p.ifHash]
-     * @returns {Promise<{ state: Record<string, unknown>, hash: number } | { unchanged: true } | null>} null when the
-     * message isn't the tree's.
+     * @returns {Promise<{ state: Record<string, unknown>, hash: number } | { unchanged: true } | null>}
      */
     async stateAt({ tree, at, session = null, ifHash }) {
         let message = null;
@@ -2261,15 +2002,12 @@ export class ChatEngine {
     }
 
     /**
-     * Sets and removes `chat_metadata` keys at a position, as state changes: only the keys whose value differs. A
-     * chat variable is a key of its own: one is removed only when named, so tabs changing different variables keep
-     * each other's.
      * @param {object} p
      * @param {bigint} p.tree
-     * @param {string | null} p.at The message (null: the tree's root).
-     * @param {Record<string, unknown>} p.set A `variables` object here sets the variables it holds.
-     * @param {string[]} p.unset `variables` here removes the object and every variable.
-     * @param {{ set?: Record<string, unknown>, unset?: string[] }} [p.variables] Variables set and removed by name.
+     * @param {string | null} p.at
+     * @param {Record<string, unknown>} p.set
+     * @param {string[]} p.unset
+     * @param {{ set?: Record<string, unknown>, unset?: string[] }} [p.variables]
      * @param {Actor} p.actor
      * @param {number} [p.author]
      */
@@ -2283,7 +2021,6 @@ export class ChatEngine {
             const state = await this.shownState(await this.store.chatRead('state', { tree, ...(message === null ? {} : { at: message }) }));
             const now = new Map(state.filter(e => !e.variable).map(e => [e.field, e.json]));
             const vars = new Map(state.filter(e => e.variable).map(e => [e.field, e.json]));
-            // Each key touched, in the order first touched, with the value it ends with.
             /** @type {Map<string, [string, string | undefined, boolean]>} */
             const touched = new Map();
             const change = (/** @type {string} */ key, /** @type {string | undefined} */ value, variable = false) => {
@@ -2294,7 +2031,6 @@ export class ChatEngine {
             };
             const isObject = (/** @type {unknown} */ v) => v !== null && typeof v === 'object' && !Array.isArray(v);
             const setVariables = (/** @type {Record<string, unknown>} */ values) => {
-                // The object itself, empty or not, is a marker.
                 if (!now.has('variables')) change('variables', '{}');
                 for (const [name, v] of Object.entries(values)) {
                     if (v !== undefined) change(name, JSON.stringify(v), true);
@@ -2343,8 +2079,6 @@ export class ChatEngine {
     }
 
     /**
-     * State entries as `chat_metadata` shows them: a lorebook link as the name of the book it resolves as (or its
-     * own name).
      * @param {{ variable: boolean, field: string, json: string }[]} state
      */
     async shownState(state) {
@@ -2362,9 +2096,6 @@ export class ChatEngine {
     }
 
     /**
-     * Runs `fn` with the lanes of the books the `world_info` values in `values` would link held, giving it what to
-     * record for a `world_info` value's JSON: a link to the book its key finds (an unresolved name made in
-     * `records` when there is none), or the JSON itself.
      * @template T
      * @param {unknown[]} values
      * @param {(link: (json: string, records: object[]) => Promise<string>) => Promise<T>} fn
@@ -2391,8 +2122,6 @@ export class ChatEngine {
     }
 
     /**
-     * The state at a position as `chat_metadata`: its keys in order, `variables` holding the chat variables (an
-     * object since it was first set, even when empty), and, read through a session, `integrity`: the session's UUID.
      * @param {bigint} tree
      * @param {bigint | null} at
      * @param {string | null} [session]
@@ -2414,7 +2143,6 @@ export class ChatEngine {
     }
 
     /**
-     * Of these send keys, the ones the tree has a stored message for (at most the first 100 strings are looked up).
      * @param {bigint} tree
      * @param {unknown} keys
      * @returns {Promise<string[]>}
@@ -2427,8 +2155,6 @@ export class ChatEngine {
     }
 
     /**
-     * Every message of a tree, in batches of up to `size` ids (each a message's replies or a part of them), parents
-     * before their replies.
      * @param {bigint} tree
      * @param {number} size
      * @returns {AsyncGenerator<bigint[]>}
@@ -2448,14 +2174,12 @@ export class ChatEngine {
     }
 
     /**
-     * A group member's messages in the group's tree become another character's: each message whose
-     * `original_avatar` is `oldAvatar` gets `newAvatar` and `newName`, and `force_avatar`'s path follows.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string} p.oldAvatar
      * @param {string} p.newAvatar
      * @param {string} p.newName
-     * @returns {Promise<number>} How many messages were the member's.
+     * @returns {Promise<number>}
      */
     renameMemberInMessages({ tree, oldAvatar, newAvatar, newName }) {
         return this.serialized(tree, async () => {
@@ -2480,11 +2204,8 @@ export class ChatEngine {
         });
     }
 
-    // ---- prompt itemizations ----
 
     /**
-     * Stores a message's itemization (zstd-compressed JSON, without `mesId`), replacing the one it had; nothing is
-     * written when it is the one stored.
      * @param {object} p
      * @param {string} p.node_id
      * @param {Record<string, unknown>} p.entry
@@ -2507,16 +2228,11 @@ export class ChatEngine {
     }
 
     /**
-     * Stores itemizations upstream kept for a chat (`mesId` its message's position on the chat's path) on the
-     * position's messages, in one commit. A message that has one already keeps it: an equal entry counts as
-     * `unchanged`, a different one is left out. Left out, with why: an entry with no position, a position past the
-     * chat's end, a later entry for a position that had one (upstream showed the first).
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string | null} p.at
      * @param {Record<string, unknown>[]} p.entries
      * @returns {Promise<{ stored: number, unchanged: number, unmatched: { entry: number, mesId: unknown, why: string }[] } | null>}
-     * `entry` the left-out entry's index in `entries`; null when the message isn't the tree's.
      */
     importItemizations({ tree, at, entries }) {
         return this.serialized(tree, async () => {
@@ -2553,7 +2269,6 @@ export class ChatEngine {
     }
 
     /**
-     * Changes some fields of a message's itemization; nothing is written when they already have these values.
      * @param {object} p
      * @param {string} p.node_id
      * @param {Record<string, unknown>} p.fields
@@ -2576,11 +2291,9 @@ export class ChatEngine {
     }
 
     /**
-     * A message's itemization, and the nearest message above it whose itemization holds the prompt as sent.
      * @param {object} p
      * @param {string} p.node_id
-     * @returns {Promise<{ entry: Record<string, unknown>, previous_node_id: string | null } | null>} null when it has
-     * none.
+     * @returns {Promise<{ entry: Record<string, unknown>, previous_node_id: string | null } | null>}
      */
     async readItemization({ node_id }) {
         const [id] = await this.messageIds([node_id]);
@@ -2598,12 +2311,10 @@ export class ChatEngine {
     }
 
     /**
-     * The itemizations of a position's messages, each with its message's place on the path.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string | null} p.at
-     * @returns {Promise<{ index: number, node_id: string, entry: Record<string, unknown> }[] | null>} null when the
-     * message isn't the tree's.
+     * @returns {Promise<{ index: number, node_id: string, entry: Record<string, unknown> }[] | null>}
      */
     async chatItemizations({ tree, at }) {
         const ids = await this.pathIds(tree, at);
@@ -2619,11 +2330,10 @@ export class ChatEngine {
     }
 
     /**
-     * Removes the itemizations of a position's messages.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string | null} p.at
-     * @returns {Promise<number | null>} How many were removed; null when the message isn't the tree's.
+     * @returns {Promise<number | null>}
      */
     deleteChatItemizations({ tree, at }) {
         return this.serialized(tree, async () => {
@@ -2637,9 +2347,8 @@ export class ChatEngine {
     }
 
     /**
-     * Removes every itemization, in batches of `batch` with `pause` ms between them.
      * @param {{ batch?: number, pause?: number }} [p]
-     * @returns {Promise<number>} How many were removed.
+     * @returns {Promise<number>}
      */
     async clearItemizations({ batch = 256, pause = 10 } = {}) {
         let removed = 0;
@@ -2654,7 +2363,6 @@ export class ChatEngine {
     }
 
     /**
-     * The message ids from the tree's root down to a message of the tree (null: none), or null when it isn't one.
      * @param {bigint} tree
      * @param {string | null} at
      * @returns {Promise<bigint[] | null>}
@@ -2667,13 +2375,10 @@ export class ChatEngine {
         return this.store.chatRead('path', { tree, at: id });
     }
 
-    // ---- sessions and bookmarks as lists ----
 
     /**
-     * List rows of sessions at positions: name, where (tree and message), message count, the message's text and
-     * time.
      * @param {{ sid: bigint, position: bigint, tree: bigint | null, at: bigint | null }[]} entries
-     * @param {boolean} withMetadata Adds each position's state as `chat_metadata`.
+     * @param {boolean} withMetadata
      */
     async sessionRows(entries, withMetadata) {
         const sessions = entries.length ? await this.store.chatRead('sessions', { ids: entries.map(e => e.sid) }) : [];
@@ -2706,9 +2411,6 @@ export class ChatEngine {
     }
 
     /**
-     * The session list filtered by a tree: a page of the sessions with meaningful activity there, the most recent
-     * first, each at its position in the tree; `before` is the last row's `position` of the page before. (Upstream's
-     * chat list is `chatList()`.)
      * @param {object} p
      * @param {bigint} p.tree
      * @param {bigint} [p.before]
@@ -2726,7 +2428,6 @@ export class ChatEngine {
     }
 
     /**
-     * The id of a tab's session (its UUID), or null when it has none yet.
      * @param {string | undefined} session
      */
     async sessionId(session) {
@@ -2736,12 +2437,9 @@ export class ChatEngine {
     }
 
     /**
-     * Rows of chat list items: a bookmark (`bookmark`, its id) or a tab's session (`session`, its UUID), its name,
-     * where it is, the message count there, the message's text and time; `position` is the item's place in the list
-     * (the `after` of the next page).
      * @param {bigint} tree
      * @param {{ bookmark: bigint | null, session: bigint | null, at: bigint | null, key?: [bigint, bigint] }[]} items
-     * @param {boolean} withMetadata Adds each position's state as `chat_metadata`.
+     * @param {boolean} withMetadata
      */
     async listRows(tree, items, withMetadata) {
         const bookmarks = items.filter(i => i.bookmark !== null).map(i => /** @type {bigint} */ (i.bookmark));
@@ -2782,13 +2480,9 @@ export class ChatEngine {
     }
 
     /**
-     * Upstream's chat list of a character or group (`/api/characters/chats`, `/api/chats/group/info`, the chat
-     * pickers), newest first (upstream's order): the tree's bookmarks by the time of the message each is at, and the
-     * tab's session by its own when it is in the tree and no bookmark is at its message (so `getCurrentChatId()`'s
-     * chat is listed). `after` is the last row's `position` of the page before.
      * @param {object} p
      * @param {bigint} p.tree
-     * @param {string} [p.session] The tab's session (its UUID).
+     * @param {string} [p.session]
      * @param {string} [p.after]
      * @param {number} p.limit
      * @param {boolean} [p.withMetadata]
@@ -2798,22 +2492,11 @@ export class ChatEngine {
     }
 
     /**
-     * The chat list (`chatList()`) searched: an item matches by its name (every clause's text inside it,
-     * lower-cased, as upstream's file names) or by the path down to it holding every word (whole words; a
-     * closed-quote phrase as a phrase) in some message, none of a negated one. `exact` is false when the search's
-     * work limit cut it short (results "~"); `more` and `next` read on.
-     *
-     * On top, a first page (no `after`) scans the tree's messages' texts newest first for `search` without its search
-     * syntax (a phrase's quotes, a leading dash) as a lower-cased substring (as upstream matched), under a cap of text
-     * bytes (`scanBytes`): the items whose path holds a message found, that the index and names didn't match, follow
-     * the page's rows. When the scan stops
-     * short the answer has a `scanCursor` and is not `exact`; passing `scanCursor` back scans on from there alone (an
-     * item may come again, when its path holds matches in both reads).
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string} p.search
-     * @param {string} [p.session] The tab's session (its UUID).
-     * @param {string} [p.after] A row's `position`, or a page's `next`.
+     * @param {string} [p.session]
+     * @param {string} [p.after]
      * @param {number} p.limit
      * @param {boolean} [p.withMetadata]
      * @param {string} [p.scanCursor]
@@ -2842,24 +2525,16 @@ export class ChatEngine {
     }
 
     /**
-     * A tree's messages a search string matches: from the index, best first (whole words; a closed-quote phrase as
-     * a phrase), then what a substring scan of the messages' texts (newest first, each clause's text lower-cased
-     * inside the message's, as upstream matched) adds, under a cap of text bytes read (`scanBytes`). Each row is a
-     * message with its context: its id, speaker, time, depth and a snippet of its text around the first match;
-     * opening one moves the session there (`goTo`). Index pages read on with `after` (no scan); when the scan
-     * stops (cap or `limit`) the answer is `partial` ("~") with a `scanCursor`, and passing that back scans on from
-     * there alone.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string} p.search
      * @param {number} p.limit
-     * @param {string} [p.after] The `after` of the page before.
+     * @param {string} [p.after]
      * @param {string} [p.scanCursor]
      * @param {number} [p.scanBytes]
      */
     async searchMessages({ tree, search, limit, after, scanCursor, scanBytes }) {
         const clauses = searchClauses(search);
-        // `s<rank>:<message>`, then `:<idf>,…` with several words (`cursorWeightsOf`).
         const afterAt = after === undefined ? null : /^s([^:]+):(\d+)(?::([^:]*))?$/.exec(after);
         const weights = afterAt?.[3] === undefined ? undefined : cursorWeights(afterAt[3]);
         if (after !== undefined && (!afterAt || weights === null)) throw new Error('invalid cursor');
@@ -2892,21 +2567,16 @@ export class ChatEngine {
     }
 
     /**
-     * Starts a new chat for a session: it goes to the tree's root with the card's first greeting chosen
-     * provisionally (`chooseCardGreeting()`), nothing stored until a reply is sent from it; no bookmark is made. A
-     * group's tree has no card: the session goes to its root, where the page shows the members' greetings
-     * provisionally, in upstream's order, stored only when the conversation continues.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Actor} p.actor
-     * @param {boolean} [p.group] The tree is a group's.
+     * @param {boolean} [p.group]
      */
     newChat({ tree, actor, group = false }) {
         return group ? this.goTo({ tree, node_id: null, actor }) : this.chooseCardGreeting({ tree, index: 0, actor });
     }
 
     /**
-     * A page of every session by its last move, the most recent first, each where its pointer is.
      * @param {object} p
      * @param {bigint} [p.before]
      * @param {number} p.limit
@@ -2921,10 +2591,6 @@ export class ChatEngine {
     }
 
     /**
-     * A page of the conversations by their last meaningful activity, the most recent first: each bookmark someone
-     * acted in, and each session's conversation in a tree where it has no current chat (one row per compat chat id).
-     * `id` is the row's compat chat id, `name` the bookmark's label (null for a session's), `last_activity` the time
-     * of the message the conversation is at; `before` is the last row's `position` of the page before.
      * @param {object} p
      * @param {bigint} [p.before]
      * @param {number} p.limit
@@ -2950,8 +2616,6 @@ export class ChatEngine {
     }
 
     /**
-     * Names a session (null: no name), the name as given (a free label; its identity is its UUID). Nothing is
-     * written when the session already has it.
      * @param {object} p
      * @param {string} p.session
      * @param {string | null} p.name
@@ -2971,8 +2635,6 @@ export class ChatEngine {
     }
 
     /**
-     * Deletes a session: its pointer, history, remembered positions and its own choices; its UUID then says it was
-     * deleted.
      * @param {string} session
      */
     deleteSession(session) {
@@ -2985,8 +2647,6 @@ export class ChatEngine {
     }
 
     /**
-     * A page of a tree's bookmarks in the order they were made: id (a decimal string), name, mode, the message it is
-     * at and the one it was made at; `after` is the last id of the page before.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string} [p.after]
@@ -2998,7 +2658,6 @@ export class ChatEngine {
         const external = await this.externalIds(shown.flatMap(b => [b.at, b.createdAt]).filter(id => id !== null));
         let e = 0;
         const next = (/** @type {bigint | null} */ id) => (id === null ? null : external[e++]);
-        // A bookmark at the tree's root is at no message, and was made at none.
         const rows = shown.map(b => ({
             id: String(b.id),
             name: b.name,
@@ -3010,7 +2669,6 @@ export class ChatEngine {
     }
 
     /**
-     * A bookmark of the tree, or null.
      * @param {bigint} tree
      * @param {string} bookmark
      */
@@ -3024,8 +2682,6 @@ export class ChatEngine {
     }
 
     /**
-     * Relabels a bookmark (a chat's name: refused when another chat of its scope has it, `nameTaken()`), makes it
-     * following or pinned, or deletes it; nothing is written when nothing changes.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string} p.bookmark
@@ -3053,8 +2709,6 @@ export class ChatEngine {
     }
 
     /**
-     * Moves a bookmark to a message of its tree (`node_id` null: the tree's root), whatever its mode; nothing is
-     * written when it is there already. The message it was made at stays its own (`bookmark_link`, `branches`).
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string} p.bookmark
@@ -3076,18 +2730,13 @@ export class ChatEngine {
         });
     }
 
-    // ---- reading a position ----
 
     /**
-     * A position's messages in upstream's shape: the path from the tree's root down to `at` (nothing below it),
-     * each with its alternatives in `swipes` / `swipe_info` (full length; text only within ALTERNATIVE_WINDOW of the
-     * shown one unless `full`, the others null), its outside id, and the bookmarks made at it; and the state there as
-     * `chat_metadata` (with `integrity` when read through a session).
      * @param {object} p
      * @param {bigint} p.tree
-     * @param {string | null} p.at The message (null: the tree's root, no message).
-     * @param {string | null} [p.session] The session's UUID.
-     * @param {boolean} [p.full] Every alternative's text (an export).
+     * @param {string | null} p.at
+     * @param {string | null} [p.session]
+     * @param {boolean} [p.full]
      */
     async load({ tree, at, session = null, full = false }) {
         let atId = null;
@@ -3097,13 +2746,12 @@ export class ChatEngine {
         }
         const ids = atId === null ? [] : await this.store.chatRead('path', { tree, at: atId });
         const stored = await this.stored(ids);
-        /** @type {Map<string, bigint[]>} parent → replies */
+        /** @type {Map<string, bigint[]>} */
         const siblings = new Map();
         for (const id of ids) {
             const s = stored.get(id);
             const key = String(s.parent);
             if (siblings.has(key)) continue;
-            // A message on the path with one reply has only the next one on the path.
             const parent = s.parent === null ? undefined : stored.get(s.parent);
             siblings.set(key, parent?.replies === 1 ? [id] : await this.children(tree, s.parent));
         }
@@ -3120,7 +2768,6 @@ export class ChatEngine {
         const decoded = new Map(allIds.map((id, i) => [id, decodedList[i]]));
         const bookmarkIds = [...new Set(ids.flatMap(id => all.get(id).branches))];
         const bookmarks = bookmarkIds.length ? await this.store.chatRead('bookmarks', { ids: bookmarkIds }) : [];
-        // `bookmark_link` and `branches` name each live bookmark by its chat id, its label (`bookmarkChatIds()`).
         const labels = new Map(bookmarkIds.map((b, i) => [b, bookmarks[i]?.name]).filter(([, name]) => name));
         const messages = [];
         for (const id of ids) {
@@ -3155,9 +2802,7 @@ export class ChatEngine {
 }
 
 /**
- * `resolveChatName()` read on this thread, with no asking session: a live session by its UUID, else the chat of that
- * name in the tree, else the one session labelled so; `session` is the session's integer id.
- * @param {any} store The binding's `Store`.
+ * @param {any} store
  * @param {bigint} tree
  * @param {string} name
  * @returns {{ bookmark: bigint } | { session: bigint | null, derived?: true } | null}
@@ -3173,8 +2818,7 @@ export function resolveChatNameSync(store, tree, name) {
 }
 
 /**
- * `treeOfChatId()` read on this thread.
- * @param {any} store The binding's `Store`.
+ * @param {any} store
  * @param {string} id
  * @returns {bigint | null}
  */
@@ -3191,10 +2835,8 @@ export function treeOfChatIdSync(store, id) {
 }
 
 /**
- * `ChatEngine.load()` read on this thread, for a synchronous caller (upstream's `getChatData`): the same answer,
- * through the binding's synchronous reads.
- * @param {any} store The binding's `Store` (`engineStoreHere()`).
- * @param {{ tree: bigint, at: string | null, session?: string | null, full?: boolean }} p `full`: every alternative's text, as `load()`.
+ * @param {any} store
+ * @param {{ tree: bigint, at: string | null, session?: string | null, full?: boolean }} p
  * @returns {{ messages: Record<string, any>[], metadata: Record<string, unknown>, node_id: string | null } | null}
  */
 export function loadSync(store, { tree, at, session = null, full = false }) {
@@ -3266,7 +2908,6 @@ export function loadSync(store, { tree, at, session = null, full = false }) {
     const decoded = new Map(allIds.map(id => [id, JSON.parse(decodeMessage(all.get(id), sid => speakers.get(sid) ?? null))]));
     const bookmarkIds = [...new Set(ids.flatMap(id => all.get(id).branches))];
     const bookmarks = bookmarkIds.length ? read('bookmarks', { ids: bookmarkIds }) : [];
-    // A bookmark's compat chat identifier is `b<id>` (its label is free text): `bookmark_link` and `branches` name those.
     const labels = new Map(bookmarkIds.map((/** @type {bigint} */ b, /** @type {number} */ i) => [b, bookmarks[i]?.name]).filter(([, name]) => name));
     const messages = [];
     for (const id of ids) {
@@ -3322,7 +2963,6 @@ export function loadSync(store, { tree, at, session = null, full = false }) {
 }
 
 /**
- * A chat list cursor: an item's place, `<time key>:<bookmark>`.
  * @param {[bigint, bigint]} key
  */
 function listCursor(key) {

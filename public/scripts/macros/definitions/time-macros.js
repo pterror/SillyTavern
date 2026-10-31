@@ -2,7 +2,6 @@ import { moment, timestampToMoment } from '../engine/MacroLibraries.js';
 import { MacroRegistry, MacroCategory, MacroValueType } from '../engine/MacroRegistry.js';
 
 /**
- * Now, in the user's time zone: where the macros run (the server) may be in another.
  * @param {import('../engine/MacroEnv.types.js').MacroEnv} env
  */
 function now(env) {

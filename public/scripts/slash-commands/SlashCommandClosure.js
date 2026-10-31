@@ -63,7 +63,6 @@ export class SlashCommandClosure {
                 list: { min: 1, max: 2 },
                 handler: (context) => {
                     try {
-                        // unlike the legacy replacer, unknown variables must not halt execution
                         return scope.getVariable(context.list[0], context.list[1]);
                     } catch (error) {
                         console.warn('{{var}} dynamic macro execution error:', error);
@@ -178,7 +177,6 @@ export class SlashCommandClosure {
 
     /** @returns {Promise<SlashCommandClosureResult>} */
     async execute() {
-        // Executes a copy, so a closure called twice (loop, multiple /run) isn't tainted by its own effects.
         const closure = this.getCopy();
         const gen = closure.executeDirect();
         let step;
@@ -254,7 +252,6 @@ export class SlashCommandClosure {
                     step = await stepper.next();
                     step = await stepper.next();
                     step = await stepper.next();
-                    // Must yield before arguments resolve if one is an immediate closure, or stepping into it is impossible.
                     const hasImmediateClosureInNamedArgs = /**@type {SlashCommandExecutor}*/(step.value)?.namedArgumentList?.find(it => it.value instanceof SlashCommandClosure && it.value.executeNow);
                     const hasImmediateClosureInUnnamedArgs = /**@type {SlashCommandExecutor}*/(step.value)?.unnamedArgumentList?.find(it => it.value instanceof SlashCommandClosure && it.value.executeNow);
                     if (hasImmediateClosureInNamedArgs || hasImmediateClosureInUnnamedArgs) {
@@ -266,7 +263,6 @@ export class SlashCommandClosure {
                 }
             } else if (!step.done && this.debugController?.testStepping(this)) {
                 this.debugController.isSteppingInto = false;
-                // Must yield before arguments resolve if one is an immediate closure, or stepping into it is impossible.
                 const hasImmediateClosureInNamedArgs = /**@type {SlashCommandExecutor}*/(step.value)?.namedArgumentList?.find(it => it.value instanceof SlashCommandClosure && it.value.executeNow);
                 const hasImmediateClosureInUnnamedArgs = /**@type {SlashCommandExecutor}*/(step.value)?.unnamedArgumentList?.find(it => it.value instanceof SlashCommandClosure && it.value.executeNow);
                 if (hasImmediateClosureInNamedArgs || hasImmediateClosureInUnnamedArgs) {
@@ -286,7 +282,6 @@ export class SlashCommandClosure {
             step = await stepper.next();
         }
 
-        // execution can return a closure result directly, which should only happen on abort
         if (step.value instanceof SlashCommandClosureResult) {
             this.debugController?.up();
             return step.value;
@@ -296,8 +291,6 @@ export class SlashCommandClosure {
         this.debugController?.up();
         return result;
     }
-    // Steps through the executor list; each executor yields three times: before/after argument
-    // resolution, and after execution.
     async* executeStep() {
         let done = 0;
         let isFirst = true;
@@ -308,7 +301,6 @@ export class SlashCommandClosure {
                 this.debugController.namedArguments = undefined;
                 this.debugController.unnamedArguments = undefined;
             }
-            // The debugger might want to act on this executor before anything happens to it.
             yield executor;
             /**@type {import('./SlashCommand.js').NamedArguments} */
             // @ts-ignore

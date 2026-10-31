@@ -48,7 +48,6 @@ export class KokoroTtsProvider {
         this.pendingRequests = new Map();
         this.nextRequestId = 1;
 
-        // debounced so rapid setting changes don't each restart the worker
         this.initTtsDebounced = debounceAsync(this.initializeWorker.bind(this), debounce_timeout.relaxed);
     }
 

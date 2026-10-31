@@ -137,7 +137,6 @@ async function backupUserSettings(handle, preventDuplicates, userDirectories = g
     if (!fs.existsSync(userDirectories.root)) {
         return;
     }
-    // Run outside any request (the periodic backup): the settings as the user's settings document holds them.
     await openSettingsDocument(userDirectories, handle);
 
     if (!settingsExist(userDirectories)) {
@@ -162,7 +161,6 @@ async function backupUserSettings(handle, preventDuplicates, userDirectories = g
     removeOldBackups(userDirectories.backups, `settings_${handle}`);
 }
 
-/** Checks if the backup would be a duplicate of the latest existing one. */
 export function isDuplicateBackup(handle, content, userDirectories = getUserDirectories(handle)) {
     const latestBackup = getLatestBackup(handle, userDirectories);
     if (!latestBackup || !fs.existsSync(latestBackup)) {
@@ -213,9 +211,6 @@ export const router = express.Router();
  * overwrite, for backward compatibility).
  */
 /**
- * The settings context a save was made in (the page showing a context's settings over a range of levels): the
- * `X-Settings-Context` header, `{ avatar?, group_id?, range? }`; null for the user's own settings, or without the
- * settings model.
  * @param {import('express').Request} request
  * @returns {{ document: import('../settings-documents.js').OpenSettingsDocument, context: { avatar: string | null, groupId: string | null }, range: { from: string, to: string } } | null}
  */
@@ -233,7 +228,6 @@ function savedIn(request) {
 }
 
 /**
- * The settings a save is checked against and answered by: the context's view when it was made in one, else the user's.
  * @param {import('express').Request} request
  * @param {import('../users.js').UserDirectoryList} directories
  * @returns {Record<string, any>}
@@ -270,18 +264,12 @@ router.post('/save', async function (request, response) {
             });
         }
 
-        // Keeps the key files the body leaves out: the client's full save has no tags, tag_map or accountStorage.
-        // Its charLore isn't stored (writeNamedSettings() leaves it out).
         const at = savedIn(request);
         const body = withServerOwned(request.body, settingsSavedOver(request, directories));
         if (at) await at.document.saveIn(at.context, at.range, /** @type {any} */ (settingsWithoutCharLore('', body).value));
         else await writeNamedSettings(directories, body);
         void reportIgnoredCharLore(request, settingsWithoutCharLore('', request.body).charLore);
         triggerAutoSave(request.user.profile.handle, request.user.directories);
-        // Key order in the reconstructed store may differ from the client's payload, so the client can't just
-        // hash its own JSON locally - it must use this returned hash.
-        // The hashes of the settings as stored (the settings model may store them otherwise than sent: its key order,
-        // without what nothing reads), for the client's next conflict check; a context's as it shows them.
         const stored = settingsSavedOver(request, directories);
         const keyHashes = {};
         seedKeyHashes(keyHashes, pageSettings(stored));
@@ -292,12 +280,6 @@ router.post('/save', async function (request, response) {
     }
 });
 
-/**
- * Partial-update alternative to /save: writes only the given top-level keys, leaving other keys' files untouched.
- * Conflict checking is per-key so two updates to disjoint keys can both succeed. Relies on the handler running
- * synchronously (no `await` between read and write) to keep concurrent calls from interleaving; would need real
- * locking if this process is ever clustered.
- */
 router.post('/save-partial', async function (request, response) {
     try {
         const directories = request.user.directories;
@@ -309,7 +291,6 @@ router.post('/save-partial', async function (request, response) {
                 error: 'Partial update body must include a "keys" object of top-level settings keys to merge.',
             });
         }
-        // What the server owns isn't the page's to write.
         const over = settingsSavedOver(request, directories);
         const keys = Object.fromEntries(Object.entries(sent).flatMap(([key, value]) => {
             const write = pageWrite(key, value, over);
@@ -332,7 +313,6 @@ router.post('/save-partial', async function (request, response) {
         try {
             const at = savedIn(request);
             if (at) {
-                // The context's settings as shown, with the keys changed; the save then routes each change.
                 const saved = structuredClone(at.document.view(at.context, at.range).settings);
                 for (const [key, given] of Object.entries(keys)) {
                     const { value, skip } = settingsWithoutCharLore(key, given);
@@ -340,7 +320,6 @@ router.post('/save-partial', async function (request, response) {
                 }
                 await at.document.saveIn(at.context, at.range, saved);
             } else {
-                // A charLore among the keys isn't stored (writeSettingsKeys() leaves it out).
                 await writeSettingsKeys(directories, keys);
             }
         } catch (err) {
@@ -351,9 +330,6 @@ router.post('/save-partial', async function (request, response) {
         void reportIgnoredCharLore(request, carried);
 
         triggerAutoSave(request.user.profile.handle, request.user.directories);
-        // Same reasoning as /save's response above: return the server's own canonical whole-store hash so the
-        // client's knownServerSettingsHash stays correct without needing to know how the store reconstructs it; and
-        // the hashes of each top-level key written, as stored (a context's as it shows them).
         const stored = settingsSavedOver(request, directories);
         const keyHashes = {};
         const known = pageSettings(stored);
@@ -367,17 +343,6 @@ router.post('/save-partial', async function (request, response) {
     }
 });
 
-/**
- * Toggles one extension's membership in extension_settings.disabledExtensions. The server owns the
- * merge so the client only ever asserts the raw fact (which extension, enabled or not).
- */
-/**
- * A character's or group's settings (the settings model's character level): `{ holder: { type: 'character' |
- * 'group', id }, set?: { <path>: value }, unset?: [<path>], select?: { <selection path>: name | null } }`, the
- * paths upstream's (`oai_settings.temp_openai`, `oai_settings.preset_settings_openai`, …): an override set or
- * removed, a bundle stated or not. Only a bundle group's fields and selections are stated at this level.
- * Answers the settings in that holder's context.
- */
 router.post('/level', async function (request, response) {
     try {
         const { directories } = request.user;
@@ -418,10 +383,6 @@ router.post('/level', async function (request, response) {
     }
 });
 
-/**
- * The settings in a context: `{ avatar?, group_id? }` → `{ settings, settingsHash }`, the speaking character's and
- * its group's statements over the user's (the user's alone for neither, or without the settings model).
- */
 router.post('/for-context', function (request, response) {
     const { directories } = request.user;
     const document = settingsDocumentOf(directories);
@@ -439,7 +400,6 @@ router.post('/for-context', function (request, response) {
 });
 
 /**
- * A request's settings context: `{ avatar?, group_id? }`.
  * @param {any} body
  */
 function contextOf(body) {
@@ -450,7 +410,6 @@ function contextOf(body) {
 }
 
 /**
- * A request's level range: `{ from, to }` (LEVEL_POSITIONS), every level when left out.
  * @param {any} body
  */
 function rangeOf(body) {
@@ -488,7 +447,6 @@ router.post('/toggle-extension', async function (request, response) {
     }
 });
 
-// Wintermute's code
 router.post('/get', storeRoute('reading settings', async (request, response) => {
     let settings;
     try {
@@ -498,7 +456,6 @@ router.post('/get', storeRoute('reading settings', async (request, response) => 
     }
 
     const { directories } = request.user;
-    // Sampler presets as their files' text, by name in locale order; the other bundles parsed, in code-unit order.
     const presets = async (/** @type {string} */ group) => {
         const listed = await listBundles(directories, group, { order: 'locale' });
         return { texts: listed.map(entry => entry.text), names: listed.map(entry => entry.name) };
@@ -519,7 +476,6 @@ router.post('/get', storeRoute('reading settings', async (request, response) => 
     const sysprompt = await parsed('template.sysprompt');
     const reasoning = await parsed('template.reasoning');
 
-    // The hashes are of the settings as stored, without charLore; the page gets it filled in.
     const keyHashes = {};
     seedKeyHashes(keyHashes, pageSettings(JSON.parse(settings)));
     const { lib } = await requestStore(request);
@@ -628,12 +584,10 @@ router.post('/restore-snapshot', getFileNameValidationFunction('name'), async (r
 
         await writeAllSettings(request.user.directories, snapshotSettings);
 
-        // A restored snapshot holding tags is imported again; the import marks itself done once no source is left.
         if (snapshotSettings && typeof snapshotSettings === 'object'
             && (Object.hasOwn(snapshotSettings, 'tags') || Object.hasOwn(snapshotSettings, 'tag_map'))) {
             const { lib } = await requestStore(request);
             if (settingsDocumentOf(request.user.directories)) {
-                // The settings model keeps no tags: the snapshot's go to the tag store from here.
                 await lib.tags.importSettingsSource(`settings tags import (${snapshotName})`, snapshotSettings);
             } else {
                 await lib.tags.restartSettingsImport();

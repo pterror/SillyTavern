@@ -5,7 +5,6 @@ import type { Alternative, Listed, Ports } from './server.ts';
 import { patchOf } from '@st/server-ui';
 import type { ActionContext, ActionResult, User } from '@st/server-ui';
 
-/** A patch merged as the page merges it: objects key by key, anything else replaced. */
 function merged(held: unknown, change: unknown): unknown {
     const isRecord = (value: unknown): value is Record<string, unknown> =>
         typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -29,14 +28,12 @@ const said = (text: string, nodeId: string | null = null): Alternative => ({
     date: null,
 });
 
-/** In-memory stand-ins for the tree, the card and the count store. */
 function world(listed: (target: Target) => Listed | null, stored: Record<string, number> = {}) {
     const state = {
         stored: { ...stored },
         counted: [] as string[][],
         ops: [] as GreetingOp[],
         refuse: null as string | null,
-        /** Counting each text waits for this, when set. */
         hold: null as Promise<void> | null,
     };
     const ports: Ports = {
@@ -66,17 +63,13 @@ function world(listed: (target: Target) => Listed | null, stored: Record<string,
     const area = alternativesArea(ports);
     const context: ActionContext = { user, session: 's', chat: { tree: '1' }, upload: null };
     const act = (type: string, payload: unknown): Promise<ActionResult> => area.actions[type]!(context, payload);
-    /** The list as read, part by part. */
     const listParts = async () => {
         const parts: ListView[] = [];
         for await (const part of area.views['alternatives.list']!(context) as AsyncIterable<ListView>) parts.push(part);
         return parts;
     };
-    /** The list as it ends up. */
     const list = async () => (await listParts()).at(-1)!;
-    /** A view's parts as they're read: the first at once, the next when asked for. */
     const parts = (key: string) => (area.views[key]!(context) as AsyncIterable<unknown>)[Symbol.asyncIterator]();
-    /** A view as it ends up: its parts, each patch merged into what came before. */
     const whole = async <T>(key: string): Promise<T> => {
         let value: unknown;
         for await (const part of area.views[key]!(context) as AsyncIterable<unknown>) {
@@ -122,16 +115,13 @@ test('a long list comes in parts: the rows around the current one first, then mo
     expect(parts.map((p) => p.complete)).toEqual([false, false, false, true]);
     expect(parts.every((p) => p.total === 1000)).toBe(true);
     expect(parts[0]!.items.map((i) => i.index)).toEqual(Array.from({ length: FIRST_PART }, (_, i) => 580 + i));
-    // Each part has the one before it in it.
     for (const [n, part] of parts.slice(1).entries()) {
         const ids = new Set(part.items.map((i) => i.id));
         expect(parts[n]!.items.every((i) => ids.has(i.id))).toBe(true);
     }
-    // Near the end, the first part is the last rows.
     const end = world(() => swipes(texts.slice(0, 200), 199));
     await end.act('alternatives.open', { target: { message: 'n199' }, tokenizer });
     expect((await end.listParts())[0]!.items.at(-1)!.index).toBe(199);
-    // A short list is one part.
     const short = world(() => swipes(['a', 'b']));
     await short.act('alternatives.open', { target: { message: 'n0' }, tokenizer });
     expect(await short.listParts()).toHaveLength(1);
@@ -222,11 +212,9 @@ test('counts: what the store has comes at once; each miss follows as soon as it 
     await w.list();
     const counts = w.parts('alternatives.counts');
     expect((await counts.next()).value).toEqual({ counts: { n0: 2 } });
-    // Read again while counting: nothing is asked for twice.
     const again = w.parts('alternatives.counts');
     expect((await again.next()).value).toEqual({ counts: { n0: 2 } });
     release();
-    // The counts follow as patches with only what's new (those done close together in one).
     const patches: unknown[] = [];
     for (let next = await counts.next(); next.done !== true; next = await counts.next())
         patches.push(patchOf(next.value)?.value);
@@ -255,7 +243,6 @@ test('closing stops the counting: what is left is not counted', async () => {
     await counts.next();
     await w.act('alternatives.close', {});
     release();
-    // The first one counted was told, and was the last.
     const told: unknown[] = [];
     for (let next = await counts.next(); next.done !== true; next = await counts.next()) told.push(next.value);
     expect(told.length).toBeLessThanOrEqual(1);
@@ -315,13 +302,11 @@ test('a search over many sends what each step found as it finds it, with how far
         checked: SEARCH_STEP,
         matches: { n0: [0, 3], n100: [0, 3] },
     });
-    // The next part has at least the next step's.
     const next = patchOf((await found.next()).value)?.value as { checked: number; matches: Record<string, number[]> };
     expect(next.checked).toBeGreaterThanOrEqual(SEARCH_STEP * 2);
     expect(next.matches).toMatchObject({ n200: [0, 3], n300: [0, 3] });
     expect((await w.matches()).checked).toBe(texts.length);
     expect(Object.keys((await w.matches()).matches!)).toEqual(['n0', 'n100', 'n200', 'n300', 'n400']);
-    // Another search: one still going stops.
     const old = w.parts('alternatives.matches');
     await old.next();
     await w.act('alternatives.search', { query: 'small' });

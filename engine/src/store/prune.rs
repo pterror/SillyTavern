@@ -1,16 +1,3 @@
-//! Subtree deletes (`.plans/2026-10-03-storage-build-path.md` 5b addendum): a message and everything below it go.
-//!
-//! The `subtreeDelete` record is the delete, durable at its commit. Its own derivation does what is bounded by the
-//! tree's positions, not by the subtree: the root leaves its parent's replies, the sessions, remembered positions
-//! and bookmarks inside move to the root's parent (or, for an opening, sessions to the newest other opening;
-//! pinned bookmarks, and following ones with no message to move to, go), and the root is recorded as pending.
-//! Slices in the commit queue then delete the subtree's messages a bounded number at a time, leaves first, and
-//! the last one deletes the root and clears the pending entry. A crash between slices resumes from the pending
-//! entry on open.
-//!
-//! While a root is pending its subtree reads as deleted: it is no reply of its parent, a path stops above it,
-//! search drops its messages, and nothing may be written to them; the tree's stats are marked estimates.
-
 use std::collections::BTreeMap;
 
 use super::StoreError;
@@ -22,32 +9,25 @@ use super::sessions;
 use crate::keyspace::val::{Val, get_u64};
 use crate::log::format::{Record, Value};
 
-/// Per pending root: `[tree, next message to visit + 1, record position, record length]`.
 pub const PRUNE: u64 = 172;
-/// Per (tree, root): the tree's pending roots.
 pub const PRUNE_IN: u64 = 173;
-/// Per tree: how many roots are pending (a counter).
 pub const PRUNE_TREE: u64 = 174;
 
-/// Messages a slice visits (each is visited going down once and deleted once).
 pub const PRUNE_SLICE: usize = 256;
 
 fn bad(what: &str) -> StoreError {
     StoreError::Entry(format!("{what} doesn't decode"))
 }
 
-/// Whether a delete is pending in the tree.
 pub fn pending_in(view: &View, tree: u64) -> Result<bool, StoreError> {
     Ok(counter(view, &key::id(PRUNE_TREE, tree))? > 0)
 }
 
-/// Whether a delete is pending anywhere (for a store opening with some left).
 pub fn any_pending(view: &View) -> Result<bool, StoreError> {
     let p = key::of(PRUNE);
     Ok(!view.scan(&p, &key::prefix_end(&p), 1)?.is_empty())
 }
 
-/// The tree's pending roots.
 pub fn roots(view: &View, tree: u64) -> Result<Vec<u64>, StoreError> {
     let p = key::id(PRUNE_IN, tree);
     view.scan(&p, &key::prefix_end(&p), usize::MAX)?
@@ -59,13 +39,10 @@ pub fn roots(view: &View, tree: u64) -> Result<Vec<u64>, StoreError> {
         .collect()
 }
 
-/// Whether `m` is a pending root.
 pub fn is_root(view: &View, m: u64) -> Result<bool, StoreError> {
     Ok(view.get(&key::id(PRUNE, m))?.is_some())
 }
 
-/// Whether `m` is `r` or below it. Through jump pointers, unless a depth rewrite is under way in the tree (its
-/// jumps may name former ancestors then): through the parents.
 pub fn under(view: &View, tree: u64, r: u64, m: u64) -> Result<bool, StoreError> {
     if sessions::depths_pending(view, tree)? {
         let mut cur = Some(m);
@@ -84,7 +61,6 @@ pub fn under(view: &View, tree: u64, r: u64, m: u64) -> Result<bool, StoreError>
     Ok(sessions::ancestor_or_self(view, r, m, &mut reads)?.unwrap_or(false))
 }
 
-/// Whether message `m` of `tree` is being deleted (it is a pending root or below one).
 pub fn doomed(view: &View, tree: u64, m: u64) -> Result<bool, StoreError> {
     if !pending_in(view, tree)? {
         return Ok(false);
@@ -97,7 +73,6 @@ pub fn doomed(view: &View, tree: u64, m: u64) -> Result<bool, StoreError> {
     Ok(false)
 }
 
-/// Refuses a write naming message `m` of `tree` while it is being deleted.
 pub fn refuse_doomed(view: &View, tree: u64, m: u64) -> Result<(), StoreError> {
     if doomed(view, tree, m)? {
         return Err(StoreError::Refused(format!("message {m} is being deleted")));
@@ -105,8 +80,6 @@ pub fn refuse_doomed(view: &View, tree: u64, m: u64) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Where what is at a message below `r` (a message with `parent`) goes: the parent, else the tree's newest other
-/// opening, else the tree's root (None).
 fn destination(
     view: &View,
     tree: u64,
@@ -126,8 +99,6 @@ fn destination(
     Ok(None)
 }
 
-/// The tree's bookmarks below `r`, each with whether it goes (pinned, or following with no parent of `r` to move
-/// to).
 pub fn bookmarks_below(
     view: &View,
     tree: u64,
@@ -151,7 +122,6 @@ pub fn bookmarks_below(
     Ok(out)
 }
 
-/// `subtreeDelete`: message `message` and everything below it go.
 pub struct SubtreeDelete;
 
 impl Deriver for SubtreeDelete {
@@ -247,7 +217,6 @@ impl Deriver for SubtreeDelete {
     }
 }
 
-/// The first reply of `m`, if any.
 fn first_reply(view: &View, m: u64) -> Result<Option<u64>, StoreError> {
     let p = key::id(key::CHILD, m);
     match view.scan(&p, &key::prefix_end(&p), 1)?.into_iter().next() {
@@ -256,8 +225,6 @@ fn first_reply(view: &View, m: u64) -> Result<Option<u64>, StoreError> {
     }
 }
 
-/// One slice of the first pending delete: from its next message, down to a leaf and deleting it, then on from its
-/// parent, up to `PRUNE_SLICE` visits; the root last. Returns whether one was found.
 pub fn step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
     let pp = key::of(PRUNE);
     let Some((pk, v)) = view.scan(&pp, &key::prefix_end(&pp), 1)?.into_iter().next() else {
@@ -318,10 +285,6 @@ pub fn step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
     Ok(true)
 }
 
-/// What deleting the subtrees of `roots` (in `tree`) drops besides their messages: the bookmarks that go
-/// (`[bookmark, at]`, pinned ones and following ones with nowhere to move) and the state changes hanging on their
-/// messages (`[change, message]`), walking the subtrees. The subtrees of `keep` are left out: they move away first
-/// (a cut's tail).
 #[allow(clippy::type_complexity)]
 pub fn drops(
     view: &View,

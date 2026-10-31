@@ -1,14 +1,3 @@
-//! The library list searched (build path 5d): a page of the characters and groups matching a search's clauses
-//! under the list's filter, in relevance order or any of the list's orders.
-//!
-//! In relevance order the search reads its postings, the list's filter checked per document. The documents every
-//! positive clause matches by a tag name alone score alike (`query::Found::tied`): they follow every match scoring
-//! at least theirs, in the list's own order (as upstream's search kept the list's order among equal scores), read
-//! as a list order is. In a list order, a search with at most √(page · library / READ_WHOLE) matches is read
-//! whole and its matches placed in the order (as listed ids); otherwise the order is walked, each entity checked
-//! against the search, under the list's work cap. The total is the search's (the listed ids' count when read
-//! whole).
-
 use super::StoreError;
 use super::derive::View;
 use super::library::{CHARACTER, GROUP, Scope as LibScope, count_key, counter};
@@ -18,60 +7,39 @@ use crate::search::query::{
     self, After, Clause, Filter, Limits, Matching, Order, StatsCache, TagNames, Take,
 };
 
-/// What reading one match whole costs (its type, fav, filter and sort key read, then sorted) in walk steps (an
-/// entity of the order examined and checked against the search): measured 10-11 at 10^5 synthetic cards, ~150 µs
-/// against ~0.2 µs, rounded down. Matches are read whole when M · READ_WHOLE < P · N / M.
 const READ_WHOLE: u64 = 512;
 
-/// How a searched page is ordered.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ordered {
-    /// Best match first; `after` where the page before ended, and `weights` the idfs it ranked by
-    /// (`Searched::weights`). The list's `Query::sort` orders the tied matches.
     Relevance {
         after: Option<Resume>,
         weights: Option<Vec<f64>>,
     },
-    /// The list's own `Query::sort`.
     List,
 }
 
-/// Where a relevance page ended, by ranks (`query::Hit::rank`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Resume {
-    /// At a hit (rank, entity) that isn't tied.
     Score(f64, u64),
-    /// Among the tied matches of this rank, at the list's cursor.
     Tied(f64, Vec<u8>),
-    /// After the tied matches of this rank.
     Below(f64),
 }
 
 #[derive(Debug, Default)]
 pub struct Searched {
     pub ids: Vec<u64>,
-    /// Relevance order: each hit's score, and its rank (`query::Hit::rank`).
     pub scores: Vec<f64>,
     pub ranks: Vec<f64>,
     pub total: u64,
     pub total_exact: bool,
     pub more: bool,
-    /// List order: the list's cursor.
     pub cursor: Option<Vec<u8>>,
-    /// Relevance order, with `more`: where the next page starts, and the idfs it ranks by
-    /// (`query::Found::weights`).
     pub next: Option<Resume>,
     pub weights: Option<Vec<f64>>,
-    /// The searches' reports of blocks with maxima too high (`query::Found::tighten`).
     pub tighten: Vec<query::Tighten>,
-    /// Relevance order: the walk stopped at the work limit, and the page goes on from here
-    /// (`page_continued`); nothing else of it is set.
     pub partial: Option<query::Partial>,
 }
 
-/// The search filters standing for the list's filter: its ids and the tags it requires may lead the search (each
-/// required tag, and the tags of which one is required, as the carriers of their merge sources), and the rest is
-/// checked per document as a list page checks it.
 pub(super) fn filters(view: &View, q: &Query) -> Result<Vec<Filter>, StoreError> {
     let f = &q.filter;
     let mut out = Vec::new();
@@ -91,7 +59,6 @@ pub(super) fn filters(view: &View, q: &Query) -> Result<Vec<Filter>, StoreError>
 
 #[cfg(test)]
 thread_local! {
-    /// Tests' work limits for this thread's searches, so a small library runs past them as a large one does.
     pub(super) static TEST_LIMITS: std::cell::Cell<Option<Limits>> = const { std::cell::Cell::new(None) };
 }
 
@@ -122,7 +89,6 @@ fn search_query(
     }
 }
 
-/// Characters and groups of the kinds the filter lists.
 fn library_size(view: &View, q: &Query) -> Result<u64, StoreError> {
     let mut n = 0i64;
     for (kind, on) in [(CHARACTER, q.filter.characters), (GROUP, q.filter.groups)] {
@@ -145,8 +111,6 @@ pub fn page(
     page_continued(view, q, clauses, ordered, cache, None)
 }
 
-/// `page`, going on from where a relevance walk stopped at the work limit (`Searched::partial` of the read
-/// before): a page whose walk stops again says so in its own `partial`, and has no ids yet.
 pub fn page_continued(
     view: &View,
     q: &Query,
@@ -155,7 +119,6 @@ pub fn page_continued(
     cache: &StatsCache,
     partial: Option<query::Partial>,
 ) -> Result<Searched, StoreError> {
-    // Every pass of the request plans the same clauses: the tags their names match are found once.
     let names = TagNames::default();
     let filters = filters(view, q)?;
     match ordered {
@@ -166,7 +129,6 @@ pub fn page_continued(
     }
 }
 
-/// `filters` is `filters(view, q)`, read once per request.
 fn by_relevance(
     view: &View,
     q: &Query,
@@ -178,14 +140,12 @@ fn by_relevance(
     cache: &StatsCache,
     names: &TagNames,
 ) -> Result<Searched, StoreError> {
-    // Without a cursor, the page starts `offset` hits in.
     let skip = if after.is_some() {
         0
     } else {
         q.offset as usize
     };
     let want = skip.saturating_add(q.limit);
-    // Matches that aren't tied, from where the page starts among them; or where the walk reading them stopped.
     let from = match (&after, partial) {
         (_, Some(p)) => Some(After::Partial(Box::new(p))),
         (Some(Resume::Score(s, d)), None) => Some(After::Score(*s, *d)),
@@ -200,7 +160,6 @@ fn by_relevance(
         names,
     )?;
     if f.partial.is_some() {
-        // The walk stopped at the work limit: the page isn't known until it goes on.
         return Ok(Searched {
             tighten: f.tighten,
             weights: f.weights,
@@ -229,7 +188,6 @@ fn by_relevance(
         query::tied_count(view, &search_query(filters, clauses, 0, None, None), cache, names)?;
     out.total += tied_total;
     out.total_exact &= tied_exact;
-    // Which of the tied, and of the matches below them, the page may start in.
     let (tied_from, below_only) = match &after {
         Some(Resume::Score(s, _)) if *s < tie => (None, true),
         Some(Resume::Tied(_, c)) => (Some(Some(c.clone())), false),
@@ -274,15 +232,12 @@ fn by_relevance(
             tied.ids.len(),
         ));
         out.ranks.extend(std::iter::repeat_n(tie, tied.ids.len()));
-        // A list page's cursor says more follow (its `more`, that the work cap cut it short).
         out.total_exact &= !tied.more;
         if let Some(c) = tied.cursor {
             out.more = true;
             out.next = Some(Resume::Tied(tie, c));
             return Ok(out);
         }
-        // Past the tied, by their exact number: an estimate (their count past its work, or from the carriers'
-        // counts) would start the matches below them in the wrong place.
         if below_skip > 0 {
             let tied_exact_total = if tied_exact {
                 tied_total
@@ -304,13 +259,11 @@ fn by_relevance(
     Ok(out)
 }
 
-/// Where the next page starts after the page's last hit, when more follow.
 fn resume_at(out: &Searched, more: bool) -> Option<Resume> {
     let (&doc, &rank) = (out.ids.last()?, out.ranks.last()?);
     more.then_some(Resume::Score(rank, doc))
 }
 
-/// `filters` is `filters(view, q)`, read once per request.
 fn by_list(
     view: &View,
     q: &Query,
@@ -325,8 +278,6 @@ fn by_list(
         .cap
         .min((page.saturating_mul(library_size(view, q)?) / READ_WHOLE).isqrt());
     let mut out = Searched::default();
-    // A count first (a word's is its counter); unless it is exact and over `few`, the matches read in id order,
-    // all of them when at most `few`.
     match take {
         Take::Tied => {
             (out.total, out.total_exact) =
@@ -363,7 +314,6 @@ fn by_list(
         out.total_exact = true;
         return Ok(out);
     }
-    // The page checks the list's filter itself.
     let mut clauses_only = search_query(filters, clauses, 0, None, None);
     clauses_only.filters.clear();
     let mut m = Matching::new(view, &clauses_only, cache, take, names)?;

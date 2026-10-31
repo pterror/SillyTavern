@@ -1022,7 +1022,6 @@ function onSeedInput() {
 
 function onScaleInput() {
     const newScale = Number($('#sd_scale').val());
-    // Loading the page re-applies the already-saved value; don't persist a no-op.
     const scaleChanged = newScale !== extension_settings.sd.scale;
     extension_settings.sd.scale = newScale;
     $('#sd_scale_value').val(extension_settings.sd.scale.toFixed(1));
@@ -1033,7 +1032,6 @@ function onScaleInput() {
 
 function onStepsInput() {
     const newSteps = Number($('#sd_steps').val());
-    // Loading the page re-applies the already-saved value; don't persist a no-op.
     const stepsChanged = newSteps !== extension_settings.sd.steps;
     extension_settings.sd.steps = newSteps;
     $('#sd_steps_value').val(extension_settings.sd.steps);
@@ -1044,7 +1042,6 @@ function onStepsInput() {
 
 async function onPromptPrefixInput() {
     const newPromptPrefix = String($('#sd_prompt_prefix').val());
-    // Loading the page re-applies the already-saved value; don't persist a no-op.
     const promptPrefixChanged = newPromptPrefix !== extension_settings.sd.prompt_prefix;
     extension_settings.sd.prompt_prefix = newPromptPrefix;
     if (promptPrefixChanged) {
@@ -1056,7 +1053,6 @@ async function onPromptPrefixInput() {
 
 async function onNegativePromptInput() {
     const newNegativePrompt = String($('#sd_negative_prompt').val());
-    // Loading the page re-applies the already-saved value; don't persist a no-op.
     const negativePromptChanged = newNegativePrompt !== extension_settings.sd.negative_prompt;
     extension_settings.sd.negative_prompt = newNegativePrompt;
     if (negativePromptChanged) {
@@ -1129,7 +1125,6 @@ function onSchedulerChange() {
 
 function onWidthInput() {
     const newWidth = Number($('#sd_width').val());
-    // Loading the page re-applies the already-saved value; don't persist a no-op.
     const widthChanged = newWidth !== extension_settings.sd.width;
     extension_settings.sd.width = newWidth;
     $('#sd_width_value').val(extension_settings.sd.width);
@@ -1140,7 +1135,6 @@ function onWidthInput() {
 
 function onHeightInput() {
     const newHeight = Number($('#sd_height').val());
-    // Loading the page re-applies the already-saved value; don't persist a no-op.
     const heightChanged = newHeight !== extension_settings.sd.height;
     extension_settings.sd.height = newHeight;
     $('#sd_height_value').val(extension_settings.sd.height);
@@ -1313,7 +1307,6 @@ function onHrUpscalerChange() {
 
 function onHrScaleInput() {
     const newHrScale = Number($('#sd_hr_scale').val());
-    // Loading the page re-applies the already-saved value; don't persist a no-op.
     const hrScaleChanged = newHrScale !== extension_settings.sd.hr_scale;
     extension_settings.sd.hr_scale = newHrScale;
     $('#sd_hr_scale_value').val(extension_settings.sd.hr_scale.toFixed(1));
@@ -1324,7 +1317,6 @@ function onHrScaleInput() {
 
 function onDenoisingStrengthInput() {
     const newDenoisingStrength = Number($('#sd_denoising_strength').val());
-    // Loading the page re-applies the already-saved value; don't persist a no-op.
     const denoisingStrengthChanged = newDenoisingStrength !== extension_settings.sd.denoising_strength;
     extension_settings.sd.denoising_strength = newDenoisingStrength;
     $('#sd_denoising_strength_value').val(extension_settings.sd.denoising_strength.toFixed(2));
@@ -1335,7 +1327,6 @@ function onDenoisingStrengthInput() {
 
 function onHrSecondPassStepsInput() {
     const newHrSecondPassSteps = Number($('#sd_hr_second_pass_steps').val());
-    // Loading the page re-applies the already-saved value; don't persist a no-op.
     const hrSecondPassStepsChanged = newHrSecondPassSteps !== extension_settings.sd.hr_second_pass_steps;
     extension_settings.sd.hr_second_pass_steps = newHrSecondPassSteps;
     $('#sd_hr_second_pass_steps_value').val(extension_settings.sd.hr_second_pass_steps);
@@ -2095,7 +2086,6 @@ function ensureElectronHubQualitySelect(models) {
         $select.empty();
 
         if (!qualities || qualities.length === 0) {
-            // Loading the page can re-run this for a model that already has no quality; don't persist a no-op.
             const qualityChanged = extension_settings.sd.electronhub_quality !== undefined;
             extension_settings.sd.electronhub_quality = undefined;
             if (qualityChanged) {
@@ -3108,7 +3098,6 @@ async function generatePicture(initiator, args, trigger, message, callback) {
         }
 
         console.trace(err);
-        // Errors here are usually from prompt text generation, not sendGenerationRequest (which handles its own).
         const reason = err.error?.message || err.message || 'Unknown error';
         const errorText = 'SD prompt text generation failed. ' + reason;
         toastr.error(errorText, 'Image Generation');
@@ -5209,7 +5198,6 @@ async function sdMessageButton($icon, { animate } = {}) {
         return;
     }
 
-    // Message objects are frozen, so build the normalized extra object through updateIn.
     message = context.updateIn(messageId, ['extra'], (e) => {
         const next = { ...(e ?? {}) };
         if (!Array.isArray(next.media)) {

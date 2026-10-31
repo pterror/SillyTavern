@@ -3,9 +3,6 @@ import { testSetup } from './frontent-test-utils.js';
 import { connectLlamaCpp, createCharacter, openCharacter, startLlamaCpp } from './llamacpp-mock.js';
 import { connectOpenAICompat, startOpenAICompat } from './openai-mock.js';
 
-// A quiet prompt's own response length reaches the backend with its request (response_length), and the response
-// length setting stays as it was: it's the server's, and a generation doesn't change it.
-
 test('a quiet prompt with a response length asks the backend for that many tokens, and leaves the setting alone', async ({ page }) => {
     const llama = await startLlamaCpp();
     try {

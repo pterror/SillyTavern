@@ -1,15 +1,9 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// `tag_map` is an upstream export of tags.js that extensions import, read and write. Here it covers the
-// characters and groups extensions are shown (the current character, or the open group and its members), and a
-// write to it reaches the server as assigns and unassigns. A key added
-// or deleted is found when a settings save is asked for, which is what upstream's extensions do after a write.
-
 /** @param {import('@playwright/test').Page} page */
 async function loadApp(page) {
     await testSetup.awaitST({ page });
-    // APP_READY is an auto-fire event: a listener added after it was emitted still runs.
     await page.evaluate(() => {
         window['__appReady'] = false;
         const { eventSource, eventTypes } = window['SillyTavern'].getContext();
@@ -33,7 +27,11 @@ async function api(page, path, body = {}) {
     }, { path, body });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<string>} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
@@ -45,7 +43,10 @@ async function createCharacter(page, name) {
     }, name);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} id */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} id
+ */
 async function createTag(page, id) {
     await api(page, '/api/tags/create', {
         tag: {
@@ -56,14 +57,16 @@ async function createTag(page, id) {
     return id;
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} key @returns {Promise<string[]>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} key
+ * @returns {Promise<string[]>}
+ */
 async function serverTagsOf(page, key) {
     return [...(await api(page, '/api/tags/for', { ids: [key] }))[key] ?? []].sort();
 }
 
 /**
- * Creates the fixture data from a throwaway browser context, so the page under test learns about everything only
- * through its own boot.
  * @param {import('@playwright/test').Browser} browser
  * @param {(page: import('@playwright/test').Page) => Promise<T>} fn
  * @template T
@@ -80,7 +83,6 @@ async function withSetupPage(browser, fn) {
 }
 
 /**
- * Keeps `avatar` from ever reaching the page, so the page doesn't hold it.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -99,7 +101,6 @@ async function hideCharacter(page, avatar) {
 }
 
 /**
- * Makes the character the current one, which is what gives it a `tag_map` entry.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -114,7 +115,7 @@ async function selectCharacter(page, avatar) {
 
 /**
  * @param {import('@playwright/test').Page} page
- * @returns {string[]} every tag assignment write the page sends from now on, as `path body`
+ * @returns {string[]}
  */
 function recordWrites(page) {
     /** @type {string[]} */
@@ -127,9 +128,8 @@ function recordWrites(page) {
 }
 
 /**
- * Runs `fn` in the page with the exported `tag_map`, the way an extension module would use it.
  * @param {import('@playwright/test').Page} page
- * @param {string} fn Body of `(tag_map, arg, saveSettingsDebounced) => ...`
+ * @param {string} fn
  * @param {any} [arg]
  */
 async function withTagMap(page, fn, arg) {
@@ -140,7 +140,6 @@ async function withTagMap(page, fn, arg) {
     }, { fn, arg });
 }
 
-// Long enough for a request the page should not send to have shown up.
 const NO_WRITE_SETTLE_MS = 1500;
 
 test.describe('the tag_map export', () => {
@@ -176,7 +175,6 @@ test.describe('the tag_map export', () => {
         expect(seen.same).toBe(true);
         expect(seen.tagged).toEqual([fixture.tag]);
         expect(seen.isArray).toBe(true);
-        // Held by the page, but not the current character: extensions are not shown it.
         expect(seen.untagged).toBeUndefined();
         expect(seen.missing).toBeUndefined();
         expect(seen.keys).toEqual([fixture.tagged]);
@@ -351,7 +349,6 @@ test.describe('the tag_map export', () => {
         await withTagMap(page, 'delete tag_map[arg.card]; saveSettingsDebounced();', fixture);
 
         await expect.poll(() => serverTagsOf(page, fixture.card)).toEqual([]);
-        // It is still the current character, so it has an entry again.
         expect(await withTagMap(page, 'return tag_map[arg.card];', fixture)).toEqual([]);
     });
 

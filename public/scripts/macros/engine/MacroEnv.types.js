@@ -1,5 +1,3 @@
-/** Typedefs only (no runtime code) so this can be imported for types without creating runtime dependencies. */
-
 /** @typedef {import('./MacroRegistry.js').MacroHandler} MacroHandler */
 /** @typedef {import('./MacroRegistry.js').MacroDefinitionOptions} MacroDefinitionOptions */
 
@@ -37,7 +35,7 @@
  */
 
 /**
- * @typedef {Object} MacroVariableScope One scope of variables (a chat's, or the global ones): variables.js's semantics.
+ * @typedef {Object} MacroVariableScope
  * @property {(name: string, args?: { index?: string|number, key?: string }) => string|number} get
  * @property {(name: string, value: any, args?: { index?: string|number, as?: string }) => any} set
  * @property {(name: string) => string} del
@@ -58,27 +56,26 @@
  */
 
 /**
- * @typedef {Object} MacroEnvState What the macros read of the app, given by whoever evaluates (the page's
- * MacroEnvBuilder, the server's src/macro-substitution.js). A fact left out reads as empty.
- * @property {MacroChatMessage[]} [chat] The chat's messages, oldest first.
- * @property {Record<string, any>} [chatMetadata] The chat's metadata ({{pick}}'s seed, the first message in context).
- * @property {string} [chatId] The chat's id, for {{pick}}'s seed.
+ * @typedef {Object} MacroEnvState
+ * @property {MacroChatMessage[]} [chat]
+ * @property {Record<string, any>} [chatMetadata]
+ * @property {string} [chatId]
  * @property {{ local: MacroVariableScope, global: MacroVariableScope }} [variables]
- * @property {string} [input] What is typed in the message box.
- * @property {number|null} [firstDisplayedMessageId] The first message shown on the page.
+ * @property {string} [input]
+ * @property {number|null} [firstDisplayedMessageId]
  * @property {number} [maxPromptTokens]
  * @property {number} [maxContextTokens]
  * @property {number} [maxResponseTokens]
- * @property {string} [mainApi] The API generating (main_api).
- * @property {string[]} [bannedWords] Where {{banned}} puts each word it bans, for a text-completion request.
- * @property {(key: string) => string} [outlet] A world info outlet's text.
+ * @property {string} [mainApi]
+ * @property {string[]} [bannedWords]
+ * @property {(key: string) => string} [outlet]
  * @property {boolean} [isMobile]
- * @property {number} [utcOffset] The user's offset from UTC in minutes, for the time macros; left out: this process's own.
+ * @property {number} [utcOffset]
  * @property {string} [lastGenerationType]
- * @property {{ names: string[], disabled: string[] }} [extensions] The extensions there are, and those turned off.
- * @property {Record<string, any>} [instruct] The instruct template, when instruct mode is on.
+ * @property {{ names: string[], disabled: string[] }} [extensions]
+ * @property {Record<string, any>} [instruct]
  * @property {{ enabled?: boolean, content?: string }} [sysprompt]
- * @property {Record<string, any>} [context] The context template.
+ * @property {Record<string, any>} [context]
  * @property {boolean} [preferCharacterPrompt]
  */
 

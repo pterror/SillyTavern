@@ -282,7 +282,6 @@ async function initGallery(items, url) {
     gallery.css('height', gallery.parent().css('height'));
 
     await delay(100);
-    // The gallery library sets its own height at some point during population; unset it after so it doesn't stick.
     gallery.css('height', 'unset');
     gallery.nanogallery2('resize');
 }
@@ -316,7 +315,6 @@ async function showCharGallery(deleteModeState = false) {
 
     try {
         deleteModeActive = deleteModeState;
-        // selected_group is only a placeholder here; a character selection always overwrites it below.
         let url = selected_group;
         if (getSelectionState().type === 'character') {
             url = getGalleryFolder(getCurrentCharacter());
@@ -637,7 +635,6 @@ function makeDragImg(id, url) {
         draggableElem.classList.add('galleryImageDraggable');
 
         draggableElem.style.display = 'block';
-        // No padding, unlike other non-zoomed-avatar draggables.
         draggableElem.style.padding = '0';
 
         const closeButton = /** @type {HTMLElement} */ (draggableElem.querySelector('.dragClose'));
@@ -744,7 +741,6 @@ SlashCommandParser.addCommandObject(SlashCommand.fromProps({
 
 async function listGalleryCommand(args) {
     try {
-        // selected_group is only a placeholder here; a character selection always overwrites it below.
         let url = args.char ?? (args.group ? groups.find(it => it.name == args.group)?.id : null) ?? selected_group;
         if (!args.char && !args.group && getSelectionState().type === 'character') {
             url = getGalleryFolder(getCurrentCharacter());

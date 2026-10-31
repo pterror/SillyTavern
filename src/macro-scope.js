@@ -2,29 +2,24 @@ import { readCardContent } from './endpoints/characters.js';
 import { getGroupsByIds } from './endpoints/groups.js';
 
 /**
- * Who a prompt is built for, as the macros and the prompt builders read it: the one place the server reads a
- * character's and a group's names for them.
- */
-
-/**
- * @typedef {object} GroupLike The fields read off a group (getGroupsByIds() leaves its records untyped).
+ * @typedef {object} GroupLike
  * @property {string} [name]
- * @property {string[]} [members] Member avatars.
- * @property {string[]} [disabled_members] Muted member avatars.
+ * @property {string[]} [members]
+ * @property {string[]} [disabled_members]
  */
 
 /**
  * @typedef {object} Speakers
- * @property {string} name2 The character's name; with no character, the group's.
- * @property {Record<string, any> | null} character The character's card, parsed.
- * @property {string[]} groupMembers Every member's name, muted ones too.
- * @property {string[]} groupDisabledMembers The muted members' names.
+ * @property {string} name2
+ * @property {Record<string, any> | null} character
+ * @property {string[]} groupMembers
+ * @property {string[]} groupDisabledMembers
  */
 
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} avatar
- * @returns {Promise<Record<string, any> | null>} Null for a card that isn't there or can't be read.
+ * @returns {Promise<Record<string, any> | null>}
  */
 async function readCard(directories, avatar) {
     try {
@@ -39,8 +34,6 @@ async function readCard(directories, avatar) {
 const nameOf = card => card?.name || card?.data?.name || '';
 
 /**
- * The character (by avatar) and the group (by id) a prompt is built for. A member whose card can't be read is left
- * out.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {{ avatar?: string | null, groupId?: string | null }} who
  * @returns {Promise<Speakers>}

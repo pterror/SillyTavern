@@ -1,17 +1,11 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, holdCharacters } from './frontent-test-utils.js';
 
-// Duplicating a character copies its tags on the server, in the same write as the card, from what the server has.
-// The page sends no tag request of its own, so a copy of the original it holds that is out of date can't decide
-// what the duplicate gets.
-
 /**
- * Loads the app and waits for APP_READY.
  * @param {import('@playwright/test').Page} page
  */
 async function loadApp(page) {
     await testSetup.awaitST({ page });
-    // APP_READY is an auto-fire event: a listener added after it was emitted still runs.
     await page.evaluate(() => {
         window['__appReady'] = false;
         const { eventSource, eventTypes } = window['SillyTavern'].getContext();
@@ -35,7 +29,11 @@ async function api(page, path, body = {}) {
     }, { path, body });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<string>} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
@@ -47,7 +45,10 @@ async function createCharacter(page, name) {
     }, name);
 }
 
-/** @param {string} id @param {string} name */
+/**
+ * @param {string} id
+ * @param {string} name
+ */
 function tagDefinition(id, name) {
     return {
         id, name, folder_type: 'NONE', filter_state: 'UNDEFINED', sort_order: 1000,
@@ -55,19 +56,31 @@ function tagDefinition(id, name) {
     };
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<string>} tag id */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
 async function createTag(page, name) {
     const id = `tag-copy-${name}`;
     await api(page, '/api/tags/create', { tag: tagDefinition(id, name) });
     return id;
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} key @returns {Promise<string[]>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} key
+ * @returns {Promise<string[]>}
+ */
 async function serverTagsOf(page, key) {
     return (await api(page, '/api/tags/for', { ids: [key] }))[key];
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar @returns {Promise<string[] | null>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ * @returns {Promise<string[] | null>}
+ */
 async function residentTagsOf(page, avatar) {
     return page.evaluate(async (avatar) => {
         const { charactersStore } = await import('/scripts/character-store.js');
@@ -77,8 +90,6 @@ async function residentTagsOf(page, avatar) {
 }
 
 /**
- * Creates the fixture data from a throwaway browser context, so the page under test learns about everything only
- * through its own boot.
  * @param {import('@playwright/test').Browser} browser
  * @param {(page: import('@playwright/test').Page) => Promise<T>} fn
  * @template T
@@ -95,7 +106,6 @@ async function withSetupPage(browser, fn) {
 }
 
 /**
- * Keeps changes to `avatar` from reaching the page.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -114,10 +124,9 @@ async function hideChangesOf(page, avatar) {
 }
 
 /**
- * Duplicates `avatar` the way the character panel's Duplicate button does, without its confirmation popup.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
- * @returns {Promise<string>} The duplicate's avatar.
+ * @returns {Promise<string>}
  */
 async function duplicate(page, avatar) {
     return page.evaluate(async (avatar) => {
@@ -128,7 +137,7 @@ async function duplicate(page, avatar) {
 
 /**
  * @param {import('@playwright/test').Page} page
- * @returns {{ path: string, body: any }[]} Filled with every tag write the page sends from now on.
+ * @returns {{ path: string, body: any }[]}
  */
 function recordTagWrites(page) {
     /** @type {{ path: string, body: any }[]} */
@@ -143,8 +152,6 @@ function recordTagWrites(page) {
 test.describe('Duplicating a character copies its tags on the server', () => {
     test.setTimeout(180000);
 
-    // A route handler can still be waiting on a request the page sent near the end of a test; drop the routes so
-    // teardown doesn't fail it.
     test.afterEach(async ({ page }) => {
         await page.unrouteAll({ behavior: 'ignoreErrors' });
     });

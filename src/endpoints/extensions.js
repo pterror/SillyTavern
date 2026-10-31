@@ -485,8 +485,6 @@ router.get('/discover', function (request, response) {
         fs.mkdirSync(globalThis.GLOBAL_EXTENSIONS_PATH);
     }
 
-    // Skips folders without manifest.json (e.g. leftovers from a manual delete) so the client doesn't
-    // report a ghost extension.
     const hasManifest = (parentDirectory, folder) => {
         const manifestExists = fs.existsSync(path.join(parentDirectory, folder, 'manifest.json'));
         if (!manifestExists) {

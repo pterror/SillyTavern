@@ -1,4 +1,3 @@
-// File-derived dates retain fractional milliseconds through loads, updates, ordering and reopen.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';

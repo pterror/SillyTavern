@@ -1,10 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import path from 'node:path';
 
-// Which group a group chat route acts on: `group_id` when given, else the group whose chat the id names (the stock API
-// shape: `/group/get` and `/group/save` are handed `group.chat_id` and nothing else). Labels are free text and may
-// repeat, so with no `group_id` a bare label names no chat.
-
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
 /** @type {typeof import('./converted-user.fixture.js')} */
@@ -50,8 +46,7 @@ async function post(urlPath, body) {
 }
 
 /**
- * Groups, each with chats (bookmarks) labelled as given, each chat one message naming it.
- * @returns {Promise<Record<string, string>>} Each chat's compat id, by `<group>/<label>`.
+ * @returns {Promise<Record<string, string>>}
  */
 async function seedGroups(groups) {
     /** @type {Record<string, string>} */
@@ -67,7 +62,6 @@ async function seedGroups(groups) {
     return ids;
 }
 
-/** The messages `/group/get` answers. */
 async function messagesOf(body) {
     const { status, body: chat } = await post('/api/chats/group/get', body);
     expect(status).toBe(200);

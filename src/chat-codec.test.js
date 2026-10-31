@@ -1,4 +1,3 @@
-// A message stored as the engine's values comes back byte for byte (build path 5b, the message shape).
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -16,7 +15,6 @@ const alice = { id: 7n, name: 'Alice', avatar: 'alice.png' };
 const bot = { id: 8n, name: 'Bot', avatar: 'bot.png' };
 const speakers = new Map([[7n, alice], [8n, bot]]);
 
-/** [message, speaker] pairs: the shapes the page, the server and upstream's page make, and odd ones. */
 const corpus = [
     [{ name: 'User', is_user: true, is_system: false, send_date: new Date(t - 30).toISOString(), mes: 'Hi there', extra: { isSmallSys: false }, force_avatar: '/thumbnail?type=persona&file=user.png' }, null],
     [{ name: 'Bot', is_user: false, mes: 'Hello', extra: {}, send_date: t, gen_started: t - 1000, gen_finished: t }, bot],
@@ -45,14 +43,12 @@ for (const [name, engine] of Object.entries({ native: loadEngine().binding, wasm
             const json = decodeMessage(stored[i], id => speakers.get(id) ?? null);
             assert.equal(json, JSON.stringify(message), `message ${i}`);
         }
-        // A speaker renamed: the messages that used the name it had follow it; one that held its own name keeps it.
         const renamed = id => (id === 7n ? { ...alice, name: 'Alicia', avatar: 'alicia.png' } : speakers.get(id) ?? null);
         const four = JSON.parse(decodeMessage(stored[4], renamed));
         assert.equal(four.name, 'Alicia');
         assert.equal(four.original_avatar, 'alicia.png');
         assert.equal(four.force_avatar, '/thumbnail?type=avatar&file=alicia.png');
         assert.equal(JSON.parse(decodeMessage(stored[5], renamed)).name, 'Old name');
-        // The usual messages store no order and no name; their flags take one byte.
         for (const i of [0, 1, 2, 4]) {
             const enc = encodeMessage(corpus[i][0], t + i, corpus[i][1]);
             assert.ok(enc.flags < 128 || i === 4, `flags of ${i}: ${enc.flags}`);

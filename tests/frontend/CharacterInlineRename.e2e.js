@@ -1,10 +1,10 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-// The character's name at the top of its info renames it in place: the pen beside it, or a click on it, turns
-// it into a text box; Enter renames, past messages showing the new name too, without asking; Escape doesn't.
-
-/** @param {import('@playwright/test').Page} page @param {string} name */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ */
 async function createAndOpen(page, name) {
     const avatar = await page.evaluate(async (name) => {
         // @ts-ignore

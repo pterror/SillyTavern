@@ -1,22 +1,8 @@
-/**
- * A search string as the engine's clauses (`Store.search`, `Store.librarySearch`): words and phrases, each over
- * some fields, maybe negated.
- *
- * Tokens are split on whitespace, but a `"quoted phrase"` (with a `label:` or `-label:` directly before it) stays
- * one token, and so does an unclosed quote with everything after it. A closed quote's phrase is `quoted`: its last
- * word is matched whole even when it ends the query; an unclosed one's last word is a prefix, as a last word is.
- * `label:value` restricts a clause to the label's fields, `-label:value` excludes what it matches; a label the
- * scope doesn't know is part of the word.
- */
-
-/** Library fields, in the engine's `LIBRARY_FIELDS` order. */
 export const LIBRARY_FIELD = Object.freeze({
     name: 0, description: 1, mes_example: 2, scenario: 3, personality: 4, first_mes: 5, creator_notes: 6,
     creator: 7, tags: 8, alternate_greetings: 9, members: 10, id: 11,
 });
 
-/** The library's labels: today's characters and groups index labels, on the engine's fields. A `tag:` clause is a
- * tag membership filter (the cards carrying a tag whose name it matches). */
 export const LIBRARY_LABELS = Object.freeze({
     name: [LIBRARY_FIELD.name],
     tag: [LIBRARY_FIELD.tags],
@@ -39,9 +25,7 @@ export const LIBRARY_LABELS = Object.freeze({
     id: [LIBRARY_FIELD.id],
 });
 
-/**
- * @typedef {{ text: string, fields?: number[], negate: boolean, quoted: boolean }} Clause
- */
+/** @typedef {{ text: string, fields?: number[], negate: boolean, quoted: boolean }} Clause */
 
 /**
  * @param {string} search
@@ -69,7 +53,6 @@ export function searchClauses(search, labels = {}) {
 }
 
 /**
- * A cursor's weight list (`<idf>,<idf>,…`) as numbers; null when one isn't a finite number.
  * @param {string} list
  * @returns {number[] | null}
  */
@@ -79,8 +62,6 @@ export function cursorWeights(list) {
 }
 
 /**
- * The `:<idf>,<idf>,…` a cursor ends with when the engine's `next` has `weights` (each as `Number#toString` writes
- * it, which reads back exactly), else nothing.
  * @param {{ weights?: number[] }} next
  * @returns {string}
  */

@@ -123,19 +123,13 @@ export function importRisuSprites(directories, data, avatarFileName = null) {
 }
 
 /**
- * Downloads one Chub expression pack's images into a sprites folder. Detached/best-effort - the
- * caller doesn't await this, so a character with no pack, or one whose images fail to fetch,
- * imports exactly as it would have otherwise.
- * @param {string} spritesPath Resolved sprites folder (already confirmed to exist as a directory)
- * @param {string} label Human-readable label for log lines (character name, optionally "name/altKey")
- * @param {Record<string, unknown>} expressionsMap Emotion label -> value, per ChubExpressionPack.expressions
+ * @param {string} spritesPath
+ * @param {string} label
+ * @param {Record<string, unknown>} expressionsMap
  */
 async function downloadChubExpressionPack(spritesPath, label, expressionsMap) {
     const existingLabels = new Set(fs.readdirSync(spritesPath).map(f => path.parse(f).name));
 
-    // Only a plain http(s) URL is fetchable directly. Some packs may carry a bare filename meant
-    // to be resolved against the pack's `compressed` zip instead (unconfirmed against a real
-    // sample so far) - those are skipped rather than guessed at.
     const entries = Object.entries(expressionsMap)
         .filter(([, value]) => typeof value === 'string' && /^https?:\/\//.test(value));
 
@@ -157,10 +151,6 @@ async function downloadChubExpressionPack(spritesPath, label, expressionsMap) {
                 continue;
             }
             const buffer = Buffer.from(await result.arrayBuffer());
-            // Real Chub data mixes .png/.webp/etc within the same pack - keep the source
-            // extension (default .png only if the URL's own path has none) so the file's
-            // extension matches its actual bytes, matching how /get's mime.lookup(file) later
-            // identifies it as an image by that same extension.
             const sourceExt = path.extname(new URL(url).pathname) || '.png';
             const pathToFile = path.join(spritesPath, sanitize(`${emotion}${sourceExt}`));
             writeFileAtomicSync(pathToFile, buffer);
@@ -171,11 +161,10 @@ async function downloadChubExpressionPack(spritesPath, label, expressionsMap) {
 }
 
 /**
- * Ensures a sprites folder exists and is a directory, creating it if needed.
  * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} name Character name, optionally "name/subfolder"
+ * @param {string} name
  * @param {boolean} isSubfolder
- * @returns {string | null} The resolved path, or null if invalid/not a directory
+ * @returns {string | null}
  */
 function ensureSpritesPath(directories, name, isSubfolder) {
     const spritesPath = getSpritesPath(directories, name, isSubfolder);
@@ -192,26 +181,9 @@ function ensureSpritesPath(directories, name, isSubfolder) {
 }
 
 /**
- * Imports Chub expression pack(s) - CCv2 extensions.chub.expressions (the primary/default pack)
- * and extensions.chub.alt_expressions (a map of named alternate packs, each shaped the same way)
- * - per https://github.com/malfoyslastname/character-card-spec-v2. Each pack is a map of emotion
- * label to an individual image URL. Detached/best-effort: fires background network fetches and
- * does not await them, so it never blocks or fails the character import itself. Doesn't
- * distinguish a pack's is_default (confirmed unreliable as a "generic placeholder vs bespoke art"
- * signal) - whatever the card actually carries is what gets imported, same as any other field.
- *
- * The primary pack goes into the character's own sprites folder; each alt pack goes into its own
- * "name/altKey" subfolder (the same subfolder convention /spriteoverride and /uploadsprite's
- * folder= already use), so multiple packs on one character don't collide.
- *
- * Same folder-identity preference as importRisuSprites() above: keyed by the character's eventual
- * avatar identity when the caller has minted one, falling back to display name only when it
- * doesn't - matching getSpriteFolderName()'s runtime resolution order.
- *
- * @param {import('../users.js').UserDirectoryList} directories User directories
- * @param {object} data Character data (V2/V3 spec)
- * @param {string | null} [avatarFileName] The character's eventual avatar identity (id, no extension), once the
- * caller knows it. See importRisuSprites() for why this takes priority over the display name.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {object} data
+ * @param {string | null} [avatarFileName]
  * @returns {void}
  */
 export function importChubExpressions(directories, data, avatarFileName = null) {
@@ -224,7 +196,7 @@ export function importChubExpressions(directories, data, avatarFileName = null) 
 
         const folderName = avatarFileName || name;
 
-        /** @type {[string, string, Record<string, unknown>][]} [spritesPath, label, expressionsMap] jobs, resolved synchronously up front so any invalid path is caught before kicking off network work. */
+        /** @type {[string, string, Record<string, unknown>][]} */
         const jobs = [];
 
         const primaryExpressions = chubExt.expressions?.expressions;
@@ -247,8 +219,6 @@ export function importChubExpressions(directories, data, avatarFileName = null) 
             return;
         }
 
-        // Detached on purpose - see doc comment above. Errors are logged, never thrown upward.
-        // Sequential across packs (not Promise.all) to keep concurrent outbound fetches bounded.
         (async () => {
             for (const [spritesPath, label, expressionsMap] of jobs) {
                 await downloadChubExpressionPack(spritesPath, label, expressionsMap);
@@ -260,19 +230,8 @@ export function importChubExpressions(directories, data, avatarFileName = null) 
 }
 
 /**
- * Downloads any Chub lorebooks linked to a locally-imported character (as opposed to embedded
- * in the card) and writes them into the user's worlds directory. The live /importURL and
- * /importUUID paths surface this same data (`definition.extensions.chub.related_lorebooks`, see
- * content-manager.js's downloadChubCharacter()) as an X-Related-Lorebook-Paths response header
- * for the client to fetch one-by-one via /importChubLorebookByPath - there is no such round trip
- * available mid file-import, so this downloads and persists them directly instead, the same way
- * importChubExpressions() above downloads a card's embedded expression packs during local import.
- *
- * Detached/best-effort like importChubExpressions(): fires background network fetches and does
- * not await them, so it never blocks or fails the character import itself.
- *
- * @param {import('../users.js').UserDirectoryList} directories User directories
- * @param {object} data Character data (V2/V3 spec)
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {object} data
  * @returns {void}
  */
 export function importChubRelatedLorebooks(directories, data) {
@@ -295,8 +254,6 @@ export function importChubRelatedLorebooks(directories, data) {
             return;
         }
 
-        // Detached on purpose - see doc comment above. Errors are logged, never thrown upward.
-        // Sequential (not Promise.all) to keep concurrent outbound fetches bounded.
         (async () => {
             for (const lorebookPath of relatedLorebookPaths) {
                 try {
@@ -348,12 +305,6 @@ router.get('/get', function (request, response) {
     return response.send(sprites);
 });
 
-/**
- * Lists every existing sprite/expression-pack folder name, for autocomplete on the folder=/name=
- * arguments of the sprite-related slash commands. Every subdirectory of directories.characters
- * is a sprite folder (character files themselves are flat .png/.json, never subdirectories), so
- * this is a plain directory listing - one level of subfolder overrides included as "parent/child".
- */
 router.get('/folders', function (request, response) {
     const folders = [];
     try {
@@ -372,11 +323,6 @@ router.get('/folders', function (request, response) {
     return response.send(folders);
 });
 
-/**
- * Renames an entire sprite/expression-pack folder (as opposed to /delete, which removes one
- * sprite by label). Refuses to clobber an existing folder at the destination - the caller must
- * delete it first if that's really what they want.
- */
 router.post('/rename-folder', (request, response) => {
     const oldName = String(request.body.oldName || '');
     const newName = String(request.body.newName || '');
@@ -408,10 +354,6 @@ router.post('/rename-folder', (request, response) => {
     }
 });
 
-/**
- * Deletes an entire sprite/expression-pack folder (as opposed to /delete, which removes one
- * sprite by label).
- */
 router.post('/delete-folder', (request, response) => {
     const name = String(request.body.name || '');
 

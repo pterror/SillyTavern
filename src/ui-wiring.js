@@ -28,15 +28,9 @@ import { textMatches } from './text-matches.js';
 import { getEngine } from '../engine/load.js';
 import { hashGreetingText, opAppend, opDelete, opEdit, opMove, opSetDefault, opUnsetDefaultByHash } from './greeting-ops.js';
 
-/**
- * The new code's server side (packages/server-ui) over the old server: each port an area declares is implemented
- * here with old code, so the packages never import it.
- */
-
 /** @typedef {import('@st/server-ui').User} User */
 /** @typedef {import('@st/server-ui').ViewContext} ViewContext */
 
-/** What a chat's background may be stored as (not svg: it can carry script, and user images are served as they are). */
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'apng', 'bmp', 'avif']);
 
 const LIST_KEY = 'chat_backgrounds';
@@ -52,7 +46,6 @@ const directoriesOf = user => /** @type {any} */ (user.directories);
 const backgroundPath = file => path.posix.join('backgrounds', file);
 
 /**
- * The open chat of a tab: its tree, and where its session is in it.
  * @param {ViewContext} context
  */
 async function openChat(context) {
@@ -65,8 +58,6 @@ async function openChat(context) {
 }
 
 /**
- * A new background's metadata (its color, shape, whether it's animated), made now so the list has it. The file is
- * stored whether or not this works (as upstream's upload route); a background without it lists without it.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} file
  */
@@ -187,7 +178,6 @@ const backgroundPorts = {
             const directories = directoriesOf(context.user);
             const speaker = (await chat.store.people.speakers([chat.tree])).get(chat.tree);
             const [key] = await chat.store.lib.store.libraryKeys([chat.tree]);
-            // Upstream's folder: the character's name, or the group's id.
             const folder = sanitize(speaker?.name || key?.key || 'chat');
             const extension = path.extname(upload.name).toLowerCase();
             if (!IMAGE_EXTENSIONS.has(extension.slice(1))) throw new Error(`Not an image to keep: ${upload.name}`);
@@ -215,21 +205,16 @@ const backgroundPorts = {
     },
 };
 
-/** The backgrounds' views (packages/areas/backgrounds/protocol.ts). */
 export const BACKGROUND_VIEWS = ['backgrounds', 'backgrounds.chat'];
 
-/** The settings' view (packages/areas/settings/protocol.ts). */
 export const SETTINGS_VIEWS = ['settings'];
 
 /**
- * The settings document's context for a chat's owner.
  * @param {import('@st/protocol').ChatOwner | null} owner
  */
 const contextOf = owner => ({ avatar: owner && 'avatar' in owner ? owner.avatar : null, groupId: owner && 'group' in owner ? owner.group : null });
 
 /**
- * Keeps the model list a chat completion status answer carries, and pushes the settings view when it changed (its
- * limits may have).
  * @param {import('express').Request} request
  * @param {import('express').Response} response
  * @param {import('express').NextFunction} next
@@ -269,21 +254,16 @@ const settingsPorts = {
         return key.type === TYPE.group ? { group: key.key } : { avatar: key.key };
     },
     models: (user, source) => modelListOf(user.directories, source),
-    // The chat completion defaults the old page and the server's generations fill settings from.
     defaults: () => ({ oai_settings: chatCompletionDefaults }),
 };
 
-/** The alternatives' views (packages/areas/alternatives/protocol.ts). */
 export const ALTERNATIVES_VIEWS = ['alternatives.list', 'alternatives.counts', 'alternatives.matches'];
 
-/** How many texts are counted at once. */
 const COUNTING_AT_ONCE = 2;
 
-/** Every alternative there is: an opening list is read whole. */
 const WHOLE = { offset: 0, limit: Number.MAX_SAFE_INTEGER };
 
 /**
- * A tab's open chat's tree, owner and session.
  * @param {ViewContext} context
  */
 async function chatOfTab(context) {
@@ -296,8 +276,7 @@ async function chatOfTab(context) {
 }
 
 /**
- * An alternative's fields as the area takes them.
- * @param {Record<string, any>} entry alternativeEntry()'s.
+ * @param {Record<string, any>} entry
  * @returns {import('@st/alternatives/server').Alternative}
  */
 const alternativeOf = entry => ({
@@ -310,7 +289,6 @@ const alternativeOf = entry => ({
 });
 
 /**
- * The connection's tokenizer and its identity in the token tables (null: its counts aren't stored).
  * @param {User} user
  * @param {import('@st/alternatives/protocol').TokenizerState} tokenizer
  */
@@ -320,7 +298,6 @@ async function tokenizerOf(user, tokenizer) {
 }
 
 /**
- * A card greeting operation, as the greeting routes run it.
  * @param {import('@st/alternatives/protocol').GreetingOp} op
  * @returns {(model: import('./greeting-list.js').GreetingsModel) => any}
  */
@@ -386,14 +363,12 @@ const alternativesPorts = {
                 return;
             }
             const counter = await opened.storedCounter();
-            // A few at a time (a remote tokenizer is a request each), each told as soon as it's counted.
             let next = 0;
             let stopped = false;
             const worker = async () => {
                 for (let i = next++; i < texts.length && !stopped; i = next++) {
                     const text = texts[i];
                     if (!each(i, text === '' ? 0 : await counter.countText(text).catch(() => null))) stopped = true;
-                    // A local tokenizer counts on this thread: what else is waiting (a search's next step) runs between.
                     await new Promise(resolve => setImmediate(resolve));
                 }
             };
@@ -418,7 +393,6 @@ export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(setti
 });
 
 /**
- * The user a request is (what auth put on it), as the new code takes it.
  * @param {import('express').Request} request
  * @returns {User}
  */

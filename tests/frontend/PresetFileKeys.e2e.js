@@ -1,8 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// What a saved preset or template file holds: its object less the keys that aren't a preset's, and for a text API
-// the response length and context size.
 test.describe('Preset files', () => {
     test.beforeEach(testSetup.awaitST);
 

@@ -258,12 +258,6 @@ async function sendClaudeRequest(request, response, persist, warnings = null, on
     try {
         const controller = stoppableController(response);
         request.socket.removeAllListeners('close');
-        // A raw-action (persisted) generation deliberately keeps its upstream request running after
-        // the client disconnects, instead of aborting it here - same reasoning/precedent as
-        // text-completions.js's own `/generate` route (search that file for this exact comment) -
-        // this is what lets GET /generate/resume/:id serve a live continuation rather than a
-        // truncated partial. Every `controller.abort()` call in this file guarded by `if (persist)
-        // return;`/`if (!persist)` follows this same rule.
         request.socket.on('close', function () {
             if (persist) return;
             controller.abort();
@@ -324,7 +318,6 @@ async function sendClaudeRequest(request, response, persist, warnings = null, on
             }
         }
 
-        // Fable 5.1 and Opus 5.5 reject forced tools, but support native JSON outputs.
         if (request.body.json_schema) {
             if (useNativeJsonOutput) {
                 requestBody.output_config = {
@@ -444,17 +437,6 @@ async function sendClaudeRequest(request, response, persist, warnings = null, on
         onDispatched?.();
 
         if (request.body.stream) {
-            // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
-            // accumulate the real reply text for persistence when `persist` is set - the compact re-encoding itself always
-            // happens; a falsy `persist` only skips persistence (see
-            // `forwardAndPersistCompactStream()`'s own doc comment above for the full teeing mechanism).
-            // Claude's SSE stream is a sequence of named events (`message_start`/`content_block_start`/
-            // `content_block_delta`/`ping`/`message_delta`/`message_stop`, etc) whose payload JSON
-            // itself carries a matching `type` field - only `content_block_delta` events whose own
-            // `delta.type === 'text_delta'` are real reply text; every other event/delta type
-            // (`thinking_delta` for extended-thinking output, `input_json_delta` for tool-call
-            // argument streaming, `citations_delta`, and every non-`content_block_delta` event type)
-            // is correctly ignored, so thinking/tool-call content is never mistaken for the reply.
             await forwardAndPersistCompactStream(generateResponse, response, persist,
                 json => (json?.type === 'content_block_delta' && json?.delta?.type === 'text_delta') ? json.delta.text : undefined,
                 json => json?.delta?.thinking || undefined, warnings);
@@ -472,13 +454,6 @@ async function sendClaudeRequest(request, response, persist, warnings = null, on
             // Wrap it back to OAI format + save the original content
             const reply = { choices: [{ 'message': { 'content': responseText } }], content: generateResponseJson.content };
 
-            // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
-            // no-op otherwise). The Messages API's `content` array can hold multiple block types
-            // alongside each other (e.g. a `type: 'thinking'` block from extended thinking, or
-            // `type: 'tool_use'`) - unlike `responseText` above (which only ever reads `content[0]`,
-            // pre-existing client-response behavior left untouched here), persistence must extract
-            // EVERY real `type: 'text'` block (there can be more than one) and none of the others, so
-            // thinking/tool-call content is never persisted as if it were the reply.
             const persistedText = Array.isArray(generateResponseJson?.content)
                 ? generateResponseJson.content.filter(block => block?.type === 'text').map(block => block.text).join('')
                 : '';
@@ -801,18 +776,6 @@ async function sendMakerSuiteRequest(request, response, persist, warnings = null
 
         if (stream) {
             try {
-                // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
-                // accumulate the real reply text for persistence when `persist` is set - the compact re-encoding itself always
-                // happens; a falsy `persist` only skips persistence (see
-                // `forwardAndPersistCompactStream()`'s own doc comment above). Each `alt=sse` `data:` event
-                // is a real, full GenerateContentResponse-shaped JSON payload (the same shape as the
-                // non-streaming `generateResponseJson` parsed below), just carrying that CHUNK's own
-                // incremental `candidates[0].content.parts` rather than the whole reply - so the exact
-                // same `!part.thought` filter this function's own non-streaming branch already applies
-                // (see `responseText` below) is reused here too, excluding Gemini's own "thought"/
-                // reasoning parts from the persisted text. Parts within a single chunk are joined with
-                // '' (not '\n\n', unlike the non-streaming case below): a streamed chunk's parts are
-                // adjacent fragments of ONE ongoing chunk of text, not separate paragraphs.
                 await forwardAndPersistCompactStream(generateResponse, response, persist, json => {
                     const parts = json?.candidates?.[0]?.content?.parts;
                     return Array.isArray(parts) ? parts.filter(part => !part.thought).map(part => part.text ?? '').join('') : undefined;
@@ -847,8 +810,6 @@ async function sendMakerSuiteRequest(request, response, persist, warnings = null
             const responseContent = candidates[0].content ?? candidates[0].output;
             const functionCall = (candidates?.[0]?.content?.parts ?? []).some(part => part.functionCall);
             const inlineData = (candidates?.[0]?.content?.parts ?? []).some(part => part.inlineData);
-            // Pass the object raw, not a pre-formatted util.inspect() dump - inspect() ran unconditionally
-            // even when minLogLevel gates console.debug down to a no-op.
 
             const responseText = typeof responseContent === 'string' ? responseContent : responseContent?.parts?.filter(part => !part.thought)?.map(part => part.text)?.join('\n\n');
             if (!responseText && !functionCall && !inlineData) {
@@ -860,10 +821,6 @@ async function sendMakerSuiteRequest(request, response, persist, warnings = null
             // Wrap it back to OAI format (responseContent includes thought signatures in parts array)
             const reply = { choices: [{ 'message': { 'content': responseText } }], responseContent };
 
-            // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
-            // no-op otherwise). Reuses `responseText` as-is - it's already computed above with the
-            // exact same `!part.thought` filter this persistence needs (Gemini's own "thought"/
-            // reasoning parts excluded), so no separate extraction is needed here.
             if (persist) {
                 const persisted = await persistAssistantReply(persist, responseText ?? '', { data: reply });
                 attachStoredReply(reply, persisted);
@@ -951,11 +908,6 @@ async function sendAI21Request(request, response, persist, warnings = null, onDi
         const generateResponse = await fetch(API_AI21 + '/chat/completions', options);
         onDispatched?.();
         if (request.body.stream) {
-            // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
-            // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
-            // persistence when `persist` is set - the compact re-encoding itself always happens;
-            // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
-            // own doc comment above).
             await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content, null, warnings);
         } else {
             if (!generateResponse.ok) {
@@ -966,9 +918,6 @@ async function sendAI21Request(request, response, persist, warnings = null, onDi
             }
             const generateResponseJson = await generateResponse.json();
 
-            // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
-            // no-op otherwise). Real, verified OpenAI-Chat-Completions-shaped body - see this
-            // function's own doc comment above.
             if (persist) {
                 const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '', { data: generateResponseJson });
                 attachStoredReply(generateResponseJson, persisted);
@@ -1068,11 +1017,6 @@ async function sendMistralAIRequest(request, response, persist, warnings = null,
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
         onDispatched?.();
         if (request.body.stream) {
-            // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
-            // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
-            // persistence when `persist` is set - the compact re-encoding itself always happens;
-            // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
-            // own doc comment above).
             await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content,
                 json => json.choices?.find(choice => choice?.delta?.content?.[0]?.thinking)?.delta?.content?.[0]?.thinking?.[0]?.text || undefined, warnings);
         } else {
@@ -1084,9 +1028,6 @@ async function sendMistralAIRequest(request, response, persist, warnings = null,
             }
             const generateResponseJson = await generateResponse.json();
 
-            // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
-            // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
-            // function's own doc comment above.
             if (persist) {
                 const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '', { data: generateResponseJson });
                 attachStoredReply(generateResponseJson, persisted);
@@ -1204,15 +1145,6 @@ async function sendCohereRequest(request, response, persist, warnings = null, on
         if (request.body.stream) {
             const stream = await fetch(apiUrl, config);
             onDispatched?.();
-            // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
-            // accumulate the real reply text for persistence when `persist` is set - the compact re-encoding itself always
-            // happens; a falsy `persist` only skips persistence (see
-            // `forwardAndPersistCompactStream()`'s own doc comment above). Cohere v2's SSE events carry their
-            // own named `type` field (`message-start`/`content-start`/`content-delta`/`tool-plan-delta`/
-            // `tool-call-start`/.../`message-end`, etc) - only `content-delta`/`tool-plan-delta` events'
-            // own `delta.message.content.text` are real reply-text chunks (see this function's own doc
-            // comment above for exactly where this shape is verified), so every other event type is
-            // correctly ignored.
             await forwardAndPersistCompactStream(stream, response, persist, json =>
                 (typeof json?.delta === 'object' && typeof json?.delta?.message === 'object' && ['content-delta', 'tool-plan-delta'].includes(json?.type))
                     ? (json.delta.message.content?.text ?? '')
@@ -1228,10 +1160,6 @@ async function sendCohereRequest(request, response, persist, warnings = null, on
             }
             const generateResponseJson = await generateResponse.json();
 
-            // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
-            // no-op otherwise). See this function's own doc comment above for exactly where this shape
-            // (message.content[] filtered to type: 'text', falling back to message.tool_plan for a
-            // tool-call-only reply) was verified.
             if (persist) {
                 const contentText = Array.isArray(generateResponseJson?.message?.content)
                     ? generateResponseJson.message.content.filter(block => block?.type === 'text').map(block => block.text ?? '').join('')
@@ -1361,14 +1289,6 @@ async function sendDeepSeekRequest(request, response, persist, warnings = null, 
         onDispatched?.();
 
         if (request.body.stream) {
-            // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
-            // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
-            // persistence when `persist` is set - the compact re-encoding itself always happens;
-            // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
-            // own doc comment above).
-            // Deliberately reads ONLY `delta.content`, never `delta.reasoning_content` (DeepSeek
-            // reasoner models' separate reasoning-output field - see this function's own doc comment
-            // above), so reasoning is never persisted as if it were the reply.
             await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content,
                 json => json.choices?.find(choice => choice?.delta?.reasoning_content)?.delta?.reasoning_content || undefined, warnings);
         } else {
@@ -1380,10 +1300,6 @@ async function sendDeepSeekRequest(request, response, persist, warnings = null, 
             }
             const generateResponseJson = await generateResponse.json();
 
-            // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
-            // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
-            // function's own doc comment above. Deliberately reads ONLY `message.content`, never
-            // `message.reasoning_content`.
             if (persist) {
                 const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '', { data: generateResponseJson });
                 attachStoredReply(generateResponseJson, persisted);
@@ -1501,11 +1417,6 @@ async function sendXaiRequest(request, response, persist, warnings = null, onDis
         onDispatched?.();
 
         if (request.body.stream) {
-            // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
-            // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
-            // persistence when `persist` is set - the compact re-encoding itself always happens;
-            // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
-            // own doc comment above).
             await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content,
                 json => json.choices?.find(choice => choice?.delta?.reasoning_content)?.delta?.reasoning_content || undefined, warnings);
         } else {
@@ -1517,9 +1428,6 @@ async function sendXaiRequest(request, response, persist, warnings = null, onDis
             }
             const generateResponseJson = await generateResponse.json();
 
-            // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
-            // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
-            // function's own doc comment above.
             if (persist) {
                 const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '', { data: generateResponseJson });
                 attachStoredReply(generateResponseJson, persisted);
@@ -1635,11 +1543,6 @@ async function sendAimlapiRequest(request, response, persist, warnings = null, o
         onDispatched?.();
 
         if (request.body.stream) {
-            // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
-            // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
-            // persistence when `persist` is set - the compact re-encoding itself always happens;
-            // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
-            // own doc comment above).
             await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content, extractGenericReasoning, warnings);
         } else {
             if (!generateResponse.ok) {
@@ -1650,9 +1553,6 @@ async function sendAimlapiRequest(request, response, persist, warnings = null, o
             }
             const generateResponseJson = await generateResponse.json();
 
-            // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
-            // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
-            // function's own doc comment above.
             if (persist) {
                 const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '', { data: generateResponseJson });
                 attachStoredReply(generateResponseJson, persisted);
@@ -1776,11 +1676,6 @@ async function sendElectronHubRequest(request, response, persist, warnings = nul
         onDispatched?.();
 
         if (request.body.stream) {
-            // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
-            // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
-            // persistence when `persist` is set - the compact re-encoding itself always happens;
-            // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
-            // own doc comment above).
             await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content, extractGenericReasoning, warnings);
         } else {
             if (!generateResponse.ok) {
@@ -1791,9 +1686,6 @@ async function sendElectronHubRequest(request, response, persist, warnings = nul
             }
             const generateResponseJson = await generateResponse.json();
 
-            // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
-            // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
-            // function's own doc comment above.
             if (persist) {
                 const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '', { data: generateResponseJson });
                 attachStoredReply(generateResponseJson, persisted);
@@ -1908,11 +1800,6 @@ async function sendChutesRequest(request, response, persist, warnings = null, on
         onDispatched?.();
 
         if (request.body.stream) {
-            // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
-            // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
-            // persistence when `persist` is set - the compact re-encoding itself always happens;
-            // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
-            // own doc comment above).
             await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content, extractGenericReasoning, warnings);
         } else {
             if (!generateResponse.ok) {
@@ -1923,9 +1810,6 @@ async function sendChutesRequest(request, response, persist, warnings = null, on
             }
             const generateResponseJson = await generateResponse.json();
 
-            // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
-            // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
-            // function's own doc comment above.
             if (persist) {
                 const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '', { data: generateResponseJson });
                 attachStoredReply(generateResponseJson, persisted);
@@ -2021,11 +1905,6 @@ async function sendMinimaxRequest(request, response, persist, warnings = null, o
         onDispatched?.();
 
         if (request.body.stream) {
-            // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
-            // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
-            // persistence when `persist` is set - the compact re-encoding itself always happens;
-            // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
-            // own doc comment above).
             await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content, null, warnings);
         } else {
             if (!generateResponse.ok) {
@@ -2036,9 +1915,6 @@ async function sendMinimaxRequest(request, response, persist, warnings = null, o
             }
             const generateResponseJson = await generateResponse.json();
 
-            // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
-            // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
-            // function's own doc comment above.
             if (persist) {
                 const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '', { data: generateResponseJson });
                 attachStoredReply(generateResponseJson, persisted);
@@ -2145,11 +2021,6 @@ async function sendAzureOpenAIRequest(request, response, persist, warnings = nul
         onDispatched?.();
 
         if (request.body.stream) {
-            // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
-            // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
-            // persistence when `persist` is set - the compact re-encoding itself always happens;
-            // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
-            // own doc comment above).
             return await forwardAndPersistCompactStream(fetchResponse, response, persist, json => json?.choices?.[0]?.delta?.content, null, warnings);
         }
 
@@ -2157,9 +2028,6 @@ async function sendAzureOpenAIRequest(request, response, persist, warnings = nul
             /** @type {any} */
             const json = await fetchResponse.json();
 
-            // Persist the ASSISTANT's real reply text for a raw-action request (`persist` truthy - a
-            // no-op otherwise). Standard, verified OpenAI-Chat-Completions-shaped body - see this
-            // function's own doc comment above.
             if (persist) {
                 const persisted = await persistAssistantReply(persist, json?.choices?.[0]?.message?.content ?? '', { data: json });
                 attachStoredReply(json, persisted);
@@ -2209,7 +2077,6 @@ router.post('/status', async function (request, statusResponse) {
             apiKey = readSecret(request.user.directories, SECRET_KEYS.CUSTOM, request.body.secret_id);
             headers = {};
             mergeObjectWithYaml(headers, request.body.custom_include_headers);
-            // Connecting asks again whether the URL is llama.cpp, without holding up the status reply.
             void refreshLlamaCppDetection(apiUrl, { 'Authorization': 'Bearer ' + apiKey, ...headers });
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.COHERE) {
             apiUrl = API_COHERE_V1;
@@ -2565,17 +2432,12 @@ router.post('/status', async function (request, statusResponse) {
 });
 
 /**
- * A chat-completion send's tokenizer warnings: `trim-estimate` when its prompt was fitted by the
- * estimate because the tokenizer failed, `dropped` for the bias entries it had no token ids for, and
- * `license` for a tokenizer file its prompt count downloaded.
  * @param {string} source
  * @param {string|null|undefined} model
  * @param {string[]} droppedEntries
- * @param {import('../../tokenizer-resolve.js').TokenizerOutcome} [outcome] The prompt count's outcome;
- * none for a send that counts nothing.
- * @param {import('../../tokenizer-map-resolution.js').ChatCompletionConnection} [connection] The send's custom URL,
- * directories and custom headers with its macros substituted.
- * @returns {Promise<Array<{kind: string, key: string, message: string, entries?: string[]}>>} Empty when there is nothing to report.
+ * @param {import('../../tokenizer-resolve.js').TokenizerOutcome} [outcome]
+ * @param {import('../../tokenizer-map-resolution.js').ChatCompletionConnection} [connection]
+ * @returns {Promise<Array<{kind: string, key: string, message: string, entries?: string[]}>>}
  */
 async function chatCompletionSendWarnings(source, model, droppedEntries, outcome = createTokenizerOutcome(), connection = {}) {
     if (droppedEntries.length === 0 && !outcome.countEstimated && !outcome.usedCopy && !outcome.downloads?.length) {
@@ -2586,12 +2448,10 @@ async function chatCompletionSendWarnings(source, model, droppedEntries, outcome
 }
 
 /**
- * A server-built send's custom URL and custom headers, substituted with its own macros as the send
- * substitutes them.
- * @param {any} settings The send's chat-completion settings
+ * @param {any} settings
  * @param {import('../../users.js').UserDirectoryList} directories
  * @param {object} macroContext
- * @param {import('../../llamacpp-props.js').LlamaCppPropsCheck} [llamaCppProps] The send's `/props` check
+ * @param {import('../../llamacpp-props.js').LlamaCppPropsCheck} [llamaCppProps]
  * @returns {import('../../tokenizer-map-resolution.js').ChatCompletionConnection}
  */
 function chatCompletionConnection(settings, directories, macroContext, llamaCppProps = undefined) {
@@ -2602,7 +2462,6 @@ function chatCompletionConnection(settings, directories, macroContext, llamaCppP
 }
 
 /**
- * JSON with every non-ASCII character escaped, so it can be a header value.
  * @param {any} value
  * @returns {string}
  */
@@ -2634,181 +2493,29 @@ router.post('/bias', async function (request, response) {
     }
 });
 
-/**
- * Bound on how many "backend calls a server-native tool -> execute it -> call the backend again"
- * rounds a single raw-action `/generate` request may go through before giving up and returning a
- * real error, instead of looping forever against a backend/tool combination that never settles on a
- * plain-text reply. Matches the client-side precedent's own recursion bound
- * (`ToolManager.RECURSE_LIMIT`, public/scripts/tool-calling.js) - kept as the same numeric value (5)
- * for consistency, even though the two limits guard genuinely different loops (this one is
- * server-round-trips-to-the-backend; the client's is its own recursive
- * `invokeFunctionTools()`-then-generate-again chain).
- */
 const SERVER_TOOL_ROUND_LIMIT = 5;
 
 /**
- * Builds the real backend-request-shaped payload for the raw-action `/generate` branch below - the
- * direct chat-completion analog of `buildRawActionTextCompletionRequest()`
- * (src/endpoints/backends/text-completions.js, commit ac42ce8c9). Mirrors that function's shape/
- * naming/scoping discipline as closely as the real differences between the two pipelines allow - see
- * this session's task write-up for the full read-first list.
- *
- * In order:
- * 1. Real existence checks for the named character/group (identical pattern to
- *    `buildRawActionTextCompletionRequest()` - `readCardContent`/`getGroupsByIds`, tolerating a
- *    missing/unreadable card as "not found" rather than letting an ENOENT bubble up as an unrelated 500).
- * 2. Real anchor-node resolution (a given `nodeId` verified as a message of the request's tree, or -
- *    only when `nodeId` is explicitly `null` AND the tree's root is current - the root) - identical logic to the text-completion helper; see this function's own ADDRESSING
- *    MODEL doc comment below.
- * 3. Read real `oai_settings`/`power_user` via `readSettingsFor()` - JUDGMENT CALL: unlike
- *    text-completion (which needs a separate `resolveTextGenBackend()` step - see
- *    src/textgen-backend-resolve.js), chat completion has no separate "resolve the active backend
- *    connection" concept: `oai_settings.chat_completion_source`/model selection IS the settings, and
- *    `resolveChatCompletionGenerationInput()` already reads `oai_settings` internally to resolve
- *    `model`. Confirmed by reading the `connection_profile_id` branch above (which resolves its own
- *    `settings`/`selectedApiMap.source` from a connection profile + preset, a genuinely different,
- *    profile-driven case) and the default/legacy inline dispatch further below (which reads
- *    `request.body.chat_completion_source`/`request.body.secret_id` as given by the client - the
- *    client is expected to have already put its own active `oai_settings`-derived values there). This
- *    raw-action branch is the one case that resolves the user's OWN currently active `oai_settings`
- *    server-side, for real, instead of trusting a client-supplied value.
- * 4. Resolve the orchestrator's full input from real on-disk settings/character/chat state via
- *    `resolveChatCompletionGenerationInput()`.
- * 5. Assemble the real message array via `prepareOpenAIMessages(orchestratorInput, false)` (a real
- *    generation, never a dry run here).
- * 6. Build the real backend-request payload via `createGenerationParameters()`. Context fields are
- *    resolved the SAME honest way `resolveChatCompletionGenerationInput()`'s own doc comment already
- *    established for each of them (see that module's FIELD-MAPPING NOTES and
- *    src/chat-completion-generation-data.js's own doc comment for the full per-field rationale):
- *      - `biasPresetEntries`: real, resolved via `oai_settings.bias_preset_selected`/`.bias_presets`,
- *        the exact same one-line derivation the `connection_profile_id` branch above already performs.
- *      - `useLogprobs`: real, `Boolean(power_user.request_token_probabilities)` - verified against
- *        public/scripts/chat-completion-settings.js's own `const useLogprobs =
- *        !!power_user.request_token_probabilities` (~line 2851), a plain, simple settings-path
- *        mapping this module's own doc comment explicitly says a caller may resolve directly.
- *      - `chatId`: real, the resolved `anchorNodeId` - chat-completion-generation-data.js's own doc
- *        comment says this is only ever `getCurrentChatId()` because "the caller already knows which
- *        chat this generation belongs to"; the real, resolved node id (whether caller-given or
- *        anchor-resolved for a brand-new conversation - see this function's own ADDRESSING MODEL doc
- *        comment) IS that knowledge, so it's forwarded for real rather than left `undefined`.
- *      - `macroContext`: real, `orchestratorInput.macroContext` (already built by the resolver).
- *      - `toolsPayload`: resolved here from TWO sources merged into one `tools` array -
- *        (1) the server-native tool registry (`../../server-tools.js`, chunk (a)): `ctx =
- *        {directories, ownerId, characterAvatar, groupId}` (the exact tuple already resolved above
- *        for everything else in this function) is passed to `getEnabledServerTools(ctx)`; and
- *        (2) chunk (c)'s `clientToolSchemas` param (the browser-extension `ToolManager`'s own
- *        advertised tools, merged in with server tools taking priority on a name collision - see
- *        this function's own `clientToolSchemas` doc comment above for the full policy). When the
- *        combined list is non-empty, `toolsPayload = {tools: [...], tool_choice: 'auto'}` is
- *        forwarded into `createGenerationParameters()` - otherwise `toolsPayload` stays `undefined`,
- *        so a request with no server tool registered AND no `client_tools` sent advertises no
- *        `tools` at all, byte-for-byte identical to this route's pre-chunk-(b) behavior. The route
- *        handler's tool-execution loop (`runServerToolRounds()`) uses `enabledClientToolNames`
- *        (this function's own return value) to tell a legitimate client-only tool call apart from a
- *        genuinely unrecognized/hallucinated one - see that function's own doc comment.
- *      - `jsonSchema`: real, forwarded verbatim from this function's own `jsonSchema` param straight
- *        into `createGenerationParameters()` (which already turns it into `generate_data.json_schema` -
- *        see that function's own doc comment/implementation, src/chat-completion-generation-data.js).
- *        NOT a new capability: every provider branch below (`sendClaudeRequest`/the default dispatch's
- *        own `request.body.json_schema` handling/etc.) already reads `request.body.json_schema` and
- *        turns it into that provider's own `response_format`/`json_schema` shape - this was purely a
- *        raw-action-specific gap (this function never accepted the param at all) fixed by this task, not
- *        a fresh subsystem.
- *      - `getStoppingStrings`/`groupNames`/`electronHubReasoningEfforts`/
- *        `reverseProxyValidated`/`logitBias` override: still NOT resolved here - explicit,
- *        documented MVP scope boundaries per chat-completion-generation-data.js's own doc comment
- *        (each needs a genuinely separate subsystem - live model lists, a reverse-proxy confirmation
- *        UI, etc. - not guessed at here). Left at `createGenerationParameters()`'s own defaults.
- *
- * Does NOT persist anything (the caller's job - see the route handler below) and does NOT set
- * `stream`/`chat_completion_source`/`secret_id` on the returned `params` (also the caller's job,
- * mirroring the `connection_profile_id` branch's own final-assignment shape).
- *
- * ADDRESSING MODEL (this task's correction) - identical rule to
- * `buildRawActionTextCompletionRequest()` (src/endpoints/backends/text-completions.js) - see that
- * function's own doc comment for the full rationale (label vs. node-address are different concepts;
- * a real client always already has the concrete `node_id` it's looking at by the time it's about to
- * generate). There is no `branchName`/`branch_name` field in this raw-action surface. `nodeId` is
- * the ONLY addressing input and is REQUIRED, but `null` is a valid, meaningful value:
- * - A real `nodeId` string: address that specific existing node - unchanged prior behavior.
- * - `nodeId === null`: valid ONLY when this owner's conversation is genuinely empty - resolved via
- *   the owner's anchor. If the owner already has real history, this is a real 400, not a silent guess.
- * - `nodeId === undefined` (the key was absent from the request body entirely): throws - a caller
- *   that doesn't know whether it has real history yet must say so explicitly (`null`), not omit the
- *   field and have the server guess.
- *
  * @param {import('../../users.js').UserDirectoryList} directories
  * @param {object} params
- * @param {string} [params.characterAvatar] Character avatar filename. One of this or `groupId` is required.
- * @param {string} [params.groupId] Group id. One of this or `characterAvatar` is required.
- * @param {string} params.ownerId The request's `owner_id`, handed to server tools in their `ctx`.
- * @param {import('../../chat-request.js').ChatContext} params.chat The chat the request acts in.
- * @param {string|null} params.nodeId REQUIRED (`undefined` throws) - see ADDRESSING MODEL above. A
- * real node id string addresses that node; `null` goes on from the tree's root, and only succeeds
- * when that is current.
- * @param {string} [params.type] Generation type ('normal'/'impersonate'/'continue'/'swipe'/...).
+ * @param {string} [params.characterAvatar]
+ * @param {string} [params.groupId]
+ * @param {string} params.ownerId
+ * @param {import('../../chat-request.js').ChatContext} params.chat
+ * @param {string|null} params.nodeId
+ * @param {string} [params.type]
  * @param {boolean} [params.isImpersonate]
  * @param {boolean} [params.isContinue]
  * @param {boolean} [params.isSwipe]
- * @param {string} [params.userMessageText] The literal text the user typed this turn. Omit for
- * generation types that don't add a new message (continue/swipe).
- * @param {import('../../macro-facts.js').PageMacroFacts} [params.pageFacts] What only the page knows, for the macros.
- * @param {import('../../extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections] What the page's extensions inject (src/page-injections.js).
- * @param {object} [params.userMessageExtra] Already-SERVER-VALIDATED `extra` (see
- * `sanitizeUserMessageExtra()` in user-message-extra.js) for the new user message being appended -
- * forwarded verbatim to `resolveChatCompletionGenerationInput()`; the caller (route handler below) is
- * responsible for having already sanitized whatever the client sent. Ignored when `userMessageText`
- * is omitted.
- * @param {any[]} [params.clientToolSchemas] Chunk (c): the client's own `client_tools` array, exactly
- * as sent on the wire (`ToolManager.registerFunctionToolsOpenAI()`'s computed
- * `[{type:'function', function:{name, description, parameters}}, ...]` shape) - tools registered via
- * the browser-extension `ToolManager` API (`public/scripts/tool-calling.js`) that genuinely cannot
- * execute server-side. Untrusted, attacker-controlled input: only entries shaped
- * `{type:'function', function:{name: non-empty string, ...}}` are kept, everything else is silently
- * dropped (same "a bad/foreign field doesn't fail the whole request" convention as
- * `sanitizeUserMessageExtra()`); duplicate `function.name`s within this same array keep only the
- * first occurrence. NAME-COLLISION POLICY (this task's judgment call): a client tool whose name
- * collides with an already-`enabledServerTools` name is DROPPED (with a logged warning), and the
- * server-native tool wins - server tools are operator-configured (registered by a trusted server
- * plugin via `registerServerTool()`, chunk (a)), while `clientToolSchemas` is arbitrary,
- * unauthenticated-as-to-intent client input; letting an unprivileged client silently shadow an
- * operator-configured tool by re-declaring its name would be a real privilege inversion. This
- * mirrors `server-tools.js`'s own registry, which already throws on a same-name collision between
- * two *trusted* registrations - dropping (not throwing) here because this collision involves
- * untrusted input and must degrade gracefully, not fail the whole generation request.
- * @param {object} [params.jsonSchema] JSON schema for a structured/JSON-schema-constrained generation -
- * same shape `generateQuietPrompt()`/the legacy client-assembled chat-completion path already use and
- * every provider branch in this file already reads off `request.body.json_schema`: `{name: string,
- * description?: string, value: object, strict?: boolean, returnInvalid?: boolean}` (`value` is the
- * actual JSON schema object; `returnInvalid` is client-side-only, read by `extractJsonFromData()` in
- * public/script.js, never by this server). Forwarded verbatim into `createGenerationParameters()` - see
- * this function's own doc comment, item 6, `jsonSchema` bullet.
- * @param {string[]} [params.stealthClientToolNames] THIS TASK (stealth-tool parity): the wire's new
- * `stealth_tool_names` field - the subset of the client's OWN `clientToolSchemas` names that
- * `ToolManager.isStealthTool()` says are stealth (public/scripts/tool-calling.js - a per-TOOL
- * registration flag, "a tool call result will not be shown in the chat, no follow-up generation is
- * performed"). Untrusted, attacker-controlled input like `clientToolSchemas` itself: only string
- * entries are kept, and only those that also survived into `enabledClientToolNames` matter (see the
- * `enabledStealthClientToolNames` return value below) - a name that isn't even an advertised
- * `client_tools` entry (typo, or a name that lost the name-collision policy to a server tool) is
- * simply inert, never treated as "this round should abort" for a name that was never really
- * client-only to begin with.
- * @param {import('../../page-writes.js').QuietPrompt} [params.quiet] The request's quiet prompt (quietOf()): its
- * text and image are the turn's `quietPrompt`/`quietImage`, as upstream's `prepareOpenAIMessages()` takes them.
- * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string, enabledServerTools: import('../../server-tools.js').ServerToolRegistration[], enabledClientToolNames: Set<string>, enabledStealthClientToolNames: Set<string>, warnings: Array<{kind: string, key: string, message: string, entries?: string[]}>, tokenCountRows: import('../../token-count-store.js').PendingTokenRows }>} `warnings`: the `dropped` warning when bias entries were left out.
- * `tokenCountRows` are the message counts and bias ids this build read from or added to the token tables,
- * written back by the `/generate` route once the backend request is sent.
- * `enabledServerTools` is the same list used to build `params.tools` (empty when no server tool is
- * currently enabled for this request) - returned so the route handler's tool-execution loop doesn't
- * need to re-query the registry (and re-run every tool's own `shouldEnable(ctx)`) a second time.
- * `enabledClientToolNames` (chunk (c)) is the set of `clientToolSchemas` names actually advertised to
- * the backend after the collision policy above (i.e. excluding any dropped for colliding with a
- * server tool name) - the route handler's tool-execution loop uses this to tell "hand off to the
- * client" (name is here) apart from "hallucinated/unknown tool name" (name is in neither this set nor
- * `enabledServerTools`). `enabledStealthClientToolNames` (this task) is the subset of
- * `enabledClientToolNames` that `stealthClientToolNames` marked stealth - see
- * `runServerToolRounds()`'s own doc comment for how this is used to abort a round instead of handing
- * it off.
+ * @param {string} [params.userMessageText]
+ * @param {import('../../macro-facts.js').PageMacroFacts} [params.pageFacts]
+ * @param {import('../../extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections]
+ * @param {object} [params.userMessageExtra]
+ * @param {any[]} [params.clientToolSchemas]
+ * @param {object} [params.jsonSchema]
+ * @param {string[]} [params.stealthClientToolNames]
+ * @param {import('../../page-writes.js').QuietPrompt} [params.quiet]
+ * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string, enabledServerTools: import('../../server-tools.js').ServerToolRegistration[], enabledClientToolNames: Set<string>, enabledStealthClientToolNames: Set<string>, warnings: Array<{kind: string, key: string, message: string, entries?: string[]}>, tokenCountRows: import('../../token-count-store.js').PendingTokenRows }>}
  */
 export async function buildRawActionChatCompletionRequest(directories, {
     characterAvatar, groupId, ownerId, chat, nodeId,
@@ -2821,13 +2528,10 @@ export async function buildRawActionChatCompletionRequest(directories, {
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
     }
-    // See ADDRESSING MODEL above - `undefined` means the request body never had the `node_id` key at
-    // all (real JSON has no `undefined` literal, so this is distinguishable from an explicit `null`).
     if (nodeId === undefined) {
         throw new Error('node_id is required (pass null explicitly for a brand-new, empty conversation)');
     }
 
-    // Step 1 (existence checks) - identical convention to buildRawActionTextCompletionRequest().
     if (characterAvatar) {
         let raw;
         try {
@@ -2844,10 +2548,6 @@ export async function buildRawActionChatCompletionRequest(directories, {
         }
     }
 
-    // Step 2 (anchor resolution) - identical logic to buildRawActionTextCompletionRequest(): a real
-    // given `nodeId` is verified directly; `nodeId === null` is left unresolved here and read back
-    // off `orchestratorInput.resolvedNodeId`/`chatResolutionAmbiguous` once Step 4 has computed it,
-    // rather than re-deriving whether the root is current a second, independent way.
     let anchorNodeId = null;
     if (nodeId !== null) {
         if (!await chat.store.chats.messageOf(chat.tree, nodeId)) {
@@ -2856,30 +2556,10 @@ export async function buildRawActionChatCompletionRequest(directories, {
         anchorNodeId = nodeId;
     }
 
-    // Step 3
     const { oai_settings: savedSettings = {}, power_user: powerUser = {} } = readSettingsFor(directories, settingsContextOf({ avatar: characterAvatar, groupId, chat, nodeId }), ['oai_settings', 'power_user']);
-    // A quiet or raw generation's own response length, in place of the setting's.
     const settings = responseLength === undefined ? savedSettings : { ...savedSettings, openai_max_tokens: responseLength };
 
-    // Step 4
-    // `imageInlining`/`videoInlining`/`audioInlining` OVERRIDE via `macroExtras` (resolveChatCompletionGenerationInput()'s
-    // own doc comment: these three otherwise resolve to `false` - a documented, PRE-EXISTING MVP scope
-    // boundary from before this task, since the client's own real capability predicates
-    // (`isImageInliningSupported()`/etc., public/scripts/chat-completion-settings.js) are not ported
-    // server-side). Without this override, a `userMessageExtra.media` entry forwarded by this task's
-    // own new attachment-plumbing would be silently inert (present in `extra.media`, never inlined) -
-    // NOT a fabricated capability check, but a REAL, narrower one than the client's: just the user's own
-    // `oai_settings.media_inlining` on/off toggle (the single settings field that gates all three
-    // inlining kinds together - see that setting's own migration history merging former
-    // `image_inlining`/`video_inlining`/`audio_inlining` into one flag), WITHOUT also re-checking the
-    // client's per-model vision-capability allowlist (a large, hardcoded model-name list with no
-    // server-side port - porting THAT is out of this task's scope, left as its own real, addressable
-    // follow-up). Practical effect of the narrowing: a raw-action request MAY attempt to inline media
-    // even when the currently-selected model doesn't actually support vision, if the user has
-    // `media_inlining` enabled - `Message.addImage()`'s own real backend call would then fail/be
-    // ignored by that backend, not this server silently mis-behaving.
     const mediaInliningEnabled = Boolean(settings.media_inlining);
-    // A custom URL that is llama.cpp is asked its /props afresh, once, for every count and encode of this send.
     const llamaCppProps = createLlamaCppPropsCheck({ reuse: false });
     /** @type {import('../../token-count-store.js').PendingTokenRows} */
     const tokenCountRows = { counts: [], ids: [] };
@@ -2892,8 +2572,6 @@ export async function buildRawActionChatCompletionRequest(directories, {
         },
     });
 
-    // `nodeId === null` goes on from the tree's root only when that is current - see
-    // buildRawActionTextCompletionRequest()'s identical handling.
     if (nodeId === null) {
         if (orchestratorInput.chatResolutionAmbiguous) {
             throw new Error('node_id is required: this chat is not at its start - pass the node_id of the message to generate from (null is only valid in a new chat)');
@@ -2901,32 +2579,18 @@ export async function buildRawActionChatCompletionRequest(directories, {
         anchorNodeId = orchestratorInput.resolvedNodeId;
     }
 
-    // Checked against the RAW (pre-drop) history length, not `orchestratorInput.macroContext.chat`
-    // (which, for a swipe/regenerate, has already had the message being replaced dropped - see
-    // resolveChatCompletionGenerationInput()'s own `promptChat`/`rawChatLength` doc comments). A chat
-    // with exactly one message (e.g. a fresh chat's opening greeting) being swiped legitimately ends
-    // up with zero remaining context - that's not the same as "there was nothing to swipe at all".
     if ((isContinue || isSwipe) && orchestratorInput.rawChatLength === 0) {
         throw new Error('Cannot continue/swipe an empty chat.');
     }
 
-    // Step 5
     const { chat: messages } = await prepareOpenAIMessages(orchestratorInput, false);
 
-    // Step 6
     const biasPresetEntries = settings.bias_preset_selected ? settings.bias_presets?.[settings.bias_preset_selected] : undefined;
     const useLogprobs = Boolean(powerUser.request_token_probabilities);
-    // Server-native tool registry (../../server-tools.js, chunk (a)) - see this function's own doc
-    // comment, item 6, for the full rationale. `ctx` is exactly the tuple this route already has
-    // resolved for everything else here; nothing new is computed to build it.
     const serverToolCtx = { directories, ownerId, characterAvatar, groupId };
     const enabledServerTools = await getEnabledServerTools(serverToolCtx);
     const serverToolNames = new Set(enabledServerTools.map(tool => tool.name));
 
-    // Chunk (c): merge in the client's own `client_tools` (see this function's own doc comment,
-    // `clientToolSchemas` param, for the full validation/collision rationale). Kept as a Map (not a
-    // plain array-dedupe) so a duplicate `function.name` WITHIN `clientToolSchemas` itself keeps only
-    // its first occurrence, matching the collision-drop convention below.
     const clientToolsByName = new Map();
     if (Array.isArray(clientToolSchemas)) {
         for (const entry of clientToolSchemas) {
@@ -2945,9 +2609,6 @@ export async function buildRawActionChatCompletionRequest(directories, {
     }
     const enabledClientToolNames = new Set(clientToolsByName.keys());
 
-    // THIS TASK (stealth-tool parity): only names that are BOTH advertised (`enabledClientToolNames`)
-    // AND flagged stealth by the client survive - see this function's own `stealthClientToolNames`
-    // param doc comment for why a name outside `enabledClientToolNames` must not count.
     const enabledStealthClientToolNames = new Set(
         Array.isArray(stealthClientToolNames)
             ? stealthClientToolNames.filter(name => typeof name === 'string' && enabledClientToolNames.has(name))
@@ -2973,20 +2634,6 @@ export async function buildRawActionChatCompletionRequest(directories, {
         tokenCountRows,
     });
 
-    // JUDGMENT CALL: unlike buildRawActionTextCompletionRequest() (which gets `name1` back directly
-    // on resolveTextCompletionGenerationInput()'s own return object), this resolver only exposes
-    // `name1` inside `macroContext` (see that module's doc comment decision 2/FIELD-MAPPING NOTES -
-    // `name1` itself is never a top-level field on its returned object) - read from there instead.
-    //
-    // `anchorContent` (used only for `is_continue` persistence - see the route handler below): the
-    // CURRENT, on-disk content of the anchor node, read from `orchestratorInput.macroContext.chat`'s
-    // own last entry rather than a second DB read. Verified (not assumed) safe to reuse here:
-    // resolveChatCompletionGenerationInput()'s own `promptChat` (which becomes `macroContext.chat`)
-    // only drops the last entry when `isSwipe` (see that function's own `promptChat` doc comment) -
-    // never for `isContinue`, so for a continue call `macroContext.chat` is exactly `orchestratorInput`
-    // 's raw, undropped `chat` and its last entry is the anchor's real, current content. Only
-    // meaningful when that array is non-empty, which the `rawChatLength === 0` guard above already
-    // guarantees for `isContinue` - `null` otherwise.
     const anchorChat = orchestratorInput.macroContext.chat;
     const anchorContent = anchorChat.length > 0 ? anchorChat[anchorChat.length - 1] : null;
 
@@ -2995,22 +2642,11 @@ export async function buildRawActionChatCompletionRequest(directories, {
 
     return {
         params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledServerTools, enabledClientToolNames, enabledStealthClientToolNames, warnings, tokenCountRows,
-        // The chat variables the prompt's macros changed, for the route to store (storeMacroVariables()).
         macroVariables: macroVariableChanges(orchestratorInput.macroContext.chatMetadata, orchestratorInput.macroContext.globalVariables, orchestratorInput.variablesBefore),
     };
 }
 
 /**
- * Coalesces binary-frame writes for one response, guarding every `response.write()` against firing
- * after `response.writableEnded` (a real client-disconnect race - the upstream body can still emit a
- * final `data` event after the client's socket closed) and against backpressure (buffers while
- * waiting for `drain`, as under a slow/lossy connection).
- *
- * JUDGMENT CALL: a local, file-scoped copy rather than exporting/importing
- * `createBackpressureWriter` from `./llamacpp-compact-stream.js` - that file is owned by a
- * concurrently-running change in this same effort (extending the compact protocol for the
- * text-completion path) and is out of scope to edit here; same "separate local copy" precedent this
- * file already follows for its own `forwardAndPersistCompactStream` history.
  * @param {import('express').Response} res
  */
 function createChatCompactStreamWriter(res) {
@@ -3057,9 +2693,6 @@ function createChatCompactStreamWriter(res) {
     };
 }
 
-/** Generic OpenAI-Chat-Completions-shaped `choices[0].delta.reasoning_content`/`.reasoning` fallback,
- * matching `getStreamingReply()`'s own identical fallback in chat-completion-settings.js for every
- * source that has no more specific reasoning field of its own. */
 function extractGenericReasoning(json) {
     return json?.choices?.find(choice => choice?.delta?.reasoning_content)?.delta?.reasoning_content
         ?? json?.choices?.find(choice => choice?.delta?.reasoning)?.delta?.reasoning
@@ -3067,39 +2700,12 @@ function extractGenericReasoning(json) {
 }
 
 /**
- * Forwards a fetch() response's live SSE stream as the compact binary protocol (see
- * `./llamacpp-compact-stream.js` for the wire format) instead of the upstream SSE-JSON bytes
- * verbatim - direct instruction from the user, server side forwards nothing raw to the client.
- *
- * Called for every streaming request reaching one of the provider-specific `sendXRequest()`
- * functions, raw-action or not - `persist` (`pendingAssistantPersist`) only gates whether the
- * accumulated text is persisted once the stream ends; a falsy `persist` (quiet generations,
- * connection-profile testing, group-member impersonation preview) still gets the same compact-v1
- * re-encoding, just with the persistence step skipped.
- *
- * Each `data:` line's JSON is parsed exactly like the previous SSE-line-forwarding implementation
- * (line-buffered across TCP chunk boundaries) and passed to `extractText(json)`/`extractReasoning(json)`
- * to pull out that provider's real per-chunk text/reasoning fields - the exact same per-provider shapes
- * `getStreamingReply()` already uses client-side. Content is coalesced (first chunk flushed immediately
- * for perceived responsiveness, then buffered up to ~256 bytes or ~40ms since the last flush, whichever
- * comes first) into `encodeContent()` frames; a reasoning or swipe-index frame flushes any pending
- * content first so frame order matches arrival order. Once the upstream stream ends, the accumulated
- * text (if any) is persisted (when `persist` is set) and its node id is sent as the final
- * `encodeAssistantNodeIdFrame()` frame before `response.end()`.
  * @param {import('node-fetch').Response} fetchResponse
  * @param {import('express').Response} response
- * @param {object|null|undefined} persist `pendingAssistantPersist`, or a falsy value to skip
- * persistence only - the compact binary re-encoding itself always happens.
- * @param {(json: any) => string|undefined} extractText Pulls the real per-chunk generated-text
- * field out of one parsed SSE JSON payload.
- * @param {((json: any) => string|undefined)|null} [extractReasoning] Pulls that provider's real
- * per-chunk reasoning/thinking text out of one parsed SSE JSON payload, or `null` for a provider with
- * no reasoning field of its own (Claude/Gemini/DeepSeek/xAI/Mistral pass their own; everything else
- * OpenAI-Chat-Completions-shaped passes `extractGenericReasoning`; AI21/MiniMax/Azure pass `null`,
- * matching `getStreamingReply()` never surfacing reasoning for those sources either).
- * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The
- * `/generate` route's per-request warnings - when non-empty, written as the stream's first frame, a
- * control frame (`{control: {warnings: ...}}`), before any content.
+ * @param {object|null|undefined} persist
+ * @param {(json: any) => string|undefined} extractText
+ * @param {((json: any) => string|undefined)|null} [extractReasoning]
+ * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings]
  * @returns {Promise<void>}
  */
 async function forwardAndPersistCompactStream(fetchResponse, response, persist, extractText, extractReasoning = null, warnings = null) {
@@ -3111,12 +2717,6 @@ async function forwardAndPersistCompactStream(fetchResponse, response, persist, 
     if (statusCode === 401) statusCode = 400;
     response.statusCode = statusCode;
     response.statusMessage = fetchResponse.statusText;
-    // Same header value/wire format as the llama.cpp/text-completion path's own compact stream
-    // (text-completions.js's forwardAndPersistCompactStream()) - originally given a distinct
-    // 'compact-v1-chat' value to avoid ambiguity between two independent conversions happening
-    // concurrently in the same session, but the bytes are byte-for-byte identical (both use the same
-    // encoder functions from llamacpp-compact-stream.js), so there is exactly one wire format and one
-    // header value across every raw-action streaming path.
     response.setHeader('X-ST-Stream-Format', 'compact-v1');
     const generationId = generationIdFor(response);
     response.setHeader('X-Generation-Id', generationId);
@@ -3197,14 +2797,10 @@ async function forwardAndPersistCompactStream(fetchResponse, response, persist, 
     }
 
     const onSocketClose = () => {
-        // Client dropped - keep buffering the still-in-flight upstream generation for a possible
-        // resume (see llamacpp-compact-stream.js's module doc comment) instead of tearing it down;
-        // the persist-and-end logic below still runs once fetchResponse.body ends on its own.
         stopKeepalive();
         writer = detachFromResponse(generationRecord);
     };
     response.socket?.once('close', onSocketClose);
-    // On a stop, what was held back to coalesce goes out first: the stored reply is what was sent.
     onGenerationStopFlush(response, flushContentBuffer);
 
     await new Promise((resolve) => {
@@ -3246,18 +2842,8 @@ async function forwardAndPersistCompactStream(fetchResponse, response, persist, 
 }
 
 /**
- * Faithful, server-side port of `ToolManager.#applyToolCallDelta()` (public/scripts/tool-calling.js) -
- * the exact algorithm the CLIENT already uses to accumulate one OpenAI-Chat-Completions-shaped
- * `choices[0].delta.tool_calls[N]` fragment across many SSE chunks into a complete tool call. Ported
- * (not reinvented) so the server reproduces the real, verified-against-real-backends behavior:
- * `id`/`name`/`type` are sent whole on (typically) the FIRST chunk for a given tool call and must
- * never be re-concatenated on subsequent chunks (some backends resend them unchanged on every chunk -
- * blindly concatenating would duplicate the value); `function.arguments` is the one field that
- * genuinely arrives as successive partial-JSON string fragments and must be concatenated in order,
- * including mid-token splits. Recurses into nested plain-object deltas (`function: {...}`) exactly like
- * the original.
- * @param {object} target The accumulator object for one tool call (mutated in place).
- * @param {object} delta One chunk's own delta fragment for this same tool call index.
+ * @param {object} target
+ * @param {object} delta
  * @returns {void}
  */
 function applyServerToolCallDelta(target, delta) {
@@ -3296,82 +2882,12 @@ function applyServerToolCallDelta(target, delta) {
 }
 
 /**
- * Streaming counterpart of `runServerToolRounds()`'s non-streaming entry point, for the raw-action
- * `/generate` route's shared default/legacy OpenAI-Chat-Completions-shaped dispatch block ONLY - the
- * one place chunk (b)/(c) wired tool execution into (see that function's own doc comment for the full
- * scope note: the ~12 provider-`switch` functions above are unaffected, unchanged, and still use the
- * plain `forwardAndPersistCompactStream()`).
- *
- * ONLY ever called when `pendingServerToolLoop` is set (this request advertised at least one
- * server-native or client-advertised tool - identical gate to the non-streaming call site, which also
- * guarantees `persist`/`pendingAssistantPersist` is set - see its own declaration comment). A request
- * with no tools registered never reaches this function at all - it keeps using the untouched
- * `forwardAndPersistCompactStream()`, so its behavior is 100% unaffected by this function's existence.
- *
- * Emits the same compact binary wire format (`./llamacpp-compact-stream.js`, `X-ST-Stream-Format:
- * compact-v1`) as every other raw-action streaming path, instead of the old hand-reconstructed
- * SSE-JSON this function used to write directly (see `git log -- <this file>` for that version):
- * 1. Tees the first round's SSE stream, accumulating BOTH the real `choices[0].delta.content` text
- *    AND `choices[0].delta.tool_calls[]` (via `applyServerToolCallDelta()` above, index-keyed exactly
- *    like the client's own accumulator) - needed either way, to know whether a tool was called and to
- *    reconstruct the round for `runServerToolRounds()` below.
- * 2. Real content deltas are forwarded to the client LIVE, chunk-by-chunk, as `encodeContent()` frames
- *    - no buffering, no added latency - preserving real-time streaming UX for the overwhelmingly
- *    common case (a normal reply, tool-enabled or not, that doesn't end up calling a tool this turn).
- * 3. Tool-call deltas ARE forwarded, as `encodeToolCallDeltaFrame()` (`0x05`) frames, one per delta -
- *    unlike the old SSE-JSON version, which had to suppress them entirely to avoid double-processing
- *    by the client's generic SSE-JSON `ToolManager.parseToolCalls()`/legacy tool-calling path. Neither
- *    of those runs against a compact-v1 stream (chat-completion-settings.js branches on the response
- *    header before choosing a consumer at all), so there is no such hazard here - a dedicated compact-
- *    stream consumer accumulates `0x05` deltas the same way, and is solely responsible for them.
- * 4. Once the first round's stream ends, if no tool calls were accumulated: behaves exactly like
- *    `forwardAndPersistCompactStream()` (persist the accumulated text, if any, write the
- *    `assistant_node_id` frame, and close the stream) - this is the common case for any tool-enabled
- *    conversation where the model didn't call a tool THIS turn.
- * 5. If tool calls WERE accumulated, reconstructs the exact `{choices: [{message: {content,
- *    tool_calls}}]}` shape `runServerToolRounds()` already consumes for a non-streaming round, and runs
- *    that SAME function - reused entirely unchanged, not duplicated - which executes server-native
- *    tools, persists the round, and (per the existing, already-shipped precedent that every round AFTER
- *    the first always re-calls the backend non-streamingly regardless of the original request's own
- *    `stream` flag - see `runServerToolRounds()`'s own `refetch` calls) re-resolves and re-calls the
- *    backend for as many further rounds as needed, bounded by the same `SERVER_TOOL_ROUND_LIMIT`.
- * 6. Once `runServerToolRounds()` settles, the stream is completed by writing ONE final control
- *    (`0x08`) frame, then ending the response (there is no `[DONE]` sentinel to hold back in the
- *    compact protocol - the natural end of the byte stream IS the end signal):
- *    - `ok: 'pending'` (chunk (c) client-only hand-off): `{tool_call_handoff: {node_id,
- *      pending_tool_calls}}` - the client's streaming generator (`sendOpenAIRequest()` in
- *      chat-completion-settings.js) stashes it on `state.toolCallHandoff`, and the end-of-stream
- *      handler (public/script.js, `isStreamFinished` block) recognizes it and hands off to the SAME
- *      `resolveClientToolHandoffLoop()` chunk (c) already shipped for the non-streaming case,
- *      completely unchanged - the tree node addressed by `node_id` was ALREADY persisted server-side
- *      by `runServerToolRounds()` before this frame is even written, so there is nothing left for the
- *      client to persist, only to resolve.
- *    - `ok: false` (a real error mid-loop, e.g. round limit exceeded or an unrecognized tool name):
- *      `{error: {message}}` - the best available error-surfacing mechanism once the stream is already
- *      committed (the HTTP status code itself can no longer change).
- *    - `ok === 'aborted'` (an all-stealth round - matching legacy's `shouldStopGeneration` branch,
- *      "generation stops, nothing new appears"): `{tool_call_aborted: true}` - the client's streaming
- *      generator stashes it on `state.toolCallAborted` the same way, and `finishGenerating()`
- *      recognizes it to unblock generation cleanly with no persisted reply. Any real narrative text
- *      generated in the SAME round as the stealth call is also not forwarded/persisted (see
- *      `runServerToolRounds()`'s own step 2b doc comment for why this narrower behavior was chosen).
- *    - `ok: true` (a final plain-text reply was reached, possibly after several further non-streaming
- *      rounds): the final text is sent as an ordinary `encodeContent()` frame (no client-side
- *      special-casing needed for this branch at all), persisted via the shared
- *      `persistAssistantReply()` anchored at `roundResult.leafNodeId` (mirroring the non-streaming call
- *      site's own `pendingAssistantPersist.anchorNodeId = roundResult.leafNodeId` reassignment), and
- *      its node id sent as the final `encodeAssistantNodeIdFrame()` frame before `response.end()`.
- * @param {import('node-fetch').Response} fetchResponse The first round's upstream fetch response.
- * @param {import('express').Response} response The client-facing Express response.
- * @param {object} persist `pendingAssistantPersist` - always truthy whenever this function is called
- * (same gate as `pendingServerToolLoop`, see the route handler).
- * @param {object} pendingServerToolLoop The route handler's own `pendingServerToolLoop` object
- * (`{directories, ownerId, characterAvatar, groupId, enabledTools, clientToolNames, clientToolSchemas}`).
- * @param {(messages: object[]) => Promise<import('node-fetch').Response>} refetch Re-issues the backend
- * request with a freshly-resolved `messages` array - forwarded straight through to `runServerToolRounds()`.
- * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The
- * `/generate` route's per-request warnings - when non-empty, written as the stream's first frame, a
- * control frame (`{control: {warnings: ...}}`), before any content.
+ * @param {import('node-fetch').Response} fetchResponse
+ * @param {import('express').Response} response
+ * @param {object} persist
+ * @param {object} pendingServerToolLoop
+ * @param {(messages: object[]) => Promise<import('node-fetch').Response>} refetch
+ * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings]
  * @returns {Promise<void>}
  */
 async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, response, persist, pendingServerToolLoop, refetch, warnings = null) {
@@ -3403,11 +2919,6 @@ async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, resp
             const line = buffer.slice(0, idx).trim();
             buffer = buffer.slice(idx + 1);
             if (isGenerationStopped(response)) continue;
-            // Unlike the old SSE-JSON version, there is no "forward the raw line" fallback for a
-            // non-`data:` line (an SSE comment, a keep-alive, a blank separator) or a parse failure -
-            // the compact protocol has no concept of forwarding opaque upstream bytes, only real
-            // content/frame events, matching forwardAndPersistCompactStream()'s own established
-            // "drop and warn" precedent for the exact same situation.
             if (!line.startsWith('data:')) continue;
             const payload = line.slice(5).trim();
             if (!payload || payload === '[DONE]') continue;
@@ -3451,9 +2962,7 @@ async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, resp
     await ended;
 
     const toolCalls = toolCallsByIndex.filter(Boolean);
-    // A stopped round keeps the text sent so far and runs no tools: a tool call cut off mid-stream is incomplete.
     if (toolCalls.length === 0 || isGenerationStopped(response)) {
-        // No tool calls this round - see this function's own doc comment, step 4.
         if (text) {
             const persisted = await persistAssistantReply(persist, text);
             const frame = encodeStoredReplyFrame(persisted, persist);
@@ -3463,7 +2972,6 @@ async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, resp
         return;
     }
 
-    // See this function's own doc comment, step 5 - reuse runServerToolRounds() wholesale.
     const initialJson = { choices: [{ message: { role: 'assistant', content: text || null, tool_calls: toolCalls } }] };
     const roundResult = await runServerToolRounds({
         ...pendingServerToolLoop,
@@ -3473,7 +2981,6 @@ async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, resp
         refetch,
     });
 
-    // See this function's own doc comment, step 6.
     if (roundResult.ok === 'aborted') {
         writer.write(encodeControlFrame({ tool_call_aborted: true }));
         writer.end();
@@ -3497,12 +3004,6 @@ async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, resp
         writer.write(encodeContent(finalText));
     }
 
-    // See runServerToolRounds()'s own doc comment and the non-streaming call site's identical
-    // comment above: once any round has run (guaranteed here - this function is only reached when
-    // the first round's own accumulated deltas included tool_calls), isSwipe/isContinue are
-    // downgraded to a plain append onto roundResult.leafNodeId - the sibling-alternative slot (swipe)
-    // was already claimed at round 0, and continue's edit-in-place has no meaningful target once a
-    // real tool-call node exists on the tree.
     persist.anchorNodeId = roundResult.leafNodeId;
     persist.isSwipe = false;
     persist.isContinue = false;
@@ -3516,16 +3017,8 @@ async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, resp
 }
 
 /**
- * Parses one tool call's `function.arguments` string into a plain object, the same "usually JSON,
- * but an empty string is not valid JSON" tolerance `ToolManager.#parseParameters()`
- * (public/scripts/tool-calling.js) already applies client-side. Any other JSON-parse failure (a
- * genuinely malformed arguments string from a misbehaving backend) also falls back to `{}` rather
- * than throwing - this is untrusted backend output, not a programming error, so a tool invoked with
- * an empty-object fallback (and possibly failing on its own missing-argument validation, which then
- * flows back to the model as a normal tool-error result - see `runServerToolRounds()` below) is the
- * right degradation, not a crashed request.
- * @param {unknown} rawArguments `toolCall.function.arguments`, as sent by the backend.
- * @returns {object} The parsed arguments, or `{}` on any failure/empty input.
+ * @param {unknown} rawArguments
+ * @returns {object}
  */
 function parseServerToolArguments(rawArguments) {
     if (rawArguments === '' || rawArguments === undefined || rawArguments === null) {
@@ -3543,175 +3036,23 @@ function parseServerToolArguments(rawArguments) {
 }
 
 /**
- * Runs the server-native tool-calling loop for the raw-action `/generate` route's non-streaming
- * default/legacy chat-completion dispatch path (the ONLY response-handling code path this chunk
- * wires tool execution into - see the `/generate` route handler's own comment on
- * `pendingAssistantPersist`/`SERVER_TOOL_ROUND_LIMIT` for the full list of what's explicitly NOT
- * covered: streaming, and every one of the 12 provider-`switch` functions above).
- *
- * Only ever invoked when the initial backend response already carries `tool_calls` AND at least one
- * server-native OR client-advertised tool was in play for this raw-action request - the caller is
- * expected to skip calling this entirely otherwise, so a request with neither ever reaches this
- * function (byte-for-byte the same behavior as before chunk (b) landed).
- *
- * Each round:
- * 1. Reads `json.choices[0].message.tool_calls`. Empty/undefined -> done, return the final
- *    plain-text `json` as-is (the caller persists it via the existing `persistAssistantReply()` path,
- *    completely unchanged).
- * 2. Otherwise, partitions the calls into three buckets by `function.name`: SERVER (in `enabledTools`,
- *    case-sensitive exact match against the SAME list this request already advertised - a tool that
- *    was enabled when the request was built but raced to disabled mid-request is not re-checked here,
- *    matching this route's general "resolve settings once per request" convention elsewhere),
- *    CLIENT-ONLY (in `clientToolNames`, chunk (c) - a name the client itself advertised via
- *    `client_tools` but that has no server-native registration), and UNKNOWN (neither). If ANY call is
- *    UNKNOWN, the WHOLE round fails immediately with a real, sane 422 - explicitly NOT executing the
- *    recognized calls from that same round first. This is unchanged from chunk (b)'s own judgment call
- *    (a response mixing a real tool with an unrecognized name is far more likely to be a
- *    hallucinated/mistargeted call than a legitimate multi-tool turn, and partially
- *    executing+persisting only some of a model-issued "batch" would leave a confusing,
- *    semantically-broken turn on the tree) - chunk (c) only widens what counts as "recognized" to
- *    include the client's own advertised names, it does not relax this all-or-nothing rule.
- * 2b. STEALTH-TOOL PARITY (this task). Legacy semantics, precisely verified by reading
- *     `ToolManager.invokeFunctionTools()`/`finishGenerating()`'s `onSuccess()` in full
- *     (public/script.js, public/scripts/tool-calling.js) rather than assumed from the older doc
- *     comment this fixes (`resolveClientToolHandoffLoop()`'s "KNOWN LIMITATION" note, which describes
- *     only the ALL-stealth case): `shouldStopGeneration = (!invocationResult.invocations.length &&
- *     shouldDeleteMessage) || invocationResult.stealthCalls.length` - the `||` means ANY stealth call
- *     present in a round stops generation entirely, UNCONDITIONALLY, even when the SAME round also has
- *     real non-stealth calls that were already invoked and succeeded - `saveFunctionToolInvocations()`
- *     is never reached for that round, so even a successful non-stealth invocation's result is
- *     silently discarded, not partially handed off. This is NOT "abort only if every call is stealth" -
- *     it is "abort if at least one call is stealth", full stop. That is the precise rule this function
- *     replicates below: if ANY call in this round's tool_calls has a `function.name` in
- *     `stealthToolNames` (a client-only tool name the client itself marked stealth - stealth is a
- *     per-TOOL registration property, `ToolManager.registerFunctionTool()`'s own `stealth` param -
- *     never per-call), the WHOLE round returns `{ok: 'aborted'}` - see this function's own return-type
- *     doc below - and nothing in this function's steps 3/4/5 below ever runs for that round: no tool
- *     (server-native OR client-only) is invoked, no tree node is persisted, no hand-off is returned.
- *     JUDGMENT CALL, explicitly narrower than legacy where legacy has no equivalent at all: legacy's
- *     literal mechanics execute every non-stealth call first (real side effects happen) and only THEN
- *     discard the round: this function instead never invokes anything once a stealth name is detected,
- *     rather than running a real server-native tool's `invoke()` (a genuine side-effecting operation,
- *     unlike a discarded chat-UI toast) purely to throw its result away - the user-visible outcome is
- *     identical ("nothing new appears, generation stops"), which is the property that actually matters
- *     for parity; only the "does a side-effecting call still fire" question is a deliberate, documented
- *     divergence for the one case (stealth mixed with a server-native call) legacy has no precedent for
- *     at all (legacy never had server-native tools). A stealth call mixed only with OTHER client-only
- *     calls (stealth or not) is exact, verified parity, not a narrowing.
- * 3. For every SERVER call, parses `function.arguments` (`parseServerToolArguments()` above) and calls
- *    `tool.invoke(args, ctx)`. A thrown/rejected `invoke()` does NOT abort the round or the request -
- *    it is caught and turned into a normal (if `error`-flagged) invocation result, so the model sees
- *    the failure text and can retry/apologize/call something else, exactly matching
- *    `ToolManager.invokeFunctionTools()`'s own "still create an invocation so the model sees the
- *    failure, keep looping" behavior (public/scripts/tool-calling.js). Every CLIENT-ONLY call instead
- *    becomes an IN-FLIGHT invocation - `{id, name, parameters, result: null, error: null}` - `result`
- *    stays `null` until the client's own `type: 'tool_result'` follow-up request resolves it (see
- *    `resolvePendingToolResults()` below); no server tool's own `invoke()` result is ever `null` (it is
- *    always coerced to a string), so `result === null` unambiguously means "still pending" wherever
- *    this shape is read back (`resolvePendingToolResults()`, `populateChatHistory()`'s
- *    `invocation.result || '[No content]'` fallback for the rare case a still-pending node is ever
- *    read as history mid-flight).
- * 4. Persists the WHOLE round (server results and client-pending calls together) as ONE new tree node
- *    via `appendMessages()`, shaped `{is_system: true, is_user: false, extra: {tool_invocations:
- *    [...]}}` - the exact shape `populateChatHistory()` (src/chat-completion-history.js) and
- *    `buildChatCompletionMessages()` (src/chat-completion-messages.js) already expect for replay,
- *    mirroring the client's own `ToolManager.saveFunctionToolInvocations()`. SINGLE-NODE JUDGMENT CALL
- *    (this task): a mixed round (some server, some client-only calls) is persisted as ONE node with a
- *    mixed `tool_invocations` array (some entries resolved, some `result: null`) rather than two
- *    separate nodes. Reasoning: one backend response is one real, atomic model turn ("the model made
- *    these N tool calls together, in one message") - splitting it into two tree nodes would fragment
- *    that single turn into two history entries with no natural ordering between them (both would need
- *    to attach at the same parent, becoming siblings/an ambiguous fork, not a sequence), and every
- *    existing reader of this shape (`populateChatHistory()`, `runServerToolRounds()` itself on its next
- *    round, `resolvePendingToolResults()`) already expects "one round = one node" - a single node with
- *    some entries still pending is a strictly smaller extension of that existing contract (just widen
- *    every reader to tolerate `result === null`) versus teaching every reader a new
- *    two-nodes-per-round shape and a new ordering rule.
- * 5. If any CLIENT-ONLY calls were in this round, STOPS here (does not advance/refetch) and returns
- *    `{ok: 'pending', pendingToolCalls: [...], leafNodeId}` - one entry per client-only call, each
- *    `{node_id: currentLeafId, tool_call_id, name, arguments}` (arguments as a parsed object, not a
- *    JSON string, matching the wire example in this task's design doc) - so the caller (the route
- *    handler) can hand this off to the client instead of trying to resolve it itself. Otherwise
- *    (SERVER-only round), advances the "current leaf" to the just-appended node, re-resolves the FULL
- *    prompt fresh via `buildRawActionChatCompletionRequest()` (so the newly-persisted tool turn is
- *    included exactly the way any other real tree node would be - no manual message-array patching
- *    here, and `clientToolNames`/`clientToolSchemas` are forwarded again so a LATER round can still
- *    hand off to the client), and calls the backend again via the caller-supplied `refetch(messages)`.
- *
- * Bounded by `SERVER_TOOL_ROUND_LIMIT` rounds (a `pending` return does not consume this bound further -
- * it ends this function's own loop immediately; the CLIENT's own resumption is bounded separately, by
- * its own recursion limit on the `tool_result` follow-up chain - see public/script.js's
- * `resolveClientToolHandoffLoop()`). Exhausting the limit without ever reaching a plain-text reply (or
- * a pending hand-off) returns a real error too - the tool-call/result turns already persisted along the
- * way stay on the tree (they're real facts that happened), only the client-facing response reports
- * failure.
- *
- * FORMERLY-DOCUMENTED LIMITATION, NOW FIXED: `isSwipe`/`isContinue` interleaved with a server tool-call
- * round used to be unreconciled - `leafNodeId` always attached the first round's tool-call turn as a
- * plain CHILD of the pre-loop anchor (via `appendMessages()`), and the caller then reassigned
- * `persistAssistantReply()`'s own `anchorNodeId` to `roundResult.leafNodeId` (the tool turn's node) -
- * correct for the plain-append case, but wrong for `isSwipe`/`isContinue`, whose persistence modes treat
- * `anchorNodeId` as the node being REPLACED-BY-A-SIBLING/EDITED-IN-PLACE, not "appended after". Feeding
- * the tool-call node in as that anchor turned a swipe into "add a new child two levels under the ORIGINAL
- * anchor's parent" (nested one level too deep - a sibling of the tool turn, not of the original message)
- * and turned a continue into "overwrite the tool-call turn's own `tool_invocations` with concatenated
- * text at the wrong node" (destroying the tool-call record).
- *
- * Fix: `isSwipe` now attaches ONLY the very first round's tool-call turn as a REAL SIBLING of the
- * pre-loop anchor (appended after the anchor's parent, chosen through the session) - the
- * sibling-alternative slot a swipe is supposed to occupy is claimed by the
- * FIRST real thing that happened during this swipe attempt (a tool call), preserving true event order;
- * everything after round 0 (further rounds, and the caller's own final-reply append) chains onward from
- * there via ordinary `appendMessages()`, exactly like the plain-append case, since by round 1 the sibling
- * slot is already spoken for. The caller (the route handler, both streaming and non-streaming) then
- * downgrades its own `isSwipe`/`isContinue` flags to `false` before calling `persistAssistantReply()` for
- * the FINAL reply, once any round has actually run - `roundResult.leafNodeId` at that point already sits
- * exactly where a plain append belongs (a descendant of the just-claimed sibling for swipe; a descendant
- * of the unmoved, unedited original anchor for continue, which never needed the sibling-claim step since
- * continue has no sibling concept - editing text in place across a genuine tool-call boundary isn't
- * meaningful once a real intervening tree node exists, so continue-with-a-tool-call degrades to "the
- * continuation text lands as its own new node after the tool call", not a merged edit).
  * @param {object} params
  * @param {import('../../users.js').UserDirectoryList} params.directories
- * @param {string} params.ownerId The request's `owner_id`, handed to server tools in their `ctx`.
- * @param {import('../../chat-request.js').ChatContext} params.chat The chat the tool turns are stored in.
+ * @param {string} params.ownerId
+ * @param {import('../../chat-request.js').ChatContext} params.chat
  * @param {string} [params.characterAvatar]
  * @param {string} [params.groupId]
- * @param {import('../../server-tools.js').ServerToolRegistration[]} params.enabledTools The exact
- *   list this request already advertised to the backend (`buildRawActionChatCompletionRequest()`'s
- *   own `enabledServerTools` return value).
- * @param {Set<string>} params.clientToolNames Chunk (c): the exact set this request already advertised
- *   to the backend as client-only tools (`buildRawActionChatCompletionRequest()`'s own
- *   `enabledClientToolNames` return value).
- * @param {any[]} [params.clientToolSchemas] The SAME raw `client_tools` array the request carried -
- *   forwarded to each re-resolution's own `buildRawActionChatCompletionRequest()` call so a later
- *   round can still detect/hand-off a further client-only call, exactly mirroring how `enabledTools`
- *   is re-derived fresh from the registry every round rather than assumed static.
- * @param {Set<string>} [params.stealthToolNames] THIS TASK (stealth-tool parity) - see this function's
- *   own doc comment, step 2b. `buildRawActionChatCompletionRequest()`'s own
- *   `enabledStealthClientToolNames` return value: the subset of `clientToolNames` the client itself
- *   marked stealth. Defaults to an empty set (no stealth tools in play) so every pre-existing caller
- *   that doesn't pass this is completely unaffected.
- * @param {string} params.leafNodeId The tree node the first tool-call round (if any) should attach
- *   after - the assistant-reply anchor already resolved for this request.
- * @param {boolean} [params.isSwipe] See this function's own doc comment above - when true, round 0's
- *   tool-call turn is stored as an alternative of `leafNodeId` (a reply of its parent, chosen
- *   through the session) instead of a reply to it. Every later round appends normally.
- * @param {any} params.initialJson The backend's first response body (already parsed JSON).
- * @param {(messages: object[]) => Promise<import('node-fetch').Response>} params.refetch Re-issues
- *   the backend request with a freshly-resolved `messages` array, everything else unchanged.
- * @returns {Promise<
- *   {ok: true, json: any, leafNodeId: string} |
- *   {ok: false, status: number, message: string} |
- *   {ok: 'pending', pendingToolCalls: {node_id: string, tool_call_id: string, name: string, arguments: object}[], leafNodeId: string} |
- *   {ok: 'aborted', leafNodeId: string}
- * >} `ok: 'aborted'` (this task) - see step 2b above: a stealth client-only call was present in this
- * round. Nothing was invoked or persisted for the round that triggered this - `leafNodeId` is simply
- * whatever it already was BEFORE this round (unchanged), returned only so a caller that logs/asserts
- * on it has something real, never a node this round itself created.
+ * @param {import('../../server-tools.js').ServerToolRegistration[]} params.enabledTools
+ * @param {Set<string>} params.clientToolNames
+ * @param {any[]} [params.clientToolSchemas]
+ * @param {Set<string>} [params.stealthToolNames]
+ * @param {string} params.leafNodeId
+ * @param {boolean} [params.isSwipe]
+ * @param {any} params.initialJson
+ * @param {(messages: object[]) => Promise<import('node-fetch').Response>} params.refetch
+ * @returns {Promise< {ok: true, json: any, leafNodeId: string} | {ok: false, status: number, message: string} | {ok: 'pending', pendingToolCalls: {node_id: string, tool_call_id: string, name: string, arguments: object}[], leafNodeId: string} | {ok: 'aborted', leafNodeId: string} >}
  */
 /**
- * Stores a raw-action build's counts and ids without holding up the request; a failure is only logged.
  * @param {import('../../users.js').UserDirectoryList} directories
  * @param {import('../../token-count-store.js').PendingTokenRows | null} rows
  */
@@ -3743,11 +3084,6 @@ async function runServerToolRounds({ directories, ownerId, chat, characterAvatar
             };
         }
 
-        // THIS TASK (stealth-tool parity) - see this function's own doc comment, step 2b, for the full
-        // legacy-verification and the deliberate "abort before invoking anything" narrowing versus
-        // legacy's own "invoke everything, then discard" mechanics. Checked AFTER the unknown-name 422
-        // above (a hallucinated name alongside a stealth call is still treated as the hallucination
-        // error, not silently swallowed by an abort) and BEFORE any invocation below.
         const hasStealthCall = toolCalls.some(toolCall => stealthToolNames.has(toolCall?.function?.name));
         if (hasStealthCall) {
             return { ok: 'aborted', leafNodeId: currentLeafId };
@@ -3763,8 +3099,6 @@ async function runServerToolRounds({ directories, ownerId, chat, characterAvatar
             const tool = toolsByName.get(name);
 
             if (!tool) {
-                // Client-only (chunk (c)) - see this function's own doc comment, steps 3/5. Left
-                // unresolved (`result: null`) until the client's `type: 'tool_result'` follow-up.
                 invocations.push({ id: toolCall.id, name, parameters, result: null, error: null });
                 pendingToolCalls.push({ tool_call_id: toolCall.id, name, arguments: args });
                 continue;
@@ -3792,12 +3126,6 @@ async function runServerToolRounds({ directories, ownerId, chat, characterAvatar
             send_date: Date.now(),
         };
 
-        // Round 0 of an `isSwipe` request claims the sibling-alternative slot itself (see this
-        // function's own doc comment above) - the tool call is the first real thing that happened
-        // during this swipe attempt, so IT becomes the new alternative alongside the message being
-        // swiped, not a child buried one level under it. Every later round (round > 0) has no sibling
-        // slot left to claim - the slot was already taken by round 0's own tool turn - so it just
-        // chains on as an ordinary child, identical to the plain-append case.
         const claimsSiblingSlot = round === 0 && isSwipe;
         const { chats } = chat.store;
         let after = currentLeafId;
@@ -3818,9 +3146,6 @@ async function runServerToolRounds({ directories, ownerId, chat, characterAvatar
         currentLeafId = appendResult.node_ids[appendResult.node_ids.length - 1];
 
         if (pendingToolCalls.length > 0) {
-            // See this function's own doc comment, step 5 - stop here, hand off to the client. The
-            // `node_id` on each pending entry is the freshly-resolved `currentLeafId` (fixed up below
-            // since it was computed above using the PRE-append `currentLeafId`).
             return {
                 ok: 'pending',
                 pendingToolCalls: pendingToolCalls.map(call => ({ ...call, node_id: currentLeafId })),
@@ -3828,13 +3153,6 @@ async function runServerToolRounds({ directories, ownerId, chat, characterAvatar
             };
         }
 
-        // Re-resolve the FULL prompt fresh from the tree (never hand-patch the previous messages
-        // array) - see this function's own doc comment, step 5. `type: 'normal'`/no new user
-        // message/no continue-or-swipe: a follow-up round never introduces a new user turn and
-        // continue/swipe only ever apply to the FIRST round's own final reply (see the route
-        // handler's own comment on `pendingAssistantPersist.anchorNodeId` for that interaction).
-        // `clientToolSchemas` is forwarded again so a LATER round can still detect/hand off a further
-        // client-only call (see this function's own `clientToolSchemas` param doc comment).
         const rebuilt = await buildRawActionChatCompletionRequest(directories, {
             characterAvatar, groupId, ownerId, chat, nodeId: currentLeafId, type: 'normal', clientToolSchemas,
         });
@@ -3860,33 +3178,9 @@ async function runServerToolRounds({ directories, ownerId, chat, characterAvatar
 }
 
 /**
- * Chunk (c), wire step 3: resolves a client's `type: 'tool_result'` follow-up request - the client
- * submitting the result(s) of the tool call(s) `runServerToolRounds()` (above) had to hand off to it
- * via `pending_tool_calls`, addressing the exact tree node that hand-off already persisted.
- *
- * Reuses the SAME `node_id`-required addressing model as every other raw-action request on this route
- * (`buildRawActionChatCompletionRequest()`'s own ADDRESSING MODEL doc comment): the exact message
- * addressed, a message of the request's tree.
- *
- * Persistence is an IN-PLACE EDIT via `editMessages()`, NOT a new message - identical pattern to
- * `persistAssistantReply()`'s own `isContinue` branch (../../assistant-reply-persist.js): an edit gives
- * the WHOLE content, so the message's current stored content is spread and only
- * `extra.tool_invocations` is touched.
- *
- * Only the invocations still `result === null` (chunk (b)/(c)'s "in-flight" marker - see
- * `runServerToolRounds()`'s own doc comment, step 3) are eligible to be filled in; an already-resolved
- * invocation's `id` appearing again in `toolResults` is left untouched (a resubmission is not treated
- * as a correction). ALL still-pending invocations on the node must be resolved by this one call - a
- * partial submission (leaving some `result === null`) is refused with a 400 rather than silently
- * resuming the tool-calling loop with a node that still has an unresolved invocation on it (which
- * would either crash or silently mis-serialize once replayed into the backend's own tool-result
- * message format, see `chat-completion-history.js`'s own `invocation.result || '[No content]'`
- * fallback - a real but confusing degradation this function chooses to refuse up front instead).
  * @param {import('../../chat-request.js').ChatContext} chat
- * @param {string} nodeId The pending tool-call node's own id (the `node_id` the client received on
- *   each `pending_tool_calls` entry for this round).
- * @param {any[]} toolResults Client-supplied `[{id, result, error}, ...]` - `id` is the tool call id
- *   (`pending_tool_calls[].tool_call_id`), `result` is coerced to a string, `error` to a boolean.
+ * @param {string} nodeId
+ * @param {any[]} toolResults
  * @returns {Promise<{ok: true}|{ok: false, status: number, message: string}>}
  */
 async function resolvePendingToolResults(chat, nodeId, toolResults) {
@@ -3908,8 +3202,6 @@ async function resolvePendingToolResults(chat, nodeId, toolResults) {
         const id = entry?.id;
         const invocation = typeof id === 'string' ? invocationsById.get(id) : undefined;
         if (!invocation || invocation.result !== null) {
-            // Unknown id, or an already-resolved invocation being resubmitted - see this function's
-            // own doc comment for why a resubmission is silently ignored rather than re-applied.
             if (!invocation) unknownIds.push(id);
             continue;
         }
@@ -3937,84 +3229,13 @@ async function resolvePendingToolResults(chat, nodeId, toolResults) {
 }
 
 router.post('/generate', withGenerationStop(async function (request, response) {
-    // Set only by the raw-action branch below (and only for a type/mode where the reply is actually
-    // meant to be persisted - see that branch's own comment for the `is_impersonate`/`type ===
-    // 'quiet'` exclusion). Read by BOTH the streaming and non-streaming response points inside the
-    // single shared default/legacy inline OpenAI/custom/other-source dispatch block further down
-    // (the ONLY response-handling code in this file with one shared point across every source it
-    // covers). Every other branch (connection-profile, default/legacy without a raw action) never
-    // sets this, so it stays a no-op for them - the byte stream those requests receive is completely
-    // unaffected by any of this.
-    //
-    // Streaming persistence status, precisely:
-    // - The shared default/legacy inline dispatch block (search `forwardAndPersistCompactStream` below):
-    //   PERSISTS FOR REAL, for both streaming and non-streaming. A raw-action request goes to
-    //   `/chat/completions` unless its model is in TEXT_COMPLETION_MODELS (`isTextCompletion`), which
-    //   sends it to `/completions` with a string prompt. Non-streaming, the reply is read the way the
-    //   page reads it (`replyTextAsPageShows()`), which covers both answer shapes. Streaming,
-    //   `forwardAndPersistCompactStream()` accumulates `choices[0].delta.content` per chunk (`choices[0].text`
-    //   for a `/completions` stream) and persists the full text via the shared `persistAssistantReply()`
-    //   (../../assistant-reply-persist.js) once the stream ends.
-    // - ALL 12 provider-`switch` functions dispatched below (sendClaudeRequest/sendMakerSuiteRequest
-    //   (also used for VERTEXAI)/sendAI21Request/sendMistralAIRequest/sendCohereRequest/
-    //   sendDeepSeekRequest/sendAimlapiRequest/sendXaiRequest/sendChutesRequest/sendMinimaxRequest/
-    //   sendElectronHubRequest/sendAzureOpenAIRequest - each taking `pendingAssistantPersist` as an
-    //   explicit third parameter, passed at their call sites below): PERSIST FOR REAL, for both
-    //   streaming and non-streaming, each per its OWN verified response/stream shape:
-    //   - sendClaudeRequest: non-streaming extracts every real `type: 'text'` block from the Messages
-    //     API's `content` array (never a `type: 'thinking'`/`type: 'tool_use'` block); streaming tees
-    //     via `forwardAndPersistCompactStream()`, accumulating only `content_block_delta` events whose own
-    //     `delta.type === 'text_delta'` (ignoring `thinking_delta`/`input_json_delta`/other event
-    //     types).
-    //   - sendMakerSuiteRequest: both modes reuse the exact same `!part.thought` filter over
-    //     `candidates[0].content.parts` this function already applied for its own non-streaming
-    //     client response, excluding Gemini's own "thought"/reasoning parts.
-    //   - sendAI21Request/sendMistralAIRequest/sendDeepSeekRequest/sendAimlapiRequest/sendXaiRequest/
-    //     sendChutesRequest/sendMinimaxRequest/sendElectronHubRequest/sendAzureOpenAIRequest: standard,
-    //     verified OpenAI-Chat-Completions-shaped bodies (`choices[0].message.content` non-streaming,
-    //     `choices[0].delta.content` per SSE chunk while streaming; sendAzureOpenAIRequest's
-    //     deployment-based URL/auth scheme only affects where/how the request is sent, never this
-    //     shape) - sendDeepSeekRequest additionally never reads DeepSeek reasoner models' separate
-    //     `reasoning_content` field (only `content`/`delta.content`), so reasoning output is never
-    //     mistaken for the reply; sendChutesRequest/sendMinimaxRequest/sendElectronHubRequest/
-    //     sendAzureOpenAIRequest were each individually checked for any comparable
-    //     reasoning/thinking-adjacent response field and found to read/expose none, so plain
-    //     `content`/`delta.content` is the whole reply for all four.
-    //   - sendCohereRequest: Cohere's real (non-OpenAI-shaped) v2 chat API - non-streaming extracts
-    //     every real `type: 'text'` block from `message.content` (falling back to `message.tool_plan`
-    //     only for a tool-call-only reply with no real text content, mirroring the existing client-side
-    //     `extractMessageFromData()` in public/script.js); streaming tees via
-    //     `forwardAndPersistCompactStream()`, accumulating `content-delta`/`tool-plan-delta` events' own
-    //     `delta.message.content.text` field, the same event types/field public/scripts/sse-stream.js's
-    //     own `parseStreamData()` already treats as real reply-text chunks.
-    //
-    // This completes the raw-action persistence cutover for this file: every response-handling code
-    // path in this route - the shared default/legacy dispatch block AND all 12 provider-`switch`
-    // functions, for both streaming and non-streaming - now persists the assistant's real reply text
-    // when `pendingAssistantPersist` is set, with no remaining exclusions.
     let pendingAssistantPersist = null;
 
-    // Set only by the raw-action branch below, and only when it advertised at least one
-    // server-native tool (`built.enabledServerTools` non-empty - see `server-tools.js`'s chunk (a)
-    // registry and `buildRawActionChatCompletionRequest()`'s own `toolsPayload` doc comment). Read
-    // ONLY by the shared default/legacy non-streaming dispatch block below (search
-    // `runServerToolRounds` further down) - streaming and all 12 provider-`switch` functions are
-    // explicitly OUT OF SCOPE for server-native tool execution in this chunk, so this stays `null`
-    // (a no-op) for every other path, identical to today's behavior. `characterAvatar`/`groupId` are
-    // carried alongside `directories`/`ownerId`/`chat` because
-    // `runServerToolRounds()` needs the full `ctx` tuple `getEnabledServerTools()`/`tool.invoke()`
-    // expect, and because each round re-resolves the prompt via a fresh
-    // `buildRawActionChatCompletionRequest()` call, which requires them too.
     let pendingServerToolLoop = null;
 
-    // Per-request warnings for the screen (dropped entries, estimate trims, tokenizer fallbacks, an unreadable reply),
-    // covering every branch below and not gated on persistence. Sent as the stream's first frame
-    // (`{control: {warnings}}`) or as the reply's `warnings`, only when non-empty - so a reply with
-    // no warnings is byte-identical.
     /** @type {Array<{kind: string, key: string, message: string, entries?: string[]}>} */
     const warnings = [];
 
-    // The raw-action build's counts and ids, stored once the backend has the request.
     /** @type {import('../../token-count-store.js').PendingTokenRows | null} */
     let tokenCountRows = null;
     const storeTokenCountRows = () => storeTokenCountRowsInBackground(request.user.directories, tokenCountRows);
@@ -4022,9 +3243,6 @@ router.post('/generate', withGenerationStop(async function (request, response) {
     try {
         if (!request.body) return response.status(400).send({ error: true });
 
-        // "Generate using connection profile X" - the raw action is the profile id plus the raw
-        // messages/generation-type facts; the server resolves the profile's source, preset, secret,
-        // and proxy itself instead of the client pre-resolving and asserting them.
         if (request.body.connection_profile_id) {
             const { profile, selectedApiMap } = resolveConnectionProfile(request.user.directories, request.body.connection_profile_id);
             if (selectedApiMap.selected !== 'openai') {
@@ -4036,13 +3254,10 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 return response.status(400).send({ error: true, message: 'messages must be an array' });
             }
 
-            // A generation in no chat: the user's own settings.
             const { 'oai_settings': baseSettings, proxies } = readSettingsFor(request.user.directories, settingsContextOf({}), ['oai_settings', 'proxies']);
             const preset = profile.preset ? await readBundle(request.user.directories, 'preset.openai', profile.preset) : null;
             const settings = mergeChatCompletionPreset({ ...baseSettings, chat_completion_source: selectedApiMap.source }, preset);
 
-            // Connection profile takes precedence over the preset/settings value for every
-            // URL-style override field, matching the client's own "profile => preset => settings" order.
             if (profile['api-url']) {
                 for (const field of ['custom_url', 'vertexai_region', 'zai_endpoint', 'siliconflow_endpoint', 'minimax_endpoint', 'pollinations_endpoint']) {
                     settings[field] = profile['api-url'];
@@ -4073,37 +3288,13 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 secret_id: profile['secret-id'],
                 custom_prompt_post_processing: profile['prompt-post-processing'],
             };
-        // "Generate for this character/group's chat" - the raw action is WHICH character/group,
-        // WHICH branch/node in that conversation tree to generate from, and the LITERAL text the
-        // user typed this turn (or nothing, for a continue/swipe) - the server resolves the user's
-        // OWN currently active oai_settings, character, chat history, and full prompt assembly
-        // entirely itself. See buildRawActionChatCompletionRequest() above for the full resolution
-        // pipeline - the direct chat-completion analog of buildRawActionTextCompletionRequest() in
-        // src/endpoints/backends/text-completions.js (commit ac42ce8c9). Field names deliberately
-        // match that precedent's raw-action field names verbatim (character_avatar/group_id/
-        // owner_id/node_id/type/is_impersonate/is_continue/is_swipe/user_message) - there is no
-        // `branch_name` field (see buildRawActionChatCompletionRequest()'s own ADDRESSING MODEL doc
-        // comment). `node_id` is destructured straight off the parsed body, not defaulted, so the
-        // "key absent" (`undefined`) vs. "explicit null" distinction survives intact - see that same
-        // doc comment for why the two must stay distinguishable.
         } else if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
             const {
                 character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
                 type = 'normal',
-                // Chunk (c): `client_tools` (the client's own advertised `ToolManager` tools, see
-                // `buildRawActionChatCompletionRequest()`'s own `clientToolSchemas` doc comment) and
-                // `tool_results` (only meaningful for `type === 'tool_result'`, see the `isToolResult`
-                // branch below).
                 client_tools: clientToolSchemas,
-                // THIS TASK (stealth-tool parity): the subset of `client_tools` names the client
-                // itself marked stealth (`ToolManager.isStealthTool()`) - see
-                // `buildRawActionChatCompletionRequest()`'s own `stealthClientToolNames` doc comment.
                 stealth_tool_names: stealthClientToolNames,
                 tool_results: toolResults,
-                // Structured/JSON-schema-constrained generation - see
-                // `buildRawActionChatCompletionRequest()`'s own `jsonSchema` param doc comment for the
-                // exact shape (identical to the legacy path's `request.body.json_schema` every provider
-                // branch below already reads).
                 json_schema: jsonSchema,
             } = request.body;
             const directories = request.user.directories;
@@ -4116,17 +3307,6 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             if (!turn) return;
             const { nodeId, userMessageText, userMessageExtra, quiet, responseLength, pageFacts, pageInjections } = turn;
 
-            // Chunk (c), wire step 3: `type: 'tool_result'` is NOT one of the "generation types" this
-            // route otherwise dispatches on (normal/impersonate/continue/swipe/regenerate/quiet) - it
-            // never adds a new user message, is never an impersonate/continue/swipe of anything, and
-            // its OWN node_id already exists (it's the pending tool-call node the previous response
-            // handed off - see `resolvePendingToolResults()` above). Resolve+persist the submitted
-            // results FIRST (an in-place edit of that exact node, per `resolvePendingToolResults()`'s
-            // own doc comment), THEN fall through into the exact same "resolve the full request fresh
-            // from the tree and dispatch to the backend" code below, treated as a plain `type:
-            // 'normal'` continuation from that now-fully-resolved node - reusing
-            // `buildRawActionChatCompletionRequest()`/the dispatch/`runServerToolRounds()` machinery
-            // wholesale instead of duplicating any of it.
             const isToolResult = type === 'tool_result';
             if (isToolResult) {
                 if (typeof nodeId !== 'string' || !nodeId) {
@@ -4141,10 +3321,6 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 }
             }
 
-            // is_impersonate/is_continue/is_swipe are NOT read from the wire - see the identical
-            // derivation and rationale in text-completions.js's own raw-action branch. Each is 100%
-            // derivable from `type` alone; sending them as separate fields was a redundant classification
-            // duplicating a fact already sent once. `type: 'tool_result'` is none of these (see above).
             const isImpersonate = type === 'impersonate';
             const isContinue = type === 'continue';
             const isSwipe = type === 'swipe' || type === 'regenerate';
@@ -4154,8 +3330,6 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             try {
                 built = await buildRawActionChatCompletionRequest(directories, {
                     characterAvatar, groupId, ownerId, chat, nodeId,
-                    // `type: 'normal'`/no new user message for the `tool_result` case - see the
-                    // `isToolResult` comment above.
                     type: isToolResult ? 'normal' : type, isImpersonate, isContinue, isSwipe,
                     userMessageText: isToolResult ? undefined : userMessageText,
                     userMessageExtra: isToolResult ? undefined : userMessageExtra,
@@ -4174,36 +3348,6 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             warnings.push(...built.warnings);
             tokenCountRows = built.tokenCountRows;
 
-            // Persist the NEW USER MESSAGE - "the user sent this" - BEFORE dispatching to the
-            // backend. This is a real fact that should be committed regardless of whether generation
-            // itself succeeds afterward, so it's done for real here, not deferred (identical
-            // rationale to buildRawActionTextCompletionRequest()'s own route wiring).
-            //
-            // NEITHER side of this turn is persisted for `is_impersonate`/`type === 'quiet'`
-            // (identical rationale/exclusion to text-completions.js's own route wiring):
-            // - impersonate generates what the user MIGHT say - it is never a real submitted user
-            //   message, and its output is written back into the client's send textarea, never the
-            //   chat, so it must never appear as a bogus assistant message either.
-            // - quiet generations are meta/background - they must never touch the visible tree on
-            //   either side.
-            // The user-message skip below is defensive: a real caller has no user text to send for
-            // either of these types in practice, but even if `user_message` were passed alongside
-            // `is_impersonate`/`type: 'quiet'`, it is not committed.
-            //
-            // The ASSISTANT's reply (for every other, non-skipped type) is persisted further down, at
-            // the single shared streaming AND non-streaming response points in the default/legacy
-            // inline dispatch block - see `pendingAssistantPersist`, set a few lines below, and that
-            // variable's own declaration comment above for exactly which paths persist for real
-            // (the shared block, both modes) versus which remain a documented, separately-scoped
-            // exclusion (the ~12 provider-`switch` functions above, for EITHER mode).
-            // The reply, once persisted, must chain onto whatever node is actually the new leaf after
-            // this block - the just-appended user message's node when one was appended, otherwise
-            // `built.anchorNodeId` unchanged (continue/swipe/regenerate, which add no new message - a
-            // swipe/regenerate REPLACES the anchor with a sibling instead, see below).
-            // `isToolResult` never has a new user message to append (see the `isToolResult` comment
-            // above) - `built.anchorNodeId` for that case is just `nodeId` itself (the pending
-            // tool-call node, already resolved+edited above), which is exactly the node the eventual
-            // reply should attach after.
             const skipPersistence = isImpersonate || type === 'quiet';
             let replyAnchorNodeId = built.anchorNodeId;
             const userMessage = turn.userMessage;
@@ -4215,37 +3359,10 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 if (!userNodeId) return;
                 replyAnchorNodeId = userNodeId;
             }
-            // What the prompt's macros changed of the chat's variables, kept with the page's own chat metadata.
             await storeMacroVariables(response, chat, nodeId, built.macroVariables);
 
-            // Stash what's needed to persist the ASSISTANT's reply once a (streaming or
-            // non-streaming) response is known - read both by the default/legacy-dispatch-block below
-            // (guarded by `if (pendingAssistantPersist)`/the `forwardAndPersistCompactStream()` call) AND,
-            // passed explicitly as each function's own third parameter, by ALL 12 provider-`switch`
-            // cases (sendClaudeRequest/sendMakerSuiteRequest/sendAI21Request/sendMistralAIRequest/
-            // sendCohereRequest/sendDeepSeekRequest/sendAimlapiRequest/sendXaiRequest/
-            // sendChutesRequest/sendMinimaxRequest/sendElectronHubRequest/sendAzureOpenAIRequest) -
-            // every provider-`switch` case now persists for real (see the comment on this variable's
-            // declaration above for exactly which paths persist for real, per-provider). Left `null`
-            // (its declared default) for `is_impersonate`/`type === 'quiet'`, so the reply is never
-            // appended to the tree for either - it still reaches the client unchanged via the normal
-            // response, it just never gets persisted.
-            //
-            // `isSwipe` is carried through identically to text-completions.js's own route wiring - see
-            // that file's own comment on this same field for the full rationale (sibling-alternative
-            // persistence as an alternative of the anchor, shared by BOTH `type === 'swipe'` and `type ===
-            // 'regenerate'` via the client's single `is_swipe` flag).
-            //
-            // `isContinue`/`anchorContent` are carried through identically to text-completions.js's own
-            // route wiring too - see that file's own comment on these same fields for the full
-            // rationale (in-place `editMessages()` persistence for a continue, and why `anchorContent`'s
-            // full object - not just the anchor node id - is needed to build it).
-            // A continue sent with text in the box stores that text as the user's message first, and the page then
-            // continues that message, as upstream does: the reply is stored as an edit of it.
             const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
             if (!skipPersistence) {
-                // The reply's write goes through the session; one made for it is in the headers, which a
-                // stream sends before the reply is stored.
                 chat.session.actor();
                 pendingAssistantPersist = {
                     chat, anchorNodeId: replyAnchorNodeId, name2: built.name2,
@@ -4253,43 +3370,22 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                     warnings,
                     generationStop: response.locals.generationStop,
                     itemization: itemizationOf(request.body.itemization, null),
-                    // How the reply is finished (its reasoning split off, see src/reply-reasoning.js).
                     finish: await readReplyFinishSettings(directories, {
                         mainApi: 'openai', source: built.settings.chat_completion_source, model: built.params?.model ?? null,
                         avatar: characterAvatar, groupId, name1: built.name1, name2: built.name2,
                     }),
                 };
-                // Only wired up when this request actually advertised at least one server-native
-                // tool OR at least one client-advertised tool (chunk (c) - see `built.enabledServerTools`/
-                // `built.enabledClientToolNames`/`buildRawActionChatCompletionRequest()`'s own
-                // `toolsPayload` doc comment) - gated on the exact same conditions as
-                // `pendingAssistantPersist` above, since the tool-call loop only ever runs as a
-                // precursor to persisting a real final reply (never for impersonate/quiet). A pure client-tools-only request (no server tool registered at all) still
-                // needs this wired up - otherwise a backend response calling one of those client tools
-                // would fall through to the "no pending tool loop" path below and be mishandled as a
-                // plain reply.
                 if (built.enabledServerTools.length > 0 || built.enabledClientToolNames.size > 0) {
                     pendingServerToolLoop = {
                         directories, ownerId, chat, characterAvatar, groupId,
                         enabledTools: built.enabledServerTools,
                         clientToolNames: built.enabledClientToolNames,
-                        // THIS TASK (stealth-tool parity) - forwarded into runServerToolRounds()'s own
-                        // `stealthToolNames` param, see that function's doc comment step 2b.
                         stealthToolNames: built.enabledStealthClientToolNames,
                         clientToolSchemas,
                     };
                 }
             }
 
-            // Replace the body entirely - mirrors the connection-profile branch's own final
-            // assignment shape exactly, so the existing downstream dispatch code below is completely
-            // unaware of which branch produced request.body. No secret_id override: unlike the
-            // connection-profile branch (which resolves a PROFILE's own stored secret), this raw
-            // action uses the user's OWN currently active setup, so `secret_id` is left `undefined` -
-            // exactly like an ordinary client-driven request that doesn't name a specific stored
-            // secret - and every downstream `readSecret(..., request.body.secret_id)` call already
-            // treats `undefined` as "use the default secret for this key" (readSecret()'s own `id =
-            // null` default).
             const stream = !!request.body.stream;
             request.body = { ...built.params, stream, chat_completion_source: built.settings.chat_completion_source };
         }
@@ -4741,22 +3837,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
         storeTokenCountRows();
 
         if (request.body.stream) {
-            // Server-native (chunk (b)) AND client-proxy (chunk (c)) tool-calling loop, STREAMING
-            // counterpart of the non-streaming branch below - ONLY when this raw-action request
-            // actually advertised at least one server tool OR client-advertised tool
-            // (`pendingServerToolLoop` set, identical gate to the non-streaming call site below). See
-            // `forwardAndPersistCompactStreamWithServerTools()`'s own doc comment for the full design
-            // (tee + accumulate tool_calls, forward them as 0x05 frames, reuse `runServerToolRounds()`
-            // once the round ends, and the `tool_call_handoff` control-frame mechanism for a
-            // client-only hand-off).
             if (pendingServerToolLoop) {
-                // `stream: false` is forced for every round AFTER the first - matching the EXISTING,
-                // already-shipped non-streaming call site's own precedent a few lines below (every
-                // round after the first uses a plain non-streaming `refetch()` regardless of the
-                // ORIGINAL request's own `stream` flag) - the original request's `requestBody.stream`
-                // here is `true` (this is the streaming branch), so it must be explicitly overridden,
-                // or a real backend would honor it and return another SSE stream that
-                // `runServerToolRounds()`'s own `fetchResponse.json()` call cannot parse.
                 return await forwardAndPersistCompactStreamWithServerTools(
                     fetchResponse, response, pendingAssistantPersist, pendingServerToolLoop,
                     (messages) => fetch(endpointUrl, { ...config, body: JSON.stringify({ ...requestBody, stream: false, messages }) }),
@@ -4764,12 +3845,6 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 );
             }
 
-            // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
-            // accumulate the reply text for persistence - see `forwardAndPersistCompactStream()`'s own
-            // doc comment above for the full teeing mechanism. A `/chat/completions` stream carries it at
-            // `choices[0].delta.content`, a `/completions` stream at `choices[0].text`. The compact
-            // re-encoding itself always happens; `pendingAssistantPersist` being `null`
-            // (connection_profile_id and legacy/default calls) only skips persistence.
             const streamedText = usesCompletionsEndpoint
                 ? json => json?.choices?.[0]?.text
                 : json => json?.choices?.[0]?.delta?.content;
@@ -4780,16 +3855,6 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             /** @type {any} */
             let json = await fetchResponse.json();
 
-            // Server-native (chunk (b)) AND client-proxy (chunk (c)) tool-calling loop - ONLY when
-            // this raw-action request actually advertised at least one server tool OR client-advertised
-            // tool (`pendingServerToolLoop` set - see its own declaration comment near the top of this
-            // route) AND the backend's first response already came back with real `tool_calls`. A
-            // request with neither never set `pendingServerToolLoop`, so `json`/the response-handling
-            // below is completely unaffected - byte-for-byte the same as before chunk (b) landed. See
-            // `runServerToolRounds()`'s own doc comment for the full per-round behavior (execute ->
-            // persist -> re-resolve -> re-fetch, bounded by `SERVER_TOOL_ROUND_LIMIT`) and its
-            // documented "unrecognized tool name" failure mode (still a 422 - now only for a name that
-            // matches NEITHER the server registry NOR this request's own `client_tools`).
             if (pendingServerToolLoop && Array.isArray(json?.choices?.[0]?.message?.tool_calls) && json.choices[0].message.tool_calls.length > 0) {
                 const roundResult = await runServerToolRounds({
                     ...pendingServerToolLoop,
@@ -4798,16 +3863,6 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                     initialJson: json,
                     refetch: (messages) => fetch(endpointUrl, { ...config, body: JSON.stringify({ ...requestBody, messages }) }),
                 });
-                // Chunk (c): a client-only tool call was hit - hand off to the client instead of
-                // trying to resolve it here. This response shape is DISTINCT from a normal generation
-                // result (see `runServerToolRounds()`'s own doc comment, step 5) - nothing below this
-                // (persistence of a "final reply") applies, since there isn't one yet.
-                // THIS TASK (stealth-tool parity, runServerToolRounds()'s own doc comment step 2b) -
-                // nothing was invoked/persisted for this round; matching legacy's `shouldStopGeneration`
-                // branch, respond with a distinct, non-`choices`-shaped outcome the client recognizes
-                // (see public/script.js's raw-action gate) instead of a normal generation result or the
-                // `pending_tool_calls` hand-off shape - there is no pending tool call for the client to
-                // resolve, only "this generation produced nothing".
                 if (roundResult.ok === 'aborted') {
                     return response.send(withStoredMessages({ aborted: true }, response));
                 }
@@ -4818,37 +3873,12 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                     return response.status(roundResult.status).send({ error: true, message: roundResult.message });
                 }
                 json = roundResult.json;
-                // Advance the persistence anchor to whatever the tool-call loop's last-appended node
-                // was, so the FINAL plain-text reply (persisted just below) chains after the real
-                // tool-call/result turns instead of the stale pre-loop anchor. Once ANY round has run
-                // (guaranteed here - this block is only reached when the backend's first response
-                // already carried tool_calls, so round 0 always executes), `isSwipe`/`isContinue` are
-                // downgraded to a plain append: `runServerToolRounds()` already claimed the
-                // sibling-alternative slot for `isSwipe` at round 0 (see its own doc comment), and
-                // `isContinue`'s "edit in place" has no meaningful target anymore once a real
-                // intervening tool-call node exists on the tree - see `runServerToolRounds()`'s own doc
-                // comment for the full rationale (was previously a documented, out-of-scope limitation).
                 pendingAssistantPersist.anchorNodeId = roundResult.leafNodeId;
                 pendingAssistantPersist.isSwipe = false;
                 pendingAssistantPersist.isContinue = false;
             }
 
-            // Persist the ASSISTANT's reply for the raw-action branch (see
-            // `pendingAssistantPersist`'s declaration near the top of this route) - only reached for
-            // a real, successful (fetchResponse.ok) NON-STREAMING generation dispatched through THIS
-            // shared inline OpenAI/custom/other-source block, so nothing speculative ever gets
-            // committed. A no-op when the raw-action branch didn't run, and never reached at all for
-            // the provider-`switch` cases above (each `return`s from its own function before this
-            // point) - see that variable's own declaration comment for the full list of what's NOT
-            // covered here (those ~12 functions, for either streaming or non-streaming).
-            //
-            // The actual plain/continue/swipe persistence branching lives in `persistAssistantReply()`
-            // (../../assistant-reply-persist.js), shared with the streaming branch above - see that
-            // module's own doc comment for the plain, continue and swipe modes (shared, verbatim, with
-            // text-completions.js's own identical persistence for its backend).
             if (pendingAssistantPersist) {
-                // `/chat/completions` answers `choices[0].message.content`; a TEXT_COMPLETION_MODELS model
-                // (`isTextCompletion`) goes to `/completions`, which answers `choices[0].text`.
                 const generatedText = replyTextAsPageShows(json, 'openai');
                 if (generatedText === null) {
                     warnings.push(unreadableReplyWarning(json, `openai|${request.body.chat_completion_source}`));
@@ -5137,10 +4167,7 @@ multimodalModels.post('/workers_ai', async (req, res) => {
 
 router.use('/multimodal-models', multimodalModels);
 
-// See text-completions.js's identical route for the shared implementation/rationale - both routers
-// mount it since a generation id doesn't identify which backend produced it.
 router.get('/generate/resume/:id', handleGenerationResume);
-// See generation-stop.js: an explicit stop aborts what a disconnect deliberately doesn't.
 router.post('/generate/stop/:id', handleGenerationStop);
 
 router.post('/process', async function (request, response) {

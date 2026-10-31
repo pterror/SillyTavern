@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, setStackedDrawers } from './frontent-test-utils.js';
 
-// With stacked drawers on, nothing covers what is being edited: a character info field, or a chat message. Another
-// layer can still open, behind it; once the edit ends, the edited layer stays where it was.
-
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise(resolve => {
         const { eventSource, eventTypes } = window['SillyTavern'].getContext();
@@ -12,9 +9,8 @@ async function awaitAppReady(page) {
 }
 
 /**
- * Makes a character and opens it in character info.
  * @param {import('@playwright/test').Page} page
- * @returns {Promise<string>} Its avatar.
+ * @returns {Promise<string>}
  */
 async function openNewCharacter(page) {
     const avatar = await page.evaluate(async (name) => {
@@ -49,7 +45,6 @@ test.describe('Nothing covers what is being edited', () => {
         await page.setViewportSize({ width: 1400, height: 900 });
     });
 
-    // The data root is shared by the worker's later tests, which expect the defaults.
     test.afterEach(async ({ page }) => {
         await setStackedDrawers(page, false);
     });
@@ -63,19 +58,16 @@ test.describe('Nothing covers what is being edited', () => {
         await page.locator('.field_edit_toggle[data-for="description_textarea"]').click();
         await expect(panel).toHaveClass(/\bfield_editing\b/);
 
-        // Fullscreen character management opens, but behind character info.
         await page.locator('#rightNavDrawerIcon').click();
         await expect(page.locator('#right-nav-panel')).toHaveClass(/openDrawer/);
         await expect.poll(() => isCut(page.locator('#right-nav-panel'))).toBe(true);
         expect(await isCut(info)).toBe(false);
 
-        // Clicking another character is refused: the field's ✓ ✕ flash and no toast.
         await page.locator('#rm_print_characters_block .character_select', { hasText: 'Seraphina' }).first().click();
         await expect(panel).toHaveClass(/\bfield_edit_attention\b/);
         await expect(page.locator('#toast-container .toast-message', { hasText: 'being edited' })).toHaveCount(0);
         await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar);
 
-        // Once the edit ends, character info stays where it was.
         await page.locator('.field_edit_cancel[data-for="description_textarea"]').click();
         await expect(panel).not.toHaveClass(/\bfield_editing\b/);
         await page.waitForFunction(() => !document.querySelector('.field_editing'));
@@ -92,13 +84,11 @@ test.describe('Nothing covers what is being edited', () => {
         await page.locator('#chat .mes[mesid="0"] .mes_edit').click();
         await expect(page.locator('#curEditTextarea')).toHaveCount(1);
 
-        // User Settings opens over the chat's middle, but behind it.
         await page.locator('#user-settings-button .drawer-icon').click();
         await expect(page.locator('#user-settings-block')).toHaveClass(/openDrawer/);
         await expect.poll(() => isCut(page.locator('#user-settings-block'))).toBe(true);
         expect(await isCut(page.locator('#sheld'))).toBe(false);
 
-        // Ending the edit by a click in the chat closes the unpinned drawer, as any click in the chat does.
         await page.locator('#chat .mes[mesid="0"] .mes_edit_cancel').click();
         await expect(page.locator('#curEditTextarea')).toHaveCount(0);
         await expect.poll(() => isCut(page.locator('#sheld'))).toBe(false);

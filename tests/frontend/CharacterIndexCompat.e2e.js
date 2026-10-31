@@ -2,17 +2,12 @@ import zlib from 'node:zlib';
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, holdCharacters } from './frontent-test-utils.js';
 
-// Upstream's exports that take a character index (a position in `getContext().characters`), called the way an
-// upstream extension calls them: with `getContext().characterId` (an index string), with a number, and with the
-// fork's avatar key. Each form must have the same effect; a miss follows upstream's miss behaviour.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
 const PAIR_MISMATCH_WARNING = 'do not resolve to the same character';
 const LEGACY_INDEX_WARNING = 'called with a legacy character index';
-// No test creates this many characters, so it is never a position in `getContext().characters`.
 const MISSING_INDEX = 999999;
 
 function stamp() {
@@ -20,11 +15,10 @@ function stamp() {
 }
 
 /**
- * Creates a character through the API.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
  * @param {string} description
- * @returns {Promise<string>} The avatar filename.
+ * @returns {Promise<string>}
  */
 async function createCharacter(page, name, description = 'stored description') {
     return page.evaluate(async ({ name, description }) => {
@@ -41,11 +35,10 @@ async function createCharacter(page, name, description = 'stored description') {
 }
 
 /**
- * Creates characters, then reloads the client's character list so they are all in `getContext().characters`.
  * @param {import('@playwright/test').Page} page
  * @param {string} prefix
  * @param {number} count
- * @returns {Promise<string[]>} Avatars, in creation order.
+ * @returns {Promise<string[]>}
  */
 async function createCharacters(page, prefix, count) {
     const s = stamp();
@@ -57,7 +50,6 @@ async function createCharacters(page, prefix, count) {
         // @ts-ignore
         await SillyTavern.getContext().getCharacters();
     });
-    // These tests are about characters the page holds.
     await holdCharacters(page, avatars);
     return avatars;
 }
@@ -83,7 +75,6 @@ async function deleteCharacters(page, avatars) {
 }
 
 /**
- * Selects the character (as a click on its list row does) and waits for its chat.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -98,7 +89,6 @@ async function selectCharacter(page, avatar) {
 }
 
 /**
- * Selects the character and returns `getContext().characterId`, the index string an upstream extension reads.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  * @returns {Promise<string>}
@@ -115,12 +105,9 @@ async function indexOf(page, avatar) {
 }
 
 /**
- * Opens a new group of these characters. Extensions are shown only the current character or the open group's
- * members, so this is how a test gets an index into `getContext().characters` naming a character that isn't the
- * current one. {@link deleteCharacters} deletes the group too.
  * @param {import('@playwright/test').Page} page
  * @param {string[]} avatars
- * @returns {Promise<{groupId: string, indices: Record<string, string>}>} The group, and each avatar's index string.
+ * @returns {Promise<{groupId: string, indices: Record<string, string>}>}
  */
 async function openGroupOf(page, avatars) {
     const groupId = await page.evaluate(async ({ members, name }) => {
@@ -152,7 +139,6 @@ async function openGroupOf(page, avatars) {
 }
 
 /**
- * Checks that the index still names the character in `getContext().characters` (nothing shifted it since).
  * @param {import('@playwright/test').Page} page
  * @param {string} index
  * @param {string} avatar
@@ -168,7 +154,7 @@ async function expectIndexNames(page, index, avatar) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
- * @returns {Promise<{ok: boolean, body: any}>} The card as stored on the server.
+ * @returns {Promise<{ok: boolean, body: any}>}
  */
 async function fetchStoredCharacter(page, avatar) {
     return page.evaluate(async (avatarUrl) => {
@@ -182,7 +168,6 @@ async function fetchStoredCharacter(page, avatar) {
 }
 
 /**
- * Saves a one-message chat for the character under the given name.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  * @param {string} fileName
@@ -198,7 +183,6 @@ async function saveChat(page, avatar, fileName) {
 }
 
 /**
- * The character's chat names, as the server lists them: each chat's label, or its compat id when it has none.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  * @returns {Promise<string[]>}
@@ -214,7 +198,6 @@ async function listChatNames(page, avatar) {
 }
 
 /**
- * Every console.warn from here on.
  * @param {import('@playwright/test').Page} page
  * @returns {string[]}
  */
@@ -227,7 +210,6 @@ function collectWarnings(page) {
 }
 
 /**
- * Every POST to the given path from here on, with its JSON body.
  * @param {import('@playwright/test').Page} page
  * @param {string} path
  * @returns {any[]}
@@ -353,7 +335,6 @@ test.describe('positional character parameters (#1-#8)', () => {
     test('#5 handleDeleteCharacter deletes the named character for an index string, a number and an avatar', async ({ page }) => {
         const [bystander, byIndexString, byNumber, byAvatar] = await createCharacters(page, 'IdxDelete', 4);
         try {
-            // Each deletion shifts later indices, so each index is read just before its call.
             const byIndexStringRef = await indexOf(page, byIndexString);
             await deleteVia(page, byIndexStringRef);
             expect((await fetchStoredCharacter(page, byIndexString)).ok).toBe(false);
@@ -363,7 +344,6 @@ test.describe('positional character parameters (#1-#8)', () => {
             await deleteVia(page, byNumberRef);
             expect((await fetchStoredCharacter(page, byNumber)).ok).toBe(false);
 
-            // With nothing selected, deleteCharacter first asks to close the temporary chat.
             await selectCharacter(page, bystander);
             await deleteVia(page, byAvatar);
             expect((await fetchStoredCharacter(page, byAvatar)).ok).toBe(false);
@@ -434,7 +414,6 @@ test.describe('positional character parameters (#1-#8)', () => {
         const [current] = await createCharacters(page, 'IdxEditorMiss', 1);
         try {
             await selectCharacter(page, current);
-            // Selecting puts the editor in front of the character list; bring the list back as a user would.
             await expect(page.locator('#form_create')).toHaveAttribute('actiontype', 'editcharacter');
             await expect(page.locator('#right-nav-panel')).toBeHidden();
             await page.locator('#rightNavDrawerIcon').click();
@@ -527,8 +506,6 @@ test.describe('positional character parameters (#1-#8)', () => {
             const index = (await openGroupOf(page, [current, target])).indices[target];
             await expectIndexNames(page, index, target);
 
-            // Naming a chat moves the tab to that bookmark and makes it the current chat, whose compat id (its label,
-            // the name the chat was saved under) the character's `chat` then holds, locally and as stored.
             const calls = [[names[0], index], [names[1], Number(index)], [names[2], target]];
             const seen = new Set();
             for (const [newName, ref] of calls) {
@@ -557,9 +534,6 @@ test.describe('#10 Generate force_chid', () => {
     test.beforeEach(testSetup.awaitST);
 
     /**
-     * Creates two characters and a group of both, captures their indices, and opens the group. Generation is
-     * made to reach the group wrapper (online) and to stop right after it drafts a member (offline again, so the
-     * member's own Generate returns before any backend call). Drafted members are recorded.
      * @param {import('@playwright/test').Page} page
      */
     async function setUpGroup(page) {
@@ -617,7 +591,6 @@ test.describe('#10 Generate force_chid', () => {
     }
 
     /**
-     * Calls Generate with these options and reports the members drafted and whether it threw.
      * @param {import('@playwright/test').Page} page
      * @param {object} options
      * @returns {Promise<{drafted: number[], error: null|{name: string, message: string}}>}
@@ -645,7 +618,6 @@ test.describe('#10 Generate force_chid', () => {
         const { first, second, secondIndex, groupId } = await setUpGroup(page);
         try {
             const warnings = collectWarnings(page);
-            // GROUP_MEMBER_DRAFTED carries the member's index in `characters`, as upstream's does.
             const drafted = [Number(secondIndex)];
             expect(await generateWith(page, { force_chid: Number(secondIndex) })).toEqual({ drafted, error: null });
             expect(await generateWith(page, { force_avatar: second })).toEqual({ drafted, error: null });
@@ -661,7 +633,6 @@ test.describe('#10 Generate force_chid', () => {
         try {
             const warnings = collectWarnings(page);
             const drafted = [Number(firstIndex)];
-            // `getContext().characterId` is an index string: force_chid takes numbers only, so force_avatar decides.
             expect(await generateWith(page, { force_chid: secondIndex, force_avatar: first })).toEqual({ drafted, error: null });
             expect(await generateWith(page, { force_chid: second, force_avatar: first })).toEqual({ drafted, error: null });
             expect(await generateWith(page, { force_chid: String(MISSING_INDEX), force_avatar: first })).toEqual({ drafted, error: null });
@@ -709,7 +680,6 @@ test.describe('#10 Generate force_chid', () => {
             await selectCharacter(page, current);
             const result = await page.evaluate(async (missing) => {
                 const { Generate, setOnlineStatus } = await import('/script.js');
-                // Offline, Generate returns before any backend call; a group branch would run before that.
                 setOnlineStatus('no_connection');
                 try {
                     await Generate('normal', { force_chid: missing });
@@ -729,7 +699,6 @@ test.describe('#11/#12 getCharacterCardFields and getCharacterCardFieldsLazy', (
     test.beforeEach(testSetup.awaitST);
 
     /**
-     * The description each export returns for these options.
      * @param {import('@playwright/test').Page} page
      * @param {object} options
      * @returns {Promise<{fields: string, lazy: string}>}
@@ -770,7 +739,6 @@ test.describe('#11/#12 getCharacterCardFields and getCharacterCardFieldsLazy', (
             for (const options of [{ chid: null }, { chid: undefined }, {}]) {
                 expect(await descriptionsFor(page, options)).toEqual({ fields: expected, lazy: expected });
             }
-            // With chid null, the avatar form applies.
             const otherDescription = (await fetchStoredCharacter(page, other)).body.description;
             expect(await descriptionsFor(page, { chid: null, avatar: other })).toEqual({ fields: otherDescription, lazy: otherDescription });
         } finally {
@@ -812,8 +780,6 @@ test.describe('#13 renameGroupOrCharacterChat', () => {
     test.beforeEach(testSetup.awaitST);
 
     /**
-     * Starts the rename. A failure awaits the user closing the "Chat was not renamed" popup, so the call is
-     * left running and awaited by {@link finishRename}.
      * @param {import('@playwright/test').Page} page
      * @param {object} params
      */
@@ -834,7 +800,6 @@ test.describe('#13 renameGroupOrCharacterChat', () => {
     }
 
     /**
-     * Expects the rename to fail with upstream's "Chat was not renamed" popup, and closes it.
      * @param {import('@playwright/test').Page} page
      */
     async function expectNotRenamed(page) {
@@ -970,11 +935,9 @@ test.describe('writeExtensionField index branch', () => {
 test.describe('emitted indices: GENERATION_STARTED and GENERATION_AFTER_COMMANDS force_chid (step 11)', () => {
     test.beforeEach(testSetup.awaitST);
 
-    // Upstream's options payload, in upstream's key order.
     const UPSTREAM_OPTION_KEYS = ['automatic_trigger', 'force_name2', 'quiet_prompt', 'quietToLoud', 'skipWIAN', 'force_chid', 'force_avatar', 'signal', 'quietImage'];
 
     /**
-     * Calls Generate offline (it returns before any backend call) and reports both events' payloads.
      * @param {import('@playwright/test').Page} page
      * @param {{omitOptions?: boolean, options?: object}} call
      */
@@ -1010,7 +973,6 @@ test.describe('emitted indices: GENERATION_STARTED and GENERATION_AFTER_COMMANDS
     }
 
     /**
-     * Both events' payloads, as expected for this force_chid and force_avatar.
      * @param {any} forceChid
      * @param {string|undefined} forceAvatar
      */
@@ -1068,7 +1030,6 @@ test.describe('emitted indices: CHARACTER_EDITOR_OPENED (step 12)', () => {
     test.beforeEach(testSetup.awaitST);
 
     /**
-     * Records every CHARACTER_EDITOR_OPENED from here on into `window.__editorOpened`.
      * @param {import('@playwright/test').Page} page
      */
     async function recordEditorOpened(page) {
@@ -1085,7 +1046,6 @@ test.describe('emitted indices: CHARACTER_EDITOR_OPENED (step 12)', () => {
     }
 
     /**
-     * Returns the CHARACTER_EDITOR_OPENED emits recorded so far, and clears them.
      * @param {import('@playwright/test').Page} page
      * @returns {Promise<{count: number, type: string, chid: any}[]>}
      */
@@ -1117,7 +1077,6 @@ test.describe('emitted indices: CHARACTER_EDITOR_OPENED (step 12)', () => {
         try {
             const index = (await openGroupOf(page, [current, target])).indices[target];
             await expectIndexNames(page, index, target);
-            // A member opened in the editor is the current character while the group stays open.
             await page.evaluate(async (avatar) => {
                 const { setCharacterId } = await import('/scripts/character-store.js');
                 setCharacterId(avatar);
@@ -1145,14 +1104,12 @@ test.describe('emitted indices: CHARACTER_EDITOR_OPENED (step 12)', () => {
             await selectCharacter(page, current);
             await recordEditorOpened(page);
 
-            // Selecting a character (what a click on its list row runs).
             await selectCharacter(page, target);
             const targetIndex = await currentCharacterId(page);
             await expectIndexNames(page, targetIndex, target);
             const onSelect = await takeEditorOpened(page);
             expect(onSelect.length).toBeGreaterThan(0);
             expect(onSelect).toEqual(onSelect.map(() => emitted(targetIndex)));
-            // (A click on the name at the top of the character's info edits the name; it no longer reopens the info.)
         } finally {
             await deleteCharacters(page, [current, target]);
         }
@@ -1190,7 +1147,6 @@ test.describe('emitted indices: CHARACTER_EDITOR_OPENED (step 12)', () => {
             await page.locator('#rm_button_selected_ch').click();
             const view = page.locator(`.rm_group_members .group_member[data-avatar="${second}"] [data-action="view"]`);
             await expect(view).toHaveCount(1, { timeout: 10000 });
-            // Drops the emits from opening the group panel.
             await takeEditorOpened(page);
             await view.click();
             await expect(page.locator('#avatar_url_pole')).toHaveValue(second, { timeout: 10000 });
@@ -1211,7 +1167,6 @@ test.describe('emitted indices: CHARACTER_DELETED id (step 13)', () => {
     test.beforeEach(testSetup.awaitST);
 
     /**
-     * Records every CHARACTER_DELETED from here on into `window.__deleted`.
      * @param {import('@playwright/test').Page} page
      */
     async function recordDeleted(page) {
@@ -1234,7 +1189,6 @@ test.describe('emitted indices: CHARACTER_DELETED id (step 13)', () => {
     }
 
     /**
-     * Returns the CHARACTER_DELETED payloads recorded so far, and clears them.
      * @param {import('@playwright/test').Page} page
      */
     async function takeDeleted(page) {
@@ -1257,10 +1211,8 @@ test.describe('emitted indices: CHARACTER_DELETED id (step 13)', () => {
         try {
             await recordDeleted(page);
 
-            // Each deletion can shift later indices, so each index is read just before its call.
             const refs = [[byIndexString, (index) => index], [byNumber, (index) => Number(index)], [byArray, (index) => [Number(index)]]];
             for (const [avatar, toRef] of refs) {
-                // A delete closes the group, so each call gets a group of its own.
                 await openGroupOf(page, [bystander, avatar]);
                 const index = await page.evaluate((avatar) => {
                     // @ts-ignore
@@ -1282,13 +1234,10 @@ test.describe('emitted indices: CHARACTER_DELETED id (step 13)', () => {
             await selectCharacter(page, bystander);
             await recordDeleted(page);
 
-            // handleDeleteCharacter with the avatar form.
             await deleteVia(page, byHandleAvatar);
             expect((await fetchStoredCharacter(page, byHandleAvatar)).ok).toBe(false);
             expect(await takeDeleted(page)).toEqual([deletedPayload(undefined, byHandleAvatar)]);
 
-            // An extension calling deleteCharacter(avatar). A delete closes the current chat, and with nothing
-            // selected deleteCharacter first asks to close the temporary chat.
             await selectCharacter(page, bystander);
             await page.evaluate(async (avatar) => {
                 const { deleteCharacter } = await import('/script.js');
@@ -1297,7 +1246,6 @@ test.describe('emitted indices: CHARACTER_DELETED id (step 13)', () => {
             expect((await fetchStoredCharacter(page, byDeleteCharacter)).ok).toBe(false);
             expect(await takeDeleted(page)).toEqual([deletedPayload(undefined, byDeleteCharacter)]);
 
-            // The editor's delete button, which deletes the current character by avatar.
             await selectCharacter(page, byDeleteButton);
             await page.locator('#delete_button').click();
             await page.locator('dialog[open] .popup-button-ok').click();
@@ -1316,18 +1264,14 @@ test.describe('emitted indices: CHARACTER_DELETED id (step 13)', () => {
 });
 
 test.describe('#9 saveSettings and saveSettingsDebounced', () => {
-    // Upstream's retry messages and TempResponseLength.restore's log, which nothing prints now (a response length
-    // asked for no longer changes the setting, so saves don't wait for it).
     const RESPONSE_LENGTH_WARNING = 'Response length is currently being overridden, scheduling another save';
     const RESPONSE_LENGTH_ERROR = 'Response length is currently being overridden, but the save loop has reached the maximum number of retries';
     const RESTORE_LOG = '[TempResponseLength] Restored original response length:';
-    // Longer than the save debounce (DEFAULT_SAVE_EDIT_TIMEOUT, 1000 ms), so a window started before it has run.
     const PAST_WINDOW = 2500;
     const RETRY_TIMEOUT = 15000;
 
     test.beforeEach(async ({ page }) => {
         await testSetup.awaitST({ page });
-        // Lets any save the boot scheduled run before a test starts recording.
         await page.waitForTimeout(PAST_WINDOW);
     });
 
@@ -1336,8 +1280,6 @@ test.describe('#9 saveSettings and saveSettingsDebounced', () => {
     });
 
     /**
-     * From here on, in order: upstream's retry warning and error, the restore log, and each POST to
-     * /api/settings/save ('save') or /api/settings/save-partial ('save-partial') with its JSON body.
      * @param {import('@playwright/test').Page} page
      * @returns {{kind: string, text?: string, body?: any}[]}
      */
@@ -1363,8 +1305,6 @@ test.describe('#9 saveSettings and saveSettingsDebounced', () => {
     }
 
     /**
-     * The timeline, with each full save reduced to the given probes' values and amount_gen, and each partial
-     * save to its keys and whether it carries expectedHashes.
      * @param {{kind: string, text?: string, body?: any}[]} timeline
      * @param {{name: string}[]} probes
      */
@@ -1381,7 +1321,6 @@ test.describe('#9 saveSettings and saveSettingsDebounced', () => {
     }
 
     /**
-     * Waits for the timeline to reach the length, then past one more debounce window so a later event would show.
      * @param {import('@playwright/test').Page} page
      * @param {any[]} timeline
      * @param {number} length
@@ -1392,7 +1331,6 @@ test.describe('#9 saveSettings and saveSettingsDebounced', () => {
     }
 
     /**
-     * Names a fresh power_user field, so each save of it differs from the last saved settings.
      * @returns {{name: string, key: string, value: string}}
      */
     function newProbe() {
@@ -1401,8 +1339,6 @@ test.describe('#9 saveSettings and saveSettingsDebounced', () => {
     }
 
     /**
-     * Runs the steps in one evaluate, with no await between them other than a direct saveSettings() call's own.
-     * A step either sets a probe's value in power_user, or calls a script.js export with arguments.
      * @param {import('@playwright/test').Page} page
      * @param {({probe: {name: string, value: string}} | {call: string, args: any[]})[]} steps
      */
@@ -1423,10 +1359,8 @@ test.describe('#9 saveSettings and saveSettingsDebounced', () => {
     }
 
     /**
-     * Asks for a response length, as an in-flight generateRawData({ responseLength }) does: the generation is held in
-     * a GENERATE_AFTER_COMBINE_PROMPTS listener until releaseResponseLength().
      * @param {import('@playwright/test').Page} page
-     * @returns {Promise<{original: number, overridden: number}>} amount_gen before and during the override.
+     * @returns {Promise<{original: number, overridden: number}>}
      */
     async function holdResponseLength(page) {
         return page.evaluate(async () => {
@@ -1445,7 +1379,6 @@ test.describe('#9 saveSettings and saveSettingsDebounced', () => {
                 await released;
             };
             ctx.eventSource.on(ctx.eventTypes.GENERATE_AFTER_COMBINE_PROMPTS, listener);
-            // Stopped before it is released, so it never reaches a backend.
             const generation = generateRawData({ prompt: 'hold', api: 'kobold', responseLength }).catch(() => { });
             await inside;
             ctx.eventSource.removeListener(ctx.eventTypes.GENERATE_AFTER_COMBINE_PROMPTS, listener);
@@ -1460,7 +1393,6 @@ test.describe('#9 saveSettings and saveSettingsDebounced', () => {
     }
 
     /**
-     * Ends a holdResponseLength() generation, if one is held.
      * @param {import('@playwright/test').Page} page
      */
     async function releaseResponseLength(page) {
@@ -1539,13 +1471,11 @@ test.describe('#9 saveSettings and saveSettingsDebounced', () => {
             { call: 'saveSettingsDebounced', args: [a.key] },
             { call: 'saveSettings', args: [] },
         ]);
-        // The keyed window still runs, and finds nothing pending.
         await settle(page, timeline, 1);
         expect(project(timeline, [a])).toEqual([
             { kind: 'save', probes: [a.value], amountGen: expect.any(Number) },
         ]);
 
-        // A keyed save sends its keys plus any still pending, so a keyed save of b shows a is no longer pending.
         const b = newProbe();
         await runSteps(page, [
             { probe: b },
@@ -1660,19 +1590,12 @@ test.describe('#9 saveSettings and saveSettingsDebounced', () => {
 test.describe('getEntitiesList (step 10)', () => {
     test.beforeEach(testSetup.awaitST);
 
-    // Smaller than the entities setUpList() leaves in the list, so the list has more than one page.
     const PAGE_SIZE = 10;
     const LIST_CHARACTERS = 12;
-    // Not one of the server's /query sort fields, so printCharacters() falls back to name order. No entity's item has
-    // it either, so getEntitiesList()'s browser sort by it leaves the page's order as it is.
     const REJECTED_SORT_FIELD = 'no_such_sort_field';
-    // getEntitiesList()'s argument forms; null stands for no argument.
     const FLAG_COMBINATIONS = [null, {}, { doSort: false }, { doFilter: true }, { doFilter: true, doSort: false }, { doFilter: false, doSort: true }];
 
     /**
-     * Defines, in the page: window.__listRows(), the character list's rows on screen in order, as `type:id` keys
-     * (characters by data-avatar, groups by data-grid, folders by tagid); window.__listFavRows(), the same for the
-     * rows marked as favourites; and window.__entityKeys(entities), the same keys for entities.
      * @param {import('@playwright/test').Page} page
      */
     async function installListProbe(page) {
@@ -1694,8 +1617,6 @@ test.describe('getEntitiesList (step 10)', () => {
     }
 
     /**
-     * Creates LIST_CHARACTERS characters, every other one a favourite, then renders the list from page 1 at
-     * PAGE_SIZE rows a page, with the saved sort or with one the server rejects.
      * @param {import('@playwright/test').Page} page
      * @param {{rejectedSort?: boolean}} [options]
      * @returns {Promise<{avatars: string[], favs: string[], originalSortField: string}>}
@@ -1739,7 +1660,6 @@ test.describe('getEntitiesList (step 10)', () => {
         // @ts-ignore
         await expect.poll(() => page.evaluate(() => window.__listRows().length)).toBe(PAGE_SIZE);
 
-        // The render took the intended path: the server rejects the sort field, and serves the others.
         if (rejectedSort) {
             expect(queryStatuses).toContain(400);
         } else {
@@ -1756,8 +1676,6 @@ test.describe('getEntitiesList (step 10)', () => {
     }
 
     /**
-     * Restores the sort field setUpList() may have changed, and deletes its characters. The page size lives in
-     * this test's browser context only.
      * @param {import('@playwright/test').Page} page
      * @param {{avatars: string[], originalSortField: string}} list
      */
@@ -1770,14 +1688,12 @@ test.describe('getEntitiesList (step 10)', () => {
     }
 
     /**
-     * In one synchronous run: the rows on screen, and getEntitiesList()'s keys for each of FLAG_COMBINATIONS.
      * @param {import('@playwright/test').Page} page
      * @returns {Promise<{rows: string[], results: string[][]}>}
      */
     async function snapshotList(page) {
         return page.evaluate(async (combinations) => {
             const { getEntitiesList } = await import('/script.js');
-            // No await from here on, so the rows and the calls see the same render.
             // @ts-ignore
             const rows = window.__listRows();
             // @ts-ignore
@@ -1787,7 +1703,6 @@ test.describe('getEntitiesList (step 10)', () => {
     }
 
     /**
-     * Turns the character list to its next page and waits for it to render.
      * @param {import('@playwright/test').Page} page
      */
     async function turnPage(page) {
@@ -1819,7 +1734,6 @@ test.describe('getEntitiesList (step 10)', () => {
                 const first = await snapshotList(page);
                 expect(first.rows).toHaveLength(PAGE_SIZE);
                 expect(first.results).toEqual(FLAG_COMBINATIONS.map(() => first.rows));
-                // Every character and group the page holds, not just the ones extensions are shown.
                 const loaded = await page.evaluate(async () => {
                     const { characters } = await import('/scripts/character-store.js');
                     const { groups } = await import('/scripts/group-store.js');
@@ -1880,7 +1794,6 @@ test.describe('getEntitiesList (step 10)', () => {
     test('before the list first renders, getEntitiesList() returns []', async ({ page }) => {
         const [avatar] = await createCharacters(page, 'IdxEntitiesBoot', 1);
         try {
-            // Holds every /query request, the first page's among them, so the reloaded page can't render the list.
             const held = [];
             let released = false;
             await page.route('**/api/characters/query', async (route) => {
@@ -1890,9 +1803,6 @@ test.describe('getEntitiesList (step 10)', () => {
                     held.push(route);
                 }
             });
-            // Pages seen before are kept in browser storage and drawn before the server answers: with none kept,
-            // nothing can render while /query is held. A delete waits for this page's connections to close (the
-            // reload), and the reloaded page's opens wait for the delete.
             await page.evaluate(async () => {
                 const names = (await indexedDB.databases()).map(db => db.name).filter(name => name?.startsWith('SillyTavern_QueryCache_'));
                 for (const name of names) indexedDB.deleteDatabase(name);
@@ -1938,26 +1848,21 @@ test.describe('getEntitiesList (step 10)', () => {
                 const { getEntitiesList } = await import('/script.js');
                 // @ts-ignore
                 const keys = window.__entityKeys;
-                // No await until the pagination below, so every call sees the render the rows came from.
                 // @ts-ignore
                 const rows = window.__listRows();
                 // @ts-ignore
                 const favRows = window.__listFavRows();
 
-                // Upstream's select_rm_info post-import page jump.
                 const avatarIndices = avatars.map((avatarFileName) => {
                     const charData = getEntitiesList({ doFilter: true });
                     return charData.findIndex((x) => x?.item?.avatar?.startsWith(avatarFileName));
                 });
-                // Upstream's select_rm_info post-create group page jump, for a group not on the page.
                 const groupIndex = getEntitiesList({ doFilter: true }).findIndex((x) => String(x?.item?.id) === String('no-such-group'));
 
-                // Upstream's favsToHotswap.
                 const entities = getEntitiesList({ doFilter: false });
                 const FAVS_LIMIT = 25;
                 const hotswapFavs = keys(entities.filter(x => x.item.fav || x.item.fav == 'true').slice(0, FAVS_LIMIT));
 
-                // Upstream's printCharacters pagination, on a pager of its own.
                 const pagedEntities = getEntitiesList({ doFilter: true });
                 const holder = document.createElement('div');
                 document.body.append(holder);
@@ -1990,12 +1895,10 @@ test.describe('getEntitiesList (step 10)', () => {
             }, { pageSize: PAGE_SIZE, avatars: list.avatars, favs: list.favs });
 
             expect(outcome.rows).toHaveLength(PAGE_SIZE);
-            // A position within the page for an avatar on it, -1 for one elsewhere, and both kinds are here.
             expect(outcome.avatarIndices).toEqual(outcome.expectedAvatarIndices);
             expect(outcome.avatarIndices.some(index => index >= 0)).toBe(true);
             expect(outcome.avatarIndices.some(index => index === -1)).toBe(true);
             expect(outcome.groupIndex).toBe(-1);
-            // The favourites on the page, and some favourites are on other pages.
             expect(outcome.favRows.length).toBeGreaterThan(0);
             expect(outcome.favsOffPage).toBeGreaterThan(0);
             expect(outcome.hotswapFavs).toEqual(outcome.favRows);

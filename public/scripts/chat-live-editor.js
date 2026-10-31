@@ -1,7 +1,3 @@
-// The live editor on the chat's own text boxes: a message being edited, a reasoning block being edited, and the chat
-// box. A message or reasoning editor lives exactly as long as its edit: mounted when the edit starts, taken away
-// before the textarea is removed. The chat box keeps its editor once it has one.
-
 import { showdown } from '../lib.js';
 import { MacroValues } from './macro-values.js';
 import { macrosIn } from './safe-macros.js';
@@ -11,13 +7,12 @@ import { drawerStackChanged } from './drawer-stack.js';
 /**
  * @typedef {object} ChatEditorDeps
  * @property {(mes: string, chName: string, isSystem: boolean, isUser: boolean, messageId: number, sanitizerOverrides?: object, isReasoning?: boolean) => string} messageFormatting
- * @property {() => import('./macro-values.js').MacroScope} macroScope Whose macros the chat's are: the open chat's.
+ * @property {() => import('./macro-values.js').MacroScope} macroScope
  * @property {{ encode_tags?: boolean }} power_user
  * @property {(file: File) => Promise<string>} uploadImage
- * @property {() => string} userName The user's name, as a message they send renders with it.
- * @property {() => number} nextMessageId The id the chat box's message gets when it's sent.
+ * @property {() => string} userName
+ * @property {() => number} nextMessageId
  * @property {(macroName: string, characterName: string) => import('./macro-pill.js').MacroPerson | null} macroPerson
- * Who a mention names, {{char}} being the character of that name.
  */
 
 /** @type {ChatEditorDeps | null} */
@@ -33,12 +28,12 @@ const editors = new Map();
 
 /**
  * @typedef {object} ChatEditorTarget
- * @property {string | (() => string)} name The speaker's name, as the message renders with it.
+ * @property {string | (() => string)} name
  * @property {boolean} isSystem
  * @property {boolean} isUser
  * @property {number | (() => number)} messageId
- * @property {boolean} [isReasoning] A reasoning block, rendered as messageFormatting renders reasoning.
- * @property {boolean} [isChatBox] The chat box: it keeps its own look, and its toolbar shows only while it has focus.
+ * @property {boolean} [isReasoning]
+ * @property {boolean} [isChatBox]
  */
 
 /**
@@ -53,11 +48,7 @@ function chatEditorOptions(chatDeps, target) {
     const isReasoning = Boolean(target.isReasoning);
     const isChatBox = Boolean(target.isChatBox);
     const { messageFormatting, power_user, uploadImage, macroPerson } = chatDeps;
-    // messageFormatting fills in macros only on the first message of a character (not reasoning); a reasoning edit
-    // fills them in when it's saved, and the chat box's text when it's sent. Elsewhere the text renders with its
-    // macros as written.
     const fillsMacros = () => isReasoning || isChatBox || (Number(messageIdNow()) === 0 && !isSystem && !isUser);
-    // {{char}} is the speaker only where a character speaks.
     const values = new MacroValues(() => (isUser ? chatDeps.macroScope() : { ...chatDeps.macroScope(), name2: nameNow() }));
     return {
         render: text => messageFormatting(text, nameNow(), isSystem, isUser, messageIdNow(), {}, isReasoning),
@@ -66,12 +57,8 @@ function chatEditorOptions(chatDeps, target) {
             dialogueQuotes: !isSystem,
             encodeTags: !isSystem && Boolean(power_user.encode_tags),
         },
-        // A reasoning block's own class also draws its box (border, padding), which the edit box doesn't have; the
-        // chat box keeps its own text look.
         contentClass: isReasoning || isChatBox ? '' : 'mes_text',
-        // Without chat's text class, the editor's own classes give its quotes chat's look.
         editorClass: isChatBox ? 'live-chat-text' : isReasoning ? 'live-chat-text live-reasoning-text' : '',
-        // Only where the text's macros are filled in; elsewhere they're shown as written.
         macros: {
             values: {
                 get: source => (fillsMacros() ? values.get(source) : null),
@@ -86,7 +73,6 @@ function chatEditorOptions(chatDeps, target) {
 }
 
 /**
- * Puts the live editor on a chat text box that's being edited, set up as that message renders.
  * @param {HTMLTextAreaElement} textarea
  * @param {ChatEditorTarget} target
  */
@@ -95,11 +81,9 @@ export async function mountChatEditor(textarea, target) {
     takeDetachedEditorsAway();
     const holder = { editor: null, ended: false };
     editors.set(textarea, holder);
-    // Nothing may cover the chat while a message is being edited.
     drawerStackChanged();
     try {
         const options = chatEditorOptions(deps, target);
-        // The editor opens with its macros' values, so nothing moves once it's shown.
         await options.macros.values.wantMacros(macrosIn(textarea.value));
         if (holder.ended || !textarea.isConnected) {
             editors.delete(textarea);
@@ -120,7 +104,6 @@ export async function mountChatEditor(textarea, target) {
 }
 
 /**
- * Takes the editor away from a chat text box. Call before the textarea is removed; the textarea keeps the text.
  * @param {HTMLTextAreaElement | null | undefined} textarea
  */
 export function unmountChatEditor(textarea) {
@@ -130,11 +113,9 @@ export function unmountChatEditor(textarea) {
     holder.ended = true;
     holder.editor?.destroy();
     editors.delete(textarea);
-    // The edit box goes after this; the stack looks again on the next frame.
     drawerStackChanged();
 }
 
-/** Editors whose text box left the page without its edit closing (e.g. the chat was redrawn) are taken away. */
 export function takeDetachedEditorsAway() {
     for (const textarea of [...editors.keys()]) {
         if (!textarea.isConnected) unmountChatEditor(textarea);
@@ -142,11 +123,6 @@ export function takeDetachedEditorsAway() {
 }
 
 /**
- * Gives the chat box the live editor once the page is idle after loading, and only at a moment the chat box doesn't
- * have focus: focus never moves while the user types, so no keystroke can land between the plain box and the editor.
- * If the chat box has focus when the editor is ready, the editor goes on when the chat box loses it. The check and
- * the mount happen in one task, so no input can arrive in between. If the editor can't load, the chat box stays a
- * plain text box.
  * @param {HTMLTextAreaElement} textarea
  */
 export function initChatBoxEditor(textarea) {

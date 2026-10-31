@@ -1,17 +1,12 @@
-// The macro colors editor (the theme's `macro_colors`, macro-colors.js): the color scheme, its starting hue and the
-// chroma for every macro, then each macro by category, drawn as its pill, with its own hue or color.
-// A leaf module: what it needs from the app is passed to initMacroColorsEditor(), so importing it never adds an import
-// cycle.
-
 import { DEFAULT_MACRO_COLORS, MACRO_CATEGORY_ORDER, MACRO_COLOR_SCHEMES, macroHues } from './macro-colors.js';
 import { macroPill, registeredMacros } from './macro-pill.js';
 
 /**
  * @typedef {object} MacroColorsEditorDeps
- * @property {() => import('./macro-colors.js').MacroColors} getColors The theme's, as they are now.
- * @property {(colors: import('./macro-colors.js').MacroColors) => void} setColors Applies and saves them.
+ * @property {() => import('./macro-colors.js').MacroColors} getColors
+ * @property {(colors: import('./macro-colors.js').MacroColors) => void} setColors
  * @property {(strings: TemplateStringsArray, ...values: any[]) => string} t
- * @property {(content: HTMLElement) => Promise<unknown>} showPopup Shows the editor until it is closed.
+ * @property {(content: HTMLElement) => Promise<unknown>} showPopup
  */
 
 /** @type {MacroColorsEditorDeps | null} */
@@ -19,7 +14,7 @@ let deps = null;
 
 /**
  * @param {MacroColorsEditorDeps} dependencies
- * @param {HTMLElement | null} button The theme setting's button that opens the editor.
+ * @param {HTMLElement | null} button
  */
 export function initMacroColorsEditor(dependencies, button) {
     deps = dependencies;
@@ -38,7 +33,6 @@ function el(tag, attributes = {}, children = []) {
     return node;
 }
 
-/** Opens the editor; every change applies and saves as it is made. */
 export async function openMacroColorsEditor() {
     if (!deps) return;
     const { t, getColors, setColors } = deps;
@@ -83,7 +77,6 @@ export async function openMacroColorsEditor() {
         byCategory.get(/** @type {string} */ (category))?.push(macro);
     }
 
-    /** Draws each macro's row from the settings as they are now. */
     function drawRows() {
         const colors = getColors();
         const hues = macroHues(colors);
@@ -112,7 +105,6 @@ export async function openMacroColorsEditor() {
         requestAnimationFrame(showCurrentColors);
     }
 
-    /** Each row's color input shows the macro's color as it is drawn now, once the rows are on the page. */
     function showCurrentColors() {
         const canvas = document.createElement('canvas');
         canvas.width = canvas.height = 1;

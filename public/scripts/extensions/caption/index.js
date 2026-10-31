@@ -27,7 +27,6 @@ const GOOGLE_MODEL_MIGRATIONS = new Map([
     ['gemini-3-pro-image-preview', 'gemini-3-pro-image'],
 ]);
 
-/** Kept for compatibility with old settings. */
 function migrateSettings() {
     if (extension_settings.caption.local !== undefined) {
         extension_settings.caption.source = extension_settings.caption.local ? 'local' : 'extras';
@@ -150,7 +149,6 @@ async function captionExistingMessage(message, mediaIndex) {
 
     const messageText = String(message.mes).trim();
 
-    // The attachment lives inside the frozen `extra.media`, so it gets replaced, not poked.
     const nextAttachment = {
         ...mediaAttachment,
         title: wrappedCaption,

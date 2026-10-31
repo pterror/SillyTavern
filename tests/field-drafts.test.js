@@ -13,7 +13,6 @@ import {
     revertChanges,
 } from '../public/scripts/field-drafts.js';
 
-/** In-memory stand-in for localStorage's `{ getItem, setItem, removeItem }`. */
 function makeStorage(initial = {}) {
     const state = { ...initial };
     return {
@@ -169,7 +168,6 @@ describe('commit points', () => {
 });
 
 /**
- * A field on a page: what it holds, what is stored for it, and a commit that stores it (or fails).
  * @param {object} [options]
  * @param {'text'|'line'|'number'|'toggle'} [options.type]
  * @param {string} [options.stored]
@@ -301,7 +299,6 @@ describe('an editor field', () => {
         const first = binding.handle({ type: 'blur' });
         await typeText('second');
         const second = binding.handle({ type: 'blur' });
-        // The field is taken down before the second commit goes (its options removed, a box emptied).
         field.value = '';
         release();
         await Promise.all([first, second]);
@@ -403,7 +400,6 @@ describe('revertChanges (a failed commit leaves the page\'s copy as stored)', ()
 });
 
 describe('drafts of things that are gone', () => {
-    /** A storage that can also be gone over, as localStorage can. */
     function makeListedStorage() {
         const storage = makeStorage();
         Object.defineProperty(storage, 'length', { get: () => Object.keys(storage.state).length });

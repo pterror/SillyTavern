@@ -1,17 +1,6 @@
-/**
- * `/query`'s hash-only mode (`want: ['hashes']`) answer, decoded.
- */
-
-/**
- * Search-backend enum codes for `/query`'s binary hash-mode response - mirrors HASH_QUERY_SEARCH_BACKEND_CODES
- * server-side (src/endpoints/characters.js). 0 means "absent".
- */
 const HASH_QUERY_SEARCH_BACKEND_NAMES = { 1: 'tantivy', 2: 'native', 3: 'wasm', 4: 'unavailable' };
 
 /**
- * Decodes `/query`'s hash-only mode (`want: ['hashes']`) binary response. See
- * `serializeQueryHashesBinary()` server-side (src/endpoints/characters.js) for the matching encoder and the
- * field-by-field layout spec this just walks with a `DataView`.
  * @param {ArrayBuffer} buffer
  * @returns {{seq: number, token: string|null, total: number|undefined, totalApprox: boolean, hidden: number|undefined, hiddenApprox: boolean, searchBackend: string|undefined, more: boolean, cursor: string|undefined, hashRows: {id:string, isGroup:boolean, version:number|null, favHash:number, tagIdsHash:number, contentHash:number, date_added:number, create_date:number|null, date_last_chat:number, chat_size:number, data_size:number, chat:string|null}[]}}
  */
@@ -40,8 +29,6 @@ export function deserializeQueryHashesBinary(buffer) {
         const idLen = view.getUint16(offset, true); offset += 2;
         const id = decoder.decode(new Uint8Array(buffer, offset, idLen)); offset += idLen;
 
-        // A character's cache key is its version and its tags' digest (its version doesn't move with its tags); a
-        // group's, its three digests.
         let version = null, favHash = 0, tagIdsHash = 0, contentHash = 0;
         if (isGroup) {
             favHash = view.getUint32(offset, true); offset += 4;
@@ -68,7 +55,6 @@ export function deserializeQueryHashesBinary(buffer) {
         });
     }
 
-    // Trailer: tokenLen(2) + token(tokenLen, utf8); tokenLen 0 means a null token.
     const tokenLen = view.getUint16(offset, true); offset += 2;
     const token = tokenLen > 0 ? decoder.decode(new Uint8Array(buffer, offset, tokenLen)) : null;
     offset += tokenLen;
@@ -80,7 +66,6 @@ export function deserializeQueryHashesBinary(buffer) {
         offset += cursorLen;
     }
 
-    // Present only when the request wanted 'hidden': hiddenFlags(1) [bit0=approx] + hidden(8).
     let hidden;
     let hiddenApprox = false;
     if (offset + 9 <= buffer.byteLength) {

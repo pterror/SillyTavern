@@ -2,7 +2,6 @@ import { describe, test, expect, jest, beforeEach } from '@jest/globals';
 
 const ENV_KEY = 'SILLYTAVERN_PERFORMANCE_SEARCHTIMING';
 
-// The flag is cached on first use, so each test loads a fresh copy of the module.
 async function loadWithFlag(value) {
     process.env[ENV_KEY] = value;
     jest.resetModules();

@@ -20,7 +20,6 @@ dialog {
     max-width: calc(100dvw - 2em);
     min-height: fit-content;
 
-    /* visible so toasts can escape the dialog; .popup-body clips the real content */
     overflow: visible;
 
     /* Fix weird animation issue with font-scaling during popup open */

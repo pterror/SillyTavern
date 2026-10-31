@@ -6,9 +6,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// The page size of a separate top-500 relevance query, which the list must never send.
 const TOP_SEARCH_PAGE_SIZE = 500;
-// Over getCharactersDebounced()'s 2s delay.
 const CHANGE_DEBOUNCE_TIMEOUT_MS = 6000;
 const QUIET_MS = 800;
 const EVENT_SOURCE_CONNECTING = 0;
@@ -23,7 +21,6 @@ async function awaitAppReady(page) {
 }
 
 /**
- * Turns the fullscreen character list on or off through its toggle and waits for the save.
  * @param {import('@playwright/test').Page} page
  * @param {boolean} on
  */
@@ -38,8 +35,6 @@ async function setGalleryFullscreen(page, on) {
 }
 
 /**
- * Covers the whole list with character info. With stacked drawers on, a drawer is cut only where another covers it,
- * so the list must sit where character info does: in the sidebar, not fullscreen.
  * @param {import('@playwright/test').Page} page
  */
 async function coverListWithCharacterInfo(page) {
@@ -50,8 +45,6 @@ async function coverListWithCharacterInfo(page) {
     await expect.poll(() => listShowing(page)).toBe(false);
 }
 
-// Set by tests that change the drawer settings. The data root is shared by the worker's later tests, which expect
-// the defaults.
 let drawerSettingsChanged = false;
 
 test.afterEach(async ({ page }) => {
@@ -61,24 +54,16 @@ test.afterEach(async ({ page }) => {
     await setStackedDrawers(page, false);
 });
 
-/** The page's changes stream, whatever its query. */
 const STREAM_ROUTE = /\/api\/characters\/changes\/stream(\?|$)/;
-/** The session the mocked stream gives a fresh tab. */
 const TAB_SESSION = '0190a1b2-0000-7000-8000-00000000e2e1';
 
 /**
- * Records /api/characters/query and /api/characters/changes requests, and can hold /query responses.
- * The real /changes/stream is replaced by one that sends nothing but the tab's session (the page waits for it to
- * start), so the only other stream messages are the ones a test sends with sendStreamMessage(). It answers with
- * `log.streamStatus`. A 200 ends at once, and its `retry` (`log.streamRetry`) keeps the browser from reconnecting
- * within a test, so the stream never reopens by itself.
  * @param {import('@playwright/test').Page} page
  */
 async function instrument(page) {
     await page.addInitScript(() => {
         const NativeEventSource = window.EventSource;
         window['__changeStreams'] = [];
-        // Every stream's creation, errors and opens, with its readyState at the time, on performance.now()'s clock.
         window['__streamEvents'] = [];
         window.EventSource = class extends NativeEventSource {
             constructor(...args) {
@@ -91,7 +76,6 @@ async function instrument(page) {
                 this.addEventListener('open', () => record('open'));
             }
         };
-        // When the disconnected notice was first added to and removed from the page, on the same clock.
         window['__notice'] = { shownAt: null, removedAt: null };
         const isNotice = node => node instanceof Element && node.matches('.toast-warning') && node.textContent.includes('Live updates are disconnected');
         new MutationObserver(mutations => {
@@ -102,7 +86,6 @@ async function instrument(page) {
         }).observe(document, { childList: true, subtree: true });
     });
     await page.route(STREAM_ROUTE, async route => {
-        // Counted before answering, so a notice a failed answer leads to can't be among them yet.
         const notices = await disconnectedNotice(page).count();
         log.streamRequests.push({ at: Date.now(), status: log.streamStatus, notices });
         const session = new URL(route.request().url()).searchParams.get('session') ?? TAB_SESSION;
@@ -120,7 +103,6 @@ async function instrument(page) {
         streamRequests: [],
         /** @type {{ search: string|undefined, pageSize: number, page: number, fav: boolean|undefined }[]} */
         queries: [],
-        /** Each of `queries`' `sort.field`, at the same index. */
         /** @type {(string|undefined)[]} */
         sortFields: [],
         changes: 0,
@@ -146,7 +128,6 @@ async function instrument(page) {
             log.lastActivity = Date.now();
         }
     });
-    // The change sync (/changes, then groups) counts as activity, so a print it leads to isn't missed.
     const onSyncActivity = request => {
         const pathname = new URL(request.url()).pathname;
         if (pathname === '/api/characters/changes' || pathname.startsWith('/api/groups/')) {
@@ -164,14 +145,12 @@ async function instrument(page) {
     return log;
 }
 
-/** Waits until no /query or change-sync activity for `quietMs`, counting from this call. */
 async function waitForQuiet(log, quietMs = QUIET_MS) {
     const since = Date.now();
     await expect.poll(() => log.inFlight === 0 && Date.now() - Math.max(since, log.lastActivity) >= quietMs, { timeout: 30000 }).toBe(true);
 }
 
 /**
- * Delivers one /changes/stream message to the page's stream handler.
  * @param {import('@playwright/test').Page} page
  * @param {object} message
  */
@@ -185,7 +164,6 @@ async function sendStreamMessage(page, message) {
     }, JSON.stringify(message));
 }
 
-// The list's own page queries: not the top-500 search, and not favsToHotswap()'s favorites-only query.
 function pageQueries(log, from = 0) {
     return log.queries.slice(from).filter(q => q.pageSize !== TOP_SEARCH_PAGE_SIZE && q.fav !== true);
 }
@@ -255,7 +233,6 @@ test.describe('change message ({}) on /changes/stream', () => {
         const changesBefore = log.changes;
 
         await sendStreamMessage(page, {});
-        // Away, the change message only marks the list dirty, with no debounce.
         await waitForQuiet(log);
         expect(log.queries.slice(from)).toEqual([]);
         expect(log.changes).toBe(changesBefore);
@@ -284,13 +261,11 @@ test.describe('the list going from hidden to showing', () => {
         await waitForQuiet(log);
     });
 
-    /** Covers the list with the character info panel, then waits for quiet. */
     async function coverList(page) {
         await coverListWithCharacterInfo(page);
         await waitForQuiet(log);
     }
 
-    /** Waits for the list to show and for quiet, then checks exactly one page query and no change sync since `from`. */
     async function expectOnePageQueryOnly(page, from, changesBefore) {
         await expect.poll(() => listShowing(page)).toBe(true);
         await expect.poll(() => pageQueries(log, from).length).toBe(1);
@@ -406,7 +381,6 @@ test.describe('re-rendering the visible page keeps the list\'s scroll distance',
     let log;
 
     /**
-     * Creates CHARACTER_COUNT characters whose names all contain `term`.
      * @param {import('@playwright/test').Page} page
      * @param {string} term
      */
@@ -429,7 +403,6 @@ test.describe('re-rendering the visible page keeps the list\'s scroll distance',
     }
 
     /**
-     * Searches for `term` until the list shows every character created for it.
      * @param {import('@playwright/test').Page} page
      * @param {string} term
      */
@@ -439,7 +412,6 @@ test.describe('re-rendering the visible page keeps the list\'s scroll distance',
     }
 
     /**
-     * Scrolls the list to SCROLLED_TO.
      * @param {import('@playwright/test').Page} page
      */
     async function scrollList(page) {
@@ -541,13 +513,11 @@ test.describe('a refresh the user didn\'t ask for keeps the list\'s page and scr
         await waitForQuiet(log);
     });
 
-    /** Searches for `term` until the search index has taken up the characters created for it. */
     async function searchCreated(page) {
         await setSearchTerm(page, log, term);
         await expect.poll(() => page.locator('#rm_print_characters_block .character_select').count()).toBeGreaterThanOrEqual(PAGE_SIZE);
     }
 
-    /** Goes to page 2 and scrolls the list to SCROLLED_TO. Returns where the queries after that start. */
     async function toPage2Scrolled(page) {
         await page.evaluate(() => window['$']('#rm_print_characters_pagination').pagination('go', 2));
         await waitForQuiet(log);
@@ -557,7 +527,6 @@ test.describe('a refresh the user didn\'t ask for keeps the list\'s page and scr
         return log.queries.length;
     }
 
-    /** Checks that page queries ran since `from`, the last for page 2, and that the list is on page 2 at SCROLLED_TO. */
     async function expectPage2Kept(page, from) {
         expect(listPageQueries(from).length).toBeGreaterThan(0);
         expect(listPageQueries(from).at(-1).page).toBe(2);
@@ -662,7 +631,6 @@ test.describe('a refresh the user didn\'t ask for keeps the list\'s page and scr
     test('on a background sync dropping a tag filter whose tag is gone', async ({ page }) => {
         const from = await toPage2Scrolled(page);
         const staleTagId = `stale-${Date.now()}`;
-        // Excluding a tag that doesn't exist leaves the list as it is; the next print's filter-bar pass drops it.
         await page.evaluate(async (staleTagId) => {
             const { entitiesFilter } = await import('/scripts/character-list.js');
             const { FILTER_TYPES } = await import('/scripts/filters.js');
@@ -794,7 +762,6 @@ function disconnectedNotice(page) {
 }
 
 /**
- * Fires the page's /changes/stream handlers for the given events, in order.
  * @param {import('@playwright/test').Page} page
  * @param {('error'|'open')[]} types
  */
@@ -877,7 +844,6 @@ test.describe('the change stream reopening', () => {
 
     test('an open with no error before it sends nothing', async ({ page }) => {
         log = await instrument(page);
-        // The mocked stream's body ends, which is an error, so this uses the server's own stream, which stays open.
         await page.unroute(STREAM_ROUTE);
         await bootWithListShowing(page);
         const from = log.queries.length;
@@ -893,17 +859,13 @@ test.describe('the change stream reopening', () => {
     test('a closed stream is rebuilt with backoff, a notice shows once it has been closed 10s, and the reopen clears it and syncs', async ({ page }) => {
         test.setTimeout(90000);
         log = await instrument(page);
-        // The page starts only once its stream has given it its session, so the stream fails after that: the browser
-        // reconnects 1s after each mocked stream ends, and gives up on one that fails.
         log.streamRetry = 1000;
         await bootWithListShowing(page);
         log.streamStatus = 500;
-        // The stream that comes back stays (its end isn't reconnected within the test), as before.
         log.streamRetry = 86400000;
         const from = log.streamRequests.length;
         const since = () => log.streamRequests.slice(from);
 
-        // The browser's reconnect and 3 rebuilds (after 1s, 2s, 4s) fail; the notice shows before the 4th (after 8s).
         await expect.poll(() => since().length, { timeout: 30000 }).toBe(4);
         await expect(disconnectedNotice(page)).toHaveCount(1, { timeout: 30000 });
         const changesBefore = log.changes;
@@ -925,7 +887,6 @@ test.describe('the change stream reopening', () => {
         const lastOpen = events.filter(e => e.type === 'open' && e.at < failures[0].at).at(-1);
         const down = events.find(e => e.type === 'error' && e.at > lastOpen.at);
         const reopen = events.find(e => e.type === 'open' && e.at > failures[3].at);
-        // Not open since the stream ended before the first failure.
         expect(notice.shownAt - down.at).toBeGreaterThanOrEqual(10000);
         expect(notice.shownAt).toBeLessThan(reopen.at);
         expect(notice.removedAt).toBeGreaterThanOrEqual(reopen.at);
@@ -938,8 +899,6 @@ test.describe('the change stream reopening', () => {
 
         await expect(disconnectedNotice(page)).toHaveCount(1, { timeout: 30000 });
         const { events, notice } = await page.evaluate(() => ({ events: window['__streamEvents'], notice: window['__notice'] }));
-        // The fresh tab's first stream, which asked for a session, is rebuilt once to name the session it was given.
-        // That one opens, then its body ends: the browser keeps it CONNECTING and doesn't rebuild it.
         const steady = [['create', EVENT_SOURCE_CONNECTING], ['open', EVENT_SOURCE_OPEN], ['error', EVENT_SOURCE_CONNECTING]];
         expect(events.map(e => [e.type, e.readyState])).toEqual([...steady, ...steady]);
         expect(notice.shownAt - events[5].at).toBeGreaterThanOrEqual(10000);

@@ -219,13 +219,11 @@ if (!cliArgs.disableCsrf) {
 // Static files
 const frontendAssets = new FrontendAssets({
     publicDirectory: path.join(serverDirectory, 'public'),
-    // The libraries the old page imports (/lib.js...), built with the new page (packages/serve-ui).
     libraryDirectory: () => servedUi?.libraries.directory,
     libraryFiles: () => servedUi?.libraries.files ?? [],
     globalExtensionsDirectory: () => globalThis.GLOBAL_EXTENSIONS_PATH,
     userCssPath: () => path.join(globalThis.DATA_ROOT, '_css', 'user.css'),
     extensionsEnabled: () => !!getConfigValue('extensions.enabled', true, 'boolean'),
-    // The new page's entry, at the file built for it (null until it's built: before the server listens).
     moduleAliases: () => (servedUi ? { [UI_ENTRY]: servedUi.entry() } : {}),
 });
 
@@ -251,8 +249,6 @@ app.get('/', cacheBuster.middleware, async (request, response, next) => {
     }
 });
 
-// The build id a fresh load of `/` would carry now: an open page compares it with its own to tell whether the
-// server's files changed under it.
 app.get('/api/frontend/build', async (request, response, next) => {
     if (shouldRedirectToLogin(request)) {
         return response.sendStatus(403);
@@ -282,7 +278,6 @@ app.get('/login', loginPageMiddleware);
 
 // Host frontend assets
 app.use(frontendAssetMiddleware(frontendAssets));
-// The new page (packages/ui), ready before the server listens (preSetup).
 /** @type {import('@st/serve-ui').ServedUi | null} */
 let servedUi = null;
 app.use((request, response, next) => (servedUi ? servedUi.router(request, response, next) : next()));
@@ -356,8 +351,6 @@ async function preSetupTasks() {
     __mark('getUserDirectoriesList');
     await checkForNewContent(directories);
     __mark('checkForNewContent');
-    // No boot-time diskCache.verify(): cache keys embed file mtime, so stale entries just miss on
-    // next read rather than needing a full-library readdir+stat walk on every boot.
     migrateFlatSecrets(directories);
     __mark('migrateFlatSecrets');
     cleanUploads();
@@ -365,11 +358,9 @@ async function preSetupTasks() {
     migrateAccessLog();
     __mark('migrateAccessLog');
 
-    // Inert unless localImport.directories is configured.
     await initializeLocalImportScan();
     __mark('initializeLocalImportScan');
 
-    // Fire-and-forget: per-user settings backup IO must not gate the server starting to listen.
     {
         const __settingsStart = process.hrtime.bigint();
         settingsInit()
@@ -403,8 +394,6 @@ async function preSetupTasks() {
     // Set up event listeners for a graceful shutdown
     process.on('SIGINT', exitProcess);
     process.on('SIGTERM', exitProcess);
-    // A closed terminal makes every console write fail with EPIPE. Unhandled, that error reaches
-    // the uncaughtException handler below, whose console.error fails the same way, forever.
     for (const stream of [process.stdout, process.stderr]) {
         stream.on('error', (err) => {
             if (err?.code !== 'EPIPE') throw err;
@@ -431,8 +420,6 @@ async function preSetupTasks() {
     // Add request proxy.
     initRequestProxy({ enabled: cliArgs.requestProxyEnabled, url: cliArgs.requestProxyUrl, bypass: cliArgs.requestProxyBypass, enableKeepAlive: cliArgs.enableKeepAlive, privateRequestFilterEnabled: requestFilterOptions.enabled });
 
-    // The new page's and the libraries' build for this source: the one there, else its release's (built here only for
-    // unreleased source).
     servedUi = await serveUi({ dev: process.env.ST_UI_DEV === '1' });
     __mark('serveUi');
 }
@@ -533,16 +520,10 @@ async function postSetupTasks(result) {
     setupLogLevel();
     serverEvents.emit(EVENT_NAMES.SERVER_STARTED, { url: browserLaunchUrl });
 
-    // Not awaited. Opens each user's store and resumes what a stop left under way (a tag reorder pass, the pair
-    // postings' build or delete), in small batches; a bulk action a stop cut short is reported and its list dropped.
-    // Each user's characters/ is then rescanned in batches and watched for dropped PNGs; a new store's upstream
-    // groups, books and chats are imported after it (src/upstream-import.js).
     resumeStoreWork(await getUserDirectoriesList(), async (store, directories) => {
         const userDirectories = /** @type {import('./users.js').UserDirectoryList} */ (directories);
-        // The settings document first: the work below reads settings outside any request.
         await openSettingsDocument(userDirectories, path.basename(userDirectories.root));
         await dropStoppedRuns(store.lib);
-        // A new store's upstream groups, books and chats go in after the characters' rescan, which their chats need.
         startDroppedWatch(userDirectories).first
             .then(() => resumeUpstreamImport(store, userDirectories))
             .catch(err => console.error(color.red('[upstream-import] Importing the upstream data failed:'), err));
@@ -550,15 +531,8 @@ async function postSetupTasks(result) {
         .catch(err => console.error(color.red('[user-stores] Resuming the stores\' work failed:'), err));
 }
 
-/**
- * Fetches (when needed) and loads the engine, before anything that reads or writes a user's store (the old public
- * folders' import included); a user directory still in the format before the engine stops the server with one line
- * naming the conversion.
- */
 async function loadStoreEngine() {
     try {
-        // A scratch build named by ST_ENGINE_PATH (tests) is loaded as is: engine/dist/ is neither fetched into nor
-        // cleaned.
         if (!process.env.ST_ENGINE_PATH) await ensureEngine();
         loadEngine();
         setStoreEngine(getEngine);

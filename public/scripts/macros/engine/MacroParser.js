@@ -14,7 +14,6 @@ let instance;
 export { instance as MacroParser };
 
 /**
- * Builds the parser with the parsing library the page or the server has (initMacroLexer()), after the lexer.
  * @param {typeof import('chevrotain')} chevrotain
  */
 export function initMacroParser(chevrotain) {
@@ -143,8 +142,6 @@ function buildMacroParser(chevrotain) {
                             });
                             $.SUBRULE($.argumentAllowingColons, { LABEL: 'argument' });
                         },
-                        // Chevrotain flags this as ambiguous with the DoubleColon branch above, but argument
-                        // capture explicitly excludes double colons as a first token, so it can't actually occur.
                         IGNORE_AMBIGUITIES: true,
                     },
                 ]);
@@ -177,8 +174,6 @@ function buildMacroParser(chevrotain) {
         }
 
         /**
-         * Parses a document into a CST.
-         *
          * @param {string} input
          * @returns {{ cst: CstNode|null, errors: ({ message: string }|ILexingError|IRecognitionException)[] , lexingErrors: ILexingError[], parserErrors: IRecognitionException[] }}
          */

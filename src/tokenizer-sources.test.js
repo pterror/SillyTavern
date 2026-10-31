@@ -22,7 +22,7 @@ const userRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'st-tokenizer-sources-use
 
 /** @type {{ url: string, authorization: string | undefined }[]} */
 const requests = [];
-/** @type {Map<string, () => Response>} URL -> response. Anything else answers 404. */
+/** @type {Map<string, () => Response>} */
 const responses = new Map();
 mock.module('node-fetch', {
     defaultExport: async (url, opts) => {
@@ -58,7 +58,6 @@ const sha256Of = body => crypto.createHash('sha256').update(body).digest('hex');
 
 let revisionCounter = 0;
 /**
- * A test-only entry for `body`, one source per repo name or URL.
  * @param {Buffer} body
  * @param {({ repo: string, gated?: boolean, path?: string } | { url: string })[]} sources
  * @param {object} [extra]
@@ -85,7 +84,6 @@ function makeEntry(body, sources, extra = {}) {
 /** @param {Buffer} body */
 const ok = body => () => new Response(body, { status: 200 });
 
-/** console.info lines printed by the module since the last testCase. */
 const infoLines = [];
 mock.method(console, 'info', (...args) => { infoLines.push(args.join(' ')); });
 
@@ -262,7 +260,6 @@ await testCase('parallel calls on a cold cache share one download; only the call
 
 await testCase('the license is that of the source the file came from: the console line, the result and the request\'s download notice name it', async () => {
     const { loadRegistryTokenizer } = await import('./tokenizer-loader.js');
-    // A tekken file where every byte is its own token, after 10 special tokens.
     const body = Buffer.from(JSON.stringify({
         config: { pattern: String.raw`\S+|\s+`, default_vocab_size: 266, default_num_special_tokens: 10 },
         vocab: Array.from({ length: 256 }, (_, rank) => ({ rank, token_bytes: Buffer.from([rank]).toString('base64') })),
@@ -319,15 +316,12 @@ await testCase('every registry entry is pinned', () => {
         entry.sources.forEach((source, index) => {
             assert.equal(Boolean(source.license), Boolean(source.licenseUrl), `${entry.id}: ${source.repo ?? source.url}'s license and its URL come together`);
             if ('url' in source) {
-                // A file on another host has no revision: the entry's sha256 and bytes pin it.
                 assert.match(source.url, /^https:\/\/[^/]+\/./, `${entry.id}: url`);
                 assert.deepEqual(Object.keys(source).filter(key => !['url', 'license', 'licenseUrl'].includes(key)), [], `${entry.id}: a URL source has no repo, revision, path or gated`);
                 return;
             }
             assert.match(source.revision, /^[0-9a-f]{40}$/, `${entry.id}: revision`);
             assert.ok(source.repo && source.path, `${entry.id}: repo and path`);
-            // A gated repo is the model's own, listed first, or an official repo after the ungated
-            // official repos that ship the same bytes.
             const owner = source.repo.split('/')[0];
             const isAfterOfficialRepos = entry.sources.slice(0, index).every(earlier => !earlier.gated && earlier.repo?.split('/')[0] === owner);
             assert.ok(index === 0 || !source.gated || isAfterOfficialRepos, `${entry.id}: ${source.repo} is gated`);
@@ -354,7 +348,6 @@ await testCase('a file only Cohere publishes is pinned to the URL Cohere\'s API 
 
 await testCase('every registry entry has its fixed `tokenizers` value, on the server, in the browser and in Advanced Formatting', async () => {
     const { tokenizers, TOKENIZER_TYPE_KEYS } = await import('./tokenizer-ids.js');
-    // Fixed forever once shipped: never renumbered, reused or removed.
     const expected = { QWEN3: 1000, LLAMA3_1: 1001, NEMO_TEKKEN: 1002, KIMI: 1003, QWEN2_VL: 1004, QWEN2_5: 1005, QWEN3_5: 1006, QWEN3_5_BASE: 1007, QWEN3_8: 1008, CODEQWEN1_5: 1009, DEEPSEEK_V2: 1010, DEEPSEEK_V2_5: 1011, DEEPSEEK_R1: 1012, DEEPSEEK_V3_1: 1013, DEEPSEEK_V3_2: 1014, DEEPSEEK_V4: 1015, DEEPSEEK_V4_1: 1016, DEEPSEEK_R1_DISTILL_QWEN: 1017, DEEPSEEK_R1_DISTILL_LLAMA: 1018, DEEPSEEK_R1_0528_QWEN3: 1019, GEMMA_4: 1020, GEMMA_4_ASSISTANT: 1021, GEMMA_3_IT: 1022, GEMMA_3_PT: 1023, GEMMA_3N: 1024, CODEGEMMA: 1025, GEMMA_2_JPN: 1026, LLAMA3_1_BASE: 1027, LLAMA3_3: 1028, LLAMA4: 1029, LLAMA_GUARD_3_8B: 1030, LLAMA_GUARD_3_11B_VISION: 1031, LLAMA_GUARD_2: 1032, LLAMA_GUARD_4: 1033, MISTRAL_7B_V0_3: 1034, MATHSTRAL: 1035, MISTRAL_LARGE_2411: 1036, MISTRAL_7B_V0_3_HF: 1037, CODESTRAL_22B_HF: 1038, CODESTRAL_MAMBA_HF: 1039, MATHSTRAL_HF: 1040, MISTRAL_LARGE_2411_HF: 1041, MINISTRAL_8B_2410_HF: 1042, MINISTRAL_3_INSTRUCT_HF: 1043, MINISTRAL_3_BASE_HF: 1044, MISTRAL_SMALL_4_HF: 1045, SHIELDSTRAL_HF: 1046, MISTRAL_SMALL_3_HF: 1047, COMMAND_A_VISION: 1048, COMMAND_A_PLUS: 1049, AYA_VISION_32B: 1050, TINY_AYA: 1051, TINY_AYA_BASE: 1052, COMMAND_R_08_2024_HF: 1053, AYA_VISION_32B_HF: 1054, GLM_4_0414: 1055, GLM_4_5: 1056, GLM_5: 1057, GLM_EDGE: 1058, AUTOGLM_PHONE: 1059, KIMI_K2_BASE: 1060, KIMI_K2_THINKING: 1061, KIMI_K2_5: 1062, KIMI_K3: 1063, KIMI_VL: 1064, MOONLIGHT: 1065, MINIMAX_TEXT_01: 1066, MINIMAX_M1: 1067, MINIMAX_M2: 1068, MINIMAX_M3: 1069, GPT_OSS: 1070, PHI_1: 1071, PHI_3_HF: 1072, PHI_3_SMALL: 1073, PHI_3_VISION: 1074, PHI_4: 1075, PHI_4_MINI: 1076, PHI_4_MULTIMODAL: 1077, PHI_4_REASONING: 1078, PHI_4_REASONING_VISION: 1079, NEMOTRON_4: 1080, LLAMA_3_1_NEMOTRON_51B: 1081, NEMOTRON_H: 1082, LLAMA_3_1_NEMOTRON_NANO_VL: 1083, ACEREASON_NEMOTRON_1_1: 1084, NEMOTRON_NANO_12B_V2_VL: 1085, NEMOTRON_3: 1086 };
     const clientEnum = fs.readFileSync(path.join(__dirname, '..', 'public', 'scripts', 'tokenizers.js'), 'utf8');
     const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');

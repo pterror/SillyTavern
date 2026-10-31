@@ -3,12 +3,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-/**
- * World info on the engine (src/world-info-engine.js): books read back as written, the books list, and the entry
- * actions (`/entries/apply`, `/entry/create`, `/entry/edit`, `/entry/transplant`, `/duplicate`, `/delete`) against a
- * model of what each route does to a book; and what a write records, characters' embedded books, lorebook links by
- * id.
- */
 
 /** @type {typeof import('../src/library-engine.js')} */
 let lib;
@@ -49,7 +43,6 @@ afterEach(async () => {
     fs.rmSync(directories.root, { recursive: true, force: true });
 });
 
-/** A deterministic stream of numbers in [0, 1). */
 function rng(seed) {
     let s = seed >>> 0;
     return () => {
@@ -62,7 +55,6 @@ function rng(seed) {
 
 const WORDS = ['dragon', 'castle', 'Émile', 'the', 'quiet', '😀', 'knight', 'a\u{1F600}b', ''];
 
-/** A varied entry: upstream's keys in its order or shuffled, lists empty or not, unknown keys, odd values. */
 function makeEntry(r, uid) {
     const pick = (/** @type {any[]} */ list) => list[Math.floor(r() * list.length)];
     const words = (/** @type {number} */ n) => Array.from({ length: n }, () => pick(WORDS)).join(' ');
@@ -95,7 +87,6 @@ function makeEntry(r, uid) {
     return e;
 }
 
-/** A varied book: integer and text keys, book fields before or after `entries`, an `originalData`. */
 function makeBook(r, n) {
     /** @type {Record<string, unknown>} */
     const entries = {};
@@ -115,7 +106,6 @@ function makeBook(r, n) {
     return book;
 }
 
-/** The same book: every key's value equal (JSON, key order within included) and the same keys. */
 function expectSameBook(got, want) {
     expect(got).not.toBeNull();
     expect(Object.keys(got).sort()).toEqual(Object.keys(want).sort());
@@ -129,17 +119,14 @@ function expectSameBook(got, want) {
     }
 }
 
-/** As JSON carries it. */
 const json = (/** @type {unknown} */ v) => JSON.parse(JSON.stringify(v));
 
-/** The lowest non-negative integer that isn't a key of `entries`. */
 function freeKey(entries) {
     let k = 0;
     while (Object.hasOwn(entries, String(k))) k++;
     return k;
 }
 
-/** The model of `/entries/apply` on a book (upstream's page actions against their versions); answers as the route. */
 function modelApply(book, entryChanges, fieldChanges) {
     const isObject = (/** @type {unknown} */ v) => typeof v === 'object' && v !== null && !Array.isArray(v);
     const hash = (/** @type {unknown} */ v) => (v === undefined ? null : hashUtils.jsonHash(v));
@@ -191,7 +178,6 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
     });
 
     describe('world books against a model of the routes', () => {
-        /** Reads a book and checks it is the model's. */
         async function same(name, want) {
             expectSameBook(json(await books.read(name)), want);
         }
@@ -267,7 +253,6 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
                     if (deleteOriginal) delete current.entries[uid];
                     got = await books.transplant({ source: name, target: name === 'A' ? 'B' : 'A', uid, deleteOriginal });
                 } else if (op === 3) {
-                    // Changes against the page's versions, some stale.
                     const entries = [];
                     for (const u of uids.slice(0, 3)) {
                         const stale = r() < 0.2;
@@ -315,7 +300,6 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             expect(await books.read('D')).toBeNull();
             expect(await books.exists('D')).toBe(false);
             expect((await books.list()).map(b => b.file_id)).toEqual(['D2']);
-            // Written again under the name, the book is new.
             await books.write('D', { entries: {} });
             expect(await books.read('D')).toEqual({ entries: {} });
         }, 120_000);
@@ -336,11 +320,9 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             expect(await lorebook()).toBe('Lore');
             await books.rename('Lore', 'Lore 2');
             expect(await lorebook()).toBe('Lore 2');
-            // Set to the name it reads as, nothing is recorded.
             expect((await chats.changeState({ tree, at: null, ops: [{ key: 'world_info', value: 'Lore 2' }], actor })).changes).toEqual([]);
             await books.delete('Lore 2');
             expect(await lorebook()).toBe('Lore 2');
-            // A name no book has resolves once a book takes it.
             const ghost = await chats.changeState({ tree, at: null, ops: [{ key: 'world_info', value: 'Ghost' }], actor });
             expect(await lorebook()).toBe('Ghost');
             await books.write('Ghost', { entries: {} });
@@ -381,14 +363,12 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             const next = JSON.parse(JSON.stringify(card));
             next.data.character_book.entries[2].content = 'changed';
             const { records } = await library.writeCard(directories, 'c.png', JSON.stringify(next));
-            // The entry's edit and the card's identity hash.
             expect(records).toBe(2);
             next.data.character_book.entries.splice(1, 0, { keys: ['new'], content: 'n' });
             next.data.character_book.entries.pop();
             await library.writeCard(directories, 'c.png', JSON.stringify(next));
             const [again] = await library.cards(['c.png']);
             expect(JSON.stringify(/** @type {any} */ (again).data.character_book)).toBe(JSON.stringify(next.data.character_book));
-            // A character_book that isn't a list of entries is kept as it came.
             const odd = { ...next, data: { ...next.data, character_book: { entries: 'none' } } };
             await library.writeCard(directories, 'c.png', JSON.stringify(odd));
             expect(/** @type {any} */ ((await library.cards(['c.png']))[0]).data.character_book).toEqual({ entries: 'none' });
@@ -401,7 +381,6 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             const worldOf = async (/** @type {string} */ avatar) => /** @type {any} */ ((await library.cards([avatar]))[0]).data.extensions.world;
             const linked = async (/** @type {string} */ world) => (await library.query({ world, wantRows: false, wantHashes: true })).hashRows.map((/** @type {any} */ row) => row.id).sort();
             const { computeContentIdentityHash } = await import('../src/character-card-normalize.js');
-            /** Each card's stored identity hash is its card's as it reads now: import dedup finds it by that. */
             const hashesCurrent = async () => {
                 for (const avatar of ['a.png', 'b.png']) {
                     const [read] = await library.cards([avatar]);
@@ -421,15 +400,12 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             const after = (await library.query({ ids: ['a.png'], wantRows: false, wantHashes: true })).hashRows[0].version;
             expect(after).toBeGreaterThan(before);
             await hashesCurrent();
-            // The hash made from the old name no longer finds the card.
             expect(await library.findByHash(lib.HASH.identity, computeContentIdentityHash(JSON.parse(card('Lore'))))).toBeNull();
-            // Renamed onto the unresolved name, the book takes its links.
             expect(await books.rename('Lore 2', 'Ghost')).toBe('ok');
             expect(await worldOf('a.png')).toBe('Ghost');
             expect(await worldOf('b.png')).toBe('Ghost');
             expect(await linked('Ghost')).toEqual(['a.png', 'b.png']);
             await hashesCurrent();
-            // Deleted, the links keep the name; a book taking the name again resolves them.
             expect(await books.delete('Ghost')).toBe(true);
             expect(await worldOf('a.png')).toBe('Ghost');
             expect(await linked('Ghost')).toEqual(['a.png', 'b.png']);
@@ -439,13 +415,10 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             expect(await books.rename('Ghost', 'Found')).toBe('ok');
             expect(await worldOf('b.png')).toBe('Found');
             await hashesCurrent();
-            // A card saved with the name it already reads as writes nothing.
             expect((await library.writeCard(directories, 'b.png', card('Found', 'B'))).records).toBe(0);
             expect(await books.rename('Found', 'Found')).toBe('ok');
             await books.write('Other', { entries: {} });
             expect(await books.rename('Other', 'Found')).toBe('taken');
-            // Renamed without relinking (upstream's relink_characters: false): the cards keep the old name, now an
-            // unresolved link; a book taking the old name again resolves them.
             expect(await books.rename('Found', 'Moved', { relink: false })).toBe('ok');
             expect(await worldOf('a.png')).toBe('Found');
             expect(await worldOf('b.png')).toBe('Found');
@@ -469,25 +442,21 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             };
             for (const name of ['A', 'B', 'C', 'D']) await books.write(name, { entries: {} });
             await library.writeCard(directories, 'a.png', card('A'));
-            // Extra books are appended after the first link; repeats are dropped, the first kept.
             expect(await library.extraLinks('a.png', 'add', ['B', 'C', 'B', 'A'])).toEqual(['B', 'C']);
             expect(await worldOf('a.png')).toBe('A');
             expect(await extras('a.png')).toEqual(['B', 'C']);
             for (const w of ['A', 'B', 'C']) expect(await linked(w)).toEqual(['a.png']);
             expect(await library.charLore()).toEqual([{ name: 'a', extraBooks: ['B', 'C'] }]);
-            // `set` keeps the links asked for, in the order asked; `remove` removes.
             expect(await library.extraLinks('a.png', 'set', ['D', 'B'])).toEqual(['D', 'B']);
             expect(await linked('C')).toEqual([]);
             expect(await library.extraLinks('a.png', 'remove', ['D'])).toEqual(['B']);
             expect(await library.extraLinks('a.png', 'set', ['C', 'B', 'D'])).toEqual(['C', 'B', 'D']);
             expect(await library.extraLinks('a.png', 'set', ['D', 'C', 'B'])).toEqual(['D', 'C', 'B']);
-            // A card write setting world replaces only the first link; one a later link has moves up, not twice.
             await library.writeCard(directories, 'a.png', card('C'));
             expect(await worldOf('a.png')).toBe('C');
             expect(await extras('a.png')).toEqual(['D', 'B']);
             expect(await linked('A')).toEqual([]);
             await hashCurrent('a.png');
-            // Clearing world removes only the first link: the next one reads as world.
             await library.writeCard(directories, 'a.png', card(''));
             expect(await worldOf('a.png')).toBe('D');
             expect(await extras('a.png')).toEqual(['B']);
@@ -499,12 +468,10 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             await library.writeCard(directories, 'a.png', card(''));
             expect(await worldOf('a.png')).toBe('');
             expect(await linked('B')).toEqual([]);
-            // On a character with no links, the first book added is its first link (its world).
             expect(await library.extraLinks('a.png', 'add', ['C', 'D'])).toEqual(['D']);
             expect(await worldOf('a.png')).toBe('C');
             await hashCurrent('a.png');
             expect(await library.extraLinks('nobody.png', 'add', ['C'])).toBeNull();
-            // A rename without relinking keeps every link on the old name, unresolved; a delete leaves links unresolved.
             await library.writeCard(directories, 'b.png', card('D', 'B'));
             await library.extraLinks('b.png', 'add', ['C']);
             expect(await books.rename('C', 'C2', { relink: false })).toBe('ok');
@@ -518,14 +485,12 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             expect(await extras('a.png')).toEqual(['D']);
             expect(await worldOf('b.png')).toBe('D');
             expect(await library.charLore()).toEqual([{ name: 'a', extraBooks: ['D'] }, { name: 'b', extraBooks: ['C'] }]);
-            // Two links that come to read as one book read once.
             await books.write('D', { entries: {} });
             expect(await books.rename('D', 'C')).toBe('ok');
             expect(await worldOf('a.png')).toBe('C');
             expect(await extras('a.png')).toEqual([]);
             expect(await library.charLore()).toEqual([]);
             expect(await linked('C')).toEqual(['a.png', 'b.png']);
-            // A saved charLore is compared, not stored: the links it names.
             expect(await library.charLoreDiffers([])).toBe(false);
             expect(await library.charLoreDiffers([{ name: 'b', extraBooks: [] }])).toBe(false);
             expect(await library.charLoreDiffers([{ name: 'b', extraBooks: ['X'] }])).toBe(true);
@@ -544,7 +509,6 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
                 const want = ids.filter(() => next() < 0.6).sort(() => next() - 0.5);
                 const [stored] = await library.entities(await library.ids(lib.TYPE.character, ['a.png']));
                 const records = linkListRecords(/** @type {any} */ (stored).id, storedLinks(stored), /** @type {bigint[]} */ (want));
-                // A book's link is never edited in place.
                 expect(records.some((/** @type {any} */ r) => r.kind === 'textEdit')).toBe(false);
                 if (records.length) await library.store.commit(records);
                 const [after] = await library.entities(await library.ids(lib.TYPE.character, ['a.png']));

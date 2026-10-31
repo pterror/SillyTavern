@@ -29,46 +29,31 @@ import { default_avatar, getCurrentCharacter, per_page_default, selectCharacterB
 
 let saveCharactersPage = 0;
 
-// Seeds pagination.js's totalNumber on reconstruction, or it reads 0 until the first ajax response and clamps
-// the page back to 1 (see the resetPageNumberOnInit: false pairing below). Only a full refresh or a query change
-// (resetListPositionOnNextPrint) zeroes it; every other reprint stays on the page it was on.
 let saveCharactersTotal = 0;
 
-// Only the user changing the query (search term, a filter, the sort, "Tags as folders") sends the list to page 1 at
-// the top. A reprint for anything else - a data change, a display setting - keeps the page and scroll distance.
 let resetListPositionOnNextPrint = false;
 
-/** For a query change the user made that doesn't go through setFilterDataFromUser(). Only call it when the value changed. */
 export function resetCharacterListPositionOnNextPrint() {
     resetListPositionOnNextPrint = true;
 }
 
 /**
- * setFilterData() for a search or filter change the user made.
  * @param {FilterHelper} filterHelper
  * @param {string} filterType
  * @param {any} data
  */
 export function setFilterDataFromUser(filterHelper, filterType, data) {
-    // setFilterData()'s own change test: an unchanged value starts no reprint, so it mustn't leave a reset pending.
     if (filterHelper === entitiesFilter && JSON.stringify(filterHelper.getFilterData(filterType)) !== JSON.stringify(data)) {
         resetListPositionOnNextPrint = true;
     }
     filterHelper.setFilterData(filterType, data);
 }
 
-/** @type {debounce_timeout} The debounce timeout used for printing. debounce_timeout.quick: 100 ms */
+/** @type {debounce_timeout} */
 export const DEFAULT_PRINT_TIMEOUT = debounce_timeout.quick;
 
-/**
- * Prints the character list in a debounced fashion without blocking, with a delay of 100 milliseconds.
- * Use this function instead of a direct `printCharacters()` whenever the reprinting of the character list is not the primary focus.
- *
- * The printing will also always reprint all filter options of the global list, to keep them up to date.
- */
 export const printCharactersDebounced = debounce(() => { printCharacters(false); }, DEFAULT_PRINT_TIMEOUT);
 
-/** Puts the current view's conditions and text into the search box; set by initCharacterSearch(). */
 let showViewInSearchBox = () => {};
 
 export const entitiesFilter = new FilterHelper(printCharactersDebounced);
@@ -89,8 +74,6 @@ async function getEmptyBlock() {
     return $(emptyBlock);
 }
 
-// Order-independent equality (nullish treated as empty) - the server and the resident copy don't guarantee the
-// same tag_ids insertion order, so a plain array compare would false-positive on every render.
 function arraysHaveSameMembers(a, b) {
     const setA = new Set(Array.isArray(a) ? a : []);
     const setB = new Set(Array.isArray(b) ? b : []);
@@ -107,7 +90,6 @@ function renderCharacterBlock(template, item, id) {
         this_avatar = `/characters/${encodeURIComponent(item.avatar)}`;
     }
     template.attr({ 'data-avatar': item.avatar });
-    // loading="lazy": avoids a request storm when a large library renders hundreds of cards at once.
     template.find('img').attr('src', this_avatar).attr('loading', 'lazy').attr('alt', item.name);
     template.find('.avatar').attr('title', `${item.name}\nFile: ${item.avatar}`);
     template.find('.ch_name').text(item.name).attr('title', item.name);
@@ -117,12 +99,9 @@ function renderCharacterBlock(template, item, id) {
     template.toggleClass('is_fav', isFav);
     template.find('.ch_fav').val(String(isFav));
 
-    // .toggle() (not .remove()) so this stays correct when the row is reused in place, not freshly cloned.
     const isAssistant = item.avatar === getPermanentAssistantAvatar();
     template.find('.ch_assistant').toggle(isAssistant);
 
-    // toggleClass, not .toggle(bool): jQuery's .toggle()/.show() write an inline display style that outranks
-    // the grid-view CSS hide rule for these fields, and it sticks around across reused rows.
     const description = item.data?.creator_notes || '';
     template.find('.ch_description').text(description).toggleClass('displayNone', !description);
 
@@ -130,8 +109,6 @@ function renderCharacterBlock(template, item, id) {
     const auxFieldValue = (item.data && item.data[auxFieldName]) || '';
     template.find('.character_version').text(auxFieldValue).toggleClass('displayNone', !auxFieldValue);
 
-    // Keep the resident charactersStore entry's tag_ids from drifting behind this row's fresher fetch - other
-    // surfaces still read the resident copy directly. No-op when nothing was actually stale.
     const resident = charactersStore.get(id);
     const rowTagIdsCurrent = isFetchedTagIdsCurrent(id, item.tagFetchStamp);
     if (Array.isArray(item.tag_ids) && rowTagIdsCurrent) {
@@ -140,9 +117,6 @@ function renderCharacterBlock(template, item, id) {
         }
     }
 
-    // `tags` resolves pills from `item.tag_ids` directly rather than printTagList()'s default resident-store
-    // lookup, since `item` here can be fresher than a not-yet-reconciled resident entry - unless a local tag
-    // change makes the resident entry the fresher one.
     const tagsElement = template.find('.tags');
     const rowTagIds = rowTagIdsCurrent ? item.tag_ids : resident?.tag_ids;
     const rowTags = Array.isArray(rowTagIds)
@@ -162,10 +136,6 @@ function updateCharacterBlock(node, item, id) {
     return node;
 }
 
-// Updates one character's own row in place, if it's currently rendered, without requerying or reprinting the
-// rest of the (possibly very large) list. Returns false if the row isn't on the current page/filter view - the
-// caller then has nothing to refresh, since an off-screen row needs no DOM update and a filter/search
-// membership change (this character starting/stopping matching) isn't handled by this path.
 export function updateCharacterListRow(id) {
     const character = charactersStore.get(id);
     if (!character) return false;
@@ -176,11 +146,6 @@ export function updateCharacterListRow(id) {
     return true;
 }
 
-// Same as updateCharacterListRow(), but for an operation that changed the row's own key (a rename) - looks the
-// row up by its previous avatar and re-renders it in place under the new one. Removal is always safe regardless
-// of sort order (there's no "where does it go" question, unlike an insertion), so a straight DOM removal is
-// exact here too - both skip the pagination widget's own tracked total/page-count, which is then off by one
-// until the current page is next actually queried (a real page turn, or refreshCharacterListCurrentPage()).
 export function renameCharacterListRow(previousId, id) {
     const character = charactersStore.get(id);
     if (!character) return false;
@@ -192,9 +157,7 @@ export function renameCharacterListRow(previousId, id) {
 }
 
 /**
- * The character rows on screen whose characters `charactersStore` doesn't hold, each with the tag ids it was drawn
- * with: those rows are the only place the page has them.
- * @returns {Map<string, string[]>} by avatar
+ * @returns {Map<string, string[]>}
  */
 export function getUnheldRowTagIds() {
     /** @type {Map<string, string[]>} */
@@ -207,10 +170,9 @@ export function getUnheldRowTagIds() {
 }
 
 /**
- * Draws the row on screen of a character `charactersStore` doesn't hold again with `tagIds`.
  * @param {string} avatar
  * @param {string[]} tagIds
- * @param {number} fetchStamp - tagFetchStamp() taken before `tagIds` was read
+ * @param {number} fetchStamp
  */
 export function setUnheldRowTagIds(avatar, tagIds, fetchStamp) {
     let item = null;
@@ -223,7 +185,6 @@ export function setUnheldRowTagIds(avatar, tagIds, fetchStamp) {
     if (item && row) updateCharacterBlock(row, item, avatar);
 }
 
-/** Draws the rows on screen of characters `charactersStore` doesn't hold again, as they are. */
 export function redrawUnheldRows() {
     for (const entity of renderedPageEntities) {
         if (entity.type !== 'character' || charactersStore.has(entity.id)) continue;
@@ -240,40 +201,24 @@ export function removeCharacterListRow(id) {
     return true;
 }
 
-// For an operation that adds/removes a row or could move it to a different sort position (create/delete/
-// duplicate) - unlike a same-row edit, correctly reflecting this generally needs to know the row's real sorted
-// position and the corpus's real new count, neither of which is safe to guess client-side (sort can be by name,
-// date, fav, a random seed, or search relevance). Re-fetches only the CURRENTLY VISIBLE PAGE - bounded by page
-// size, not corpus size - through the pagination widget's own async path, rather than printCharacters()'s full
-// reinit (which also repeats the folder-tile scan and the tag-filter reprint on every call). Returns false when
-// the list hasn't been built yet - the caller then still needs a real printCharacters() call to reflect the change.
 export function refreshCharacterListCurrentPage() {
     if (!serverPagedList) return false;
     const pager = document.getElementById('rm_print_characters_pagination');
     const pagination = pager ? $(pager).data('pagination') : undefined;
     if (!pagination?.initialized) return false;
-    // pagination.js drops a refresh while its own fetch runs (disabled), so there is no render to keep the scroll for.
     keepScrollOnNextRender = !pagination.model?.disabled;
     $(pager).pagination('refresh');
     return true;
 }
 
-// Set by refreshCharacterListCurrentPage() for the re-render it starts: that render keeps the list's scroll
-// distance as it is then, instead of printCharacters()'s afterRender restoring the one saved when it built the pager.
 let keepScrollOnNextRender = false;
-/** @type {'top' | 'bottom' | number | null} Where a page turn the user made leaves the list scrolled. */
+/** @type {'top' | 'bottom' | number | null} */
 let pageTurnScroll = null;
 
-// Page fetches of the characters list still running: printCharacters()'s page-1 probe through to the pager it
-// builds, and every pager ajaxFunction call. pagination.js drops a refresh while its own fetch runs, so the list
-// being shown meanwhile waits here for the last one to settle.
 let pageFetchesInFlight = 0;
 let shownRefreshPending = false;
-// The list filter a page kept in browser storage was drawn for, when the server's fresher answer for it came while a
-// page fetch was still running; the page is drawn again once they settle.
 /** @type {object | null} */
 let freshRefreshPendingFor = null;
-// Whether printCharacters() has built the server-paged list.
 let serverPagedList = false;
 
 function pageFetchSettled() {
@@ -291,20 +236,15 @@ function pageFetchSettled() {
     }
 }
 
-// #right-nav-panel holds only the characters list. An open drawer that another panel covers is hidden by CSS
-// (visibility), so openDrawer alone doesn't mean it is showing.
 export function isCharacterListShowing() {
     const panel = document.getElementById('right-nav-panel');
     return Boolean(panel?.classList.contains('openDrawer')) && getComputedStyle(panel).visibility !== 'hidden';
 }
 
-// Same test as /query's hasSearch: only a non-blank term reaches the search index.
 export function hasActiveCharacterSearch() {
     return String(entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) ?? '').trim().length > 0;
 }
 
-// For the list going from hidden to showing, when no change sync is pending: re-queries the visible page with its
-// token, since anything that changed while it was hidden wasn't shown.
 export function onCharacterListShown() {
     if (!isCharacterListShowing()) return;
     if (pageFetchesInFlight > 0) {
@@ -316,39 +256,28 @@ export function onCharacterListShown() {
 }
 
 /**
- * Prints the global character list, optionally doing a full refresh of the list
- * Use this function whenever the reprinting of the character list is the primary focus, otherwise using `printCharactersDebounced` is preferred for a cleaner, non-blocking experience.
- *
- * The printing will also always reprint all filter options of the global list, to keep them up to date.
- *
- * @param {boolean} fullRefresh - If true, the list is fully refreshed and the navigation is being reset
+ * @param {boolean} fullRefresh
  */
-// Must be a string, not a function: pagination.js only enters real per-page `isAsync` mode (calling
-// `ajaxFunction` fresh on every page turn) for a string `dataSource`. The value itself is never fetched.
 const SERVER_PAGINATED_DATA_SOURCE = '/api/characters/query';
 /** @type {('rows'|'total')[]} */
 const PAGE_WANT = ['rows', 'total'];
 
-// The entities of the rows on screen. Always reassigned, never mutated: the page callback stores pagination.js's own
-// page array here, which must not change under it.
 /** @type {Entity[]} */
 let renderedPageEntities = [];
 
 /**
  * @typedef {object} CharacterListPageContext
- * @property {{ filter: object, sort: object|undefined } | null} query The `/query` filter and sort the drawn page came from.
- * @property {string} queryKey `query` as a string, to tell whether a later page came from the same list.
- * @property {number} pageOffset The position in the list of the drawn page's first row.
- * @property {number} total How many rows the list has.
- * @property {boolean} totalApprox Whether `total` is an estimate.
+ * @property {{ filter: object, sort: object|undefined } | null} query
+ * @property {string} queryKey
+ * @property {number} pageOffset
+ * @property {number} total
+ * @property {boolean} totalApprox
  */
 
 /** @type {CharacterListPageContext} */
 let listPageContext = { query: null, queryKey: '', pageOffset: 0, total: 0, totalApprox: false };
 
 /**
- * Which list the drawn page belongs to and where in it, for the bulk selection. Each drawn character row carries its
- * position in the list as `data-list-position`.
  * @returns {CharacterListPageContext}
  */
 export function getCharacterListPageContext() {
@@ -371,25 +300,20 @@ export async function printCharacters(fullRefresh = false) {
         saveCharactersPage = 0;
         saveCharactersTotal = 0;
         currentScrollTop = 0;
-        // A current-page refresh started before this would otherwise keep its scroll distance on this render.
         keepScrollOnNextRender = false;
         await delay(1);
     }
 
-    // Before printing the personas, we check if we should enable/disable search sorting
     verifyCharactersSearchSortRule();
 
-    // A filter set from code (upstream's FilterHelper, the tag bars) shows in the pills and the box.
     showViewInSearchBox();
     refreshSavedViewState();
     void refreshFolderSwitcher();
 
-    // We are actually always reprinting filters, as it "doesn't hurt", and this way they are always up to date
     printTagFilters(tag_filter_type.character);
     printTagFilters(tag_filter_type.group_members_list);
     printTagFilters(tag_filter_type.group_candidates_list);
 
-    // We are also always reprinting the lists on character/group edit window, as these ones doesn't get updated otherwise
     applyTagsOnCharacterSelect();
     applyTagsOnGroupSelect();
 
@@ -400,8 +324,6 @@ export async function printCharacters(fullRefresh = false) {
         return async function (/** @type {Entity[]} */ data) {
             const list = $(listId).get(0);
 
-            // Keyed diff: rows whose avatar is still on the new page are moved/updated in place rather than
-            // rebuilt from the template. Groups and tags aren't keyed (far fewer per page) and rebuild every time.
             const existingCharacterRows = new Map();
             for (const child of list.children) {
                 if (child instanceof HTMLElement && child.hasAttribute('data-avatar')) {
@@ -409,8 +331,6 @@ export async function printCharacters(fullRefresh = false) {
                 }
             }
 
-            // Build into a detached fragment and append once - one reflow for the page instead of one per row.
-            // Moving an attached node into the fragment detaches it from `list`, so replaceChildren() below is safe.
             const fragment = document.createDocumentFragment();
             let position = listPageContext.pageOffset;
             for (const i of data) {
@@ -464,8 +384,6 @@ export async function printCharacters(fullRefresh = false) {
             accountStorage.setItem(storageKey, e.target.value);
             paginationDropdownChangeHandler(e, size);
         },
-        // A page turned: the next page from the list's bottom starts at its top, the previous one from the top at
-        // its bottom; otherwise the list keeps where it was scrolled when the page was turned.
         beforePaging: function (/** @type {number} */ pageNumber) {
             const list = $(listId).get(0);
             if (!list) return;
@@ -509,11 +427,7 @@ export async function printCharacters(fullRefresh = false) {
     async function printServerPaginated() {
         const { filter, sort: wantedSort } = buildCharacterQueryFromCurrentFilterState({ includeGroups: true });
 
-        // Page 1 is fetched before the plugin is built, so every later page uses the sort it settled on.
-        // A page kept in browser storage from an earlier visit is drawn at once; if the server says it changed, the
-        // page on screen is drawn again where it is.
         const onFresh = () => {
-            // A fresh answer arriving while a page is still being fetched or drawn waits for it to settle.
             if (pageFetchesInFlight > 0 || listPageContext.query?.filter !== filter) {
                 freshRefreshPendingFor = filter;
                 return;
@@ -523,9 +437,7 @@ export async function printCharacters(fullRefresh = false) {
         const { sort, result: firstPage } = await queryWithSortFallback(filter, wantedSort,
             trySort => characterRepository.query(filter, trySort, 1, pageSize, PAGE_WANT, { onFresh }));
 
-        // Serves the already-fetched probe to ajaxFunction's first call instead of re-fetching.
         let pendingFirstPage = firstPage;
-        // Whether the latest page response's `total` was `~`-prefixed (approximate).
         let pageTotalApprox = isApproxTotal(firstPage.total);
 
         serverPagedList = true;
@@ -538,8 +450,6 @@ export async function printCharacters(fullRefresh = false) {
                 const rangeEnd = Math.min(currentPage * pageSize, totalNumber);
                 return `${rangeStart}-${rangeEnd} .. ${pageTotalApprox ? '~' : ''}${totalNumber}`;
             },
-            // Keeps a re-render on saveCharactersPage instead of pagination.js bouncing it to page 1 while the ajax
-            // response is in flight.
             totalNumber: saveCharactersTotal || undefined,
             resetPageNumberOnInit: false,
             totalNumberLocator: function (/** @type {{total: number|string}} */ response) {
@@ -573,7 +483,6 @@ export async function printCharacters(fullRefresh = false) {
                     })
                     .catch(error => {
                         console.error('[printCharacters] server-paginated /query failed:', error);
-                        // No render follows, so a refresh's keep-scroll must not carry over to a later page turn.
                         keepScrollOnNextRender = false;
                         ajaxParams.error(error);
                     })
@@ -584,7 +493,6 @@ export async function printCharacters(fullRefresh = false) {
     }
 }
 
-// Auto-selects the "Search" sort option only when the search term first becomes active, preserving a manual switch away from it.
 function verifyCharactersSearchSortRule() {
     const searchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH);
     const searchOption = $('#character_sort_order option[data-field="search"]');
@@ -594,7 +502,6 @@ function verifyCharactersSearchSortRule() {
         searchOption.removeAttr('hidden');
         searchOption.prop('selected', true);
     }
-    // No longer a valid sort with nothing to rank by - fall back to the last real sort.
     if (!searchTerm && !isHidden) {
         searchOption.attr('hidden', '');
         if (searchOption.is(':selected')) {
@@ -604,56 +511,45 @@ function verifyCharactersSearchSortRule() {
 }
 
 /**
- * @typedef {object} Entity - Object representing a display entity
- * @property {Character|Group|import('./scripts/tags.js').Tag|*} item - The item
- * @property {string|number} id - The id
- * @property {'character'|'group'|'tag'} type - The type of this entity (character, group, tag)
- * @property {Entity[]?} [entities=null] - An optional list of entities relevant for this item
- * @property {number|string?} [hidden=null] - An optional number representing how many hidden entities this entity contains. A
- *   folder tile's is `~`-prefixed when approximate.
- * @property {number|string?} [total=null] - A folder tile's sub-list size when `entities` holds only its first rows,
- *   `~`-prefixed when approximate
- * @property {boolean?} [isUseless=null] - Specifies if the entity is useless (not relevant, but should still be displayed for consistency) and should be displayed greyed out
+ * @typedef {object} Entity
+ * @property {Character|Group|import('./scripts/tags.js').Tag|*} item
+ * @property {string|number} id
+ * @property {'character'|'group'|'tag'} type
+ * @property {Entity[]?} [entities=null]
+ * @property {number|string?} [hidden=null]
+ * @property {number|string?} [total=null]
+ * @property {boolean?} [isUseless=null]
  */
 
 /**
- * Converts the given character to its entity representation
- *
- * @param {Character} character - The character
- * @param {string|number} [id] - The entity id. Upstream callers pass the character's index; defaults to its avatar.
- * @returns {Entity} The entity for this character
+ * @param {Character} character
+ * @param {string|number} [id]
+ * @returns {Entity}
  */
 export function characterToEntity(character, id) {
     return { item: character, id: id === undefined ? character?.avatar : id, type: 'character' };
 }
 
 /**
- * Converts the given group to its entity representation
- *
- * @param {Group} group - The group
- * @returns {Entity} The entity for this group
+ * @param {Group} group
+ * @returns {Entity}
  */
 export function groupToEntity(group) {
     return { item: group, id: group.id, type: 'group' };
 }
 
 /**
- * Converts the given tag to its entity representation
- *
- * @param {import('./scripts/tags.js').Tag} tag - The tag
- * @returns {Entity} The entity for this tag
+ * @param {import('./scripts/tags.js').Tag} tag
+ * @returns {Entity}
  */
 export function tagToEntity(tag) {
     return { item: structuredClone(tag), id: tag.id, type: 'tag', entities: [] };
 }
 
-// The one sort state power_user.sort_field/sort_order alone can't express, since selecting this option
-// overrides both (mirrors sortEntitiesList()'s own isSearch check).
 function isSearchSortSelected() {
     return $('#character_sort_order option[data-field="search"]').is(':selected');
 }
 
-/** Sort fields already warned about by warnUnsupportedSort(), so each is named once per page load. */
 const warnedUnsupportedSorts = new Set();
 
 /**
@@ -669,7 +565,6 @@ function warnUnsupportedSort(field) {
 }
 
 /**
- * The sort a list uses when the server doesn't know the one asked for: relevance with a search term, else name.
  * @param {import('./character-repository.js').CharacterQueryFilter} filter
  * @returns {import('./character-repository.js').CharacterQuerySort}
  */
@@ -678,14 +573,11 @@ function fallbackSort(filter) {
 }
 
 /**
- * Runs a `/query` request with `sort`. When the sort is unknown to the server (old saved settings or an extension),
- * or is relevance with no search term, it warns once naming the sort and runs the request with fallbackSort().
  * @template T
- * @param {import('./character-repository.js').CharacterQueryFilter} filter The request's filter.
+ * @param {import('./character-repository.js').CharacterQueryFilter} filter
  * @param {import('./character-repository.js').CharacterQuerySort|undefined} sort
  * @param {(sort: import('./character-repository.js').CharacterQuerySort|undefined) => Promise<T>} request
- * @returns {Promise<{ sort: import('./character-repository.js').CharacterQuerySort|undefined, result: T }>} The
- *   sort that answered, and its result.
+ * @returns {Promise<{ sort: import('./character-repository.js').CharacterQuerySort|undefined, result: T }>}
  */
 export async function queryWithSortFallback(filter, sort, request) {
     if (!(sort?.field === 'search' && !filter.search)) {
@@ -721,8 +613,6 @@ function booleanToTriState(value) {
 }
 
 /**
- * How the list's included tags combine: 'or' shows rows carrying any one of them. Upstream's tag filter has no such
- * setting, so it is kept beside `entitiesFilter`, per browser.
  * @returns {'and'|'or'}
  */
 function readTagMode() {
@@ -734,7 +624,6 @@ function readTagMode() {
 }
 
 /**
- * The list's range bounds. Upstream's filter helper has no ranges, so they are kept beside it, per browser.
  * @returns {import('./character-view.js').CharacterView['ranges']}
  */
 function readRanges() {
@@ -746,8 +635,6 @@ function readRanges() {
 }
 
 /**
- * The closed-folder case the list shows, while "Tags as Folders" is on: 'none' (no closed folder) unless one was
- * picked. Upstream's filter helper has no folder case, so it is kept beside it, per browser.
  * @returns {string}
  */
 function readFolderCase() {
@@ -792,17 +679,12 @@ function writeTagMode(mode) {
 }
 
 /**
- * What the character list shows. It is read from `entitiesFilter` and the sort settings, which stay the store, so an
- * extension setting a filter through upstream's FilterHelper or `power_user.sort_*` changes the view, and a view set
- * here is what they read back.
  * @returns {import('./character-view.js').CharacterView}
  */
 export function getCharacterView() {
     const tagFilterData = entitiesFilter.getFilterData(FILTER_TYPES.TAG) ?? { selected: [], excluded: [] };
     const { text, conditions } = parseSearchText(entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) ?? '');
-    // With no term the option is about to be deselected (verifyCharactersSearchSortRule()), so the saved sort applies.
     const isSearchSort = hasActiveCharacterSearch() && isSearchSortSelected();
-    // The saved sort; under the search sort it orders the matches only tag names match (they all score alike).
     /** @type {{ field: string, order: 'asc'|'desc', seed?: number }} */
     const listSort = power_user.sort_order === 'random'
         ? { field: 'random', order: 'asc', seed: getRandomSortSeed(accountStorage) }
@@ -812,7 +694,6 @@ export function getCharacterView() {
     return {
         text,
         conditions,
-        // tagFilterData.selected doubles as "which bogus folder is open", so an open folder is a tag condition.
         tags: {
             include: [...(tagFilterData.selected ?? [])],
             exclude: [...(tagFilterData.excluded ?? [])],
@@ -827,11 +708,9 @@ export function getCharacterView() {
 }
 
 /**
- * Shows `view` in the character list, as a change the user made: one reprint, back to page 1 at the top.
- * Fields left out keep their current value.
  * @param {Partial<import('./character-view.js').CharacterView>} view
  * @param {object} [options]
- * @param {boolean} [options.fromSearchBox] The search box already shows it, so it isn't redrawn.
+ * @param {boolean} [options.fromSearchBox]
  */
 export function setCharacterView(view, { fromSearchBox = false } = {}) {
     const current = getCharacterView();
@@ -857,7 +736,6 @@ export function setCharacterView(view, { fromSearchBox = false } = {}) {
     }
     resetListPositionOnNextPrint = true;
     if (!fromSearchBox) showViewInSearchBox();
-    // At once, not on the print: a reload right after a change must still find it as a draft.
     refreshSavedViewState();
     printCharactersDebounced();
 }
@@ -867,7 +745,6 @@ function buildCharacterQueryFromCurrentFilterState({ includeGroups = false } = {
     return buildCharacterQuery(viewToQueryState(getCharacterView(), { includeGroups }));
 }
 
-// Maps one normalized `/query` row to its `Entity` form.
 function queryRowToEntity(row) {
     const { type, item } = normalizeQueryRow(row);
     return type === 'group' ? groupToEntity(item) : characterToEntity(item);
@@ -877,22 +754,18 @@ function applyFinalFilterRun(entities) {
     const beforeFinalEntities = filterByTagState(entities, { globalDisplayFilters: true });
     let filtered = entitiesFilter.applyFilters(beforeFinalEntities, { clearFuzzySearchCaches: false });
 
-    // Magic for folder filter. If that one is enabled, and no folders are display anymore, we remove that filter to actually show the characters.
     if (isFilterState(entitiesFilter.getFilterData(FILTER_TYPES.FOLDER), FILTER_STATES.SELECTED) && filtered.filter(x => x.type == 'tag').length == 0) {
         filtered = entitiesFilter.applyFilters(beforeFinalEntities, { tempOverrides: { [FILTER_TYPES.FOLDER]: FILTER_STATES.UNDEFINED }, clearFuzzySearchCaches: false });
     }
     return filtered;
 }
 
-// Rows per /query request in findCharacterListPage(), within the server's page cap (MAX_QUERY_PAGE_SIZE).
 const FIND_PAGE_CHUNK_SIZE = 1000;
 
 /**
- * The page of the character list an entity is on, with the list's filters and sort (and its fallback), for a list of
- * `pageSize` rows a page. The list's `/query` rows are read in order, one chunk at a time, until it turns up.
  * @param {(entity: Entity) => boolean} isEntity
  * @param {number} pageSize
- * @returns {Promise<number>} The 1-based page, or -1 when the list doesn't hold it.
+ * @returns {Promise<number>}
  */
 export async function findCharacterListPage(isEntity, pageSize) {
     const { filter, sort: wantedSort } = buildCharacterQueryFromCurrentFilterState({ includeGroups: true });
@@ -909,15 +782,10 @@ export async function findCharacterListPage(isEntity, pageSize) {
 }
 
 /**
- * The entities of the character list page on screen, `[]` before the list first renders.
- *
- * This keeps the browser's own filter (`doFilter`) and sort (`doSort`) over the page: upstream callers expect it to
- * answer synchronously. It is the one place the browser still filters and ranks the list.
- *
- * @param {object} param0 - Optional parameters
- * @param {boolean} [param0.doFilter] - Whether this entity list should already be filtered based on the global filters
- * @param {boolean} [param0.doSort] - Whether the entity list should be sorted when returned
- * @returns {Entity[]} All entities
+ * @param {object} param0
+ * @param {boolean} [param0.doFilter]
+ * @param {boolean} [param0.doSort]
+ * @returns {Entity[]}
  */
 export function getEntitiesList({ doFilter = false, doSort = true } = {}) {
     let entities = renderedPageEntities.slice();
@@ -932,8 +800,6 @@ export function getEntitiesList({ doFilter = false, doSort = true } = {}) {
 }
 
 /**
- * Keeps a saved view's first page, at the list's page size, pinned in browser storage so opening the view is drawn
- * at once; null lets go of it.
  * @param {string} id
  * @param {import('./character-view.js').CharacterView | null} view
  */
@@ -944,7 +810,6 @@ async function pinSavedViewPage(id, view) {
         return;
     }
     const pageSize = Number(accountStorage.getItem('Characters_PerPage')) || per_page_default;
-    // The view on screen is pinned as the list asks for it (a search sorts by relevance there).
     const { filter, sort } = sameView(getCharacterView(), view)
         ? buildCharacterQueryFromCurrentFilterState({ includeGroups: true })
         : buildCharacterQuery(viewToQueryState(view, { includeGroups: true }));
@@ -952,7 +817,6 @@ async function pinSavedViewPage(id, view) {
 }
 
 /**
- * A page of folders of one type whose names hold `term`, in the tag sort order.
  * @param {string} term
  * @param {string | null} cursor
  * @param {'OPEN'|'CLOSED'} folderType
@@ -964,7 +828,6 @@ async function readFolderPage(term, cursor, folderType) {
 }
 
 /**
- * A folder of one type by id: null when no such folder exists, undefined when the read failed.
  * @param {string} id
  * @param {'OPEN'|'CLOSED'} folderType
  * @returns {Promise<{ id: string, name: string } | null | undefined>}
@@ -978,10 +841,8 @@ async function readFolder(id, folderType) {
 }
 
 /**
- * Re-reads one character from the server and updates it in the store.
- * @param {string} avatarUrl The character's avatar key.
- * @returns {Promise<boolean>} True when the store was updated; false on a non-ok response, or when the page doesn't
- *   hold the character (there is nothing in memory to refresh). A failed request (network error) still throws.
+ * @param {string} avatarUrl
+ * @returns {Promise<boolean>}
  */
 export async function getOneCharacter(avatarUrl) {
     if (!charactersStore.has(avatarUrl)) {
@@ -998,16 +859,12 @@ export async function getOneCharacter(avatarUrl) {
 
     if (response.ok) {
         const getData = await response.json();
-        // See selectCharacterByAvatar()'s identical fix: `chat` can legitimately be unset/null now
-        // (Workstream 6), and `String(undefined)` would corrupt it into the literal "undefined".
         getData.chat = getData.chat ? String(getData.chat) : '';
-        // This response is always full data; reset shallow explicitly or a once-shallow entity stays shallow forever.
         getData.shallow = false;
         if (!isFetchedTagIdsCurrent(avatarUrl, fetchStamp)) {
             delete getData.tag_ids;
         }
 
-        // The page may have let go of it while the request was out.
         if (charactersStore.has(avatarUrl)) {
             charactersStore.update(avatarUrl, getData);
             return true;
@@ -1017,8 +874,7 @@ export async function getOneCharacter(avatarUrl) {
 }
 
 /**
- * @param {string|number|Character} [chId] An index into `getContext().characters`, an avatar key, or a character
- *   object
+ * @param {string|number|Character} [chId]
  * @returns {string}
  */
 export function getCharacterSource(chId = getCurrentCharacter()) {
@@ -1067,36 +923,24 @@ export function getCharacterSource(chId = getCurrentCharacter()) {
     return '';
 }
 
-// getCharacters() also refetches the full group list as a side effect; several group-mutation call sites piggyback on this.
 /**
  * @param {object} [options]
  * @param {boolean} [options.silent=false]
  * @param {boolean} [options.silentGroups=false]
  */
-// Bounds a single /api/characters/batch request so a large-library boot doesn't become one giant response.
 const CHARACTER_BATCH_CHUNK_SIZE = 500;
 
-// Only meant for freshly-fetched data; a cache hit already has this applied.
 function finalizeFetchedCharacter(character) {
-    // Leave it unset for a character with no chat yet - inventing a name here guarantees a
-    // 404 the first time this character is opened, against a file that was never written.
     character.chat = character.chat ? String(character.chat) : '';
 }
 
 /**
- * What one sync learned, kept across retries: a failed attempt has already moved the cursor past the pages it
- * applied, so their updates are only ever seen once.
  * @typedef {object} DeltaProgress
- * @property {Map<string, object|null>} updates Each character the sync touched, as the cache now holds it; `null`
- *   when the cache has no record of it (deleted, or its fetch or write failed).
- * @property {boolean} changed Whether the sync saw any change at all.
- * @property {boolean} full Whether the cache was wiped and rebuilt, so a character absent from `updates` is gone.
+ * @property {Map<string, object|null>} updates
+ * @property {boolean} changed
+ * @property {boolean} full
  */
 
-/**
- * The change-feed position this tab's `characters` is current through. The cache and its cursor are shared by
- * every tab of this user, so another tab can move the cursor past changes this tab has not taken in yet.
- */
 let memorySeq = 0;
 
 /**
@@ -1117,24 +961,19 @@ async function fetchChangesPage(sinceSeq) {
 }
 
 /**
- * Takes in what another tab already wrote to the cache between this tab's `memorySeq` and the shared cursor:
- * the ids come from the change feed, the records from the cache.
  * @param {DeltaProgress} progress
- * @param {number} cursor The shared cursor.
+ * @param {number} cursor
  */
 async function catchUpFromCache(progress, cursor) {
     let sinceSeq = memorySeq;
     while (sinceSeq < cursor) {
         const { seq, changes, truncated, hasMore } = await fetchChangesPage(sinceSeq);
         if (truncated) {
-            // The feed no longer reaches back to this tab's position. The tab that moved the cursor has the cache
-            // current through it, so the characters this page holds are read from the cache as it is now.
             await readHeldFromCache(progress);
             progress.changed = true;
             memorySeq = cursor;
             return;
         }
-        // Only the characters this page holds have anything in memory to update.
         const ids = [...new Set(changes.map(change => change.id))].filter(id => charactersStore.has(id));
         if (changes.length > 0) {
             progress.changed = true;
@@ -1151,12 +990,8 @@ async function catchUpFromCache(progress, cursor) {
     }
 }
 
-// Syncs via the change-feed against the local cache instead of a full-library dump; no full-fetch fallback on failure since that dump can be multi-hundred-MB.
-// The server pages /changes; each page is applied and saved, then its cursor persisted, so an interrupted sync resumes at the last fully applied page.
-/** @param {DeltaProgress} progress Filled in as each page is applied. */
+/** @param {DeltaProgress} progress */
 async function fetchCharactersDelta(progress) {
-    // Advanced in memory, not re-read per page: setCachedCursor() swallows write errors, and re-reading a
-    // cursor that failed to persist would refetch the same page forever.
     let sinceSeq = await getCachedCursor();
     if (memorySeq < sinceSeq) {
         await catchUpFromCache(progress, sinceSeq);
@@ -1165,7 +1000,6 @@ async function fetchCharactersDelta(progress) {
         const { seq, changes, truncated, hasMore } = await fetchChangesPage(sinceSeq);
 
         if (truncated) {
-            // sinceSeq predates the server's change log; wipe the cache and retry as a fresh full sync.
             await clearCharacterCache();
             progress.updates.clear();
             progress.full = true;
@@ -1175,7 +1009,6 @@ async function fetchCharactersDelta(progress) {
 
         const deleteIds = [];
         const wholeRecordIds = [];
-        // Group field-level changes by their field set so each set becomes one batched /batch call.
         /** @type {Map<string, { fields: string[], ids: string[] }>} */
         const fieldGroupMap = new Map();
 
@@ -1193,7 +1026,6 @@ async function fetchCharactersDelta(progress) {
             }
         }
 
-        // Re-fetch records that failed to write on a previous sync, triggered by the failure itself.
         const previousFailures = await getWriteFailures();
         if (previousFailures.length > 0) {
             const deleteSet = new Set(deleteIds);
@@ -1209,11 +1041,9 @@ async function fetchCharactersDelta(progress) {
             await removeCachedCharacters(deleteIds);
         }
 
-        /** @type {Map<string, object>} fresh/updated records to save back to the cache */
+        /** @type {Map<string, object>} */
         const fresh = new Map();
 
-        // Each changed character's fields the cache holds are sent as hashes, and only the fields that differ come
-        // back (a character the cache lacks comes back whole).
         for (let i = 0; i < wholeRecordIds.length; i += CHARACTER_BATCH_CHUNK_SIZE) {
             const chunk = wholeRecordIds.slice(i, i + CHARACTER_BATCH_CHUNK_SIZE);
             const held = await readCachedCharactersByIds(chunk);
@@ -1237,9 +1067,7 @@ async function fetchCharactersDelta(progress) {
             }
         }
 
-        // Field-level fetches request only the changed fields, e.g. skipping the PNG read server-side.
         if (fieldGroupMap.size > 0) {
-            // Reads only this page's field-changed ids, so the read is bounded by the page size.
             const cachedBefore = await readCachedCharactersByIds([...fieldGroupMap.values()].flatMap(group => group.ids));
 
             for (const { fields, ids } of fieldGroupMap.values()) {
@@ -1258,7 +1086,6 @@ async function fetchCharactersDelta(progress) {
                     const batchMerged = [];
                     for (const partial of batchData) {
                         const avatar = partial.avatar;
-                        // Check `fresh` first - a whole-record fetch in this same sync supersedes the pre-sync cache.
                         const existing = fresh.get(avatar) || cachedBefore.get(avatar);
                         if (existing) {
                             for (const field of fields) {
@@ -1266,8 +1093,6 @@ async function fetchCharactersDelta(progress) {
                                     existing[field] = partial[field];
                                 }
                             }
-                            // A 'fav' change also sets shallow_json's data.extensions.fav, but /batch only returns the top-level
-                            // field; without the mirror this record's fav hash would differ from the server's.
                             if (fields.includes('fav') && 'fav' in partial) {
                                 existing.data = existing.data ?? {};
                                 existing.data.extensions = existing.data.extensions ?? {};
@@ -1277,7 +1102,6 @@ async function fetchCharactersDelta(progress) {
                             batchMerged.push({ avatar, character: existing });
                         }
                     }
-                    // Saved incrementally per batch to avoid one huge IndexedDB write at the end.
                     if (batchMerged.length > 0) {
                         await saveCachedCharacters(batchMerged);
                     }
@@ -1289,13 +1113,9 @@ async function fetchCharactersDelta(progress) {
         if (fresh.size > 0) {
             writeFailures = await saveCachedCharacters(Array.from(fresh, ([avatar, character]) => ({ avatar, character })));
         }
-        // Failures before the cursor: if interrupted between the two writes, the page replays and refetches them,
-        // instead of the cursor moving past ids whose write failed.
         await setWriteFailures(writeFailures);
         await setCachedCursor(seq);
 
-        // Read back from the cache rather than taken from `fresh`, so a character whose fetch or write failed is
-        // absent here exactly as it is on disk. Only the characters this page holds have anything in memory to update.
         const touched = [...new Set([...deleteIds, ...wholeRecordIds, ...[...fieldGroupMap.values()].flatMap(group => group.ids)])]
             .filter(id => charactersStore.has(id));
         const stored = await readCachedCharactersByIds(touched);
@@ -1314,7 +1134,6 @@ async function fetchCharactersDelta(progress) {
     }
 }
 
-// lodash merge() would merge arrays index-by-index; returning arrays as-is makes them replace wholesale instead.
 function mergeShallowCharacterCustomizer(_objValue, srcValue) {
     if (Array.isArray(srcValue)) {
         return srcValue;
@@ -1322,18 +1141,11 @@ function mergeShallowCharacterCustomizer(_objValue, srcValue) {
     return undefined;
 }
 
-/**
- * Takes the cache's feed position at boot, before the first sync. The cache may hold the whole library, and none of
- * it is read into memory: the page holds only the characters on screen, each read when something needs it, and every
- * one of them is fresher than this position.
- */
 export async function seedCharactersFromCache() {
     memorySeq = await getCachedCursor();
 }
 
 /**
- * Reads the characters this page holds from the cache as it is now. One the cache lacks is gone only if the server
- * says so: a cache another tab is still rebuilding lacks characters that exist.
  * @param {DeltaProgress} progress
  */
 async function readHeldFromCache(progress) {
@@ -1346,8 +1158,6 @@ async function readHeldFromCache(progress) {
 }
 
 /**
- * Records as gone each of these held characters that the server says doesn't exist. One it can't answer for is
- * left as it is.
  * @param {DeltaProgress} progress
  * @param {string[]} avatars
  */
@@ -1363,7 +1173,6 @@ async function markHeldGoneIfDeleted(progress, avatars) {
 const DELTA_FETCH_MAX_RETRIES = 3;
 const DELTA_FETCH_RETRY_DELAYS_MS = [1000, 3000, 8000];
 
-// A sync request (one /changes page, or /api/groups/all) taking this long is broken rather than slow.
 export const SYNC_REQUEST_TIMEOUT_MS = 60000;
 
 export function showCharacterSyncFailedToast() {
@@ -1374,16 +1183,12 @@ export function showCharacterSyncFailedToast() {
     );
 }
 
-// Never falls back to an unconditional full-library fetch on exhausted retries; reports the failure and leaves `characters` stale but uncorrupted.
 /**
  * @param {object} [options]
  * @param {boolean} [options.silent=false]
  * @param {boolean} [options.silentGroups=false]
- * @param {boolean} [options.skipPrint=false] Skip the trailing printCharacters()/search-refetch - for a
- * caller that's about to do its own smaller, targeted DOM update (or its own real requery, like
- * select_rm_info()'s flash-to-new-character navigation) instead.
- * @param {boolean} [options.keepListPosition=false] Reprint the list on the page and scroll distance it is at,
- * instead of going back to page 1 at the top - for a refresh the user didn't ask for.
+ * @param {boolean} [options.skipPrint=false]
+ * @param {boolean} [options.keepListPosition=false]
  */
 export async function getCharacters(options = {}) {
     try {
@@ -1395,12 +1200,9 @@ export async function getCharacters(options = {}) {
 }
 
 /**
- * Applies a sync's updates to the characters the page holds, in place. A character it doesn't hold is not taken in:
- * what the page holds is decided by what is on screen, never by a sync. Callers re-index the store afterwards.
  * @param {DeltaProgress} progress
- * @param {number} fetchStamp From tagFetchStamp() before the sync, so tag ids a newer write superseded are dropped.
- * @returns {string[]} Held characters an update reached only as a shallow row: their heavy fields may have changed
- *   too, so they are to be read again in full.
+ * @param {number} fetchStamp
+ * @returns {string[]}
  */
 function applyCharacterUpdates({ updates }, fetchStamp) {
     const removed = new Set();
@@ -1418,7 +1220,6 @@ function applyCharacterUpdates({ updates }, fetchStamp) {
         if (!isFetchedTagIdsCurrent(avatar, fetchStamp)) {
             delete incoming.tag_ids;
         }
-        // Merged field by field: a shallow row lacks the heavy fields, which the held card keeps until it is read again.
         lodash.mergeWith(existing, incoming, mergeShallowCharacterCustomizer);
         if (incoming.shallow === true) {
             existing.shallow = false;
@@ -1436,7 +1237,6 @@ function applyCharacterUpdates({ updates }, fetchStamp) {
 }
 
 /**
- * Reads these held characters again in full and updates them in place. One the page let go of meanwhile stays out.
  * @param {string[]} avatars
  */
 async function readHeldAgainInFull(avatars) {
@@ -1445,7 +1245,6 @@ async function readHeldAgainInFull(avatars) {
     const full = await characterRepository.readFull(avatars);
     for (const [avatar, character] of full) {
         if (!charactersStore.has(avatar)) continue;
-        // A tag change of this tab's not stored when the read began keeps its tag ids over the server's older ones.
         if (!isFetchedTagIdsCurrent(avatar, fetchStamp)) delete character.tag_ids;
         charactersStore.update(avatar, character);
     }
@@ -1453,8 +1252,6 @@ async function readHeldAgainInFull(avatars) {
 
 async function syncCharacters({ silent = false, silentGroups = false, skipPrint = false, keepListPosition = false } = {}) {
     let lastError;
-    // An extension's write to tag_map just before this sync (upstream's code reloads the characters right after one)
-    // is this tab's change: its tag ids are kept over the server's copy, which may not have it yet.
     takeInExtensionTagWrites();
     const fetchStamp = tagFetchStamp();
     /** @type {DeltaProgress} */
@@ -1474,7 +1271,6 @@ async function syncCharacters({ silent = false, silentGroups = false, skipPrint 
         }
     }
 
-    // A rebuilt cache names every character that exists; a held one it didn't name is checked with the server.
     if (progress.full) {
         try {
             await markHeldGoneIfDeleted(progress, charactersStore.getAll().map(character => character.avatar).filter(avatar => !progress.updates.has(avatar)));
@@ -1483,7 +1279,6 @@ async function syncCharacters({ silent = false, silentGroups = false, skipPrint 
         }
     }
 
-    // Pages a failed sync did apply moved the cursor past them, so they are applied here even on failure.
     if (progress.changed) {
         const readAgain = applyCharacterUpdates(progress, fetchStamp);
         try {
@@ -1520,7 +1315,6 @@ async function syncCharacters({ silent = false, silentGroups = false, skipPrint 
     await printCharacters(!keepListPosition);
 }
 
-// Per-backend UI info for the persistent search-backend indicator icon; null means "hide it, this backend is fully healthy".
 /** @type {Record<string, { icon: string, tone: 'warning' | 'error', tooltip: string } | null>} */
 const SEARCH_BACKEND_INDICATOR = {
     tantivy: null,
@@ -1548,8 +1342,8 @@ const SEARCH_BACKEND_INDICATOR = {
 };
 
 /**
- * @param {number|string|undefined} total A `/query` response's `total`.
- * @returns {boolean} Whether it is a `~`-prefixed approximate count.
+ * @param {number|string|undefined} total
+ * @returns {boolean}
  */
 function isApproxTotal(total) {
     return typeof total === 'string' && total.startsWith('~');
@@ -1559,7 +1353,6 @@ function isApproxTotal(total) {
 let lastKnownSearchBackend = null;
 
 /**
- * Shows the search-backend indicator for a list page's `searchBackend`, with a toast when it differs from the last one.
  * @param {string} searchBackend
  */
 function showSearchBackend(searchBackend) {
@@ -1579,8 +1372,6 @@ function showSearchBackend(searchBackend) {
 }
 
 export function initCharacterSearch() {
-    // Typing in the box waits for a pause; a change made any other way goes out at once and drops a pending one, which
-    // would carry what the pills were before it.
     /** @type {Partial<import('./character-view.js').CharacterView> | null} */
     let pendingTypedView = null;
     const debouncedCharacterSearch = debounce(() => {
@@ -1588,7 +1379,6 @@ export function initCharacterSearch() {
         pendingTypedView = null;
         if (view) setCharacterView(view, { fromSearchBox: true });
     });
-    // What was typed and not yet sent still becomes the view (and so a draft) if the page goes before the pause.
     window.addEventListener('pagehide', () => {
         const view = pendingTypedView;
         pendingTypedView = null;
@@ -1671,7 +1461,6 @@ export function initCharacterSearch() {
         }
     });
 
-    // The account's storage holds the view in use: read once settings are, before the list is first drawn.
     eventSource.on(event_types.SETTINGS_LOADED, () => applyKeptView());
     eventSource.on(event_types.APP_READY, () => {
         void restoreCurrentView();

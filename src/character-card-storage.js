@@ -1,42 +1,5 @@
 import crypto from 'node:crypto';
 
-/**
- * A character card stored as its own values instead of one JSON blob (storage redesign, step 5).
- *
- * splitCard() turns a card (the parsed V1/V2/V3 object as the store holds it today) into the rows of the field
- * layout; assembleCard() turns those rows back into the same card. The two are exact inverses for any JSON object
- * except for the favourite flag: nothing else a card carries is dropped, and the assembled card has the same canonical
- * hash as cardWithStoredFav() of the original (key order may differ; canonicalCardHash() ignores it).
- *
- * The favourite flag is one fact whose truth is the `characters.fav` column; a card's `data.extensions.fav` is a
- * stale copy of it. So only whether the card has that key is stored, and assembly sets it from the column, which the
- * caller passes as `columns.fav`.
- *
- * Where each value goes:
- * - `columns`: the values the narrow `characters` row holds (the character's name, `data.creator`,
- *   `data.character_version`, `data.extensions.world`, and the top-level `create_date`), each only when it has the
- *   type that column holds (`create_date`: a string or a number); otherwise it goes to `extra` so nothing is coerced.
- *   `fav` is never set by splitCard(); assembleCard() reads it.
- * - The character's name is the one the app shows and sorts by, getCharaCardV2(card).name: `data.name` when the card
- *   has `spec` and a `data` object with a `name` key, the top-level `name` otherwise. `name:data` or `name:top` in
- *   `extra` says which key it came from, so it goes back there. A name that isn't a string is stored as itself there
- *   too (`data:name` or `top:name`), and the name column holds the text upstream sorts and finds it by (nameText()),
- *   which is the one value coerced, and only for the column. The other key, when the card has it, is `mirror:name`
- *   when equal and is otherwise stored as itself (`data:name` or `top:name`, a string included).
- * - `card`: the known V2/V3 scalar fields of `data` (CARD_COLUMNS), each only when it has its column's type; the
- *   card table holds them as typed columns.
- * - `greetings`: `data.alternate_greetings` and `data.group_only_greetings`, one row per greeting, in order.
- * - `tags`: the card's own tag names (`data.tags`), one row per name, in order. These are the card's embedded names,
- *   not the user's tag assignments (`character_tags`).
- * - `extensions`: every key of `data.extensions` except fav and world, its value as JSON.
- * - `extra`: everything else, by path, as JSON: other `data` keys and known ones of another type (`data:<key>`),
- *   top-level keys other than `data`
- *   (`top:<key>`), the presence of `data.extensions.fav` (`present:fav`), and a top-level key whose value is exactly
- *   the V1 mirror of its `data` counterpart (`mirror:<key>`, value null), so the mirror is one value here and written
- *   to both places on assembly.
- */
-
-/** Top-level V1 keys that mirror a value under `data`, by path. */
 const V1_MIRRORS = Object.freeze({
     name: ['name'],
     description: ['description'],
@@ -52,7 +15,6 @@ const V1_MIRRORS = Object.freeze({
 
 const COLUMN_KEYS = Object.freeze(['creator', 'character_version']);
 
-/** The known V2/V3 scalar fields of `data` the card table holds as columns, with the type each holds. */
 export const CARD_COLUMNS = Object.freeze({
     description: 'string',
     personality: 'string',
@@ -71,11 +33,11 @@ const GREETING_LISTS = Object.freeze(['alternate_greetings', 'group_only_greetin
 /**
  * @typedef {object} CardParts
  * @property {{ name?: string, creator?: string, character_version?: string, fav?: boolean, world?: string, create_date?: string | number }} columns
- * @property {Record<string, string | number>} card The CARD_COLUMNS values the card has.
+ * @property {Record<string, string | number>} card
  * @property {{ list: string, position: number, text: string }[]} greetings
  * @property {{ position: number, name: string }[]} tags
- * @property {{ key: string, value: string }[]} extensions JSON text per key.
- * @property {{ path: string, value: string | null }[]} extra JSON text per path; null for a marker.
+ * @property {{ key: string, value: string }[]} extensions
+ * @property {{ path: string, value: string | null }[]} extra
  */
 
 /**
@@ -102,7 +64,6 @@ function readPath(data, path) {
 }
 
 /**
- * Deep equality for JSON values.
  * @param {unknown} a
  * @param {unknown} b
  * @returns {boolean}
@@ -112,7 +73,6 @@ function jsonEqual(a, b) {
 }
 
 /**
- * JSON text with object keys sorted at every level, so two cards that differ only in key order serialise the same.
  * @param {unknown} value
  * @returns {string}
  */
@@ -125,7 +85,6 @@ export function canonicalJson(value) {
 }
 
 /**
- * The hash a card is verified by: sha256 of its canonical JSON.
  * @param {unknown} card
  * @returns {string}
  */
@@ -134,9 +93,7 @@ export function canonicalCardHash(card) {
 }
 
 /**
- * The card assembleCard() gives back for `card` once split, when the stored favourite flag is `fav`: its
- * `data.extensions.fav`, and a top-level `fav` that mirrored it, read `fav`.
- * @param {unknown} card A parsed card; not modified.
+ * @param {unknown} card
  * @param {boolean} fav
  * @returns {unknown}
  */
@@ -151,9 +108,6 @@ export function cardWithStoredFav(card, fav) {
 }
 
 /**
- * Which key of `card` holds the name getCharaCardV2() gives it: `data.name` for a card with `spec` and a `data` object
- * with a `name` key (readFromV2() hoists it), the top-level `name` otherwise (readFromV2() leaves it when `data` has
- * none; convertToV2() takes it for a card without `spec`).
  * @param {Record<string, unknown>} card
  * @returns {'data' | 'top'}
  */
@@ -162,8 +116,6 @@ export function cardNameSource(card) {
 }
 
 /**
- * The text a card's name is shown, sorted and found by, as upstream makes it: its character list passes the name
- * through DOMPurify.sanitize(), which gives '' for a falsy value and the value's string for any other.
  * @param {unknown} value
  * @returns {string}
  */
@@ -173,7 +125,7 @@ export function nameText(value) {
 }
 
 /**
- * @param {unknown} card A parsed card.
+ * @param {unknown} card
  * @returns {CardParts}
  */
 export function splitCard(card) {
@@ -205,7 +157,6 @@ export function splitCard(card) {
     }
 
     if (isPlainObject(data)) {
-        // An empty `data` or `data.extensions` splits to no rows, so their presence is a marker of its own.
         parts.extra.push({ path: 'present:data', value: null });
         for (const [key, value] of Object.entries(data)) {
             if (key === 'name') continue;
@@ -259,7 +210,7 @@ export function splitCard(card) {
 
 /**
  * @param {CardParts} parts
- * @returns {unknown} The card splitCard() was given (same canonical hash).
+ * @returns {unknown}
  */
 export function assembleCard(parts) {
     const whole = parts.extra.find(row => row.path === 'whole');
@@ -310,8 +261,6 @@ export function assembleCard(parts) {
     const nameFrom = parts.extra.some(row => row.path === 'name:data') ? 'data' : parts.extra.some(row => row.path === 'name:top') ? 'top' : null;
     if (columns.name !== undefined) {
         if (nameFrom === null) throw new TypeError('assembleCard(): columns.name is set but no name:data or name:top says which key it belongs to');
-        // A name that isn't a string was put back as itself above (`data:name` or `top:name`); the column holds only
-        // its text.
         const asItself = parts.extra.some(row => row.path === `${nameFrom}:name`);
         if (!asItself && nameFrom === 'data') ensureData().name = columns.name;
         else if (!asItself) card.name = columns.name;

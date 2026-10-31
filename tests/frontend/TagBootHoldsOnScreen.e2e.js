@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// The page reads no tag list at boot: it holds the tags of what is on screen, read by id. A reset of the tag change
-// feed re-reads those tags by id, sending a hash of each copy held.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -33,7 +30,11 @@ async function api(page, path, body = {}) {
     }, { path, body });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<string>} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
@@ -45,7 +46,10 @@ async function createCharacter(page, name) {
     }, name);
 }
 
-/** @param {import('@playwright/test').Page} page @returns {Promise<string[]>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @returns {Promise<string[]>}
+ */
 async function heldTagIds(page) {
     return page.evaluate(async () => {
         const { tagsStore } = await import('/scripts/tags.js');
@@ -65,7 +69,6 @@ test.describe('the tags the page holds', () => {
             const setup = await context.newPage();
             await loadApp(setup);
             for (let i = 0; i < ids.length; i += 25) {
-                // Placed last in the manual order, so other tests' tags stay on Manage Tags' first page.
                 await Promise.all(ids.slice(i, i + 25).map((id, j) => api(setup, '/api/tags/create', {
                     tag: { id, name: id, folder_type: 'NONE', sort_order: 9000000 + i + j, is_hidden_on_character_card: false, color: '', color2: '', create_date: 1 },
                 })));
@@ -128,7 +131,6 @@ test.describe('the tags the page holds', () => {
         const asked = reread.flatMap(read => read.ids);
         expect([...asked].sort()).toEqual([...held].sort());
         for (const read of reread) expect(Object.keys(read.known).sort()).toEqual([...read.ids].sort());
-        // Nothing changed, so nothing was let go.
         expect((await heldTagIds(page)).sort()).toEqual([...held].sort());
     });
 });

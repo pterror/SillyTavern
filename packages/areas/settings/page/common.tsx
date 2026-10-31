@@ -1,15 +1,11 @@
 import { useUi } from '@st/page/context';
 import { Checkbox, FieldBlock, Slider, UnsetButton } from './fields.tsx';
 
-// The fields the text APIs share (response length, context size and its unlock, each API's streaming), laid out as
-// the old markup's #pro-settings-block had them. Its prompt cost line after them is still the old page's.
-
 const BLOCK =
     'range-block-range-and-counter alignitemscenter flex-container marginBot5 flexFlowColumn flexBasis48p flexGrow flexShrink gap0';
 const STREAMING_TIP =
     'Display the response bit by bit as it is generated.\rWhen this is off, responses will be displayed all at once when they are complete.';
 
-/** One API's streaming toggle, under the response length. */
 function Streaming(props: { id: string }) {
     const { t } = useUi();
     return (

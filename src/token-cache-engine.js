@@ -1,22 +1,8 @@
-/**
- * The token-count cache in the engine's keyspace (build path 5b): counts and token ids keyed by the tokenizer's
- * identity and the text's hash (`tokenKeyHash()`), each table kept at a cap of entries by evicting the least
- * recently used in slices. A crash may lose results not yet flushed; they are tokenized again.
- */
-
-/**
- * How far a reused key's `last_used` may lag before it is written again. `last_used` only orders entries for
- * eviction, where a day's difference doesn't matter, so a key reused many times a day costs one write a day, not one per use.
- */
 export const LAST_USED_GRANULARITY_MS = 24 * 60 * 60 * 1000;
-/** Entries each table may hold before the least recently used are evicted. */
 export const TOKEN_COUNT_ROW_CAP = 1_000_000;
-/** Entries one eviction batch removes at most. */
 export const PRUNE_BATCH_ROWS = 5000;
-/** The pause between eviction batches. */
 export const PRUNE_PAUSE_MS = 50;
 
-/** The engine's tables. */
 export const TABLE = Object.freeze({ counts: 0, ids: 1 });
 
 /**
@@ -54,7 +40,6 @@ function countBytes(count) {
 }
 
 /**
- * Token ids as varints after their number, then the chunks as JSON when there are any.
  * @param {ArrayLike<number>} ids
  * @param {string[] | null} chunks
  */
@@ -79,20 +64,20 @@ function idsOf(b) {
 
 export class TokenCache {
     /**
-     * @param {any} store The engine's `Store`.
+     * @param {any} store
      * @param {TokenTableLimits} [limits]
      */
     constructor(store, limits = { cap: TOKEN_COUNT_ROW_CAP, batchRows: PRUNE_BATCH_ROWS, pauseMs: PRUNE_PAUSE_MS }) {
         this.store = store;
         this.limits = limits;
-        /** @type {Map<number, Promise<void>>} The eviction running per table. */
+        /** @type {Map<number, Promise<void>>} */
         this.evicting = new Map();
     }
 
     /**
      * @param {number} table
      * @param {string} identity
-     * @param {string} hash Hex.
+     * @param {string} hash
      */
     async read(table, identity, hash) {
         return this.store.chatRead('tokenCache', { table, identity, hash: Buffer.from(hash, 'hex') });
@@ -101,7 +86,7 @@ export class TokenCache {
     /**
      * @param {string} identity
      * @param {string} hash
-     * @returns {Promise<number | null>} null when nothing is stored under the key.
+     * @returns {Promise<number | null>}
      */
     async readCount(identity, hash) {
         const found = await this.read(TABLE.counts, identity, hash);
@@ -119,9 +104,6 @@ export class TokenCache {
     }
 
     /**
-     * Keeps results: a key new to its table is stored; a stored one keeps its value (a count's `replace` writes it
-     * over; stored ids without chunks take the chunks given), and is marked used once it is a day behind `now`.
-     * A table pushed over its cap gets an eviction, unless one is running.
      * @param {import('./token-count-store.js').PendingTokenRows} pending
      * @param {number} [now]
      * @returns {Promise<{ prunesScheduled: ('token_counts' | 'token_ids')[] }>}
@@ -147,7 +129,6 @@ export class TokenCache {
     }
 
     /**
-     * Evicts a table's least recently used entries down to the cap, a batch at a time with a pause between.
      * @param {number} table
      */
     async evict(table) {
@@ -156,7 +137,6 @@ export class TokenCache {
         }
     }
 
-    /** Resolves once no eviction is running. */
     async idle() {
         while (this.evicting.size) await Promise.all(this.evicting.values());
     }

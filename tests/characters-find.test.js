@@ -1,8 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import path from 'node:path';
 
-// /api/characters/find: findChar()'s answer over the whole library, for findCharAsync().
-
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
 let TYPE;
@@ -56,7 +54,10 @@ async function find(body) {
     return { status: response.status, body: parsed };
 }
 
-/** @param {string} avatar @param {string} name */
+/**
+ * @param {string} avatar
+ * @param {string} name
+ */
 async function seedCharacter(avatar, name) {
     const cardJson = JSON.stringify({
         name,
@@ -65,7 +66,10 @@ async function seedCharacter(avatar, name) {
     await user.store.lib.writeCard(directories, avatar, cardJson);
 }
 
-/** @param {string} id @param {string} name */
+/**
+ * @param {string} id
+ * @param {string} name
+ */
 async function seedTag(id, name) {
     await user.store.lib.writeTag({ id, name });
 }
@@ -127,7 +131,6 @@ describe('POST /api/characters/find', () => {
         expect((await find({ name: '42', allowAvatar: false })).body).toEqual({ ids: ['n.png'], capped: false });
         expect((await find({ name: '42', allowAvatar: false, insensitive: false })).body).toEqual({ ids: ['n.png'], capped: false });
         const page = await user.store.lib.query({ sortField: 'name', sortOrder: 'asc', limit: 10, wantRows: false, wantHashes: true, includeGroups: false });
-        // false is '' to upstream (DOMPurify.sanitize), so it sorts first.
         expect(page.hashRows.map(r => r.id)).toEqual(['f.png', 'n.png', 'a.png', 'b.png']);
         expect(await user.store.lib.cards(['n.png', 'f.png'])).toEqual([{ spec: 'chara_card_v2', data: { name: 42 } }, { name: false }]);
     });

@@ -1,8 +1,3 @@
-/**
- * Holding Ctrl on its own shows the list of hotkeys until it's released. It only shows for a bare hold: pressing any
- * other key, clicking or scrolling while Ctrl is down means a shortcut is being used, so it hides (or never shows).
- * It takes no focus and blocks nothing, so the next key of a shortcut still goes where it was going.
- */
 const HOLD_DELAY_MS = 200;
 const MODIFIER_KEYS = new Set(['Control', 'Shift', 'Alt', 'Meta', 'AltGraph', 'CapsLock']);
 
@@ -12,11 +7,10 @@ let holdTimer = null;
 let overlay = null;
 /** @type {() => boolean} */
 let isEnabled = () => true;
-// Bumped on every cancel, so a show that was waiting on its content doesn't appear after the hold ended.
 let holdNumber = 0;
 
 /**
- * @param {() => boolean} enabled Whether holding Ctrl should show the list right now (the user's setting).
+ * @param {() => boolean} enabled
  */
 export function initHotkeyOverlay(enabled) {
     isEnabled = enabled;
@@ -65,7 +59,7 @@ function cancel() {
     }
 }
 
-/** @param {number} number The hold this show belongs to. */
+/** @param {number} number */
 async function show(number) {
     const { renderHotkeys } = await import('./help-hotkeys.js');
     const { t } = await import('./i18n.js');
@@ -78,7 +72,6 @@ async function show(number) {
     title.textContent = t`Hotkeys`;
     element.appendChild(title);
     renderHotkeys(element);
-    // A manual popover shows in the top layer, above open popups, without moving focus.
     element.popover = 'manual';
     document.body.appendChild(element);
     overlay = element;

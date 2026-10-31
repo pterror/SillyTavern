@@ -9,51 +9,35 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import { readSecret, SECRET_KEYS } from './endpoints/secrets.js';
 import { getConfigValue } from './util.js';
 
-/**
- * @typedef {'hf-json' | 'sentencepiece' | 'tekken' | 'tiktoken'} TokenizerFileFormat
- */
+/** @typedef {'hf-json' | 'sentencepiece' | 'tekken' | 'tiktoken'} TokenizerFileFormat */
 
 /**
- * One place a registry entry's file can be downloaded from: a Hugging Face repo pinned to a commit, or
- * a `url` on a host with no revisions to pin, such as Cohere's `tokenizer_url` files. Only the entry's
- * `sha256` and `bytes` pin a `url` source, so a file changed there is a failed download of that source.
  * @typedef {object} TokenizerSource
- * @property {string} [repo] Hugging Face repo, `owner/name`
- * @property {string} [revision] Full 40-hex commit sha
- * @property {string} [path] File path inside the repo at that revision
- * @property {boolean} [gated] Whether the repo is gated. Only an official repo can be.
- * @property {string} [url] Instead of `repo`, `revision`, `path` and `gated`: the file's URL as its host publishes it
- * @property {string} [license] This source's license, when it isn't the entry's
- * @property {string} [licenseUrl] Given with `license`
+ * @property {string} [repo]
+ * @property {string} [revision]
+ * @property {string} [path]
+ * @property {boolean} [gated]
+ * @property {string} [url]
+ * @property {string} [license]
+ * @property {string} [licenseUrl]
  */
 
 /**
- * One official tokenizer file. Every source of an entry serves the same bytes.
  * @typedef {object} TokenizerSourceEntry
  * @property {string} id
  * @property {string} family
  * @property {TokenizerFileFormat} format
- * @property {string} sha256 64-hex sha256 of the file
- * @property {number} bytes File size in bytes
- * @property {string} license License name, of every source that names none of its own
+ * @property {string} sha256
+ * @property {number} bytes
+ * @property {string} license
  * @property {string} licenseUrl
- * @property {readonly TokenizerSource[]} sources Tried in order: the model's own repo first, then verified
- * byte-identical copies. When several official repos ship the bytes, the ungated ones come first, the more
- * permissive license first among them.
- * @property {readonly string[]} [repos] Other Hugging Face repos verified to ship this file (their LFS
- * sha256 or git blob oid matches), and old ids Hugging Face redirects to them. Only for recognizing a model
- * by its repo id; nothing is downloaded from them. Entries that share their file with another entry and
- * read it differently (Kimi) list none, because the file alone doesn't say which entry a repo is.
- * @property {boolean} [severalOfficialFiles] The model's vendor publishes other official files that give
- * other ids, so only the vendor's own API is known to read this one.
- * @property {string} [nameNote] What the name's parentheses say instead of `official`: for a model whose
- * official files disagree, its HF `tokenizer.json` entry is `official, HF tokenizer.json`
- * @property {import('./tokenizer-loader.js').TiktokenConfig} [tiktoken] For the `tiktoken` format: how the repo's own code builds its encoding
+ * @property {readonly TokenizerSource[]} sources
+ * @property {readonly string[]} [repos]
+ * @property {boolean} [severalOfficialFiles]
+ * @property {string} [nameNote]
+ * @property {import('./tokenizer-loader.js').TiktokenConfig} [tiktoken]
  */
 
-// Kimi's tokenization_kimi.py and the older tokenization_moonshot.py (Kimi-VL, Moonlight) build their
-// encoding with this pattern and split the text the same way before encoding. Each repo's
-// tokenizer_config.json names its special tokens.
 const KIMI_PAT_STR = [
     String.raw`[\p{Han}]+`,
     String.raw`[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?`,
@@ -66,11 +50,10 @@ const KIMI_PAT_STR = [
 ].join('|');
 
 /**
- * A Kimi repo's tiktoken config.
- * @param {Record<string, number>} specialTokens The special tokens its tokenizer_config.json names
+ * @param {Record<string, number>} specialTokens
  * @param {object} [options]
- * @param {number} [options.reservedCount] Special ids reserved after the ranks: 256 in tokenization_kimi.py, 258 in tokenization_moonshot.py
- * @param {'all' | 'none'} [options.allowedSpecial] `none` for Kimi-K2-Base, whose encode reads special-token text as text
+ * @param {number} [options.reservedCount]
+ * @param {'all' | 'none'} [options.allowedSpecial]
  * @returns {import('./tokenizer-loader.js').TiktokenConfig}
  */
 function kimiTiktoken(specialTokens, { reservedCount = 256, allowedSpecial = 'all' } = {}) {
@@ -105,8 +88,6 @@ const KIMI_K2_SPECIAL_TOKENS = {
 const KIMI_THINK_TOKENS = { '<think>': 163606, '</think>': 163607 };
 const KIMI_MEDIA_TOKENS = { '<|media_content|>': 163603, '<|media_end|>': 163604, '<|media_pad|>': 163605 };
 
-// Phi-3-small's tokenization_phi3_small.py builds its encoding from tiktoken's cl100k_base pattern (as
-// tiktoken 0.14.0 has it) and its own special tokens, and encodes the whole text with all of them allowed.
 const CL100K_PAT_STR = String.raw`'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}++|\p{N}{1,3}+| ?[^\s\p{L}\p{N}]++[\r\n]*+|\s++$|\s*[\r\n]|\s+(?!\S)|\s`;
 const PHI_3_SMALL_SPECIAL_TOKENS = {
     '<|dummy_id_2|>': 100256,
@@ -125,10 +106,7 @@ const PHI_3_SMALL_SPECIAL_TOKENS = {
     ...Object.fromEntries(Array.from({ length: 75 }, (_, i) => [`<|dummy_id_${12 + i}|>`, 100277 + i])),
 };
 
-/**
- * The pinned tokenizer registry. A fixed list in code: disk and memory are bounded by it, not by user data.
- * @type {readonly TokenizerSourceEntry[]}
- */
+/** @type {readonly TokenizerSourceEntry[]} */
 export const TOKENIZER_SOURCES = Object.freeze([
     {
         id: 'qwen3',
@@ -409,7 +387,6 @@ export const TOKENIZER_SOURCES = Object.freeze([
         sha256: 'eccd1665d2e477697c33cb7f0daa6f6dfefc57a0a6bceb66d4be52952f827516',
         bytes: 14801223,
         license: 'Apache-2.0',
-        // The pinned revision has no LICENSE file; its model card declares apache-2.0.
         licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
         severalOfficialFiles: true,
         sources: [
@@ -859,7 +836,6 @@ export const TOKENIZER_SOURCES = Object.freeze([
             { repo: 'deepseek-ai/DeepSeek-R1-0528-Qwen3-8B', revision: '6e8885a6ff5c1dc5201574c8fd700323f23c25fa', path: 'tokenizer.json', gated: false },
         ],
     },
-    // No Gemma repo has a LICENSE file; each license is its model card's.
     {
         id: 'gemma-4',
         family: 'Gemma 4',
@@ -1327,7 +1303,6 @@ export const TOKENIZER_SOURCES = Object.freeze([
             'RichardErkhov/google_-_gemma-2-2b-jpn-it-8bits',
         ],
     },
-    // A copy is listed under the file it carries, whatever its repo is called.
     {
         id: 'llama3.1-base',
         family: 'Llama 3.1 base',
@@ -1370,7 +1345,6 @@ export const TOKENIZER_SOURCES = Object.freeze([
             { repo: 'meta-llama/Llama-3.3-70B-Instruct', revision: '6f6073b423013f6a7d4d9f39144961bfbfbc386b', path: 'tokenizer.json', gated: true },
             { repo: 'NousResearch/DeepHermes-3-Llama-3-8B-Preview', revision: '53d902c7dcfa4c749a3b455149064f82af2e2549', path: 'tokenizer.json', gated: false },
             { repo: 'unsloth/Llama-3.1-70B', revision: '99f146c778e0de3b687d83191faf41e49198f2ca', path: 'tokenizer.json', gated: false },
-            // NVIDIA's repos of Llama-based models that ship this file. They have no LICENSE file; their model cards name this license.
             { repo: 'nvidia/Llama-3.1-Nemotron-Nano-4B-v1.1', revision: 'd552708a9d575fa8d4a690b988fd870d65279f98', path: 'tokenizer.json', gated: false, license: 'nvidia-open-model-license (model card: other)', licenseUrl: 'https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/' },
             { repo: 'nvidia/Llama-3.1-Nemotron-Nano-8B-v1', revision: '54641c1611fcff44fa4865626462445e0a153fc7', path: 'tokenizer.json', gated: false, license: 'nvidia-open-model-license (model card: other)', licenseUrl: 'https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/' },
             { repo: 'nvidia/Llama-3.1-Nemotron-Safety-Guard-8B-v3', revision: '8fdc246ba3d56db9c469d534233b9f582d3afafa', path: 'tokenizer.json', gated: false, license: 'nvidia-open-model-license (model card: other)', licenseUrl: 'https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/' },
@@ -1833,9 +1807,6 @@ export const TOKENIZER_SOURCES = Object.freeze([
             'RedHatAI/Llama-Guard-4-12B-quantized.w8a8',
         ],
     },
-    // Mistral's native files (tokenizer.model.v*) and its repos' HF tokenizer.json files, which give other
-    // ids. Only the Modified MIT repos have a LICENSE file; the others' licenses
-    // are their model cards'.
     {
         id: 'mistral-7b-v0.3',
         family: 'Mistral 7B v0.3',
@@ -2239,7 +2210,6 @@ export const TOKENIZER_SOURCES = Object.freeze([
             'TheAgenticAI/MISTRAL-LARGE-LORA',
         ],
     },
-    // Cohere. No Cohere repo has a LICENSE file; each license is its model card's.
     {
         id: 'command-a-vision',
         family: 'Command A Vision',
@@ -2279,7 +2249,6 @@ export const TOKENIZER_SOURCES = Object.freeze([
         ],
     },
     {
-        // The file Cohere's API names for c4ai-aya-vision-32b. No Hugging Face repo ships its content.
         id: 'aya-vision-32b',
         family: 'Aya Vision 32B',
         format: 'hf-json',
@@ -2478,9 +2447,6 @@ export const TOKENIZER_SOURCES = Object.freeze([
             'unsloth/aya-vision-32b-unsloth-bnb-4bit',
         ],
     },
-    // Z.ai's GLM. The GLM-4-9B repos (2024) ship GLM-4-0414's content: their tokenizer.json differs
-    // only in its post-processor, and their tokenizer.model, read by their tokenization_chatglm.py,
-    // gives the same ids.
     {
         id: 'glm-4-0414',
         family: 'GLM-4-0414',
@@ -2583,7 +2549,6 @@ export const TOKENIZER_SOURCES = Object.freeze([
             { repo: 'zai-org/AutoGLM-Phone-9B-Multilingual', revision: '832ab5e014b965268dafd944e64cbc8e4bade892', path: 'tokenizer.json', gated: false },
         ],
     },
-    // Kimi: every repo ships the same tiktoken.model; its code and tokenizer_config.json decide the tokenizer.
     {
         id: 'kimi-k2-base',
         family: 'Kimi K2 Base',
@@ -2704,7 +2669,6 @@ export const TOKENIZER_SOURCES = Object.freeze([
             '[UNK]': 163839,
         }, { reservedCount: 258 }),
     },
-    // MiniMax.
     {
         id: 'minimax-text-01',
         family: 'MiniMax-Text-01',
@@ -2762,7 +2726,6 @@ export const TOKENIZER_SOURCES = Object.freeze([
             { repo: 'MiniMaxAI/MiniMax-M3-MXFP8', revision: 'c5454eb03678d8710e54a4e0fc681b9f3b4a3dba', path: 'tokenizer.json', gated: false },
         ],
     },
-    // OpenAI.
     {
         id: 'gpt-oss',
         family: 'gpt-oss',
@@ -2778,7 +2741,6 @@ export const TOKENIZER_SOURCES = Object.freeze([
             { repo: 'openai/gpt-oss-safeguard-20b', revision: '8a11e17b25c973a24099d4016bf2e17dd7ec1574', path: 'tokenizer.json', gated: false },
         ],
     },
-    // Microsoft's Phi. Phi-3 and Phi-3.5 mini, medium and MoE read the bundled llama.model.
     {
         id: 'phi-1',
         family: 'Phi-1/1.5/2',
@@ -2885,7 +2847,6 @@ export const TOKENIZER_SOURCES = Object.freeze([
         sources: [
             { repo: 'microsoft/Phi-4-multimodal-instruct', revision: '93f923e1a7727d1c4f446756212d9d3e8fcc5d81', path: 'tokenizer.json', gated: false },
             { repo: 'microsoft/Phi-4-multimodal-instruct-onnx', revision: '295df4cddf8c3740df7cd66e5d05f06a872fcaf5', path: 'gpu/gpu-int4-rtn-block-32/tokenizer.json', gated: false },
-            // Its revision has no LICENSE file; its model card declares mit.
             { repo: 'microsoft/paza-Phi-4-multimodal-instruct', revision: '1e78f4f84fd8a92f132295a32e5cb71b5321dcab', path: 'tokenizer.json', gated: false, license: 'MIT', licenseUrl: 'https://opensource.org/license/mit' },
         ],
     },
@@ -2911,13 +2872,11 @@ export const TOKENIZER_SOURCES = Object.freeze([
         sha256: '3c7e8a15e8e0933538e1f384331d0163f6329c3655a132ce2edb1b0e5a7c024b',
         bytes: 7153065,
         license: 'MIT',
-        // The pinned revision has no LICENSE file; its model card declares mit.
         licenseUrl: 'https://opensource.org/license/mit',
         sources: [
             { repo: 'microsoft/Phi-4-reasoning-vision-15B', revision: 'c3e4fac79ddace21976ced56fbf1564b8bd8c89f', path: 'tokenizer.json', gated: false },
         ],
     },
-    // NVIDIA's Nemotron. None of these repos has a LICENSE file with a title; their model cards name their licenses.
     {
         id: 'nemotron-4',
         family: 'Nemotron-4',
@@ -3046,9 +3005,7 @@ export function findTokenizerSource(id, registry = TOKENIZER_SOURCES) {
 }
 
 /**
- * The entries whose file a Hugging Face repo ships: the repo is one of their sources or `repos`.
- * Hugging Face resolves repo ids ignoring letter case, so they are compared that way.
- * @param {string} repo `owner/name`
+ * @param {string} repo
  * @param {readonly TokenizerSourceEntry[]} [registry]
  * @returns {TokenizerSourceEntry[]}
  */
@@ -3059,7 +3016,6 @@ export function findEntriesByRepo(repo, registry = TOKENIZER_SOURCES) {
 }
 
 /**
- * JSON with every object's keys sorted, so equal values give equal text.
  * @param {any} value
  * @returns {string}
  */
@@ -3074,8 +3030,6 @@ function canonicalJson(value) {
 }
 
 /**
- * The sha256 of an entry's tokenizer config (its `tiktoken` field) as canonical JSON; null for an
- * entry whose file alone is its tokenizer.
  * @param {TokenizerSourceEntry} entry
  * @returns {string|null}
  */
@@ -3084,8 +3038,6 @@ export function getTokenizerConfigHash(entry) {
 }
 
 /**
- * What identifies an entry's tokenizer, and names its reference fixture: its file's sha256, then
- * `.<config hash>` when it has a config, because entries can share one file and read it differently.
  * @param {TokenizerSourceEntry} entry
  * @returns {string}
  */
@@ -3095,7 +3047,6 @@ export function getTokenizerIdentity(entry) {
 }
 
 /**
- * The name an entry's tokenizer is shown under, also its Advanced Formatting → Tokenizer option.
  * @param {TokenizerSourceEntry} entry
  * @returns {string}
  */
@@ -3104,7 +3055,6 @@ export function getTokenizerDisplayName(entry) {
 }
 
 /**
- * The license of the file as downloaded from this source.
  * @param {TokenizerSourceEntry} entry
  * @param {TokenizerSource} source
  * @returns {{ license: string, licenseUrl: string }}
@@ -3115,11 +3065,7 @@ export function getSourceLicense(entry, source) {
         : { license: entry.license, licenseUrl: entry.licenseUrl };
 }
 
-/**
- * Cache file extension per format. The sha256 is the file's identity and the format decides its
- * loader, so one sha256 always gets one name, whatever path it came from.
- * @type {Readonly<Record<TokenizerFileFormat, string>>}
- */
+/** @type {Readonly<Record<TokenizerFileFormat, string>>} */
 export const CACHE_EXTENSIONS = Object.freeze({
     'hf-json': '.json',
     'tekken': '.json',
@@ -3131,15 +3077,10 @@ export const DOWNLOAD_RETRY_MS = 60_000;
 
 const IS_DOWNLOAD_ALLOWED = getConfigValue('enableDownloadableTokenizers', true, 'boolean');
 
-/**
- * URL -> `performance.now()` of its last failed download. Monotonic, so a wall-clock change
- * can't stretch or skip the wait. Shared by every tokenizer download.
- * @type {Map<string, number>}
- */
+/** @type {Map<string, number>} */
 const failedDownloads = new Map();
 
 /**
- * Whether a download from this URL failed less than {@link DOWNLOAD_RETRY_MS} ago.
  * @param {string} url
  * @returns {boolean}
  */
@@ -3149,7 +3090,6 @@ export function isDownloadBackedOff(url) {
 }
 
 /**
- * Records a failed download from this URL.
  * @param {string} url
  */
 export function recordDownloadFailure(url) {
@@ -3157,7 +3097,6 @@ export function recordDownloadFailure(url) {
 }
 
 /**
- * Forgets a failed download from this URL after a successful one.
  * @param {string} url
  */
 export function clearDownloadFailure(url) {
@@ -3174,7 +3113,7 @@ export function getSourceUrl(source) {
 
 /**
  * @param {TokenizerSourceEntry} entry
- * @returns {string} The entry's cache file name, `<sha256>.<ext>`
+ * @returns {string}
  */
 export function getCacheFileName(entry) {
     const extension = CACHE_EXTENSIONS[entry.format];
@@ -3184,14 +3123,10 @@ export function getCacheFileName(entry) {
     return `${entry.sha256.toLowerCase()}${extension}`;
 }
 
-/**
- * sha256 -> the download in flight for it, so parallel calls share one fetch.
- * @type {Map<string, Promise<{ path: string, license: string }>>}
- */
+/** @type {Map<string, Promise<{ path: string, license: string }>>} */
 const inFlight = new Map();
 
 /**
- * Reads a response body, failing once it grows past `maxBytes`.
  * @param {any} body
  * @param {number} maxBytes
  * @returns {Promise<Buffer>}
@@ -3212,10 +3147,9 @@ async function readCappedBody(body, maxBytes) {
 }
 
 /**
- * Downloads one source and checks it against the entry's size and sha256.
  * @param {TokenizerSourceEntry} entry
  * @param {TokenizerSource} source
- * @param {string} hfToken The user's saved Hugging Face token, or ''
+ * @param {string} hfToken
  * @returns {Promise<Buffer>}
  */
 async function downloadSource(entry, source, hfToken) {
@@ -3240,11 +3174,10 @@ async function downloadSource(entry, source, hfToken) {
 }
 
 /**
- * Tries the entry's sources in order and writes the first verified body to the cache.
  * @param {TokenizerSourceEntry} entry
  * @param {string} cachedFile
  * @param {string} hfToken
- * @returns {Promise<{ path: string, license: string }>} The cached file's path, and the license of the source it came from
+ * @returns {Promise<{ path: string, license: string }>}
  */
 async function downloadEntry(entry, cachedFile, hfToken) {
     /** @type {string[]} */
@@ -3276,12 +3209,9 @@ async function downloadEntry(entry, cachedFile, hfToken) {
 }
 
 /**
- * Gets a registry entry's file from the cache, downloading it from its pinned sources when absent.
- * @param {TokenizerSourceEntry} entry Registry entry
- * @param {import('./users.js').UserDirectoryList} [directories] The requesting user's directories, for their saved Hugging Face token
- * @returns {Promise<{ path: string, downloaded: boolean, license: string }>} `downloaded` is true only for the
- * call that fetched the file. `license` is that of the source the file came from when this call or one it
- * shared fetched it, else the entry's.
+ * @param {TokenizerSourceEntry} entry
+ * @param {import('./users.js').UserDirectoryList} [directories]
+ * @returns {Promise<{ path: string, downloaded: boolean, license: string }>}
  */
 export async function getPinnedTokenizerFile(entry, directories) {
     const cacheDir = path.join(globalThis.DATA_ROOT, '_cache');

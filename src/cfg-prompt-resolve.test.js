@@ -5,8 +5,6 @@ import { cfgType, getGuidanceScale, getCfgPrompt, adjustMaxContextForCfg } from 
 
 const fakeCountTokens = async (text) => text.length;
 
-// --- getGuidanceScale ---------------------------------------------------
-
 test('getGuidanceScale: chat-level active', () => {
     const result = getGuidanceScale({ chatGuidanceScale: 3 });
     assert.deepStrictEqual(result, { type: cfgType.chat, value: 3 });
@@ -28,8 +26,6 @@ test('getGuidanceScale: character-level active (groupchatCharOverride case)', ()
 });
 
 test('getGuidanceScale: isGroup without override does not use charaCfg', () => {
-    // isGroup true, no groupchatIndividualChars override -> chara branch condition is false,
-    // falls through to global.
     const result = getGuidanceScale({ isGroup: true, charaCfg: { guidance_scale: 2.5 }, globalCfg: { guidance_scale: 7 } });
     assert.deepStrictEqual(result, { type: cfgType.global, value: 7 });
 });
@@ -58,8 +54,6 @@ test('getGuidanceScale: nothing active falls through to undefined', () => {
     const result = getGuidanceScale({});
     assert.strictEqual(result, undefined);
 });
-
-// --- getCfgPrompt ---------------------------------------------------------
 
 test('getCfgPrompt: single-source resolution - chat active', () => {
     const guidanceScale = { type: cfgType.chat, value: 3 };
@@ -107,7 +101,6 @@ test('getCfgPrompt: exact ordering of combined sources (global, chara, chat)', (
         promptCombine: [cfgType.chara, cfgType.global],
         promptSeparator: JSON.stringify('|'),
     });
-    // unshift order: chat first -> [AAA]; chara -> [BBB, AAA]; global -> [CCC, BBB, AAA]
     assert.strictEqual(result.value, 'CCC|BBB|AAA');
 });
 
@@ -170,8 +163,6 @@ test('getCfgPrompt: insertionDepth passed through when given', () => {
     });
     assert.strictEqual(result.depth, 4);
 });
-
-// --- adjustMaxContextForCfg -----------------------------------------------
 
 test('adjustMaxContextForCfg: decrement is Math.max(negativeCount, positiveCount), not sum or negative-only', async () => {
     const cfgGuidanceScale = { type: cfgType.chat, value: 3 };

@@ -1,7 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jest } from '@jest/globals';
 import path from 'node:path';
 
-// Seeding a few hundred tags takes a moment on a loaded machine.
 jest.setTimeout(60000);
 
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
@@ -56,7 +55,7 @@ afterEach(async () => {
     await user.close();
 });
 
-/** The tags seeded and still there, in creation order, each with the count of characters carrying it. @type {{ tag: any, count: number }[]} */
+/** @type {{ tag: any, count: number }[]} */
 let model = [];
 
 /**
@@ -73,7 +72,6 @@ async function query(body) {
 }
 
 /**
- * Follows cursors from the first page to the end, collecting ids.
  * @param {object} body
  * @returns {Promise<{ ids: string[], requests: number, capped: number }>}
  */
@@ -97,10 +95,6 @@ async function queryAll(body) {
     }
 }
 
-/**
- * A mixed set of tags: every sort_order form the coercion covers (ties, missing, null, numeric strings, infinities,
- * no order), folders and not, names with case, accents and duplicates, some assigned, some at count 0.
- */
 function mixedTags() {
     const orders = [undefined, 3, 3, null, '7', 'abc', { at: 1 }, 1.5, 'Infinity', '-Infinity', 0, -2, true, 3];
     const folders = [undefined, 'NONE', 'OPEN', 'CLOSED', null];
@@ -119,12 +113,9 @@ function mixedTags() {
 }
 
 /**
- * Writes tags and assignments: tag i gets (i % 4) assignments, and every tag divisible by 9 gets one that is then
- * removed, leaving it at count 0.
  * @param {object[]} tags
  */
 async function seed(tags) {
-    // Written as given: the stored order forms the coercion covers must come back as they went in.
     for (let i = 0; i < tags.length; i += 200) {
         await Promise.all(tags.slice(i, i + 200).map(tag => user.store.lib.writeTag(/** @type {any} */ (tag))));
     }
@@ -142,12 +133,13 @@ async function seed(tags) {
     model = tags.map((tag, i) => ({ tag, count: i % 4 }));
 }
 
-/** @param {string} a @param {string} b */
+/**
+ * @param {string} a
+ * @param {string} b
+ */
 const bytes = (a, b) => Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
 
 /**
- * The expected ids, computed from the tags seeded: upstream's compareTagsForSort, with ties by creation order and
- * names compared byte by byte.
  * @param {string} sort
  * @param {{ used?: boolean, folders?: boolean, search?: string, name?: string, contains?: string, ids?: string[] }} filter
  */
@@ -216,7 +208,6 @@ describe('POST /api/tags/query', () => {
 
         expect((await query({ ...ask, ifHash: first.body.hash })).body).toEqual({ unchanged: true, hash: first.body.hash });
 
-        // A rename of a tag on the page changes the page.
         const renamed = first.body.rows[0];
         await user.store.lib.tags.edit(renamed.id, { color: '#123456' });
         const after = await query({ ...ask, ifHash: first.body.hash });
@@ -224,7 +215,6 @@ describe('POST /api/tags/query', () => {
         expect(after.body.hash).not.toBe(first.body.hash);
         expect(after.body.rows.find(tag => tag.id === renamed.id).color).toBe('#123456');
 
-        // Another page size or cursor is another page.
         expect((await query({ ...ask, pageSize: 6, ifHash: after.body.hash })).body.unchanged).toBeUndefined();
         expect((await query({ ...ask, ifHash: 7 })).status).toBe(400);
     });
@@ -307,7 +297,6 @@ describe('POST /api/tags/query', () => {
             await user.store.lib.assignTag(TYPE.character, 'a.png', 'other', true);
             await user.store.lib.tags.delete('source', 'target');
 
-            // The carriers move in steps after the delete; once they have, the count is exact: a.png carried both.
             let body;
             const deadline = Date.now() + 10_000;
             do {
@@ -331,7 +320,6 @@ describe('POST /api/tags/query', () => {
                 await lib.writeCard(directories, 'Bob.png', card('Bob'));
                 expect((await lib.tags.assign('Bob.png', 'buffered')).result).toBe('ok');
                 expect((await lib.tags.assign('Bob.png', 'both')).result).toBe('ok');
-                // Written again over its stored card: the stored assignment is the one it has.
                 await lib.writeCard(directories, 'Stored.png', card('Stored'));
                 expect((await lib.tags.assign('Stored.png', 'both')).result).toBe('ok');
 
@@ -379,7 +367,6 @@ describe('POST /api/tags/query', () => {
         for (const body of cases) {
             expect({ body, status: (await query(body)).status }).toEqual({ body, status: 400 });
         }
-        // 500 distinct ids, repeated, is within the cap.
         const ids = Array.from({ length: 500 }, (_, i) => `x${i}`);
         expect((await query({ filter: { ids: [...ids, ...ids] } })).status).toBe(200);
     });

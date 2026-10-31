@@ -1,5 +1,3 @@
-//! Books, entries and lorebook links against a model, through commits, a reopen, a crash and cleaning.
-
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
@@ -112,7 +110,6 @@ fn index(entry: u64, book: u64, x: Option<f64>) -> Record {
     )
 }
 
-/// A `bookLink` record (`books::BookLink`, a reserved kind).
 fn book_link(e: u64, book: Option<u64>) -> Record {
     rec(
         "bookLink",
@@ -149,7 +146,6 @@ fn link_place(e: u64, item: u64, position: u64) -> Record {
     )
 }
 
-/// Character `e`'s link of `item` (at `position`) to `book`.
 fn link(e: u64, item: u64, position: u64, book: u64) -> Vec<Record> {
     vec![
         link_place(e, item, position),
@@ -188,7 +184,6 @@ struct Entry {
 
 #[derive(Default)]
 struct Model {
-    /// Per book: its entries by id.
     books: BTreeMap<u64, BTreeMap<u64, Entry>>,
 }
 
@@ -377,7 +372,6 @@ fn entries_created_one_after_another_rewrite_one_free_entry() {
     }
     let n = read(&s, |v| books::book_numbers(v, 1));
     assert_eq!(*field(&n, "freeKey"), Js::Num(40.0));
-    // The buffer holds the book's free entries: one, never a deletion.
     let free = key::id(books::FREE, 1);
     let v = s.inner.ks.version();
     let held: Vec<bool> = v.mems[0]
@@ -416,7 +410,6 @@ fn an_entry_needs_a_book_and_its_key_once() {
         refused(vec![index(10, 2, Some(1.0))]),
         "an index in another book"
     );
-    // "05" and a key past the safe integers are text, so they don't take an integer key.
     s.commit_wait(vec![
         create(11, ENTRY, "1:05"),
         create(12, ENTRY, "1:9007199254740992"),
@@ -453,7 +446,6 @@ fn world_page(s: &Store, key: &str) -> Vec<u64> {
     ids
 }
 
-/// The total a lorebook filter's page counts.
 fn world_total(s: &Store, key: &str) -> u64 {
     let q = Query {
         filter: Filter {
@@ -490,7 +482,6 @@ fn character(e: u64) -> Vec<Record> {
     ]
 }
 
-/// Each numbering of `book`'s scope is dense, and each character in it keeps its number where `rank` reads it.
 fn numbered(s: &Store, book: u64) -> Vec<u64> {
     let scope = library::Scope::World(books::scope_bytes(book));
     s.derived(|v| {
@@ -555,7 +546,6 @@ fn resolved(s: &Store, book: u64) -> (u64, String, bool) {
 fn links_name_books_by_id_and_resolve_unresolved_names() {
     let dir = temp_dir("links");
     let s = Store::open_in(&dir, SMALL, pool()).unwrap();
-    // A book, and a name no book has (unresolved), each linked by a character.
     let mut r = vec![
         defined(1, true),
         create(1, BOOK, "lore"),
@@ -586,19 +576,16 @@ fn links_name_books_by_id_and_resolve_unresolved_names() {
         refused(vec![link_place(10, 2, 200), link_text(10, 2, "01")]),
         "a link's text is a book's id in canonical decimal"
     );
-    // The book is renamed to the unresolved name: the name resolves as the book, and goes.
     s.commit_wait(vec![forward(2, 1), delete(2), update(1, BOOK, "gone")])
         .unwrap();
     assert_eq!(listed(&s), vec![(1, "gone".into())]);
     assert_eq!(resolved(&s, 2), (1, "gone".into(), true));
     assert_eq!(world_page(&s, "gone"), vec![10, 11]);
     assert_eq!(world_page(&s, "lore"), Vec::<u64>::new());
-    // Deleted, the book is an unresolved name again; links keep naming it.
     s.commit_wait(vec![defined(1, false)]).unwrap();
     assert_eq!(listed(&s), Vec::<(u64, String)>::new());
     assert_eq!(resolved(&s, 2), (1, "gone".into(), false));
     assert_eq!(world_page(&s, "gone"), vec![10, 11]);
-    // A link goes; a character going takes its links.
     s.commit_wait(vec![unlink(10, 1)]).unwrap();
     assert_eq!(world_page(&s, "gone"), vec![11]);
     s.commit_wait(vec![delete(11)]).unwrap();
@@ -624,7 +611,6 @@ fn a_characters_links_are_one_list_each_in_its_books_scope() {
     r.extend(character(10));
     r.extend(character(11));
     s.commit_wait(r).unwrap();
-    // A 3-link character is in 3 lorebook scopes, numbered in each.
     let mut r = link(10, 1, 100, 1);
     r.extend(link(10, 2, 200, 2));
     r.extend(link(10, 3, 300, 3));
@@ -639,11 +625,9 @@ fn a_characters_links_are_one_list_each_in_its_books_scope() {
     assert_eq!(multi(&s), vec![10]);
     let first = |e: u64| read(&s, |v| books::first_link(v, e));
     assert_eq!(first(10), Some(1));
-    // A reorder moves places only: the first link is another, the scopes stay.
     s.commit_wait(vec![link_place(10, 3, 50)]).unwrap();
     assert_eq!(first(10), Some(3));
     assert_eq!(world_page(&s, "c"), vec![10]);
-    // An edit of a link's text moves the character to the other book's scope.
     let refused = |r: Vec<Record>| matches!(s.commit_wait(r), Err(StoreError::Refused(_)));
     assert!(refused(vec![link_text(10, 3, "2")]), "a book linked twice");
     s.commit_wait(vec![unlink(10, 2), link_text(10, 3, "2")])
@@ -654,12 +638,10 @@ fn a_characters_links_are_one_list_each_in_its_books_scope() {
     assert_eq!(numbered(&s, 3), Vec::<u64>::new());
     assert_eq!(first(10), Some(2));
     assert_eq!(multi(&s), vec![10]);
-    // Down to one link, the character isn't multi-linked.
     s.commit_wait(vec![unlink(10, 3)]).unwrap();
     assert_eq!(multi(&s), Vec::<u64>::new());
     assert_eq!(first(10), Some(1));
     assert_eq!(world_page(&s, "b"), vec![11]);
-    // A character made with its links before its create (values first) is in their scopes.
     let mut r = link(12, 1, 100, 3);
     r.extend(link(12, 2, 200, 1));
     r.extend(character(12));
@@ -677,7 +659,6 @@ fn a_characters_links_are_one_list_each_in_its_books_scope() {
         }),
         "a character made with a book linked twice"
     );
-    // A group's list 4 is no link.
     s.commit_wait(vec![
         create(20, library::GROUP, "g"),
         link_place(20, 1, 100),
@@ -685,13 +666,11 @@ fn a_characters_links_are_one_list_each_in_its_books_scope() {
     ])
     .unwrap();
     assert_eq!(multi(&s), vec![12]);
-    // A character linking a book and a name forwarded into it is listed once.
     s.commit_wait(vec![create(4, BOOK, "d")]).unwrap();
     s.commit_wait(link(11, 2, 200, 4)).unwrap();
     s.commit_wait(vec![forward(4, 2), delete(4)]).unwrap();
     assert_eq!(world_page(&s, "b"), vec![11]);
     assert_eq!(world_total(&s, "b"), 1);
-    // A character going takes its links.
     s.commit_wait(vec![delete(12)]).unwrap();
     assert_eq!(multi(&s), vec![11]);
     assert_eq!(numbered(&s, 1), vec![10]);
@@ -718,7 +697,6 @@ fn a_book_link_is_a_reserved_kind_refused_and_dead() {
         Err(StoreError::Refused(_))
     ));
     assert_eq!(world_page(&s, "a"), Vec::<u64>::new());
-    // Cleaning reads an old one and drops it: none is live.
     let old = book_link(10, Some(1));
     assert!(!read(&s, |v| books::BookLink.is_live(&old, 0, v)));
     drop(s);
@@ -819,8 +797,6 @@ fn an_entry_edit_writes_the_same_whatever_its_books_size() {
         let after = (s.stats().ks.inserted, s.stats().log_bytes);
         costs.push((after.0 - before.0, after.1 - before.1));
     }
-    // Derived: the text's head, its edit, the entry's version and its book's, and the two changed terms' search
-    // entries in the book's scope. The record (and its group's trailer) differs only by the varint of the entry's id.
     assert!(costs.iter().all(|c| c.0 == costs[0].0), "{costs:?}");
     assert!(costs.iter().all(|c| c.1 <= 17), "{costs:?}");
     drop(s);
@@ -843,7 +819,6 @@ fn a_world_book_reads_whole_from_one_view() {
             ],
         )
     };
-    // A book of 2500 entries (three scans of places), placed out of id order, one deleted.
     let n = 2500u64;
     let mut r = vec![
         create(1, BOOK, "lore"),
@@ -860,7 +835,6 @@ fn a_world_book_reads_whole_from_one_view() {
         s.commit_wait(chunk.to_vec()).unwrap();
     }
     s.commit_wait(vec![delete(100 + 7)]).unwrap();
-    // Its `originalData`, and a book that is only a name a link holds.
     s.commit_wait(vec![
         create(2, OWNED, "1:o"),
         create(3, ENTRY, "2:0"),
@@ -904,7 +878,6 @@ fn a_world_book_reads_whole_from_one_view() {
     drop(s);
     let s = Store::open_in(&dir, SMALL, pool()).unwrap();
     check(&s);
-    // A name forwarded into another book reads as nothing of its own; an undefined book as nothing.
     s.commit_wait(vec![
         create(5, BOOK, "other"),
         defined(5, true),

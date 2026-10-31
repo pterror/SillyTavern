@@ -2,9 +2,8 @@ import assert from 'node:assert/strict';
 import { activateWorldInfoEntries } from './activation.js';
 import { parseDecorators } from './decorators.js';
 
-const countTokens = async (text) => Math.ceil(text.length / 4); // cheap deterministic stand-in
+const countTokens = async (text) => Math.ceil(text.length / 4);
 
-// Basic key match activates an entry
 {
     const entries = [{ uid: '1', world: 'w', key: ['dragon'], content: 'Dragons breathe fire.' }];
     const { activatedEntries, content } = await activateWorldInfoEntries(entries, ['a dragon appears'], {
@@ -14,7 +13,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(content, 'Dragons breathe fire.');
 }
 
-// No key match -> nothing activates
 {
     const entries = [{ uid: '1', world: 'w', key: ['griffin'], content: 'Griffins fly.' }];
     const { activatedEntries } = await activateWorldInfoEntries(entries, ['a dragon appears'], {
@@ -23,7 +21,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(activatedEntries.length, 0);
 }
 
-// Constant entries always activate regardless of chat content
 {
     const entries = [{ uid: '1', world: 'w', key: [], constant: true, content: 'Always here.' }];
     const { activatedEntries } = await activateWorldInfoEntries(entries, ['nothing relevant'], {
@@ -32,7 +29,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(activatedEntries.length, 1);
 }
 
-// Recursion: entry A's content contains the key for entry B
 {
     const entries = [
         { uid: '1', world: 'w', key: ['dragon'], content: 'The dragon guards a cave.' },
@@ -45,7 +41,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.ok(activatedEntries.some(e => e.uid === '2'));
 }
 
-// Recursion disabled: only the directly-matched entry activates
 {
     const entries = [
         { uid: '1', world: 'w', key: ['dragon'], content: 'The dragon guards a cave.' },
@@ -57,7 +52,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(activatedEntries.length, 1);
 }
 
-// preventRecursion: entry's content doesn't feed back into the recursion buffer
 {
     const entries = [
         { uid: '1', world: 'w', key: ['dragon'], content: 'The dragon guards a cave.', preventRecursion: true },
@@ -69,19 +63,17 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(activatedEntries.length, 1, 'entry 2 never gets a chance to match since entry 1 is excluded from recursion feed');
 }
 
-// Token budget enforcement: a tiny budget stops further entries from activating
 {
     const entries = [
         { uid: '1', world: 'w', key: ['dragon'], content: 'x'.repeat(400) },
         { uid: '2', world: 'w', key: ['dragon'], content: 'y'.repeat(400) },
     ];
     const { activatedEntries } = await activateWorldInfoEntries(entries, ['a dragon appears'], {
-        maxContext: 4000, budgetPercent: 1, countTokens, depth: 1, // budget = round(1% of 4000) = 40 tokens
+        maxContext: 4000, budgetPercent: 1, countTokens, depth: 1,
     });
     assert.ok(activatedEntries.length < 2, 'budget should prevent both large entries from activating');
 }
 
-// ignoreBudget entries activate even past the overflow point
 {
     const entries = [
         { uid: '1', world: 'w', key: ['dragon'], content: 'x'.repeat(4000) },
@@ -93,7 +85,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.ok(activatedEntries.some(e => e.uid === '2'), 'ignoreBudget entry activates despite overflow');
 }
 
-// Probability: injected RNG deterministically gates activation
 {
     const entries = [{ uid: '1', world: 'w', key: ['dragon'], content: 'Maybe here.', useProbability: true, probability: 10 }];
     const failing = await activateWorldInfoEntries(entries, ['a dragon appears'], {
@@ -107,7 +98,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(passing.activatedEntries.length, 1, '5 <= 10% probability passes the roll');
 }
 
-// disabled entries never activate even with a matching key
 {
     const entries = [{ uid: '1', world: 'w', key: ['dragon'], content: 'hidden', disable: true }];
     const { activatedEntries } = await activateWorldInfoEntries(entries, ['a dragon appears'], {
@@ -116,7 +106,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(activatedEntries.length, 0);
 }
 
-// budgetCap clamps a large percentage-based budget
 {
     const entries = [{ uid: '1', world: 'w', key: ['dragon'], content: 'x'.repeat(2000) }];
     const { activatedEntries } = await activateWorldInfoEntries(entries, ['a dragon appears'], {
@@ -125,9 +114,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(activatedEntries.length, 0, 'a 10-token cap should reject a ~500-token entry');
 }
 
-// countTokens is called once per pass for the accumulated-so-far text, not once per entry -
-// regression guard for a real inefficiency this session caught by cross-checking the client source
-// (which computes textToScanTokens once before its per-entry loop, not inside it).
 {
     let calls = 0;
     const countingCountTokens = async (text) => { calls++; return Math.ceil(text.length / 4); };
@@ -139,35 +125,24 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     await activateWorldInfoEntries(entries, ['a dragon appears'], {
         maxContext: 4000, budgetPercent: 100, depth: 1, countTokens: countingCountTokens,
     });
-    // Pass 1: 1 shared call + 1 per entry = 4. All 3 entries succeed with no preventRecursion, so a
-    // second (recursion) pass runs - matching the client, which has no early-exit for an empty
-    // activatedNow and computes its shared token count unconditionally every pass; that pass finds
-    // no new matches but still costs 1 more shared call = 5 total, not 3 entries x 2 calls each (6).
     assert.equal(calls, 5, `expected 5 countTokens calls (4 from pass 1 + 1 shared call in the empty follow-up pass), got ${calls}`);
 }
 
-// Sticky: an entry activated once stays active (bypassing key matching) for its sticky duration,
-// tracked in chatMetadata across calls - simulating two separate generations against the same chat.
 {
     const entries = [{ uid: '1', world: 'w', key: ['dragon'], content: 'Dragon lore.', sticky: 3 }];
     const chatMetadata = {};
 
-    // First call: matches on "dragon", becomes sticky for the next 3 messages.
     const first = await activateWorldInfoEntries(entries, ['a dragon appears'], {
         maxContext: 4000, budgetPercent: 100, depth: 1, countTokens, chatMetadata,
     });
     assert.equal(first.activatedEntries.length, 1);
 
-    // Second call: the new incoming message (most recent = index 0) has no key match, but the entry
-    // is still within its sticky window (chat grew by 1, sticky lasts 3) - should still activate
-    // via isSticky, bypassing key matching entirely.
     const second = await activateWorldInfoEntries(entries, ['something unrelated', 'a dragon appears'], {
         maxContext: 4000, budgetPercent: 100, depth: 1, countTokens, chatMetadata,
     });
     assert.equal(second.activatedEntries.length, 1, 'sticky keeps the entry active without a new key match');
 }
 
-// Cooldown: once a sticky entry's window ends, it goes on cooldown and is suppressed even if its key matches again
 {
     const entries = [{ uid: '1', world: 'w', key: ['dragon'], content: 'Dragon lore.', sticky: 1, cooldown: 5 }];
     const chatMetadata = {};
@@ -175,9 +150,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     await activateWorldInfoEntries(entries, ['a dragon appears'], {
         maxContext: 4000, budgetPercent: 100, depth: 1, countTokens, chatMetadata,
     });
-    // Chat advances past the sticky window (sticky=1 -> ends when chat.length >= start+1 = 2).
-    // "dragon again" is the new incoming message (most recent = index 0) - it WOULD match the key
-    // directly if cooldown weren't suppressing the entry.
     const afterSticky = await activateWorldInfoEntries(entries, ['dragon again', 'a dragon appears'], {
         maxContext: 4000, budgetPercent: 100, depth: 1, countTokens, chatMetadata,
     });
@@ -185,7 +157,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.ok(chatMetadata.timedWorldInfo.cooldown['w.1'], 'cooldown recorded on sticky expiry');
 }
 
-// Delay: an entry with a delay longer than the current chat length never activates, even on key match
 {
     const entries = [{ uid: '1', world: 'w', key: ['dragon'], content: 'Dragon lore.', delay: 10 }];
     const { activatedEntries } = await activateWorldInfoEntries(entries, ['a dragon appears'], {
@@ -194,7 +165,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(activatedEntries.length, 0, 'suppressed by delay regardless of key match');
 }
 
-// isDryRun: sticky state is never written, so a second dry-run call doesn't see it as sticky
 {
     const entries = [{ uid: '1', world: 'w', key: ['dragon'], content: 'Dragon lore.', sticky: 3 }];
     const chatMetadata = {};
@@ -207,7 +177,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(second.activatedEntries.length, 0, 'dry run never persists sticky, so no carryover (depth:1 only scans the most recent message, "unrelated")');
 }
 
-// Inclusion groups: two entries sharing a group tag are mutually exclusive - only one activates
 {
     const entries = [
         { uid: '1', world: 'w', key: ['dragon'], content: 'Version A.', group: 'lore', order: 1 },
@@ -220,7 +189,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(activatedEntries[0].uid, '2', 'the groupOverride entry wins');
 }
 
-// Character filter: an entry restricted to a different character never activates for this one
 {
     const entries = [{ uid: '1', world: 'w', key: ['dragon'], content: 'Dragon lore.', characterFilter: { names: ['other.png'], isExclude: false } }];
     const { activatedEntries } = await activateWorldInfoEntries(entries, ['a dragon appears'], {
@@ -230,7 +198,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(activatedEntries.length, 0, 'entry restricted to a different character is filtered out');
 }
 
-// Generation-trigger filter: an entry restricted to specific trigger types is suppressed otherwise
 {
     const entries = [{ uid: '1', world: 'w', key: ['dragon'], content: 'Dragon lore.', triggers: ['impersonate'] }];
     const suppressed = await activateWorldInfoEntries(entries, ['a dragon appears'], {
@@ -244,27 +211,21 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(allowed.activatedEntries.length, 1);
 }
 
-// Once budget overflows, recursion stops entirely for the rest of the scan - verified against the
-// client source: nextScanState only ever becomes RECURSION/MIN_ACTIVATIONS when !token_budget_overflowed,
-// so a match that would only be reachable via a post-overflow recursion pass never activates, even
-// though the entry that overflowed the budget DOES contain the recursion trigger word in its content.
 {
     let calls = 0;
     const countingCountTokens = async (text) => { calls++; return Math.ceil(text.length / 4); };
     const entries = [
-        { uid: '1', world: 'w', key: ['dragon'], content: 'x'.repeat(4000) + ' cave' }, // overflows the tiny budget below
-        { uid: '2', world: 'w', key: ['cave'], content: 'Cave lore.' }, // would only be reachable by recursing through entry 1's content
+        { uid: '1', world: 'w', key: ['dragon'], content: 'x'.repeat(4000) + ' cave' },
+        { uid: '2', world: 'w', key: ['cave'], content: 'Cave lore.' },
     ];
     const { activatedEntries } = await activateWorldInfoEntries(entries, ['a dragon appears'], {
-        maxContext: 4000, budgetPercent: 1, countTokens: countingCountTokens, depth: 1, recursive: true, // budget = 40 tokens, entry 1 alone overflows it
+        maxContext: 4000, budgetPercent: 1, countTokens: countingCountTokens, depth: 1, recursive: true,
     });
     assert.equal(activatedEntries.length, 0, 'entry 1 is cut by budget, and entry 2 never gets a recursion pass to be found in');
     assert.equal(calls, 2, 'exactly one pass ran (1 shared scanTokens call + 1 for entry 1'
         + '\'s own content) - no second pass was attempted after overflow');
 }
 
-// Externally-forced activation: an entry with no matching key still activates when force-listed,
-// and the FORCED object (not necessarily the same reference) is what ends up in the result.
 {
     const original = { uid: '1', world: 'w', key: ['nonexistent-keyword'], content: 'original content' };
     const forced = { uid: '1', world: 'w', key: ['nonexistent-keyword'], content: 'forced content override' };
@@ -276,7 +237,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(activatedEntries[0].content, 'forced content override', 'the forced entry object is used, not the original candidate');
 }
 
-// Without externalActivations, the same non-matching entry does not activate (control)
 {
     const entries = [{ uid: '1', world: 'w', key: ['nonexistent-keyword'], content: 'never matches' }];
     const { activatedEntries } = await activateWorldInfoEntries(entries, ['nothing relevant'], {
@@ -285,9 +245,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(activatedEntries.length, 0);
 }
 
-// Decorators, full path: raw entry content is parsed via parseDecorators() (mirroring the client's
-// getSortedEntries() preprocessing step) before entries are handed to activateWorldInfoEntries.
-// @@activate forces activation bypassing key matching entirely.
 {
     const [decorators, content] = parseDecorators('@@activate\nThis lore has no matching key.');
     const entries = [{ uid: '1', world: 'w', key: ['nonexistent-keyword'], content, decorators }];
@@ -298,7 +255,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(activatedEntries[0].content, 'This lore has no matching key.', 'decorator header stripped from content before scanning');
 }
 
-// @@dont_activate suppresses an entry that WOULD otherwise activate via a real key match.
 {
     const [decorators, content] = parseDecorators('@@dont_activate\nDragon lore that would normally match.');
     const entries = [{ uid: '1', world: 'w', key: ['dragon'], content, decorators }];
@@ -308,9 +264,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(activatedEntries.length, 0, '@@dont_activate suppresses the entry even though its key matches the chat');
 }
 
-// Control: the same entries without any decorators behave normally (key match required, and does
-// activate when present) - proves the decorator tests above are actually exercising the decorator
-// path, not some unrelated effect.
 {
     const entries = [{ uid: '1', world: 'w', key: ['nonexistent-keyword'], content: 'No decorators here.' }];
     const noMatch = await activateWorldInfoEntries(entries, ['nothing relevant here'], {
@@ -325,9 +278,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(withMatch.activatedEntries.length, 1, 'without @@dont_activate, a matching key does activate');
 }
 
-// additionalScanInjects: an entry whose ONLY matching key appears in an injected string (not in
-// chatMessages or globalScanData) still activates - proves the option's wiring actually reaches the
-// scan buffer, not just that it's accepted.
 {
     const entries = [{ uid: '1', world: 'w', key: ['unicorn'], content: 'Unicorns are rare.' }];
     const { activatedEntries } = await activateWorldInfoEntries(entries, ['nothing relevant here'], {
@@ -337,7 +287,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4); // cheap determi
     assert.equal(activatedEntries.length, 1, 'entry activates purely from additionalScanInjects text');
 }
 
-// additionalScanInjects: falsy/empty entries in the array are ignored (no crash, no spurious match).
 {
     const entries = [{ uid: '1', world: 'w', key: ['unicorn'], content: 'Unicorns are rare.' }];
     const { activatedEntries } = await activateWorldInfoEntries(entries, ['nothing relevant here'], {

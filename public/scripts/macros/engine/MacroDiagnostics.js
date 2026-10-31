@@ -17,10 +17,9 @@ import { SimpleMutex } from '../../util/SimpleMutex.js';
 /** @typedef {MacroErrorContext & { message: string, error?: any }} MacroLogOptions */
 
 
-// Kept for extensions: the engine is the only one, so there is nothing to offer.
 export const onboardingExperimentalMacroEngineMutex = new SimpleMutex(async () => {});
 
-/** @deprecated The macro engine is always on; does nothing. */
+/** @deprecated */
 export const onboardingExperimentalMacroEngine = onboardingExperimentalMacroEngineMutex.update.bind(onboardingExperimentalMacroEngineMutex);
 
 /**

@@ -10,14 +10,9 @@ import { readTokenizerState } from '../connection-state-header.js';
 import { createLlamaCppPropsCheck } from '../llamacpp-props.js';
 import { createStoredCounter, writeBack } from '../token-count-store.js';
 
-// The `/api/tokenizers/current/*` routes. They live apart from ./tokenizers.js because the
-// resolver imports that module.
-
 export const router = express.Router();
 
 /**
- * The local tokenizer that turns ids back into text for a resolution: the local one, or a remote
- * one's exact local copy. null when there is none.
  * @param {import('../tokenizer-resolve.js').ResolvedTokenizer} resolved
  * @returns {import('../tokenizer-resolve.js').ResolvedTokenizer|null}
  */
@@ -32,9 +27,6 @@ function getDecodingResolution(resolved) {
 }
 
 /**
- * Trims `text` to `limit` tokens the way upstream's `/trimtokens` does: `start` keeps the first
- * tokens and `end` the last. With no tokenizer that can turn the sliced ids back into text, it trims
- * by upstream's character-proportion fallback, whose `start`/`end` keep the opposite ends.
  * @param {import('../tokenizer-resolve.js').ResolvedTokenizer} resolved
  * @param {string} text
  * @param {number} limit
@@ -67,20 +59,16 @@ async function trimToTokenLimit(resolved, text, limit, direction, options) {
 }
 
 /**
- * The tokenizer for a connection state (resolved as the page's counters are), and a counter through the user's
- * token tables made on first use (`storedCounter()`); `writeCounted()` stores what it counted.
  * @param {import('../tokenizer-resolve.js').TokenizerState & { explicitTokenizer?: any }} state
  * @param {import('../users.js').UserDirectoryList} directories
- * @param {{ recount?: boolean }} [options] `recount`: counts are taken again and written over the stored ones.
+ * @param {{ recount?: boolean }} [options]
  */
 export async function openTokenizer(state, directories, { recount = false } = {}) {
-    // A recent /props answer is reused, so typing in a field doesn't ask llama.cpp on every keystroke.
     const llamaCppProps = createLlamaCppPropsCheck({ reuse: true });
     const resolved = await resolveTokenizer(state, { directories, llamaCppProps });
     const outcome = createTokenizerOutcome();
     /** @type {import('../tokenizer-resolve.js').EncodeWithTokenizerTypeOptions} */
     const options = {
-        // setAdditionalHeaders() picks the backend's API key by the body's api_type.
         request: /** @type {any} */ ({ body: { api_type: state.type }, user: { directories } }),
         textgenBaseUrl: state.url,
         textgenModel: state.model,
@@ -98,7 +86,6 @@ export async function openTokenizer(state, directories, { recount = false } = {}
         resolved,
         options,
         outcome,
-        /** The tokenizer's identity in the token tables (null: its counts aren't stored). */
         identity: () => (identity ??= tokenizerIdentity(resolved, identityFacts)),
         storedCounter: async () => {
             if (!counter) {
@@ -114,17 +101,8 @@ export async function openTokenizer(state, directories, { recount = false } = {}
 }
 
 /**
- * A `/current/*` route: resolves the tokenizer for the request's `state` and answers with what
- * `handle` gives, the tokenizer that answered, and any warnings about it. An optional
- * `explicitTokenizer` (a `tokenizers` value the caller named, as `getTextTokens(id, …)` does)
- * wins over the state's resolution on every api; the answer's `key` still comes from `state`.
- * One that isn't an explicit pick answers 400.
- * `handle` gets a `storedCounter()` that counts and encodes through the token tables; what it counted is
- * written back after the response. With `recount: true` in the body, counts are taken again and written over the
- * stored ones.
  * @template T
- * @param {(body: any, state: import('../tokenizer-resolve.js').TokenizerState) => T|null} parse The
- * route's input; null answers 400.
+ * @param {(body: any, state: import('../tokenizer-resolve.js').TokenizerState) => T|null} parse
  * @param {(input: T, resolved: import('../tokenizer-resolve.js').ResolvedTokenizer, options: import('../tokenizer-resolve.js').EncodeWithTokenizerTypeOptions, storedCounter: () => Promise<import('../token-count-store.js').StoredCounter>) => Promise<object>} handle
  * @returns {(request: import('express').Request, response: import('express').Response) => Promise<any>}
  */
@@ -168,13 +146,11 @@ router.post('/current/count', currentTokenizerRoute(
         if (Array.isArray(body.messages)) {
             return state.api === 'openai' ? { messages: body.messages } : null;
         }
-        // Several chat-completion messages, each counted on its own (a chat's messages, for their counters).
         if (Array.isArray(body.messages_each)) {
             return state.api === 'openai' ? { messagesEach: body.messages_each } : null;
         }
         const texts = readTexts(body);
         const padding = Number(body.padding ?? 0);
-        // `promptStart`: every text begins the prompt a generation sends, so it is counted as that prompt is.
         return texts && { texts, padding: Number.isFinite(padding) ? padding : 0, promptStart: body.promptStart === true };
     },
     async (input, _resolved, _options, storedCounter) => {

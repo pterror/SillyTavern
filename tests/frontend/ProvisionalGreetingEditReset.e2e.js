@@ -9,11 +9,10 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 }
 
 /**
- * Creates a character whose greetings are `greetings`, in order, with the first one as the default.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
  * @param {string[]} greetings
- * @returns {Promise<string>} The new character's avatar filename.
+ * @returns {Promise<string>}
  */
 async function createCharacter(page, name, greetings) {
     return page.evaluate(async ({ name, greetings }) => {
@@ -30,7 +29,6 @@ async function createCharacter(page, name, greetings) {
 }
 
 /**
- * Opens the character (editor included) and waits for its chat's opening to be in place.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  */
@@ -51,7 +49,6 @@ async function openCharacter(page, avatar) {
 }
 
 /**
- * The parts of chat[0] a greeting save may change, plus the chat's length.
  * @param {import('@playwright/test').Page} page
  */
 async function openingState(page) {
@@ -70,10 +67,9 @@ async function openingState(page) {
 }
 
 /**
- * Jumps message 0 to the swipe holding `text`, the way the swipe picker's "jump to swipe" does.
  * @param {import('@playwright/test').Page} page
  * @param {number} swipeId
- * @param {string} text The greeting expected at that swipe.
+ * @param {string} text
  */
 async function showSwipe(page, swipeId, text) {
     await page.evaluate(async (swipeId) => {
@@ -91,7 +87,6 @@ async function showSwipe(page, swipeId, text) {
 const stamp = () => `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
 /**
- * Opens a second, separately logged-in browser session, standing in for "another session" editing the same card.
  * @param {import('@playwright/test').Browser} browser
  * @param {(other: import('@playwright/test').Page) => Promise<T>} fn
  * @template T
@@ -108,7 +103,6 @@ async function withOtherSession(browser, fn) {
 }
 
 /**
- * The character's greetings as the server stores them, in order.
  * @param {import('@playwright/test').Page} session
  * @param {string} avatar
  * @returns {Promise<string[]>}
@@ -125,7 +119,6 @@ async function storedGreetings(session, avatar) {
 }
 
 /**
- * Deletes the greeting with this text through the greetings API, from `session`.
  * @param {import('@playwright/test').Page} session
  * @param {string} avatar
  * @param {string} text
@@ -147,9 +140,6 @@ async function deleteGreetingViaApi(session, avatar, text) {
 }
 
 /**
- * Sidebar pager: starts editing the greeting at `index` (0-based) and types `text` into it, deletes `deleted`
- * from another session, runs `/char-update` on a non-greeting field while the edit is still open, then clicks
- * Done. Returns the greeting edit request's response and the server's stored greetings afterwards.
  * @param {import('@playwright/test').Page} page
  * @param {import('@playwright/test').Browser} browser
  * @param {object} args
@@ -184,7 +174,6 @@ async function editAcrossRemoteDeletes(page, browser, { name, greetings, index, 
         const remaining = greetings.filter(g => !deleted.includes(g));
         expect(await storedGreetings(other, avatar)).toEqual(remaining);
 
-        // A non-greeting /char-update refetches the card and runs select_selected_character while the greeting is still in edit.
         const refetched = page.waitForResponse(response => new URL(response.url()).pathname === '/api/characters/get', { timeout: 15000 });
         await page.evaluate(async (personality) => {
             // @ts-ignore
@@ -192,7 +181,6 @@ async function editAcrossRemoteDeletes(page, browser, { name, greetings, index, 
             await executeSlashCommandsWithOptions(`/char-update personality="${personality}"`);
         }, `Personality ${name}`);
         expect((await refetched).ok()).toBe(true);
-        // The refreshed greetings wait for the edit to end: the pager still holds the list the edit started on.
         await expect(page.locator('.greeting-pager-total')).toHaveText(`/${greetings.length}`);
         await expect(page.locator('.greeting-pager-input')).toHaveValue(String(index + 1));
         await expect(textarea).toBeVisible();
@@ -205,7 +193,6 @@ async function editAcrossRemoteDeletes(page, browser, { name, greetings, index, 
         expect(editRequests).toEqual([text]);
         const stored = await storedGreetings(other, avatar);
         if (response.ok()) {
-            // Once the edit ends the pager takes the current list and stays on the edited greeting, wherever it is now.
             await expect(textarea).toBeHidden();
             await expect(page.locator('.greeting-pager-total')).toHaveText(`/${stored.length}`);
             await expect(page.locator('.greeting-pager-input')).toHaveValue(String(stored.indexOf(text) + 1));
@@ -250,11 +237,8 @@ test.describe('editing the showing provisional greeting keeps it shown', () => {
         const otherText = `One edited elsewhere ${s}`;
 
         await withOtherSession(browser, async (other) => {
-            // Once this page's edit is confirmed, the other session edits the same greeting again before this
-            // page's next openings read reaches the server, so that read no longer holds `typed`.
             let armed = false;
             let otherEdited = false;
-            /** The other session's edit is stored (its answer came back). */
             let otherStored = false;
             await page.route('**/api/ui/action', async (route) => {
                 const response = await route.fetch();
@@ -310,8 +294,6 @@ test.describe('editing the showing provisional greeting keeps it shown', () => {
             await showSwipe(page, 1, g1);
             expect((await openingState(page)).node_id.startsWith('card:')).toBe(true);
 
-            // Let the first greeting edit reach the server, but hold its response so the autosave is still in flight
-            // when the edit is confirmed.
             /** @type {string[]} */
             const editTexts = [];
             /** @type {() => void} */

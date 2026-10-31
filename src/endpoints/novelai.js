@@ -181,47 +181,22 @@ router.post('/status', async function (req, res) {
 });
 
 /**
- * Real, tested raw-action request builder for main_api === 'novel'. Directly mirrors
- * src/endpoints/backends/text-completions.js's own `buildRawActionTextCompletionRequest()` (see
- * `git show ac42ce8c9` for the original design) and src/endpoints/backends/kobold.js's own
- * `buildRawActionKoboldRequest()` - same field names, same
- * resolveTextCompletionGenerationInput()+assembleTextCompletionPrompt() pipeline, now dispatching to
- * createNovelGenerationData() for real per text-completion-prompt-orchestrator.js's own Step 16
- * update. No `resolveTextGenBackend()`/api_server concept here at all - NovelAI is always the same
- * fixed API endpoint (`API_NOVELAI`/`TEXT_NOVELAI`, selected by model name, unchanged below), unlike
- * Kobold's own connectable-server-URL model.
- *
- * The tokenizer is resolved with `resolveTokenizer()` from `nai_settings.model_novel` and
- * `power_user.tokenizer`. An estimate resolution, or a tokenizer that fails, counts by the
- * estimate and has no ids, so stop strings, bad words and bias entries needing ids are left out
- * and reported in the returned `warnings`.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {object} params
  * @param {import('express').Request} [params.request]
  * @param {string} [params.characterAvatar]
  * @param {string} [params.groupId]
- * @param {import('../chat-request.js').ChatContext} params.chat The chat the request acts in.
- * @param {string|null} params.nodeId REQUIRED (`undefined` throws) - see
- * src/endpoints/backends/text-completions.js's `buildRawActionTextCompletionRequest()` own
- * ADDRESSING MODEL doc comment for the full rationale this mirrors verbatim: a real node id string
- * addresses that specific existing node; `null` goes on from the tree's root, and only succeeds
- * when that is current. There is no `branchName`/`branch_name`
- * field in this raw-action surface anymore.
+ * @param {import('../chat-request.js').ChatContext} params.chat
+ * @param {string|null} params.nodeId
  * @param {string} [params.type]
  * @param {boolean} [params.isImpersonate]
  * @param {boolean} [params.isContinue]
  * @param {boolean} [params.isSwipe]
  * @param {string} [params.userMessageText]
- * @param {import('../macro-facts.js').PageMacroFacts} [params.pageFacts] What only the page knows, for the macros.
- * @param {import('../extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections] What the page's extensions inject (src/page-injections.js).
- * @param {object} [params.userMessageExtra] Already-SERVER-VALIDATED `extra` (see
- * `sanitizeUserMessageExtra()` in user-message-extra.js) for the new user message being appended -
- * identical contract to buildRawActionTextCompletionRequest()'s own equivalent param. NovelAI has no
- * media/image inlining wired here - only `.files` is meaningfully consumed downstream
- * (file-attachment-inline.js, via resolveTextCompletionGenerationInput()).
+ * @param {import('../macro-facts.js').PageMacroFacts} [params.pageFacts]
+ * @param {import('../extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections]
+ * @param {object} [params.userMessageExtra]
  * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, tokenCountRows: import('../token-count-store.js').PendingTokenRows, name1: string, name2: string, warnings: object[] }>}
- * `tokenCountRows` are the counts and ids this build read from or added to the token tables, for
- * writeBack() once the request is sent.
  */
 export async function buildRawActionNovelRequest(directories, {
     request, characterAvatar, groupId, chat, nodeId,
@@ -231,9 +206,6 @@ export async function buildRawActionNovelRequest(directories, {
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
     }
-    // See buildRawActionTextCompletionRequest()'s own ADDRESSING MODEL doc comment - `undefined`
-    // means the request body never had the `node_id` key at all (JSON has no `undefined` literal, so
-    // this is distinguishable from an explicit `null`).
     if (nodeId === undefined) {
         throw new Error('node_id is required (pass null explicitly for a brand-new, empty conversation)');
     }
@@ -254,10 +226,6 @@ export async function buildRawActionNovelRequest(directories, {
         }
     }
 
-    // Anchor resolution - a real given `nodeId` is verified directly; `nodeId === null` (going on
-    // from the tree's root) is left unresolved here and read back off
-    // `orchestratorInput.resolvedNodeId`/`chatResolutionAmbiguous` once resolved below - identical
-    // pattern to buildRawActionTextCompletionRequest()'s own Step 2.
     let anchorNodeId = null;
     if (nodeId !== null) {
         if (!await chat.store.chats.messageOf(chat.tree, nodeId)) {
@@ -275,7 +243,6 @@ export async function buildRawActionNovelRequest(directories, {
     const storedCounter = createStoredCounter({ resolved: resolvedTokenizer, identity, directories, encodeOptions });
     const encodeTokens = storedCounter.encodeText;
     const countTokens = storedCounter.countText;
-    // createNovelGenerationData() hands back the type it was given, which is this resolution's.
     const encodeTokensByType = (_tokenizerType, text) => encodeTokens(text);
     const novelTokenizerType = resolvedTokenizer.kind === 'estimate' ? tokenizers.NONE : resolvedTokenizer.id;
 
@@ -286,8 +253,6 @@ export async function buildRawActionNovelRequest(directories, {
         macroExtras: { encodeTokensByType, novelTokenizerType, ...textCompletionQuietInput(quiet) },
     });
 
-    // `nodeId === null` goes on from the tree's root only when that is current - see
-    // buildRawActionTextCompletionRequest()'s identical handling.
     if (nodeId === null) {
         if (orchestratorInput.chatResolutionAmbiguous) {
             throw new Error('node_id is required: this chat is not at its start - pass the node_id of the message to generate from (null is only valid in a new chat)');
@@ -306,7 +271,6 @@ export async function buildRawActionNovelRequest(directories, {
         params: assembled.generate_data, anchorNodeId, anchorContent, tokenCountRows: storedCounter.pending,
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
         warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
-        // The chat variables the prompt's macros changed, for the route to store (storeMacroVariables()).
         macroVariables: macroVariableChanges(orchestratorInput.chatMetadata, orchestratorInput.macroFacts.globalVariables, orchestratorInput.variablesBefore),
     };
 }
@@ -314,15 +278,9 @@ export async function buildRawActionNovelRequest(directories, {
 router.post('/generate', withGenerationStop(async function (req, res) {
     if (!req.body) return res.sendStatus(400);
 
-    // Real raw-action cutover - see buildRawActionNovelRequest() above and
-    // src/endpoints/backends/text-completions.js's/src/endpoints/backends/kobold.js's own
-    // identically-shaped branches for the full design precedent this mirrors.
     let pendingAssistantPersist = null;
-    // Per-request warnings for the screen - see text-completions.js's identical `warnings` for the
-    // full rationale. Covers every branch, not gated on persistence; sent only when non-empty.
     /** @type {Array<{kind: string, key: string, message: string, entries?: string[]}>} */
     const warnings = [];
-    // The raw-action build's counts and ids, stored once the backend has the request.
     /** @type {import('../token-count-store.js').PendingTokenRows | null} */
     let tokenCountRows = null;
     if (req.body.owner_id && (req.body.character_avatar || req.body.group_id)) {
@@ -330,9 +288,6 @@ router.post('/generate', withGenerationStop(async function (req, res) {
             character_avatar: characterAvatar, group_id: groupId,
             type = 'normal',
         } = req.body;
-        // is_impersonate/is_continue/is_swipe are NOT read from the wire - see kobold.js's own
-        // identical derivation/comment (extended there from text-completions.js's/
-        // chat-completions.js's original commit 4a79e197e).
         const isImpersonate = type === 'impersonate';
         const isContinue = type === 'continue';
         const isSwipe = type === 'swipe' || type === 'regenerate';
@@ -360,10 +315,6 @@ router.post('/generate', withGenerationStop(async function (req, res) {
         warnings.push(...built.warnings);
         tokenCountRows = built.tokenCountRows;
 
-        // Same three-mode persistence contract as text-completions.js's/kobold.js's own raw-action
-        // branches - see text-completions.js's own extensive comment on impersonate/quiet skipping,
-        // the swipe/regenerate sibling-vs-child distinction, and the continue/userMessageText
-        // tree-shape edge case. Not re-derived here; identical reasoning applies verbatim.
         const skipPersistence = isImpersonate || type === 'quiet';
         let replyAnchorNodeId = built.anchorNodeId;
         const userMessage = turn.userMessage;
@@ -375,10 +326,7 @@ router.post('/generate', withGenerationStop(async function (req, res) {
             if (!userNodeId) return;
             replyAnchorNodeId = userNodeId;
         }
-        // What the prompt's macros changed of the chat's variables, kept with the page's own chat metadata.
         await storeMacroVariables(res, chat, nodeId, built.macroVariables);
-        // A continue sent with text in the box stores that text as the user's message first, and the page then
-        // continues that message, as upstream does: the reply is stored as an edit of it.
         const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
         if (!skipPersistence) {
             pendingAssistantPersist = {
@@ -386,21 +334,14 @@ router.post('/generate', withGenerationStop(async function (req, res) {
                 isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
                 warnings, generationStop: res.locals.generationStop,
                 itemization: itemizationOf(req.body.itemization, null),
-                // How the reply is finished (its reasoning split off, see src/reply-reasoning.js).
                 finish: await readReplyFinishSettings(req.user.directories, {
                     mainApi: 'novel', avatar: characterAvatar, groupId, name1: built.name1, name2: built.name2,
                     model: built.params?.model ?? null,
                 }),
             };
-            // The reply's write goes through the session; one made for it is in the headers, which a
-            // stream sends before the reply is stored.
             chat.session.actor();
         }
 
-        // Replace the body entirely - the existing dispatch code below (bad-words/logit-bias
-        // enrichment, `req.body.model`-keyed URL selection, streaming vs non-streaming) is completely
-        // unaware of which branch produced req.body, same as text-completions.js's/kobold.js's own
-        // pattern.
         req.body = built.params;
     }
 
@@ -492,9 +433,6 @@ router.post('/generate', withGenerationStop(async function (req, res) {
         }
     }
 
-    // Pass the object raw, not a pre-formatted util.inspect() dump - see the same fix in chat-completions.js
-    // and text-completions.js for why the eager inspect/stringify defeats minLogLevel's no-op gate.
-
     const args = {
         body: JSON.stringify(data),
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + api_key_novel },
@@ -511,13 +449,6 @@ router.post('/generate', withGenerationStop(async function (req, res) {
         }
 
         if (req.body.streaming) {
-            // Re-encode NovelAI's own SSE data payload shape (`{"token": "...", "logprobs": {...}}`,
-            // verified against generateNovelWithStreaming() in public/scripts/nai-settings.js -
-            // `data.token` is already decoded text, not a raw token id) into the same compact binary
-            // wire format every streaming path uses, raw-action or not (see
-            // forwardAndPersistCompactStream()'s own doc comment) - `data.logprobs` is carried through
-            // as a `0x02` probabilities frame so per-token logprob display keeps working.
-            // `pendingAssistantPersist` only gates whether the final text also gets persisted.
             await forwardAndPersistCompactStream(response, res, pendingAssistantPersist, json => json?.token, json => json?.logprobs, warnings);
         } else {
             if (!response.ok) {
@@ -538,11 +469,6 @@ router.post('/generate', withGenerationStop(async function (req, res) {
             /** @type {any} */
             const data = await response.json();
 
-            // Persist the ASSISTANT's reply for the raw-action branch (see
-            // `pendingAssistantPersist`'s declaration above) - only reached for a real, successful
-            // (response.ok) NON-STREAMING generation. `/ai/generate`'s real response shape carries
-            // the generated text at `data.output` (verified against public/script.js's own
-            // `data.output` read of this exact endpoint).
             if (pendingAssistantPersist) {
                 const generatedText = data?.output ?? '';
                 const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText, { data });

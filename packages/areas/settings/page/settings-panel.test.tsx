@@ -14,8 +14,6 @@ import type { Support } from './cc.tsx';
 import { isShown } from './fields.tsx';
 import { settingsCompat } from './compat.ts';
 
-// The panel against a stand-in client: it draws the view it's given and sends what the user does.
-
 function viewOf(over: Partial<SettingsView> = {}): SettingsView {
     return {
         context: { avatar: 'cara.png' },
@@ -96,7 +94,6 @@ test('each field is drawn under its old ids with its value, and only for the sou
     expect(host.querySelector<HTMLInputElement>('#temp_counter_openai')?.value).toBe('1.2');
     expect(host.querySelector('#temp_openai')?.closest('[data-field]')?.getAttribute('data-field')).toBe('temp_openai');
     expect(host.querySelector('#freq_pen_openai')).not.toBeNull();
-    // Top K isn't OpenAI's.
     expect(host.querySelector('#top_k_openai')).toBeNull();
 });
 
@@ -107,7 +104,6 @@ test("a chat's level is marked; a range above the defaults dims what nothing in 
     );
     const block = character.host.querySelector('[data-field="temp_openai"]');
     expect(block?.getAttribute('data-settings-level')).toBe('character');
-    // The chat's own value can be taken away.
     block?.querySelector<HTMLButtonElement>('.settings_unset')?.click();
     expect(character.sent.at(-1)).toEqual({ type: 'settings.unset', payload: { path: 'oai_settings.temp_openai' } });
 
@@ -185,9 +181,7 @@ test("upstream's settings object reads the view and writes actions; a value alre
     expect(sent).toEqual([]);
     oai['temp_openai'] = 0.5;
     expect(sent).toEqual([{ type: 'settings.set', payload: { path: 'oai_settings.temp_openai', value: 0.5 } }]);
-    // Read at once, it's what was written.
     expect(oai['temp_openai']).toBe(0.5);
-    // Not a field of the panel: the object's own.
     oai['custom_url'] = 'http://y';
     expect(oai['custom_url']).toBe('http://y');
     setCurrent(viewOf({ values: { 'oai_settings.temp_openai': 0.5 } }));
@@ -232,12 +226,10 @@ const textgen = (over: Partial<SettingsView> = {}) =>
 test("a text generation field shows for its backends; the user's chosen samplers decide over that", () => {
     const { host, setCurrent } = mount(textgen(), () => <TgSamplers />);
     expect(host.querySelector('#temp_textgenerationwebui')).not.toBeNull();
-    // Top A isn't llama.cpp's.
     expect(host.querySelector('#top_a_textgenerationwebui')).toBeNull();
     setCurrent(textgen({ samplerSelects: { llamacpp: { manual: true, shown: ['top_a'] } } }));
     expect(host.querySelector('#top_a_textgenerationwebui')).not.toBeNull();
     expect(host.querySelector('#temp_textgenerationwebui')).toBeNull();
-    // A list that doesn't decide: the backend does.
     setCurrent(textgen({ samplerSelects: { llamacpp: { manual: false, shown: ['top_a'] } } }));
     expect(host.querySelector('#top_a_textgenerationwebui')).toBeNull();
 });
@@ -246,7 +238,6 @@ test('with zen sliders a slider shows its value in its handle, Off at its off va
     const { host, setCurrent } = mount(textgen({ zen: true }), () => <TgSamplers />);
     expect(host.querySelector('#temp_textgenerationwebui_zenslider .ui-slider-handle')?.textContent).toBe('0.70');
     expect(host.querySelector('#min_p_textgenerationwebui_zenslider .ui-slider-handle')?.textContent).toBe('Off');
-    // The old id stays, on the value it holds.
     expect(host.querySelector<HTMLInputElement>('#temp_textgenerationwebui')?.value).toBe('0.7');
     setCurrent(textgen({ zen: false }));
     expect(host.querySelector('#temp_textgenerationwebui_zenslider')).toBeNull();

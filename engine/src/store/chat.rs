@@ -1,10 +1,3 @@
-//! Chats (`.plans/2026-10-03-storage-build-path.md` 5b): messages in each character's or group's tree, positions
-//! (sessions and bookmarks) and the outside keys that name messages, sessions and users.
-//!
-//! A message's own values are the `messageAppend` record's fixed slots; every other value it holds is a value of
-//! the message (`Holder::Message`) in the value kinds, by field. Its text is the field `MES`: the append's text
-//! is its first full value, and edits and later full values follow it as any text value's do.
-
 use super::StoreError;
 use super::derive::{Deriver, Loc, Out, View};
 use super::kinds::{
@@ -17,11 +10,6 @@ use crate::search::{self, Scope};
 
 use super::sessions::{self, Fork};
 
-/// A message's known top-level keys as field codes (1–63; `extra`'s known keys take 64 on; the JavaScript writer,
-/// `src/chat-codec.js`, holds the whole list). Codes the engine reads: the text (`mes`), the fixed booleans when they
-/// hold another value than the flags can say, `send_date` and the generation times. A time is a `messageTime` delta
-/// from the append's time: of `SEND_DATE`, `GEN_STARTED`, `GEN_FINISHED` for an ISO string, of the `_NUM` codes for a
-/// number; for another JSON value, the `_AT` codes hold the time the writer read from it (`parseTimestamp()`).
 pub const MES: u64 = 1;
 pub const IS_USER: u64 = 2;
 pub const IS_SYSTEM: u64 = 3;
@@ -35,12 +23,10 @@ pub const SEND_AT: u64 = 20;
 pub const GEN_STARTED_AT: u64 = 21;
 pub const GEN_FINISHED_AT: u64 = 22;
 pub const SEND_DATE_NUM: u64 = 23;
-/// A message's flags after a change (JSON, a number): the append's are never rewritten.
 pub const FLAGS: u64 = 16;
 pub const GEN_STARTED_NUM: u64 = 24;
 pub const GEN_FINISHED_NUM: u64 = 25;
 
-/// `messageAppend`'s slots.
 pub const APPEND_ID: usize = 0;
 pub const APPEND_PARENT: usize = 1;
 pub const APPEND_OWNER: usize = 2;
@@ -51,18 +37,6 @@ pub const APPEND_SESSION: usize = 8;
 pub const APPEND_USER: usize = 9;
 pub const APPEND_SEND_KEY: usize = 10;
 
-/// `messageAppend`'s `flags`: the shape of the message's fixed values, two bits each (lowest first), laid out so
-/// the usual messages (one the page sends, a reply the server stores, an upstream reply) take one byte:
-/// - `is_user`: 0 false, 1 true, 2 absent, 3 another value (a JSON value of its own);
-/// - `send_date`: 0 its own value (a `messageTime` or JSON value), 1 the append's time as a number, 2 the ISO
-///   string of the append's time, 3 absent;
-/// - key order: 0, 1, 2 one of the writer's three usual orders, 3 its own order value;
-/// - `is_system`: 0 absent, 1 false, 2 true, 3 another value;
-/// - `mes`: 0 the append's text (then edited as the text value `MES`), 1 absent, 2 another value;
-/// - `extra`: 0 an object (its keys are values of their own), 1 absent, 2 another value;
-/// - `name`: 0 a string (the append's `name`, else the speaker's), 1 absent, 2 another value;
-/// - `is_name`: 0 absent, 1 true, 2 false, 3 another value;
-/// - then one bit each: `original_avatar` is the speaker's key; `force_avatar` is the speaker's thumbnail URL.
 pub const FLAG_IS_USER: u32 = 0;
 pub const FLAG_SEND_DATE: u32 = 2;
 pub const FLAG_ORDER: u32 = 4;
@@ -74,12 +48,10 @@ pub const FLAG_IS_NAME: u32 = 14;
 pub const FLAG_ORIGINAL_AVATAR: u32 = 16;
 pub const FLAG_FORCE_AVATAR: u32 = 17;
 
-/// A message's text is the append's own (its `mes` is a string).
 pub fn text_in_append(flags: u64) -> bool {
     (flags >> FLAG_MES) & 3 == 0
 }
 
-/// A time as a key component that sorts as the time does (times are within ±(2^53 - 1)).
 fn time_key(k: &mut Vec<u8>, t: i64) {
     put_u64(k, (t + (1 << 53)) as u64);
 }
@@ -88,7 +60,6 @@ fn time_of(rec: &Record) -> i64 {
     time_at(rec, APPEND_TIME)
 }
 
-/// The record's time slot `i`.
 pub(super) fn time_at(rec: &Record, i: usize) -> i64 {
     match rec.values[i] {
         Value::Time(t) => t,
@@ -103,7 +74,6 @@ pub fn opt_id(rec: &Record, i: usize) -> Option<u64> {
     }
 }
 
-/// The key of a message's place among its parent's replies, or among the messages opening its owner's tree.
 pub fn child_key(parent: Option<u64>, owner: u64, time: i64, m: u64) -> Vec<u8> {
     let mut k = match parent {
         Some(p) => key::id(key::CHILD, p),
@@ -114,7 +84,6 @@ pub fn child_key(parent: Option<u64>, owner: u64, time: i64, m: u64) -> Vec<u8> 
     k
 }
 
-/// The prefix of a message's replies (`Some`) or of an owner's opening messages.
 pub fn children_prefix(parent: Option<u64>, owner: u64) -> Vec<u8> {
     match parent {
         Some(p) => key::id(key::CHILD, p),
@@ -122,7 +91,6 @@ pub fn children_prefix(parent: Option<u64>, owner: u64) -> Vec<u8> {
     }
 }
 
-/// The message id at the end of a `child_key`.
 pub fn child_of_key(k: &[u8], prefix_len: usize) -> Result<u64, StoreError> {
     let mut at = prefix_len;
     let bad = || StoreError::Entry("a child key doesn't decode".into());
@@ -130,10 +98,8 @@ pub fn child_of_key(k: &[u8], prefix_len: usize) -> Result<u64, StoreError> {
     get_u64(k, &mut at).ok_or_else(bad)
 }
 
-/// A message's append and its parent now (None: it opens its tree).
 pub type MessageEntry = (Loc, Option<u64>);
 
-/// A message's entry: `[append position, append length, parent + 1 (0: it opens its tree)]`.
 fn message_entry_bytes(at: Loc, parent: Option<u64>) -> Vec<u8> {
     varints(&[at.pos, at.len, parent.map_or(0, |p| p + 1)])
 }
@@ -143,14 +109,12 @@ fn parse_message_entry(b: &[u8]) -> Result<(Loc, Option<u64>), StoreError> {
     Ok((Loc { pos, len }, parent.checked_sub(1)))
 }
 
-/// A message's append and its parent now.
 pub fn message_entry(view: &View, m: u64) -> Result<Option<(Loc, Option<u64>)>, StoreError> {
     view.get(&key::id(key::MESSAGE, m))?
         .map(|b| parse_message_entry(&b))
         .transpose()
 }
 
-/// Each message's entry (`message_entry`), read together.
 pub fn message_entries(view: &View, ids: &[u64]) -> Result<Vec<Option<MessageEntry>>, StoreError> {
     let keys: Vec<Vec<u8>> = ids.iter().map(|m| key::id(key::MESSAGE, *m)).collect();
     view.get_many(&keys)?
@@ -159,8 +123,6 @@ pub fn message_entries(view: &View, ids: &[u64]) -> Result<Vec<Option<MessageEnt
         .collect()
 }
 
-/// The messages from the tree's root down to `at`, through each message's entry; at a message being deleted,
-/// down to the parent of the pending root above it.
 pub fn path_to(view: &View, at: Option<u64>) -> Result<Vec<u64>, StoreError> {
     let mut above = Vec::new();
     let mut cur = at;
@@ -192,12 +154,6 @@ pub fn message_loc(view: &View, m: u64) -> Result<Option<Loc>, StoreError> {
     Ok(message_entry(view, m)?.map(|(l, _)| l))
 }
 
-// ---- a message's shape ----
-
-/// Per message: what it holds besides its append, as one sum: 1 per reply; `SHAPE_ITEMIZED` while it has an
-/// itemization; `SHAPE_KEYED` while it has an outside key; `SHAPE_EXTRA` per value, time, text other than its own,
-/// bookmark made at it and state change hanging on it, and once while its own text isn't its append's alone. A
-/// read skips what a message doesn't hold.
 pub const SHAPE: u64 = 171;
 pub const SHAPE_ITEMIZED: i64 = 1 << 24;
 pub const SHAPE_KEYED: i64 = 1 << 25;
@@ -209,7 +165,6 @@ pub fn shape_add(out: &mut Out, m: u64, n: i64) {
     }
 }
 
-/// A message's shape, decoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Shape {
     pub replies: u64,
@@ -227,7 +182,6 @@ fn shape_of(v: i64) -> Shape {
     }
 }
 
-/// Each message's shape, read together.
 pub fn shapes(view: &View, ids: &[u64]) -> Result<Vec<Shape>, StoreError> {
     let keys: Vec<Vec<u8>> = ids.iter().map(|m| key::id(SHAPE, *m)).collect();
     view.get_many(&keys)?
@@ -242,8 +196,6 @@ pub fn shapes(view: &View, ids: &[u64]) -> Result<Vec<Shape>, StoreError> {
         .collect()
 }
 
-/// Whether a message's own text is its append's alone: `head` (its text's head) is the append with no edits, or
-/// it has none and the append holds no text.
 pub fn own_text_plain(append: Loc, rec: &Record, head_full: Option<(u64, u64)>) -> bool {
     match head_full {
         Some((pos, edits)) => pos == append.pos && edits == 0,
@@ -251,7 +203,6 @@ pub fn own_text_plain(append: Loc, rec: &Record, head_full: Option<(u64, u64)>) 
     }
 }
 
-/// The message's `messageAppend` record, or a refusal naming it.
 pub fn require_message(view: &View, m: u64) -> Result<(Loc, Record), StoreError> {
     let Some(l) = message_loc(view, m)? else {
         return Err(StoreError::Refused(format!("no message {m}")));
@@ -259,8 +210,6 @@ pub fn require_message(view: &View, m: u64) -> Result<(Loc, Record), StoreError>
     Ok((l, view.record(l.pos)?.0))
 }
 
-/// A change to message `m` made through session `s` by user `u` (each optional): it is meaningful activity in
-/// the message's tree. Refuses a missing message, or an actor that isn't one.
 pub fn edit_activity(
     view: &View,
     out: &mut Out,
@@ -278,7 +227,6 @@ pub fn edit_activity(
     Ok(())
 }
 
-/// The message's parent now: its last `messageParent`'s, else its append's.
 pub fn parent_of(view: &View, m: u64, append: &Record) -> Result<Option<u64>, StoreError> {
     match view.get(&key::id(key::MESSAGE_PARENT, m))? {
         Some(b) => {
@@ -289,12 +237,10 @@ pub fn parent_of(view: &View, m: u64, append: &Record) -> Result<Option<u64>, St
     }
 }
 
-/// Whether a change to the message field `f` derives anything from its text.
 pub fn text_watched(f: &FieldRef) -> bool {
     *f == FieldRef::Code(MES)
 }
 
-/// A change of the message's text value of `f` from `old` to `new` (None: none).
 pub fn text_changed(
     view: &View,
     out: &mut Out,
@@ -326,8 +272,6 @@ fn items(t: Option<&[u8]>) -> Vec<&[u8]> {
     }
 }
 
-/// The message stored for a send key in the owner's tree. One being deleted doesn't count: the user deleted it on
-/// purpose, so sending its key again stores a new message.
 pub fn sent_message(view: &View, owner: u64, sk: &[u8]) -> Result<Option<u64>, StoreError> {
     let Some(b) = view.get(&send_key_key(owner, sk))? else {
         return Ok(None);
@@ -340,7 +284,6 @@ pub fn sent_message(view: &View, owner: u64, sk: &[u8]) -> Result<Option<u64>, S
     })
 }
 
-/// The send key's entry: the message stored for it in the owner's tree.
 pub fn send_key_key(owner: u64, sk: &[u8]) -> Vec<u8> {
     let mut k = key::id(key::SEND_KEY, owner);
     put_bytes(&mut k, sk);
@@ -361,8 +304,6 @@ pub(super) fn bookmark_entries(out: &mut Out, b: u64, owner: u64, at: u64, put: 
     }
 }
 
-/// A bookmark's place in its tree's order by time (`key::TREE_BOOKMARK_TIME`): the receive time of the message it is
-/// at, or for one at the tree's root the time it was made.
 pub(super) fn bookmark_time_put(out: &mut Out, b: u64, tree: u64, time: i64) {
     let tk = sessions::time_key(time);
     out.put(key::id(key::BOOKMARK_TIME, b), varints(&[tk]));
@@ -371,7 +312,6 @@ pub(super) fn bookmark_time_put(out: &mut Out, b: u64, tree: u64, time: i64) {
     out.put(k, Vec::new());
 }
 
-/// Takes a bookmark out of its tree's order by message time.
 pub(super) fn bookmark_time_del(
     view: &View,
     out: &mut Out,
@@ -388,7 +328,6 @@ pub(super) fn bookmark_time_del(
     Ok(())
 }
 
-/// The receive time of a stored message.
 pub(super) fn message_time(view: &View, m: u64) -> Result<i64, StoreError> {
     Ok(time_of(&require_message(view, m)?.1))
 }
@@ -407,14 +346,12 @@ pub(super) fn root_bookmark_entries(out: &mut Out, b: u64, tree: u64, put: bool)
     }
 }
 
-/// The tree whose root a bookmark is at (None: it is at a message, or isn't).
 pub fn bookmark_root(view: &View, b: u64) -> Result<Option<u64>, StoreError> {
     view.get(&key::id(key::BOOKMARK_ROOT, b))?
         .map(|v| parse_varints::<1>(&v).map(|[t]| t))
         .transpose()
 }
 
-/// The bookmarks at a tree's root.
 pub fn root_bookmarks(view: &View, tree: u64) -> Result<Vec<u64>, StoreError> {
     let start = key::id(key::ROOT_BOOKMARKS, tree);
     view.scan(&start, &key::prefix_end(&start), usize::MAX)?
@@ -427,7 +364,6 @@ pub fn root_bookmarks(view: &View, tree: u64) -> Result<Vec<u64>, StoreError> {
         .collect()
 }
 
-/// The tree a bookmark is in, at a message or at the root.
 pub(super) fn bookmark_tree(view: &View, b: u64) -> Result<Option<u64>, StoreError> {
     if let Some(m) = bookmark_at(view, b)? {
         return Ok(Some(id(&require_message(view, m)?.1, APPEND_OWNER)));
@@ -435,7 +371,6 @@ pub(super) fn bookmark_tree(view: &View, b: u64) -> Result<Option<u64>, StoreErr
     bookmark_root(view, b)
 }
 
-/// Per (tree, name, bookmark): a named bookmark, by its name's exact bytes.
 pub const BOOKMARK_NAMED: u64 = 148;
 
 pub fn bookmark_named_key(tree: u64, name: &[u8], b: u64) -> Vec<u8> {
@@ -445,7 +380,6 @@ pub fn bookmark_named_key(tree: u64, name: &[u8], b: u64) -> Vec<u8> {
     k
 }
 
-/// The bookmarks of the tree named exactly `name` (names are unique there: at most one).
 pub fn bookmarks_named(view: &View, tree: u64, name: &[u8]) -> Result<Vec<u64>, StoreError> {
     let mut p = key::id(BOOKMARK_NAMED, tree);
     put_bytes(&mut p, name);
@@ -459,8 +393,6 @@ pub fn bookmarks_named(view: &View, tree: u64, name: &[u8]) -> Result<Vec<u64>, 
         .collect()
 }
 
-/// Per (name, tree, which, holder): a chat of the tree is named so, by its name's exact bytes: a bookmark (which 0,
-/// holder the bookmark) or a session's conversation (which 1, holder the session). How a name alone finds its tree.
 pub const CHAT_NAMED: u64 = 167;
 
 pub fn chat_named_key(name: &[u8], tree: u64, which: u64, holder: u64) -> Vec<u8> {
@@ -472,7 +404,6 @@ pub fn chat_named_key(name: &[u8], tree: u64, which: u64, holder: u64) -> Vec<u8
     k
 }
 
-/// The chats named exactly `name` in any tree, `(tree, which, holder)` in that order, at most `limit`.
 pub fn chats_named(view: &View, name: &[u8], limit: usize) -> Result<Vec<(u64, u64, u64)>, StoreError> {
     let mut p = key::of(CHAT_NAMED);
     put_bytes(&mut p, name);
@@ -488,14 +419,12 @@ pub fn chats_named(view: &View, name: &[u8], limit: usize) -> Result<Vec<(u64, u
         .collect()
 }
 
-/// The message a bookmark is at.
 pub fn bookmark_at(view: &View, b: u64) -> Result<Option<u64>, StoreError> {
     view.get(&key::id(key::BOOKMARK_AT, b))?
         .map(|v| parse_varints::<1>(&v).map(|[m]| m))
         .transpose()
 }
 
-/// A bookmark's mode: its last `positionMode`'s, else its create's.
 pub fn bookmark_mode(view: &View, b: u64) -> Result<Option<u64>, StoreError> {
     if let Some(v) = view.get(&key::id(key::POSITION_MODE, b))? {
         let (r, _) = view.record(parse_loc(&v)?.pos)?;
@@ -510,7 +439,6 @@ pub fn bookmark_mode(view: &View, b: u64) -> Result<Option<u64>, StoreError> {
 pub const FOLLOWING: u64 = 1;
 pub const PINNED: u64 = 2;
 
-/// The bookmarks at a message (each id).
 pub fn bookmarks_at(view: &View, m: u64) -> Result<Vec<u64>, StoreError> {
     let start = key::id(key::BOOKMARKS_AT, m);
     let end = key::prefix_end(&start);
@@ -523,8 +451,6 @@ pub fn bookmarks_at(view: &View, m: u64) -> Result<Vec<u64>, StoreError> {
         })
         .collect()
 }
-
-// ---- messages ----
 
 pub struct MessageAppend;
 
@@ -565,7 +491,6 @@ impl Deriver for MessageAppend {
             shape_add(out, p, 1);
         }
         sessions::appended(view, out, m, parent)?;
-        // Shown through its session: the session moves to it, and continuing there is choosing it.
         if let Some(s) = s {
             sessions::moved(
                 view,
@@ -594,7 +519,6 @@ impl Deriver for MessageAppend {
             );
             search::index::update(view, out, Scope::chat(owner), m, 0, &[], &items(Some(text)))?;
         }
-        // A following bookmark at the parent (an opening's: at the tree's root) moves to the reply.
         if let Some(p) = parent {
             for b in bookmarks_at(view, p)? {
                 if bookmark_mode(view, b)? == Some(FOLLOWING) {
@@ -649,7 +573,6 @@ impl Deriver for MessageAppend {
     }
 }
 
-/// `messageDelete`: a message nothing replies to goes, with every value it holds.
 pub struct MessageDelete;
 
 impl Deriver for MessageDelete {
@@ -683,8 +606,6 @@ impl Deriver for MessageDelete {
     }
 }
 
-/// Message `m` (its append at `l`) goes at `time`, with every value it holds and what names it. `detached`: it is
-/// a subtree delete's root, already taken from among its parent's replies.
 pub(super) fn delete_message(
     view: &View,
     out: &mut Out,
@@ -695,7 +616,6 @@ pub(super) fn delete_message(
 ) -> Result<(), StoreError> {
     let owner = id(&append, APPEND_OWNER);
     let h = Holder::Message(m);
-    // Text values (the message's own included), then the rest of what it holds.
     let tp = key::id(key::MSG_TEXT, m);
     for (tk, _) in view.scan(&tp, &key::prefix_end(&tp), usize::MAX)? {
         let f = super::library::field_after(&tk, key::MSG_TEXT)?;
@@ -714,7 +634,6 @@ pub(super) fn delete_message(
         out.del(key::id(key::MESSAGE_PARENT, m));
     }
     out.del(child_key(parent, owner, time_of(&append), m));
-    // The key may name a message sent with it after this one began being deleted.
     if let Value::Bytes(sk) = &append.values[APPEND_SEND_KEY]
         && view.get(&send_key_key(owner, sk))?.as_deref() == Some(&varints(&[m])[..])
     {
@@ -734,7 +653,6 @@ pub(super) fn delete_message(
     Ok(())
 }
 
-/// Whether `a` is `m` or one of its ancestors' (walking up from `a`).
 fn is_at_or_below(view: &View, a: u64, m: u64) -> Result<bool, StoreError> {
     let mut cur = Some(a);
     let mut steps = 0u64;
@@ -754,7 +672,6 @@ fn is_at_or_below(view: &View, a: u64, m: u64) -> Result<bool, StoreError> {
     Ok(false)
 }
 
-/// `messageParent`: a message moves under another parent of its tree (none: it opens the tree).
 pub struct MessageParent;
 
 impl Deriver for MessageParent {
@@ -841,12 +758,10 @@ fn repoint_at(view: &View, out: &mut Out, k: &[u8], from: u64, to: Loc) -> Resul
     Ok(())
 }
 
-/// The entry of a message's time value.
 pub fn msg_time_key(m: u64, f: &FieldRef) -> Vec<u8> {
     key::field(key::MSG_TIME, m, f)
 }
 
-/// `messageTime`: one of a message's times as an ISO string a delta from its append's time.
 pub struct MessageTime;
 
 impl Deriver for MessageTime {
@@ -854,7 +769,6 @@ impl Deriver for MessageTime {
         let (m, f) = (id(rec, 0), field(rec, 1));
         edit_activity(view, out, m, opt_id(rec, 3), opt_id(rec, 4), at)?;
         let h = Holder::Message(m);
-        // A time takes the place of any other value of the field.
         drop_text_of(view, out, h, f)?;
         super::library::drop_json_of(view, out, h, f)?;
         let k = msg_time_key(m, f);
@@ -888,7 +802,6 @@ impl Deriver for MessageTime {
     }
 }
 
-/// Clears the message field's time value before another value takes its place.
 pub fn drop_time(view: &View, out: &mut Out, m: u64, f: &FieldRef) -> Result<(), StoreError> {
     let k = msg_time_key(m, f);
     if let Some(v) = view.get(&k)? {
@@ -899,9 +812,6 @@ pub fn drop_time(view: &View, out: &mut Out, m: u64, f: &FieldRef) -> Result<(),
     Ok(())
 }
 
-// ---- outside keys ----
-
-/// `KEYED`'s spaces, by their index in it.
 pub const KEYED_MESSAGE: u8 = 0;
 pub const KEYED_SESSION: u8 = 1;
 pub const KEYED_USER: u8 = 2;
@@ -916,7 +826,6 @@ pub fn key_of_key(space: u8, i: u64) -> Vec<u8> {
     key::ids(key::KEY_OF, u64::from(space), i)
 }
 
-/// The id an outside key names in `space`.
 pub fn id_by_key(view: &View, space: u8, k: &[u8]) -> Result<Option<u64>, StoreError> {
     Ok(match key_state(view, space, k)? {
         KeyState::Live(i) => Some(i),
@@ -924,7 +833,6 @@ pub fn id_by_key(view: &View, space: u8, k: &[u8]) -> Result<Option<u64>, StoreE
     })
 }
 
-/// What an outside key names: an id, a deleted session (its tombstone), or nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyState {
     Live(u64),
@@ -932,7 +840,6 @@ pub enum KeyState {
     None,
 }
 
-/// A key's entry is `[id]`, or `[id, 1]` once the session it named was deleted.
 pub fn key_state(view: &View, space: u8, k: &[u8]) -> Result<KeyState, StoreError> {
     let Some(v) = view.get(&key_map_key(space, k))? else {
         return Ok(KeyState::None);
@@ -947,7 +854,6 @@ pub fn key_state(view: &View, space: u8, k: &[u8]) -> Result<KeyState, StoreErro
     })
 }
 
-/// The outside key naming `i` in `space`.
 pub fn key_by_id(view: &View, space: u8, i: u64) -> Result<Option<Vec<u8>>, StoreError> {
     match view.get(&key_of_key(space, i))? {
         Some(v) => Ok(Some(bytes(&view.record(parse_loc(&v)?.pos)?.0, 1).to_vec())),
@@ -955,7 +861,6 @@ pub fn key_by_id(view: &View, space: u8, i: u64) -> Result<Option<Vec<u8>>, Stor
     }
 }
 
-/// Leaves a deleted session's key a tombstone: it names no id, and says the session was deleted.
 pub(super) fn tombstone_key(
     view: &View,
     out: &mut Out,
@@ -974,7 +879,6 @@ pub(super) fn tombstone_key(
     Ok(())
 }
 
-/// Drops `i`'s outside key, if it has one.
 pub(super) fn drop_key(view: &View, out: &mut Out, space: u8, i: u64) -> Result<(), StoreError> {
     let k = key_of_key(space, i);
     let Some(v) = view.get(&k)? else {
@@ -998,8 +902,6 @@ fn keyed(rec: &Record) -> (u8, u64) {
     }
 }
 
-/// `keyMap`: an outside key names an id, one key per id and one id per key; a deleted session's key (a tombstone)
-/// may name a new id.
 pub struct KeyMap;
 
 impl Deriver for KeyMap {
@@ -1051,9 +953,6 @@ impl Deriver for KeyMap {
     }
 }
 
-// ---- positions ----
-
-/// Whether position `p` is a session: it has an outside key (sessions are named by UUIDs).
 pub fn is_session(view: &View, p: u64) -> Result<bool, StoreError> {
     Ok(view.get(&key_of_key(KEYED_SESSION, p))?.is_some())
 }
@@ -1066,7 +965,6 @@ fn check_mode(mode: u64) -> Result<(), StoreError> {
     }
 }
 
-/// `positionCreate`: a bookmark comes to be at a message.
 pub struct PositionCreate;
 
 impl Deriver for PositionCreate {
@@ -1105,7 +1003,6 @@ impl Deriver for PositionCreate {
     }
 }
 
-/// `positionRoot`: a bookmark at a tree's root.
 pub struct PositionRoot;
 
 impl Deriver for PositionRoot {
@@ -1140,7 +1037,6 @@ impl Deriver for PositionRoot {
     }
 }
 
-/// `positionName`: a bookmark's or session's name.
 pub struct PositionName;
 
 impl Deriver for PositionName {
@@ -1155,7 +1051,6 @@ impl Deriver for PositionName {
                 Value::Text(t) => Some(t.as_slice()),
                 _ => None,
             };
-            // A session's name is a free label, as a bookmark's.
             let old = super::searched::position_name(view, p)?;
             super::searched::session_named(view, out, p, old.as_deref(), name)?;
             if let Some(o) = &old {
@@ -1165,7 +1060,6 @@ impl Deriver for PositionName {
                 out.put(sessions::named_key(n, p), Vec::new());
             }
         } else if let Some(tree) = bookmark_tree(view, p)? {
-            // A bookmark's name is a free label: several may share one (the tree's index lists each).
             let name = match &rec.values[1] {
                 Value::Text(t) => Some(t.as_slice()),
                 _ => None,
@@ -1213,7 +1107,6 @@ impl Deriver for PositionName {
     }
 }
 
-/// `positionMode`: a bookmark becomes following or pinned.
 pub struct PositionMode;
 
 impl Deriver for PositionMode {
@@ -1253,7 +1146,6 @@ impl Deriver for PositionMode {
     }
 }
 
-/// `positionMove`: a bookmark moves to a message of its tree, or to its root.
 pub struct PositionMove;
 
 impl Deriver for PositionMove {
@@ -1318,7 +1210,6 @@ impl Deriver for PositionMove {
     }
 }
 
-/// `positionDelete`: a bookmark goes.
 pub struct PositionDelete;
 
 impl Deriver for PositionDelete {
@@ -1353,11 +1244,8 @@ impl Deriver for PositionDelete {
     }
 }
 
-/// Bookmark `b` (its create at `cl`) goes, with its name, mode and place.
 pub(super) fn bookmark_gone(view: &View, out: &mut Out, b: u64, cl: Loc) -> Result<(), StoreError> {
     let (create, _) = view.record(cl.pos)?;
-    // The message it was made at may have gone before it (a following bookmark moves on), taking its entries. One
-    // made at a tree's root was made at no message.
     if create.kind.name == "positionCreate" {
         let made_at = id(&create, 4);
         if message_loc(view, made_at)?.is_some() {
@@ -1393,7 +1281,6 @@ pub(super) fn bookmark_gone(view: &View, out: &mut Out, b: u64, cl: Loc) -> Resu
     Ok(())
 }
 
-/// `pointerMove`: a session's pointer moves; the record is its history entry's, kept while the session is.
 pub struct PointerMove;
 
 impl Deriver for PointerMove {
@@ -1431,7 +1318,6 @@ impl Deriver for PointerMove {
     }
 }
 
-/// `pointerRoot`: a session's pointer moves to a tree's root; the record is its history entry's, as a `pointerMove`'s.
 pub struct PointerRoot;
 
 impl Deriver for PointerRoot {
@@ -1458,7 +1344,6 @@ impl Deriver for PointerRoot {
     }
 }
 
-/// `userPosition`: a user's remembered position in a tree, set by no session's move.
 pub struct UserPosition;
 
 impl Deriver for UserPosition {
@@ -1486,8 +1371,6 @@ impl Deriver for UserPosition {
     }
 }
 
-/// `conversationActive`: a conversation (a bookmark, or a session's in a tree) has its last meaningful activity here.
-/// Written only by the conversion, which places the conversations it makes in the order of their last messages.
 pub struct ConversationActive;
 
 impl Deriver for ConversationActive {
@@ -1522,8 +1405,6 @@ impl Deriver for ConversationActive {
     }
 }
 
-/// `currentChat`: a session's current chat in a tree (upstream's open chat file) becomes a bookmark of the tree, or
-/// none: an explicit switch, never an append or a move.
 pub struct CurrentChat;
 
 impl Deriver for CurrentChat {
@@ -1556,7 +1437,6 @@ impl Deriver for CurrentChat {
     }
 }
 
-/// `conversationName`: a session's conversation in a tree is named; the record is the name's while it is.
 pub struct ConversationName;
 
 impl Deriver for ConversationName {
@@ -1582,7 +1462,6 @@ impl Deriver for ConversationName {
     }
 }
 
-/// `historyStep`: a session steps back or forward in its history; the record is its cursor's while it stays there.
 pub struct HistoryStep;
 
 impl Deriver for HistoryStep {
@@ -1608,7 +1487,6 @@ impl Deriver for HistoryStep {
     }
 }
 
-/// `sessionFork`: a new session reads another's history up to an entry; the record is kept while it does.
 pub struct SessionFork;
 
 impl Deriver for SessionFork {
@@ -1633,7 +1511,6 @@ impl Deriver for SessionFork {
     }
 }
 
-/// `openingChoice`: a session chooses a card greeting for a tree with no message stored.
 pub struct OpeningChoice;
 
 impl Deriver for OpeningChoice {
@@ -1659,7 +1536,6 @@ impl Deriver for OpeningChoice {
     }
 }
 
-/// `forkSelection`: a reply is chosen at its fork by a session and a user.
 pub struct ForkSelection;
 
 impl Deriver for ForkSelection {
@@ -1701,10 +1577,8 @@ impl Deriver for ForkSelection {
     }
 }
 
-/// Per message: its `itemization` record.
 pub const ITEMIZED: u64 = 170;
 
-/// The message's itemization: whether it holds the prompt as sent, and its data.
 pub fn itemization(view: &View, m: u64) -> Result<Option<(bool, Vec<u8>)>, StoreError> {
     match view.get(&key::id(ITEMIZED, m))? {
         Some(b) => {
@@ -1718,7 +1592,6 @@ pub fn itemization(view: &View, m: u64) -> Result<Option<(bool, Vec<u8>)>, Store
     }
 }
 
-/// `itemization`: a message's prompt itemization is set, or goes.
 pub struct Itemization;
 
 impl Deriver for Itemization {
@@ -1726,7 +1599,6 @@ impl Deriver for Itemization {
         let m = id(rec, 0);
         let (_, r) = require_message(view, m)?;
         let has = rec.values[2] != Value::Absent;
-        // Removing one is allowed: clearing every itemization reads them without regard to deletes under way.
         if has {
             super::prune::refuse_doomed(view, id(&r, APPEND_OWNER), m)?;
         }
@@ -1793,7 +1665,6 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
     })
 }
 
-/// A message's shape (`SHAPE`) as the structures it sums hold it.
 #[cfg(test)]
 pub fn shape_scanned(v: &View, m: u64) -> Result<Shape, StoreError> {
     let count = |p: Vec<u8>| -> Result<usize, StoreError> {

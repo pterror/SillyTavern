@@ -11,18 +11,12 @@ import { resolveTextGenBackend } from '../textgen-backend-resolve.js';
 import { storeRoute } from '../user-stores.js';
 import { isSafeMacro } from '../../public/scripts/safe-macros.js';
 
-/**
- * What the page shows in a macro's place (a pill, a preview), filled in by the engine that fills in the prompts, from
- * the same facts: the page never fills in macros for itself.
- */
 export const router = express.Router();
 
-/** The most macros one request fills in, and the longest one. */
 const MAX_MACROS = 1000;
 const MAX_MACRO_LENGTH = 100_000;
 
 /**
- * The model the macros name ({{model}}), as the prompt builders read it.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {import('../settings-reads.js').SettingsContext} settingsContext
  * @param {string} mainApi
@@ -39,9 +33,6 @@ function modelOf(directories, settingsContext, mainApi, oaiSettings) {
 }
 
 /**
- * What the macros read for the page's open chat: the character's and the group's (`avatar_url`, `group_id`), the
- * chat at the message `at` (left out: the tree's root), the user's settings and what the page sent of its own
- * (`macro_facts`); `name2` names the character instead (a greeting shown under the name being typed).
  * @param {any} request
  * @returns {Promise<import('../macro-substitution.js').SubstituteParamsContext>}
  */
@@ -61,7 +52,6 @@ async function previewContext(request) {
         'power_user', 'extension_settings', 'oai_settings', 'username', 'user_avatar', 'main_api', 'max_context', 'amount_gen',
     ]));
     const { chat: messages, metadata } = await loadChatHistory(chat, { nodeId: at });
-    // Only read: a copy, whatever a macro does.
     const chatMetadata = structuredClone(metadata);
     const pageFacts = readPageMacroFacts(body.macro_facts);
     const macroFacts = generationMacroFacts({
@@ -85,12 +75,6 @@ async function previewContext(request) {
     return { ...base, characterCard, model: modelOf(directories, settingsContext, mainApi, oaiSettings) };
 }
 
-/**
- * `{ macros: string[], avatar_url?, group_id?, at?, name2?, all?, macro_facts? }`: each macro's value (`{{…}}`, a
- * whole one), in order; null for one that runs only when sent (side effects or randomness), which the page shows as
- * written. With `all`, each is a text whose every macro is filled in, those too, on a copy of the variables: nothing
- * a macro sets is kept.
- */
 router.post('/values', storeRoute('filling in macros', async (request, response) => {
     const macros = request.body?.macros;
     if (!Array.isArray(macros) || macros.length > MAX_MACROS || !macros.every(m => typeof m === 'string' && m.length <= MAX_MACRO_LENGTH)) {

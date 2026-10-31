@@ -3,10 +3,6 @@ import type { GreetingOp, Item, ListView, Target, TokenizerState } from './proto
 import { defineArea, patch } from '@st/server-ui';
 import type { ActionResult, User, ViewContext } from '@st/server-ui';
 
-// The alternatives of a message (packages/areas/alternatives/protocol.ts), over the chat tree, the card and the
-// token count store, which old server code reads and writes.
-
-/** An alternative as old code reads it. */
 export type Alternative = {
     nodeId: string | null;
     text: string;
@@ -16,29 +12,18 @@ export type Alternative = {
     date: string | number | null;
 };
 
-/** What a target is, as old code reads it; null when it isn't there (no chat open, no such message or card). */
 export type Listed = {
     alternatives: Alternative[];
-    /** Which the message shows; a greetings list: the default. */
     current: number | null;
-    /** The card's greetings (card order, as stored, empty ones included) and default; null for a group's chat. */
     card: { avatar: string; greetings: string[]; defaultPosition: number | null } | null;
-    /** A greetings list whose character's chat the tab has open: the texts of that chat's first message's alternatives. */
     openings: string[] | null;
 };
 
-/** What old server code does for this area. */
 export type Ports = {
     list(context: ViewContext, target: Target): Promise<Listed | null>;
-    /** The hash a card greeting's operations name it by. */
     hash(text: string): number;
     counts: {
-        /** What the count store has for each text (null: not stored). */
         stored(user: User, tokenizer: TokenizerState, texts: string[]): Promise<(number | null)[]>;
-        /**
-         * Counts the texts, storing what it counted; `each` is told each count as it's done (null: the text couldn't be
-         * counted), and answers whether to go on.
-         */
         count(
             user: User,
             tokenizer: TokenizerState,
@@ -46,13 +31,10 @@ export type Ports = {
             each: (index: number, count: number | null) => boolean,
         ): Promise<void>;
     };
-    /** The chat search's matcher: each text's matched source ranges (flat [start, end) pairs), null where it doesn't match. */
     match(query: string, texts: string[]): (number[] | null)[];
-    /** A card greeting operation; refused with the reason when the card changed under it, or isn't there. */
     greeting(user: User, avatar: string, op: GreetingOp): Promise<{ ok: true } | { ok: false; reason: string }>;
 };
 
-/** A look at a target, nothing read or counted yet. */
 function freshLook(target: Target, tokenizer: TokenizerState | null): Look {
     const look: Look = {
         target,
@@ -71,7 +53,6 @@ function freshLook(target: Target, tokenizer: TokenizerState | null): Look {
     return look;
 }
 
-/** The look's next count kept as a promise, and how to keep it. */
 function waitForCount(look: Look) {
     look.counted1 = new Promise((resolve) => {
         look.tell = () => {
@@ -81,46 +62,33 @@ function waitForCount(look: Look) {
     });
 }
 
-/** A tab's look at a target. */
 type Look = {
     target: Target;
     tokenizer: TokenizerState | null;
     query: string;
-    /** The list as last read, which counts and matches are of. */
     items: Item[];
     current: number | null;
-    /** The card the list is of, and how many greetings it had. */
     card: { avatar: string; greetings: number } | null;
     counted: Map<string, number>;
-    /** Texts being counted, or that couldn't be: not asked for again. */
     asked: Set<string>;
-    /** The misses being counted (null: none), and a promise kept each time one is counted. */
     counting: Promise<void> | null;
     counted1: Promise<void>;
     tell: () => void;
 };
 
-/** Tabs that went away without closing their look leave it; the oldest go past this many. */
 const LOOKS_KEPT = 32;
-/** How many rows around the current one a long list's first part has; each part after has this many times more. */
 export const FIRST_PART = 40;
 const GROWTH = 4;
-/** How many texts a search checks before it sends what it found. */
 export const SEARCH_STEP = 200;
-/** The least time between two parts of counts. */
 const COUNTS_PART_MS = 50;
-/** How long a search goes on checking before it sends what it found. */
 const SEARCH_PART_MS = 30;
 
-/** Lets what's waiting run (an answer's lines go out) before the next step. */
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 const sameTarget = (a: Target, b: Target) => JSON.stringify(a) === JSON.stringify(b);
 
-/** Whether two texts read the same in the chat (spaces and line breaks around them don't show). */
 const shown = (text: string) => text.trim();
 
-/** The list's items from what old code read: each card greeting at its position, with its hash. */
 export function itemsOf(listed: Listed, target: Target, hash: (text: string) => number): Item[] {
     const greetings = listed.card?.greetings ?? [];
     const positions = new Map<string, number>();
@@ -128,8 +96,6 @@ export function itemsOf(listed: Listed, target: Target, hash: (text: string) => 
         if (text !== '' && !positions.has(shown(text))) positions.set(shown(text), position);
     });
     const openings = listed.openings?.map(shown) ?? null;
-    // A greeting not stored in the chat is known by its text (its place on the card changes as others move): the
-    // same text twice is told apart by which it is.
     const seen = new Map<number, number>();
     const idOf = (text: string) => {
         const key = hash(text);
@@ -169,7 +135,6 @@ export function alternativesArea(ports: Ports) {
         chatOpen: false,
     };
 
-    // A long list comes in parts: the rows around the current one at once, then more and more around them, then all.
     async function* readList(context: ViewContext): AsyncGenerator<ListView, void, undefined> {
         const look = lookOf(context);
         if (!look) {
@@ -209,7 +174,6 @@ export function alternativesArea(ports: Ports) {
         yield view;
     }
 
-    /** Counts the misses, nearest the current one first, telling the look each count as it's done. */
     const countMisses = async (user: User, session: string, look: Look, texts: string[]) => {
         const tokenizer = look.tokenizer;
         if (!tokenizer) return;
@@ -217,12 +181,10 @@ export function alternativesArea(ports: Ports) {
             const text = texts[index];
             if (text !== undefined && typeof count === 'number') look.counted.set(text, count);
             look.tell();
-            // Closed, or looking at something else: the rest isn't counted.
             return looks.get(session) === look;
         });
     };
 
-    /** The counts of the look's items known now, by item id, but those already sent. */
     const countsOf = (look: Look, sent: Set<string>) => {
         const counts: Record<string, number> = {};
         for (const item of look.items) {
@@ -234,7 +196,6 @@ export function alternativesArea(ports: Ports) {
         return counts;
     };
 
-    // The counts the store has at once, then each miss as it's counted (a patch with what's new).
     async function* readCounts(context: ViewContext): AsyncGenerator<unknown, void, undefined> {
         const look = lookOf(context);
         if (!look?.tokenizer) {
@@ -254,7 +215,6 @@ export function alternativesArea(ports: Ports) {
                 look.asked.add(text);
             });
             if (misses.length > 0) {
-                // Those nearest the one shown come first.
                 const current = look.current ?? 0;
                 const place = new Map(look.items.map((item, index) => [item.text, Math.abs(index - current)]));
                 misses.sort((a, b) => (place.get(a) ?? 0) - (place.get(b) ?? 0));
@@ -274,7 +234,6 @@ export function alternativesArea(ports: Ports) {
         let last = performance.now();
         while (look.counting && lookOf(context) === look) {
             await look.counted1;
-            // Counts done close together go in one part: a page gets a few a second, not one line per text.
             const wait = last + COUNTS_PART_MS - performance.now();
             if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
             const fresh = countsOf(look, sent);
@@ -285,7 +244,6 @@ export function alternativesArea(ports: Ports) {
         if (Object.keys(rest).length > 0) yield patch({ counts: rest });
     }
 
-    // A search checks the texts a step at a time and sends what each step found (a patch), with how far it is.
     async function* readMatches(context: ViewContext): AsyncGenerator<unknown, void, undefined> {
         const look = lookOf(context);
         if (!look || look.query.trim() === '') {
@@ -309,9 +267,7 @@ export function alternativesArea(ports: Ports) {
         yield { query, total: items.length, ...step(0) };
         for (let from = SEARCH_STEP; from < items.length;) {
             await turn();
-            // Another search took its place: this one stops.
             if (lookOf(context) !== look || look.query !== query) return;
-            // As many steps as fit in a short while go in one part (each turn may wait behind other work).
             const found: Record<string, number[]> = {};
             let checked = from;
             const until = performance.now() + SEARCH_PART_MS;
@@ -330,7 +286,6 @@ export function alternativesArea(ports: Ports) {
     return defineArea({
         schemas: actions,
         views: { [LIST_VIEW]: readList, [COUNTS_VIEW]: readCounts, [MATCHES_VIEW]: readMatches },
-        // A tab gone: its look goes, and its counting stops.
         gone: (session) => void looks.delete(session),
         actions: {
             'alternatives.open': async (context, { target, tokenizer }) => {
@@ -362,14 +317,12 @@ export function alternativesArea(ports: Ports) {
                 const avatar = look ? ('greetings' in look.target ? look.target.greetings : look.card?.avatar) : null;
                 if (avatar === null || avatar === undefined) return { refused: 'These have no card to change.' };
                 const greetingsBefore = look?.card?.greetings ?? 0;
-                // Emptying a greeting is removing it.
                 const sent: GreetingOp =
                     op.op === 'edit' && op.text.trim() === ''
                         ? { op: 'delete', position: op.position, hash: op.hash }
                         : op;
                 const result = await ports.greeting(context.user, avatar, sent);
                 if (!result.ok) return { refused: result.reason, changed: [...VIEWS] };
-                // The first greeting a character gets is its default, as when it's created with one.
                 if (sent.op === 'add' && greetingsBefore === 0) {
                     await ports.greeting(context.user, avatar, {
                         op: 'default',

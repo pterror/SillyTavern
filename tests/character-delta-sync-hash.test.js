@@ -7,17 +7,11 @@ import lodash from 'lodash';
 
 import { characterContentFieldsFingerprint, normalizeFav, normalizeTagIds, shallowCharacterData } from '../public/scripts/hash-utils.js';
 
-// The real delta-sync client (character-list.js getCharacters() -> fetchCharactersDelta() -> character-cache.js)
-// against the real server routes: every character the server writes, fetched whole by delta-sync, must be cached
-// as the list row the server shows for it, compared by fav, tag_ids and the content fields. Only modules that can't load in node are replaced: IndexedDB (localforage) by an
-// in-memory store that structured-clones like IndexedDB does, and character-list.js's DOM-bound UI imports.
-
-// writeCharacterData()'s and the JSON importer's DEFAULT_AVATAR_PATH ('./public/img/...') is repo-root-relative.
 const originalCwd = process.cwd();
 
 const USER_HANDLE = 'delta-sync-hash-test-user';
 
-/** @type {Map<string, Map<string, any>>} localforage instance name -> key -> record */
+/** @type {Map<string, Map<string, any>>} */
 const localforageStores = new Map();
 
 function createFakeLocalforageInstance({ name }) {
@@ -41,7 +35,6 @@ function createFakeLocalforageInstance({ name }) {
     };
 }
 
-// One stable array, mutated in place: the mocked module's export is bound once.
 const residentCharacters = [];
 const noop = () => {};
 
@@ -57,7 +50,6 @@ jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({ favsT
 jest.unstable_mockModule('../public/scripts/character-store.js', () => ({
     characters: residentCharacters,
     charactersStore: { get: () => undefined, has: () => false, onChange: () => noop, reindex: noop, reset: noop },
-    // The real resolveCharacterRef over this mock's stores: charactersStore.get() always misses.
     resolveCharacterRef: ref => residentCharacters[ref],
     this_avatar: undefined,
 }));
@@ -138,14 +130,11 @@ const FULL_CARD = {
         extensions: { talkativeness: 0.5, world: 'Lore' },
     },
 };
-// No character_version/creator/tags/creator_notes/world, so the server's shallow projection fills in its defaults.
 const SPARSE_CARD = {
     spec: 'chara_card_v2', spec_version: '2.0', name: 'Sparse',
     data: { name: 'Sparse', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', extensions: {} },
 };
-// Not even data.name.
 const BARE_CARD = { spec: 'chara_card_v2', spec_version: '2.0', name: 'Bare', data: { extensions: {} } };
-// Top-level V1 mirrors disagreeing with data.*.
 const DRIFT_CARD = {
     spec: 'chara_card_v2', spec_version: '2.0', name: 'Old name', tags: ['old'],
     data: {
@@ -153,13 +142,11 @@ const DRIFT_CARD = {
         character_version: '', creator: '', tags: ['new'], creator_notes: 'n', extensions: { world: '' },
     },
 };
-// No spec at all.
 const V1_CARD = { name: 'Legacy', description: 'd', creatorcomment: 'legacy notes', creator: 'c', tags: ['a', 'b'] };
 
 const CARDS = [['full', FULL_CARD], ['sparse', SPARSE_CARD], ['bare', BARE_CARD], ['drifted', DRIFT_CARD], ['V1', V1_CARD]];
 
 /**
- * What a list row shows of fav, tag_ids and the content fields, normalized as the page compares them.
  * @param {any} shallow
  */
 function listFactsOf(shallow) {
@@ -171,8 +158,6 @@ function listFactsOf(shallow) {
 }
 
 /**
- * A cached record's list facts: its character, with the fields its store split off put back, projected as the
- * server's list row is under `includeCreatorNotes`.
  * @param {any} record
  * @param {boolean} includeCreatorNotes
  */
@@ -211,7 +196,6 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
     beforeAll(async () => {
         process.env.SILLYTAVERN_PERFORMANCE_SHALLOWCHARACTERSINCLUDECREATORNOTES = String(creatorNotes);
         process.env.SILLYTAVERN_PERFORMANCE_LAZYLOADCHARACTERS = String(lazy);
-        // Both settings are read at module load, so each mode gets its own module instances.
         jest.resetModules();
 
         const { setConfigFilePath } = await import('../src/util.js');
@@ -256,7 +240,6 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         for (const records of localforageStores.values()) records.clear();
         residentCharacters.length = 0;
         toastrError.mockClear();
-        // The client issues root-relative URLs; route them to the test server.
         globalThis.fetch = (url, init) => realFetch(String(url).startsWith('/') ? `${mode.baseUrl}${url}` : url, init);
     });
 
@@ -294,8 +277,7 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
     }
 
     /**
-     * The list facts of each character's list row (the store's list rows), as the client projects its cached records.
-     * @param {number} expectedRows how many character rows the calling test has written
+     * @param {number} expectedRows
      * @returns {Promise<Map<string, ReturnType<typeof listFactsOf>>>}
      */
     async function serverListFacts(expectedRows) {
@@ -305,7 +287,6 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         return new Map(rows.map(row => [row.avatar, listFactsOf(row)]));
     }
 
-    /** A fresh client's delta-sync from an empty cache, so every character comes back as a whole-record fetch. */
     async function deltaSync() {
         for (const records of localforageStores.values()) records.clear();
         residentCharacters.length = 0;
@@ -316,8 +297,7 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
     }
 
     /**
-     * A fresh client's delta-sync next to the server's list facts, as { actual, expected } for the test to compare.
-     * @param {number} expectedRows how many character rows the calling test has written
+     * @param {number} expectedRows
      */
     async function cachedAgainstServer(expectedRows) {
         const cached = await deltaSync();
@@ -327,7 +307,6 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
             actual: {
                 serverHasRows: server.size > 0,
                 ids: [...cached.keys()].sort(),
-                // Every whole-record fetch is a record the client does store: never the shallow_json projection itself.
                 fields: [...cached].map(([id, record]) => ({ id, fields: record.character.shallow === true ? 'shallow' : 'full' })),
                 hashes: Object.fromEntries(hashes),
             },

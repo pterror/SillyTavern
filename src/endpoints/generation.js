@@ -3,10 +3,8 @@ import { generationEntryOf } from '../generation-stop.js';
 import { retryPersistReply } from '../assistant-reply-persist.js';
 
 /**
- * Tries again to store a reply whose first store failed, from the text the server kept on its
- * generation. The page never writes a generated reply itself; this is how it asks again.
  * @param {string} id
- * @param {string|undefined} handle Only the user who started the generation may retry.
+ * @param {string|undefined} handle
  * @returns {Promise<{state: 'unknown'|'saved'|'failed', node_id?: string, mes?: string, extra?: object, reason?: string}>}
  */
 export async function retryGenerationStore(id, handle) {

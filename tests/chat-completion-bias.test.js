@@ -4,8 +4,6 @@ import { beforeEach, describe, expect, jest, test } from '@jest/globals';
 const showTokenizerWarnings = jest.fn();
 const power_user = { tokenizer: 99, token_padding: 64 };
 
-// Stands in for every import these tests don't exercise: callable, constructible, and every
-// property is itself.
 const stub = new Proxy(function () {}, {
     get: (_target, prop) => {
         if (prop === Symbol.toPrimitive) return () => '';
@@ -42,8 +40,6 @@ const overrides = {
     './horde.js': { horde_settings: { models: [] } },
 };
 
-// Every module the two real modules import is mocked, with stubs for the names they import; the settings' defaults are
-// plain data, used as they are.
 const realModules = ['chat-completion-settings.js', 'tokenizers.js', 'chat-completion-defaults.js', 'prompt-manager-defaults.js'];
 const scriptsUrl = new URL('../public/scripts/', import.meta.url);
 /** @type {Map<string, object>} */
@@ -106,7 +102,6 @@ beforeEach(async () => {
         bias_preset_selected: 'Drop',
         bias_presets: { Drop: [{ id: 'a', text: 'hello', value: -5 }, { id: 'b', text: '[11]', value: 2 }, { id: 'c', text: 'café', value: 1 }] },
     });
-    // The answer boot fetches.
     tokenizersModule.getFriendlyTokenizerName('openai');
 });
 

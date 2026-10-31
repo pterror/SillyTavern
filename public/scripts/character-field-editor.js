@@ -9,23 +9,15 @@ import { EDITOR_ESCAPE_TAKERS, isEditorEvent, isUserEvent, mountLiveEditor } fro
 import { renderedOffset, sourcePosition } from './live-editor/positions.js';
 import { drawerStackChanged } from './drawer-stack.js';
 
-// A leaf module: everything it needs from the rest of the app is passed to initCharacterFieldEditor(), so importing it
-// never adds an import cycle.
-
 /**
  * @typedef {object} CharacterFieldEditorDeps
- * @property {() => import('./macro-values.js').MacroScope} macroScope Whose macros the fields' are: the character in
- * the editor's, in the open chat.
+ * @property {() => import('./macro-values.js').MacroScope} macroScope
  * @property {(mes: string, chName: string, isSystem: boolean, isUser: boolean, messageId: number) => string} messageFormatting
  * @property {(text: string, valueOf: import('./safe-macros.js').MacroValueOf, styleScope?: string) => string} formatCreatorNotes
- * Renders Creator's Notes for the character loaded in the editor, as upstream does (markdown with the card's HTML,
- * sanitized), each macro shown with its value; `styleScope` is the selector of the element it's shown in, which the
- * card's `<style>` rules are kept to (Creator's Notes' own preview when left out).
  * @property {{ auto_save_msg_edits: boolean, click_to_edit: boolean }} power_user
  * @property {(strings: TemplateStringsArray, ...values: any[]) => string} t
- * @property {(macroName: string) => import('./macro-pill.js').MacroPerson | null} macroPerson Who a mention names in
- * the character's fields: {{char}} being the character in the editor.
- * @property {number} autoSaveTimeout Milliseconds of typing pause before an autosave.
+ * @property {(macroName: string) => import('./macro-pill.js').MacroPerson | null} macroPerson
+ * @property {number} autoSaveTimeout
  * @property {(value: string) => Promise<boolean>} saveCreatorNotesField
  * @property {(value: string) => Promise<boolean>} saveDescriptionField
  * @property {(value: string, options?: { confirmed?: boolean }) => Promise<boolean>} saveGreetingField
@@ -35,12 +27,11 @@ import { drawerStackChanged } from './drawer-stack.js';
  * @property {(value: string) => Promise<boolean>} saveScenarioField
  * @property {(value: string) => Promise<boolean>} saveCharacterNoteField
  * @property {(value: string) => Promise<boolean>} saveExampleMessagesField
- * @property {(file: File) => Promise<string>} [uploadImage] Uploads an image the editor's image button picked; gives its URL.
- * @property {(title: string, text: string) => Promise<boolean>} confirmDiscard Asks before an edit's change is thrown away.
- * @property {(id: string) => void} [onEditStart] Called once a field has entered edit mode.
- * @property {(id: string) => void} [onEditEnd] Called once a field has left edit mode (Done or cancel).
- * @property {() => string} [editorKey] Which character's fields are in the editor ('' when none), so a field's
- * unsaved text is kept per character.
+ * @property {(file: File) => Promise<string>} [uploadImage]
+ * @property {(title: string, text: string) => Promise<boolean>} confirmDiscard
+ * @property {(id: string) => void} [onEditStart]
+ * @property {(id: string) => void} [onEditEnd]
+ * @property {() => string} [editorKey]
  */
 
 /** @type {CharacterFieldEditorDeps} */
@@ -57,7 +48,6 @@ function renderLiteralTagsPreview(text, valueOf) {
     return insertMacroPills(html, macros, deps.t, name => withFilledAbout(deps.macroPerson(name), name, valueOf));
 }
 
-/** The name typed for the character, which its greeting is shown under. */
 const typedName = () => String($('#character_name_pole').val() ?? '');
 
 /**
@@ -74,15 +64,13 @@ function renderGreetingPreview(text, valueOf) {
 
 /**
  * @typedef {object} EditableField
- * @property {() => (value: string, options?: { confirmed?: boolean }) => Promise<boolean>} save `confirmed`: the edit's
- *   Done, not an autosave or a write by code.
+ * @property {() => (value: string, options?: { confirmed?: boolean }) => Promise<boolean>} save
  * @property {(text: string, valueOf: import('./safe-macros.js').MacroValueOf) => string} render
  */
 
-/** @type {Record<string, EditableField>} Keyed by textarea id. */
+/** @type {Record<string, EditableField>} */
 const FIELDS = {
     creator_notes_textarea: { save: () => deps.saveCreatorNotesField, render: (text, valueOf) => deps.formatCreatorNotes(text, valueOf) },
-    // The description shows the card's HTML, rendered as upstream renders card text (Creator's Notes).
     description_textarea: { save: () => deps.saveDescriptionField, render: (text, valueOf) => deps.formatCreatorNotes(text, valueOf, '#description_preview') },
     greeting_field: { save: () => deps.saveGreetingField, render: renderGreetingPreview },
     system_prompt_textarea: { save: () => deps.saveSystemPromptField, render: renderLiteralTagsPreview },
@@ -93,23 +81,22 @@ const FIELDS = {
     mes_example_textarea: { save: () => deps.saveExampleMessagesField, render: renderLiteralTagsPreview },
 };
 
-/**
- * The one field in edit mode. `userText` is what the user last typed, so a write from code during the edit can be
- * stored without losing it.
- * @type {{ id: string, original: string, userText: string, saving: boolean } | null}
- */
+/** @type {{ id: string, original: string, userText: string, saving: boolean } | null} */
 let activeEdit = null;
 
-/** @type {Map<string, { next: string | null }>} Saves of values written by code that are in flight, by field. */
+/** @type {Map<string, { next: string | null }>} */
 const outsideWrites = new Map();
 
 /** @type {ReturnType<typeof setTimeout> | null} */
 let autoSaveTimer = null;
 
-/** @type {Promise<unknown> | null} The autosave that has been sent and not yet finished. */
+/** @type {Promise<unknown> | null} */
 let autoSaveInFlight = null;
 
-/** @param {string} id @returns {JQuery<HTMLTextAreaElement>} */
+/**
+ * @param {string} id
+ * @returns {JQuery<HTMLTextAreaElement>}
+ */
 function getTextarea(id) {
     return /** @type {JQuery<HTMLTextAreaElement>} */ ($(`#${id}`));
 }
@@ -124,33 +111,31 @@ function getPanel(id) {
     return getTextarea(id).closest('.char_info_tab_panel');
 }
 
-/** @returns {boolean} Whether a chat message (or its reasoning block) is in edit mode. */
+/** @returns {boolean} */
 function isMessageEditOpen() {
     return $('#curEditTextarea').length > 0 || $('.reasoning_edit_textarea').length > 0;
 }
 
 /**
- * @param {string} id Textarea id.
- * @returns {boolean} Whether this field is in edit mode.
+ * @param {string} id
+ * @returns {boolean}
  */
 export function isFieldInEdit(id) {
     return activeEdit?.id === id;
 }
 
-/** @returns {boolean} Whether a field is being edited: in edit mode, its edit not yet confirmed and saving. */
+/** @returns {boolean} */
 export function isFieldBeingEdited() {
     return activeEdit !== null && !activeEdit.saving;
 }
 
 /**
- * Blocks whatever the caller was about to do while a field is in edit mode.
- * @returns {boolean} True when blocked; the caller returns without acting.
+ * @returns {boolean}
  */
 export function blockWhileFieldEditing() {
     if (!activeEdit) {
         return false;
     }
-    // The field being edited is on screen (nothing may cover it), so its ✓ ✕ flash shows why, as a tab click does.
     if (getPanel(activeEdit.id)[0]?.checkVisibility({ visibilityProperty: true })) {
         flashEditControls();
     } else {
@@ -161,8 +146,7 @@ export function blockWhileFieldEditing() {
 }
 
 /**
- * Sets a field's value and re-renders its preview; a field in edit mode is left untouched.
- * @param {string} id Textarea id.
+ * @param {string} id
  * @param {string} value
  */
 export function setFieldValue(id, value) {
@@ -175,8 +159,7 @@ export function setFieldValue(id, value) {
 }
 
 /**
- * Whose macros a field's are: a greeting's {{char}} is the name typed.
- * @param {string} id Textarea id.
+ * @param {string} id
  * @returns {import('./macro-values.js').MacroScope}
  */
 function macroScopeOf(id) {
@@ -184,15 +167,13 @@ function macroScopeOf(id) {
     return id === GREETING_FIELD_ID ? { ...scope, name2: typedName() } : scope;
 }
 
-/** @type {Map<string, number>} The last render asked of each field's preview, so an older one never lands after it. */
+/** @type {Map<string, number>} */
 const previewRenders = new Map();
 let previewRenderCount = 0;
 
 /**
- * Re-renders a field's preview from its textarea, once its macros' values are in (it changes once, to the new text);
- * an empty field shows the textarea's placeholder.
- * @param {string} id Textarea id.
- * @param {MacroValues} [values] The values to render with; those it doesn't have are asked for. A new set by default.
+ * @param {string} id
+ * @param {MacroValues} [values]
  */
 function refreshFieldPreview(id, values = new MacroValues(() => macroScopeOf(id))) {
     refreshCharInfoTabDimming();
@@ -217,8 +198,7 @@ function refreshFieldPreview(id, values = new MacroValues(() => macroScopeOf(id)
 }
 
 /**
- * Blocks starting a field edit while another field or a chat message is in edit mode.
- * @returns {boolean} True when blocked; the caller returns without acting.
+ * @returns {boolean}
  */
 export function blockFieldEditStart() {
     if (blockWhileFieldEditing()) {
@@ -232,12 +212,9 @@ export function blockFieldEditStart() {
     return false;
 }
 
-/** What decides how the text is laid out, so entering edit changes the content shown and not the font or wrapping. */
 const TEXT_METRICS = ['font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'word-spacing', 'word-break', 'overflow-wrap'];
 
 /**
- * Gives the field's textarea its preview's text metrics. Read while the preview is still shown, so a theme's or the
- * user's CSS on the preview carries over.
  * @param {string} id
  */
 function matchPreviewText(id) {
@@ -251,10 +228,8 @@ function matchPreviewText(id) {
 }
 
 /**
- * Puts a field in edit mode and focuses its textarea, unless {@link blockFieldEditStart} blocks it.
- * @param {string} id Textarea id.
- * @param {number} [at] Where in the text the cursor goes (where the preview was clicked); the start by default. The
- *   page doesn't scroll for it beyond bringing the cursor into view.
+ * @param {string} id
+ * @param {number} [at]
  */
 export function beginEdit(id, at = 0) {
     if (activeEdit?.id === id) {
@@ -268,28 +243,20 @@ export function beginEdit(id, at = 0) {
     const text = String(textarea.val() ?? '');
     activeEdit = { id, original: text, userText: text, saving: false };
     getPanel(id).addClass('field_editing');
-    // Nothing may cover the field being edited.
     drawerStackChanged();
     deps.onEditStart?.(id);
-    // Focusing scrolls to the cursor by default, which, in a text box sized differently from the editor that takes
-    // its place, lands anywhere; the editor brings its cursor into view once it's mounted.
     const element = textarea[0];
     element.setSelectionRange(at, at);
     element.focus({ preventScroll: true });
     void mountFieldEditor(id);
 }
 
-/**
- * The editor on the field in edit mode, and its macros' values, which its preview renders with once the edit ends.
- * @type {{ id: string, editor: import('./live-editor/mount.js').LiveEditor | null, ended: boolean, values: MacroValues } | null}
- */
+/** @type {{ id: string, editor: import('./live-editor/mount.js').LiveEditor | null, ended: boolean, values: MacroValues } | null} */
 let liveEditor = null;
 
-/** Classes of a field's preview that style its text (not its box), so the editor's text is styled the same. */
 const PREVIEW_TEXT_CLASSES = new Set(['mes_text', 'creator_notes_preview_content']);
 
 /**
- * Puts the live editor on the field in edit mode, in place of its textarea, set up as the field's preview renders.
  * @param {string} id
  */
 async function mountFieldEditor(id) {
@@ -300,7 +267,6 @@ async function mountFieldEditor(id) {
     const preview = getPreview(id)[0];
     const isGreeting = id === GREETING_FIELD_ID;
     try {
-        // The editor opens with its macros' values, so nothing moves once it's shown.
         await values.want(textarea.value);
         if (holder.ended) return;
         const editor = await mountLiveEditor(textarea, {
@@ -343,7 +309,6 @@ function endEdit() {
     getPanel(id).removeClass('field_editing');
     drawerStackChanged();
     deps.onEditEnd?.(id);
-    // With the editor's values: the preview is drawn at once with what the editor showed.
     refreshFieldPreview(id, values);
 }
 
@@ -354,7 +319,10 @@ function cancelAutoSave() {
     }
 }
 
-/** @param {string} id @param {string} value */
+/**
+ * @param {string} id
+ * @param {string} value
+ */
 function scheduleAutoSave(id, value) {
     cancelAutoSave();
     autoSaveTimer = setTimeout(() => {
@@ -379,20 +347,23 @@ function scheduleAutoSave(id, value) {
     }, deps.autoSaveTimeout);
 }
 
-// Greetings are saved per greeting through the pager, never from the field's value.
 const GREETING_FIELD_ID = 'greeting_field';
 
-// What the user typed in a field and hasn't got saved yet, kept in browser storage so it survives a reload. Greetings
-// keep theirs through the greetings popup's own kept edit.
 const DRAFT_PREFIX = 'CharacterFieldDraft:';
 
-/** @param {string} id @returns {string | null} */
+/**
+ * @param {string} id
+ * @returns {string | null}
+ */
 function draftKey(id) {
     const owner = deps?.editorKey?.() ?? '';
     return owner && id !== GREETING_FIELD_ID ? `${DRAFT_PREFIX}${owner}:${id}` : null;
 }
 
-/** @param {string} id @returns {string | null} */
+/**
+ * @param {string} id
+ * @returns {string | null}
+ */
 function readDraft(id) {
     const key = draftKey(id);
     if (!key) return null;
@@ -404,7 +375,6 @@ function readDraft(id) {
 }
 
 /**
- * Keeps the field's typed text, or forgets it once it matches what is stored.
  * @param {string} id
  * @param {string} text
  * @param {string} stored
@@ -432,8 +402,6 @@ function forgetDraft(id) {
 }
 
 /**
- * Shows, on a field that isn't being edited, that an earlier edit of it was never saved, with the means to take it
- * back up or let it go.
  * @param {string} id
  */
 function showDraftNotice(id) {
@@ -478,8 +446,6 @@ function restoreDraft(id) {
 }
 
 /**
- * Saves at once (in create mode that sets the value Create builds from before the writer's next line runs). While a
- * save of this field is in flight, only the latest value waits for it.
  * @param {string} id
  * @param {string} value
  */
@@ -508,9 +474,6 @@ function scheduleOutsideWriteSave(id, value) {
 }
 
 /**
- * Code wrote a field and fired `input`, as upstream extensions do: the value is stored, as upstream stores it.
- * During an edit the write has replaced the user's text in the textarea; the written value is stored and becomes
- * what Cancel returns to, and the user's text is put back so their edit goes on.
  * @param {string} id
  * @param {string} value
  */
@@ -538,8 +501,6 @@ async function confirmEdit() {
     }
     const edit = activeEdit;
     edit.saving = true;
-    // Confirmed, the field no longer holds its drawer in front (drawer-stack.js): a drawer brought forward while
-    // it saves goes over it. A failed save puts it back in front, its edit going on.
     getPanel(edit.id).addClass('field_edit_saving');
     drawerStackChanged();
     cancelAutoSave();
@@ -571,13 +532,8 @@ function cancelEdit() {
     endEdit();
 }
 
-/** Whether the "discard your changes?" question is on screen, so a second Escape doesn't ask again. */
 let askingToDiscard = false;
 
-/**
- * Escape ends the edit. With autosave off and the text changed, it asks before throwing the change away; saying no
- * keeps the edit open as it was.
- */
 async function escapeEdit() {
     if (deps.power_user.auto_save_msg_edits) {
         void confirmEdit();
@@ -606,9 +562,8 @@ async function escapeEdit() {
 }
 
 /**
- * Handles Ctrl+Enter / Escape for the field in edit mode, when that field is visible.
  * @param {'confirm'|'escape'} key
- * @returns {boolean} Whether the key was handled.
+ * @returns {boolean}
  */
 export function handleFieldEditKey(key) {
     if (!activeEdit || !getTextarea(activeEdit.id).is(':visible')) {
@@ -622,12 +577,10 @@ export function handleFieldEditKey(key) {
     return true;
 }
 
-/** @type {Map<string, { layer: import('./editor-layer.js').EditorLayer, placeholder: HTMLElement }>} Maximized tab panels by field id. */
+/** @type {Map<string, { layer: import('./editor-layer.js').EditorLayer, placeholder: HTMLElement }>} */
 const maximizedPanels = new Map();
 
 /**
- * Maximizing moves the whole tab panel, in whatever state it's in, into an expanded editor layer; a placeholder
- * stands in for it in the drawer. Restoring moves it back.
  * @param {HTMLElement} button
  */
 function toggleMaximize(button) {
@@ -659,7 +612,6 @@ function toggleMaximize(button) {
     setMaximizeButton(panel, true);
     const layer = openEditorLayer(panelEl, {
         closeTitle: t`Restore`,
-        // Escape first ends an edit in progress, as it does in the drawer.
         escapeCloses: () => !panel.hasClass('field_editing'),
         onClose: () => {
             maximizedPanels.delete(id);
@@ -679,14 +631,13 @@ function toggleMaximize(button) {
 const TAB_RADIO = 'input[name="charInfoTabs_tab"]';
 const TAB_SWITCH_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', ' ']);
 
-/** @returns {string | null} The `charInfoTabs_tab` value of the tab holding the field in edit mode. */
+/** @returns {string | null} */
 function editingTab() {
     if (!activeEdit) return null;
     const panelId = getPanel(activeEdit.id).attr('id') ?? '';
     return panelId.startsWith('charInfoTab_') ? panelId.slice('charInfoTab_'.length) : null;
 }
 
-/** Draws the eye to the field being edited's ✓ ✕, so it's clear why the tab didn't switch. */
 function flashEditControls() {
     const panel = getPanel(activeEdit.id);
     panel.removeClass('field_edit_attention');
@@ -695,10 +646,6 @@ function flashEditControls() {
     setTimeout(() => panel.removeClass('field_edit_attention'), 800);
 }
 
-/**
- * While a field is being edited, the character info tabs don't switch away from it: clicks, keys, and our own code
- * switching them. The edit has to be confirmed or cancelled first.
- */
 function initTabSwitchGuard() {
     const tabs = document.getElementById('charInfoTabs');
     if (!tabs) return;
@@ -725,7 +672,6 @@ function initTabSwitchGuard() {
         flashEditControls();
     }, true);
 
-    // Anything else that checks another tab (our own code dispatching `change`) is put back.
     tabs.addEventListener('change', (event) => {
         if (!(event.target instanceof HTMLInputElement) || !event.target.matches(TAB_RADIO)) return;
         const current = editingTab();
@@ -738,7 +684,6 @@ function initTabSwitchGuard() {
 }
 
 /**
- * A field in edit mode takes focus after it moves, at the cursor it had, so typing carries on.
  * @param {string} id
  */
 function focusEditing(id) {
@@ -748,7 +693,6 @@ function focusEditing(id) {
         getTextarea(id)[0]?.focus({ preventScroll: true });
         return;
     }
-    // Moving the editor loses the page's selection inside it: measure it where it is now, and put its cursor back.
     view.requestMeasure();
     view.focus();
     view.dispatch({ selection: view.state.selection, scrollIntoView: true });
@@ -768,24 +712,23 @@ function setMaximizeButton(panel, maximized) {
 }
 
 /**
- * @param {EventTarget} target What was clicked.
- * @param {Element} preview The field preview the click landed in.
- * @returns {boolean} Whether the click landed on a link inside the preview.
+ * @param {EventTarget} target
+ * @param {Element} preview
+ * @returns {boolean}
  */
 function isOnLink(target, preview) {
     return target instanceof Element && $(target).closest('a[href]', preview).length > 0;
 }
 
 /**
- * @param {EventTarget} target What was clicked.
- * @returns {boolean} Whether the click landed on an image that opens the lightbox (image-lightbox.js).
+ * @param {EventTarget} target
+ * @returns {boolean}
  */
 function isOnLightboxImage(target) {
     return target instanceof HTMLImageElement && !target.closest('[data-result]');
 }
 
 /**
- * Starts editing a preview's field with the cursor where the preview was clicked.
  * @param {HTMLElement} preview
  * @param {MouseEvent} event
  */
@@ -800,13 +743,9 @@ export function initCharacterFieldEditor(dependencies) {
     deps = dependencies;
     initTabSwitchGuard();
 
-    // Capture phase, so it runs before the document's own Escape handlers (which close drawers and panels); a
-    // handled Escape is marked with preventDefault, and those handlers leave it alone.
     document.addEventListener('keydown', (event) => {
         if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return;
-        // The editor's copy of a key on its textarea: the original already came through here.
         if (isEditorEvent(event)) return;
-        // An open suggestion list or panel in the editor takes the Escape first.
         const editor = /** @type {Element} */ (event.target).closest?.('.cm-editor');
         if (editor?.querySelector(EDITOR_ESCAPE_TAKERS)) return;
         if (handleFieldEditKey('escape')) {
@@ -845,7 +784,6 @@ export function initCharacterFieldEditor(dependencies) {
     for (const id of Object.keys(FIELDS)) {
         getTextarea(id).on('input', function (event) {
             const value = String($(this).val() ?? '');
-            // Typing is a trusted event; `.val(x).trigger('input')` or a dispatched Event is code writing the field.
             if (isUserEvent(event.originalEvent)) {
                 if (isFieldInEdit(id)) {
                     activeEdit.userText = value;

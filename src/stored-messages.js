@@ -1,21 +1,11 @@
 import { storedForm } from './chat-engine.js';
 import { sanitizeUserMessageExtra } from './user-message-extra.js';
 
-/**
- * @typedef {{ ref: string, node_id: string, integrity?: string | null, metadata_not_saved?: true, state_changed?: true, global_variables?: { set: Record<string, unknown>, unset: string[] } }} StoredMessage
- * Something the server stored for a request under the ref the page sent for it: a message at `node_id`, or (with
- * `integrity`) chat metadata keys at `node_id` ('': the tree's root), `integrity` the session's UUID; with
- * `metadata_not_saved`, chat metadata keys it couldn't store there; with `state_changed`, a change of the chat's
- * state at `node_id` the page didn't send (what the prompt's macros changed of its variables); with `global_variables`,
- * the global variables the prompt's macros set and removed, for the page to keep.
- */
+/** @typedef {{ ref: string, node_id: string, integrity?: string | null, metadata_not_saved?: true, state_changed?: true, global_variables?: { set: Record<string, unknown>, unset: string[] } }} StoredMessage */
 
 /**
- * The user message a raw-action generate request carries (`user_message`): the message as the page has it once
- * sent, stored as it is.
- * @param {any} body The request body.
- * @returns {{ text: string, extra: object, content: Record<string, any> } | null} Its text and attachments (for the
- * prompt) and the message to store; null when the request carries none.
+ * @param {any} body
+ * @returns {{ text: string, extra: object, content: Record<string, any> } | null}
  */
 export function sentUserMessageOf(body) {
     const message = body?.user_message;
@@ -26,7 +16,6 @@ export function sentUserMessageOf(body) {
 }
 
 /**
- * Records something this request stored under a page ref, for the request's answer (see storedMessagesOf()).
  * @param {import('express').Response} response
  * @param {StoredMessage} stored
  */
@@ -38,20 +27,13 @@ export function recordStored(response, stored) {
 }
 
 /**
- * Stores the user message a raw-action generate request carries, as a reply to `anchorNodeId` (null: as the
- * tree's opening) through the request's session, and records it under the page's `ref` for this request's answer
- * (see storedMessagesOf()). The ref is the send's key: a send already stored under it is answered with that
- * message, not stored again.
- *
- * When it can't be stored, answers the request with an error itself and returns null: the caller then
- * returns without generating, so nothing is generated onto a message the chat doesn't have.
- * @param {import('express').Response} response The generate request's response.
+ * @param {import('express').Response} response
  * @param {object} params
  * @param {import('./chat-request.js').ChatContext} params.chat
  * @param {string | null} params.anchorNodeId
- * @param {object} params.message The message content to store.
- * @param {unknown} params.ref The request's `user_message_ref`; nothing is recorded unless it is a non-empty string.
- * @returns {Promise<string|null>} The stored message's node id; null when the request has been answered with the failure.
+ * @param {object} params.message
+ * @param {unknown} params.ref
+ * @returns {Promise<string|null>}
  */
 export async function storeUserMessage(response, { chat, anchorNodeId, message, ref }) {
     const { store, tree, treeSpeaker, session } = chat;
@@ -70,13 +52,9 @@ export async function storeUserMessage(response, { chat, anchorNodeId, message, 
     return nodeId;
 }
 
-/** Response header carrying `stored` (JSON) on an error answer, whose body and status stay as they are. */
 export const STORED_HEADER = 'X-ST-Stored';
 
 /**
- * Makes every error answer this response sends from now on report what the request stored: an error
- * status (a backend's error passed on as it came, or one of the route's own) gets the `X-ST-Stored`
- * header, and an error body the route builds itself (`{ error, ... }`) also gets a `stored` field.
  * @param {import('express').Response} response
  */
 function reportStoredOnErrorAnswers(response) {
@@ -86,7 +64,6 @@ function reportStoredOnErrorAnswers(response) {
     const setStoredHeader = () => {
         const stored = storedMessagesOf(response);
         if (stored && !response.headersSent) {
-            // Header values must be ASCII; \u escapes keep it the same JSON.
             response.setHeader(STORED_HEADER, JSON.stringify(stored).replace(/[\u007f-\uffff]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`));
         }
     };
@@ -116,7 +93,7 @@ function reportStoredOnErrorAnswers(response) {
 
 /**
  * @param {import('express').Response} response
- * @returns {StoredMessage[]|null} What this request stored under a page ref, or null when nothing.
+ * @returns {StoredMessage[]|null}
  */
 export function storedMessagesOf(response) {
     const stored = response.locals?.storedMessages;
@@ -124,7 +101,6 @@ export function storedMessagesOf(response) {
 }
 
 /**
- * Sets `stored` on a non-streaming answer body when this request stored anything under a page ref.
  * @template T
  * @param {T} body
  * @param {import('express').Response} response

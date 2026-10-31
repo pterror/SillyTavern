@@ -5,19 +5,12 @@ import os from 'node:os';
 import process from 'node:process';
 import lodash from 'lodash';
 
-// The real delta-sync client (character-list.js getCharacters()) against the real server routes: a sync applies
-// the changes the feed names to the characters the page holds, takes in none it doesn't hold, and never reads the
-// whole cache; boot reads none of the cache into memory. Only modules that
-// can't load in node are replaced: IndexedDB (localforage) by an in-memory store, and character-list.js's
-// DOM-bound UI imports. The character store is the real EntityStore over the shared array.
-
 const originalCwd = process.cwd();
 
 const USER_HANDLE = 'delta-sync-apply-test-user';
 
-/** @type {Map<string, Map<string, any>>} localforage instance name -> key -> record */
+/** @type {Map<string, Map<string, any>>} */
 const localforageStores = new Map();
-/** Whole-store reads (iterate/keys) since the last reset. */
 const wholeStoreReads = { count: 0 };
 
 function createFakeLocalforageInstance({ name }) {
@@ -42,7 +35,6 @@ function createFakeLocalforageInstance({ name }) {
     };
 }
 
-// One stable array, mutated in place: the mocked module's export is bound once.
 const residentCharacters = [];
 const noop = () => {};
 /** @type {import('../public/scripts/entity-store.js').EntityStore<any>} */
@@ -181,7 +173,6 @@ describe('delta sync applies only what changed', () => {
         store.reindex();
         toastrError.mockClear();
         globalThis.fetch = (url, init) => realFetch(String(url).startsWith('/') ? `${baseUrl}${url}` : url, init);
-        // As at boot: each test is a fresh tab over a fresh server.
         await characterList.seedCharactersFromCache();
     });
 
@@ -212,7 +203,6 @@ describe('delta sync applies only what changed', () => {
 
     const avatars = () => residentCharacters.map(c => c.avatar).sort();
 
-    /** Holds these characters, as selecting one or opening a group does: read from the server into the store. */
     async function hold(...avatarKeys) {
         const records = await (await postJson('/api/characters/batch', { avatars: avatarKeys })).json();
         for (const record of records) {
@@ -263,7 +253,6 @@ describe('delta sync applies only what changed', () => {
 
         expect(wholeStoreReads.count).toBe(0);
         expect(avatars()).toEqual([a, b]);
-        // Updated in place, so every reference to the character sees the change.
         expect(store.get(a)).toBe(heldA);
         expect(heldA.fav).toBe(true);
         expect(store.get(b)).toBe(heldB);
@@ -289,7 +278,6 @@ describe('delta sync applies only what changed', () => {
         const a = await createCharacter('A');
         await sync();
         await hold(a);
-        // As selectCharacterByAvatar() holds a character it fetched on demand: in memory, not in the cache.
         store.create({ avatar: 'OnDemand.png', name: 'On demand', shallow: false });
 
         await postJson('/api/characters/fav', { avatar: a, fav: true });
@@ -307,7 +295,6 @@ describe('delta sync applies only what changed', () => {
         const heldA = store.get(a);
 
         await postJson('/api/characters/fav', { avatar: a, fav: true });
-        // Another tab syncs first: it writes the change into the cache and moves the shared cursor past it.
         const changes = await (await postJson('/api/characters/changes', { sinceSeq: await cache.getCachedCursor() })).json();
         const batchResponse = await postJson('/api/characters/batch', { avatars: [a] });
         const [record] = await batchResponse.json();
@@ -332,7 +319,6 @@ describe('delta sync applies only what changed', () => {
         const heldA = store.get(a);
 
         await postJson('/api/characters/fav', { avatar: a, fav: true });
-        // The cache holds a shallow row of the change (as with lazyLoadCharacters on): no description.
         const changes = await (await postJson('/api/characters/changes', { sinceSeq: await cache.getCachedCursor() })).json();
         const batchResponse = await postJson('/api/characters/batch', { avatars: [a] });
         const [record] = await batchResponse.json();

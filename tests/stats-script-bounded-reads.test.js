@@ -1,14 +1,11 @@
 import { describe, test, expect, jest, beforeAll, afterAll } from '@jest/globals';
 import path from 'node:path';
 
-// scripts/stats.js reads a running server's routes only: the totals it prints and the five top-10 lists it asks the
-// server for, each at most 10 rows.
-
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
 /** @type {import('node:http').Server} */
 let server;
-/** The routes the script asked, and with what. @type {{ route: string, body: any }[]} */
+/** @type {{ route: string, body: any }[]} */
 const asked = [];
 /** @type {string[]} */
 let output;
@@ -24,7 +21,6 @@ beforeAll(async () => {
     const { lib } = user.store;
     const { directories } = user;
 
-    // char1..char12: added, chatted, sized and used by tags in rising order; the odd ones favorites; one fav group.
     for (let i = 1; i <= CHARACTER_COUNT; i++) {
         const name = `char${i}`;
         const card = { name, data: { name, description: 'd'.repeat(i * 100), tags: [], extensions: { fav: false, world: '' } } };
@@ -73,7 +69,6 @@ afterAll(async () => {
     await user.close();
 });
 
-/** The lines between a heading's underline and the next blank line. */
 function section(title) {
     const start = output.indexOf(title);
     expect(start).toBeGreaterThanOrEqual(0);

@@ -169,7 +169,6 @@ export function registerEnvMacros() {
         description: 'Original message content for {{original}} substitution in in character prompt overrides.',
         returns: 'Original message content.',
         handler: ({ env }) => {
-            // Only defined when the caller passed an `original` string; resolve to empty otherwise rather than throwing
             if (typeof env.functions.original !== 'function') {
                 return '';
             }

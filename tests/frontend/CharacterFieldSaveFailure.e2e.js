@@ -1,8 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openInfoTab } from './frontent-test-utils.js';
 
-// A field save the server refuses is shown as not saved, keeps what was typed, and that text survives a reload.
-
 /**
  * @param {import('@playwright/test').Page} page
  * @param {Record<string, string>} values
@@ -26,7 +24,10 @@ async function createAndOpen(page, values) {
     return { avatar, name };
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
 async function openCharacter(page, avatar) {
     await page.evaluate(async (avatar) => {
         // @ts-ignore
@@ -35,7 +36,10 @@ async function openCharacter(page, avatar) {
     await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
 async function stored(page, avatar) {
     return page.evaluate(async (avatar) => {
         // @ts-ignore

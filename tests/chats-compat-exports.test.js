@@ -22,14 +22,12 @@ afterAll(async () => {
 const characterChat = (/** @type {string} */ name) => path.join(user.directories.chats, 'Alice', `${name}.jsonl`);
 const groupChat = (/** @type {string} */ name) => path.join(user.directories.groupChats, `${name}.jsonl`);
 
-/** Every bookmark name of a tree. */
 async function namesOf(/** @type {{ avatar?: string, group?: string }} */ owner) {
     const { chatNamesOf } = await import('../src/chat-request.js');
     const { treeOf } = await import('./converted-user.fixture.js');
     return chatNamesOf(user.store, await treeOf(user.store, owner));
 }
 
-/** What `/get` answers for a chat name of a tree (no tab). */
 async function asLoaded(/** @type {{ avatar?: string, group?: string }} */ owner, /** @type {string} */ name) {
     const { treeOf } = await import('./converted-user.fixture.js');
     const tree = await treeOf(user.store, owner);

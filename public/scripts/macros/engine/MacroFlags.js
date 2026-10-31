@@ -1,5 +1,3 @@
-/** Modifiers placed between `{{` and the macro identifier, e.g. `{{!user}}`. Combinable: `{{!?myMacro}}`. */
-
 /**
  * @typedef {Object} MacroFlags
  * @property {boolean} immediate - Whether the immediate (`!`) flag is set.
@@ -18,25 +16,18 @@
  * @enum {string}
  */
 export const MacroFlagType = Object.freeze({
-    /** Not implemented in v1. */
     IMMEDIATE: '!',
 
-    /** Not implemented in v1. */
     DELAYED: '?',
 
-    /** Not implemented in v1. */
     REEVALUATE: '~',
 
-    /** Parsed but the filter feature itself isn't implemented yet. */
     FILTER: '>',
 
-    /** Closes a scoped macro, e.g. `{{setvar::myvar}}long text{{/setvar}}`; content becomes the last unnamed argument. */
     CLOSING_BLOCK: '/',
 
-    /** Skips auto-trimming of scoped content; also backs legacy handlebars-style `{{#if ...}}` syntax. */
     PRESERVE_WHITESPACE: '#',
 
-    // Variable shorthand (. and $) are not flags — they trigger the separate variableExpr parse branch.
 });
 
 /**

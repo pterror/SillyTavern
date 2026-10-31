@@ -6,29 +6,20 @@ import { useUi } from '@st/page/context';
 import { Checkbox, FieldBlock, NumberBox, Radio, Select, Slider, TextArea, UnsetButton, useField } from './fields.tsx';
 import type { FieldState } from './fields.tsx';
 
-// The chat completion fields of the AI response configuration panel, laid out as the old markup (public/index.html,
-// #range_block_openai and #openai_settings) had them. Each section replaces one run of the old field blocks; what's
-// between them (the middle-out transform, prompt costs, quick prompts, logit bias, the prompt manager) is still the
-// old page's.
-
-/** What the old page knows of the model and the page shows by the toggles (until connections are the server's). */
 export type Support = { functionCalling: boolean; image: boolean; video: boolean; audio: boolean };
 
-/** The chat completion source now. */
 function useSource() {
     const { client } = useUi();
     const view = client.view<SettingsView>(VIEW);
     return () => view()?.api.source ?? '';
 }
 
-/** Shown only for these chat completion sources (the old markup's data-source), or for all but them. */
 function ForSources(props: { sources: string; except?: boolean; children: JSX.Element }) {
     const source = useSource();
     const listed = () => props.sources.split(',').includes(source());
     return <Show when={props.except === true ? !listed() : listed()}>{props.children}</Show>;
 }
 
-/** A block's title row: the label and the unset button. */
 function Title(props: { field: FieldState; text: string; i18n?: string | undefined; class?: string }) {
     const { t } = useUi();
     return (
@@ -39,7 +30,6 @@ function Title(props: { field: FieldState; text: string; i18n?: string | undefin
     );
 }
 
-/** A slider block: title, then slider and counter. */
 function SliderBlock(props: { id: string; counterId: string; title: string; i18n?: string }) {
     return (
         <FieldBlock id={props.id}>
@@ -53,7 +43,6 @@ function SliderBlock(props: { id: string; counterId: string; title: string; i18n
     );
 }
 
-/** A checkbox block: the box and its label, a description under them. */
 function CheckboxBlock(props: { id: string; label: string; i18n?: string; title?: string; children?: JSX.Element }) {
     const { t } = useUi();
     return (
@@ -76,7 +65,6 @@ function CheckboxBlock(props: { id: string; label: string; i18n?: string; title?
     );
 }
 
-/** Unlocked context, context size, response length and swipes per generation (the old blocks before middle-out). */
 export function CcContext() {
     const { t } = useUi();
     return (
@@ -116,7 +104,6 @@ export function CcContext() {
     );
 }
 
-/** Streaming and the samplers (the old blocks after the prompt costs). */
 export function CcSamplers() {
     const { t } = useUi();
     return (
@@ -146,7 +133,6 @@ export function CcSamplers() {
     );
 }
 
-/** A utility prompt: title with its restore button, a description, the text. */
 function UtilityPrompt(props: {
     id: string;
     title: string;
@@ -191,7 +177,6 @@ function UtilityPrompt(props: {
     );
 }
 
-/** The utility prompts drawer and the seed (the old blocks after the quick prompts). */
 export function CcUtility() {
     const { t } = useUi();
     const use = () => t('Use', 'scenario_format_template_part_1');
@@ -312,16 +297,13 @@ export function CcUtility() {
     );
 }
 
-/** A choice field as an inline drawer of radios, the choice's label shown in the header. */
 function ChoiceDrawer(props: {
     id: string;
     title: string;
     tip: string;
     name: string;
     class: string;
-    /** The id of the span showing the choice in the header (the old markup's). */
     displayId: string;
-    /** Each option's label key and description (key and English), by the option's index. */
     options: { i18n?: string; description?: [string, string] }[];
 }) {
     const { t } = useUi();
@@ -365,7 +347,6 @@ function ChoiceDrawer(props: {
     );
 }
 
-/** Support icons for the model (the old page's capability checks), shown while their toggle is on. */
 function SupportIcon(props: { id: string; supported: boolean; icon: string; sources?: string }) {
     const { t } = useUi();
     const icons = (
@@ -377,7 +358,6 @@ function SupportIcon(props: { id: string; supported: boolean; icon: string; sour
     return props.sources !== undefined ? <ForSources sources={props.sources}>{icons}</ForSources> : icons;
 }
 
-/** The options under the samplers: names, continue, prompts, tools, media, reasoning, prefills. */
 export function CcOptions(props: { support: () => Support }) {
     const { t } = useUi();
     const showThoughts = useField('openai_show_thoughts');
@@ -793,7 +773,6 @@ export function CcOptions(props: { support: () => Support }) {
     );
 }
 
-/** Claude's assistant prefills, and the warning that function calling with tools makes them not work. */
 function ClaudePrefills() {
     const { t } = useUi();
     const prefill = useField('claude_assistant_prefill');

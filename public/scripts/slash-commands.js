@@ -29,7 +29,6 @@ import {
     validateArrayArgString,
     getParser,
 } from './slash-commands/core.js';
-// Upstream's export: the shared parser, a live binding set at startup (initDefaultSlashCommands()).
 export { parser } from './slash-commands/core.js';
 import { registerConnectionCommands } from './slash-commands/commands/connection.js';
 import { registerCharacterCommands } from './slash-commands/commands/character.js';
@@ -77,7 +76,6 @@ export {
  * Shared execution engine, autocomplete plumbing and cross-category helpers live in public/scripts/slash-commands/core.js.
  */
 export function initDefaultSlashCommands() {
-    // Sets the `parser` export before extensions load.
     getParser();
     eventSource.on(event_types.CHAT_CHANGED, processChatSlashCommands);
     setupConnectAPIMap();

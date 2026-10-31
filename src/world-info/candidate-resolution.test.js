@@ -11,7 +11,6 @@ const { importWorldInfoFromRaw } = await import('../endpoints/worldinfo.js');
 const user = await (await import('../../tests/converted-user.fixture.js')).convertedUser('wi-candidate-resolution-');
 const directories = user.directories;
 
-/** Minimal real on-disk lorebook shape, matching default/content/Eldoria.json's entries format. */
 function makeEntry(uid, order, content = `content-${uid}`) {
     return {
         uid,
@@ -43,7 +42,6 @@ await writeLorebook('PersonaWorld', [makeEntry('p1', 1)]);
 
 const character = { data: { extensions: { world: 'CharBase' } } };
 
-// (a) global + character lore merge under each of the 3 strategies, asserting actual resulting order.
 {
     const entries = await resolveWorldInfoCandidates({
         directories,
@@ -51,7 +49,6 @@ const character = { data: { extensions: { world: 'CharBase' } } };
         character,
         worldInfoCharacterStrategy: world_info_insertion_strategy.evenly,
     });
-    // evenly: [...globalLore, ...characterLore].sort by order desc -> g2(20), c1(15), g1(10)
     assert.deepEqual(entries.map(e => e.uid), ['g2', 'c1', 'g1']);
 }
 {
@@ -61,7 +58,6 @@ const character = { data: { extensions: { world: 'CharBase' } } };
         character,
         worldInfoCharacterStrategy: world_info_insertion_strategy.character_first,
     });
-    // character_first: characterLore sorted, then globalLore sorted -> c1(15), then g2(20), g1(10)
     assert.deepEqual(entries.map(e => e.uid), ['c1', 'g2', 'g1']);
 }
 {
@@ -71,11 +67,9 @@ const character = { data: { extensions: { world: 'CharBase' } } };
         character,
         worldInfoCharacterStrategy: world_info_insertion_strategy.global_first,
     });
-    // global_first: globalLore sorted, then characterLore sorted -> g2(20), g1(10), then c1(15)
     assert.deepEqual(entries.map(e => e.uid), ['g2', 'g1', 'c1']);
 }
 
-// (b) chat lore and persona lore always land first (in that order) regardless of strategy.
 {
     const entries = await resolveWorldInfoCandidates({
         directories,
@@ -88,10 +82,7 @@ const character = { data: { extensions: { world: 'CharBase' } } };
     assert.deepEqual(entries.map(e => e.uid), ['ch1', 'p1', 'g2', 'c1', 'g1']);
 }
 
-// (c) skip-precedence rules in getCharacterLore.
 {
-    // A world already selected globally is excluded from character lore (it still appears via
-    // global lore - just not duplicated).
     const entries = await resolveWorldInfoCandidates({
         directories,
         selectedWorldInfo: ['CharBase'],
@@ -100,18 +91,15 @@ const character = { data: { extensions: { world: 'CharBase' } } };
     assert.equal(entries.filter(e => e.uid === 'c1').length, 1, 'character world already in global selection is not duplicated');
 }
 {
-    // A world matching the chat world is excluded from character lore.
     const charInChat = { data: { extensions: { world: 'ChatWorld' } } };
     const entries = await resolveWorldInfoCandidates({
         directories,
         character: charInChat,
         chatWorldName: 'ChatWorld',
     });
-    // ch1 should appear exactly once (from chat lore), not duplicated via character lore.
     assert.equal(entries.filter(e => e.uid === 'ch1').length, 1);
 }
 {
-    // A world matching the persona world is excluded from character lore.
     const charAsPersona = { data: { extensions: { world: 'PersonaWorld' } } };
     const entries = await resolveWorldInfoCandidates({
         directories,
@@ -121,7 +109,6 @@ const character = { data: { extensions: { world: 'CharBase' } } };
     assert.equal(entries.filter(e => e.uid === 'p1').length, 1);
 }
 {
-    // characterExtraBooks contributes additional worlds beyond extensions.world.
     const entries = await resolveWorldInfoCandidates({
         directories,
         character,
@@ -131,7 +118,6 @@ const character = { data: { extensions: { world: 'CharBase' } } };
     assert.ok(entries.some(e => e.uid === 'c2'));
 }
 
-// (d) each returned entry has decorators/content/hash/world fields; content has decorators stripped.
 {
     await writeLorebook('Decorated', [makeEntry('d1', 1, '@@activate\nThe rest of the content.')]);
     const entries = await resolveWorldInfoCandidates({
@@ -146,7 +132,6 @@ const character = { data: { extensions: { world: 'CharBase' } } };
     assert.equal(typeof entry.hash, 'number');
 }
 
-// (e) missing/absent lorebooks degrade to empty contributions, not a crash.
 {
     const entries = await resolveWorldInfoCandidates({
         directories,
@@ -158,14 +143,10 @@ const character = { data: { extensions: { world: 'CharBase' } } };
     assert.deepEqual(entries, []);
 }
 {
-    // No character, no persona, no chat lorebook configured at all.
     const entries = await resolveWorldInfoCandidates({ directories });
     assert.deepEqual(entries, []);
 }
 
-// (f) embedded character_book fallback: extensions.world names a book that doesn't exist on disk,
-// and the character carries its own embedded character_book - its entries get converted and
-// tagged with EMBEDDED_WORLD_NAME.
 {
     const embeddedCharacter = {
         data: {
@@ -189,7 +170,6 @@ const character = { data: { extensions: { world: 'CharBase' } } };
     assert.equal(b.position, 1);
 }
 {
-    // Real World file exists for extensions.world -> embedded book is NOT used, even though present.
     const characterWithRealWorld = {
         data: {
             extensions: { world: 'CharBase' },
@@ -201,8 +181,6 @@ const character = { data: { extensions: { world: 'CharBase' } } };
     assert.ok(entries.some(e => e.uid === 'c1' && e.world === 'CharBase'));
 }
 {
-    // No extensions.world at all, but an embedded character_book exists -> still used (baseWorldName
-    // is falsy, so baseWorldResolves is false, matching the client's `!!baseWorldName && ...` check).
     const characterNoBaseWorld = {
         data: { character_book: { entries: [{ id: 0, keys: ['delta'], content: 'Embedded, no base world', insertion_order: 1, enabled: true }] } },
     };

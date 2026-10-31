@@ -1,16 +1,11 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, holdCharacters } from './frontent-test-utils.js';
 
-// "Prune unused tags" must only remove tags that no character or group uses anywhere on the server - not
-// judged by what this page happens to have loaded, synced or counted.
-
 /**
- * Loads the app and waits for APP_READY (all characters/groups resident).
  * @param {import('@playwright/test').Page} page
  */
 async function loadApp(page) {
     await testSetup.awaitST({ page });
-    // APP_READY is an auto-fire event: a listener added after it was emitted still runs.
     await page.evaluate(() => {
         window['__appReady'] = false;
         const { eventSource, eventTypes } = window['SillyTavern'].getContext();
@@ -34,7 +29,11 @@ async function api(page, path, body = {}) {
     }, { path, body });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<string>} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
@@ -46,7 +45,11 @@ async function createCharacter(page, name) {
     }, name);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<string>} tag id */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
 async function createTag(page, name) {
     const id = `tag-prune-${name}`;
     await api(page, '/api/tags/create', {
@@ -58,21 +61,26 @@ async function createTag(page, name) {
     return id;
 }
 
-/** @param {import('@playwright/test').Page} page @returns {Promise<string[]>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @returns {Promise<string[]>}
+ */
 async function serverTagIds(page) {
     const { tags } = await api(page, '/api/tags/backup');
     return tags.map(t => t.id);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} tagId @returns {Promise<number|undefined>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} tagId
+ * @returns {Promise<number|undefined>}
+ */
 async function serverTagUsage(page, tagId) {
     const { counts } = await api(page, '/api/tags/query', { filter: { ids: [tagId] }, counts: true });
     return counts?.[tagId];
 }
 
 /**
- * Creates the fixture data from a throwaway browser context, so the page under test starts with an empty
- * IndexedDB character cache and learns about everything only through its own boot.
  * @param {import('@playwright/test').Browser} browser
  * @param {(page: import('@playwright/test').Page) => Promise<T>} fn
  * @template T
@@ -96,7 +104,6 @@ async function openTagManagement(page) {
 }
 
 /**
- * Counts /api/tags/* requests still in flight, so a test can wait until whatever a prune sent has landed.
  * @param {import('@playwright/test').Page} page
  */
 function trackTagRequests(page) {
@@ -109,9 +116,8 @@ function trackTagRequests(page) {
 }
 
 /**
- * Clicks "prune", accepts whatever it offers, and waits until the prune is fully done (server included).
  * @param {import('@playwright/test').Page} page
- * @returns {Promise<string>} the confirm popup's text ('' if prune found nothing to offer)
+ * @returns {Promise<string>}
  */
 async function pruneAndAccept(page) {
     const requests = trackTagRequests(page);
@@ -143,7 +149,6 @@ test.describe('Tag prune keeps tags that are in use', () => {
             return { hiddenTag, restoredTag, hiddenCard, visibleCard };
         });
 
-        // The page never receives hiddenCard: dropped from the change log and from any batch fetch.
         await page.route('**/api/characters/changes', async route => {
             const response = await route.fetch();
             const json = await response.json();
@@ -165,7 +170,6 @@ test.describe('Tag prune keeps tags that are in use', () => {
 
         await openTagManagement(page);
 
-        // Restore a backup that touches only the visible card.
         const backup = {
             tags: [{ id: fixture.restoredTag, name: `restored-${stamp}`, folder_type: 'NONE', filter_state: 'UNDEFINED', sort_order: 1000, color: '', color2: '' }],
             tag_map: { [fixture.visibleCard]: [fixture.restoredTag] },
@@ -193,16 +197,13 @@ test.describe('Tag prune keeps tags that are in use', () => {
 
         await loadApp(page);
         await holdCharacters(page, [fixture.card]);
-        // Change-stream syncs are deferred while the character list is hidden.
         await openCharacterManagementDrawer(page);
 
-        // A second tab in the same browser assigns the (so far unused) tag.
         const other = await page.context().newPage();
         await loadApp(other);
         await api(other, '/api/tags/assign', { id: fixture.card, tagId: fixture.tag });
         await other.close();
 
-        // Wait for this page to sync the assignment onto its own copy of the card, so what's left is prune itself.
         await expect.poll(() => page.evaluate(async ({ card, tag }) => {
             const { charactersStore } = await import('/scripts/character-store.js');
             const c = charactersStore.get(card);

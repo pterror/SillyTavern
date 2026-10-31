@@ -1,6 +1,3 @@
-// The new page's build (packages/serve-ui): `node scripts/build-ui.mjs` builds it here; `--pack <file>` also writes
-// the release's file (CI); `--ensure` takes the build there or the released one, or builds when there's none, and
-// exits 2 when it can't (building needs the dev dependencies: start.sh installs them then and runs it again).
 import fs from 'node:fs';
 import process from 'node:process';
 import { buildUi, ensureUi, packUi, uiReleaseKey, uiSourceHash } from '@st/serve-ui';

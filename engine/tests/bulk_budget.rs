@@ -1,7 +1,3 @@
-//! A bulk load's memory stays under its budget, measured as the process's resident memory (`memory::Resident`),
-//! and what it stores doesn't depend on the budget. A test binary of its own: the memory measured is this load's
-//! alone.
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -41,7 +37,6 @@ fn create(e: u64, kind: u64, key: &str) -> Record {
     )
 }
 
-/// Words from a vocabulary of 5,000, by a fixed sequence.
 struct Words(u64);
 
 impl Words {
@@ -60,7 +55,6 @@ impl Words {
     }
 }
 
-/// Tags as entities, then cards with a name, two text fields and three tags each.
 fn library() -> impl Iterator<Item = Record> {
     let tags = (1..=TAGS).flat_map(|t| {
         vec![
@@ -101,7 +95,6 @@ fn library() -> impl Iterator<Item = Record> {
 fn load(dir: &Path, budget: Option<usize>) -> (bulk::LoadStats, usize) {
     let s = Store::open(dir, StoreConfig::default()).unwrap();
     s.wait_ready().unwrap();
-    // The most the process's resident memory reaches past what it was at the load's start, sampled meanwhile.
     let base = st_engine::memory::Resident::new().read().unwrap();
     let peak = Arc::new(AtomicUsize::new(0));
     let done = Arc::new(AtomicBool::new(false));
@@ -128,7 +121,6 @@ fn load(dir: &Path, budget: Option<usize>) -> (bulk::LoadStats, usize) {
     (st, peak.load(Ordering::Relaxed))
 }
 
-/// Every entry of the store at `dir`.
 fn entries(dir: &Path) -> Vec<(Vec<u8>, Vec<u8>)> {
     let s = Store::open(dir, StoreConfig::default()).unwrap();
     s.wait_ready().unwrap();
@@ -161,7 +153,6 @@ fn temp(name: &str) -> PathBuf {
 fn a_bulk_load_stays_in_its_budget_and_stores_the_same_in_any() {
     let budget = 256 << 20;
     let (a, b) = (temp("budget-roomy"), temp("budget-tight"));
-    // The tight load first: memory the allocator keeps from a load before would be in its start.
     let (tight, sampled) = load(&b, Some(budget));
     let (roomy, _) = load(&a, None);
     eprintln!(

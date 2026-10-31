@@ -1,8 +1,5 @@
 import { sessionHeaderValue } from './tab-session.js';
 
-// CSRF token handed out at load time by GET /csrf-token; script.js's firstLoadInit() is the
-// only writer, via setToken() below (an ESM live binding can't be reassigned from outside
-// this module).
 export let token;
 
 export function setToken(value) {

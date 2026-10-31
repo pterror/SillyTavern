@@ -1,20 +1,3 @@
-//! Measures a store against the design's bounds table (`.plans/2026-10-03-storage-from-needs.md` 4.3) on the
-//! test kind `testSet`, whose deriver keeps two entries per id (its current value and its place in an order by
-//! key) and a count.
-//!
-//!   cargo run --release --features measure --example measure -- run <dir> <entries>
-//!     loads entries/2 ids, reads, updates every id once (so half the log is dead and cleaning runs), reads
-//!     again, closes and reopens; prints one JSON object per phase.
-//!   cargo run --release --features measure --example measure -- crash <dir> <rounds>
-//!     on a store `run` made: a child process commits updates under load and is killed with SIGKILL at a random
-//!     moment; the store is reopened and every commit the child saw acknowledged is checked to be readable.
-//!   cargo run --release --features measure --example measure -- calibrate <dir>
-//!     the memory a buffer of `testSet`'s entries takes, against the bytes it counts toward B.
-//!   cargo run --release --features measure --example measure -- multi <dir> <stores> <entries>
-//!     that many stores on one pool, loaded and updated at once (store i with entries/(i % 4 + 1)): peak memory
-//!     and each store's reads and writes.
-//! Linux only (`/proc/self/status`). The constants can be overridden from the environment (`config`).
-
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -63,7 +46,6 @@ fn proc_kb(field: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// Bytes a directory's files take on disk (holes excluded), and their sizes.
 fn disk(dir: &Path) -> (u64, u64) {
     use std::os::unix::fs::MetadataExt;
     let (mut used, mut size) = (0, 0);
@@ -84,7 +66,6 @@ fn settle(s: &Store) {
     ks.wait_merged();
 }
 
-/// Settles, then cleans until no file is queued, and removes what the runs cover.
 fn clean_all(s: &Store) {
     for _ in 0..1000 {
         settle(s);
@@ -94,7 +75,6 @@ fn clean_all(s: &Store) {
         let queued = s.scan(&q, &key::prefix_end(&q), usize::MAX).unwrap();
         let gone = s.scan(&g, &key::prefix_end(&g), usize::MAX).unwrap();
         let covered = s.keyspace().covered() >> st_engine::log::FILE_SHIFT;
-        // Files at or past the newest run's file wait for later flushes; they aren't counted.
         let pending = queued
             .iter()
             .filter(|(k, _)| file_of_key(k) < covered)
@@ -111,19 +91,16 @@ fn file_of_key(k: &[u8]) -> u64 {
     get_u64(k, &mut at).unwrap()
 }
 
-/// Commits in flight at once per store: ST_INFLIGHT, else 8.
 fn inflight_limit() -> u32 {
     std::env::var("ST_INFLIGHT").map_or(8, |v| v.parse().unwrap())
 }
 
-/// Commits in flight at once across all stores of `multi`: ST_TOTAL_INFLIGHT, else unbounded.
 fn total_inflight_limit() -> u64 {
     std::env::var("ST_TOTAL_INFLIGHT").map_or(u64::MAX, |v| v.parse().unwrap())
 }
 
 fn commit_all(s: &Store, mut recs: impl Iterator<Item = Record>) -> Duration {
     let started = Instant::now();
-    // Several commits in flight, as concurrent actions would be.
     let inflight = Arc::new((std::sync::Mutex::new(0u32), std::sync::Condvar::new()));
     loop {
         let chunk: Vec<Record> = recs.by_ref().take(BATCH as usize).collect();
@@ -202,8 +179,6 @@ fn report(phase: &str, s: &Store, dir: &Path, extra: &str) {
     std::io::stdout().flush().unwrap();
 }
 
-/// Point lookups of random ids and pages of the order from random keys: blocks fetched per read (from the
-/// cache or the file) and file reads (cache misses) per read.
 fn reads(s: &Store, ids: u64, rng: &mut Rng) -> String {
     let ks = s.keyspace();
     let before = ks.stats();
@@ -238,7 +213,6 @@ fn reads(s: &Store, ids: u64, rng: &mut Rng) -> String {
     )
 }
 
-/// Bytes of the live records: every id's current record, each read back to check it is there.
 fn live_bytes(s: &Store) -> u64 {
     let start = key::of(key::TEST_SET);
     let end = key::prefix_end(&start);
@@ -260,8 +234,6 @@ fn live_bytes(s: &Store) -> u64 {
     total
 }
 
-/// The default config, with any constant overridden by an environment variable (ST_L, ST_DELTA, ST_U, ST_BLOCK,
-/// ST_LOG_BLOCK, ST_LOG_FILE; sizes in bytes). B and C are the pool's (`pool`).
 fn config() -> StoreConfig {
     let mut c = StoreConfig::default();
     let env = |k: &str| std::env::var(k).ok();
@@ -286,9 +258,6 @@ fn config() -> StoreConfig {
     c
 }
 
-/// Memory a buffer of entries shaped like `testSet`'s takes, against what it counts.
-/// The pool every store of a run shares: B, C and the engine's threads from ST_B, ST_C and ST_THREADS, else the
-/// defaults.
 fn pool() -> Arc<Pool> {
     static POOL: std::sync::OnceLock<Arc<Pool>> = std::sync::OnceLock::new();
     POOL.get_or_init(|| {
@@ -433,13 +402,10 @@ fn run(dir: &Path, entries: u64) {
     s.close();
 }
 
-/// The crash child: commits rounds of updates, keeping up to 32 commits in flight, and prints each commit's
-/// number once it is acknowledged. Commit `i` sets `BATCH` ids to the key `base + i`.
 fn child(dir: &Path, ids: u64, base: u64) {
     let s = Arc::new(Store::open_in(dir, config(), pool()).unwrap());
     s.wait_ready().unwrap();
     let inflight = Arc::new((std::sync::Mutex::new(0u32), std::sync::Condvar::new()));
-    // Until killed.
     let mut i = 0;
     loop {
         let (m, cv) = &*inflight;
@@ -498,7 +464,6 @@ fn crash(dir: &Path, rounds: u64) {
         });
         let wait = Duration::from_millis(2000 + rng.next() % 6000);
         std::thread::sleep(wait);
-        // SIGKILL: nothing in the child runs after it.
         child.kill().unwrap();
         child.wait().unwrap();
         reader.join().unwrap();
@@ -508,7 +473,6 @@ fn crash(dir: &Path, rounds: u64) {
         let opened = started.elapsed();
         s.wait_ready().unwrap();
         let ready = started.elapsed();
-        // Every id an acknowledged commit set holds that commit's key or a later one.
         let mut checked = 0;
         let mut expect = std::collections::HashMap::new();
         if last != u64::MAX {
@@ -547,8 +511,6 @@ fn crash(dir: &Path, rounds: u64) {
     }
 }
 
-/// `k` stores in `dir`/0.. on one pool, each loaded with `entries` and then updated, all at once from a thread
-/// per store: the pool's peak memory, and each store's reads and writes.
 fn multi(dir: &Path, k: usize, entries: u64) {
     let ids = entries / 2;
     let stores: Vec<Arc<Store>> = (0..k)
@@ -566,8 +528,6 @@ fn multi(dir: &Path, k: usize, entries: u64) {
             }
         })
     };
-    // A store beside them committing one record every 5 ms: its commit latency shows whether the busy stores
-    // starve it.
     let probe = Arc::new(Store::open_in(&dir.join("probe"), config(), pool()).unwrap());
     probe.wait_ready().unwrap();
     let probing = Arc::new(AtomicU64::new(1));
@@ -587,8 +547,6 @@ fn multi(dir: &Path, k: usize, entries: u64) {
         })
     };
     let started = Instant::now();
-    // One thread submits for every store, as the server's single JavaScript thread does: store i loads
-    // ids/(i % 4 + 1), then updates as many, keeping up to `inflight_limit()` commits in flight per store.
     let ns: Vec<u64> = (0..k as u64).map(|i| ids / (i % 4 + 1)).collect();
     let inflight: Vec<Arc<AtomicU64>> = (0..k).map(|_| Arc::new(AtomicU64::new(0))).collect();
     let progress = Arc::new((std::sync::Mutex::new(()), std::sync::Condvar::new()));

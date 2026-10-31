@@ -2,9 +2,6 @@ import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 import { openCharacter } from './llamacpp-mock.js';
 
-// The values the page shows in macros' places come from the server, which fills in the prompts with the same engine
-// and the same facts (src/endpoints/macros.js): the page never fills in macros for its own previews.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -12,8 +9,6 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 test.beforeEach(testSetup.awaitST);
 
 /**
- * Makes a character whose description is `description` (and creator's notes `notes`), with the global variable `mood`
- * set, and opens it.
  * @param {import('@playwright/test').Page} page
  * @param {string} description
  * @param {string} [notes]
@@ -42,7 +37,6 @@ test('a field\'s preview shows the values the server fills in; a macro run only 
     await asked;
     const preview = page.locator('.field_preview[data-for="description_textarea"]');
     await expect(preview).toContainText('Feeling sunny, rolled');
-    // Shown as written, in its pill: it runs only when sent.
     await expect(preview.locator('.macro-pill[data-macro-name="roll"]')).toHaveCount(1);
 });
 
@@ -67,7 +61,6 @@ test('filled in whole, as the macro preview does, nothing a macro sets is kept',
         const scope = openChatMacroScope();
         const [whole] = await fetchMacroValues(['{{setvar::seen::yes}}{{getvar::seen}} and {{getglobalvar::mood}}'], scope, { all: true });
         const [after] = await fetchMacroValues(['{{getvar::seen}}'], scope);
-        // A macro run only when sent isn't filled in one at a time.
         const [roll] = await fetchMacroValues(['{{roll::d6}}'], scope);
         return { whole, after, roll };
     });

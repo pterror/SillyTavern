@@ -6,11 +6,6 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// A sent message the server didn't store stays on screen marked as not saved, with a notice that doesn't
-// fade, and is kept (also across a reload, where it was) until it is saved again or discarded. One the generate
-// request didn't store is stored by the page itself first; only one that can't be stored that way either is not
-// saved. Each store carries the send's key, so a send the server had stored after all isn't stored twice.
-
 const MODEL = 'failed-send-model';
 const REPLY = 'Aye, at dawn.';
 
@@ -44,7 +39,10 @@ function startLlamaCpp() {
     });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
@@ -58,7 +56,10 @@ async function createCharacter(page, name) {
     }, name);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
 async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
@@ -71,7 +72,10 @@ async function openCharacter(page, avatar) {
     await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} url */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} url
+ */
 async function connectLlamaCpp(page, url) {
     if (!(await page.locator('#main_api').isVisible())) {
         await page.locator('#API-status-top').click();
@@ -88,7 +92,6 @@ async function connectLlamaCpp(page, url) {
         // @ts-ignore
         SillyTavern.getContext().textCompletionSettings.streaming = false;
     });
-    // The server reads the backend from the saved settings; let that save land.
     await page.waitForTimeout(2500);
 }
 
@@ -100,14 +103,20 @@ function chatState(page) {
     });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
 async function reopen(page, avatar) {
     await page.reload();
     await testSetup.awaitST({ page });
     await openCharacter(page, avatar);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} title */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} title
+ */
 function notice(page, title) {
     return page.locator('.toast-error', { hasText: title });
 }
@@ -125,7 +134,6 @@ test.describe('a send the server did not store', () => {
         await openCharacter(page, avatar);
         await connectLlamaCpp(page, mock.url);
 
-        // Neither the generate request nor the page's own store of the message reaches the server.
         await page.route('**/api/backends/text-completions/generate', route => route.abort('connectionreset'));
         await page.route('**/api/chats/message/append', route => route.abort('connectionreset'));
         const text = `When do we leave ${stamp}?`;
@@ -135,7 +143,6 @@ test.describe('a send the server did not store', () => {
         await expect(notice(page, 'Message not saved')).toBeVisible({ timeout: 15000 });
         await expect(page.locator('#chat .mes.failed_send')).toHaveCount(1);
         await expect(page.locator('#chat .mes.failed_send .mes_text')).toContainText(text);
-        // A new send is refused until it is saved or discarded.
         await page.unroute('**/api/backends/text-completions/generate');
         await page.unroute('**/api/chats/message/append');
         await chatBox(page).fill('And then?');
@@ -147,7 +154,6 @@ test.describe('a send the server did not store', () => {
         await expect(page.locator('#chat .mes.failed_send')).toHaveCount(1);
         await expect(page.locator('#chat .mes.failed_send')).toHaveAttribute('mesid', '1');
         await expect(page.locator('#chat .mes.failed_send .mes_text')).toContainText(text);
-        // The text lives with the failed send, not also in the box.
         expect(await page.evaluate(() => String($('#send_textarea').val()))).toBe('');
 
         await notice(page, 'Message not saved').getByRole('button', { name: 'Save it again' }).click();
@@ -168,7 +174,6 @@ test.describe('a send the server did not store', () => {
         await openCharacter(page, avatar);
         await connectLlamaCpp(page, mock.url);
 
-        // The server stores the message and the reply, but the answer never reaches the page.
         await page.route('**/api/backends/text-completions/generate', async (route) => {
             await route.fetch();
             await route.abort('connectionreset');
@@ -182,7 +187,6 @@ test.describe('a send the server did not store', () => {
         await expect(page.locator('#chat .mes.failed_send')).toHaveCount(0);
         await expect(notice(page, 'Message not saved')).toHaveCount(0);
 
-        // The chat as stored: the message once, with the reply the server stored after it.
         await reopen(page, avatar);
         await expect.poll(async () => (await chatState(page)).map(m => m.mes)).toEqual(['Hello.', text, REPLY]);
     });
@@ -194,13 +198,11 @@ test.describe('a send the server did not store', () => {
         await openCharacter(page, avatar);
         await connectLlamaCpp(page, mock.url);
 
-        // The request never reaches the server, and the page is reloaded before it settles.
         await page.route('**/api/backends/text-completions/generate', () => new Promise(() => {}));
         const lost = `Lost in flight ${stamp}`;
         await chatBox(page).fill(lost);
         await page.locator('#send_but').click();
         await expect(page.locator('#chat .mes .mes_text', { hasText: lost })).toHaveCount(1);
-        // Left routed through the reload: unrouting first would let the held request through.
         await reopen(page, avatar);
         await page.unroute('**/api/backends/text-completions/generate');
         await expect(page.locator('#chat .mes.failed_send .mes_text')).toContainText(lost);
@@ -209,7 +211,6 @@ test.describe('a send the server did not store', () => {
         await expect(page.locator('#chat .mes.failed_send')).toHaveCount(0);
         await connectLlamaCpp(page, mock.url);
 
-        // The server stores it, but the page is reloaded before hearing so.
         await page.route('**/api/backends/text-completions/generate', async (route) => {
             await route.fetch();
             await new Promise(() => {});
@@ -247,7 +248,6 @@ test.describe('a send the server did not store', () => {
         await page.unroute('**/api/backends/text-completions/generate');
         await page.unroute('**/api/chats/message/append');
 
-        // Meanwhile someone else adds a message after the greeting.
         const greetingNode = await page.evaluate(async (avatar) => {
             // @ts-ignore
             const context = SillyTavern.getContext();
@@ -270,7 +270,6 @@ test.describe('a send the server did not store', () => {
 
         await moved.getByRole('button', { name: 'Send as reply to that message' }).click();
         await expect(moved).toHaveCount(0);
-        // It is on its own branch now, right after the greeting.
         await expect.poll(async () => (await chatState(page)).map(m => m.mes)).toEqual(['Hello.', text]);
         const chat = await chatState(page);
         expect(chat[0].node_id).toBe(greetingNode);

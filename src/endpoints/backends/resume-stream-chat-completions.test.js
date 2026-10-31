@@ -8,31 +8,11 @@ import express from 'express';
 
 import { write as writeCard } from '../../character-card-parser.js';
 import '../../fetch-patch.js';
-// Same process-wide config-path requirement as chat-completions.test.js/resume-stream.test.js (the
-// import chain through chat-completion-generation-input.js -> characters.js -> character-shallow.js
-// reads config at import time).
 import { setConfigFilePath } from '../../util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 
-// Real end-to-end resumability test for chat-completions.js's provider-specific `sendXRequest()`
-// functions - resume-stream.text-completions.test.js already proves the shared guard/buffer/resume
-// mechanism end-to-end for the default/legacy text-completion dispatch path; this file proves the
-// SAME mechanism for three of chat-completions.js's ~13 independent provider functions, chosen to
-// cover meaningfully different real upstream stream framings, not just three copies of the same
-// OpenAI-delta shape:
-// - Claude (sendClaudeRequest): named SSE events (content_block_delta/message_stop), no [DONE]
-//   sentinel - the stream just ends when the connection closes.
-// - Gemini/MakerSuite (sendMakerSuiteRequest): `alt=sse` chunks, each a FULL
-//   GenerateContentResponse-shaped payload (not an OpenAI-style incremental delta).
-// - Mistral (sendMistralAIRequest): the typical OpenAI-Chat-Completions-shaped
-//   `choices[0].delta.content` stream every other provider function not covered here also uses.
-// Each real client (fetch + AbortController) genuinely disconnects mid-stream from the real router
-// (mounted on a real Express app, listening on a real ephemeral TCP port) while a real, paced `http`
-// fake backend is still mid-generation, then reconnects via the real GET /generate/resume/:id route
-// and is served the live continuation - the exact same mechanism resume-stream.test.js already
-// verifies for the default path.
 const { router } = await import('./chat-completions.js');
 const { writeAllSettings } = await import('../../settings-store.js');
 const { CompactStreamDecoder } = await import('../../../public/scripts/llamacpp-compact-stream.js');
@@ -47,8 +27,6 @@ globalThis.DATA_ROOT = user.dataRoot;
 let branches = 0;
 
 /**
- * A new conversation of `avatar`'s, its greeting stored through a session of its own (a greeting of its own: one
- * with the same text would be the stored one).
  * @param {string} avatar
  */
 async function newBranch(avatar) {
@@ -84,7 +62,6 @@ async function writeCharacter(avatar, overrides = {}) {
     return avatar;
 }
 
-/** Real settings.json fixture - only the keys resolveChatCompletionGenerationInput()/createGenerationParameters() actually read. */
 function buildSettingsFixture() {
     return {
         username: 'Tester',
@@ -159,13 +136,6 @@ async function startFakeBackend(handler) {
     return { server, url: `http://127.0.0.1:${server.address().port}` };
 }
 
-/**
- * Starts a fake backend that writes each of `rawChunks` (already-formatted SSE text, one write per
- * array entry) with a real delay between writes, so there is a genuine window during which the real
- * client can disconnect while the backend is still actively producing content the server has not
- * relayed yet. Resolves `done` once every chunk has been written (tests await this before asserting
- * final persisted state, to avoid racing the backend's own completion).
- */
 function startFakePacedSseBackend(rawChunks, { delayMs = 40, trailer = '' } = {}) {
     let resolveDone;
     const done = new Promise(resolve => { resolveDone = resolve; });
@@ -207,10 +177,6 @@ async function waitFor(check, { timeoutMs = 3000, intervalMs = 10 } = {}) {
 }
 
 /**
- * Runs one full disconnect-mid-stream-then-resume cycle against a real, paced fake backend, and
- * asserts the resumed stream reconstructs the complete text with nothing lost or duplicated, and that
- * the real persisted tree message matches exactly. Shared across all three provider cases below - only
- * the fake backend's own wire shape and the settings-pointing function differ between them.
  * @param {object} options
  * @param {string} options.userMessage
  * @param {string} options.expectedText
@@ -266,8 +232,6 @@ async function runResumeCase({ avatar, ownerId, userMessage, expectedText, start
         assert.ok(text.length > 0 && expectedText.startsWith(text), 'the first real chunk decoded to a real prefix of the expected text');
         assert.ok(text.length < expectedText.length, 'the backend has more content still to send - the drop below is genuinely mid-generation, not after the fact');
 
-        // Real socket-level disconnect - same mechanism resume-stream.test.js verifies for the
-        // default text-completion dispatch path.
         controller.abort();
         await assert.rejects(() => reader.read(), 'the original connection is genuinely dead after abort()');
 
@@ -312,8 +276,6 @@ async function run() {
     });
     const ownerId = avatar;
 
-    // --- Claude (sendClaudeRequest): named SSE events, content only lives in `text_delta` deltas on
-    // the real `text` content block; the stream ends on `message_stop` with no [DONE] sentinel. ---
     {
         const chunks = ['Once ', 'upon ', 'a ', 'time, ', 'a ', 'dropped ', 'connection ', 'resumed.'];
         const expectedText = chunks.join('');
@@ -336,9 +298,6 @@ async function run() {
         });
     }
 
-    // --- Gemini/MakerSuite (sendMakerSuiteRequest): `alt=sse` chunks, each a FULL
-    // GenerateContentResponse-shaped payload carrying that chunk's own incremental
-    // `candidates[0].content.parts` - not an OpenAI-style incremental delta at all. ---
     {
         const chunks = ['Once ', 'upon ', 'a ', 'time, ', 'a ', 'dropped ', 'connection ', 'resumed.'];
         const expectedText = chunks.join('');
@@ -353,9 +312,6 @@ async function run() {
         });
     }
 
-    // --- Mistral (sendMistralAIRequest): the typical OpenAI-Chat-Completions-shaped
-    // `choices[0].delta.content` stream, the same shape most of the other 13 provider functions not
-    // individually covered here also use. ---
     {
         const chunks = ['Once ', 'upon ', 'a ', 'time, ', 'a ', 'dropped ', 'connection ', 'resumed.'];
         const expectedText = chunks.join('');

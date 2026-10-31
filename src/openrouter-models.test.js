@@ -18,7 +18,6 @@ if (typeof mock.module !== 'function') {
 
 const MODELS_URL = 'https://openrouter.ai/api/v1/models';
 
-// Rows of OpenRouter's /models reply as it was on 2026-09-28, cut down to the fields read here.
 const LISTED = [
     { id: 'deepseek/deepseek-chat-v3.1', hugging_face_id: 'deepseek-ai/DeepSeek-V3.1' },
     { id: 'anthropic/claude-sonnet-4', hugging_face_id: '' },
@@ -65,7 +64,6 @@ async function testCase(name, fn) {
     }
 }
 
-/** A fetch that fails the test if the list is fetched. */
 const noFetch = async () => {
     throw new Error('the list was fetched');
 };
@@ -149,7 +147,6 @@ await testCase('an hour-old list whose refetch fails answers not ok', async () =
     }
 });
 
-// The two /status routes refresh the list with the reply they already fetched.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-openrouter-models-'));
 globalThis.DATA_ROOT = root;
 const directories = { root };

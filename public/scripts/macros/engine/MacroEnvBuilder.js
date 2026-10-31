@@ -23,7 +23,6 @@ import { getStringHash } from '../../hash-utils.js';
  * own from a request's (src/macro-substitution.js).
  */
 
-/** The type of the last generation queued, for {{lastGenerationType}}; forgotten when the chat changes. */
 let lastGenerationType = '';
 eventSource.on(event_types.GENERATION_STARTED, (type, _params, isDryRun) => {
     if (!isDryRun) lastGenerationType = type || 'normal';
@@ -32,12 +31,9 @@ eventSource.on(event_types.CHAT_CHANGED, () => {
     lastGenerationType = '';
 });
 
-/** Variables the macros use instead of the chat's and the global ones, while set (withScratchVariables()). */
 let scratchVariables = /** @type {{ local: import('./MacroEnv.types.js').MacroVariableScope, global: import('./MacroEnv.types.js').MacroVariableScope } | null} */ (null);
 
 /**
- * A copy of the chat's and the global variables, for macros evaluated on the page while the server builds the
- * prompt: what they set stays in the copy, so only the server's evaluation changes the variables.
  * @returns {{ local: import('./MacroEnv.types.js').MacroVariableScope, global: import('./MacroEnv.types.js').MacroVariableScope }}
  */
 export function variablesCopy() {
@@ -47,7 +43,6 @@ export function variablesCopy() {
 }
 
 /**
- * Runs `fn` with the macros reading and writing `variables` (variablesCopy()) instead of the real ones.
  * @template T
  * @param {ReturnType<typeof variablesCopy>} variables
  * @param {() => T} fn
@@ -64,7 +59,6 @@ export function withScratchVariables(variables, fn) {
 }
 
 /**
- * The dialogue examples as the prompt has them: formatted for instruct mode when it is on.
  * @param {string} raw
  * @param {string} user
  * @param {string} char
@@ -80,8 +74,6 @@ function formatMesExamples(raw, user, char) {
 }
 
 /**
- * What only the page knows of what the macros read, sent with a generation the server builds the prompt of
- * (src/macro-facts.js).
  * @returns {import('../../../../src/macro-facts.js').PageMacroFacts}
  */
 export function pageMacroFacts() {
@@ -90,7 +82,6 @@ export function pageMacroFacts() {
 }
 
 /**
- * What the macros read of the page, each read when a macro reads it.
  * @returns {import('./MacroEnv.types.js').MacroEnvState}
  */
 function pageState() {
@@ -255,7 +246,6 @@ class MacroEnvBuilder {
 
         env.system.model = getGeneratingModel();
 
-        // env.functions.original resolves once then returns empty on subsequent calls
         if (typeof ctx.original === 'string') {
             let originalSubstituted = false;
             env.functions.original = () => {
@@ -266,7 +256,6 @@ class MacroEnvBuilder {
         }
         env.functions.postProcess = typeof ctx.postProcessFn === 'function' ? ctx.postProcessFn : (x) => x;
 
-        // Keys normalized to lowercase for case-insensitive matching
         if (ctx.dynamicMacros && typeof ctx.dynamicMacros === 'object') {
             for (const [key, value] of Object.entries(ctx.dynamicMacros)) {
                 env.dynamicMacros[key.toLowerCase()] = value;

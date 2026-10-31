@@ -1,10 +1,8 @@
-/** `error.code` for an import input that holds no character card data - a bad file, not a server fault. */
 export const NO_CARD_DATA = 'NO_CARD_DATA';
 
 /**
- * Names what was being imported in an error thrown from code that only saw its bytes or a temp path.
- * @param {string} name The uploaded file's original name, the local source path, or the remote URL/id.
- * @param {unknown} error The original error, kept as `cause`; its `code` is carried over.
+ * @param {string} name
+ * @param {unknown} error
  * @returns {Error & { code?: string }}
  */
 export function importFailure(name, error) {

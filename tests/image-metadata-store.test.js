@@ -6,16 +6,12 @@ import path from 'node:path';
 /** @type {typeof import('../src/endpoints/image-metadata.js')} */
 let imageMetadata;
 
-// A real, minimal 1x1 PNG so generateImageMetadata() (imageSize + Jimp) has something genuine to
-// decode - these tests exercise the actual write path end to end, not a mocked-out generator.
 const ONE_PIXEL_PNG = Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
     'base64',
 );
 
 beforeAll(async () => {
-    // image-metadata.js reads config.yaml at import time via getConfigValue() (thumbnail dimensions) -
-    // point that at the repo's default config so the import doesn't hard process.exit(1).
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
@@ -31,9 +27,6 @@ describe('image-metadata sharded storage', () => {
         userRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'st-image-metadata-'));
         backgroundsDir = path.join(userRoot, 'backgrounds');
         fs.mkdirSync(backgroundsDir, { recursive: true });
-        // write-file-atomic (used for every metadata write below) writes to a tmpfile then does a
-        // callback-style fs.rename() to the real target path - that final rename is the reliable
-        // "this file was actually (re)written" signal, since it names the true destination path.
         renameSpy = jest.spyOn(fs, 'rename');
     });
 
@@ -63,7 +56,6 @@ describe('image-metadata sharded storage', () => {
         expect(fs.existsSync(metaFilePath('backgrounds/a.png'))).toBe(true);
         expect(fs.existsSync(metaFilePath('backgrounds/b.png'))).toBe(false);
 
-        // No per-user index file was touched at all.
         expect(fs.existsSync(path.join(userRoot, 'image-metadata.json'))).toBe(false);
     });
 
@@ -75,12 +67,10 @@ describe('image-metadata sharded storage', () => {
         const bMetaPath = metaFilePath('backgrounds/b.png');
         const bBytesBefore = fs.readFileSync(bMetaPath);
 
-        // Touch a.png so its mtime changes, forcing regeneration, and regenerate just that one.
         fs.utimesSync(path.join(backgroundsDir, 'a.png'), new Date(), new Date(Date.now() + 5000));
         renameSpy.mockClear();
         await imageMetadata.getOrGenerateMetadataBatch(userRoot, ['backgrounds/a.png'], 'bg');
 
-        // b.png's metadata file was never (re)written, and its bytes are unchanged.
         const renamedToPaths = renameSpy.mock.calls.map(call => String(call[1]));
         expect(renamedToPaths.some(p => p.includes('b.png'))).toBe(false);
         expect(renamedToPaths.some(p => p.endsWith(path.join('images', 'backgrounds', 'a.png.json')))).toBe(true);
@@ -160,7 +150,6 @@ describe('image-metadata sharded storage', () => {
 
         expect(index.images['backgrounds/legacy.png']).toEqual(legacyIndex.images['backgrounds/legacy.png']);
         expect(index.folders).toEqual(legacyIndex.folders);
-        // Legacy file was moved out of the way, not left in place or destroyed.
         expect(fs.existsSync(path.join(userRoot, 'image-metadata.json'))).toBe(false);
         expect(fs.existsSync(path.join(userRoot, 'image-metadata.json.migrated'))).toBe(true);
     });

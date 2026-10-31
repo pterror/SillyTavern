@@ -4,10 +4,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { write as writeCard } from './character-card-parser.js';
-// text-completion-generation-input.js pulls in src/endpoints/characters.js (via readCardContent),
-// which (via character-shallow.js) reads process-wide config at import time - set the config path
-// before importing it, the same way character-card-fields.test.js does, since this test runs
-// standalone (see that file's own comment on the exact same requirement).
 import { setConfigFilePath } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -25,7 +21,6 @@ const user = await convertedUser('st-text-completion-generation-input-test-');
 const directories = user.directories;
 globalThis.DATA_ROOT = user.dataRoot;
 
-/** Minimal real on-disk lorebook, matching src/world-info/candidate-resolution.test.js's own fixture shape. */
 function writeLorebook(name, entries) {
     const entriesObj = {};
     for (const entry of entries) {
@@ -69,14 +64,13 @@ async function writeCharacter(avatar, overrides = {}) {
     return avatar;
 }
 
-/** A real settings.json-shaped fixture, trimmed to what resolveTextCompletionGenerationInput() actually reads - see that module's own field-mapping notes for exactly why each field lives where it does. */
 function buildSettingsFixture() {
     return {
         username: 'Tester',
         user_avatar: 'Tester.png',
         amount_gen: 250,
         max_context: 4096,
-        main_api: 'koboldhorde', // deliberately NOT 'textgenerationwebui' - proves the resolver hardcodes mainApi regardless.
+        main_api: 'koboldhorde',
         power_user: {
             token_padding: 8,
             always_force_name2: true,
@@ -120,14 +114,12 @@ function buildSettingsFixture() {
                 post_history: '',
             },
         },
-        // Real global lorebook selection - nested `world_info_settings.world_info` key, NOT top-level `world_info`
-        // (see text-completion-generation-input.js's own field-mapping notes on this exact distinction).
         world_info_settings: {
             world_info: {
                 globalSelect: ['TestLore'],
                 charLore: [],
             },
-            world_info_character_strategy: 1, // world_info_insertion_strategy.character_first
+            world_info_character_strategy: 1,
             world_info_depth: 3,
             world_info_budget: 30,
             world_info_budget_cap: 0,
@@ -137,7 +129,6 @@ function buildSettingsFixture() {
             world_info_min_activations_depth_max: 0,
             world_info_use_group_scoring: false,
             world_info_max_recursion_steps: 0,
-            // Real settings that exist here but have no orchestrator input to map to - see module doc comment.
             world_info_case_sensitive: false,
             world_info_match_whole_words: true,
         },
@@ -216,7 +207,6 @@ function buildSettingsFixture() {
     };
 }
 
-/** Deterministic fake tokenizer - real tokenizer resolution is out of this resolver's scope (see module doc comment). */
 function makeFakeTokenizers() {
     const countTokens = async (text) => Math.ceil(String(text ?? '').length / 4);
     const encodeTokens = (text) => Array.from(String(text ?? '')).map(ch => ch.codePointAt(0));
@@ -234,7 +224,6 @@ async function run() {
         data: { name: 'Rex', description: 'Rex is a {{char}}.', first_mes: 'Hi, I am Rex.' },
     });
 
-    // The chat is named by its session, as upstream's chat name names it.
     const branchName = newSessionKey();
     const chatContext = await chatContextOf(user.store, { avatar }, branchName);
     await seedMessages(user.store, { avatar }, null, [
@@ -252,7 +241,6 @@ async function run() {
         countTokens, encodeTokens,
     });
 
-    // --- settings-derived fields ---
     assert.equal(input.name1, 'Tester', 'name1 resolves from settings.json top-level username');
     assert.equal(input.name2, 'Rex', 'name2 resolves from the real character card, not guessed');
     assert.equal(input.mainApi, 'textgenerationwebui', 'mainApi is hardcoded for this text-completion-only resolver, regardless of the live main_api setting');
@@ -275,19 +263,16 @@ async function run() {
     assert.equal(input.customStoppingStringsRaw, '"CUSTOM_STOP"');
     assert.equal(input.noteSettings.default, 'Author note default text.', 'noteSettings passes extension_settings.note through unchanged (same field names)');
     assert.equal(input.globalCfg.guidance_scale, 1, 'globalCfg resolves from extension_settings.cfg.global');
-    // --- world-info candidate resolution (now real, via resolveWorldInfoCandidates()) ---
     assert.equal(input.worldInfoCandidates.length, 1, 'worldInfoCandidates is auto-resolved for real from the on-disk lorebook named in settings.world_info.globalSelect');
     assert.equal(input.worldInfoCandidates[0].content, 'The ancient tower looms over the village.');
     assert.equal(input.worldInfoCandidates[0].world, 'TestLore');
     assert.ok(input.worldInfoCandidates[0].hash, 'resolved candidates carry the real getStringHash() hash');
 
-    // An explicit override (including []) always wins over auto-resolution.
     const overriddenWI = await resolveTextCompletionGenerationInput(directories, {
         avatar, chatContext, branchName, countTokens, encodeTokens, worldInfoCandidates: [],
     });
     assert.deepEqual(overriddenWI.worldInfoCandidates, [], 'an explicit worldInfoCandidates override bypasses auto-resolution');
 
-    // --- userMessageText: appends the pending user action onto the loaded chat history ---
     const withUserMessage = await resolveTextCompletionGenerationInput(directories, {
         avatar, chatContext, branchName, countTokens, encodeTokens,
         userMessageText: 'What happens next, Rex?',
@@ -300,9 +285,6 @@ async function run() {
     assert.deepEqual(appended.extra, {});
     assert.equal(input.chat.length, 3, 'omitting userMessageText leaves chat exactly as loaded, unchanged');
 
-    // --- userMessageExtra: a forwarded file-attachment reference becomes the appended message's
-    // real `extra`, and is later actually inlined by the real orchestrator (not just carried through
-    // as inert data) ---
     fs.writeFileSync(path.join(directories.files, 'notes.txt'), 'The tower key is hidden under the loose stone.');
     const withUserMessageExtra = await resolveTextCompletionGenerationInput(directories, {
         avatar, chatContext, branchName, countTokens, encodeTokens,
@@ -317,19 +299,15 @@ async function run() {
         'a real file-attachment reference forwarded via userMessageExtra is actually inlined into the assembled prompt, via the already-generic file-attachment-inline.js machinery',
     );
 
-    // world_info_settings is nested (NOT top-level world_info_depth) - this is the field-mapping
-    // correction the task specifically asked to verify against real settings.json.
     assert.equal(input.worldInfoDepth, 3, 'worldInfoDepth resolves from the NESTED world_info_settings.world_info_depth, not a top-level key');
     assert.equal(input.worldInfoBudgetPercent, 30);
     assert.equal(input.worldInfoIncludeNames, true);
     assert.equal(input.worldInfoRecursive, false);
 
-    // --- backend resolution (reused, not re-derived) ---
     assert.equal(input.model, 'test-model-7b', 'model resolves via the real, reused resolveTextGenBackend()');
     assert.equal(input.settings.type, 'ooba', 'settings forwards the real textgenerationwebui_settings object');
     assert.equal(input.settings.temp, 0.9);
 
-    // --- chat resolution (real message-tree DB round trip, not a hand-typed fixture) ---
     assert.equal(input.chat.length, 3, 'chat resolves through the chat engine');
     assert.equal(input.chat[0].mes, 'Hello there, traveler.');
     assert.equal(input.chat[0].name, 'Rex');
@@ -338,7 +316,6 @@ async function run() {
     assert.equal(input.chat[2].mes, 'Likewise!');
     assert.ok(input.chat[0].node_id, 'real tree node ids are present, not fabricated');
 
-    // --- macroExtras override ---
     const overridden = await resolveTextCompletionGenerationInput(directories, {
         avatar, chatContext, branchName, countTokens, encodeTokens,
         macroExtras: { quiet_prompt: 'Summarize the scene.', isDryRun: true },
@@ -346,7 +323,6 @@ async function run() {
     assert.equal(overridden.quiet_prompt, 'Summarize the scene.', 'macroExtras is shallow-merged over the resolved object');
     assert.equal(overridden.isDryRun, true);
 
-    // --- required-param guards ---
     await assert.rejects(
         () => resolveTextCompletionGenerationInput(directories, { avatar, chatContext, branchName, encodeTokens }),
         /countTokens is required/,
@@ -356,7 +332,6 @@ async function run() {
         /encodeTokens is required/,
     );
 
-    // --- end-to-end: feed the resolved input straight into the REAL orchestrator ---
     const result = await assembleTextCompletionPrompt(input);
     assert.equal(typeof result.combinedPrompt, 'string');
     assert.ok(result.combinedPrompt.length > 0, 'combinedPrompt is non-empty end to end');
@@ -364,9 +339,6 @@ async function run() {
     assert.ok(result.generate_data && typeof result.generate_data === 'object', 'generate_data wire payload is produced');
     assert.equal(result.generate_data.model, 'test-model-7b');
 
-    // --- end-to-end #2: the userMessageText-appended chat + real auto-resolved world-info
-    // candidates, both flowing all the way through the real orchestrator - the important proof for
-    // this session's two additions, not just that the individual fields look right in isolation.
     const resultWithUserMessage = await assembleTextCompletionPrompt(withUserMessage);
     assert.ok(typeof resultWithUserMessage.combinedPrompt === 'string' && resultWithUserMessage.combinedPrompt.length > 0);
     assert.ok(
@@ -378,7 +350,6 @@ async function run() {
         'the real, auto-resolved world-info candidate (a constant entry) was activated and made it into the final assembled prompt',
     );
 
-    // --- mainApi: 'kobold' dispatch (new in this task) ---
     const koboldInput = await resolveTextCompletionGenerationInput(directories, {
         avatar, chatContext, branchName, mainApi: 'kobold', countTokens, encodeTokens,
     });
@@ -393,7 +364,6 @@ async function run() {
     assert.equal(koboldResult.generate_data.api_server, 'http://localhost:5001');
     assert.equal(koboldResult.generate_data.max_new_tokens, undefined, 'textgen-only field must not leak into the kobold payload');
 
-    // --- mainApi: 'novel' dispatch (new in this task) ---
     const novelInput = await resolveTextCompletionGenerationInput(directories, {
         avatar, chatContext, branchName, mainApi: 'novel', countTokens, encodeTokens,
         macroExtras: { encodeTokensByType: (_tokenizerType, text) => encodeTokens(text), novelTokenizerType: tokenizers.NERD },
@@ -406,15 +376,12 @@ async function run() {
     assert.equal(novelResult.generate_data.model, 'clio-v1');
     assert.equal(novelResult.generate_data.max_new_tokens, undefined, 'textgen-only field must not leak into the novel payload');
 
-    // --- mainApi: 'koboldhorde' is explicitly rejected (see module doc comment) ---
     await assert.rejects(
         () => resolveTextCompletionGenerationInput(directories, { avatar, chatContext, branchName, mainApi: 'koboldhorde', countTokens, encodeTokens }),
         /unsupported mainApi/,
     );
 
-    // --- addressing: by chat name, by node id, or (only where the chat starts) by neither ---
     {
-        // (a) an explicit nodeId resolves the same history as the chat that is at it.
         const mainLeafId = input.chat[input.chat.length - 1].node_id;
         const viaNodeId = await resolveTextCompletionGenerationInput(directories, {
             avatar, chatContext, nodeId: mainLeafId, countTokens, encodeTokens,
@@ -423,7 +390,6 @@ async function run() {
         assert.equal(viaNodeId.resolvedNodeId, mainLeafId, 'resolvedNodeId echoes back the given node_id');
         assert.equal(viaNodeId.chatResolutionAmbiguous, false);
 
-        // (b) neither given, by a session that isn't at the tree's root while the tree has messages: ambiguous.
         const ambiguous = await resolveTextCompletionGenerationInput(directories, {
             avatar, chatContext, countTokens, encodeTokens,
         });
@@ -431,7 +397,6 @@ async function run() {
         assert.equal(ambiguous.resolvedNodeId, null);
         assert.deepEqual(ambiguous.chat, [], 'the ambiguous case resolves to an empty chat rather than guessing');
 
-        // (c) neither given, by a session at the tree's root (a new chat): the root, an empty chat.
         const atStart = newSessionKey();
         await user.store.chats.goTo({ tree: await treeOf(user.store, { avatar }), node_id: null, actor: { user: 'u', session: atStart } });
         const started = await resolveTextCompletionGenerationInput(directories, {
@@ -441,7 +406,6 @@ async function run() {
         assert.equal(started.resolvedNodeId, null);
         assert.deepEqual(started.chat, []);
 
-        // (d) neither given, in a tree with no message yet: the root.
         const freshAvatar = await writeCharacter('Fresh.png', { name: 'Fresh' });
         const fresh = await resolveTextCompletionGenerationInput(directories, {
             avatar: freshAvatar, chatContext: await chatContextOf(user.store, { avatar: freshAvatar }, newSessionKey()), countTokens, encodeTokens,
@@ -452,7 +416,6 @@ async function run() {
     }
 
     {
-        // A character's links after the first are its extra books: read from its entity, not from settings.
         const entry = (/** @type {string} */ uid, /** @type {string} */ content) => ({ uid, key: ['never-said'], keysecondary: [], comment: '', content, constant: true, selective: false, order: 10, position: 0, disable: false });
         writeLorebook('PrimaryLore', [entry('p1', 'The primary book speaks.')]);
         writeLorebook('ExtraLore', [entry('e1', 'The extra book speaks.')]);

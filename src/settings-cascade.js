@@ -1,71 +1,39 @@
-/**
- * The settings cascade (the settings model §1.1, with docs/design/settings-scopes.md): every setting is stated at a
- * level, and a field resolves from the closest level that states it. Pure: the caller hands in what each level states
- * and what each bundle holds, so nothing here reads storage.
- *
- * Levels, closest first by default: the tab, the chat, the character (in a group: the speaking character, then the
- * group), the device, the user, the app's default. A level states, for a group of fields (a bundle kind: the sampler
- * preset of an API family, a template kind, the theme, the profile), a bundle ("this preset") and overrides of single
- * fields ("temperature 0.8").
- *
- * Resolving one field walks the levels the field may use, in the order that applies to it:
- * - an override of the field at the level wins;
- * - else a bundle the level names (directly, or through a profile it names) that holds the field wins;
- * - else the next level.
- * A bundle stated at a level is a statement about every field it holds, so a character naming preset Q beats the
- * user's override of `temperature`, while a character overriding only `temperature` keeps the user's preset for the
- * rest. Statements made directly at a level beat its profile's.
- *
- * The order of the levels is itself a setting (`ORDER_FIELD`), resolved through the default order (so it doesn't
- * recurse) and stated at any level, for every field or for one.
- */
-
-/** The levels, closest first: the order a field resolves in unless a statement of the order says otherwise. */
 export const LEVELS = Object.freeze(['tab', 'chat', 'character', 'device', 'user', 'default']);
 
-/** The field stating the order of the levels; per field as `${ORDER_FIELD}:<field>`. */
 export const ORDER_FIELD = 'levelOrder';
 
-/** Which levels a kind of setting may be stated at (settings-scopes.md, "Which levels a setting may use"). */
 export const KIND_LEVELS = Object.freeze({
-    // Theme fields, font size, chat width, motion and blur, mobile view, input area, layouts, language.
     reader: Object.freeze(['tab', 'device', 'user', 'default']),
-    // Every level.
     background: LEVELS,
-    // Presets, templates, connection, persona, Author's Note, CFG.
     generation: Object.freeze(['tab', 'chat', 'character', 'user', 'default']),
-    // Capabilities that run in the browser: a TTS voice, speech recognition, WebLLM.
     browser: Object.freeze(['tab', 'chat', 'character', 'device', 'user', 'default']),
 });
 
 /**
- * @typedef {object} LevelStatements What one level states.
- * @property {string} level One of LEVELS. In a group, two levels are `character` (the speaker's, then the group's).
- * @property {Record<string, unknown>} [overrides] Single fields' values, by field.
- * @property {Record<string, string>} [bundles] The bundle stated for a group of fields, by group (a ref).
- * @property {string} [profile] A connection profile stated at the level (a ref): a bundle of bundle statements.
+ * @typedef {object} LevelStatements
+ * @property {string} level
+ * @property {Record<string, unknown>} [overrides]
+ * @property {Record<string, string>} [bundles]
+ * @property {string} [profile]
  */
 
 /**
- * @typedef {object} Catalog What the cascade reads besides the levels.
- * @property {(field: string) => string | null} groupOf The group (bundle kind) a field belongs to; null for a field
- *   no bundle holds.
- * @property {(field: string) => keyof typeof KIND_LEVELS} kindOf The field's kind, for the levels it may use.
- * @property {(ref: string, group: string) => Record<string, unknown> | undefined} bundle A bundle's fields, by ref and
- *   the group it's stated for; undefined when there's no such bundle.
- * @property {(ref: string) => Record<string, string> | undefined} profile A profile's bundle statements by group.
+ * @typedef {object} Catalog
+ * @property {(field: string) => string | null} groupOf
+ * @property {(field: string) => keyof typeof KIND_LEVELS} kindOf
+ * @property {(ref: string, group: string) => Record<string, unknown> | undefined} bundle
+ * @property {(ref: string) => Record<string, string> | undefined} profile
  */
 
 /**
  * @typedef {object} Resolution
  * @property {unknown} value
- * @property {number} index Which of the levels (their index in the list given) supplied it; -1 for none.
+ * @property {number} index
  * @property {'override' | 'bundle' | 'none'} from
- * @property {string} [bundle] The bundle that supplied it.
+ * @property {string} [bundle]
  */
 
 /**
- * The bundle a level states for a group: directly, else through its profile.
  * @param {LevelStatements} level
  * @param {string} group
  * @param {Catalog} catalog
@@ -78,7 +46,6 @@ export function statedBundle(level, group, catalog) {
 }
 
 /**
- * What one level says of a field, if anything.
  * @param {LevelStatements} level
  * @param {string} field
  * @param {Catalog} catalog
@@ -98,12 +65,10 @@ function statedAt(level, field, catalog) {
 }
 
 /**
- * The levels a field resolves through, in order: the order stated for it (or for every field) through the default
- * order, then only the levels its kind may use.
- * @param {LevelStatements[]} levels The context's levels, in the default order.
+ * @param {LevelStatements[]} levels
  * @param {string} field
  * @param {Catalog} catalog
- * @returns {number[]} Indices into `levels`.
+ * @returns {number[]}
  */
 export function levelOrder(levels, field, catalog) {
     const allowed = KIND_LEVELS[catalog.kindOf(field)] ?? LEVELS;
@@ -115,7 +80,6 @@ export function levelOrder(levels, field, catalog) {
         const at = order.indexOf(name);
         return at === -1 ? order.length + LEVELS.indexOf(name) : at;
     };
-    // Stable: the levels of one name (a group's speaker, then the group) keep their order.
     return levels
         .map((level, index) => ({ level, index }))
         .filter(({ level }) => allowed.includes(level.level))
@@ -139,9 +103,7 @@ function resolveIn(levels, order, field, catalog) {
 }
 
 /**
- * A field's value in a context.
- * @param {LevelStatements[]} levels The context's levels, in the default order (LEVELS; a group's two character
- *   levels speaker first), the default level last.
+ * @param {LevelStatements[]} levels
  * @param {string} field
  * @param {Catalog} catalog
  * @returns {Resolution}
@@ -151,8 +113,6 @@ export function resolveField(levels, field, catalog) {
 }
 
 /**
- * A field's value in a context as if the level at `index` didn't state it: what removing that level's override would
- * leave.
  * @param {LevelStatements[]} levels
  * @param {number} index
  * @param {string} field
@@ -169,20 +129,15 @@ export function resolveWithout(levels, index, field, catalog) {
     return resolveField(without, field, catalog);
 }
 
-/**
- * @typedef {{ op: 'set', index: number, field: string, value: unknown } | { op: 'delete', index: number, field: string }} OverrideChange
- */
+/** @typedef {{ op: 'set', index: number, field: string, value: unknown } | { op: 'delete', index: number, field: string }} OverrideChange */
 
 /**
- * What editing a field to `value` writes (§1.1 "Edits"): an override at the working level (by default the one
- * supplying the value now; the default level is never written, so then the user's), or its removal when the value is
- * what the level would resolve without it, so a value never sits in two places.
  * @param {LevelStatements[]} levels
  * @param {string} field
  * @param {unknown} value
  * @param {Catalog} catalog
- * @param {number} [at] The working level's index; left out, the level supplying the value.
- * @returns {OverrideChange | null} null when nothing changes.
+ * @param {number} [at]
+ * @returns {OverrideChange | null}
  */
 export function editField(levels, field, value, catalog, at) {
     let index = at;
@@ -202,12 +157,10 @@ export function editField(levels, field, value, catalog, at) {
 }
 
 /**
- * "Save to preset": folds a level's overrides of a bundle's fields into the bundle it states, and drops them.
  * @param {LevelStatements} level
  * @param {string} group
  * @param {Catalog} catalog
- * @returns {{ bundle: string, fields: Record<string, unknown>, drop: string[] } | null} The bundle's changed fields and
- *   the overrides to drop; null when the level states no bundle for the group.
+ * @returns {{ bundle: string, fields: Record<string, unknown>, drop: string[] } | null}
  */
 export function foldIntoBundle(level, group, catalog) {
     const bundle = statedBundle(level, group, catalog);
@@ -225,7 +178,6 @@ export function foldIntoBundle(level, group, catalog) {
 }
 
 /**
- * "Reset": the overrides of a group's fields a level holds, to drop.
  * @param {LevelStatements} level
  * @param {string} group
  * @param {Catalog} catalog
@@ -236,16 +188,13 @@ export function resetGroup(level, group, catalog) {
 }
 
 /**
- * @typedef {object} ListStatement A level's statement of a combined list: its own items, and inherited ones it removes.
+ * @typedef {object} ListStatement
  * @property {string[]} [items]
  * @property {string[]} [minus]
  */
 
 /**
- * A list combined across levels (active lorebooks, visible quick reply sets, data bank files): each level adds its
- * items and may remove inherited ones. Farthest first, so a closer level's minus removes what a farther one added,
- * and an item appears once, where it was first added.
- * @param {ListStatement[]} statements Closest first, as the levels.
+ * @param {ListStatement[]} statements
  * @returns {string[]}
  */
 export function combineList(statements) {

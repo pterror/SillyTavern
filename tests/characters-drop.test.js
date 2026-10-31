@@ -75,7 +75,6 @@ async function until(done) {
 describe('PNGs dropped into characters/', () => {
     test('the first pass imports files that are there, and leaves converted ones alone', async () => {
         const lib = user.store.lib;
-        // Bob is deleted after the conversion; his PNG stays as the conversion found it.
         await lib.deleteEntity(codes.TYPE.character, 'Bob.png');
         fs.writeFileSync(path.join(user.directories.characters, 'Early.png'), await cardPng('Early'));
         const w = watch();
@@ -88,7 +87,6 @@ describe('PNGs dropped into characters/', () => {
         await w.first;
         fs.writeFileSync(path.join(user.directories.characters, 'Late.png'), await cardPng('Late'));
         await until(async () => (await present(['Late.png']))[0]);
-        // Bob (converted, then deleted) is rewritten with another picture: no longer the converted file.
         fs.writeFileSync(path.join(user.directories.characters, 'Bob.png'), await cardPng('Bob again'));
         await until(async () => (await present(['Bob.png']))[0]);
         expect(await present(['Late.png', 'Bob.png'])).toEqual([true, true]);
@@ -100,7 +98,6 @@ describe('PNGs dropped into characters/', () => {
         const w = watch();
         await w.first;
         const file = path.join(user.directories.characters, 'Cara.png');
-        // Moved away and back: the watch reports it, its name, size and mtime stay.
         const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
         fs.renameSync(file, `${file}.away`);
         fs.renameSync(`${file}.away`, file);
@@ -108,7 +105,6 @@ describe('PNGs dropped into characters/', () => {
         await w.idle();
         const warned = warn.mock.calls.flat().map(String).join(' ');
         warn.mockRestore();
-        // Reading it would fail (the conversion left no card in it) and say so.
         expect(warned).not.toContain('Cara.png');
         expect(await present(['Cara.png'])).toEqual([false]);
     });

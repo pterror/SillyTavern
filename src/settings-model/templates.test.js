@@ -38,7 +38,6 @@ test('a model binding refers to its templates by key and gives back their names'
     assert.equal(binding.key, 'llama-3-8b.gguf');
     assert.deepEqual(binding.values, { instruct: 'instruct:Llama 3 Instruct', context: 'context:Llama 3 Instruct' });
     assert.deepEqual(bindingToUpstream(binding), { instruct: 'Llama 3 Instruct', context: 'Llama 3 Instruct' });
-    // Only a context (instruct mode off when bound), a name that isn't text, a field that isn't upstream's.
     for (const entry of [{ context: 'ChatML' }, { context: null, extra: 1 }, {}]) {
         assert.deepEqual(bindingToUpstream(JSON.parse(JSON.stringify(bindingFromUpstream('h', entry)))), entry);
     }

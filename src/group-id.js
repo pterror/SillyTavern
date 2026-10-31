@@ -1,12 +1,9 @@
 import { normalizeFav } from '../public/scripts/hash-utils.js';
 
-// A group id is all digits (`String(Date.now())` at /create). Legacy group files store it as a number, which is
-// the same id. A valid id passes sanitize-filename unchanged, so `<id>.json` is always the group's own file.
 const GROUP_ID_PATTERN = /^\d+$/;
 
 /**
- * The string form of a group id, or null when `value` isn't one.
- * @param {unknown} value A digit string, or a non-negative safe integer (a legacy id stored as a number).
+ * @param {unknown} value
  * @returns {string | null}
  */
 export function normalizeGroupId(value) {
@@ -28,11 +25,9 @@ export function isValidGroupId(value) {
 }
 
 /**
- * Brings a group read from its JSON file to the shape every reader expects, in place: a valid `id` in its string
- * form, and numeric `chat_id`/`chats` entries as strings. An invalid `id` is left as is, for the caller to reject.
  * @template T
- * @param {T} group Parsed group file contents.
- * @returns {T} `group` itself.
+ * @param {T} group
+ * @returns {T}
  */
 export function normalizeGroupRecord(group) {
     if (!group || typeof group !== 'object' || Array.isArray(group)) return group;
@@ -47,11 +42,8 @@ export function normalizeGroupRecord(group) {
 }
 
 /**
- * Which kind of entity a tag assignment for `id` belongs to: an id ending in `.png` is a character's, any other is a
- * group's (legacy non-digit group ids included). Creating a group with a `.png` id is rejected, so a `.png` group
- * row can only be legacy data, and its tag assignments are never read as a group's.
  * @param {unknown} id
- * @returns {'character' | 'group' | null} null when `id` isn't a non-empty string.
+ * @returns {'character' | 'group' | null}
  */
 export function tagEntityTypeOf(id) {
     if (typeof id !== 'string' || id === '') return null;
@@ -59,7 +51,6 @@ export function tagEntityTypeOf(id) {
 }
 
 /**
- * A group as stored: what `writeGroup()` keeps of a group object (its compat chat values, read-time keys, aren't).
  * @param {Record<string, any>} group
  */
 export function storedGroup(group) {

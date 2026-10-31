@@ -23,10 +23,8 @@ router.post('/save-partial', async (request, response) => {
         return response.sendStatus(400);
     }
 
-    // Read current state (read-modify-write, writes to one set one after another as settings/save-partial's)
     let current = /** @type {Record<string, any>} */ ((await readBundle(request.user.directories, 'quickReplies', name)) ?? {});
 
-    // 1. Merge set-level properties (shallow, never touches qrList/name)
     if (setProps && typeof setProps === 'object' && !Array.isArray(setProps)) {
         const safeProps = { ...setProps };
         delete safeProps.qrList;
@@ -34,7 +32,6 @@ router.post('/save-partial', async (request, response) => {
         Object.assign(current, safeProps);
     }
 
-    // 2. Update existing QR entries by stable id (shallow merge per entry)
     if (Array.isArray(qrUpdates)) {
         const qrList = current.qrList ?? [];
         for (const update of qrUpdates) {
@@ -46,7 +43,6 @@ router.post('/save-partial', async (request, response) => {
         }
     }
 
-    // 3. Append new QR entries, minting an id for any entry that doesn't already have one
     /** @type {number[]} */
     const assignedIds = [];
     if (Array.isArray(qrAdds)) {
@@ -61,12 +57,10 @@ router.post('/save-partial', async (request, response) => {
         }
     }
 
-    // 4. Remove QR entries by stable id
     if (Array.isArray(qrDeletes)) {
         current.qrList = (current.qrList ?? []).filter(qr => !qrDeletes.includes(qr.id));
     }
 
-    // 5. Reorder QR entries by stable id list (entries not in the list are appended at the end)
     if (Array.isArray(qrOrder)) {
         const byId = new Map((current.qrList ?? []).map(qr => [qr.id, qr]));
         const ordered = qrOrder.map(id => byId.get(id)).filter(Boolean);

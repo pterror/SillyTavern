@@ -1,78 +1,34 @@
-/**
- * Stacked drawers: the layers on screen are ordered by when each was last brought forward, and with stacked drawers
- * on each one shows exactly what nothing above it covers: walking from the topmost layer down, every layer is cut by
- * the union of the boxes above it. A see-through theme then never shows two layers in one place. Paint order doesn't
- * have to agree: whichever paints on top, the lower layer is cut where the upper one is, and a cut part takes no
- * clicks either, so a click lands on what is visible there.
- *
- * Layers are found by what they are, never by a list of ids, so extensions' own drawers and windows take part:
- * - ordered layers: the chat (#sheld), every drawer (any .drawer-content, wherever it sits: the top bar's, the prompt
- *   manager's popup, an extension's), every floating window (#movingDivs' children, draggables on <body> such as
- *   zoomed avatars). Clicking, tapping or typing in one brings it forward. Any layer but the chat that appears without
- *   having been brought forward while hidden (opened by code that doesn't front it) comes forward by itself, so no
- *   drawer or window can open under the layers already shown.
- * - overlays: above every ordered layer while shown, in html order. What the browser shows in its top layer (every
- *   open dialog, so every popup; every open popover, such as the hold-Ctrl hotkey list or talkativeness), the dropdown
- *   libraries' lists (autocomplete menus, select2 dropdowns) and the chat box and field editors' tooltips (macro
- *   suggestions, the paste picker). And whatever else is put on <body> to paint above every ordered layer (a
- *   z-index above theirs), such as the search pills' and views' pickers or the slash command autocomplete, so no
- *   overlay has to be named to take part.
- *
- * The stack is told when something changes (drawerStackChanged, drawerLayersChanged) by the code that opens,
- * closes, fronts, moves or resizes a layer, and by the dropdown libraries' and editors' events. The only things it
- * watches are each drawer's own class (an extension may open one without our code), each layer's own size (its
- * content changing its height), the children of #movingDivs and <body> (floating windows, dialogs and pickers coming
- * and going) and popovers opening and closing.
- */
 import { setHoles, uncoveredPieces, unionArea } from './util/underlay-clip.js';
 import { accountStorage } from './util/AccountStorage.js';
 
-/** The top-bar drawers. They share #top-settings-holder's stacking context, so z-index alone orders their painting. */
 export const STACK_DRAWER_SELECTOR = '#top-settings-holder > .drawer > .drawer-content';
-/** Every drawer, wherever it is in the page: being a drawer is what makes it a layer, not where it was put. */
 const DRAWER_SELECTOR = '.drawer-content';
-/** Floating windows. */
 const FLOATING_SELECTOR = '#movingDivs > *, body > .draggable';
-/** The chat. Ordered like any layer; it starts at the bottom. */
 const CHAT_ID = 'sheld';
-/**
- * Overlays by what they are: dialogs and popovers (shown, they are in the top layer), the dropdown libraries' lists
- * and the editors' tooltips. Above every ordered layer while shown.
- */
 const OVERLAY_SELECTOR = 'dialog, [popover], .ui-menu, .select2-container--open > .select2-dropdown, .cm-tooltip, .cm-completionInfo';
-/** What is shown in the top layer: above everything, its ancestors' clipping included. */
 const TOP_LAYER_SELECTOR = 'dialog, [popover]';
-/** Sent (bubbling) by an editor when its tooltips come or go: they come and go inside it, not on <body>. */
 export const OVERLAYS_CHANGED_EVENT = 'overlayschanged';
 const ORDERED_SELECTOR = `#${CHAT_ID}, ${DRAWER_SELECTOR}, ${FLOATING_SELECTOR}`;
-/** An edit in progress: a character info field (not one confirmed and saving), or a chat message or its reasoning. */
 const EDITING_SELECTOR = '.field_editing:not(.field_edit_saving), #curEditTextarea, .reasoning_edit_textarea';
 const HOLE_SOURCE = 'drawer-stack';
-/** Past this, the ordered layers are renumbered from 1, keeping the numbers small. */
 const MAX_ORDER = 1000;
-/** accountStorage key of the layers' order, bottom to top, by id: a reload puts the layers it brings back in it. */
 const SAVED_ORDER_KEY = 'DrawerOrder';
-/** Startup brings layers forward before the saved order is put back; saving waits until then. */
 let savedOrderRestored = false;
 
 /** @typedef {import('./util/underlay-clip.js').Rect} Rect */
 
-/** @type {Set<HTMLElement>} Layers that currently have this module's holes or the covered class. */
+/** @type {Set<HTMLElement>} */
 const cut = new Set();
-/** @type {WeakSet<HTMLElement>} Layers shown at the last update, to tell when one appears. */
+/** @type {WeakSet<HTMLElement>} */
 const wasShown = new WeakSet();
-/** @type {WeakMap<HTMLElement, number>} Each hidden layer's order when last seen hidden. */
+/** @type {WeakMap<HTMLElement, number>} */
 const hiddenOrder = new WeakMap();
 /** @type {() => void} */
 let onVisibilityChanged = () => {};
 /** @type {(el: HTMLElement) => void} */
 let onFront = raiseDrawer;
 let frame = 0;
-/**
- * The layers in the page, found once and kept until a layer may have come or gone (see initDrawerStack's
- * `relayer`): querying the whole page several times a frame is what made every drawer move lag with a long list.
- * @type {{ ordered: HTMLElement[], overlays: HTMLElement[], icons: HTMLElement[] } | null}
- */
+/** @type {{ ordered: HTMLElement[], overlays: HTMLElement[], icons: HTMLElement[] } | null} */
 let found = null;
 
 function findLayers() {
@@ -90,9 +46,8 @@ function findLayers() {
 }
 
 /**
- * @param {HTMLElement[]} ordered The ordered layers
- * @returns {HTMLElement[]} The children of <body> that paint above every ordered layer without being or holding one:
- * positioned, with a z-index above that of each ordered layer's own child of <body>.
+ * @param {HTMLElement[]} ordered
+ * @returns {HTMLElement[]}
  */
 function bodyOverlays(ordered) {
     /** @param {Element} el */
@@ -109,7 +64,7 @@ function bodyOverlays(ordered) {
 
 /**
  * @param {Element} el
- * @returns {number} When it was last brought forward, higher being more recent; 0 if never.
+ * @returns {number}
  */
 export function drawerOrder(el) {
     return Number((/** @type {HTMLElement} */ (el)).style.getPropertyValue('--drawerOrder')) || 0;
@@ -119,28 +74,28 @@ function stackOn() {
     return document.body.classList.contains('stackedDrawers');
 }
 
-/** @returns {HTMLElement[]} Every layer that takes part in ordering, shown or not. */
+/** @returns {HTMLElement[]} */
 function orderedLayers() {
     return findLayers().ordered;
 }
 
-/** @returns {HTMLElement[]} The overlays in the page, shown or not, in html order. */
+/** @returns {HTMLElement[]} */
 function overlayLayers() {
     return findLayers().overlays;
 }
 
-/** @param {HTMLElement} el @returns {boolean} Whether an edit is in progress in it. */
+/**
+ * @param {HTMLElement} el
+ * @returns {boolean}
+ */
 function isEditing(el) {
     return el.querySelector(EDITING_SELECTOR) !== null;
 }
 
-/** @type {WeakSet<HTMLElement>} Layers that held an edit at the last update. */
+/** @type {WeakSet<HTMLElement>} */
 const wasEditing = new WeakSet();
 
 /**
- * Bottom-to-top order of two ordered layers: a layer with an edit in progress above every other, so nothing covers
- * what is being edited (another layer can still open, beside or behind it); then by when brought forward; never
- * brought forward, the chat is lowest; then html order, as painting does.
  * @param {HTMLElement} a
  * @param {HTMLElement} b
  */
@@ -152,7 +107,6 @@ function compareOrder(a, b) {
 }
 
 /**
- * Brings a layer above every other one.
  * @param {HTMLElement} el
  */
 export function raiseDrawer(el) {
@@ -168,17 +122,11 @@ export function raiseDrawer(el) {
     if (savedOrderRestored) saveOrder();
 }
 
-/** Saves the order of the layers brought forward, bottom to top, by id. */
 function saveOrder() {
     const order = orderedLayers().filter(el => el.id && drawerOrder(el) > 0).sort(compareOrder).map(el => el.id);
     accountStorage.setItem(SAVED_ORDER_KEY, JSON.stringify(order));
 }
 
-/**
- * Puts the shown layers (the chat and the panels a reload reopened) back in the order they were last in, then saves
- * the order from here on. A shown layer the saved order doesn't name goes under the ones it does, html order between
- * them.
- */
 export function restoreLayerOrder() {
     let saved = [];
     try {
@@ -197,22 +145,24 @@ export function restoreLayerOrder() {
 
 /**
  * @param {Element[]} candidates
- * @returns {Element | undefined} The one brought forward last (html order breaks ties, as painting does).
+ * @returns {Element | undefined}
  */
 export function frontmostOf(candidates) {
     return candidates.reduce((best, el) => (!best || drawerOrder(el) >= drawerOrder(best) ? el : best), undefined);
 }
 
 /**
- * @param {Element} el A top-bar drawer
- * @returns {boolean} With stacked drawers on, whether it is shown and an ordered layer above it covers part of it. An
- * overlay over it (a toast, a popover) doesn't count: it says nothing about which layer was brought forward.
+ * @param {Element} el
+ * @returns {boolean}
  */
 export function isDrawerCovered(el) {
     return stackOn() && el instanceof HTMLElement && isShown(el) && !isLayerInFront(el);
 }
 
-/** @param {HTMLElement} el @returns {boolean} Whether it takes up space on screen now (mid-animation included). */
+/**
+ * @param {HTMLElement} el
+ * @returns {boolean}
+ */
 function isShown(el) {
     if (!el.isConnected || getComputedStyle(el).display === 'none') return false;
     const box = el.getBoundingClientRect();
@@ -222,7 +172,7 @@ function isShown(el) {
 /**
  * @param {HTMLElement[]} ordered
  * @param {HTMLElement[]} overlays
- * @returns {HTMLElement[]} The shown layers, bottom first.
+ * @returns {HTMLElement[]}
  */
 function shownLayersBottomUp(ordered, overlays) {
     return [
@@ -231,12 +181,18 @@ function shownLayersBottomUp(ordered, overlays) {
     ];
 }
 
-/** @param {Element} el @returns {boolean} Whether it is one of the ordered layers. */
+/**
+ * @param {Element} el
+ * @returns {boolean}
+ */
 function isOrdered(el) {
     return findLayers().ordered.includes(/** @type {HTMLElement} */ (el));
 }
 
-/** @param {CSSStyleDeclaration} style @returns {boolean} Whether a box with this style paints anything of its own. */
+/**
+ * @param {CSSStyleDeclaration} style
+ * @returns {boolean}
+ */
 function paintsItself(style) {
     const seen = (/** @type {string} */ color) => !/^(transparent|rgba\(.*,\s*0\))$/.test(color);
     return seen(style.backgroundColor) || style.backgroundImage !== 'none' || style.boxShadow !== 'none'
@@ -245,14 +201,10 @@ function paintsItself(style) {
 }
 
 /**
- * What a layer covers of those under it: its box, with its rounded corners. An overlay that paints nothing of its own
- * covers only what its shown children do (the toasts, not the strip across the screen their container spans; what a
- * transparent popup draws, not the screen it spans). An ordered layer always covers its box: a window's own
- * background is what the stack is for.
  * @param {HTMLElement} el
- * @param {DOMRect} box Its box
- * @param {boolean} whole Whether it covers its box whatever it paints
- * @param {number} [depth] How far down its children are still looked into
+ * @param {DOMRect} box
+ * @param {boolean} whole
+ * @param {number} [depth]
  * @returns {Rect[]}
  */
 function paintedBoxes(el, box, whole, depth = 4) {
@@ -268,14 +220,14 @@ function paintedBoxes(el, box, whole, depth = 4) {
 
 /**
  * @param {HTMLElement} el
- * @param {DOMRect} box Its box
- * @param {CSSStyleDeclaration} [style] Its computed style, if already at hand
- * @returns {Rect} Its box, with the radii of its rounded corners
+ * @param {DOMRect} box
+ * @param {CSSStyleDeclaration} [style]
+ * @returns {Rect}
  */
 function roundedBox(el, box, style = getComputedStyle(el)) {
     const length = (/** @type {string} */ value, /** @type {number} */ side) =>
         Math.min(side / 2, value.endsWith('%') ? parseFloat(value) * side / 100 : parseFloat(value) || 0);
-    /** @param {string} value A computed corner radius: one length or percentage, or two for an ellipse */
+    /** @param {string} value */
     const corner = (value) => {
         const [x, y = x] = value.split(' ');
         return /** @type {[number, number]} */ ([length(x, box.width), length(y, box.height)]);
@@ -285,10 +237,9 @@ function roundedBox(el, box, style = getComputedStyle(el)) {
 }
 
 /**
- * @param {DOMRect} box The layer's box
- * @param {Rect[]} covers Boxes above it, viewport coordinates
- * @returns {Rect[]} The parts of `covers` inside the layer, in its own coordinates. A cover's rounded corner stays
- * rounded where it is inside the layer; where the layer's edge cuts the cover off, the hole's corner is square.
+ * @param {DOMRect} box
+ * @param {Rect[]} covers
+ * @returns {Rect[]}
  */
 function holesIn(box, covers) {
     /** @type {Rect[]} */
@@ -314,11 +265,13 @@ function holesIn(box, covers) {
     return out;
 }
 
-/** @param {HTMLElement} el @returns {boolean} Whether it was entirely covered */
+/**
+ * @param {HTMLElement} el
+ * @returns {boolean}
+ */
 function clearLayer(el) {
     setHoles(el, HOLE_SOURCE, []);
     const wasCovered = el.classList.contains('stackCovered');
-    // Removing a class that isn't there still rewrites the attribute, which wakes this module's own observer.
     if (wasCovered) el.classList.remove('stackCovered');
     delete el.dataset.stackCut;
     cut.delete(el);
@@ -327,26 +280,20 @@ function clearLayer(el) {
 
 /**
  * @param {HTMLElement} el
- * @param {DOMRect} box Its box
- * @param {DOMRect | null} chatBox The chat's box, if shown
- * @returns {boolean} Whether it is a fullscreen drawer: a top-bar drawer reaching past the chat on both sides.
+ * @param {DOMRect} box
+ * @param {DOMRect | null} chatBox
+ * @returns {boolean}
  */
 function isFullscreenDrawer(el, box, chatBox) {
     return !!chatBox && el.matches(STACK_DRAWER_SELECTOR) && box.left < chatBox.left - 1 && box.right > chatBox.right + 1;
 }
 
 /**
- * Cuts the union of `covers` out of `el`. A fullscreen drawer that any one layer above it splits apart (a column down
- * its middle leaving two strips) is hidden whole instead. Each cover is tested on its own, not their union: the union
- * depends on which other layers happen to be above it too (picking a character opens character info over the right
- * strip before the chat comes forward; the chat icon fronts the chat alone), and the same chat over the same drawer
- * must hide it however it got there. Only fullscreen drawers get this, to keep the extra work off every other layer.
  * @param {HTMLElement} el
- * @param {DOMRect} box Its box
+ * @param {DOMRect} box
  * @param {Rect[]} covers
- * @param {DOMRect[] | null} hideIfSplit Null, or what else hides parts of it (the drawer bar), for telling whether its
- * visible part is split
- * @returns {boolean} Whether its entirely-covered state changed
+ * @param {DOMRect[] | null} hideIfSplit
+ * @returns {boolean}
  */
 function cutLayer(el, box, covers, hideIfSplit) {
     const rects = holesIn(box, covers);
@@ -363,19 +310,15 @@ function cutLayer(el, box, covers, hideIfSplit) {
 
 /**
  * @param {DOMRect} box
- * @param {Rect[]} rects The covers' parts inside it, its own coordinates
- * @param {Rect[]} alsoHidden What else hides parts of it (the drawer bar)
- * @returns {boolean} Whether some single cover leaves its visible part in more than one piece.
+ * @param {Rect[]} rects
+ * @param {Rect[]} alsoHidden
+ * @returns {boolean}
  */
 function isSplitByOne(box, rects, alsoHidden) {
     return rects.some(r => uncoveredPieces(box.width, box.height, [r, ...alsoHidden]) > 1);
 }
 
 /**
- * A layer (any but the chat) that was hidden at the last update and is shown now comes forward, unless something
- * already brought it forward while it was hidden (the app fronts a drawer as it opens it; raising it again here
- * could put it over a drawer fronted after it). A layer never seen hidden (added to the page shown, as the expanded
- * editor is) has no such record and comes forward too. Whoever opened it, it never appears under what is already shown.
  * @param {HTMLElement[]} ordered
  */
 function raiseAppearedLayers(ordered) {
@@ -394,7 +337,6 @@ function raiseAppearedLayers(ordered) {
 }
 
 /**
- * A layer whose edit just ended stays where it was, above the layers opened while it was being edited.
  * @param {HTMLElement[]} ordered
  */
 function keepEditedLayersInFront(ordered) {
@@ -405,10 +347,6 @@ function keepEditedLayersInFront(ordered) {
     }
 }
 
-/**
- * Recomputes every cut from where the layers are now. Synchronous, so code reading a drawer's visibility right after
- * opening, closing or fronting one sees the new state.
- */
 export function updateDrawerStack() {
     const ordered = orderedLayers();
     raiseAppearedLayers(ordered);
@@ -431,11 +369,8 @@ export function updateDrawerStack() {
         for (let i = bottomUp.length - 1; i >= 0; i--) {
             const el = bottomUp[i];
             const box = el.getBoundingClientRect();
-            // A layer inside another is cut along with it, so it never cuts its own ancestor; unless it is shown in the
-            // top layer (a popover in a drawer), where its ancestor's cut doesn't reach it.
             const covers = above.filter(a => !el.contains(a.el) || a.el.matches(TOP_LAYER_SELECTOR)).flatMap(a => a.covers);
             changed = cutLayer(el, box, covers, isFullscreenDrawer(el, box, chatBox) ? barBoxes : null) || changed;
-            // A hidden layer covers nothing below it.
             if (!el.classList.contains('stackCovered')) above.push({ el, covers: paintedBoxes(el, box, isOrdered(el)) });
         }
     }
@@ -444,10 +379,9 @@ export function updateDrawerStack() {
 }
 
 /**
- * @param {HTMLElement} el An ordered layer
- * @param {HTMLElement[]} [ordered] Every ordered layer, if already at hand
- * @returns {boolean} Whether it is shown and no shown ordered layer above it covers any part of it. Overlays don't
- * count: they sit above everything while open and say nothing about which layer was brought forward.
+ * @param {HTMLElement} el
+ * @param {HTMLElement[]} [ordered]
+ * @returns {boolean}
  */
 function isLayerInFront(el, ordered = orderedLayers()) {
     if (!isShown(el)) return false;
@@ -457,7 +391,6 @@ function isLayerInFront(el, ordered = orderedLayers()) {
 }
 
 /**
- * Lights each `[data-stack-front-of]` icon while the layer it names is in front; with stacked drawers off, none.
  * @param {HTMLElement[]} ordered
  */
 function updateFrontIcons(ordered) {
@@ -467,9 +400,6 @@ function updateFrontIcons(ordered) {
     }
 }
 
-/**
- * Brings the chat forward, however much of it is covered.
- */
 export function bringChatForward() {
     const chat = document.getElementById(CHAT_ID);
     if (!chat || !stackOn() || isLayerInFront(chat)) return;
@@ -477,14 +407,14 @@ export function bringChatForward() {
     updateDrawerStack();
 }
 
-/** @returns {HTMLElement[]} Every element that can be a layer. */
+/** @returns {HTMLElement[]} */
 function allLayers() {
     return [...orderedLayers(), ...overlayLayers()];
 }
 
 /**
  * @param {HTMLElement[]} layers
- * @returns {string} Where the shown layers are, to tell when one moved.
+ * @returns {string}
  */
 function boxesKey(layers) {
     return layers.filter(isShown).map(el => {
@@ -493,7 +423,10 @@ function boxesKey(layers) {
     }).join(';');
 }
 
-/** @param {HTMLElement} el @returns {boolean} Whether a finite animation or transition of its own is running. */
+/**
+ * @param {HTMLElement} el
+ * @returns {boolean}
+ */
 function isAnimating(el) {
     return el.getAnimations({ subtree: false })
         .some(a => a.playState === 'running' && Number.isFinite(a.effect?.getComputedTiming().endTime));
@@ -501,14 +434,12 @@ function isAnimating(el) {
 
 let lastBoxes = '';
 
-/** Recomputes on the next frame, and on every frame after while a layer animates or moves. */
 function scheduleUpdate() {
     if (frame) return;
     frame = requestAnimationFrame(function step() {
         updateDrawerStack();
         const layers = allLayers();
         const boxes = boxesKey(layers);
-        // A layer animating with no size yet counts too: a popup opens from scaleY(0), and is shown only once it grows.
         const moving = boxes !== lastBoxes || layers.some(el => el.isConnected && isAnimating(el));
         lastBoxes = boxes;
         frame = moving ? requestAnimationFrame(step) : 0;
@@ -517,8 +448,7 @@ function scheduleUpdate() {
 
 /**
  * @param {EventTarget | null} target
- * @returns {HTMLElement | null} The innermost ordered layer holding `target`, or null when it is in none or in an
- * overlay (an overlay sits above everything already, and the layer under it isn't what was clicked).
+ * @returns {HTMLElement | null}
  */
 function orderedLayerOf(target) {
     if (!(target instanceof Element) || target.closest(OVERLAY_SELECTOR)) return null;
@@ -526,8 +456,6 @@ function orderedLayerOf(target) {
 }
 
 /**
- * Clicking, tapping or typing in a layer brings it forward. The event itself goes on untouched: a button in a back
- * layer still gets its click.
  * @param {Event} event
  */
 function onUserInput(event) {
@@ -535,7 +463,6 @@ function onUserInput(event) {
     if (event instanceof KeyboardEvent && ['Shift', 'Control', 'Alt', 'Meta'].includes(event.key)) return;
     const layer = orderedLayerOf(event.target);
     if (!layer || !isShown(layer)) return;
-    // A layer the stack hasn't found yet (an extension's drawer added after it last looked).
     if (!orderedLayers().includes(layer)) drawerLayersChanged();
     const shownAbove = orderedLayers().filter(other => other !== layer && isShown(other) && compareOrder(layer, other) < 0);
     if (shownAbove.length === 0) return;
@@ -543,17 +470,11 @@ function onUserInput(event) {
     drawerStackChanged();
 }
 
-/**
- * Something changed a layer: recomputes now, then every frame while a layer animates or moves (a drawer sliding
- * open, a window being dragged), stopping once nothing moves. The places that open, close, front, resize or move a
- * layer call this; the stack doesn't watch the page for them.
- */
 export function drawerStackChanged() {
     updateDrawerStack();
     scheduleUpdate();
 }
 
-/** Layers may have come or gone (a drawer, window or list added or removed): finds them again, then recomputes. */
 export function drawerLayersChanged() {
     found = null;
     observeLayers();
@@ -562,11 +483,6 @@ export function drawerLayersChanged() {
 
 let classWatcher = /** @type {MutationObserver | null} */ (null);
 let sizeWatcher = /** @type {ResizeObserver | null} */ (null);
-/**
- * Watches each drawer's own class: the one way other code (an extension's, the prompt manager's) opens or closes a
- * drawer without ours. And each layer's own size: what is in a layer changes its height (a drawer's content
- * switching, a list filtering) without anyone saying so. Only the layers' boxes, nothing inside them.
- */
 function observeLayers() {
     if (!classWatcher || !sizeWatcher) return;
     classWatcher.disconnect();
@@ -578,25 +494,18 @@ function observeLayers() {
 }
 
 /**
- * Starts following the layers.
- * @param {() => void} visibilityChanged Called when a layer becomes or stops being entirely covered.
- * @param {(el: HTMLElement) => void} [front] Brings a top-bar drawer forward the way the app does; other layers are
- * raised here.
+ * @param {() => void} visibilityChanged
+ * @param {(el: HTMLElement) => void} [front]
  */
 export function initDrawerStack(visibilityChanged, front) {
     onVisibilityChanged = visibilityChanged;
     onFront = el => (front && el.matches(STACK_DRAWER_SELECTOR) ? front(el) : raiseDrawer(el));
     classWatcher = new MutationObserver(drawerStackChanged);
-    // While the stack follows the layers every frame (a slide, a drag), it already sees each new size.
     sizeWatcher = new ResizeObserver(() => { if (!frame) drawerStackChanged(); });
     observeLayers();
-    // Floating windows (editor layers, Author's Note, extensions' windows, zoomed avatars), popups and pickers come and
-    // go as children of these two; nothing below them is watched.
     const movingDivs = document.getElementById('movingDivs');
     if (movingDivs) new MutationObserver(drawerLayersChanged).observe(movingDivs, { childList: true });
     new MutationObserver(drawerLayersChanged).observe(document.body, { childList: true });
-    // The dropdown libraries and the editors say when a list or tooltip opens or closes; a popover or dialog opening
-    // or closing where it is says so itself.
     $(document).on('autocompleteopen autocompleteclose select2:open select2:close', drawerLayersChanged);
     document.addEventListener(OVERLAYS_CHANGED_EVENT, drawerLayersChanged);
     document.addEventListener('toggle', drawerLayersChanged, true);

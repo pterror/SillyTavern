@@ -6,17 +6,9 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// A whole-chat save (getContext().saveChat(), as extensions call it) made while a reply is being generated never
-// writes that reply: the server stores it. An overswipe's new slot, before the page has its node, must not be saved
-// over the alternative it is beside (the message still names that one), and a first reply streaming in must not be
-// stored as a partial message of its own. Checked at each step against what the server stores: the alternatives
-// beside the swiped message, their texts, and the path the chat opens on.
-
 const MODEL = 'overswipe-save-model';
 
 /**
- * A mock llama.cpp server answering the n-th completion with `Reply number n <stamp>.`, streamed in small, spaced
- * pieces (so the page sees part of it before the end) or whole after a pause.
  * @param {string} stamp
  */
 function startLlamaCpp(stamp) {
@@ -109,7 +101,6 @@ async function connectLlamaCpp(page, url) {
     await page.selectOption('#main_api', 'textgenerationwebui', { force: true });
     await page.locator('#textgen_type').selectOption('llamacpp');
     await page.locator('#llamacpp_api_url_text').fill(url);
-    // A worker's earlier tests leave server URLs in the history, whose suggestions would cover the button.
     // @ts-ignore
     await page.evaluate(() => { const field = $('#llamacpp_api_url_text'); if (field.autocomplete('instance')) field.autocomplete('close'); });
     await page.locator('#api_button_textgenerationwebui').click();
@@ -119,9 +110,6 @@ async function connectLlamaCpp(page, url) {
 }
 
 /**
- * Installs what an extension does: `during` saves the whole chat once while each reply is being generated (on its
- * first streamed piece, or while a non-streamed request is out); `received` changes each reply's text when it arrives
- * (MESSAGE_RECEIVED) and saves the whole chat.
  * @param {import('@playwright/test').Page} page
  * @param {'during'|'received'} when
  * @param {boolean} streaming
@@ -142,7 +130,6 @@ function installExtensionSave(page, when, streaming) {
                 const message = ctx.chat[id];
                 if (message?.is_user || !String(message?.mes ?? '').startsWith('Reply number')) return;
                 ctx.updateMessage(id, { mes: `${message.mes} (noted)` });
-                // Not drawn yet when the reply wasn't streamed: it is drawn from the changed message.
                 if (document.querySelector(`#chat .mes[mesid="${id}"]`)) ctx.updateMessageBlock(id, ctx.chat[id]);
                 await save();
             });
@@ -164,8 +151,6 @@ function installExtensionSave(page, when, streaming) {
 }
 
 /**
- * What the page shows and holds of message `mesId`, and what the server stores: the alternatives beside it, and
- * the path the chat opens on.
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  * @param {number} mesId
@@ -193,7 +178,6 @@ function observe(page, avatar, mesId) {
 }
 
 /**
- * Waits until the generation is done and every message has its stored node.
  * @param {import('@playwright/test').Page} page
  */
 async function settled(page) {
@@ -206,7 +190,6 @@ async function settled(page) {
     await page.waitForTimeout(500);
 }
 
-// Each step is checked on its own (soft), so a failure names every step that went wrong, not only the first.
 const step = expect.configure({ soft: true });
 
 for (const streaming of [true, false]) {
@@ -226,11 +209,9 @@ for (const streaming of [true, false]) {
                 await connectLlamaCpp(page, mock.url);
                 // @ts-ignore
                 await page.evaluate((streaming) => { SillyTavern.getContext().textCompletionSettings.streaming = streaming; }, streaming);
-                // The server reads the backend from the saved settings; give the saves time to land.
                 await page.waitForTimeout(2500);
                 await installExtensionSave(page, when, streaming);
 
-                // The first reply: stored once, whole (no partial copy beside it).
                 await chatBox(page).fill(question);
                 await page.locator('#send_but').click();
                 await expect(page.locator('#chat .mes[mesid="2"]')).toHaveCount(1, { timeout: 30000 });
@@ -239,7 +220,6 @@ for (const streaming of [true, false]) {
                     shownText: reply(1), counter: '1/1', stored: [reply(1)], storedSelected: 0, opensOn: ['Hello.', question, reply(1)],
                 });
 
-                // Overswipe: a second alternative beside the first, which keeps its text.
                 await page.locator('#chat .mes[mesid="2"] .swipe_right').click();
                 // @ts-ignore
                 await expect.poll(() => page.evaluate(() => SillyTavern.getContext().chat[2]?.swipes?.length), { timeout: 30000 }).toBe(2);
@@ -248,7 +228,6 @@ for (const streaming of [true, false]) {
                     shownText: reply(2), counter: '2/2', stored: [reply(1), reply(2)], storedSelected: 1, opensOn: ['Hello.', question, reply(2)],
                 });
 
-                // Going on from the second alternative hangs the conversation under it.
                 await chatBox(page).fill(followUp);
                 await page.locator('#send_but').click();
                 await expect(page.locator('#chat .mes[mesid="4"]')).toHaveCount(1, { timeout: 30000 });
@@ -257,14 +236,12 @@ for (const streaming of [true, false]) {
                     stored: [reply(1), reply(2)], storedSelected: 1, opensOn: ['Hello.', question, reply(2), followUp, reply(3)],
                 });
 
-                // Back to the first: its own branch, with nothing of the second's below it.
                 await page.locator('#chat .mes[mesid="2"] .swipe_left').click();
                 await step.poll(() => observe(page, avatar, 2), { timeout: 10000 }).toMatchObject({
                     shownText: reply(1), counter: '1/2', shownCount: 3, chatLength: 3,
                     stored: [reply(1), reply(2)], storedSelected: 0, opensOn: ['Hello.', question, reply(1)],
                 });
 
-                // Away and back: the chat opens on the first, both alternatives there.
                 const other = await createCharacter(page, `Other-${stamp}`);
                 await openCharacter(page, other);
                 await openCharacter(page, avatar);
@@ -272,7 +249,6 @@ for (const streaming of [true, false]) {
                 await step.poll(() => observe(page, avatar, 2), { timeout: 10000 }).toMatchObject({
                     shownText: reply(1), counter: '1/2', stored: [reply(1), reply(2)], storedSelected: 0, opensOn: ['Hello.', question, reply(1)],
                 });
-                // The extension did save while the replies were generated.
                 // @ts-ignore
                 expect(await page.evaluate(() => window.__extensionSaves)).toBeGreaterThanOrEqual(2);
             } finally {

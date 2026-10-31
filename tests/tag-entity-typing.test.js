@@ -1,9 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import path from 'node:path';
 
-// A tag assignment's entity type follows from its id: ending in `.png` is a character, anything else a group.
-// A group whose id ends in `.png` can only be legacy data; its tag assignments are never read as a group's.
-
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
 /** @type {typeof import('./converted-user.fixture.js')} */
@@ -73,20 +70,16 @@ async function seedCharacter(avatar) {
     await user.store.lib.writeCard(directories, avatar, cardJson);
 }
 
-/** A group. @param {string} id */
+/** @param {string} id */
 async function seedGroup(id) {
     await user.store.lib.writeGroup({ id, name: `Group ${id}`, members: [], fav: false });
 }
 
-/** The tags the store holds for a group, whatever its id. @param {string} id */
+/** @param {string} id */
 async function groupTagIds(id) {
     return /** @type {any} */ ((await user.store.lib.groups([id]))[0])?.tag_ids ?? [];
 }
 
-/**
- * Legacy data where a group and a character share the id `Alice.png`: the character has tag `char-tag`, and the
- * group holds `group-tag`.
- */
 async function seedCollision() {
     await seedCharacter('Alice.png');
     await seedGroup('Alice.png');
@@ -95,8 +88,6 @@ async function seedCollision() {
     await user.store.lib.assignTag(TYPE.group, 'Alice.png', 'group-tag', true);
 }
 
-// Groups and characters are different entities, so a group whose id ends in `.png` has its own tags; the tag routes
-// still read a `.png` id as a character's avatar (upstream's keys).
 describe('a group whose id ends in .png keeps its own tags', () => {
     test('/api/tags/for reads only the character\'s tags', async () => {
         await seedCollision();

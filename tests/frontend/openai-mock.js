@@ -1,10 +1,8 @@
-// The chat completion tests' connection to the mock OpenAI-compatible server (openai-mock-server.js).
 import { expect } from './fixtures.js';
 
 export { startOpenAICompat } from './openai-mock-server.js';
 
 /**
- * Switches to Chat Completion, the custom source at `url` with the mock's model, and connects.
  * @param {import('@playwright/test').Page} page
  * @param {string} url
  * @param {string} [model]

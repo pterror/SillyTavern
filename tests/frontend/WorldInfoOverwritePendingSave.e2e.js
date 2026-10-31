@@ -1,30 +1,19 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-/** A page's write of a whole book: the changes it made (or a new book). */
 const BOOK_WRITE = /\/api\/worldinfo\/(entries\/apply|create)$/;
 
 /**
- * Whether a whole-book write's body leaves the book with entries in it: a change storing an entry, or a new book
- * with entries.
  * @param {any} body
  */
 const writesEntries = body => Array.isArray(body?.entries)
     ? body.entries.some(change => change.data != null)
     : Object.keys(body?.data?.entries ?? {}).length > 0;
 
-// A create or import that overwrites a book never lets an older save of that book land after it. A debounced save
-// still pending when the overwrite starts is written before the deletion; one made while the deletion is under way
-// is dropped, with a warning.
-//
-// These overwrite under a name differing in case, which deletes the old book first. An overwrite under exactly the
-// old name writes over its file without deleting it: WorldInfoOverwriteSameName.e2e.js.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-/** How long the tests wait after the overwrite: longer than debounce_timeout.relaxed, so a stray save would fire. */
 const AFTER_DEBOUNCE_MS = 2000;
 
 /**
@@ -44,7 +33,6 @@ async function createWorldWithEntry(page, worldName) {
 }
 
 /**
- * Schedules a debounced whole-book save of the old book with an edited entry.
  * @param {import('@playwright/test').Page} page
  * @param {string} worldName
  */
@@ -71,7 +59,7 @@ async function deleteWorld(page, worldName) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} worldName
- * @returns {Promise<any>} The book as the server has it, or null if it has none by that name.
+ * @returns {Promise<any>}
  */
 async function serverWorld(page, worldName) {
     return page.evaluate(async (worldName) => {
@@ -85,11 +73,10 @@ async function serverWorld(page, worldName) {
 }
 
 /**
- * Overwrites an existing book through createNewWorldInfo() or importWorldInfo(), confirming the overwrite prompt.
  * @param {import('@playwright/test').Page} page
  * @param {'create'|'import'} how
  * @param {string} worldName
- * @returns {Promise<unknown>} What the create or import returned.
+ * @returns {Promise<unknown>}
  */
 async function overwriteWorld(page, how, worldName) {
     return page.evaluate(async ({ how, worldName }) => {
@@ -110,11 +97,10 @@ async function overwriteWorld(page, how, worldName) {
 }
 
 /**
- * Records, in order, the old book's saves, the deletion and the new book's write.
  * @param {import('@playwright/test').Page} page
  * @param {'create'|'import'} how
- * @param {string} worldName - The old book's name.
- * @param {string} newName - The new book's name.
+ * @param {string} worldName
+ * @param {string} newName
  * @returns {string[]}
  */
 function recordRequests(page, how, worldName, newName) {
@@ -159,7 +145,6 @@ test.describe('overwriting a lorebook with a save of it pending', () => {
                 const book = await serverWorld(page, newName);
                 expect(book).not.toBeNull();
                 expect(Object.keys(book.entries ?? {})).toEqual([]);
-                // Nothing was dropped, so nothing is warned about.
                 await expect(droppedToast(page, worldName)).toHaveCount(0);
             } finally {
                 await deleteWorld(page, worldName);
@@ -175,7 +160,6 @@ test.describe('overwriting a lorebook with a save of it pending', () => {
             await createWorldWithEntry(page, worldName);
             try {
                 const events = recordRequests(page, how, worldName, newName);
-                // The deletion is held back until the old book has been saved again while it is under way.
                 let releaseDelete = () => {};
                 const deleteReleased = new Promise(resolve => { releaseDelete = () => resolve(undefined); });
                 let deleteSeen = () => {};
@@ -203,7 +187,6 @@ test.describe('overwriting a lorebook with a save of it pending', () => {
                 expect(book).not.toBeNull();
                 expect(Object.keys(book.entries ?? {})).toEqual([]);
                 await expect(droppedToast(page, worldName)).toHaveCount(1);
-                // The dropped save's data isn't handed out as the book's.
                 const cached = await page.evaluate(async (worldName) => {
                     const { loadWorldInfo } = await import('./scripts/world-info.js');
                     const data = await loadWorldInfo(worldName);

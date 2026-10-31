@@ -2,23 +2,7 @@ import { getStoppingStrings } from './stopping-strings.js';
 import { substituteParams } from './macro-substitution.js';
 
 /**
- * Server-side port of public/scripts/kai-settings.js's getKoboldGenerationData() - builds the
- * flat request payload for the classic KoboldAI API (not KoboldCpp-via-textgen, which is handled
- * by src/textgen-generation-data.js).
- *
- * Deliberately taken as explicit context parameters instead of ported (each needs its own
- * server-side capability that doesn't exist yet, or is genuinely external/live data):
- * - stoppingStringsParams - getStoppingStrings() (the real one, src/stopping-strings.js) needs the
- *   caller's own resolved chat/persona/instruct/group context; this function only supplies the
- *   `api`/`isImpersonate`/`isContinue` fields it can derive itself from `type` and the fact that
- *   this is always the kobold API. See src/stopping-strings.js's GetStoppingStringsParams typedef
- *   for the rest of the shape.
- * - macroContext - passed through to substituteParams() for koboldSettings.grammar; optional,
- *   defaults to {} (empty user/char context - substituteParams degrades gracefully).
- */
-
-/**
- * @typedef {object} KoboldGenerationSettings Equivalent of kai_settings
+ * @typedef {object} KoboldGenerationSettings
  * @property {number} [rep_pen]
  * @property {number} [rep_pen_range]
  * @property {number} [rep_pen_slope]
@@ -36,12 +20,12 @@ import { substituteParams } from './macro-substitution.js';
  * @property {string} [grammar]
  * @property {number} [seed]
  * @property {boolean} [streaming_kobold]
- * @property {number[]} [sampler_order] Falls back to settings.sampler_order (a merged-preset object) when unset
+ * @property {number[]} [sampler_order]
  * @property {string} [api_server]
  */
 
 /**
- * @typedef {object} KoboldGenerationFlags Equivalent of kai_flags
+ * @typedef {object} KoboldGenerationFlags
  * @property {boolean} [can_use_min_p]
  * @property {boolean} [can_use_stop_sequence]
  * @property {boolean} [can_use_streaming]
@@ -52,12 +36,12 @@ import { substituteParams } from './macro-substitution.js';
 
 /**
  * @typedef {object} KoboldGenerationDataContext
- * @property {object} settings A merged-preset object providing the sampler_order fallback (kai_settings.sampler_order || settings.sampler_order)
- * @property {KoboldGenerationSettings} [koboldSettings] Equivalent of kai_settings
- * @property {KoboldGenerationFlags} [koboldFlags] Equivalent of kai_flags
- * @property {string} [apiServer] Equivalent of kai_settings.api_server
- * @property {import('./stopping-strings.js').GetStoppingStringsParams} [stoppingStringsParams] Everything getStoppingStrings() needs except isImpersonate/isContinue/api, which this function supplies itself
- * @property {import('./macro-substitution.js').SubstituteParamsContext} [macroContext] For substituting koboldSettings.grammar
+ * @property {object} settings
+ * @property {KoboldGenerationSettings} [koboldSettings]
+ * @property {KoboldGenerationFlags} [koboldFlags]
+ * @property {string} [apiServer]
+ * @property {import('./stopping-strings.js').GetStoppingStringsParams} [stoppingStringsParams]
+ * @property {import('./macro-substitution.js').SubstituteParamsContext} [macroContext]
  */
 
 /**
@@ -66,7 +50,7 @@ import { substituteParams } from './macro-substitution.js';
  * @param {number} params.maxLength
  * @param {number} params.maxContextLength
  * @param {boolean} params.isHorde
- * @param {string} [params.type] 'quiet'/'impersonate'/'continue'/'normal'
+ * @param {string} [params.type]
  * @param {KoboldGenerationDataContext} params
  * @returns {object}
  */

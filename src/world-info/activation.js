@@ -7,31 +7,6 @@ import { getDecoratorActivation } from './decorators.js';
 import { substituteParams } from '../macro-substitution.js';
 
 /**
- * Server-side port of the CORE of public/scripts/world-info.js's checkWorldInfo() - primary/
- * secondary key matching, constant entries, probability, sticky/cooldown/delay timed effects,
- * inclusion groups, character/tag/generation-trigger filters, @@activate/@@dont_activate
- * decorators, externally-forced activations, recursion via matched-entry content, min-activations
- * depth-advancing, and token-budget enforcement. Uses the real scan_state machine
- * (INITIAL/RECURSION/MIN_ACTIVATIONS/NONE), not a simplified first-pass/later-pass boolean - that
- * distinction matters for real behavior (e.g. excludeRecursion is only honored during an actual
- * RECURSION pass, not a MIN_ACTIVATIONS one), and delay-until-recursion levels
- * (`entry.delayUntilRecursion`, `availableRecursionDelayLevels`/`currentRecursionDelayLevel`) - an
- * entry delayed to a given level is suppressed until a RECURSION pass reaches that level, and if the
- * scan would otherwise stop while levels remain, one more RECURSION pass is forced to unlock the
- * next level (this continuation is NOT gated on the `recursive` setting - see client
- * public/scripts/world-info.js:5213-5216). Explicitly NOT ported: the WORLDINFO_SCAN_DONE
- * event-hook mechanism (public/scripts/world-info.js:~5230-5271) - a client-only extensibility point
- * that lets extensions listen after each scan pass and mutate scan state/budget/etc. It has no
- * server equivalent (no event bus here) and is unrelated to delay-until-recursion's own logic.
- *
- * Decorators: unlike the other WIEntry fields below, `decorators` is NOT parsed here - the client's
- * getSortedEntries() parses each entry's raw content with parseDecorators() (decorators.js) exactly
- * once, before checkWorldInfo's main loop ever runs, and strips the decorator lines out of the
- * content that gets scanned/activated. Callers of this module must do the same: call
- * parseDecorators(entry.content) for each entry, then pass the parsed `entry.decorators` array and
- * the decorator-stripped content in `entries` - this function only reads entry.decorators, it never
- * derives it from entry.content itself.
- *
  * @typedef {object} WIEntry
  * @property {string} uid
  * @property {string} world
@@ -42,46 +17,40 @@ import { substituteParams } from '../macro-substitution.js';
  * @property {boolean} [constant]
  * @property {boolean} [disable]
  * @property {string} content
- * @property {string[]} [decorators] Pre-parsed via parseDecorators() - see module doc comment above
+ * @property {string[]} [decorators]
  * @property {boolean} [useProbability]
  * @property {number} [probability]
  * @property {boolean} [ignoreBudget]
  * @property {boolean} [preventRecursion]
  * @property {boolean} [excludeRecursion]
- * @property {boolean|number} [delayUntilRecursion] `true` counts as level 1; a number is that exact level
+ * @property {boolean|number} [delayUntilRecursion]
  * @property {number} [scanDepth]
  * @property {boolean} [caseSensitive]
  * @property {boolean} [matchWholeWords]
  */
 
 /**
- * @param {WIEntry[]} entries All candidate entries, in priority order (highest priority first)
- * @param {string[]} chatMessages Chat text, most recent first
+ * @param {WIEntry[]} entries
+ * @param {string[]} chatMessages
  * @param {object} options
  * @param {number} options.maxContext
- * @param {number} options.budgetPercent world_info_budget setting (0-100)
- * @param {number} [options.budgetCap] world_info_budget_cap setting (0 = no cap)
- * @param {number} [options.depth] world_info_depth setting
- * @param {boolean} [options.recursive] world_info_recursive setting
- * @param {number} [options.maxRecursionSteps] world_info_max_recursion_steps setting (0 = unlimited, capped internally at 25 as a safety net)
- * @param {object} [options.globalScanData] {personaDescription, characterDescription, characterPersonality, characterDepthPrompt, scenario, creatorNotes}
+ * @param {number} options.budgetPercent
+ * @param {number} [options.budgetCap]
+ * @param {number} [options.depth]
+ * @param {boolean} [options.recursive]
+ * @param {number} [options.maxRecursionSteps]
+ * @param {object} [options.globalScanData]
  * @param {{name1?: string, name2?: string}} [options.macroContext]
- * @param {(text: string) => Promise<number>} options.countTokens Injected tokenizer - no server tokenizer access is assumed here
- * @param {() => number} [options.random] Injectable RNG for tests
- * @param {object} [options.chatMetadata] Mutable chat metadata - timedWorldInfo is read/written on it directly (see WorldInfoTimedEffects)
- * @param {boolean} [options.isDryRun] Skips sticky/cooldown state changes (delay is still evaluated) - same as checkWorldInfo's dry-run mode
- * @param {boolean} [options.useGroupScoring] world_info_use_group_scoring setting
- * @param {{trigger?: string, characterFilename?: string, characterTags?: string[]}} [options.entryFilterContext] Generation-trigger and character/tag filter inputs (see entry-filters.js)
- * @param {number} [options.minActivations] world_info_min_activations setting (0 = disabled) - keep scanning deeper into chat history until at least this many entries have activated
- * @param {number} [options.minActivationsDepthMax] world_info_min_activations_depth_max setting (0 = no extra cap beyond chat length)
- * @param {Map<string, WIEntry>} [options.externalActivations] Entries to force-activate regardless of key matching, keyed by `${world}.${uid}` - mirrors the client's WORLDINFO_FORCE_ACTIVATE event; no event system here, the caller resolves and passes these in directly
- * @param {string[]} [options.additionalScanInjects] Extra, already-resolved strings to feed into the
- *   scan buffer's inject list (via WorldInfoBuffer#addInject()), mirroring the client's
- *   `checkWorldInfo()` loop over `extension_prompts` entries with `scan === true` (e.g. the
- *   quiet-prompt text, and the Author's Note text when its `allowWIScan` setting is on) - resolving
- *   WHICH extension-prompt entries are scannable and reading their text is the caller's job (same
- *   "caller resolves entities" pattern as `externalActivations`/`worldInfoCandidates`); this module
- *   only injects the already-resolved strings it's given. Falsy/empty strings are ignored. Default `[]`.
+ * @param {(text: string) => Promise<number>} options.countTokens
+ * @param {() => number} [options.random]
+ * @param {object} [options.chatMetadata]
+ * @param {boolean} [options.isDryRun]
+ * @param {boolean} [options.useGroupScoring]
+ * @param {{trigger?: string, characterFilename?: string, characterTags?: string[]}} [options.entryFilterContext]
+ * @param {number} [options.minActivations]
+ * @param {number} [options.minActivationsDepthMax]
+ * @param {Map<string, WIEntry>} [options.externalActivations]
+ * @param {string[]} [options.additionalScanInjects]
  * @returns {Promise<{activatedEntries: WIEntry[], content: string}>}
  */
 export async function activateWorldInfoEntries(entries, chatMessages, options) {
@@ -107,9 +76,6 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
     const timedEffects = new WorldInfoTimedEffects(chatMessages, candidateEntries, chatMetadata, isDryRun);
     timedEffects.checkTimedEffects();
 
-    // Mirrors public/scripts/world-info.js:4835-4840 - the distinct delay levels requested by any
-    // candidate entry, ascending. `true` counts as level 1. currentRecursionDelayLevel starts at the
-    // lowest requested level (0 if none requested it), and later levels only unlock on later passes.
     const availableRecursionDelayLevels = [...new Set(candidateEntries
         .filter(entry => entry.delayUntilRecursion)
         .map(entry => entry.delayUntilRecursion === true ? 1 : entry.delayUntilRecursion),
@@ -137,11 +103,8 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
 
             if (isDelay) continue;
             if (isCooldown && !isSticky) continue;
-            // delayUntilRecursion: suppressed on any non-RECURSION pass, and on a RECURSION pass
-            // suppressed until the scan has reached its required level (client lines 4941-4950).
             if (scanState !== scan_state.RECURSION && entry.delayUntilRecursion && !isSticky) continue;
             if (scanState === scan_state.RECURSION && entry.delayUntilRecursion && entry.delayUntilRecursion > currentRecursionDelayLevel && !isSticky) continue;
-            // excludeRecursion only applies to an actual recursion pass, not a min-activations one.
             if (scanState === scan_state.RECURSION && recursive && entry.excludeRecursion && !isSticky) continue;
 
             const decoratorActivation = getDecoratorActivation(entry.decorators);
@@ -174,8 +137,6 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
         }
 
         let newContent = '';
-        // Computed once per pass, not per entry - activatedText doesn't change within a pass, so
-        // recomputing this per entry would be N redundant tokenizer calls for the same answer.
         const scanTokens = await countTokens(activatedText);
         filterByInclusionGroups(activatedNow, activated, buffer, scanState, timedEffects, { useGroupScoring, random });
         for (const entry of activatedNow) {
@@ -209,16 +170,10 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
             nextScanState = scan_state.RECURSION;
         }
 
-        // A min-activations pass that turned up recursable content needs one recursion pass before
-        // advancing depth again - there might be recursion-triggerable entries matching what was
-        // just added to the buffer.
         if (recursive && !tokenBudgetOverflowed && scanState === scan_state.MIN_ACTIVATIONS && buffer.hasRecurse()) {
             nextScanState = scan_state.RECURSION;
         }
 
-        // If nothing else wants to continue the scan, but min-activations isn't satisfied yet, keep
-        // advancing depth (independent of the `recursive` setting - min-activations is about scanning
-        // further back in chat history, not about recursing through matched content).
         const minActivationsNotSatisfied = minActivations > 0 && activated.size < minActivations;
         if (!nextScanState && !tokenBudgetOverflowed && minActivationsNotSatisfied) {
             const overMax = (minActivationsDepthMax > 0 && buffer.getDepth() > minActivationsDepthMax) || (buffer.getDepth() > chatMessages.length);
@@ -228,9 +183,6 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
             }
         }
 
-        // If the scan is otherwise done but delay levels remain unlocked, force one more RECURSION
-        // pass to unlock the next level - independent of the `recursive` setting (client lines
-        // 5213-5216: this check has no `world_info_recursive` guard at all).
         if (!nextScanState && availableRecursionDelayLevels.length) {
             nextScanState = scan_state.RECURSION;
             currentRecursionDelayLevel = availableRecursionDelayLevels.shift();

@@ -7,12 +7,6 @@ import { pageAnswer, parsePageRequest } from '../catalog-page.js';
 
 export const router = express.Router();
 
-/**
- * `{ tag, freeName }` → `{ result, refused: [{ id, reason: 'deleted' | 'exists' }], tag }`. `tag` is the definition
- * as stored, when it was; a tag sent with no `sort_order` gets the next place in the manual order. With
- * `freeName: true`, `tag.name` is only a base and the server picks a name no other tag has (`name`, else `name #1`,
- * `name #2`, ...).
- */
 router.post('/create', async (request, response) => {
     try {
         const tag = request.body?.tag;
@@ -39,10 +33,6 @@ router.post('/create', async (request, response) => {
     }
 });
 
-/**
- * `{ id, patch }` → `{ result, refused: [{ id, reason: 'deleted' | 'missing' | 'unreadable' }] }`. `patch` holds only
- * the changed fields; the rest keep their stored values.
- */
 router.post('/edit', async (request, response) => {
     try {
         const id = request.body?.id;
@@ -66,13 +56,6 @@ router.post('/edit', async (request, response) => {
     }
 });
 
-/**
- * `{ id, before }` or `{ id, after }` → `{ result, refused: [{ id, reason: 'same' | 'deleted' | 'missing' |
- * 'unreadable' | 'unordered' | 'no-room' }], written: [{ id, sort_order }], queued }`. Puts tag `id` right before or
- * after the anchor tag (by id) in the manual order. written: every tag the move wrote, with the sort_order now
- * stored. queued: the move arrived while a reorder pass is recorded, and is applied when that pass ends; the changes
- * stream says when ('tag-order-settled').
- */
 router.post('/move', async (request, response) => {
     try {
         const id = request.body?.id;
@@ -98,12 +81,6 @@ router.post('/move', async (request, response) => {
     }
 });
 
-/**
- * `{ id, before | after, mode }` → `{ result, refused: [{ id, reason: 'same' | 'deleted' | 'missing' | 'unreadable' }],
- * queued }`. A reorder made while viewing `mode` ('alphabetical' or 'by_entries'): the tags get a manual order
- * matching `mode`, with tag `id` right before or after the anchor tag (by id). queued: it was accepted, and is
- * applied later (reorderTagDefinitions()); false when refused.
- */
 router.post('/reorder', async (request, response) => {
     try {
         const id = request.body?.id;
@@ -127,7 +104,6 @@ router.post('/reorder', async (request, response) => {
         const { lib } = await requestStore(request);
         const result = await lib.tags.reorderDefinitions(id, before !== undefined ? { before } : { after }, mode);
         if (result.queued) {
-            // Not awaited: the pass writes every tag's sort_order in small batches, after this responds.
             lib.tags.startPass();
         }
 
@@ -150,7 +126,6 @@ router.post('/unused-count', async (request, response) => {
 
 const PRUNE_MAX_LIMIT = 500;
 
-/** Deletes up to `limit` unused tag definitions; `more` says whether another call could delete more. */
 router.post('/prune', async (request, response) => {
     try {
         const limit = Number(request.body?.limit);
@@ -165,13 +140,6 @@ router.post('/prune', async (request, response) => {
     }
 });
 
-/**
- * `{ id, mergeInto? }` → `{ result, refused: [{ id, reason: 'deleted' | 'missing' | 'same' | 'unreadable' }],
- * mergedInto, target }`. Deletes one tag definition by id. `mergeInto`, when given, is the tag every entity carrying
- * the deleted one gets instead, as upstream's delete-and-merge does. refused: nothing was deleted; each entry names
- * the tag its reason is about, `id` or `mergeInto`. mergedInto: the tag the entities got, which is not `mergeInto`
- * when that one had itself been merged into another; null with no merge. target: mergedInto's definition.
- */
 router.post('/delete', async (request, response) => {
     try {
         const id = request.body?.id;
@@ -192,11 +160,6 @@ router.post('/delete', async (request, response) => {
     }
 });
 
-/**
- * The tag backup file: `{ tags: [...every tag definition], tag_map: { key: [tag ids] } }`, streamed. Every character
- * and group the store has is in it, whatever any page holds. A tag being deleted is left out of `tags`, and an
- * assignment of it reads as its merge target.
- */
 router.post('/backup', async (request, response) => {
     let definitions;
     let assignments;
@@ -209,8 +172,6 @@ router.post('/backup', async (request, response) => {
         return response.sendStatus(500);
     }
 
-    // Past the first write, a failure can't un-send the 200 and partial body, so it logs and ends the connection
-    // without the closing brackets: the file then doesn't parse, and a restore refuses it.
     response.set('Content-Type', 'application/json');
     response.status(200);
     try {
@@ -249,26 +210,8 @@ router.post('/backup', async (request, response) => {
     response.end();
 });
 
-/** `restCount` counts at most this many tags after a page; past it the answer says "at least". */
 const QUERY_REST_COUNT_MAX = 10000;
 
-/**
- * One page of tag definitions:
- * `{ filter: { search, name, contains, ids, used, folders, folderType }, sort: { field }, pageSize, cursor, counts, ifHash, restCount }`
- * → `{ rows, cursor, more }`. `search` is a prefix of the name and `contains` text anywhere in it, both ignoring case
- * and accents. With `counts: true` the answer also has `counts: { [id]: n }`, how many characters and groups carry
- * each row's tag, and `approximate`, the ids whose count may be too high while a merge is unfinished.
- * `sort.field` is a tag_sort_mode value, manual by default. `cursor` is the one a
- * previous page returned, for the same sort; a manual one is refused (400 invalid-cursor) once the manual order it
- * was made in is no longer the one read, i.e. when a tag reorder pass starts or starts draining. `more` means the server's work cap cut the page short and `cursor`
- * carries on; otherwise a null `cursor` is the end.
- *
- * The page fields (`pageSize`, `cursor`, `ids`, `ifHash`) follow catalog-page.js.
- *
- * With `restCount: true`, a full page that has a next page also answers `rest: { count, more }`: how many tags
- * match after it, counted up to QUERY_REST_COUNT_MAX under the same work cap. `more` means there may be more than
- * `count`. A page cut short by the work cap (`more`) or with no next page has no `rest`.
- */
 router.post('/query', async (request, response) => {
     try {
         const body = request.body ?? {};
@@ -335,14 +278,6 @@ router.post('/query', async (request, response) => {
 
 const BY_IDS_MAX_IDS = 500;
 
-/**
- * `{ ids, known }` → `{ tags, gone, merged, unchanged }`: the definitions for a named set of ids; the ids among them
- * no tag has (never stored, deleted, or marked deleted with no merge target); and `merged`, each id marked deleted with
- * a merge target mapped to the live tag it now reads as (merge chains followed), whose definition is in `tags` too. `known` (optional) maps an id to contentHashOf() of the copy
- * the caller holds: a definition with that hash is left out of `tags` and listed in `unchanged`. An id in none of
- * the three is a tag whose stored definition can't be read. More than BY_IDS_MAX_IDS distinct ids is a 400 rather
- * than a truncated answer, which would read as those tags not existing.
- */
 router.post('/by-ids', async (request, response) => {
     try {
         const ids = Array.isArray(request.body?.ids) ? request.body.ids : [];
@@ -362,10 +297,6 @@ router.post('/by-ids', async (request, response) => {
 
 const BY_NAMES_MAX_NAMES = 100;
 
-/**
- * `{ names }` → `{ tags: [{ name, tag }] }`, one entry per distinct name in the order given: the tag each name stands
- * for (`lib.tags.findByNames()`), or null.
- */
 router.post('/by-names', async (request, response) => {
     try {
         const names = request.body?.names;
@@ -383,11 +314,6 @@ router.post('/by-names', async (request, response) => {
     }
 });
 
-/**
- * Where the change logs end now. `changesSeq` is the cursor to give /changes next. `assignmentChanges` is
- * `{ seq, groupsVersion }`, the cursors to give /assignment-changes next by a client that reads its characters and
- * groups after this answer; null when the store is unavailable.
- */
 router.post('/manifest', async (request, response) => {
     try {
         const { lib } = await requestStore(request);
@@ -402,12 +328,6 @@ router.post('/manifest', async (request, response) => {
 
 const TAG_CHANGES_PAGE_SIZE = 500;
 
-/**
- * `{ sinceSeq }` → one page of what changed in the tag definitions past that cursor:
- * `{ seq, reset, tags, removed: [{ id, mergedInto }], hasMore }`. At most TAG_CHANGES_PAGE_SIZE log
- * rows per answer. `reset` tells the client to re-read the tags it holds instead; a missing or unusable `sinceSeq`
- * always answers that, with the cursor to go on from.
- */
 router.post('/changes', async (request, response) => {
     try {
         const page = await (await requestStore(request)).lib.tags.changes(request.body?.sinceSeq, { limit: TAG_CHANGES_PAGE_SIZE });
@@ -418,13 +338,6 @@ router.post('/changes', async (request, response) => {
     }
 });
 
-/**
- * `{ sinceSeq, sinceGroupsVersion }` → one page of which characters and groups may have had their tags changed past
- * those cursors: `{ seq, groupsVersion, endSeq, endGroupsVersion, reset, ids, hasMore }`. At
- * most TAG_CHANGES_PAGE_SIZE log rows per answer. The client reads the tags of the listed entities it holds with
- * /for. `reset` tells it to re-read the tags of everything it holds instead; missing or unusable cursors always
- * answer that, with the cursors to go on from.
- */
 router.post('/assignment-changes', async (request, response) => {
     try {
         const { sinceSeq, sinceGroupsVersion } = request.body ?? {};
@@ -438,11 +351,6 @@ router.post('/assignment-changes', async (request, response) => {
 
 const FOR_MAX_IDS = 500;
 
-/**
- * Tag ids assigned to a batch of entities (character avatars and/or group ids). Unknown ids come back as `[]`.
- * More than FOR_MAX_IDS distinct ids is a 400 rather than a truncated answer, which would read as those entities
- * having no tags.
- */
 router.post('/for', async (request, response) => {
     try {
         const { ids } = request.body;
@@ -463,12 +371,6 @@ router.post('/for', async (request, response) => {
     }
 });
 
-/**
- * `{ id, tagId }` → `{ result: 'ok', assigned, reason, defined }`. `assigned` is the tag the entity got: `tagId`
- * (reason null); or the tag `tagId` was merged into, when it is being deleted with a merge target ('merged'); or
- * null, and nothing was assigned, when it is being deleted with no merge target ('deleted'). `defined` is false
- * when no stored tag has the assigned id: the assignment is stored, and shows nowhere until a tag has that id.
- */
 router.post('/assign', async (request, response) => {
     try {
         const { id, tagId } = request.body;
@@ -488,7 +390,6 @@ router.post('/assign', async (request, response) => {
     }
 });
 
-/** Unlike /assign, an unknown entity is not treated as a 404 here. */
 router.post('/unassign', async (request, response) => {
     try {
         const { id, tagId } = request.body;
@@ -505,7 +406,6 @@ router.post('/unassign', async (request, response) => {
     }
 });
 
-/** `{ from, to }` (character avatars or group ids): adds the tags `from` has to what `to` has. */
 router.post('/copy', async (request, response) => {
     try {
         const { from, to } = request.body ?? {};
@@ -525,11 +425,6 @@ router.post('/copy', async (request, response) => {
     }
 });
 
-/**
- * `{ from, to }` → `{ result: 'ok', moved }`: the tags of `from` are added to what `to` has and taken off
- * `from`. `moved` lists the tag ids taken off. 404, and nothing written, if `from` has tags and `to` is not a
- * character or group.
- */
 router.post('/rename-key', async (request, response) => {
     try {
         const { from, to } = request.body ?? {};
@@ -549,11 +444,6 @@ router.post('/rename-key', async (request, response) => {
     }
 });
 
-/**
- * `{ tags, tagMap, overwrite }` (a tag backup's `tags` and `tag_map`, and whether the backup's settings replace
- * those of tags that already exist) → everything `lib.tags.restore()` did not restore, plus `createdTagIds` and
- * `updatedTagIds`.
- */
 router.post('/restore', async (request, response) => {
     try {
         const { tags, tagMap, overwrite } = request.body ?? {};

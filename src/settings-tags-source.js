@@ -2,11 +2,6 @@ import fs from 'node:fs';
 
 import { color, generateTimestamp } from './util.js';
 
-/**
- * Settings files that may hold upstream's `tags` and `tag_map`, as the tag stores import them.
- */
-
-// Upstream's DEFAULT_TAGS (public/scripts/tags.js), which upstream shows when settings have no `tags` key.
 export const DEFAULT_TAG_NAMES = ['Plain Text', 'OpenAI', 'W++', 'Boostyle', 'PList', 'AliChat'];
 
 /**
@@ -29,11 +24,9 @@ export function readSettingsTagsSource(filePath) {
 }
 
 /**
- * Moves an imported settings key file out of the settings store, to `<file>.migrated`, or to a timestamped name when
- * that is taken. Never overwrites a file, and leaves the file where it is if it no longer holds what was imported.
  * @param {string} filePath
  * @param {string} importedText
- * @returns {boolean} Whether the file is gone from its place.
+ * @returns {boolean}
  */
 export function moveImportedSettingsFile(filePath, importedText) {
     const current = readSettingsTagsSource(filePath);

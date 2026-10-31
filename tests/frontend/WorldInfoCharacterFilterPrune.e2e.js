@@ -48,12 +48,10 @@ test.describe('world info character filter existence prune', () => {
             const entryRow = page.locator('#world_popup_entries_list .world_entry').first();
             await entryRow.waitFor({ state: 'attached', timeout: 10000 });
 
-            // The entry's editor is only built when its drawer opens.
             await entryRow.evaluate(row => $(row).find('.inline-drawer-toggle').first().trigger('click'));
             const exclusion = entryRow.locator('input[name="character_exclusion"]');
             await expect(exclusion).toBeVisible();
 
-            // Toggling the exclusion checks the filter's names against the characters that exist, and commits at once.
             const existsResponse = page.waitForResponse(response => response.url().endsWith('/api/characters/exists'));
             const editRequest = page.waitForRequest(request => request.url().endsWith('/api/worldinfo/entry/edit'));
             await exclusion.check();

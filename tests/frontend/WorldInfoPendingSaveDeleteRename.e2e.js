@@ -1,21 +1,15 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// A book's debounced saves still waiting when the book is deleted or renamed are never sent to the old name after
-// its file is deleted, where a whole-book save would write the old book back. A rename carries their edits to the
-// new name. A delete the server refuses leaves the book in place, and its waiting save still reaches the file.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-/** Past the debounce window (debounce_timeout.relaxed is 1000 ms): a save still waiting would have been sent. */
 const PAST_DEBOUNCE_MS = 2500;
 
 /**
- * Records every World Info write request (whole-book and single-entry) made from now on, by the book name it writes.
  * @param {import('@playwright/test').Page} page
- * @returns {string[]} The live list of written book names, in request order
+ * @returns {string[]}
  */
 function recordWrites(page) {
     const writes = [];
@@ -29,7 +23,6 @@ function recordWrites(page) {
 }
 
 /**
- * Creates a book with one entry (uid 0, comment 'original').
  * @param {import('@playwright/test').Page} page
  * @param {string} name
  */
@@ -48,7 +41,6 @@ async function createBook(page, name) {
 }
 
 /**
- * Whether the server lists the book, and the comment of its entry 0 if it does.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
  * @returns {Promise<{exists: boolean, comment: string}>}
@@ -85,12 +77,10 @@ async function deleteBooks(page, names) {
 }
 
 /**
- * Renames the book open in the editor through its rename button, answering the name prompt with `newName` and the
- * relink prompt with no, while a debounced save of the old book's entry 0 (comment 'pending edit') is waiting.
  * @param {import('@playwright/test').Page} page
  * @param {string} oldName
  * @param {string} newName
- * @param {'book'|'entry'} pendingKind - Which debounced save of the old book is waiting when the rename starts
+ * @param {'book'|'entry'} pendingKind
  */
 async function renameWithPendingSave(page, oldName, newName, pendingKind) {
     await page.evaluate(async ({ oldName, newName, pendingKind }) => {
@@ -199,8 +189,6 @@ test.describe('World Info saves waiting when a book is deleted or renamed', () =
 
                 expect(await savedBook(page, newName)).toEqual({ exists: true, comment: 'pending edit' });
                 expect(await savedBook(page, oldName)).toEqual({ exists: false, comment: '' });
-                // The waiting save is written to the old name first; the rename then moves the book, so nothing is
-                // written to either name after it.
                 expect(writes).toEqual([oldName]);
             } finally {
                 await deleteBooks(page, [oldName, newName]);

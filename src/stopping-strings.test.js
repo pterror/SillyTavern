@@ -3,40 +3,32 @@ import { getStoppingStrings, getCustomStoppingStrings } from './stopping-strings
 
 const disabledInstructPreset = { enabled: false, wrap: false, macro: false, sequences_as_stop_strings: false };
 
-// --- getCustomStoppingStrings ---
-
-// Valid JSON array
 assert.deepEqual(
     getCustomStoppingStrings({ customStoppingStringsRaw: JSON.stringify(['a', 'b']) }),
     ['a', 'b'],
     'valid array',
 );
 
-// Invalid JSON
 assert.deepEqual(
     getCustomStoppingStrings({ customStoppingStringsRaw: '{not json' }),
     [],
     'invalid JSON returns empty array',
 );
 
-// Non-array JSON
 assert.deepEqual(
     getCustomStoppingStrings({ customStoppingStringsRaw: JSON.stringify({ a: 1 }) }),
     [],
     'non-array JSON returns empty array',
 );
 
-// Non-string/empty entries filtered
 assert.deepEqual(
     getCustomStoppingStrings({ customStoppingStringsRaw: JSON.stringify(['x', '', 5, null, 'y', undefined]) }),
     ['x', 'y'],
     'non-string/empty entries filtered out',
 );
 
-// No raw string at all
 assert.deepEqual(getCustomStoppingStrings({}), [], 'no raw string -> empty array');
 
-// Macro substitution toggle: off
 assert.deepEqual(
     getCustomStoppingStrings({
         customStoppingStringsRaw: JSON.stringify(['Hello {{user}}']),
@@ -47,7 +39,6 @@ assert.deepEqual(
     'macro substitution off leaves macros untouched',
 );
 
-// Macro substitution toggle: on
 assert.deepEqual(
     getCustomStoppingStrings({
         customStoppingStringsRaw: JSON.stringify(['Hello {{user}}', 'Hi {{char}}']),
@@ -58,7 +49,6 @@ assert.deepEqual(
     'macro substitution on replaces macros',
 );
 
-// Ephemeral strings appended after permanent
 assert.deepEqual(
     getCustomStoppingStrings({
         customStoppingStringsRaw: JSON.stringify(['perm1']),
@@ -68,7 +58,6 @@ assert.deepEqual(
     'ephemeral strings appended after permanent ones',
 );
 
-// Limit behavior: 0/undefined = all
 assert.deepEqual(
     getCustomStoppingStrings({
         customStoppingStringsRaw: JSON.stringify(['a', 'b']),
@@ -87,7 +76,6 @@ assert.deepEqual(
     'limit undefined returns all',
 );
 
-// Limit behavior: N slices
 assert.deepEqual(
     getCustomStoppingStrings({
         customStoppingStringsRaw: JSON.stringify(['a', 'b']),
@@ -98,9 +86,6 @@ assert.deepEqual(
     'limit N slices to N items',
 );
 
-// --- getStoppingStrings ---
-
-// api === 'openai' short-circuits to only custom stopping strings
 {
     const result = getStoppingStrings({
         api: 'openai',
@@ -116,7 +101,6 @@ assert.deepEqual(
     assert.deepEqual(result, ['custom1'], 'openai api only returns custom stopping strings');
 }
 
-// names_as_stop_strings: off -> no name-based stop strings
 {
     const result = getStoppingStrings({
         api: 'textgenerationwebui',
@@ -128,7 +112,6 @@ assert.deepEqual(
     assert.deepEqual(result, [], 'names_as_stop_strings off yields no name-based stops (nothing else configured)');
 }
 
-// names_as_stop_strings: on, normal (non-impersonate) generation
 {
     const result = getStoppingStrings({
         api: 'textgenerationwebui',
@@ -141,7 +124,6 @@ assert.deepEqual(
     assert.deepEqual(result, ['\nUser:'], 'non-impersonate: only userString pushed (charString==userString collapses via dedup... but here they differ)');
 }
 
-// names_as_stop_strings: on, impersonate generation
 {
     const result = getStoppingStrings({
         api: 'textgenerationwebui',
@@ -154,7 +136,6 @@ assert.deepEqual(
     assert.deepEqual(result, ['\nChar:', '\nUser:'], 'impersonate: charString then userString');
 }
 
-// continue with trailing user message adds extra charString
 {
     const result = getStoppingStrings({
         api: 'textgenerationwebui',
@@ -169,7 +150,6 @@ assert.deepEqual(
     assert.deepEqual(result, ['\nUser:', '\nChar:'], 'continue with trailing user message adds charString');
 }
 
-// continue without trailing user message does NOT add extra charString
 {
     const result = getStoppingStrings({
         api: 'textgenerationwebui',
@@ -184,7 +164,6 @@ assert.deepEqual(
     assert.deepEqual(result, ['\nUser:'], 'continue without trailing user message: no extra charString');
 }
 
-// group member names as stop strings, with filtering of no-name/matching-name2 members
 {
     const result = getStoppingStrings({
         api: 'textgenerationwebui',
@@ -203,7 +182,6 @@ assert.deepEqual(
     );
 }
 
-// group member names NOT added when isGroup is false
 {
     const result = getStoppingStrings({
         api: 'textgenerationwebui',
@@ -218,7 +196,6 @@ assert.deepEqual(
     assert.deepEqual(result, ['\nUser:'], 'group members ignored when isGroup is false');
 }
 
-// group member names NOT added when neither name2 nor isImpersonate is set
 {
     const result = getStoppingStrings({
         api: 'textgenerationwebui',
@@ -233,7 +210,6 @@ assert.deepEqual(
     assert.deepEqual(result, ['\nUser:'], 'group members skipped entirely when name2 falsy and not impersonating');
 }
 
-// single_line prepends '\n'
 {
     const result = getStoppingStrings({
         api: 'textgenerationwebui',
@@ -245,7 +221,6 @@ assert.deepEqual(
     assert.deepEqual(result, ['\n', 'custom1'], 'single_line prepends newline before everything else');
 }
 
-// instruct stopping sequences included, in order before custom stopping strings
 {
     const result = getStoppingStrings({
         api: 'textgenerationwebui',
@@ -257,7 +232,6 @@ assert.deepEqual(
     assert.deepEqual(result, ['INSTRUCT_STOP', 'custom1'], 'instruct sequences come before custom stopping strings');
 }
 
-// final dedup across all sources
 {
     const result = getStoppingStrings({
         api: 'textgenerationwebui',
@@ -271,8 +245,6 @@ assert.deepEqual(
     assert.deepEqual(result, ['\nUser:', 'unique'], 'duplicate stop strings across sources are deduped, first occurrence kept');
 }
 
-// falsy/empty entries filtered out (e.g. empty name producing a non-empty '\n:' is kept, but a
-// literal empty string from custom stopping strings is dropped)
 {
     const result = getStoppingStrings({
         api: 'textgenerationwebui',

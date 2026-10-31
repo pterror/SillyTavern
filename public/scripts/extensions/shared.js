@@ -444,9 +444,6 @@ export class ConnectionManagerRequestService {
 
                     const messages = Array.isArray(prompt) ? prompt : [{ role: 'user', content: prompt }];
 
-                    // The server resolves the profile's source/preset/secret/proxy itself from
-                    // connection_profile_id - only applies when using the profile's own preset as-is
-                    // (includePreset:false has no server-side equivalent yet).
                     if (includePreset) {
                         return await context.ChatCompletionService.sendRequest({
                             connection_profile_id: profileId,
@@ -487,21 +484,8 @@ export class ConnectionManagerRequestService {
                         throw new Error(`API type ${selectedApiMap.selected} does not support text completions`);
                     }
 
-                    // The server resolves the profile's backend/preset/instruct-template itself
-                    // from connection_profile_id - this only applies for the common case (a raw
-                    // messages array, using the profile's own preset/instruct as-is). Callers that
-                    // need includeInstruct:false, includePreset:false, or an instructSettings
-                    // override fall back to the client-resolved path below, which those options
-                    // are not yet supported on the server side.
                     const canUseServerResolution = Array.isArray(prompt) && includeInstruct && includePreset && Object.keys(instructSettings ?? {}).length === 0;
                     if (canUseServerResolution) {
-                        // Known gap: sendRequest()'s built-in extraction reads reasoning-parsing
-                        // hints (which backend type to expect "thinking" content from) off this
-                        // same request body - since the server now resolves the backend type from
-                        // the profile, not the client, this call won't get profile-specific
-                        // reasoning extraction (it falls back to the client's main active backend's
-                        // type, which may not match). A real fix needs the server to report back
-                        // which type it used, not the client asserting one up front.
                         return await context.TextCompletionService.sendRequest({
                             connection_profile_id: profileId,
                             messages: prompt,

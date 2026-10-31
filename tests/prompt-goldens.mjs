@@ -1,10 +1,3 @@
-// Records upstream's prompt for each prompt parity case (frontend/prompt-parity-cases.js) into frontend/prompt-goldens/.
-// A text completion case's is the prompt upstream's page builds (a dry run of Generate()); a chat completion case's is
-// the messages upstream's server sends, to a mock OpenAI-compatible backend, as JSON.
-//
-// Usage: node prompt-goldens.mjs <upstream URL> [case name filter], with an upstream SillyTavern at the commit the fork
-// tracks running there on its own data root. Every case's character is created in it.
-
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,7 +14,6 @@ if (!url) {
 }
 fs.mkdirSync(out, { recursive: true });
 
-/** The slash command that sends a generation of each type. */
 const SEND = { normal: '/trigger', continue: '/continue', impersonate: '/impersonate' };
 
 const only = process.argv[3] ?? '';
@@ -33,13 +25,10 @@ try {
         const page = await browser.newPage();
         await page.goto(url);
         await page.waitForFunction(() => document.getElementById('preloader') === null, null, { timeout: 60000 });
-        // A fresh upstream asks for a language and a persona name first, and finishes starting once they're given:
-        // the defaults (English, "User"), as the parity test's server has them.
         const welcome = page.locator('dialog[open] .popup-button-ok').first();
         if (await welcome.waitFor({ timeout: 10000 }).then(() => true, () => false)) await welcome.click();
         await page.waitForFunction(() => !!$._data(document.getElementById('persona_description'), 'events'), null, { timeout: 60000 });
         if (chatCompletion) {
-            // The custom source at the mock, as the parity test connects to.
             await page.evaluate(async (url) => {
                 const set = (/** @type {string} */ id, /** @type {string} */ value, /** @type {string} */ event) => {
                     const element = /** @type {HTMLInputElement} */ (document.getElementById(id));
@@ -54,7 +43,6 @@ try {
             }, openai.url);
             await page.waitForFunction(() => SillyTavern.getContext().onlineStatus !== 'no_connection', null, { timeout: 30000 });
         } else {
-            // A text completion backend's prompt (llama.cpp's), as the parity test connects to.
             await page.evaluate(() => {
                 $('#main_api').val('textgenerationwebui').trigger('change');
                 $('#textgen_type').val('llamacpp').trigger('change');
@@ -66,7 +54,6 @@ try {
             const context = SillyTavern.getContext();
             const form = new FormData();
             for (const [key, value] of Object.entries(card)) form.set(key, value);
-            // Upstream's getRequestHeaders() always says JSON: the form goes with its CSRF token alone.
             const headers = { 'X-CSRF-Token': context.getRequestHeaders()['X-CSRF-Token'] };
             const response = await fetch('/api/characters/create', { method: 'POST', headers, body: form });
             const avatar = (await response.text()).trim();
@@ -104,7 +91,6 @@ try {
             // @ts-ignore
             const { eventSource, eventTypes } = SillyTavern.getContext();
             const { Generate } = await import('/script.js');
-            // The combined text completion prompt, as both upstream's and this page's Generate() give it.
             let prompt = '';
             const take = (/** @type {{ prompt: string, dryRun: boolean }} */ data) => { if (data.dryRun) prompt = data.prompt; };
             eventSource.on(eventTypes.GENERATE_AFTER_COMBINE_PROMPTS, take);

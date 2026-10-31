@@ -20,12 +20,10 @@ beforeAll(async () => {
 
 describe('settings backup duplicate check', () => {
     test('compares against the backup with the newest name, whatever the files\' ctimes', () => {
-        // Written newest-first, so the older backup ends up with the newer ctime (as after a copy).
         const newest = path.join(backupsDir, `settings_${handle}_20260926-150503.json`);
         const older = path.join(backupsDir, `settings_${handle}_20260926-150448.json`);
         fs.writeFileSync(newest, '{"newest":true}');
         fs.writeFileSync(older, '{"older":true}');
-        // ctime has coarse granularity; re-touch until it has actually moved past the newest backup's.
         while (fs.statSync(older).ctimeMs <= fs.statSync(newest).ctimeMs) {
             fs.utimesSync(older, new Date(), new Date());
         }

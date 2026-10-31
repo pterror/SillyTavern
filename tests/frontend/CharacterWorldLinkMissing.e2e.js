@@ -14,7 +14,6 @@ if (process.env.PLAYWRIGHT_BASIC_AUTH_USER) {
 }
 
 /**
- * Which of the theme's colors the globe shows: its warning variable, the linked (`--active`) one, or another.
  * @param {import('@playwright/test').Page} page
  * @returns {Promise<'warning'|'active'|'other'>}
  */
@@ -48,10 +47,6 @@ async function deleteBookFile(page, name) {
     }, name);
 }
 
-// A link (data.extensions.world) to a name with no World file, on a card with no embedded lorebook, points at
-// nothing. The globe shows it once, where the link is: the warning color, and a tooltip naming the book. It
-// follows the link, the World files and the embedded book as they change, and gets its own tooltip back as soon
-// as the link points at something again, or at nothing.
 test.describe('a link to a lorebook that doesn\'t exist', () => {
     test.beforeEach(testSetup.awaitST);
 
@@ -95,15 +90,12 @@ test.describe('a link to a lorebook that doesn\'t exist', () => {
             await openCharacterManagementDrawer(page);
             await expect(globe).toBeVisible();
 
-            // Opening the character: the globe is in the warning color and names the book. No toast about it.
             await expect(globe).toHaveClass(/\bwarning\b/);
             await expect(globe).not.toHaveClass(/\bworld_set\b/);
             await expect(globe).toHaveAttribute('title', `Linked lorebook "${missingName}" not found`);
-            // Polled: .menu_button eases its color in.
             await expect.poll(() => globeColor(page)).toBe('warning');
             await expect(page.locator('#toast-container .toast', { hasText: missingName })).toHaveCount(0);
 
-            // A book with that name is created: linked, with the globe's own tooltip.
             await page.evaluate(async (missingName) => {
                 const { createNewWorldInfo } = await import('./scripts/world-info.js');
                 await createNewWorldInfo(missingName);
@@ -113,7 +105,6 @@ test.describe('a link to a lorebook that doesn\'t exist', () => {
             await expect(globe).toHaveAttribute('title', /** @type {string} */ (ownTitle));
             await expect.poll(() => globeColor(page)).toBe('active');
 
-            // The book is deleted somewhere else, and the list of books is read again: missing again.
             await deleteBookFile(page, missingName);
             await page.evaluate(async () => {
                 const { updateWorldInfoList } = await import('./scripts/world-info.js');
@@ -123,7 +114,6 @@ test.describe('a link to a lorebook that doesn\'t exist', () => {
             await expect(globe).not.toHaveClass(/\bworld_set\b/);
             await expect(globe).toHaveAttribute('title', `Linked lorebook "${missingName}" not found`);
 
-            // The card gets an embedded lorebook (saved from elsewhere, then read again): the link is to that book.
             await page.evaluate(async (avatar) => {
                 const { getRequestHeaders } = await import('./script.js');
                 const { getOneCharacter } = await import('./scripts/character-list.js');
@@ -150,7 +140,6 @@ test.describe('a link to a lorebook that doesn\'t exist', () => {
             await expect(globe).not.toHaveClass(/\bwarning\b/);
             await expect(globe).toHaveAttribute('title', /** @type {string} */ (ownTitle));
 
-            // The embedded lorebook is removed in the World Info editor: missing again.
             await page.evaluate(async (avatar) => {
                 const { openEmbeddedLoreEditor } = await import('./scripts/world-info.js');
                 await openEmbeddedLoreEditor(avatar);
@@ -160,7 +149,6 @@ test.describe('a link to a lorebook that doesn\'t exist', () => {
             await expect(globe).toHaveClass(/\bwarning\b/);
             await expect(globe).toHaveAttribute('title', `Linked lorebook "${missingName}" not found`);
 
-            // The link is cleared: not linked, with the globe's own tooltip.
             await page.evaluate(async () => {
                 const { charUpdatePrimaryWorld } = await import('./scripts/world-info.js');
                 await charUpdatePrimaryWorld('');
@@ -169,7 +157,6 @@ test.describe('a link to a lorebook that doesn\'t exist', () => {
             await expect(globe).not.toHaveClass(/\bworld_set\b/);
             await expect(globe).toHaveAttribute('title', /** @type {string} */ (ownTitle));
 
-            // The link is set to another name with no book: the tooltip names that one.
             await page.evaluate(async (otherMissingName) => {
                 const { charUpdatePrimaryWorld } = await import('./scripts/world-info.js');
                 await charUpdatePrimaryWorld(otherMissingName);
@@ -177,7 +164,6 @@ test.describe('a link to a lorebook that doesn\'t exist', () => {
             await expect(globe).toHaveClass(/\bwarning\b/);
             await expect(globe).toHaveAttribute('title', `Linked lorebook "${otherMissingName}" not found`);
 
-            // Opened again after a reload: still shown.
             await testSetup.awaitST({ page });
             await page.evaluate(async (avatar) => {
                 const { selectCharacterByAvatar } = await import('./script.js');
@@ -224,7 +210,6 @@ test.describe('a link to a lorebook that doesn\'t exist', () => {
             return await response.text();
         }, missingName);
 
-        /** The link as the server has it saved. */
         const savedLink = () => page.evaluate(async (avatar) => {
             const { getRequestHeaders } = await import('./script.js');
             const response = await fetch('/api/characters/get', {
@@ -247,13 +232,10 @@ test.describe('a link to a lorebook that doesn\'t exist', () => {
             await expect(globe).toBeVisible();
             await expect(globe).toHaveClass(/\bwarning\b/);
 
-            // The popup (shift-click on the globe) shows the link selected, not "None".
             const select = page.locator('dialog[open] .character_world_info_selector');
             await globe.click({ modifiers: ['Shift'] });
             await expect(select.locator('option:checked')).toHaveText(`${missingName} (not found)`);
 
-            // Choosing "None" clears the link, and it is saved.
-            // The popup binds its handlers once its opening animation is over.
             await expect(page.locator('dialog[open]:not([opening]) .character_world_info_selector')).toHaveCount(1);
             await select.selectOption('');
             await expect(globe).not.toHaveClass(/\bwarning\b/);
@@ -262,7 +244,6 @@ test.describe('a link to a lorebook that doesn\'t exist', () => {
             await page.locator('dialog[open] .popup-button-ok').click();
             await expect(select).toHaveCount(0);
 
-            // Opened again: "None", with no option for the old name.
             await globe.click({ modifiers: ['Shift'] });
             await expect(select.locator('option:checked')).toHaveText('--- None ---');
             await expect(select.locator('option', { hasText: missingName })).toHaveCount(0);
@@ -292,7 +273,6 @@ test.describe('a link to a lorebook that doesn\'t exist', () => {
             await expect(globe).not.toHaveClass(/\bwarning\b/);
             await expect(globe).not.toHaveClass(/\bworld_set\b/);
 
-            // Linking an existing book in create mode shows it linked.
             await page.evaluate(async (bookName) => {
                 const { createNewWorldInfo, charUpdatePrimaryWorld } = await import('./scripts/world-info.js');
                 await createNewWorldInfo(bookName);
@@ -301,7 +281,6 @@ test.describe('a link to a lorebook that doesn\'t exist', () => {
             await expect(globe).toHaveClass(/\bworld_set\b/);
             await expect(globe).not.toHaveClass(/\bwarning\b/);
 
-            // Deleting that book leaves the new character's link naming it: missing.
             const linkAfterDelete = await page.evaluate(async (bookName) => {
                 const { deleteWorldInfo } = await import('./scripts/world-info.js');
                 const { create_save } = await import('./script.js');
@@ -313,13 +292,11 @@ test.describe('a link to a lorebook that doesn\'t exist', () => {
             await expect(globe).not.toHaveClass(/\bworld_set\b/);
             await expect(globe).toHaveAttribute('title', `Linked lorebook "${bookName}" not found`);
 
-            // Leaving create mode for the character list and coming back: still shown.
             await page.locator('#rm_button_back').click();
             await page.locator('#rm_button_create').click();
             await expect(globe).toHaveClass(/\bwarning\b/);
             await expect(globe).toHaveAttribute('title', `Linked lorebook "${bookName}" not found`);
 
-            // Clearing the link in create mode: not linked, with the globe's own tooltip.
             await page.evaluate(async () => {
                 const { charUpdatePrimaryWorld } = await import('./scripts/world-info.js');
                 await charUpdatePrimaryWorld('');

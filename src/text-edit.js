@@ -1,7 +1,4 @@
-/** Text edits as the engine records them (`textEdit`): offsets and lengths in WTF-8 bytes. */
-
 /**
- * Bytes of `text` in WTF-8 (UTF-8 with lone surrogates encoded as their code points), the unit of a text edit.
  * @param {string} text
  */
 export function wtf8Length(text) {
@@ -19,11 +16,9 @@ export function wtf8Length(text) {
 }
 
 /**
- * The one edit turning `before` into `after`: what lies between their common start and end, never splitting a
- * surrogate pair.
  * @param {string} before
  * @param {string} after
- * @returns {{ offset: number, removed: number, text: string }} WTF-8 byte offset and length.
+ * @returns {{ offset: number, removed: number, text: string }}
  */
 export function textEdit(before, after) {
     const max = Math.min(before.length, after.length);

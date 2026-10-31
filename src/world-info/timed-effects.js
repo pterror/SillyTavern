@@ -1,8 +1,4 @@
 /**
- * Server-side port of public/scripts/world-info.js's WorldInfoTimedEffects. Operates on a passed-in
- * chatMetadata object instead of the client's global `chat_metadata` - the caller owns loading and
- * persisting it (this class mutates chatMetadata.timedWorldInfo in place, same as the client does).
- *
  * @typedef {'sticky'|'cooldown'|'delay'} TimedEffectType
  * @typedef {{hash: number, start: number, end: number, protected: boolean}} TimedEffect
  */
@@ -14,9 +10,9 @@ export class WorldInfoTimedEffects {
     #buffer = { sticky: [], cooldown: [], delay: [] };
 
     /**
-     * @param {string[]} chat Chat messages (only .length is used - message content doesn't matter here)
-     * @param {object[]} entries World info entries being scanned this pass
-     * @param {object} chatMetadata Mutable chat metadata - timedWorldInfo is read/written on it directly
+     * @param {string[]} chat
+     * @param {object[]} entries
+     * @param {object} chatMetadata
      * @param {boolean} [isDryRun]
      */
     constructor(chat, entries, chatMetadata, isDryRun = false) {
@@ -71,7 +67,6 @@ export class WorldInfoTimedEffects {
                 continue;
             }
 
-            // Missing entries could be from another character's lorebook
             if (!entry) {
                 if (this.#chat.length >= Number(value.end)) {
                     delete this.#chatMetadata.timedWorldInfo[type][key];
@@ -101,7 +96,6 @@ export class WorldInfoTimedEffects {
         }
     }
 
-    /** Sets an entry on cooldown immediately if it has one, when its sticky effect ends. */
     #onStickyEnded(entry) {
         if (!entry.cooldown) return;
         const key = this.#getEntryKey(entry);

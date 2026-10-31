@@ -1,11 +1,9 @@
 import { substituteParams } from '../macro-substitution.js';
 
-/** Mirrors public/scripts/utils.js's escapeRegex(). */
 export function escapeRegex(string) {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** Mirrors public/scripts/world-info.js's parseRegexFromString(). */
 export function parseRegexFromString(input) {
     const match = input.match(/^\/([\w\W]+?)\/([gimsuy]*)$/);
     if (!match) return null;
@@ -20,8 +18,6 @@ export function parseRegexFromString(input) {
 }
 
 /**
- * Mirrors public/scripts/world-info.js's WorldInfoBuffer#matchKeys(). Regex keys (/pattern/flags)
- * override all other matching options.
  * @param {string} haystack
  * @param {string} needle
  * @param {{caseSensitive?: boolean, matchWholeWords?: boolean}} entry
@@ -49,13 +45,8 @@ export function matchKeys(haystack, needle, entry, globalDefaults = {}) {
 
 const MAX_SCAN_DEPTH = 1000;
 
-// Mirrors public/scripts/world-info.js's scan_state enum.
 export const scan_state = { NONE: 0, INITIAL: 1, RECURSION: 2, MIN_ACTIVATIONS: 3 };
 
-/**
- * Server-side port of public/scripts/world-info.js's WorldInfoBuffer. Builds the depth-limited
- * chat text buffer an entry's keys get matched against.
- */
 export class WorldInfoBuffer {
     #globalScanData;
     #depthBuffer = [];
@@ -68,13 +59,10 @@ export class WorldInfoBuffer {
     #externalActivations;
 
     /**
-     * @param {string[]} messages Chat messages, most recent first (same order the client scans in)
-     * @param {object} globalScanData {personaDescription, characterDescription, characterPersonality, characterDepthPrompt, scenario, creatorNotes}
+     * @param {string[]} messages
+     * @param {object} globalScanData
      * @param {{depth?: number, caseSensitive?: boolean, matchWholeWords?: boolean}} [globalDefaults]
-     * @param {Map<string, object>} [externalActivations] Entries to force-activate regardless of key
-     * matching, keyed by `${world}.${uid}` - mirrors the client's WORLDINFO_FORCE_ACTIVATE event
-     * (extensions/slash-commands forcing a specific entry active). No event system server-side; the
-     * caller resolves which entries to force and passes them in directly.
+     * @param {Map<string, object>} [externalActivations]
      */
     constructor(messages, globalScanData, globalDefaults = {}, externalActivations = new Map()) {
         this.#globalDefaults = globalDefaults;
@@ -87,7 +75,6 @@ export class WorldInfoBuffer {
         this.#externalActivations = externalActivations;
     }
 
-    /** Mirrors WorldInfoBuffer#getExternallyActivated(). */
     getExternallyActivated(entry) {
         return this.#externalActivations.get(`${entry.world}.${entry.uid}`);
     }
@@ -116,7 +103,6 @@ export class WorldInfoBuffer {
         return result;
     }
 
-    /** Mirrors WorldInfoBuffer#getScore(): counts how many of an entry's keys matched, for inclusion-group scoring. */
     getScore(entry, scanState) {
         const bufferState = this.get(entry, scanState);
         let numberOfPrimaryKeys = 0;
@@ -164,11 +150,8 @@ export class WorldInfoBuffer {
 }
 
 /**
- * Mirrors the primary/secondary key check inside public/scripts/world-info.js's checkWorldInfo()
- * main loop, given an entry's already-fetched scan buffer text. Returns the matched primary key
- * string, or null if the entry doesn't activate on keys.
  * @param {string} textToScan
- * @param {object} entry {key, keysecondary, selective, selectiveLogic}
+ * @param {object} entry
  * @param {WorldInfoBuffer} buffer
  * @param {{name1?: string, name2?: string}} [macroContext]
  * @returns {boolean}
@@ -188,7 +171,6 @@ export function matchesEntryKeys(textToScan, entry, buffer, macroContext = {}) {
     return matchSecondaryKeys(textToScan, entry, buffer, macroContext);
 }
 
-// world_info_logic enum values, mirrored from public/scripts/world-info.js.
 export const world_info_logic = { AND_ANY: 0, NOT_ALL: 1, NOT_ANY: 2, AND_ALL: 3 };
 
 function matchSecondaryKeys(textToScan, entry, buffer, macroContext) {

@@ -12,11 +12,7 @@ export class SimpleMutex {
      */
     callback = () => {};
 
-    /**
-     * Optional watchdog timeout (ms) - without it, a callback that never settles (e.g. a hung fetch with no
-     * timeout of its own) leaves `isBusy` stuck true forever, silently no-op'ing every future `update()`.
-     * @type {number}
-     */
+    /** @type {number} */
     timeout = 0;
 
     /**
@@ -43,7 +39,6 @@ export class SimpleMutex {
         this.isBusy = true;
 
         if (!(this.timeout > 0)) {
-            // Watchdog disabled: preserve the original, unmodified behavior.
             try {
                 await this.callback(...args);
             } finally {
@@ -66,7 +61,6 @@ export class SimpleMutex {
         } finally {
             clearTimeout(timeoutId);
             this.isBusy = false;
-            // Avoid a disconnected unhandled-rejection if the callback settles after the watchdog already fired.
             if (!settled) {
                 callbackPromise.catch(error => console.warn('SimpleMutex: callback settled after watchdog timeout', error));
             }

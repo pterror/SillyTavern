@@ -5,7 +5,6 @@ import { TokenHandler, ChatCompletion } from './chat-completion-budget.js';
 import { PromptCollection, Prompt } from './chat-completion-prompt-collection.js';
 import { populateDialogueExamples } from './chat-completion-dialogue-examples.js';
 
-/** Simple deterministic fake tokenizer: token count = length of the JSON-stringified message(s). */
 const fakeCountTokenAsyncFn = async (messages) => JSON.stringify(messages).length;
 
 /**
@@ -16,16 +15,11 @@ function makeChatCompletion(budget = 1_000_000) {
     const tokenHandler = new TokenHandler(fakeCountTokenAsyncFn);
     const chatCompletion = new ChatCompletion(tokenHandler);
     chatCompletion.setTokenBudget(budget, 0);
-    // `tokenHandler` is also reachable as `chatCompletion.tokenHandler` (stored by the
-    // ChatCompletion constructor - see src/chat-completion-budget.js), but returning it here
-    // explicitly keeps call sites self-documenting about what gets threaded into
-    // `populateDialogueExamples`'s `tokenHandler` option.
     return { chatCompletion, tokenHandler };
 }
 
 function makePromptCollectionWithDialogueExamples(position = 0) {
     const prompts = new PromptCollection();
-    // Pad with unrelated prompts so `index('dialogueExamples')` is non-trivial when position > 0.
     for (let i = 0; i < position; i++) {
         prompts.add(new Prompt({ identifier: `filler${i}`, role: 'system', content: 'filler' }));
     }
@@ -34,7 +28,7 @@ function makePromptCollectionWithDialogueExamples(position = 0) {
 }
 
 test('no-op when prompts does not have dialogueExamples slot', async () => {
-    const prompts = new PromptCollection(); // empty, no 'dialogueExamples'
+    const prompts = new PromptCollection();
     const { chatCompletion, tokenHandler } = makeChatCompletion();
     const before = JSON.stringify(chatCompletion.getChat());
 
@@ -60,7 +54,6 @@ test('slot is reserved even when messageExamples is empty/absent', async () => {
     assert.strictEqual(chatCompletion.has('dialogueExamples'), true);
     assert.deepStrictEqual(chatCompletion.getChat(), []);
 
-    // Also verify the "absent" (undefined) case behaves the same.
     const { chatCompletion: chatCompletion2, tokenHandler: tokenHandler2 } = makeChatCompletion();
     await populateDialogueExamples(prompts, chatCompletion2, undefined, {
         newExampleChatPrompt: '[Example Chat]',
@@ -77,7 +70,7 @@ test('normal case: 2+ dialogue blocks that all fit, with correct identifiers/rol
     const messageExamples = [
         [
             { content: 'Hello there', name: 'Alice' },
-            { content: 'General Kenobi', name: '' }, // falsy name -> omitted from getChat() output
+            { content: 'General Kenobi', name: '' },
         ],
         [
             { content: 'Second block turn 0', name: 'Bob' },
@@ -92,16 +85,14 @@ test('normal case: 2+ dialogue blocks that all fit, with correct identifiers/rol
     assert.strictEqual(chatCompletion.has('dialogueExamples'), true);
 
     const chat = chatCompletion.getChat();
-    // 2 headers + 2 turns (block 0) + 1 turn (block 1) = 5 messages total.
     assert.strictEqual(chat.length, 5);
 
     assert.deepStrictEqual(chat[0], { role: 'system', content: '[Start a new Chat]' });
     assert.deepStrictEqual(chat[1], { role: 'system', content: 'Hello there', name: 'Alice' });
-    assert.deepStrictEqual(chat[2], { role: 'system', content: 'General Kenobi' }); // no `name` key
+    assert.deepStrictEqual(chat[2], { role: 'system', content: 'General Kenobi' });
     assert.deepStrictEqual(chat[3], { role: 'system', content: '[Start a new Chat]' });
     assert.deepStrictEqual(chat[4], { role: 'system', content: 'Second block turn 0', name: 'Bob' });
 
-    // Verify exact identifiers via the underlying MessageCollection.
     const dialogueCollection = chatCompletion.getMessages().getItemByIdentifier('dialogueExamples');
     const identifiers = dialogueCollection.getCollection().map(m => m.identifier);
     assert.deepStrictEqual(identifiers, [
@@ -116,12 +107,10 @@ test('normal case: 2+ dialogue blocks that all fit, with correct identifiers/rol
 test('all-or-nothing per block: a block that does not fit stops the loop entirely', async () => {
     const prompts = makePromptCollectionWithDialogueExamples();
 
-    // Figure out exact token costs with the fake tokenizer to build a tight budget.
     const probeTokenHandler = new TokenHandler(fakeCountTokenAsyncFn);
     const headerTokens = await probeTokenHandler.countAsync({ role: 'system', content: '[New Chat]' });
     const block0Turn0Tokens = await probeTokenHandler.countAsync({ role: 'system', content: 'Block0 turn0', name: 'A' });
 
-    // Budget affords exactly: header + block0's single turn, but not a second header + block1's turn.
     const budget = headerTokens + block0Turn0Tokens;
     const { chatCompletion, tokenHandler } = makeChatCompletion(budget);
 
@@ -144,7 +133,6 @@ test('all-or-nothing per block: a block that does not fit stops the loop entirel
     const dialogueCollection = chatCompletion.getMessages().getItemByIdentifier('dialogueExamples');
     const identifiers = dialogueCollection.getCollection().map(m => m.identifier);
     assert.deepStrictEqual(identifiers, ['newChat', 'dialogueExamples 0-0']);
-    // Block 1's content must not appear anywhere.
     assert.ok(!JSON.stringify(chat).includes('Block1'));
 });
 

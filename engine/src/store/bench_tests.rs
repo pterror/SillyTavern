@@ -1,9 +1,3 @@
-//! Read costs on a real store, measured by hand (ignored): `ST_BENCH_STORE=<store dir> cargo test --release --lib
-//! store::bench_tests -- --ignored --nocapture`. The store is opened and read only (use a copy: opening may replay
-//! and flush). Entities and fields are sampled with a fixed seed, so two builds read the same things.
-//!
-//! Each read runs twice and the second is timed (warm); `ST_BENCH_COLD=1` times the first instead.
-
 use std::path::Path;
 use std::time::Instant;
 
@@ -43,7 +37,6 @@ fn report(name: &str, mut v: Vec<f64>) {
     );
 }
 
-/// Up to `n` ids of the structure's entries (keys `structure, id, ...`), sampled from the first `scan` of them.
 fn sample_ids(view: &View, structure: u64, scan: usize, n: usize, seed: &mut u64) -> Vec<u64> {
     let p = key::of(structure);
     let mut ids: Vec<u64> = view

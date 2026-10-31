@@ -1,32 +1,3 @@
-/**
- * Decoder for the compact streaming wire format emitted by the server's
- * `/api/backends/text-completions/generate` route, signaled by the `X-ST-Stream-Format: compact-v1`
- * response header - originally llama.cpp-only, now also used by the general SSE-JSON text-completion
- * path. See src/endpoints/backends/llamacpp-compact-stream.js on the server for the encoder side and
- * the full protocol description.
- *
- * Plain bytes = raw UTF-8 text, appended directly to accumulated content.
- * `0xFF 0xFF`                                    = one literal content byte 0xFF (defensive escape).
- * `0xFF 0x01 <1 byte index>`                     = target/swipe index changed.
- * `0xFF 0x02 <4-byte BE length><length bytes>`    = token-probabilities payload (JSON) for the current token.
- * `0xFF 0x03 <4-byte BE length><length bytes>`    = reasoning/thinking text chunk (UTF-8), not content.
- * `0xFF 0x04 <4-byte BE length><length bytes>`    = assistant_node_id (UTF-8 string), the final frame.
- * `0xFF 0x05 <4-byte BE length><length bytes>`    = one tool-call delta (JSON).
- * `0xFF 0x06 <4-byte BE length><length bytes>`    = one generated image (JSON {mimeType, data}).
- * `0xFF 0x07 <4-byte BE length><length bytes>`    = thought signature (UTF-8 string).
- * `0xFF 0x08 <4-byte BE length><length bytes>`    = control JSON - an out-of-band signal with no
- *                                                   dedicated frame of its own (currently only the
- *                                                   server-tool-calling stream's end-of-round
- *                                                   signals: `{tool_call_handoff}`/
- *                                                   `{tool_call_aborted}`/`{error}`).
- * `0xFF 0x09`                                     = keepalive - no payload (2 bytes total). A pure
- *                                                   liveness signal for lossy connections; decoded as
- *                                                   a no-op (no event pushed) but still resets
- *                                                   `ResumableCompactStreamReader`'s stall-detection
- *                                                   timer, same as any real frame would.
- *
- * This is a private contract between ST's own server and ST's own client, not a public/supported surface.
- */
 export const FRAME_SENTINEL = 0xFF;
 export const FRAME_TYPE_INDEX = 0x01;
 export const FRAME_TYPE_PROBABILITIES = 0x02;
@@ -38,23 +9,12 @@ export const FRAME_TYPE_THOUGHT_SIGNATURE = 0x07;
 export const FRAME_TYPE_CONTROL = 0x08;
 export const FRAME_TYPE_KEEPALIVE = 0x09;
 
-// Must match src/endpoints/backends/llamacpp-compact-stream.js's own KEEPALIVE_INTERVAL_MS - how often
-// the server injects a keepalive frame into an in-flight raw-action stream.
 export const SERVER_KEEPALIVE_INTERVAL_MS = 12 * 1000;
 
-// How long ResumableCompactStreamReader waits for ANY frame (content or keepalive) before deciding the
-// connection has silently died and proactively resuming, rather than waiting on the browser's own
-// fetch/reader (which can take minutes, or never, to notice a dead socket on a lossy link). 3x the
-// server's own keepalive interval: comfortably past one missed keepalive (a single slow/lost packet)
-// while still being much faster than relying on OS-level detection.
 export const STREAM_STALL_TIMEOUT_MS = 3 * SERVER_KEEPALIVE_INTERVAL_MS;
 
-/**
- * @typedef {{mes: string, extra: Record<string, any>}} StoredReply A generated reply as the server stored it: its text
- * and the reasoning fields of its `extra` (the server splits the reasoning off; the page only shows it).
- */
+/** @typedef {{mes: string, extra: Record<string, any>}} StoredReply */
 
-/** Stored replies a stream ended with, by node id, until the page that streamed them takes them. */
 /** @type {Map<string, StoredReply>} */
 const storedReplies = new Map();
 const STORED_REPLIES_MAX = 16;
@@ -71,7 +31,6 @@ function rememberStoredReply(reply) {
 }
 
 /**
- * The reply a stream stored at this node (its `stored_reply` frame), once.
  * @param {string|null|undefined} nodeId
  * @returns {StoredReply|null}
  */
@@ -82,23 +41,14 @@ export function takeStoredReply(nodeId) {
     return reply;
 }
 
-/**
- * @typedef {{content: string} | {index: number} | {probabilities: any} | {reasoning: string} | {assistantNodeId: string} | {toolCallDelta: any} | {image: {mimeType: string, data: string}} | {thoughtSignature: string} | {control: any}} CompactStreamEvent
- */
+/** @typedef {{content: string} | {index: number} | {probabilities: any} | {reasoning: string} | {assistantNodeId: string} | {toolCallDelta: any} | {image: {mimeType: string, data: string}} | {thoughtSignature: string} | {control: any}} CompactStreamEvent */
 
-/**
- * Incrementally decodes compact-stream bytes into structured events, correctly handling both multi-byte
- * UTF-8 characters and control frames that are split across chunk boundaries.
- */
 export class CompactStreamDecoder {
     constructor() {
-        /** @type {Uint8Array} Bytes carried over from a previous push() because a frame was incomplete. */
+        /** @type {Uint8Array} */
         this.pending = new Uint8Array(0);
         this.textDecoder = new TextDecoder('utf-8', { fatal: false });
-        /** @type {number} `Date.now()` of the last time push() saw any bytes at all (content, a
-         * control frame, or a keepalive) - a keepalive resets this exactly like real content does,
-         * since its only job is proving the connection is still alive. Read by
-         * `ResumableCompactStreamReader` to detect a stalled-but-not-closed connection. */
+        /** @type {number} */
         this.lastActivityAt = Date.now();
     }
 
@@ -117,9 +67,8 @@ export class CompactStreamDecoder {
     }
 
     /**
-     * Feeds a chunk of raw bytes into the decoder.
-     * @param {Uint8Array} chunk Raw bytes received from the network
-     * @returns {CompactStreamEvent[]} Structured events decoded from this chunk (plus any carried-over bytes)
+     * @param {Uint8Array} chunk
+     * @returns {CompactStreamEvent[]}
      */
     push(chunk) {
         if (chunk?.length) this.lastActivityAt = Date.now();
@@ -150,7 +99,6 @@ export class CompactStreamDecoder {
                 continue;
             }
 
-            // buf[i] is the sentinel byte; we need at least the type byte to know what kind of frame this is.
             if (i + 1 >= buf.length) {
                 flushContent();
                 this.pending = buf.subarray(i);
@@ -160,16 +108,12 @@ export class CompactStreamDecoder {
             const type = buf[i + 1];
 
             if (type === FRAME_SENTINEL) {
-                // Escaped literal 0xFF content byte.
                 contentRuns.push(Uint8Array.of(FRAME_SENTINEL));
                 i += 2;
                 continue;
             }
 
             if (type === FRAME_TYPE_KEEPALIVE) {
-                // No payload, no length prefix - just the sentinel + type byte, both already in hand
-                // at this point. A no-op: no event pushed, but push()'s lastActivityAt update above
-                // already counts it as activity.
                 flushContent();
                 i += 2;
                 continue;
@@ -271,8 +215,6 @@ export class CompactStreamDecoder {
                 continue;
             }
 
-            // Unknown frame type. Shouldn't happen; treat the sentinel byte itself as content so we can't
-            // ever get stuck in an infinite loop on unexpected input.
             contentRuns.push(Uint8Array.of(FRAME_SENTINEL));
             i += 1;
         }
@@ -282,8 +224,6 @@ export class CompactStreamDecoder {
     }
 
     /**
-     * Finalizes the decoder, flushing any trailing bytes the internal TextDecoder was still holding onto
-     * while waiting for the rest of a multi-byte character. Call this once after the stream ends.
      * @returns {CompactStreamEvent[]}
      */
     flush() {
@@ -307,46 +247,13 @@ export class CompactStreamDecoder {
     }
 }
 
-/**
- * Wraps a raw-action compact-stream fetch() Response's `body.getReader()` with automatic
- * resume-on-drop, exposing the exact same `{done, value}` `read()` contract so an existing consumer
- * loop (`while (true) { const {done, value} = await reader.read(); ... }`) needs no changes beyond
- * constructing this instead of calling `response.body.getReader()` directly.
- *
- * The "sequence number" a reconnect needs is just the count of raw bytes already read from
- * `response.body` - the server's generation buffer is indexed by that same byte offset (see
- * src/endpoints/backends/llamacpp-compact-stream.js's module doc comment for the full design), so no
- * wire-format change was needed to carry it.
- *
- * On a genuine drop (a network error from `reader.read()`, not the caller's own `AbortController`),
- * this calls `GET <resumeUrlBase>/<generationId>?from=<bytesReceived>`, and - if that succeeds -
- * keeps reading from its response body instead, transparently, so the SAME `CompactStreamDecoder`
- * instance the caller is feeding continues mid-frame/mid-codepoint exactly as if nothing happened.
- * If resume itself fails (expired/unknown generation buffer, server restarted, or the resume request
- * also drops after exhausting `maxResumeAttempts`), the original read error is re-thrown so the
- * caller's existing failure handling (today's "treat as a partial/failed generation" behavior) is
- * unchanged.
- *
- * STALL DETECTION: a dead connection doesn't always surface as a `reader.read()` error - on a lossy
- * link/flaky NAT/proxy, the socket can go silently dead with no RST reaching either side, so `read()`
- * would otherwise just hang forever waiting on OS-level detection (which can take minutes, or never
- * happen at all). To avoid that, every `read()` races the underlying read against a
- * `STREAM_STALL_TIMEOUT_MS` timer that only the arrival of bytes (real content OR a `0x09` keepalive
- * frame - see the server's `KEEPALIVE_INTERVAL_MS`) resets; if it fires, the stalled read is cancelled
- * and treated exactly like a genuine `reader.read()` error, going through the same resume path above.
- */
 export class ResumableCompactStreamReader {
     /**
-     * @param {Response} response The initial fetch() Response; its body starts being read immediately.
-     * @param {string} resumeUrlBase e.g. '/api/backends/text-completions/generate/resume' - the
-     * generation id and `?from=` offset are appended by this class.
-     * @param {() => Record<string, string>} [getRequestHeaders] Same auth/CSRF headers the original
-     * request used, re-sent on the resume GET. Omit if the resume endpoint needs none.
-     * @param {number} [maxResumeAttempts] Gives up (and re-throws the last read error) after this
-     * many consecutive successful-resume-but-dropped-again cycles, so a persistently bad connection
-     * can't loop forever.
-     * @param {number} [stallTimeoutMs] How long to wait for ANY bytes before treating the connection as
-     * stalled and proactively resuming; see STALL DETECTION above.
+     * @param {Response} response
+     * @param {string} resumeUrlBase
+     * @param {() => Record<string, string>} [getRequestHeaders]
+     * @param {number} [maxResumeAttempts]
+     * @param {number} [stallTimeoutMs]
      */
     constructor(response, resumeUrlBase, getRequestHeaders = null, maxResumeAttempts = 5, stallTimeoutMs = STREAM_STALL_TIMEOUT_MS) {
         this.reader = response.body.getReader();
@@ -361,10 +268,6 @@ export class ResumableCompactStreamReader {
     }
 
     /**
-     * Races `this.reader.read()` against `this.stallTimeoutMs`; on timeout, cancels the stalled reader
-     * (so its underlying connection is actually torn down rather than left dangling) and throws a
-     * `StreamStallError` - deliberately not named `AbortError`, so `read()`'s catch block below treats
-     * it as a genuine drop rather than the caller's own intentional abort.
      * @returns {Promise<{done: boolean, value: Uint8Array | undefined}>}
      */
     async readWithStallTimeout() {
@@ -408,12 +311,11 @@ export class ResumableCompactStreamReader {
                     this.gaveUp = true;
                     throw error;
                 }
-                // Loop back around and read from the newly-resumed reader.
             }
         }
     }
 
-    /** @returns {Promise<boolean>} Whether the resume request succeeded and `this.reader` now reads its body. */
+    /** @returns {Promise<boolean>} */
     async tryResume() {
         try {
             const url = `${this.resumeUrlBase}/${encodeURIComponent(this.generationId)}?from=${this.bytesReceived}`;

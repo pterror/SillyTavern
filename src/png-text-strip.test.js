@@ -15,7 +15,6 @@ import { linkWithAvatar } from './character-avatars.js';
 
 const BLANK_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 
-/** BLANK_PNG with a card and other text chunks around its image. */
 function cardPng() {
     const chunks = extract(new Uint8Array(BLANK_PNG));
     const text = (/** @type {string} */ keyword, /** @type {string} */ value) => PNGtext.encode(keyword, value);
@@ -32,7 +31,7 @@ function cardPng() {
 
 /**
  * @param {Buffer} input
- * @param {number} size The pieces it arrives in.
+ * @param {number} size
  */
 async function strip(input, size) {
     const pieces = [];
@@ -73,12 +72,10 @@ test('linkWithAvatar: the image is the source\'s bytes in a file of its own; a s
         assert.notEqual(fs.statSync(file).ino, stat.ino);
         assert.equal(fs.statSync(file).nlink, 1);
 
-        // Rewritten after it was read: not stored, nothing left behind.
         assert.equal(await linkWithAvatar(lib, directories, 'b.png', source, async () => ++writes, { size: stat.size + 1, mtimeMs: stat.mtimeMs }), null);
         assert.equal(writes, 1);
         assert.deepEqual(fs.readdirSync(directories.characters), ['a.png']);
 
-        // Already the character's file (dropped into characters/): the card is stored, the file left as it is.
         const before = fs.statSync(file);
         assert.equal(await linkWithAvatar(lib, directories, 'a.png', file, async () => ++writes), 2);
         assert.equal(fs.statSync(file).ino, before.ino);

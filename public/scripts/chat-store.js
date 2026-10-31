@@ -1,13 +1,8 @@
-// Writer side of the chat store: writes should go through the named actions below rather than
-// mutating `chat` directly and asking for a whole-conversation save.
-
 import { cardToGreetingsModel, getCurrentCharacter, getCurrentChatId, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, redisplayChat, updateViewMessageIds, refreshSwipeButtons, updateMessageBlock, _messageSnapshots, markStoredAs, isAsStored, forgetStored, isReplyGenerating } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { getMessageTimeStamp } from './RossAscends-mods.js';
-// A group has no avatar of its own - while one is open it, not getCurrentCharacter(), is the tree
-// owner for every chatOp*() below. See _currentOwner().
 import { selected_group, groupsStore } from './group-chats.js';
 import { t } from './i18n.js';
 import { uuidv4 } from './utils.js';
@@ -15,13 +10,6 @@ import { setStoredAdopter } from './stored-report.js';
 import { askToDrop, confirmOf, hasDrops, warnDropped } from './edit-drops.js';
 import { ITEMIZED_PROMPT_FLAG } from './itemized-prompts.js';
 
-// Without `noUncheckedIndexedAccess` (a project-wide tsconfig flag, out of scope to flip here since
-// it's shared by all 10 chat-strict files), `chat[i]` types as always-`ChatMessage`, never
-// `undefined` - even though at runtime an out-of-range/stale `mesId` genuinely produces `undefined`
-// at plenty of call sites below (mesId is caller-supplied, not something this module can bound-check
-// itself). That mistyping is what made real, load-bearing "does this message exist" guards look like
-// dead code to the linter. This helper states the honest, narrower-than-the-array's-own type for a
-// single lookup, so the existence checks that follow it mean what they say instead of being deleted.
 /**
  * @param {number} i
  * @returns {ChatMessage|undefined}
@@ -30,8 +18,6 @@ function _chatAt(i) {
     return chat[i];
 }
 
-// Freezes obj and all nested objects/arrays. Messages in `chat` aren't frozen (upstream's code, extensions included,
-// changes them in place); the stored copies the compat save compares them with are.
 /**
  * @template T
  * @param {T} obj
@@ -49,15 +35,12 @@ export function deepFreeze(obj) {
     return obj;
 }
 
-// The ref the page sent the server for a message it asked the server to store, until the server's
-// `stored` entry for it arrives. Kept off the message itself so extensions never see it and it is never saved.
 /** @type {WeakMap<object, string>} */
 const _storeRefs = new WeakMap();
 
 /**
- * Records the ref to send the server with the request that stores this message.
  * @param {object} message
- * @param {string} ref A fresh uuidv4() per message.
+ * @param {string} ref
  */
 export function setStoreRef(message, ref) {
     _storeRefs.set(message, ref);
@@ -65,13 +48,16 @@ export function setStoreRef(message, ref) {
 
 /**
  * @param {object|null|undefined} message
- * @returns {string|undefined} The ref setStoreRef() gave this message.
+ * @returns {string|undefined}
  */
 export function storeRefOf(message) {
     return message ? _storeRefs.get(message) : undefined;
 }
 
-/** @param {ChatMessage} from @param {ChatMessage} to */
+/**
+ * @param {ChatMessage} from
+ * @param {ChatMessage} to
+ */
 function _carryStoreRef(from, to) {
     const ref = _storeRefs.get(from);
     if (ref !== undefined) _storeRefs.set(to, ref);
@@ -81,8 +67,6 @@ function _carryStoreRef(from, to) {
 let _sendStoredListener = () => {};
 
 /**
- * Sets what is told each time the server says it stored a sent message, by the message's ref (its send key),
- * whether or not the message is still on screen.
  * @param {(ref: string) => void} listener
  */
 export function setSendStoredListener(listener) {
@@ -91,10 +75,8 @@ export function setSendStoredListener(listener) {
 
 /** @type {(entry: { ref: string, node_id: string, integrity: string|null, notSaved?: true }) => void} */
 let _metadataStoredListener = () => {};
-/** Told when an answer says the chat's state changed in a way the page didn't send. */
 let _stateChangedListener = () => {};
 
-/** Told the global variables a server-built prompt's macros changed (`global_variables`), for the page to keep. */
 let _globalVariablesListener = (/** @type {{ set: Record<string, unknown>, unset: string[] }} */ _changes) => {};
 
 /**
@@ -105,20 +87,15 @@ export function setGlobalVariablesListener(listener) {
 }
 
 /**
- * Sets what is told when an answer says the server changed the chat's state (`state_changed`), once the messages it
- * stored have their ids.
  * @param {() => void} listener
  */
 export function setStateChangedListener(listener) {
     _stateChangedListener = listener;
 }
 
-/** Refs of the metadata a group chat's greetings were stored with (ensureOpeningRow()), until the answer comes. */
 const _openingMetadataRefs = new Set();
 
 /**
- * Sets what is told when the server says it stored chat metadata keys the page sent under a ref (an entry of
- * `stored` with `integrity`), or couldn't (`notSaved`; `node_id` where they were to go, '' for the tree's root).
  * @param {(entry: { ref: string, node_id: string, integrity: string|null, notSaved?: true }) => void} listener
  */
 export function setMetadataStoredListener(listener) {
@@ -126,11 +103,7 @@ export function setMetadataStoredListener(listener) {
 }
 
 /**
- * Takes on the node ids the server reports for the messages it stored: each `{ ref, node_id }` goes to
- * the message on screen holding that ref, which is then saved as far as the page is concerned. A greeting
- * shown without a row takes on its row as ensureOpeningRow() gives it one. An entry with `integrity` reports
- * chat metadata keys stored instead, one with `metadata_not_saved` keys the server couldn't store.
- * @param {unknown} stored The answer's `stored` list.
+ * @param {unknown} stored
  */
 export function adoptStored(stored) {
     if (!Array.isArray(stored)) return;
@@ -175,8 +148,6 @@ export function adoptStored(stored) {
 }
 
 /**
- * A greeting shown without a row now has one: its shown slot takes the row's id, and a character's chat is now
- * at it, as ensureOpeningRow() leaves them.
  * @param {number} mesId
  * @param {string} realId
  */
@@ -193,14 +164,12 @@ function _adoptOpeningRow(mesId, realId) {
     }
     updateMessage(mesId, updates);
     forgetStored([provisional]);
-    // The row was made from the greeting as shown (openingForRequest()): that is what is stored there now.
     markStoredAs(realId, chat[mesId]);
     if (mesId === 0 && (selected_group == null || selected_group === '')) _setCurrentTarget(getCurrentChatId() ?? '', null);
 }
 
 setStoredAdopter(adoptStored);
 
-// The app's write path for messages: a new object in place of the old one (upstream's code may also change one in place).
 /**
  * @param {number} mesId
  * @param {Partial<ChatMessage>} updates
@@ -216,8 +185,6 @@ export function updateMessage(mesId, updates) {
 }
 
 /**
- * Sets `extra` fields that are derived for display and never stored (a token count), without the message counting as
- * changed against what was last stored.
  * @param {number} mesId
  * @param {Record<string, unknown>} values
  */
@@ -229,10 +196,6 @@ export function setUnstoredExtra(mesId, values) {
     if (wasClean && updated && old.node_id != null) markStoredAs(old.node_id, updated);
 }
 
-// Write path for nested fields; updateMessage() only shallow-merges, so writing through `extra`
-// via `{ ...old }` would still throw. Copies only the nodes along `path`, sharing the rest.
-// `path`/`value` address arbitrary nested structure inside a ChatMessage (any depth, array or
-// object) - genuinely untypeable beyond `unknown`, so `rebuild()`'s intermediate nodes are `any`.
 /**
  * @param {number} mesId
  * @param {(string|number)[]} path
@@ -253,7 +216,6 @@ export function updateIn(mesId, path, value) {
             return typeof value === 'function' ? value(node) : value;
         }
         const key = path[depth];
-        // A missing level is created as an object, matching the old mutating code's behavior.
         const src = (node === null || typeof node !== 'object') ? {} : node;
         const copy = Array.isArray(src) ? src.slice() : { ...src };
         copy[key] = rebuild(src[key], depth + 1);
@@ -267,17 +229,13 @@ export function updateIn(mesId, path, value) {
 }
 
 
-/** In-flight ensureOpeningRow() calls, keyed by provisional id, so two callers make one row. */
 /** @type {Map<string|undefined, Promise<void>>} */
 const _openingRowInFlight = new Map();
 
-// global.d.ts's SwipeInfo (client-side) has no `name`/`is_user` - the server's swipe info (src/chat-engine.js,
-// server-side) does, and _mergeCardGreetingsIntoOpening() below reads/writes those
-// same fields on client-side swipe_info entries built from card alternatives. Real cross-file gap in
-// global.d.ts, not owned by this file - typed locally rather than editing that shared ambient declaration.
 /** @typedef {SwipeInfo & {name?: string, is_user?: boolean}} SwipeInfoWithSpeaker */
 
-/** @typedef {object} OpeningAlternative
+/**
+ * @typedef {object} OpeningAlternative
  * @property {string} mes
  * @property {string} [name]
  * @property {boolean} [is_user]
@@ -286,7 +244,8 @@ const _openingRowInFlight = new Map();
  * @property {string} [node_id]
  */
 
-/** @typedef {object} OpeningsResponse
+/**
+ * @typedef {object} OpeningsResponse
  * @property {number} [total]
  * @property {number} [stored]
  * @property {number} [offset]
@@ -294,19 +253,9 @@ const _openingRowInFlight = new Map();
  * @property {OpeningAlternative[]} [alternatives]
  */
 
-// The only writer of chat_metadata.integrity and the live target pointer (charactersStore's `chat`
-// for solo, the current group's `chat_id` for a group) — every call replaces both together so the
-// two can never drift out of pairing the way ensureOpeningRow()/switchToNode()/switchToAlternativePath()
-// used to. `integrity` omitted/null means unknown, matching setNodeMetadata/setChatMetadata's own
-// falsy-`expected_integrity` semantics (the next write goes through unconditionally). `owner` overrides
-// the ambient selected_group/getCurrentCharacter() inference (same shape as _currentOwner()'s return
-// below) for a caller whose target isn't necessarily the currently open one - see deleteGroupChatByName()
-// (group-chats.js), which can repoint a group that isn't selected_group.
-// This file's own import of group-chats.js's selected_group/groupsStore, alongside group-chats.js's
-// import of this function, is the same bidirectional pattern chat-store.js already has with
 // script.js - see .oxlint-cycle-baseline's own history for that precedent.
 /**
- * @param {string} chatId The current chat's id, its name: its current chat's label, else its conversation's ('' none).
+ * @param {string} chatId
  * @param {string|null} [integrity]
  * @param {{group_id: string}|{avatar_url: string}|null} [owner]
  */
@@ -329,12 +278,8 @@ export function _setCurrentTarget(chatId, integrity = null, owner = null) {
 }
 
 /**
- * What a request that stores the greeting(s) shown at chat[mesId] without a row sends (`opening`, and for a group the
- * metadata ref its new integrity is answered under): a character's greeting, or a group chat's members' greetings in
- * a row. adoptStored() takes on the answer.
  * @param {number} mesId
- * @returns {{ opening: { refs: string[], messages: object[] }, page_metadata?: object } | null} Null when there is no
- * such greeting to store (or no text: the server refuses an empty greeting).
+ * @returns {{ opening: { refs: string[], messages: object[] }, page_metadata?: object } | null}
  */
 export function openingForRequest(mesId) {
     if (!isProvisionalNodeId(_chatAt(mesId)?.node_id)) return null;
@@ -377,10 +322,7 @@ export function openingForRequest(mesId) {
     return { opening: { refs, messages }, page_metadata: { ref: metadataRef, target: null, set: {}, unset: [] } };
 }
 
-// The only writer of chat[0].node_id — minting a row in more than one place raced (two rows for
-// one greeting, two ideas of which was the opening).
 /**
- * Gives a greeting shown without a row its row, in one request that also makes it the chat's position.
  * @param {number} [mesId]
  * @returns {Promise<string|null>}
  */
@@ -390,7 +332,6 @@ export async function ensureOpeningRow(mesId = 0) {
     if (isStoredNodeId(message.node_id)) return message.node_id;
 
     const inGroup = selected_group != null && selected_group !== '';
-    // A group's greetings are stored together, so one request covers all of them.
     const provisional = inGroup ? _chatAt(0)?.node_id : message.node_id;
     let pending = _openingRowInFlight.get(provisional);
     if (!pending) {
@@ -421,9 +362,7 @@ export async function ensureOpeningRow(mesId = 0) {
 }
 
 /**
- * Records on the server that the open chat was switched to this card greeting, which has no row, so reopening the
- * chat shows it rather than the default greeting.
- * @param {string} text The greeting's text.
+ * @param {string} text
  */
 export async function rememberCardOpening(text) {
     const character = getCurrentCharacter();
@@ -443,16 +382,11 @@ export async function rememberCardOpening(text) {
     }
 }
 
-// Brings the card's current greetings into an already-open chat's opening alternatives. Nothing is
-// written here: an appended slot carries a provisional id, marking it as card-only text; it gains a
-// row only if someone uses it.
 /**
  * @param {object} [options]
- * @param {{from: string, to: string, index?: number}|null} [options.greetingEdit] The one card greeting whose text just changed, if that's what happened; `index` is its position in the card's greeting list.
- * @param {{from: string, to: string, index?: number}[]} [options.greetingEdits] Every card greeting whose text just changed, in the order the changes were made; when given, used instead of `greetingEdit`.
- * @param {{ openings: OpeningsResponse|null, card_openings: OpeningsResponse|null }|null} [options.openings] The
- * character's openings when already read: `openings` as /api/chats/openings answers an empty body, `card_openings`
- * as it answers `{ offset: stored, limit: card-only count }`.
+ * @param {{from: string, to: string, index?: number}|null} [options.greetingEdit]
+ * @param {{from: string, to: string, index?: number}[]} [options.greetingEdits]
+ * @param {{ openings: OpeningsResponse|null, card_openings: OpeningsResponse|null }|null} [options.openings]
  */
 export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, greetingEdits, openings = null } = {}) {
     const edits = Array.isArray(greetingEdits) ? greetingEdits : (greetingEdit ? [greetingEdit] : []);
@@ -492,19 +426,18 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
     const current = _chatAt(0);
     if (current?.node_id == null || current.node_id === '' || current.node_id !== opening.node_id) return;
 
-    // The server's list, at the server's positions, as a fresh load lays it out (script.js's _openingFromTree()):
-    // the stored openings, then the card's greetings no stored opening already is. What isn't in a window read is a
-    // hole (`null`), read when swiped to, as on load.
     /** @type {(string|null)[]} */
     const keptSwipes = new Array(total).fill(null);
     /** @type {(SwipeInfoWithSpeaker|null)[]} */
     const keptInfo = new Array(total).fill(null);
-    /** @param {OpeningsResponse|null} window @param {number} start */
+    /**
+     * @param {OpeningsResponse|null} window
+     * @param {number} start
+     */
     const place = (window, start) => (window?.alternatives ?? []).forEach((alt, k) => {
         const at = start + k;
         if (at < 0 || at >= total) return;
         keptSwipes[at] = alt.mes;
-        // Provisional id, not absent, for a card-only greeting — an absent id reads as a new alternative to create.
         keptInfo[at] = {
             send_date: alt.send_date, extra: alt.extra ?? {},
             name: alt.name, is_user: alt.is_user,
@@ -514,8 +447,6 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
     place(head, head.offset ?? 0);
     place(tail, tail?.offset ?? storedCount);
 
-    // Whatever is being shown must survive the rebuild: a stored opening by its id, read around it when the window
-    // read didn't reach it; a card greeting by its text.
     const swipes = Array.isArray(current.swipes) ? current.swipes : [current.mes ?? ''];
     const shownWas = current.swipe_id ?? 0;
     const shownText = Array.isArray(current.swipes) ? current.swipes[shownWas] : current.mes;
@@ -535,7 +466,6 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
     if (unchanged) return;
 
     /**
-     * Where `alt` sits in keptSwipes, filling its slot if it's a hole; -1 if it has no slot.
      * @param {OpeningAlternative} alt
      * @param {number} serverIndex
      * @returns {number}
@@ -554,7 +484,6 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
         return keptSwipes[serverIndex] === alt.mes ? serverIndex : -1;
     };
 
-    // The fallback picks exactly what a fresh load (script.js's _openingFromTree()) would.
     const placeDefault = () => {
         const alternatives = head.alternatives ?? [];
         let k = head.default_chosen === true ? (head.default_index ?? -1) - (head.offset ?? 0) : -1;
@@ -570,8 +499,7 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
     };
 
     /**
-     * Where the server says the shown card greeting landed among the character's full openings, applied here.
-     * @returns {Promise<number|null>} -1 when there is nowhere to land; null when it couldn't be found out or applied.
+     * @returns {Promise<number|null>}
      */
     const placeLanding = async () => {
         try {
@@ -596,7 +524,6 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
 
     let landAt = shownAt;
     if (shownAt < 0 && !isStoredNodeId(current.node_id)) {
-        // The card greeting on screen isn't among the loaded openings: the server works out where it landed.
         const landing = await placeLanding();
         if (landing === null) {
             toastr.warning(t`The chat couldn't follow the greeting change, so it shows the greeting it would open on.`, t`Greeting not followed`);
@@ -608,7 +535,6 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
 
     if (landAt < 0 && !isStoredNodeId(current.node_id)) {
         if ((head.total ?? 0) > 0) return;
-        // No greeting left to open on, the same as loading a chat for a card with none.
         forgetStored([current.node_id]);
         chat.splice(0, chat.length);
         await redisplayChat();
@@ -630,34 +556,28 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
         }
     }
 
-    // Reading isn't an edit — following the card shouldn't mint a row.
     const wasClean = isAsStored(current);
     updateMessage(0, updates);
     if (updates.node_id != null && updates.node_id !== current.node_id) {
         forgetStored([current.node_id]);
     }
-    // updateMessage() above may have replaced chat[0] - re-read rather than reuse `current`.
     const updated = _chatAt(0);
     if ((wasClean || updates.node_id != null) && updated?.node_id != null && updated.node_id !== '') {
         markStoredAs(updated.node_id, updated);
     }
-    // Refresh the message block too, not just swipe buttons, or the edit appears to do nothing.
     if (updates.mes !== undefined && updated) {
         updateMessageBlock(0, updated);
     }
     refreshSwipeButtons(true);
 }
 
-// Re-fetches what followed an overswiped message, since the nodes are still in the tree.
-// With `redraw: false` only `chat` changes and the caller redraws from mesId + 1.
 /**
  * @param {number} mesId
  * @param {{redraw?: boolean}} [options]
- * @returns {Promise<boolean>} Whether what follows mesId changed.
+ * @returns {Promise<boolean>}
  */
 export async function _restoreContinuation(mesId, { redraw = true } = {}) {
     const message = _chatAt(mesId);
-    // A provisional-id opening has no row, so nothing can follow it.
     if (!isStoredNodeId(message?.node_id)) return false;
 
     let payload;
@@ -690,7 +610,6 @@ export async function _restoreContinuation(mesId, { redraw = true } = {}) {
 }
 
 /**
- * Takes the state where the session now is from an answer that moved it (`chat_metadata`), when it carries one.
  * @param {{ chat_metadata?: ChatMetadata } | null | undefined} answer
  */
 async function _takeStateFrom(answer) {
@@ -699,7 +618,6 @@ async function _takeStateFrom(answer) {
     takeServerState(answer.chat_metadata);
 }
 
-// Named actions for writes a chat can make — prefer these over _saveTreeChat's snapshot-diff guessing.
 
 /** @typedef {Error & {status: number}} HttpError */
 
@@ -712,9 +630,6 @@ function _hasHttpStatus(error) {
 }
 
 /**
- * Retries the SAME request on a transient failure (network error, 5xx) instead of asking something
- * else to guess what changed - a dropped write is still that exact write. A 4xx is a real, immediate
- * refusal (bad request, not found, conflict) and is never retried, since a retry can't change it.
  * @template T
  * @param {() => Promise<T>} fn
  * @param {{attempts?: number, baseDelayMs?: number}} [options]
@@ -738,12 +653,6 @@ async function _retryTransient(fn, { attempts = 3, baseDelayMs = 500 } = {}) {
 }
 
 /**
- * Public export of the exact same retry policy `_chatOpPost()` uses below (transient network/5xx
- * errors retried with backoff, a 4xx refusal thrown immediately) - for a caller that must persist by
- * raw node id and an explicit owner instead of through a `chatOp*()` (which always reads/writes
- * `chat[]`/`getCurrentCharacter()`, i.e. whatever's CURRENTLY open - wrong for a caller whose target
- * chat may no longer be the one on screen). See public/scripts/horde.js's `persistHordeRawActionReply()`
- * for the real caller and why it can't use `chatOp*()` directly.
  * @template T
  * @param {() => Promise<T>} fn
  * @param {{attempts?: number, baseDelayMs?: number}} [options]
@@ -753,11 +662,6 @@ export async function retryTransient(fn, options) {
     return _retryTransient(fn, options);
 }
 
-// The tree owner for whatever's currently open: a group by its own id (mirrors the server's ownerOf()
-// in src/endpoints/chats.js, which checks body.group_id before body.avatar_url) or, absent a group, the
-// selected character by avatar. getCurrentCharacter() alone is wrong while a group is open - it names
-// whichever member is mid-turn (generateGroupWrapper() calls setCharacterId() per activated member),
-// not the group whose tree every message in this chat actually belongs to.
 /** @returns {{group_id: string}|{avatar_url: string}|null} */
 function _currentOwner() {
     if (selected_group != null && selected_group !== '') return { group_id: selected_group };
@@ -765,12 +669,6 @@ function _currentOwner() {
     return avatar != null && avatar !== '' ? { avatar_url: avatar } : null;
 }
 
-// A dropped write used to rely on some LATER save eventually noticing and catching up (a diff-scan
-// against `chat[]` - the same shape this whole codebase spent tonight removing as _saveTreeChat()).
-// _retryTransient() already covers a transient blip; once that's exhausted, or a 4xx refuses outright,
-// the honest thing is to say so immediately, not stay silent and hope something notices later. Rate-
-// limited so a burst of failures (e.g. several ops during one dropped connection) produces one toast,
-// not a flood.
 let _lastChatOpFailureToastAt = 0;
 function _reportChatOpFailure() {
     const now = Date.now();
@@ -780,14 +678,9 @@ function _reportChatOpFailure() {
 }
 
 /**
- * Posts one operation. Throws on refusal, so a caller cannot mistake a refusal for a write.
- * Each chat-op endpoint has its own response shape (`node_ids`, `refused`/`applied`, `node_id`, ...),
- * read directly by each call site below - genuinely dynamic per-endpoint, so this returns `any`.
  * @param {string} path
  * @param {Record<string, unknown>} body
- * @param {boolean} [silent] Skip the generic failure toast - only for a caller that already reports
- * this same failure itself with something more specific (e.g. chatOpEditMany()'s token-count backfill
- * caller); everyone else gets it by default, since most call sites report nothing on their own.
+ * @param {boolean} [silent]
  * @returns {Promise<any>}
  */
 async function _chatOpPost(path, body, silent = false) {
@@ -814,8 +707,6 @@ async function _chatOpPost(path, body, silent = false) {
 }
 
 /**
- * Posts one operation as `_chatOpPost()` does, but answers the body of a refusal with one of `answered` statuses
- * (an edit refused for a reason the caller handles) instead of throwing.
  * @param {string} path
  * @param {Record<string, unknown>} body
  * @param {number[]} answered
@@ -844,7 +735,6 @@ async function _chatOpPostAnswering(path, body, answered) {
     }
 }
 
-// Reads the live object, not the caller's copy — updateMessage() may have replaced it.
 /**
  * @param {number} mesId
  * @param {string|null|undefined} nodeId
@@ -856,13 +746,9 @@ export function _markMessageSaved(mesId, nodeId) {
     }
 }
 
-// ChatMessage (global.d.ts, client-facing) has no `swipe_speaker_default` - TreeChatMessage
-// (src/chat-completion-generation-input.js, server-side) does, and a message loaded off the tree can carry it. Real
-// gap in that shared ambient declaration, not owned by this file - typed locally instead.
 /** @typedef {ChatMessage & {swipe_speaker_default?: {name?: string, is_user?: boolean}}} ChatMessageWithSpeakerDefault */
 
 /**
- * Strips swipe machinery and node_id — a single row, not a set.
  * @param {ChatMessageWithSpeakerDefault} msg
  * @param {string} [text]
  * @returns {Partial<ChatMessageWithSpeakerDefault>}
@@ -877,10 +763,6 @@ function _messageContent(msg, text = msg.mes) {
     return content;
 }
 
-// Never sends an edit that would empty a message — the route refuses it outright with a 409.
-// A card greeting with no row yet is saved as a new stored opening with the edited text; the card's own
-// greeting is untouched and is offered again among the openings.
-/** Extra fields reads derive, never stored as a message's own. */
 const DERIVED_EXTRA = ['branches', 'bookmark_link', ITEMIZED_PROMPT_FLAG, 'token_count'];
 
 /**
@@ -894,7 +776,6 @@ export function extraOf(extra) {
 }
 
 /**
- * A message's own fields, as stored for the alternative it shows: without its id, its swipes and what reads derive.
  * @param {ChatMessage} message
  * @returns {Record<string, any>}
  */
@@ -907,9 +788,6 @@ export function contentOf(message) {
 }
 
 /**
- * What differs from `before` in `now`: the fields to set and those to unset; null when nothing does. `extra`, where
- * extensions and the app keep a message's own data, differs key by key (`extra.<key>`), so a key set elsewhere since
- * the page read the message is kept.
  * @param {Record<string, any>} before
  * @param {Record<string, any>} now
  * @returns {{ patch: Record<string, any>, unset: string[] } | null}
@@ -933,8 +811,6 @@ export function patchOf(before, now) {
 }
 
 /**
- * The edit of a stored message, addressed by its node: what differs from the copy last stored, or its whole content
- * when the page holds no stored copy; null when nothing differs, so nothing is written.
  * @param {ChatMessage} msg
  * @returns {{ node_id: string, patch?: Record<string, any>, unset?: string[], content?: Record<string, any> } | null}
  */
@@ -947,8 +823,6 @@ function _editOf(msg) {
 }
 
 /**
- * Says that a message a reply is still being generated into (its node not known yet) wasn't changed: an edit of it
- * would land on the node it named before, or be overwritten by the reply.
  * @param {number} mesId
  */
 function _refuseGenerating(mesId) {
@@ -970,18 +844,14 @@ export async function chatOpEdit(mesId) {
     if (!isStoredNodeId(msg?.node_id)) return false;
     if (typeof msg.mes === 'string' && msg.mes.length === 0) return false;
 
-    // Only what the user changed: a field the page's copy has stale never overwrites the stored one.
     const edit = _editOf(msg);
     if (edit !== null) await _chatOpPost('/api/chats/message/edit', edit);
     _markMessageSaved(mesId, msg.node_id);
-    // A character's opening edited to a card greeting's text is that greeting now: the card-only one is dropped.
     if (mesId === 0 && (selected_group == null || selected_group === '')) await _mergeCardGreetingsIntoOpening();
     return true;
 }
 
 /**
- * Whether the message shows a slot no node is stored for: the one an overswipe opens for a new alternative (or a
- * reply that wasn't stored). The message names no node then, nor does its slot.
  * @param {ChatMessage|null|undefined} message
  * @returns {boolean}
  */
@@ -992,10 +862,8 @@ export function isComposedSlot(message) {
 }
 
 /**
- * Stores the alternative written into a slot no node is stored for (isComposedSlot()) and moves the chat onto it:
- * after the stored message before it, or as an opening of its own. Nothing is stored for an empty one.
  * @param {number} mesId
- * @returns {Promise<string|null>} Its node id; null when nothing was stored.
+ * @returns {Promise<string|null>}
  */
 export async function chatOpStoreComposed(mesId) {
     const msg = _chatAt(mesId);
@@ -1004,7 +872,6 @@ export async function chatOpStoreComposed(mesId) {
     /** @type {string|null} */
     let nodeId = null;
     if (mesId === 0) {
-        // An opening follows nothing: it is stored as a card greeting is when first changed, and the chat moves onto it.
         updateMessage(0, { node_id: provisionalNodeId(msg.name, msg.mes) });
         nodeId = await ensureOpeningRow(0);
         if (nodeId === null) updateMessage(0, { node_id: undefined });
@@ -1017,7 +884,6 @@ export async function chatOpStoreComposed(mesId) {
             if (isStoredNodeId(id)) { after = id; break; }
         }
         if (after === null) return null;
-        // No send key: the alternative swiped from may carry one, and this is not that message.
         const result = await _chatOpPost('/api/chats/message/append', { after_node_id: after, messages: [_messageContent(msg)], send_keys: [null] });
         nodeId = result.node_ids?.[0] ?? null;
         if (isStoredNodeId(nodeId)) updateMessage(mesId, { node_id: nodeId });
@@ -1034,15 +900,11 @@ export async function chatOpStoreComposed(mesId) {
     return nodeId;
 }
 
-// Batches edits across messages into a single request instead of N round trips that could end up
-// half applied.
 /**
  * @param {number[]} mesIds
- * @param {boolean} [silent] Forwarded to _chatOpPost() - true for a caller that already reports a
- * failure itself, so the generic one doesn't also fire for the same failure.
+ * @param {boolean} [silent]
  */
 export async function chatOpEditMany(mesIds, silent = false) {
-    // A card greeting with no row gets its stored row first, so the edit has a row to land on.
     let ensuredOpening = false;
     for (const mesId of mesIds) {
         if (!isProvisionalNodeId(_chatAt(mesId)?.node_id)) continue;
@@ -1069,7 +931,6 @@ export async function chatOpEditMany(mesIds, silent = false) {
         edits: edits.map(({ _mesId, ...edit }) => edit),
     }, silent);
 
-    // Only mark accepted edits saved — a partial refusal shouldn't mark everything saved.
     const refused = new Set((result.refused ?? []).map((/** @type {any} */ r) => r.node_id));
     for (const edit of edits) {
         if (!refused.has(edit.node_id)) _markMessageSaved(edit._mesId, edit.node_id);
@@ -1080,13 +941,11 @@ export async function chatOpEditMany(mesIds, silent = false) {
     return result.applied ?? 0;
 }
 
-// An opening with no row yet earns one here, since an append must name the row it attaches to.
 /**
- * Stores chat[fromIndex..toIndex) after the nearest stored message before them.
  * @param {number} fromIndex
- * @param {number} [toIndex] Exclusive end; the rest of the chat when left out.
- * @param {{ silent?: boolean }} [options] `silent`: for a caller that reports the failure itself.
- * @returns {Promise<string[]>} The stored node ids; empty when there is no stored message to follow.
+ * @param {number} [toIndex]
+ * @param {{ silent?: boolean }} [options]
+ * @returns {Promise<string[]>}
  */
 export async function chatOpAppend(fromIndex, toIndex = chat.length, { silent = false } = {}) {
     /** @type {string|null} */
@@ -1102,13 +961,11 @@ export async function chatOpAppend(fromIndex, toIndex = chat.length, { silent = 
 }
 
 /**
- * Stores chat[fromIndex..toIndex) after the stored node `after`, each with its send key when it has one.
  * @param {string} after
  * @param {number} fromIndex
- * @param {number} [toIndex] Exclusive end; the rest of the chat when left out.
- * @param {{ silent?: boolean }} [options] `silent`: for a caller that reports the failure itself.
- * @returns {Promise<{ node_ids: string[], already_stored: string[] }>} `already_stored`: the nodes of
- * messages whose send was stored before, wherever that was.
+ * @param {number} [toIndex]
+ * @param {{ silent?: boolean }} [options]
+ * @returns {Promise<{ node_ids: string[], already_stored: string[] }>}
  */
 export async function chatOpAppendAfter(after, fromIndex, toIndex = chat.length, { silent = false } = {}) {
     const messages = chat.slice(fromIndex, toIndex);
@@ -1130,12 +987,10 @@ export async function chatOpAppendAfter(after, fromIndex, toIndex = chat.length,
     return { node_ids: ids, already_stored: result.already_stored ?? [] };
 }
 
-// Splices a new message in between two existing ones. Nothing to graft before when mesId lands at
-// the tail (nothing follows it yet) — that's a plain append, so delegate rather than duplicate it.
 /**
  * @param {number} mesId
- * @param {{ silent?: boolean }} [options] `silent`: for a caller that reports the failure itself.
- * @returns {Promise<string|null>} The stored node id; null when there is nothing stored on either side to place it between.
+ * @param {{ silent?: boolean }} [options]
+ * @returns {Promise<string|null>}
  */
 export async function chatOpGraft(mesId, { silent = false } = {}) {
     const msg = _chatAt(mesId);
@@ -1168,8 +1023,6 @@ export async function chatOpGraft(mesId, { silent = false } = {}) {
 }
 
 /**
- * What an edit would drop besides its messages (bookmarks, state changes), asked of the server, and for `ask` (a
- * delete the user asked for here) whether the user goes on: the edit's `confirm`, or null when the user said no.
  * @param {string} path
  * @param {Record<string, unknown>} body
  * @param {boolean} ask
@@ -1183,19 +1036,17 @@ async function _editConfirm(path, body, ask) {
 }
 
 /**
- * @typedef {object} EditTicket What an edit drops and the confirm naming exactly that.
+ * @typedef {object} EditTicket
  * @property {{ bookmarks: string[], changes: string[] }} confirm
  * @property {import('./edit-drops.js').Drops} drops
  */
 
 /**
- * Applies an edit with what `_editConfirm()` answered. When what it drops changed meanwhile (someone else edited the
- * tree), the new drops are asked about again (`ask`) or applied; drops nobody was asked about are shown as a warning.
  * @param {string} path
  * @param {Record<string, unknown>} body
  * @param {EditTicket} ticket
  * @param {boolean} ask
- * @returns {Promise<any | null>} The answer, or null when the user said no.
+ * @returns {Promise<any | null>}
  */
 async function _applyConfirmed(path, body, ticket, ask) {
     let { confirm, drops } = ticket;
@@ -1216,17 +1067,12 @@ async function _applyConfirmed(path, body, ticket, ask) {
 }
 
 /**
- * Cuts messages [firstMesId..lastMesId] out of this chat (upstream's delete of messages: they leave this chat, other
- * branches keep what they share). What goes with them besides (bookmarks, state changes) is asked about first with
- * `ask` (the user's own delete here), else applied and shown as a warning. The chat's later messages that are now
- * copies (other branches shared them) take their copies' ids; the caller removes the cut messages from `chat`.
  * @param {number} firstMesId
  * @param {number} lastMesId
  * @param {{ ask?: boolean }} [options]
- * @returns {Promise<boolean | null>} true when cut, false when the user said no, null when nothing stored was named.
+ * @returns {Promise<boolean | null>}
  */
 export async function chatOpCut(firstMesId, lastMesId, { ask = false } = {}) {
-    // Messages not stored yet at either end of the range have nothing to cut on the server.
     let from = firstMesId;
     let to = lastMesId;
     while (from <= to && !isStoredNodeId(_chatAt(from)?.node_id)) from++;
@@ -1239,15 +1085,12 @@ export async function chatOpCut(firstMesId, lastMesId, { ask = false } = {}) {
     if (!ticket) return false;
     const answer = await _applyConfirmed('/api/chats/message/cut', body, ticket, ask);
     if (!answer) return false;
-    // The cut messages leave the chat: they are no longer the page's.
     forgetStored(chat.slice(from, to + 1).map(m => m.node_id));
     _takeCopies(answer.copied, to + 1);
     return true;
 }
 
 /**
- * The chat's messages from `from` on that the server now shows a copy of (a cut's `copied`: a later message other
- * branches shared) take their copies' ids, as stored as they were (a change not stored yet stays one).
  * @param {unknown} copied
  * @param {number} from
  */
@@ -1278,13 +1121,8 @@ function _takeCopies(copied, from) {
 }
 
 /**
- * Cuts the stored messages `nodeIds` out of this chat's path (upstream's delete of messages the page no longer holds,
- * found by the compat save): each run of adjacent ones on the server's path is one cut, the last first. What else
- * that drops (bookmarks, state changes) is applied and shown as a warning; the chat's messages the path now shows a
- * copy of take their copies' ids.
  * @param {string[]} nodeIds
- * @returns {Promise<{ not_on_path: string[], refused: { node_id: string, reason: string }[] }>} `not_on_path`: those
- * the session's path doesn't hold (already gone from it), cut nowhere.
+ * @returns {Promise<{ not_on_path: string[], refused: { node_id: string, reason: string }[] }>}
  */
 export async function chatOpCutNamed(nodeIds) {
     const answer = await _chatOpPostAnswering('/api/chats/message/cut-many', { node_ids: nodeIds }, [409]);
@@ -1298,10 +1136,8 @@ export async function chatOpCutNamed(nodeIds) {
 }
 
 /**
- * Edits stored messages by their node ids in one request, each by a patch: the fields it sets (each replaced whole)
- * and those it unsets, the rest of the message as stored.
  * @param {{ node_id: string, patch?: Record<string, unknown>, unset?: string[] }[]} edits
- * @returns {Promise<{ node_id: string, reason: string }[]>} The edits refused.
+ * @returns {Promise<{ node_id: string, reason: string }[]>}
  */
 export async function chatOpPatch(edits) {
     if (!edits.length) return [];
@@ -1310,10 +1146,9 @@ export async function chatOpPatch(edits) {
 }
 
 /**
- * Adds an alternative beside the stored message `siblingNodeId` (another reply of its parent), shown to no one.
  * @param {string} siblingNodeId
  * @param {Record<string, unknown>} content
- * @returns {Promise<string|null>} Its node id (an existing one when that alternative is there already).
+ * @returns {Promise<string|null>}
  */
 export async function chatOpAddAlternativeBeside(siblingNodeId, content) {
     const created = await _chatOpPost('/api/chats/message/alternative', { sibling_node_id: siblingNodeId, contents: [content] });
@@ -1321,21 +1156,16 @@ export async function chatOpAddAlternativeBeside(siblingNodeId, content) {
 }
 
 /**
- * Bookmarks the stored message `nodeId` with `label`, not opened.
  * @param {string} nodeId
  * @param {string} label
- * @returns {Promise<string|null>} The bookmark's compat chat id, or null when it was refused.
+ * @returns {Promise<string|null>}
  */
 export async function chatOpBookmarkNode(nodeId, label) {
     const answer = await _chatOpPostAnswering('/api/chats/bookmark', { node_id: nodeId, label }, [409]);
     return answer?.ok === true && typeof answer.id === 'string' ? answer.id : null;
 }
 
-// May return an existing row — asserting the same alternative twice is the same statement twice.
 /**
- * Stores a new alternative of a message. A first message shown from the card (no row of its own) gets it as an
- * opening of the chat, beside the card's greetings, which stay the card's; a temporary chat (no character or group)
- * keeps it on the page only.
  * @param {number} mesId
  * @param {string} text
  * @returns {Promise<string|null>}
@@ -1372,9 +1202,6 @@ export async function chatOpSelect(mesId, swipeId) {
 }
 
 /**
- * Readies the delete of an alternative (a swipe) and everything below it: what it would drop besides (bookmarks,
- * state changes) is asked about first with `ask` (the user's own delete here). Null when the user said no or the
- * alternative isn't stored; else what `chatOpDeleteAlternativeNode()` takes.
  * @param {string|null|undefined} nodeId
  * @param {{ ask?: boolean }} [options]
  * @returns {Promise<EditTicket | null>}
@@ -1385,14 +1212,11 @@ export async function chatOpReadyAlternativeDelete(nodeId, { ask = false } = {})
 }
 
 /**
- * Deletes an alternative (a swipe) and everything below it, readied by `chatOpReadyAlternativeDelete()`. Refuses
- * without asking the server while it is still the shown one (`currentNodeId`): the caller moves the selection off
- * it first.
  * @param {string|null|undefined} nodeId
  * @param {string|null|undefined} currentNodeId
  * @param {EditTicket} ticket
  * @param {{ ask?: boolean }} [options]
- * @returns {Promise<boolean>} Whether it was deleted.
+ * @returns {Promise<boolean>}
  */
 export async function chatOpDeleteAlternativeNode(nodeId, currentNodeId, ticket, { ask = false } = {}) {
     if (nodeId === currentNodeId || !isStoredNodeId(nodeId)) return false;

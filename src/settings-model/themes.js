@@ -2,11 +2,6 @@ import { TYPE } from '../library-codes.js';
 import { THEME_FIELDS } from '../../public/scripts/theme-fields.js';
 import { draft } from './entity-draft.js';
 
-/**
- * Themes (§1.3, step 3e): a bundle each (`TYPE.theme`, key its name), one value per field of its file
- * (`THEME_FIELDS` and its `name`), named as the file names them; a field that isn't a theme's is kept as it came.
- */
-
 export { THEME_FIELDS };
 
 /**

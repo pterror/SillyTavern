@@ -20,9 +20,6 @@ let baseUrl;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
-/**
- * Mounts the real characters.js router behind a fake auth middleware, mirroring characters-query.test.js's setup.
- */
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
@@ -66,8 +63,6 @@ async function postJson(urlPath, body) {
 }
 
 /**
- * Writes a real (parseable) PNG card under `avatar` and seeds its metadata row, mirroring
- * characters-query.test.js's seedCharacterWithFile().
  * @param {string} avatar
  * @param {object} overrides
  */
@@ -105,7 +100,6 @@ describe('POST /api/characters/rename (design doc §9 phase 4d: collapses to a c
         const body = await response.json();
         expect(body.avatar).toBe('11ee9c30-3aaa-7000-8000-000000000001.png');
 
-        // The image is still the same file - no rename, no copy.
         expect(await avatars.avatarPathOf(user.store.lib, directories, '11ee9c30-3aaa-7000-8000-000000000001.png')).toBe(imageBefore);
     });
 
@@ -130,7 +124,6 @@ describe('POST /api/characters/rename (design doc §9 phase 4d: collapses to a c
 
         await postJson('/api/characters/rename', { avatar_url: avatar, new_name: 'Renamed' });
 
-        // Same directory, same content - never touched.
         expect(fs.existsSync(chatsDir)).toBe(true);
         expect(fs.existsSync(path.join(chatsDir, 'a.jsonl'))).toBe(true);
     });
@@ -158,7 +151,6 @@ describe('POST /api/characters/rename (design doc §9 phase 4d: collapses to a c
         const avatar = '11ee9c30-3aaa-7000-8000-000000000010.png';
         const wait = () => new Promise(resolve => setTimeout(resolve, 5));
         const rename = (name, pastChats) => postJson('/api/characters/rename', { avatar_url: avatar, new_name: name, rename_past_chats: pastChats });
-        /** Appends a message by the character, at the real time now or at `time`. */
         const say = async (text, after, time) => {
             const chats = user.store.chats;
             if (time !== undefined) chats.now = () => time;
@@ -170,7 +162,6 @@ describe('POST /api/characters/rename (design doc §9 phase 4d: collapses to a c
                 chats.now = () => Date.now();
             }
         };
-        /** The names the whole branch down to `at` shows. */
         const shown = async at => {
             const tree = await fixture.treeOf(user.store, { avatar });
             return (await user.store.chats.load({ tree, at })).messages.map(m => m.name);
@@ -221,7 +212,6 @@ describe('POST /api/characters/rename (design doc §9 phase 4d: collapses to a c
             await rename('Second', false);
             await wait();
             const b = await say('b', a);
-            // A card write (the editor's save) keeps the history.
             const [card] = await user.store.lib.cards([avatar]);
             card.data.description = 'edited';
             await user.store.lib.writeCard(directories, avatar, JSON.stringify(card));

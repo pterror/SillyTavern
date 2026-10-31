@@ -1,8 +1,5 @@
 import type { CreateRule } from 'vite-plus/lint/plugins';
 
-// A Solid component runs once; its props are getters that follow what the caller passes. Reading one into a name,
-// or taking props apart (`const { x } = props`), reads it once, and the name never follows it. Props are read where
-// they're used: in JSX, or in a function Solid calls again (a memo, an effect, a handler).
 const rule: CreateRule = {
     meta: {
         type: 'problem',

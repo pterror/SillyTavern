@@ -1,25 +1,8 @@
-//! The record log's byte format: varints, the record kinds and their schemas, encoding and decoding.
-//!
-//! A log is a sequence of items laid out in fixed-size blocks:
-//! - `0x00` pad: the rest of the block is unused; the next item starts at the next block.
-//! - `0x01` trailer: ends a sync group; four bytes of CRC-32C (little-endian) follow: the CRC of the group's
-//!   start position (8 bytes, little-endian), continued over every item byte since the previous trailer (pads
-//!   included, unused block tails not).
-//! - a record: a header varint (`>= 2`) naming the kind and carrying its bits, then the kind's values in
-//!   schema order, with no per-value type tags.
-//!
-//! Records carry no length: a kind's schema fixes how its values are read. Ids are coded as the difference
-//! from the previous id of the same space in the same block, and times as the difference from the previous
-//! time in the block, so the decoding context resets at every block start.
-
 use std::fmt;
 
-/// A record's or an item's undecodable bytes, or a value the format can't hold.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FormatError {
-    /// The bytes end before the item does.
     Incomplete,
-    /// The bytes don't decode as an item.
     Invalid(String),
 }
 
@@ -40,15 +23,10 @@ fn invalid<T>(why: impl Into<String>) -> FormatResult<T> {
 
 pub const PAD: u8 = 0x00;
 pub const TRAILER: u8 = 0x01;
-/// A trailer's size: its marker and the CRC-32C.
 pub const TRAILER_LEN: usize = 5;
 
-/// Largest integer a JavaScript number holds exactly; the bound for every non-id integer value.
 pub const MAX_SAFE: u64 = (1 << 53) - 1;
-/// Ids are below 2^63, so the difference of two fits an i64.
 pub const MAX_ID: u64 = i64::MAX as u64;
-
-// ---- varints ----
 
 pub fn put_uvarint(out: &mut Vec<u8>, mut v: u64) {
     while v >= 0x80 {
@@ -71,7 +49,6 @@ pub fn get_uvarint(buf: &[u8], at: &mut usize) -> FormatResult<u64> {
         }
         v |= u64::from(b & 0x7f) << shift;
         if b < 0x80 {
-            // A non-minimal varint (a trailing zero byte) would give one value two encodings.
             if b == 0 && shift > 0 {
                 return invalid("varint not minimally encoded");
             }
@@ -97,9 +74,6 @@ pub fn uvarint_len(v: u64) -> usize {
     bits.div_ceil(7)
 }
 
-// ---- WTF-8: text as JavaScript holds it (UTF-16, lone surrogates included), at UTF-8's size ----
-
-/// Encodes UTF-16 code units as WTF-8: UTF-8, with a lone surrogate as its 3-byte form.
 pub fn wtf8_from_utf16(units: &[u16]) -> Vec<u8> {
     let mut out = Vec::with_capacity(units.len());
     let mut i = 0;
@@ -136,15 +110,12 @@ pub fn wtf8_from_utf16(units: &[u16]) -> Vec<u8> {
     out
 }
 
-/// Decodes well-formed WTF-8 to UTF-16 code units. A surrogate pair written as two 3-byte forms is not
-/// well-formed (it has a 4-byte form), so every string has exactly one encoding.
 pub fn wtf8_to_utf16(bytes: &[u8]) -> FormatResult<Vec<u16>> {
     let mut out = Vec::with_capacity(bytes.len());
     wtf8_units(bytes, |u| out.push(u))?;
     Ok(out)
 }
 
-/// Checks that `bytes` are well-formed WTF-8, as `wtf8_to_utf16` would, without converting them.
 pub fn check_wtf8(bytes: &[u8]) -> FormatResult<()> {
     if bytes.is_ascii() {
         return Ok(());
@@ -152,7 +123,6 @@ pub fn check_wtf8(bytes: &[u8]) -> FormatResult<()> {
     wtf8_units(bytes, |_| {})
 }
 
-/// Walks well-formed WTF-8, handing each UTF-16 code unit to `emit`.
 fn wtf8_units(bytes: &[u8], mut emit: impl FnMut(u16)) -> FormatResult<()> {
     let mut i = 0;
     let mut prev_lead = false;
@@ -197,9 +167,6 @@ fn wtf8_units(bytes: &[u8], mut emit: impl FnMut(u16)) -> FormatResult<()> {
     Ok(())
 }
 
-// ---- kinds ----
-
-/// The id spaces. An id's delta is taken against the previous id of its own space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Space {
     Entity = 0,
@@ -207,37 +174,22 @@ pub enum Space {
     Message = 2,
     Position = 3,
     User = 4,
-    /// Positions in the log.
     Log = 5,
-    /// State changes (`stateChange`, `stateRevert`).
     Change = 6,
 }
 pub const SPACES: usize = 7;
 
-/// A value's type in a kind's schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ty {
-    /// One bit, packed in the record's header.
     Bit,
-    /// An unsigned integer up to 2^53 - 1: a varint.
     UInt,
-    /// A signed integer within ±(2^53 - 1): a zigzag varint.
     Int,
-    /// A float: 8 bytes, little-endian.
     F64,
-    /// An id below 2^63: a zigzag varint of its difference from the previous id of the space in the block.
     Id(Space),
-    /// An id of one of these spaces, each named as JavaScript gives it: header bits pick the space (as few as
-    /// tell them apart), and the id is coded as an `Id` of that space.
     Sel(&'static [(Space, &'static str)]),
-    /// Milliseconds since the epoch, within ±(2^53 - 1): a zigzag varint of the difference from the previous
-    /// time in the block.
     Time,
-    /// A field: a varint code; code 0 is the escape, followed by the key as text.
     Field,
-    /// Text: a varint byte length, then WTF-8.
     Text,
-    /// Bytes: a varint length, then the bytes.
     Bytes,
 }
 
@@ -245,22 +197,17 @@ pub enum Ty {
 pub struct Slot {
     pub name: &'static str,
     pub ty: Ty,
-    /// Absent values cost nothing but a header bit.
     pub optional: bool,
 }
 
 #[derive(Debug)]
 pub struct Kind {
     pub name: &'static str,
-    /// The first header value of this kind; it takes `2^bits` values from there, one per combination of its
-    /// bits. Fixed once written: a different schema is a new kind with new header values.
     pub base: u64,
     pub slots: &'static [Slot],
-    /// Written by the engine itself, never taken from a caller.
     pub internal: bool,
 }
 
-/// A kind is its header values.
 impl PartialEq for Kind {
     fn eq(&self, other: &Self) -> bool {
         self.base == other.base
@@ -268,15 +215,12 @@ impl PartialEq for Kind {
 }
 
 impl Kind {
-    /// Bits carried in the header: one per `Bit` value, one per optional value (present or not), and a `Sel`
-    /// value's space.
     pub fn header_bits(&self) -> u32 {
         self.slots.iter().map(Slot::header_bits).sum()
     }
 }
 
 impl Slot {
-    /// The header bits this slot's value takes.
     pub fn header_bits(&self) -> u32 {
         let own = match self.ty {
             Ty::Bit => 1,
@@ -287,7 +231,6 @@ impl Slot {
     }
 }
 
-/// The header bits that tell `n` spaces apart.
 pub const fn sel_bits(n: usize) -> u32 {
     if n <= 1 {
         0
@@ -311,19 +254,14 @@ const fn opt(name: &'static str, ty: Ty) -> Slot {
     }
 }
 
-/// A value's holder: a character, group or tag, or a message.
 pub const HOLDER: &[(Space, &str)] = &[(Space::Entity, "entity"), (Space::Message, "message")];
-/// Where a state change hangs: a tree's root (the character or group), or a message.
 pub const HANG: &[(Space, &str)] = &[(Space::Entity, "tree"), (Space::Message, "message")];
-/// What an outside key names: a message (its id before the engine), a session (its UUID), a user (their handle).
 pub const KEYED: &[(Space, &str)] = &[
     (Space::Message, "message"),
     (Space::Position, "session"),
     (Space::User, "user"),
 ];
 
-/// Every kind the log knows. Header values 0 and 1 are the pad and the trailer. Kinds written often have header
-/// values below 128 (one byte); the tag manager's queue and reorder pass, written rarely, are above.
 pub static KINDS: &[Kind] = &[
     Kind {
         name: "fav",
@@ -341,7 +279,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A session's pointer moves to `target`, by `user`.
     Kind {
         name: "pointerMove",
         base: 6,
@@ -352,8 +289,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A session's pointer moves to the root of `tree` (no message), by `user`, at `time` (where the chat list
-    // places a position at a root).
     Kind {
         name: "pointerRoot",
         base: 127,
@@ -365,8 +300,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // `user`'s remembered position in `tree` (the user tier of landing) is `at` (absent: the tree's root), set by no
-    // session's move: an import that keeps the chat a card names as where the character opens.
     Kind {
         name: "userPosition",
         base: 250,
@@ -377,8 +310,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // `session`'s current chat in `tree` (upstream's open chat file) becomes `bookmark` (absent: none), by `user`: an
-    // explicit switch (opening a chat, a new chat, a branch opened), never an append or a move.
     Kind {
         name: "currentChat",
         base: 254,
@@ -390,8 +321,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A conversation, a `bookmark` or a `session`'s in `tree` (where it has no current chat), has its last
-    // meaningful activity here: written only by the conversion, in the order of the conversations' last messages.
     Kind {
         name: "conversationActive",
         base: 1400,
@@ -402,8 +331,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // `session`'s conversation in `tree` (its own chat there, with no current chat) is named `name`, by `user`:
-    // written with the conversation's first write (the name it was shown by until then), and by a rename.
     Kind {
         name: "conversationName",
         base: 1410,
@@ -415,8 +342,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A session steps back or forward to the `n`-th entry of its history: the cursor and the pointer go there, and
-    // no entry is added. `time`: when (a step to a root is when the session got there).
     Kind {
         name: "historyStep",
         base: 220,
@@ -428,9 +353,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // `session` (new, with nothing of its own yet) is forked from `from` by `user` at `time`: its history's entries 1
-    // to `length` are `from`'s (read through it, never copied) and its cursor is the `cursor`-th; its pointer goes
-    // where that entry points (a gone one's: the nearest earlier entry still there, as a step back lands).
     Kind {
         name: "sessionFork",
         base: 1300,
@@ -444,8 +366,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A session chooses, for `tree`, the card greeting at `index` in the card's greeting list, with no message
-    // stored: what it shows at the tree's root until it continues from there.
     Kind {
         name: "openingChoice",
         base: 221,
@@ -457,8 +377,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // At the fork `message` (absent: among the messages opening the reply's tree), `reply` is chosen, through
-    // `session` by `user`.
     Kind {
         name: "forkSelection",
         base: 7,
@@ -470,7 +388,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A text edit of a holder's field: `removed` bytes at `offset` replaced by `text`.
     Kind {
         name: "textEdit",
         base: 9,
@@ -497,7 +414,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A value the app keeps as it came (JSON text), or, empty, a marker that something is present.
     Kind {
         name: "jsonValue",
         base: 25,
@@ -510,7 +426,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // The field's value (text or JSON) goes.
     Kind {
         name: "valueDelete",
         base: 33,
@@ -522,8 +437,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A bookmark comes to be: following (mode 1: it moves to a reply added right after it) or pinned (mode 2),
-    // made through `session` by `user`, at `pointer`.
     Kind {
         name: "positionCreate",
         base: 56,
@@ -536,7 +449,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A bookmark at the root of `tree` (no message), as `positionCreate` makes one at a message, made at `time`.
     Kind {
         name: "positionRoot",
         base: 234,
@@ -550,23 +462,18 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A position's name (absent: it has none).
     Kind {
         name: "positionName",
         base: 59,
         slots: &[req("id", Ty::Id(Space::Position)), opt("name", Ty::Text)],
         internal: false,
     },
-    // The next record is a copy, written by cleaning, of the record at `from`.
     Kind {
         name: "moved",
         base: 41,
         slots: &[req("from", Ty::Id(Space::Log))],
         internal: true,
     },
-    // ---- the library: characters, groups and tags share the entity ids ----
-    // An entity comes to be: its kind (0 character, 1 group, 2 tag), the key the app knows it by (a character's
-    // avatar, a group's or tag's id), and the date it was added.
     Kind {
         name: "entityCreate",
         base: 42,
@@ -574,27 +481,22 @@ pub static KINDS: &[Kind] = &[
             req("entity", Ty::Id(Space::Entity)),
             req("type", Ty::UInt),
             req("key", Ty::Text),
-            // File-derived dates can include fractional milliseconds; preserve the original number.
             req("added", Ty::F64),
         ],
         internal: false,
     },
-    // Everything the entity holds goes; a tag's assignments go with its `tagMerge`.
     Kind {
         name: "entityDelete",
         base: 43,
         slots: &[req("entity", Ty::Id(Space::Entity))],
         internal: false,
     },
-    // A position's mode changes (1 following, 2 pinned; a session's never does).
     Kind {
         name: "positionMode",
         base: 57,
         slots: &[req("id", Ty::Id(Space::Position)), req("mode", Ty::UInt)],
         internal: false,
     },
-    // A bookmark moves to `at`, a message of its tree (absent: the tree's root), at `time` (where the chat list
-    // places one at a root). The message it was made at stays its own.
     Kind {
         name: "positionMove",
         base: 252,
@@ -605,7 +507,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A list item's place in its list; its text is the text value of `item_field(list, item)`.
     Kind {
         name: "itemPlace",
         base: 44,
@@ -617,7 +518,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // The item and its text go.
     Kind {
         name: "itemDelete",
         base: 45,
@@ -628,8 +528,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // Sort keys the writer computes with the app's own functions: a card's data size, and its create date as
-    // epoch ms (absent: none, or not a date).
     Kind {
         name: "dataSize",
         base: 46,
@@ -642,7 +540,6 @@ pub static KINDS: &[Kind] = &[
         slots: &[req("entity", Ty::Id(Space::Entity)), opt("ms", Ty::F64)],
         internal: false,
     },
-    // A hash a card is found by (`library::HASH_*`); absent: it has none.
     Kind {
         name: "cardHash",
         base: 49,
@@ -653,7 +550,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A tag goes: its carriers become `into`'s (or, with none, carry nothing).
     Kind {
         name: "tagMerge",
         base: 51,
@@ -663,7 +559,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // An entity's key (a character's avatar) or date added changes; its type is `entityCreate`'s, repeated.
     Kind {
         name: "entityUpdate",
         base: 53,
@@ -675,23 +570,18 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A tag's manual sort order: its stored `sort_order` as upstream coerces it (absent: it has none).
     Kind {
         name: "tagOrder",
         base: 54,
         slots: &[req("tag", Ty::Id(Space::Tag)), opt("order", Ty::F64)],
         internal: false,
     },
-    // A tag goes, as a `tagMerge` into none and its `entityDelete` would, only if nothing carries it (nor a tag
-    // merged into it whose carriers haven't moved); else nothing happens.
     Kind {
         name: "tagPrune",
         base: 113,
         slots: &[req("tag", Ty::Id(Space::Tag))],
         internal: false,
     },
-    // A move of the tag manager's manual order, queued until the reorder pass applies it, `seq` its place in the
-    // queue: `tag` right after (`after`) or before `anchor`, or `tag`'s `sort_order` set to `value` (JSON).
     Kind {
         name: "tagQueue",
         base: 128,
@@ -704,15 +594,12 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // The queued move `seq` was applied.
     Kind {
         name: "tagQueuePop",
         base: 114,
         slots: &[req("seq", Ty::UInt)],
         internal: false,
     },
-    // The reorder pass: its id, the order it writes (0 alphabetical, 1 by entries; absent: no pass is running),
-    // its phase (0 walk, 1 sweep, 2 drain), the next value the walk gives, and the order's cursor it goes on from.
     Kind {
         name: "tagPass",
         base: 136,
@@ -725,14 +612,12 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A value the app keeps for itself by name (`json`; absent: it has none), such as what an import has done.
     Kind {
         name: "metaValue",
         base: 115,
         slots: &[req("key", Ty::Text), opt("json", Ty::Text)],
         internal: false,
     },
-    // `tagOrder` written by reorder pass `pass`, which marks the tag as done by it.
     Kind {
         name: "tagPassOrder",
         base: 117,
@@ -742,11 +627,7 @@ pub static KINDS: &[Kind] = &[
             req("pass", Ty::UInt),
         ],
         internal: false,
-    }, // ---- chats ----
-    // A message: `parent` (absent: it opens its owner's tree), `owner` (the character or group whose tree it is
-    // in), `speaker` (absent: none by id), `name` (absent: the speaker's), the time the server took it, its text,
-    // the shape of its fixed values (`chat::FLAGS`), the session it was sent through (absent: none) and the
-    // user, and the key its sender made for it (absent: none).
+    },
     Kind {
         name: "messageAppend",
         base: 65,
@@ -765,22 +646,18 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // An outside key names an id: a message's id from before the engine, a session's UUID, a user's handle.
     Kind {
         name: "keyMap",
         base: 61,
         slots: &[req("id", Ty::Sel(KEYED)), req("key", Ty::Bytes)],
         internal: false,
     },
-    // A bookmark goes; or a session, with its pointer and its history.
     Kind {
         name: "positionDelete",
         base: 58,
         slots: &[req("id", Ty::Id(Space::Position))],
         internal: false,
     },
-    // A message goes (only one nothing replies to), at `time` (a tree's last opening going puts the positions at it
-    // at the root then).
     Kind {
         name: "messageDelete",
         base: 97,
@@ -792,8 +669,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A message and everything below it go (`store::prune`), through `session` by `user`, at `time` (as
-    // `messageDelete`'s).
     Kind {
         name: "subtreeDelete",
         base: 228,
@@ -805,14 +680,12 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // Every state change hanging at a tree's root when this commits goes (a tree deleted whole; `store::state`).
     Kind {
         name: "rootStateClear",
         base: 248,
         slots: &[req("tree", Ty::Id(Space::Entity))],
         internal: false,
     },
-    // A message moves under another parent (absent: it opens its owner's tree).
     Kind {
         name: "messageParent",
         base: 101,
@@ -824,9 +697,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A state change (`.plans/2026-10-03-state-layer-1.md`): `id` (stable, given in order), where it hangs, when
-    // (ms), its author (`state::AUTHOR_*` in the low bits; bit 3: the key is a variable's name) and their reference, a
-    // confidence, the key, and its value as JSON (absent: the key is deleted).
     Kind {
         name: "stateChange",
         base: 152,
@@ -844,7 +714,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A state change (or a revert) is reverted: the state is as if it never happened.
     Kind {
         name: "stateRevert",
         base: 119,
@@ -859,8 +728,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A reply's prompt itemization (D14): zstd-compressed JSON, and whether it holds the prompt as sent (absent:
-    // the message has none any more).
     Kind {
         name: "itemization",
         base: 216,
@@ -871,8 +738,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A world-info entry's `displayIndex` as JavaScript's `Number(displayIndex ?? -1)` reads it (absent: the entry
-    // has none recorded); `book` is the book holding the entry.
     Kind {
         name: "entryIndex",
         base: 222,
@@ -883,9 +748,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // Reserved: a character's one lorebook link from before a character's links were its list 4. The log's format
-    // keeps an old kind decodable so cleaning can read its records and drop them; every one is dead, and a new one is
-    // refused (`store::books::BookLink`).
     Kind {
         name: "bookLink",
         base: 224,
@@ -895,8 +757,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // The local import scan's record of a source file (`localImport.directories`): processed at `mtime` (absent:
-    // forgotten), and the character it was found to duplicate, whose delete forgets it.
     Kind {
         name: "localImportMtime",
         base: 235,
@@ -907,8 +767,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // The local import scan's skip of a source file that isn't a character: at `mtime` (absent: forgotten), why,
-    // and when it was checked.
     Kind {
         name: "localImportSkip",
         base: 239,
@@ -920,14 +778,12 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // Pair postings on or off (`search::pairs`): a pass builds or deletes them.
     Kind {
         name: "searchPairs",
         base: 232,
         slots: &[req("on", Ty::Bit)],
         internal: false,
     },
-    // An unresolved book (no definition) is resolved as `into` from now on, for every link naming it.
     Kind {
         name: "bookForward",
         base: 226,
@@ -937,7 +793,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // One of a message's times as the ISO string `new Date(time + delta).toISOString()`: which is its field.
     Kind {
         name: "messageTime",
         base: 109,
@@ -950,11 +805,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // ---- history (`store::history`): an entity's changes, each kept with who made it and when ----
-    // Each is a change of id `id` (the state layer's id space) made at `time` through `session` by `user`; every
-    // committed write is a change of its own.
-    //
-    // An entity's field becomes `value` (text; with `json`, JSON text).
     Kind {
         name: "histSet",
         base: 256,
@@ -970,7 +820,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // An entity's field's value (text; with `json`, JSON text) has `removed` bytes at `offset` replaced by `text`.
     Kind {
         name: "histEdit",
         base: 272,
@@ -988,7 +837,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // An entity's field's value goes.
     Kind {
         name: "histDelete",
         base: 288,
@@ -1002,7 +850,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // An item of an entity's list is at `position` (absent: it leaves the list); its history is its text field's.
     Kind {
         name: "histPlace",
         base: 296,
@@ -1018,7 +865,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // An entity (a world-info entry) is deleted, its history kept, so it can be restored.
     Kind {
         name: "histEntityDelete",
         base: 312,
@@ -1031,8 +877,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A deleted entity comes back under the key `key` (its type and date added as `entityCreate`'s), with the values
-    // it had.
     Kind {
         name: "histRestore",
         base: 316,
@@ -1048,8 +892,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // A field (or a list item) goes back to what it was at change `target`: written as the change that does it, a
-    // `histSet`, `histEdit`, `histDelete` or `histPlace`, never logged as itself.
     Kind {
         name: "histRevert",
         base: 320,
@@ -1064,9 +906,6 @@ pub static KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // Past changes of an entity are forgotten: change `target` of `field` (no field: of the entity itself), or (no
-    // target) every change of the entity before this one but each field's current one. With `marker`, this record
-    // takes their place as change `id`, saying who forgot them and when; without, nothing is left of them.
     Kind {
         name: "histForget",
         base: 324,
@@ -1084,11 +923,8 @@ pub static KINDS: &[Kind] = &[
     },
 ];
 
-/// Kinds that exist only in the crate's tests and measurements (feature `measure`). Their header values are
-/// far above the real kinds'.
 #[cfg(any(test, feature = "measure"))]
 pub static TEST_KINDS: &[Kind] = &[
-    // The value types `KINDS` doesn't use.
     Kind {
         name: "testAll",
         base: 1000,
@@ -1104,7 +940,6 @@ pub static TEST_KINDS: &[Kind] = &[
         ],
         internal: false,
     },
-    // Sets `id`'s value; its deriver keeps the current value, an order by `key` and a count.
     Kind {
         name: "testSet",
         base: 1256,
@@ -1132,9 +967,7 @@ pub fn kind_by_name(name: &str) -> Option<&'static Kind> {
     all_kinds().find(|k| k.name == name)
 }
 
-/// The kind a record header value names, and the header's bits.
 pub fn kind_by_header(h: u64) -> Option<(&'static Kind, u64)> {
-    // Each kind's header range, by base; built once, since every record read looks its kind up here.
     static RANGES: std::sync::OnceLock<Vec<(u64, u64, &'static Kind)>> = std::sync::OnceLock::new();
     let ranges = RANGES.get_or_init(|| {
         let mut r: Vec<_> = all_kinds()
@@ -1148,13 +981,9 @@ pub fn kind_by_header(h: u64) -> Option<(&'static Kind, u64)> {
     (h < end).then_some((k, h - base))
 }
 
-// ---- values and records ----
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum FieldRef {
-    /// A known field's code, >= 1.
     Code(u64),
-    /// An extension's own key, WTF-8.
     Key(Vec<u8>),
 }
 
@@ -1165,25 +994,20 @@ pub enum Value {
     Int(i64),
     F64(f64),
     Id(u64),
-    /// A `Sel` slot's id: which of its spaces (an index into them) and the id.
     Sel(u8, u64),
     Time(i64),
     Field(FieldRef),
-    /// WTF-8.
     Text(Vec<u8>),
     Bytes(Vec<u8>),
-    /// An optional value left out.
     Absent,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Record {
     pub kind: &'static Kind,
-    /// One per slot, in schema order.
     pub values: Vec<Value>,
 }
 
-/// Checks that a value fits its slot and the format's bounds.
 pub fn check_value(slot: &Slot, value: &Value) -> Result<(), String> {
     let ok = match (slot.ty, value) {
         (_, Value::Absent) => slot.optional,
@@ -1228,14 +1052,12 @@ impl Record {
     }
 }
 
-/// The decoding context: reset at every block start.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Ctx {
     ids: [u64; SPACES],
     time: i64,
 }
 
-/// Appends the record's bytes to `out`, advancing the context.
 pub fn encode(rec: &Record, ctx: &mut Ctx, out: &mut Vec<u8>) {
     let mut bits = 0u64;
     let mut bit = 0;
@@ -1302,8 +1124,6 @@ fn get_slice<'a>(buf: &'a [u8], at: &mut usize, len: u64) -> FormatResult<&'a [u
     Ok(s)
 }
 
-/// Steps over the values of a record at `buf[*at..]` (its header already read) without decoding them: ids
-/// and times are differences from earlier records in the block, so this needs none of them.
 pub fn skip_body(
     kind: &'static Kind,
     mut bits: u64,
@@ -1344,9 +1164,6 @@ pub fn skip_body(
     Ok(())
 }
 
-/// Steps over the record at `buf[*at..]` (its header already read), advancing `at` and the context as
-/// `decode_body` would, so the records after it in the block decode: its ids and times are read, nothing else is
-/// decoded or checked.
 pub fn advance_body(
     kind: &'static Kind,
     mut bits: u64,
@@ -1418,8 +1235,6 @@ pub fn advance_body(
     Ok(())
 }
 
-/// Decodes the record at `buf[*at..]`, given its header value (already read), advancing `at` and the
-/// context. Every value is checked as on append.
 pub fn decode_body(
     kind: &'static Kind,
     mut bits: u64,
@@ -1563,12 +1378,10 @@ mod tests {
             let w = wtf8_from_utf16(&c);
             assert_eq!(wtf8_to_utf16(&w).unwrap(), c);
         }
-        // Valid UTF-8 is the same bytes.
         assert_eq!(
             wtf8_from_utf16(&"ab😀".encode_utf16().collect::<Vec<_>>()),
             "ab😀".as_bytes()
         );
-        // A pair written as two 3-byte forms, overlong forms and stray bytes are rejected.
         assert!(wtf8_to_utf16(&[0xed, 0xa0, 0xbd, 0xed, 0xb8, 0x80]).is_err());
         assert!(wtf8_to_utf16(&[0xc0, 0x80]).is_err());
         assert!(wtf8_to_utf16(&[0x80]).is_err());
@@ -1635,7 +1448,6 @@ mod tests {
             )
             .unwrap(),
         ];
-        // NaN != NaN, so compare the bytes of a second encoding instead of the values.
         let mut ctx = Ctx::default();
         let mut buf = Vec::new();
         for r in &recs {
@@ -1695,7 +1507,6 @@ mod tests {
     fn ids_are_deltas_within_the_context() {
         let fav = kind_by_name("fav").unwrap();
         let f = |id| Record::new(fav, vec![Value::Id(id), Value::Bit(true)]).unwrap();
-        // 34-bit id: the header (bit packed) and a 5-byte varint; a repeat costs 1 byte for the id.
         let b = round_trip(&[f(1 << 33), f(1 << 33)]);
         assert_eq!(b.len(), 6 + 2);
     }

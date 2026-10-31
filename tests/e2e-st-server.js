@@ -18,8 +18,6 @@ function getFreePort() {
 }
 
 /**
- * The command that starts node so it is killed when its parent dies: `setpriv --pdeathsig KILL` on Linux; elsewhere node
- * itself, as there is no such tool (the run's own teardown stops the servers there).
  * @returns {[string, string[]]}
  */
 function pdeathPrefix() {
@@ -30,14 +28,11 @@ function pdeathPrefix() {
 }
 
 /**
- * Starts this checkout's server.js on the given data root and resolves once it answers HTTP.
  * @param {string} dataRoot
  * @returns {Promise<{ baseURL: string, stop: () => Promise<void> }>}
  */
 export async function startServer(dataRoot) {
     const port = await getFreePort();
-    // The server dies with whatever started it, by the kernel (a parent-death SIGKILL), even if its own event loop is
-    // stuck: a test run killed partway (a timeout, a stopped agent) never leaves servers behind.
     const [command, prefix] = pdeathPrefix();
     const server = spawn(command, [
         ...prefix,

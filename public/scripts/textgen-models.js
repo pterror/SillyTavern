@@ -485,10 +485,8 @@ export function updateNanoGptProvidersWarning(providersSelector) {
 }
 
 /**
- * Sets a model setting and saves it only when the value changed, so re-fetching a list that still
- * holds the saved model doesn't save. Server-built sends read the saved model, not this client's.
- * @param {string} key The `textgen_settings` model key.
- * @param {string} value The model ID.
+ * @param {string} key
+ * @param {string} value
  */
 function setTextgenModel(key, value) {
     if (textgen_settings[key] === value) {
@@ -1362,16 +1360,14 @@ function calculateOpenRouterCost() {
 }
 
 /**
- * The tokenizer the server resolves for the OpenRouter model.
- * @returns {number} Tokenizer type.
+ * @returns {number}
  */
 export function getCurrentOpenRouterModelTokenizer() {
     return getTextgenTypeTokenizer(textgen_types.OPENROUTER);
 }
 
 /**
- * The tokenizer the server resolves for the DreamGen model.
- * @returns {number} Tokenizer type.
+ * @returns {number}
  */
 export function getCurrentDreamGenModelTokenizer() {
     return getTextgenTypeTokenizer(textgen_types.DREAMGEN);

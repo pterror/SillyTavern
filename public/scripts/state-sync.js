@@ -1,17 +1,8 @@
-/**
- * `chat_metadata` as the state at the page's position (state layer 1, build path 5b): what the page sends of it, and
- * how it takes the server's. Chat variables travel one by one, as top-level keys do, so tabs and users changing
- * different variables keep each other's. Dependency-free, so it is importable under Node tests.
- */
-
-/** Keys the server derives (`integrity` is the session's UUID): never sent. */
 const DERIVED = new Set(['integrity']);
 
 /**
  * @typedef {{ set: Record<string, unknown>, unset: string[] }} KeyChanges
- * @typedef {KeyChanges & { variables: KeyChanges }} MetadataChanges What the page sends: `set` and `unset` per
- * top-level key (`variables` there only as the object being made, `{}`, or removed with every variable in it), and
- * `variables` per chat variable.
+ * @typedef {KeyChanges & { variables: KeyChanges }} MetadataChanges
  */
 
 /**
@@ -23,7 +14,6 @@ function isObject(v) {
 }
 
 /**
- * Each key's value as JSON, as the page last had it from the server or last stored it.
  * @param {Record<string, unknown> | null | undefined} metadata
  * @returns {Map<string, string>}
  */
@@ -37,7 +27,6 @@ export function baselineOf(metadata) {
 }
 
 /**
- * The variables a baseline holds, each as JSON (none when `variables` isn't an object there).
  * @param {Map<string, string>} baseline
  * @returns {Map<string, string>}
  */
@@ -49,9 +38,6 @@ function baselineVariables(baseline) {
 }
 
 /**
- * What changed in `metadata` since `baseline`, or null when nothing did. A variable is sent when its value differs
- * from the baseline's, so `variables` replaced wholesale (an extension assigning a new object) sends only the
- * variables that differ, and one missing from it is removed by name.
  * @param {Record<string, unknown>} metadata
  * @param {Map<string, string>} baseline
  * @returns {MetadataChanges | null}
@@ -73,7 +59,6 @@ export function metadataChanges(metadata, baseline) {
     for (const key of baseline.keys()) {
         if (!current.has(key)) changes.unset.push(key);
     }
-    // Removing the object removes every variable in it; otherwise the variables are compared one by one.
     if (isObject(vars)) {
         const before = wasObject ? baselineVariables(baseline) : new Map();
         for (const [name, v] of Object.entries(vars)) {
@@ -90,7 +75,6 @@ export function metadataChanges(metadata, baseline) {
 }
 
 /**
- * The baseline once the server stored `changes`.
  * @param {Map<string, string>} baseline
  * @param {MetadataChanges} changes
  * @returns {Map<string, string>}
@@ -110,7 +94,6 @@ export function baselineAfter(baseline, changes) {
         next.delete(key);
         if (key === 'variables') vars = null;
     }
-    // Setting a variable makes the object, as it does on the server.
     if (vars === null && Object.keys(changes.variables.set).length) vars = new Map();
     if (vars !== null) {
         for (const [name, v] of Object.entries(changes.variables.set)) vars.set(name, JSON.stringify(v));
@@ -121,8 +104,6 @@ export function baselineAfter(baseline, changes) {
 }
 
 /**
- * Replaces `target`'s contents with `state`, in place, so whatever holds `chat_metadata` (or its `variables`
- * object) sees the new state: keys in the server's order, the `variables` object kept when both are objects.
  * @param {Record<string, unknown>} target
  * @param {Record<string, unknown>} state
  */
@@ -141,7 +122,6 @@ export function replaceInPlace(target, state) {
 }
 
 /**
- * The variables a refused or failed save didn't store, for the error naming them.
  * @param {MetadataChanges} changes
  * @returns {string[]}
  */
@@ -151,8 +131,6 @@ export function unsavedVariables(changes) {
 }
 
 /**
- * Whether a state change recorded at `at` (a message's id; null: the tree's root) changes the state at the page's
- * position: it is on the page's path, root to pointer.
  * @param {string | null} at
  * @param {{ node_id?: string }[]} path
  */
@@ -161,7 +139,6 @@ export function changesStateHere(at, path) {
 }
 
 /**
- * Applies `changes` onto `target` in place: its keys set and removed, its variables set and removed by name.
  * @param {Record<string, unknown>} target
  * @param {MetadataChanges} changes
  */
@@ -180,11 +157,9 @@ export function applyChanges(target, changes) {
 }
 
 /**
- * What changed between two `metadataChanges()` of the same chat, `before` and `after`, as changes: a key or variable
- * whose change differs, or that changed before and is back as it was (then its value now, from `metadata`).
  * @param {MetadataChanges | null} before
  * @param {MetadataChanges | null} after
- * @param {Record<string, unknown>} metadata The chat's metadata now.
+ * @param {Record<string, unknown>} metadata
  * @returns {MetadataChanges | null}
  */
 export function changesSince(before, after, metadata) {
@@ -218,8 +193,6 @@ export function changesSince(before, after, metadata) {
 }
 
 /**
- * Changes as the state change ops a request carries (`reply_changes`): a key set or removed, a variable by name.
- * The `variables` object itself made empty is no op of its own (setting a variable makes it).
  * @param {MetadataChanges} changes
  * @returns {{ key: string, variable?: true, value?: unknown }[]}
  */

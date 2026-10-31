@@ -20,11 +20,10 @@ import { normalizeFav } from '../../hash-utils.js';
 import { validateArrayArgString } from '../core.js';
 
 /**
- * Resolves a base64 avatar data URL into an uploadable Blob, optionally running it through the crop dialog first.
- * @param {string} base64Data - Base64 data URL of the image
- * @param {object} [options={}] - Options
- * @param {boolean} [options.resizePrompt=false] - Whether to show the resize/crop prompt
- * @returns {Promise<Blob|null>} The final image blob, or null if the user cancelled the crop dialog
+ * @param {string} base64Data
+ * @param {object} [options={}]
+ * @param {boolean} [options.resizePrompt=false]
+ * @returns {Promise<Blob|null>}
  */
 async function resolveFinalAvatarBlob(base64Data, { resizePrompt = false } = {}) {
     let finalImageData = base64Data;
@@ -38,7 +37,6 @@ async function resolveFinalAvatarBlob(base64Data, { resizePrompt = false } = {})
             if (!croppedImage) {
                 return null;
             }
-            // The dialog returns the already-cropped image
             finalImageData = String(croppedImage);
         }
     }
@@ -48,9 +46,7 @@ async function resolveFinalAvatarBlob(base64Data, { resizePrompt = false } = {})
 }
 
 /**
- * Refreshes cached thumbnails and any currently-rendered `<img>` elements for a character's avatar,
- * after its underlying image file has changed on the server.
- * @param {string} avatarKey - The character's avatar filename (e.g., "name.png")
+ * @param {string} avatarKey
  * @returns {Promise<void>}
  */
 async function refreshAvatarDisplay(avatarKey) {
@@ -58,8 +54,6 @@ async function refreshAvatarDisplay(avatarKey) {
     await fetch(thumbnailUrl, { method: 'GET', cache: 'reload' });
     await fetch(`/characters/${avatarKey}`, { method: 'GET', cache: 'reload' });
 
-    // Refresh all visible avatar images that use this thumbnail URL
-    // This handles messages, character list, and any other place using the thumbnail
     const avatarImages = document.querySelectorAll(`img[src^="${thumbnailUrl}"]`);
     for (const img of avatarImages) {
         if (img instanceof HTMLImageElement) {
@@ -72,7 +66,7 @@ async function refreshAvatarDisplay(avatarKey) {
 }
 
 /**
- * @returns {Promise<string>} The avatar key of the created character
+ * @returns {Promise<string>}
  */
 async function createCharacterCallback(args) {
     const name = args.name;
@@ -132,13 +126,12 @@ async function createCharacterCallback(args) {
 
         if (!response.ok) {
             const errorText = await response.text();
-            throw new Error(errorText); // Will be caught and logged below
+            throw new Error(errorText);
         }
 
         const avatarKey = await response.text();
 
         if (avatarCancelled) {
-            // User cancelled the resize dialog, but character was still created
             toastr.info(t`Character created without avatar (resize cancelled)`);
         }
 
@@ -146,7 +139,6 @@ async function createCharacterCallback(args) {
 
         const shouldSelect = !isFalseBoolean(args.select);
         if (shouldSelect) {
-            // selectCharacterByAvatar handles group reset and active character setting, and reads the new character
             await selectCharacterByAvatar(avatarKey);
         }
 
@@ -160,7 +152,7 @@ async function createCharacterCallback(args) {
 }
 
 /**
- * @returns {Promise<string>} The avatar key of the updated character
+ * @returns {Promise<string>}
  */
 async function updateCharacterCallback(args) {
     let character;
@@ -205,14 +197,12 @@ async function updateCharacterCallback(args) {
                 value = value.split(',').map(t => t.trim()).filter(t => t);
             }
             updateData[fieldName] = value;
-            // Also set in data object for V2 spec compliance
             if (!updateData.data) updateData.data = {};
             updateData.data[fieldName] = value;
             hasUpdates = true;
         }
     }
 
-    // Special handling for world / lorebook: store under data.extensions.world
     if (args.world !== undefined) {
         const value = args.world;
         if (!updateData.data) {
@@ -245,7 +235,6 @@ async function updateCharacterCallback(args) {
         hasUpdates = true;
     }
 
-    // Handle avatar (resolve URL/base64, sent together with the merge request below)
     const avatarData = args.avatar ? await resolveAvatarData(args.avatar) : null;
     let avatarBlob = null;
     let avatarCancelled = false;
@@ -301,7 +290,7 @@ async function updateCharacterCallback(args) {
 
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.message || `Server returned ${response.status}`); // Will be caught and logged below
+            throw new Error(errorData.message || `Server returned ${response.status}`);
         }
 
         if (avatarCancelled) {
@@ -312,9 +301,6 @@ async function updateCharacterCallback(args) {
 
         await getOneCharacter(character.avatar);
 
-        // The character is looked up fresh by avatar (stable identity), since the reference
-        // can change across the awaits above (avatar upload, getOneCharacter refresh)
-        // A character the page doesn't hold is read from the server, so the event carries the edited character.
         const edited = charactersStore.get(character.avatar)
             ?? await (await import('../../character-repository.js')).characterRepository.full(character.avatar);
         await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: edited } });
@@ -333,7 +319,7 @@ async function updateCharacterCallback(args) {
 }
 
 /**
- * @returns {Promise<string>} The avatar key of the duplicated character
+ * @returns {Promise<string>}
  */
 async function duplicateCharacterCallback(args) {
     let targetAvatar = null;
@@ -361,7 +347,7 @@ async function duplicateCharacterCallback(args) {
 }
 
 /**
- * @returns {Promise<string>} Character data or field value
+ * @returns {Promise<string>}
  */
 async function getCharacterDataCallback(args) {
     let character;
@@ -382,7 +368,6 @@ async function getCharacterDataCallback(args) {
     if (args.field) {
         const fieldName = args.field;
 
-        // Try to get from data object first (V2 spec), then fall back to root
         let value = character.data?.[fieldName] ?? character[fieldName];
 
         if (fieldName === 'talkativeness') {
@@ -426,7 +411,7 @@ async function getCharacterDataCallback(args) {
 }
 
 /**
- * @returns {Promise<string>} 'true' if deleted, 'false' otherwise
+ * @returns {Promise<string>}
  */
 async function deleteCharacterCallback(args) {
     let character;
@@ -490,7 +475,6 @@ async function deleteMessagesByNameCallback(_, name) {
         return;
     }
 
-    // Each run of adjacent messages is cut from the chat, the last run first so the earlier indices still hold.
     /** @type {[number, number][]} */
     const runs = [];
     for (const index of indices) {
@@ -663,7 +647,6 @@ export function registerCharacterCommands() {
                     return '';
                 }
 
-                // Prevent generate recursion
                 $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
 
                 outerResolve(new Promise(innerResolve => setTimeout(() => innerResolve(Generate('impersonate', options)), 1)));
@@ -1037,7 +1020,10 @@ export function registerCharacterCommands() {
 
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'rename-char',
-        /** @param {{silent: string, chats: string}} options @param {string} name */
+        /**
+         * @param {{silent: string, chats: string}} options
+         * @param {string} name
+         */
         callback: async ({ silent = 'true', chats = null }, name) => {
             const renamed = await renameCharacter(name, { silent: isTrueBoolean(silent), renameChats: chats !== null ? isTrueBoolean(chats) : null });
             return String(renamed);

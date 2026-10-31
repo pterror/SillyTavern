@@ -13,10 +13,6 @@ if (process.env.PLAYWRIGHT_BASIC_AUTH_USER) {
     });
 }
 
-// A card exported from upstream links a lorebook by name (data.extensions.world) and embeds that book
-// (character_book). Importing it never makes a World file, so the link names a file that doesn't exist and
-// prompts use the embedded book. The page treats that link as a link to the embedded book: it never asks the
-// server for the name, the globe shows it as linked, and the Link to World Info popup shows it selected.
 test.describe('a link to a name with no World file, on a card with an embedded lorebook', () => {
     test.beforeEach(testSetup.awaitST);
 
@@ -37,7 +33,6 @@ test.describe('a link to a name with no World file, on a card with an embedded l
                 data: {
                     name: 'Link Keeper',
                     extensions: { world: linkName },
-                    // Named differently from the link: the link counts as the embedded book's whatever its name.
                     character_book: {
                         name: 'Inner Book Name',
                         extensions: {},
@@ -62,7 +57,6 @@ test.describe('a link to a name with no World file, on a card with an embedded l
         }, linkName);
 
         try {
-            // A fresh page load, then opening the character (which opens its chat).
             await testSetup.awaitST({ page });
             const lore = await page.evaluate(async (avatar) => {
                 const { getSortedEntries, getCharacterWorldLink, EMBEDDED_WORLD_NAME } = await import('./scripts/world-info.js');
@@ -87,14 +81,12 @@ test.describe('a link to a name with no World file, on a card with an embedded l
             expect(requestedNames).not.toContain(linkName);
             await expect(page.locator('#world_button')).toHaveClass(/\bworld_set\b/);
 
-            // Shift-click opens the Link to World Info popup, whose primary lorebook shows the link.
             await page.locator('#world_button').click({ modifiers: ['Shift'] });
             const selected = page.locator('dialog[open] .character_world_info_selector option:checked');
             await expect(selected).toHaveText(`${linkName} (Embedded Lore)`);
             await page.keyboard.press('Escape');
             await expect(page.locator('dialog[open] .character_world_info_selector')).toHaveCount(0);
 
-            // Removing the embedded book leaves the link pointing at nothing: the globe no longer shows it linked.
             await page.evaluate(async (avatar) => {
                 const { openEmbeddedLoreEditor } = await import('./scripts/world-info.js');
                 await openEmbeddedLoreEditor(avatar);
@@ -109,7 +101,6 @@ test.describe('a link to a name with no World file, on a card with an embedded l
                 const character = charactersStore.get(avatar);
                 return { link: getCharacterWorldLink(character), world: character?.data?.extensions?.world };
             }, avatar);
-            // The link itself is kept as it was.
             expect(afterRemoval).toEqual({ link: 'missing', world: linkName });
             expect(requestedNames).not.toContain(linkName);
         } finally {

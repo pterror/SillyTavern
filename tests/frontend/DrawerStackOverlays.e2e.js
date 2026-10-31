@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, setStackedDrawers, stackMismatches, chatBox } from './frontent-test-utils.js';
 
-// With stacked drawers on, whatever floats above the layers cuts what it covers under it, as a drawer does: popups,
-// popovers, the search pickers, suggestion lists and the editors' tooltips, found by what they are.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -19,13 +16,12 @@ async function loadApp(page) {
     await page.waitForFunction(() => window['__appReady'], null, { timeout: 60000 });
 }
 
-/** Lets a slide or pop-in finish. */
 const settle = (/** @type {import('@playwright/test').Page} */ page) => page.waitForTimeout(700);
 
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} overlay
- * @param {string} under The layer it is over
+ * @param {string} under
  */
 async function expectOccludes(page, overlay, under) {
     await settle(page);
@@ -44,14 +40,12 @@ test.describe('stacked drawers', () => {
     });
 
     test('a popup over the chat cuts it', async ({ page }) => {
-        // Every popup is one (the itemized prompt, a macro's text preview, ...).
         await page.evaluate(() => { void window['SillyTavern'].getContext().callGenericPopup('A popup over the chat.', 1); });
         await expect(page.locator('dialog.popup[open]')).toBeVisible();
         await expectOccludes(page, 'dialog[open]', '#sheld');
     });
 
     test('a layer blurs what is behind it itself; nothing inside it outside the top layer blurs', async ({ page }) => {
-        // Firefox draws a blurring box on a layer of its own and doesn't clip it by its ancestor's cut.
         const found = await page.evaluate(() => {
             document.body.classList.remove('no-blur');
             const blurs = (/** @type {Element} */ el) => getComputedStyle(el).backdropFilter !== 'none';
@@ -95,7 +89,6 @@ test.describe('stacked drawers', () => {
     });
 
     test('an editor\'s macro suggestions and paste picker cut the chat under them', async ({ page }) => {
-        // An editor over the chat that isn't a layer itself, so only its tooltips are over the chat.
         await page.evaluate(async () => {
             const { mountLiveEditor } = await import('/scripts/live-editor/registry.js');
             const host = document.createElement('div');

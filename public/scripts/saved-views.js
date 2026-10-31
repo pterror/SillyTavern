@@ -1,35 +1,24 @@
-/**
- * The character list's saved views: a picker by the search box listing "All characters" and the user's views, which
- * are kept on the server (/api/views). Each change is one action on one view.
- */
-
 import { contentHashOf } from './hash-utils.js';
 
-/** Translates a tagged template; the caller passes i18n's `t`, so this module stays a leaf. */
 let t = (/** @type {TemplateStringsArray} */ strings, /** @type {any[]} */ ...values) => String.raw({ raw: strings }, ...values);
 
 const CURRENT_ID_KEY = 'characterListViewId';
 const CURRENT_NAME_KEY = 'characterListViewName';
 const DRAFT_KEY = 'characterListViewDraft';
-/** The view in use as it was last applied, so a reload shows it before the server is asked. */
 const KEPT_VIEW_KEY = 'characterListViewKept';
 const PAGE_SIZE = 50;
 
-/**
- * @typedef {{ id: string, name: string, view: import('./character-view.js').CharacterView }} SavedView
- */
+/** @typedef {{ id: string, name: string, view: import('./character-view.js').CharacterView }} SavedView */
 
 /**
- * @typedef {object} FolderReads Open folders, read for the picker's Folders section.
+ * @typedef {object} FolderReads
  * @property {(term: string, cursor: string | null) => Promise<{ rows: { id: string, name: string }[], cursor: string | null } | null>} list
- * @property {(id: string) => Promise<{ id: string, name: string } | null | undefined>} get null: no such open folder;
- *   undefined: the read failed.
+ * @property {(id: string) => Promise<{ id: string, name: string } | null | undefined>} get
  */
 
 /** @type {{ getView: () => import('./character-view.js').CharacterView, setView: (view: import('./character-view.js').CharacterView) => void, sameView: (a: any, b: any) => boolean, headers: () => Record<string, string>, storage: { getItem(key: string): string|null, setItem(key: string, value: string): void, removeItem(key: string): void }, folders: FolderReads, pinView: (id: string, view: import('./character-view.js').CharacterView | null) => void } | null} */
 let deps = null;
 
-/** An open folder is a built-in view, "tag is <folder>"; its id in the picker is this prefix and the tag id. */
 const FOLDER_VIEW_PREFIX = 'folder:';
 
 /** @param {string|null} id */
@@ -38,7 +27,6 @@ function isFolderViewId(id) {
 }
 
 /**
- * The view an open folder is.
  * @param {{ id: string, name: string }} folder
  * @returns {SavedView}
  */
@@ -46,29 +34,22 @@ function folderView(folder) {
     return { id: `${FOLDER_VIEW_PREFIX}${folder.id}`, name: folder.name, view: fullView({ tags: { include: [folder.id] } }) };
 }
 
-/** The open folders read for the picker, and where the next page starts. @type {{ id: string, name: string }[]} */
+/** @type {{ id: string, name: string }[]} */
 let loadedFolders = [];
 let foldersCursor = /** @type {string|null} */ (null);
 
-/** The saved view the list shows, or null for "All characters". @type {string|null} */
+/** @type {string|null} */
 let currentId = null;
-/** The saved view's object as it was applied or read; null for "All characters". The list differs from it once the
- * user changes something, which makes the view unsaved. */
 let appliedView = null;
-/** A switch waiting on what to do with unsaved changes: the view to switch to (null: "All characters"). @type {{ target: SavedView|null }|null} */
+/** @type {{ target: SavedView|null }|null} */
 let pendingSwitch = null;
-/** Set once the view in use has been read back after the page loaded; until then there is nothing to compare with. */
 let restored = false;
-/** The view applied from browser storage as the page loaded, before the server was asked; null when none was. */
 let keptApplied = /** @type {SavedView|null} */ (null);
-/** The unsaved changes as the page loaded: read before the kept view is applied, which clears them. */
 let draftAtLoad = /** @type {{ id: string|null, view: object } | null} */ (null);
-/** Whether `draftAtLoad` was put back as the page loaded. */
 let draftShownAtLoad = false;
-/** The views read so far, in order, and where the next page starts. @type {SavedView[]} */
+/** @type {SavedView[]} */
 let loaded = [];
 let nextCursor = /** @type {string|null} */ (null);
-/** Whether `loaded` is the first page alone, as the server answered it. */
 let firstPageOnly = false;
 let listedFilter = '';
 let filterText = '';
@@ -77,17 +58,13 @@ let filterText = '';
 let picker = null;
 /** @type {HTMLElement|null} */
 let popover = null;
-/**
- * The row being renamed or confirmed for deletion, and its place: a redraw keeps it as it is (the typed text with it)
- * and draws the rest around it.
- * @type {{ id: string, row: HTMLElement, index: number } | null}
- */
+/** @type {{ id: string, row: HTMLElement, index: number } | null} */
 let editing = null;
 
 /**
  * @param {string} route
  * @param {object} body
- * @returns {Promise<any>} The answer, or null when the request failed.
+ * @returns {Promise<any>}
  */
 async function call(route, body) {
     try {
@@ -118,7 +95,7 @@ function safeSet(/** @type {string} */ key, /** @type {string|null} */ value) {
     }
 }
 
-/** A saved view object, with every field a view has. @param {any} view */
+/** @param {any} view */
 function fullView(view) {
     const current = deps.getView();
     return {
@@ -133,30 +110,22 @@ function fullView(view) {
         group: typeof view?.group === 'boolean' ? view.group : undefined,
         ranges: view?.ranges && typeof view.ranges === 'object' ? view.ranges : undefined,
         sort: view?.sort && typeof view.sort === 'object' ? view.sort : current.sort,
-        // With "Tags as Folders" off the list has no folder case; on, a view without one shows "No folder".
         folderCase: current.folderCase === null ? null : (typeof view?.folderCase === 'string' && view.folderCase ? view.folderCase : 'none'),
     };
 }
 
-/** "All characters": no filters, the sort kept. */
 function allCharactersView() {
     return fullView({});
 }
 
-/** What the list is compared with to tell whether it has unsaved changes. */
 function baseView() {
     return currentId && appliedView ? appliedView : allCharactersView();
 }
 
-/** Whether the list differs from the view it was opened as. */
 export function hasUnsavedViewChanges() {
     return !!deps && !deps.sameView(deps.getView(), baseView());
 }
 
-/**
- * The list was drawn: marks the picker unsaved or not, and keeps the unsaved changes as a draft that a reload
- * restores.
- */
 export function refreshSavedViewState() {
     if (!deps || !picker || !restored) return;
     const dirty = hasUnsavedViewChanges();
@@ -168,7 +137,10 @@ export function refreshSavedViewState() {
     if (popover) drawUnsavedBar();
 }
 
-/** @param {string|null} id @param {string} name */
+/**
+ * @param {string|null} id
+ * @param {string} name
+ */
 function setCurrent(id, name) {
     currentId = id;
     safeSet(CURRENT_ID_KEY, id);
@@ -178,7 +150,6 @@ function setCurrent(id, name) {
 }
 
 /**
- * Keeps the saved view in use, as applied, in browser storage, so a reload shows it before the server is asked.
  * @param {string} [name]
  */
 function keepCurrentView(name = safeGet(CURRENT_NAME_KEY) ?? '') {
@@ -195,8 +166,7 @@ function drawPicker(name) {
 }
 
 /**
- * Shows a view in the list and makes it current.
- * @param {SavedView|null} saved null for "All characters".
+ * @param {SavedView|null} saved
  */
 function applyView(saved) {
     const view = saved ? fullView(saved.view) : allCharactersView();
@@ -208,7 +178,6 @@ function applyView(saved) {
 }
 
 /**
- * Switches to `target`, first asking in the picker what to do with unsaved changes.
  * @param {SavedView|null} target
  */
 function switchTo(target) {
@@ -221,7 +190,7 @@ function switchTo(target) {
     applyView(target);
 }
 
-/** Saves the list over the current view. @returns {Promise<boolean>} */
+/** @returns {Promise<boolean>} */
 async function saveCurrent() {
     if (!currentId || isFolderViewId(currentId)) return false;
     const answer = await call('change', { id: currentId, view: deps.getView() });
@@ -236,16 +205,11 @@ async function saveCurrent() {
     return true;
 }
 
-/** Puts the list back to the view it was opened as. */
 function discardChanges() {
     deps.setView(baseView());
     refreshSavedViewState();
 }
 
-/**
- * The bar at the top of the picker while the list has unsaved changes: Save, Discard, and when switching views,
- * Save as new and Keep editing too.
- */
 function drawUnsavedBar() {
     if (!popover) return;
     popover.querySelector('.view_picker_unsaved')?.remove();
@@ -258,7 +222,11 @@ function drawUnsavedBar() {
     const name = currentId ? picker.querySelector('.view_picker_name').textContent : t`All characters`;
     label.textContent = pendingSwitch ? t`Unsaved changes to "${name}":` : t`Unsaved changes to "${name}"`;
     bar.append(label);
-    /** @param {string} text @param {string} action @param {() => void | Promise<void>} onClick */
+    /**
+     * @param {string} text
+     * @param {string} action
+     * @param {() => void | Promise<void>} onClick
+     */
     const button = (text, action, onClick) => {
         const b = document.createElement('div');
         b.className = 'menu_button';
@@ -300,7 +268,7 @@ function drawUnsavedBar() {
     popover.prepend(bar);
 }
 
-/** Reads the first page of open folders matching the picker's search (or the next one). @param {boolean} more */
+/** @param {boolean} more */
 async function readFolders(more) {
     const page = await deps.folders.list(filterText, more ? foldersCursor : null);
     if (!page) return false;
@@ -309,9 +277,8 @@ async function readFolders(more) {
     return true;
 }
 
-/** Reads the first page of views (or the next one), for the picker. @param {boolean} more */
+/** @param {boolean} more */
 async function readViews(more) {
-    // The first page is asked for with the hash of the copy held, so an unchanged list isn't downloaded again.
     const sameList = !more && listedFilter === filterText && firstPageOnly;
     const answer = await call('list', { contains: filterText, limit: PAGE_SIZE, cursor: more ? nextCursor : undefined, known: sameList ? contentHashOf(loaded) : undefined });
     if (!answer || answer.notFound) return false;
@@ -333,9 +300,8 @@ function closePopover() {
 }
 
 /**
- * A row of the picker.
  * @param {SavedView|null} saved
- * @param {number} index Its place among the loaded views.
+ * @param {number} index
  */
 function makeRow(saved, index) {
     const row = document.createElement('div');
@@ -354,7 +320,12 @@ function makeRow(saved, index) {
     row.append(name);
     if (!saved) return row;
 
-    /** @param {string} icon @param {string} title @param {string} action @param {() => void} onClick */
+    /**
+     * @param {string} icon
+     * @param {string} title
+     * @param {string} action
+     * @param {() => void} onClick
+     */
     const button = (icon, title, action, onClick) => {
         const b = document.createElement('i');
         b.className = `fa-solid ${icon} view_picker_action`;
@@ -377,14 +348,22 @@ function makeRow(saved, index) {
     return row;
 }
 
-/** @param {SavedView} saved @param {SavedView} anchor @param {'before'|'after'} side */
+/**
+ * @param {SavedView} saved
+ * @param {SavedView} anchor
+ * @param {'before'|'after'} side
+ */
 async function moveView(saved, anchor, side) {
     const answer = await call('move', { id: saved.id, anchor: anchor.id, side });
     if (!answer || answer.notFound) toastr.error(t`The view could not be moved.`);
     await refreshPopover();
 }
 
-/** @param {HTMLElement} row @param {SavedView} saved @param {number} index */
+/**
+ * @param {HTMLElement} row
+ * @param {SavedView} saved
+ * @param {number} index
+ */
 function startRename(row, saved, index) {
     editing = { id: saved.id, row, index };
     row.replaceChildren();
@@ -415,7 +394,11 @@ function startRename(row, saved, index) {
     input.select();
 }
 
-/** @param {HTMLElement} row @param {SavedView} saved @param {number} index */
+/**
+ * @param {HTMLElement} row
+ * @param {SavedView} saved
+ * @param {number} index
+ */
 function confirmDelete(row, saved, index) {
     editing = { id: saved.id, row, index };
     row.replaceChildren();
@@ -444,7 +427,6 @@ function confirmDelete(row, saved, index) {
     row.append(text, yes, no);
 }
 
-/** The "save the list as a new view" row. */
 function makeSaveRow() {
     const row = document.createElement('div');
     row.className = 'view_picker_save';
@@ -497,7 +479,6 @@ function drawPopover() {
     list.replaceChildren();
     if (!filterText) list.append(makeRow(null, -1));
     const rows = loaded.map((view, index) => (editing?.id === view.id ? editing.row : makeRow(view, index)));
-    // A view being edited that the list no longer holds keeps its place, so what was typed isn't lost.
     if (editing && !loaded.some(view => view.id === editing.id)) rows.splice(Math.min(editing.index, rows.length), 0, editing.row);
     list.append(...rows);
     focused?.focus();
@@ -534,7 +515,6 @@ function drawPopover() {
 }
 
 /**
- * A row of the picker's Folders section: an open folder, shown as the view "tag is <folder>".
  * @param {{ id: string, name: string }} folder
  */
 function makeFolderRow(folder) {
@@ -601,10 +581,6 @@ async function openPopover() {
     await refreshPopover();
 }
 
-/**
- * Another tab or device changed the user's views: the picker reads them again, and when the view on screen was
- * changed elsewhere and the list still shows it as it was, the list shows the new version.
- */
 export async function onSavedViewsChanged() {
     if (!deps) return;
     if (popover) await refreshPopover();
@@ -613,7 +589,6 @@ export async function onSavedViewsChanged() {
     if (!answer) return;
     if (answer.notFound) {
         deps.pinView(currentId, null);
-        // The list keeps what it shows; with nothing to compare against it now counts as changes to "All characters".
         appliedView = null;
         setCurrent(null, t`All characters`);
         refreshSavedViewState();
@@ -627,25 +602,22 @@ export async function onSavedViewsChanged() {
         appliedView = saved;
         keepCurrentView(answer.name);
         deps.pinView(answer.id, saved);
-        // Unsaved changes stay on screen, now measured against the new version.
         if (unchanged) deps.setView(saved);
     }
     refreshSavedViewState();
 }
 
 /**
- * Puts the view picker before the search box and restores the view that was in use.
  * @param {object} options
- * @param {HTMLElement} options.before The element the picker goes in front of.
+ * @param {HTMLElement} options.before
  * @param {() => import('./character-view.js').CharacterView} options.getView
  * @param {(view: import('./character-view.js').CharacterView) => void} options.setView
  * @param {(a: any, b: any) => boolean} options.sameView
  * @param {() => Record<string, string>} options.headers
  * @param {{ getItem(key: string): string|null, setItem(key: string, value: string): void, removeItem(key: string): void }} options.storage
- * @param {typeof t} options.translate i18n's `t`.
+ * @param {typeof t} options.translate
  * @param {FolderReads} options.folders
- * @param {(id: string, view: import('./character-view.js').CharacterView | null) => void} options.pinView Keeps a saved
- *   view's first page pinned in browser storage, or lets go of it when `view` is null.
+ * @param {(id: string, view: import('./character-view.js').CharacterView | null) => void} options.pinView
  */
 export function initSavedViews({ before, getView, setView, sameView, headers, storage, translate, folders, pinView }) {
     document.addEventListener('pointerdown', event => {
@@ -671,15 +643,10 @@ export function initSavedViews({ before, getView, setView, sameView, headers, st
         }
     });
     before.before(picker);
-    // A change made through the filter helper is only seen when the list is drawn; keep it if the page goes first.
     window.addEventListener('pagehide', () => refreshSavedViewState());
     drawPicker();
 }
 
-/**
- * Shows the view in use as last applied, once the account's storage is read and before the list is first drawn: the
- * server is asked for it afterwards (restoreCurrentView()), and what changed there follows.
- */
 export function applyKeptView() {
     if (!deps) return;
     currentId = safeGet(CURRENT_ID_KEY);
@@ -691,14 +658,13 @@ export function applyKeptView() {
     } else {
         drawPicker();
     }
-    // Its unsaved changes go back on at once too (a search typed and left, on "All characters" as on a view).
     if (draftAtLoad && draftAtLoad.id === currentId) {
         draftShownAtLoad = true;
         deps.setView(fullView(draftAtLoad.view));
     }
 }
 
-/** @returns {SavedView|null} The view kept by `applyView()`. */
+/** @returns {SavedView|null} */
 function readKeptView() {
     try {
         const kept = JSON.parse(safeGet(KEPT_VIEW_KEY) ?? 'null');
@@ -708,17 +674,9 @@ function readKeptView() {
     }
 }
 
-/**
- * Shows the view that was in use when the page was left, once the list can show views, and puts back its unsaved
- * changes where it was.
- */
 export async function restoreCurrentView() {
     if (!deps) return;
-    // Read before the view is applied: applying it draws a list with no changes, which clears the draft. A view kept
-    // in browser storage was applied as the page loaded, so the draft was read then.
     const draft = keptApplied || draftShownAtLoad ? draftAtLoad : readDraft();
-    // The server's copy of the view applied from browser storage: applied again only when it differs, which draws
-    // the list with no changes, so its unsaved changes go back on after.
     const showing = keptApplied;
     keptApplied = null;
     let reapplied = !draftShownAtLoad;
@@ -766,7 +724,6 @@ function readDraft() {
     }
 }
 
-/** The saved view the list shows, or null for "All characters". */
 export function getCurrentSavedViewId() {
     return currentId;
 }

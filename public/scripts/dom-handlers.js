@@ -4,7 +4,6 @@ export function initDomHandlers() {
     handleInputWheel();
 }
 
-/** Traps wheel events on focused number inputs so scrolling updates the value instead of the page (also fixes wheel not working on these inputs in Firefox). */
 function handleInputWheel() {
     const minInterval = 25; // ms
 
@@ -21,16 +20,14 @@ function handleInputWheel() {
 
         if (isNaN(currentValue) || isNaN(step) || step <= 0 || deltaY === 0) return;
 
-        // deltaY negative = wheel up
         let newValue = currentValue + (deltaY > 0 ? -step : step);
         newValue = Math.round(newValue / step) * step;
         newValue = !isNaN(min) ? Math.max(newValue, min) : newValue;
         newValue = !isNaN(max) ? Math.min(newValue, max) : newValue;
-        newValue = Math.round(newValue * 1e10) / 1e10; // avoid float precision drift
+        newValue = Math.round(newValue * 1e10) / 1e10;
 
         input.value = newValue.toString();
         if (slider) slider.value = newValue.toString();
-        // dispatch once, not per wheel tick, so listeners aren't flooded
         const inputEvent = new Event('input', { bubbles: true });
         input.dispatchEvent(inputEvent);
     }
@@ -39,7 +36,6 @@ function handleInputWheel() {
 
     document.addEventListener('wheel', (e) => {
         const input = document.activeElement instanceof HTMLInputElement ? document.activeElement : null;
-        // The new page's settings fields step themselves (packages/areas/settings/page/fields.tsx).
         if (input && input.type === 'number' && input.hasAttribute('step') && !input.closest('[data-field]')) {
             const parent = input.closest('.range-block-range-and-counter') ?? input.closest('div') ?? input.parentElement;
             const slider = /** @type {HTMLInputElement} */ (parent?.querySelector('input[type="range"]'));

@@ -2,10 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { MODEL_SETTING, limitRecord } from '@st/settings/model-limits';
 
-// Each user's chat completion model lists, by source, as the status route last answered them: a model's limits come
-// from them (packages/areas/settings/model-limits.ts). Kept in <root>/model-lists/<source>.json, only what the limits
-// read, so a restart answers the same limits before the page connects again.
-
 /** @typedef {import('@st/settings/model-limits').ModelRecord} ModelRecord */
 
 /** @type {Map<string, { version: number, lists: Map<string, readonly ModelRecord[]> }>} */
@@ -18,11 +14,13 @@ const userOf = directories => {
     return user;
 };
 
-/** @param {{ root: string }} directories @param {string} source */
+/**
+ * @param {{ root: string }} directories
+ * @param {string} source
+ */
 const fileOf = (directories, source) => path.join(directories.root, 'model-lists', `${source}.json`);
 
 /**
- * A source's model list as it last answered the user (empty when it never did, or isn't a chat completion source).
  * @param {{ root: string }} directories
  * @param {string} source
  * @returns {readonly ModelRecord[]}
@@ -45,17 +43,15 @@ export function modelListOf(directories, source) {
 }
 
 /**
- * Which lists the user has had: changes whenever one of them does.
  * @param {{ root: string }} directories
  */
 export const modelListsVersion = directories => userOf(directories).version;
 
 /**
- * Keeps what a source answered; written only when what the limits read changed.
  * @param {{ root: string }} directories
  * @param {string} source
  * @param {unknown[]} answered
- * @returns {Promise<boolean>} whether it changed
+ * @returns {Promise<boolean>}
  */
 export async function rememberModelList(directories, source, answered) {
     if (!Object.hasOwn(MODEL_SETTING, source)) return false;

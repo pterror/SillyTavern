@@ -145,17 +145,16 @@ export async function hideChatMessageRange(start, end, unhide, nameFitler = null
 
     refreshSwipeButtons();
 
-    // Save as one batched edit, not one per message
     await chatOpEditMany(changed).catch(error =>
         console.error('Could not save the hidden state for those messages:', error));
 }
 
-/** @deprecated Use hideChatMessageRange. */
+/** @deprecated */
 export async function hideChatMessage(messageId, _messageBlock) {
     return hideChatMessageRange(messageId, messageId, false);
 }
 
-/** @deprecated Use hideChatMessageRange. */
+/** @deprecated */
 export async function unhideChatMessage(messageId, _messageBlock) {
     return hideChatMessageRange(messageId, messageId, true);
 }
@@ -589,7 +588,7 @@ class StylesPreference {
      * @returns {boolean} True if preference exists, false otherwise
      */
     exists() {
-        if (!this.avatarId) return true; // No character == assume preference is set
+        if (!this.avatarId) return true;
         const character = charactersStore.get(this.avatarId);
         return character?.allow_global_styles != null;
     }
@@ -598,7 +597,7 @@ class StylesPreference {
      * @returns {boolean} True if global styles are allowed, false otherwise
      */
     get() {
-        if (!this.avatarId) return false; // Always disabled when creating a new character
+        if (!this.avatarId) return false;
         const character = charactersStore.get(this.avatarId);
         return !!character?.allow_global_styles;
     }
@@ -608,7 +607,6 @@ class StylesPreference {
      */
     set(allowed) {
         if (!this.avatarId) return;
-        // Update the in-memory character store immediately for responsive UI
         const character = charactersStore.get(this.avatarId);
         if (character) {
             character.allow_global_styles = allowed;
@@ -643,7 +641,7 @@ async function migrateAllowGlobalStylesToDb() {
             });
         } catch (err) {
             console.error('AllowGlobalStyles migration failed:', err);
-            return; // Don't mark as migrated if it failed
+            return;
         }
     }
 
@@ -730,7 +728,6 @@ async function checkForCreatorNotesStyles() {
     const notes = getCurrentCharacter().data?.creator_notes || getCurrentCharacter().creatorcomment;
     const avatarId = getCurrentCharacter().avatar;
     const styleContents = await getStyleContentsFromMarkdown(notes);
-    // Another character may have been opened meanwhile.
     if (getCurrentCharacter()?.avatar !== avatarId) {
         return;
     }
@@ -888,10 +885,10 @@ function expandMessageMedia(messageId, mediaIndex) {
 }
 
 /**
- * @param {string} url Media URL
- * @param {string} title Optional title to display
- * @param {boolean} isVideo Whether the media is a video
- * @returns {HTMLElement} The created media element
+ * @param {string} url
+ * @param {string} title
+ * @param {boolean} isVideo
+ * @returns {HTMLElement}
  */
 export function showMediaLightbox(url, title = '', isVideo = false) {
     let mediaElement;
@@ -1378,9 +1375,8 @@ async function moveAttachment(attachment, source, callback) {
  * @returns {Promise<void>} A promise that resolves when the attachment is deleted.
  */
 /**
- * Removes an attachment's local (settings/metadata) bookkeeping. Does not touch the server-side file.
- * @param {FileAttachment} attachment Attachment to remove
- * @param {string} source Source of the attachment ('global', 'chat', or 'character')
+ * @param {FileAttachment} attachment
+ * @param {string} source
  */
 function removeAttachmentLocal(attachment, source) {
     ensureAttachmentsExist();
@@ -2002,10 +1998,6 @@ export function registerFileConverter(mimeType, converter) {
     converters[mimeType] = converter;
 }
 
-/**
- * Audio and video in what messages, previews and editors show start at the user's volume (`power_user.media_volume`),
- * once each, before they play: media events don't bubble, so they are caught on their way down.
- */
 export function initMessageMediaVolume() {
     const startAtUserVolume = (/** @type {Event} */ event) => {
         const media = event.target;
@@ -2057,7 +2049,6 @@ export function addDOMPurifyHooks() {
             return;
         }
 
-        // Audio and video in a message wait to be played, unless the user lets them start by themselves.
         if (node instanceof HTMLMediaElement && !power_user.media_autoplay) {
             node.removeAttribute('autoplay');
         }
@@ -2366,7 +2357,6 @@ export function initChatUtilities() {
         textarea.classList.add('height100p', 'wide100p', 'maximized_textarea');
         bro.hasClass('monospace') && textarea.classList.add('monospace');
         bro.hasClass('mdHotkeys') && textarea.classList.add('mdHotkeys');
-        // Native events, so both jQuery handlers and native listeners (the new page's fields) hear them.
         textarea.addEventListener('input', function () {
             if (contentEditable) {
                 bro[0].innerText = textarea.value;
@@ -2375,7 +2365,6 @@ export function initChatUtilities() {
             }
             bro[0].dispatchEvent(new Event('input', { bubbles: true }));
         });
-        // Leaving the editor is leaving the field: what commits on change (a new page field) commits then.
         const committed = () => bro[0].dispatchEvent(new Event('change', { bubbles: true }));
         wrapper.appendChild(textarea);
 
@@ -2417,7 +2406,6 @@ export function initChatUtilities() {
             });
         }
 
-        // A modal popup blocks everything outside it, a layer included, so a field inside one still expands in a popup.
         if (this.closest('dialog:modal')) {
             await callGenericPopup(wrapper, POPUP_TYPE.TEXT, '', { wide: true, large: true });
             committed();
@@ -2446,7 +2434,6 @@ export function initChatUtilities() {
         }
 
         const rawText = String(bro.val());
-        // Every macro filled in, as it is sent; nothing a macro sets is kept.
         const [previewText] = await fetchMacroValues([rawText], openChatMacroScope(), { all: true });
         const pre = $('<pre class="justifyLeft" style="white-space: pre-wrap; word-break: break-word;"></pre>').text(previewText ?? rawText);
         await callGenericPopup(pre, POPUP_TYPE.TEXT, '', { wide: true, large: true, allowVerticalScrolling: true });
@@ -2454,7 +2441,6 @@ export function initChatUtilities() {
 
     $(document).on('click', 'body .mes .mes_text, body .mes .mes_reasoning', function (event) {
         if (!power_user.click_to_edit) return;
-        // A click on a link follows the link and leaves the message as it is.
         if ($(event.target).closest('a[href]', this).length) return;
         if (window.getSelection().toString()) return;
         if ($('.edit_textarea').length) return;
@@ -2516,7 +2502,6 @@ export function initChatUtilities() {
     });
     initImageLightbox(showMediaLightbox);
     chatElement.on('click', '.mes_text img, .mes_reasoning img, .mes_bias img', onLightboxImageClick);
-    // The character info field previews. The image's handler runs before the preview's own, so the field stays in the preview.
     $(document).on('click', '.field_preview img', onLightboxImageClick);
     chatElement.on('click', '.mes_media_enlarge', async function () {
         const { messageId, mediaIndex } = getMediaContainerInfo.call(this);

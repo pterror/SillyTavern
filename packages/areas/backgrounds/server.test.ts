@@ -6,7 +6,6 @@ import type { ActionContext, ActionResult, User } from '@st/server-ui';
 
 const user: User = { handle: 'u', directories: { root: '/u' } };
 
-/** In-memory stand-ins for what old server code stores. */
 function world(
     files: Partial<SystemFile>[],
     options: StoredOptions = {},
@@ -77,7 +76,6 @@ function world(
     const context: ActionContext = { user, session: 's', chat: { tree: '1' }, upload: null };
     const read = () => area.views['backgrounds']!(context) as Promise<BackgroundsView>;
     const readChat = () => area.views['backgrounds.chat']!(context) as Promise<ChatBackgroundsView>;
-    /** Both views, as the page puts them together. */
     const view = async () => ({ ...(await read()), ...(await readChat()) });
     const act = (type: string, payload: unknown, upload: ActionContext['upload'] = null): Promise<ActionResult> =>
         area.actions[type]!({ ...context, upload }, payload);
@@ -203,7 +201,6 @@ test("sorting: by title either way, by age either way (a chat's by the order it 
 test('options from storage are made valid: unknown values fall back, columns are kept in range', async () => {
     const w = world([{ file: 'a.png' }], { fitting: 'sideways', sortOrder: 'random', thumbnailColumns: 40 });
     expect((await w.view()).options).toEqual({ fitting: 'classic', animation: false, sortOrder: 'az', columns: 8 });
-    // Not chosen: the layout's own.
     expect((await world([{ file: 'a.png' }]).view()).options.columns).toBeNull();
 });
 

@@ -3,14 +3,9 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// @agnai/web-tokenizers' emscripten glue installed an empty process-wide uncaughtException
-// listener on first load, swallowing every later crash (scripts/patch-web-tokenizers.cjs removes
-// it). Each case runs in a child process, since a swallowed crash in this process would exit 0.
-
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
- * Runs an ES module snippet in a child node process from the project root.
  * @param {string} code
  */
 function runChild(code) {

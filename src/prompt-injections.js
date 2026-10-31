@@ -2,15 +2,6 @@ import { extension_prompt_types, setExtensionPrompt } from './extension-prompt-t
 import { inject_ids, persona_description_positions } from '../public/scripts/constants.js';
 
 /**
- * What a prompt has injected besides its own parts, as the page's `extension_prompts` holds it while it builds one
- * (public/script.js's Generate()): what the page's extensions inject, the author's note, the persona's description
- * around it or in the chat, and what goes in the chat at a depth (lorebook entries, the story string, the character's
- * note). Both the text completion and the chat completion builders fill their table here, under the page's keys.
- */
-
-/**
- * The page's extensions' injections (src/page-injections.js), as the page's table holds them before its build adds to
- * it.
  * @param {import('./extension-prompt-table.js').ExtensionPromptTable} table
  * @param {import('./extension-prompt-table.js').ExtensionPromptTable} [pageInjections]
  */
@@ -23,26 +14,21 @@ export function addPageInjections(table, pageInjections = {}) {
 /**
  * @typedef {object} NoteAndPersona
  * @property {ReturnType<typeof import('./authors-note.js').resolveAuthorsNote>} authorsNote
- * @property {string[]} [anBefore] Lorebook entries at the top of the note.
- * @property {string[]} [anAfter] Lorebook entries at the bottom of the note.
+ * @property {string[]} [anBefore]
+ * @property {string[]} [anAfter]
  * @property {string} [personaDescription]
- * @property {number} [personaDescriptionPosition] One of persona_description_positions.
+ * @property {number} [personaDescriptionPosition]
  * @property {number} [personaDescriptionDepth]
  * @property {number} [personaDescriptionRole]
  */
 
 /**
- * The author's note, with the lorebook entries at its top and bottom when it goes in this turn (public/scripts/
- * world-info.js's checkWorldInfo()); then the persona's description where its persona puts it besides the story string
- * (public/script.js's addPersonaDescriptionExtensionPrompt()): joined to the note when the note goes in, or in the chat
- * at its depth.
  * @param {import('./extension-prompt-table.js').ExtensionPromptTable} table
  * @param {NoteAndPersona} params
  */
 export function addNoteAndPersona(table, { authorsNote, anBefore = [], anAfter = [], personaDescription = '', personaDescriptionPosition, personaDescriptionDepth, personaDescriptionRole }) {
     const noteOn = authorsNote.disabled === false;
     if (noteOn) {
-        // At most one line break stripped from each end, as the page's regex does.
         const noteValue = authorsNote.shouldAddPrompt
             ? `${anBefore.join('\n')}\n${authorsNote.value}\n${anAfter.join('\n')}`.replace(/(^\n)|(\n$)/g, '')
             : authorsNote.value;
@@ -66,17 +52,14 @@ export function addNoteAndPersona(table, { authorsNote, anBefore = [], anAfter =
 
 /**
  * @typedef {object} DepthInjections
- * @property {{ depth: number, role: number, entries: string[] }[]} [worldInfoDepthEntries] Lorebook entries at a depth.
- * @property {{ content: string, depth: number, role: number } | null} [storyStringInjection] The story string, when it
- *   goes in the chat.
- * @property {{ text: string, depth: number, role: number }[]} [groupDepthPrompts] Each group member's note, in a group.
- * @property {{ text: string, depth: number, role: number } | null} [characterDepthPrompt] The character's note, outside one.
- * @property {boolean} [depthPromptScan] Whether a character's note is scanned for lorebook keys.
+ * @property {{ depth: number, role: number, entries: string[] }[]} [worldInfoDepthEntries]
+ * @property {{ content: string, depth: number, role: number } | null} [storyStringInjection]
+ * @property {{ text: string, depth: number, role: number }[]} [groupDepthPrompts]
+ * @property {{ text: string, depth: number, role: number } | null} [characterDepthPrompt]
+ * @property {boolean} [depthPromptScan]
  */
 
 /**
- * What goes in the chat at a depth (public/script.js's Generate()): the lorebook entries at their depths, the story
- * string when it goes in the chat, and the character's note (each member's, in a group).
  * @param {import('./extension-prompt-table.js').ExtensionPromptTable} table
  * @param {DepthInjections} params
  */

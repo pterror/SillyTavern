@@ -3,8 +3,6 @@ import assert from 'node:assert/strict';
 
 import { ORDER_FIELD, combineList, editField, foldIntoBundle, levelOrder, resetGroup, resolveField } from './settings-cascade.js';
 
-// Every precedence rule of the settings model §1.1 and settings-scopes.md.
-
 /** @type {Record<string, Record<string, unknown>>} */
 const BUNDLES = {
     'preset:P': { temp: 1.0, top_p: 0.9, rep_pen: 1.1 },
@@ -26,7 +24,6 @@ const catalog = {
 };
 
 /**
- * Levels in the default order, each stating what's given for it.
  * @param {Partial<Record<string, Omit<import('./settings-cascade.js').LevelStatements, 'level'>>>} stated
  */
 function levels(stated) {
@@ -70,20 +67,16 @@ test('a profile states its bundles at its level; a statement made there directly
 test('a level a field\'s kind may not use is skipped: no chat or character changes a reader-bound setting', () => {
     const ls = levels({ chat: { overrides: { blur: 0 } }, character: { bundles: { theme: 'theme:Dark' } }, device: { overrides: { blur: 4 } } });
     assert.deepEqual(resolveField(ls, 'blur', catalog), { value: 4, from: 'override', index: 3 });
-    // And a generation setting never depends on a device.
     const generation = levels({ device: { overrides: { temp: 0.1 } }, user: { overrides: { temp: 0.6 } } });
     assert.equal(resolveField(generation, 'temp', catalog).value, 0.6);
-    // A background may be stated at every level; a browser-run capability at the device too.
     assert.equal(resolveField(levels({ chat: { overrides: { background: 'b.png' } } }), 'background', catalog).value, 'b.png');
     assert.equal(resolveField(levels({ device: { overrides: { tts_voice: 'v' } } }), 'tts_voice', catalog).value, 'v');
 });
 
 test('the order is a setting: stated at a level for every field, or for one field', () => {
     const order = ['tab', 'device', 'user', 'chat', 'character', 'default'];
-    // "On this phone, my settings win over chats."
     const everyField = levels({ device: { overrides: { [ORDER_FIELD]: order } }, chat: { overrides: { temp: 0.2 } }, user: { overrides: { temp: 0.9 } } });
     assert.equal(resolveField(everyField, 'temp', catalog).value, 0.9);
-    // "My preset over characters' presets", for one field only.
     const oneField = levels({
         user: { overrides: { [`${ORDER_FIELD}:temp`]: order, temp: 0.9, top_p: 0.4 } },
         character: { overrides: { temp: 0.2, top_p: 0.1 } },
@@ -112,10 +105,8 @@ test('an edit goes to the level supplying the value, or the user when it comes f
     const ls = levels({ character: { overrides: { temp: 0.3 } }, default: { overrides: { top_p: 1 } } });
     assert.deepEqual(editField(ls, 'temp', 0.4, catalog), { op: 'set', index: 2, field: 'temp', value: 0.4 });
     assert.deepEqual(editField(ls, 'top_p', 0.5, catalog), { op: 'set', index: 4, field: 'top_p', value: 0.5 });
-    // A bundle supplying it: the override goes to that level.
     const bundled = levels({ chat: { bundles: { preset: 'preset:P' } } });
     assert.deepEqual(editField(bundled, 'temp', 0.4, catalog), { op: 'set', index: 1, field: 'temp', value: 0.4 });
-    // Another level, as asked.
     assert.deepEqual(editField(ls, 'temp', 0.4, catalog, 4), { op: 'set', index: 4, field: 'temp', value: 0.4 });
     assert.throws(() => editField(ls, 'temp', 0.4, catalog, 5));
 });
@@ -123,9 +114,7 @@ test('an edit goes to the level supplying the value, or the user when it comes f
 test('an override equal to what its level would resolve without it is not stored: setting it deletes the override', () => {
     const ls = levels({ chat: { overrides: { temp: 0.3 } }, user: { bundles: { preset: 'preset:P' } } });
     assert.deepEqual(editField(ls, 'temp', 1.0, catalog), { op: 'delete', index: 1, field: 'temp' });
-    // Nothing stated at the level and the value what it already resolves to: nothing to write.
     assert.equal(editField(ls, 'top_p', 0.9, catalog, 1), null);
-    // The same override again: nothing either.
     assert.equal(editField(ls, 'temp', 0.3, catalog), null);
 });
 

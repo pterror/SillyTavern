@@ -1,12 +1,7 @@
 import { describe, test, expect, jest, beforeAll, beforeEach } from '@jest/globals';
 
-// FilterHelper.searchFilter matches characters and groups with the browser's fuzzy search (or a substring match with
-// fuzzy search off) over the rows it's given, whatever the filter's search or fav state. It is what the upstream
-// getEntitiesList({ doFilter: true }) runs over the page on screen.
-
 const powerUser = { fuzzy_search: true };
 const fuzzyCalls = [];
-// What the mocked fuzzy searches search: they match names holding the term, case-insensitively.
 let residentCharacters = [];
 let residentGroups = [];
 

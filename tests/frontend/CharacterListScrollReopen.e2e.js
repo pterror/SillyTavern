@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, setStackedDrawers } from './frontent-test-utils.js';
 
-// Closing character management and opening it again brings the list back where it was scrolled to, in the desktop
-// layout (fullscreen character management) and the mobile one, with stacked drawers off and on.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -59,7 +56,6 @@ for (const { layout, width, height } of [
 
             await page.locator('#rightNavDrawerIcon').click();
             await expect(page.locator('#right-nav-panel')).toHaveClass(/openDrawer/);
-            // Within a few pixels: scroll anchoring may nudge it as rows settle their height (avatars loading).
             await page.waitForTimeout(1000);
             expect(Math.abs(await listScrollTop(page) - SCROLLED_TO)).toBeLessThanOrEqual(8);
         });

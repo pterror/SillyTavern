@@ -1,8 +1,6 @@
 import { describe, test, expect, jest, beforeAll, beforeEach, afterEach } from '@jest/globals';
 import path from 'node:path';
 
-// The order of /query pages: ties in creation order, through offset paging and cursors, over entities sharing sort keys.
-
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
 /** @type {typeof import('./converted-user.fixture.js')} */
@@ -24,12 +22,6 @@ beforeEach(async () => {
 
 afterEach(() => user.close());
 
-/**
- * Entities sharing sort keys, so the tie order decides most of the list. They are created in an order that is not
- * their ids' (b.png before a.png; group 'a' before 'a-b', whose file name 'a-b.json' sorts first); characters and
- * groups share keys.
- * `chat`: a chat of one message (all at one time), so these tie on date_last_chat and chat_size; the others have none.
- */
 const CHARACTERS = [
     { id: 'b.png', name: 'Same', fav: true, date: 100, chat: true },
     { id: 'a.png', name: 'Same', fav: false, date: 100, chat: true },
@@ -50,7 +42,6 @@ let MODEL = [];
 const message = (long) => ({ name: 'User', is_user: true, mes: long ? 'a longer message of this chat' : 'a message', send_date: 'x', extra: {} });
 
 async function seed() {
-    // The chats' messages are all received at one moment, so equal chats tie in time and size.
     const now = jest.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000);
     try {
         for (const c of CHARACTERS) {
@@ -65,7 +56,6 @@ async function seed() {
     } finally {
         now.mockRestore();
     }
-    // What the store holds for each: the sort keys the expected lists are made from.
     const page = await user.store.lib.query({ limit: 100, wantRows: true, wantTotal: false });
     MODEL = /** @type {any[]} */ (page.rows).map(({ type, item }) => (type === 'group'
         ? { type, id: item.id, name_fold: item.name.toLowerCase(), fav: item.fav, date: item.date_added, lastChat: item.date_last_chat, size: item.chat_size, create_date: item.date_added, data_size: null }
@@ -73,14 +63,9 @@ async function seed() {
     expect(MODEL).toHaveLength(CHARACTERS.length + GROUPS.length);
 }
 
-/** UTF-8 byte order, as SQLite's BINARY collation. */
 const bytes = (a, b) => Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
 
 /**
- * The expected list, from the rule itself: ascending, the sort key, then characters before groups, then creation
- * order (the engine's orders break ties by entity id, not by upstream's avatar or `<id>.json`); descending, that list
- * reversed. A fav sort only picks which fav value
- * comes first, with names and ties ascending inside each.
  * @param {string} sortField
  * @param {'asc'|'desc'} sortOrder
  * @param {boolean | undefined} fav
@@ -92,9 +77,7 @@ function expected(sortField, sortOrder, fav) {
         name: e => e.name_fold, date_added: e => e.date, date_last_chat: e => e.lastChat, chat_size: e => e.size,
         create_date: e => e.create_date, data_size: e => e.data_size,
     }[sortField];
-    // A missing key sorts below every number.
     const byNumber = (ka, kb) => (ka === null || kb === null) ? (ka === kb ? 0 : ka === null ? -1 : 1) : ka - kb;
-    // Seeded characters first, then groups, each in list order: the order they were created in.
     const created = e => (e.type === 'group' ? CHARACTERS.length + GROUPS.findIndex(g => g.id === e.id) : CHARACTERS.findIndex(c => c.id === e.id));
     const tie = (a, b) => (a.type === b.type ? 0 : a.type === 'group' ? 1 : -1) || created(a) - created(b);
     return [...entities].sort((a, b) => {
@@ -160,7 +143,6 @@ describe('/query sorted pages: ties in creation order', () => {
         await seed();
         const first = await user.store.lib.query({ sortField: 'name', sortOrder: 'asc', offset: 0, limit: 3, wantTotal: false });
         const seen = first.rows.map(idOf);
-        // A new entity that sorts before the cursor would shift an offset page; the cursor isn't moved by it.
         const cardJson = JSON.stringify({ name: 'Aaa', data: { name: 'Aaa', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
         await user.store.lib.writeCard(directories, 'new.png', cardJson);
         const next = await user.store.lib.query({ sortField: 'name', sortOrder: 'asc', offset: 3, limit: 100, wantTotal: false, cursor: first.cursor });
@@ -173,7 +155,11 @@ describe('/query sorted pages: ties in creation order', () => {
 });
 
 describe('/query with characters only: the same walk, cursor and work cap', () => {
-    /** @param {string} sortField @param {'asc'|'desc'} sortOrder @param {boolean | undefined} fav */
+    /**
+     * @param {string} sortField
+     * @param {'asc'|'desc'} sortOrder
+     * @param {boolean | undefined} fav
+     */
     const expectedCharacters = (sortField, sortOrder, fav) => expected(sortField, sortOrder, fav).filter(e => e.startsWith('character:')).map(e => e.slice('character:'.length));
 
     test('every sort, direction and fav filter lists in order, and following each page\'s cursor joins up', async () => {
@@ -203,8 +189,6 @@ describe('/query with characters only: the same walk, cursor and work cap', () =
     test('past the work cap, a page answers `more` and a cursor, and following them lists everything once', async () => {
         await seed();
         {
-            // The cap bounds what a page reads past its own rows: two characters left out next to each other (in
-            // name order) are more than a cap of 1.
             const excludeIds = ['a.png', 'b.png'];
             const want = expectedCharacters('name', 'asc', undefined).filter(id => !excludeIds.includes(id));
             const followed = [];

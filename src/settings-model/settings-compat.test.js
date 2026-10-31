@@ -26,7 +26,7 @@ function keys() {
 
 /**
  * @param {Record<string, any>} object
- * @param {string | string[]} path Dotted, or its keys.
+ * @param {string | string[]} path
  */
 function at(object, path) {
     const keys = Array.isArray(path) ? path : path.split('.');
@@ -34,7 +34,6 @@ function at(object, path) {
 }
 
 /**
- * Imports and assembles, through JSON as the store holds it.
  * @param {Record<string, any>} settings
  */
 function roundTrip(settings) {
@@ -44,7 +43,6 @@ function roundTrip(settings) {
 }
 
 /**
- * The leaves of `settings` that `back` doesn't give back, as text.
  * @param {Record<string, any>} settings
  * @param {Record<string, any>} back
  */
@@ -56,11 +54,9 @@ test('the shipped settings come back as they came, but what is dead or derived',
     const { model, back, warnings } = roundTrip(SHIPPED);
     assert.deepEqual(lost(SHIPPED, back), []);
     assert.deepEqual(warnings, []);
-    // The selected bundles are statements, and an unsaved edit is an override.
     assert.equal(model.user.bundles['preset.openai'], 'openai:Default');
     assert.equal(model.user.bundles.theme, 'Dark Lite');
     for (const path of DEAD_PATHS) assert.equal(at(back, path), undefined, path);
-    // The shipped file has no default persona, and the current one is its own.
     assert.equal(back.power_user.default_persona, null);
     assert.equal(back.user_avatar, SHIPPED.user_avatar);
 });
@@ -133,14 +129,10 @@ test('a settings file using every catalog comes back as it came', () => {
     const { model, back, warnings } = roundTrip(settings);
     assert.deepEqual(lost(settings, back), []);
     assert.deepEqual(warnings, []);
-    // Captioning through Claude is the Claude connection text generation has.
     const claude = model.entities.find(e => e.values.type === 'openai:claude');
     assert.equal(model.statements.capabilities.captioning, claude.key);
 });
 
-/**
- * The shipped settings as the model, and what assemble gives for it.
- */
 function shippedModel() {
     const model = JSON.parse(JSON.stringify(importUpstream(structuredClone(SHIPPED), { bundles: shippedBundles, newKey: keys() })));
     const { settings } = assemble(model, { bundles: shippedBundles });
@@ -194,7 +186,6 @@ test('selecting a theme with its values loaded is one statement, dropping the ol
     switched.power_user.theme = 'Azure';
     for (const [key, value] of Object.entries(azure)) if (key !== 'name') switched.power_user[key] = value;
     const writes = routeSave(withEdit, switched, { bundles: shippedBundles });
-    // Azure's fields replace the edits of them; an edit of a field Azure doesn't hold would stay.
     const replaced = Object.keys(withEdit.user.overrides).filter(field => field.startsWith('theme/') && Object.hasOwn(azure, field.slice('theme/'.length)));
     assert.ok(replaced.includes('theme/main_text_color'));
     assert.deepEqual(writes, [{ op: 'bundle', group: 'theme', ref: 'Azure', drop: replaced }]);
@@ -245,8 +236,6 @@ test('a field the settings lack stays the page\'s default, not the selected bund
 test('a context\'s closer levels: a character\'s preset and overrides win over the user\'s, the group\'s after its speaker\'s, the theme stays the reader\'s', () => {
     const model = JSON.parse(JSON.stringify(importUpstream(structuredClone(SHIPPED), { bundles: shippedBundles, newKey: keys() })));
     const userTemp = assemble(model, { bundles: shippedBundles }).settings.oai_settings.temp_openai;
-    // The speaker overrides one field; its group states a preset and overrides another. (A bundle stated closer would
-    // be a statement of every field it holds, over the group's override.)
     const character = { level: 'character', bundles: { theme: 'Azure' }, overrides: { 'preset.openai/temperature': 1.25 } };
     const group = { level: 'character', bundles: { 'preset.openai': 'openai:Default' }, overrides: { 'preset.openai/temperature': 0.1, 'preset.openai/top_p': 0.5 } };
     const { settings } = assemble(model, { bundles: shippedBundles, levels: [character, group] });

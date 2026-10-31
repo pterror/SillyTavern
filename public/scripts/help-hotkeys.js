@@ -1,8 +1,3 @@
-/**
- * Every hotkey the app handles, registered so the Hotkeys help topic and the hold-Ctrl list show them all. These only
- * describe the keys; the handlers live where the keys are handled (RossAscends-mods.js, input-md-formatting.js,
- * AutoComplete.js, popup.js, character-field-editor.js, the Quick Reply editor, and so on).
- */
 import { getHotkeys, registerHotkey } from './help-registry.js';
 import { t, translate } from './i18n.js';
 import { power_user } from './power-user.js';
@@ -64,11 +59,9 @@ registerHotkey({ category: other, mouse: ['Shift+click or Alt+click on the perso
 registerHotkey({ category: other, keys: ['Hold Ctrl'], label: t`Show this list of hotkeys` });
 
 /**
- * Draws the hotkeys, grouped by category in the order they were registered. Ones that don't work right now (their
- * `when` is false) are shown greyed out.
  * @param {HTMLElement} container
- * @param {string} [query] Only hotkeys whose label, keys or category contain this, ignoring case.
- * @returns {number} How many hotkeys were drawn.
+ * @param {string} [query]
+ * @returns {number}
  */
 export function renderHotkeys(container, query = '') {
     const needle = query.trim().toLowerCase();

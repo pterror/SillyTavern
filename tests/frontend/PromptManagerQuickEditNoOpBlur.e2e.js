@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// NixOS host: the Playwright-managed Chromium download is missing system libs, so fall back
-// to the system-provided Chrome (only when explicitly pointed at it) rather than requiring a
-// FHS-compatible browser install.
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -17,24 +14,15 @@ if (process.env.PLAYWRIGHT_BASIC_AUTH_USER) {
 }
 
 /**
- * The prompt manager's quick-edit textareas only render (and only wire their blur handler's
- * saveServiceSettings up to a real save) under the Chat Completion API, and live inside a
- * collapsed "Quick Prompts Edit" drawer in the AI Response Configuration panel. Get there.
  * @param {import('@playwright/test').Page} page
  */
 async function openQuickEditMainTextarea(page) {
     await page.locator('#leftNavDrawerIcon').click();
-    // The #main_api <select> is select2-enhanced (a hidden native <select> mirrored by a fake
-    // dropdown UI), so Playwright's actionability checks see it as not visible - force bypasses
-    // that and sets the underlying value directly, which is what select2 listens to anyway.
     await page.selectOption('#main_api', 'openai', { force: true });
     const drawerToggle = page.locator('.inline-drawer-toggle', { hasText: 'Quick Prompts Edit' });
     await drawerToggle.first().click();
     const textarea = page.locator('#main_prompt_quick_edit_textarea');
     await textarea.waitFor({ state: 'visible', timeout: 10000 });
-    // Switching main_api itself fires its own debounced settings save - let that settle before
-    // a caller starts listening for saves, so it isn't mistaken for one triggered by the
-    // quick-edit textarea under test.
     await page.waitForTimeout(1500);
     return textarea;
 }
@@ -54,24 +42,15 @@ test.describe('prompt manager quick-edit blur save', () => {
 
         const before = await textarea.inputValue();
 
-        // With the prompt's edit form open, the blur handler writes the prompt into the form, so an
-        // unchanged blur would replace the form's unsaved text with the stored prompt.
         await page.locator('#completion_prompt_manager_list li[data-pm-identifier="main"] .prompt-manager-edit-action').click();
         const editFormPrompt = page.locator('#completion_prompt_manager_popup_entry_form_prompt');
         await editFormPrompt.waitFor({ state: 'visible', timeout: 5000 });
         const unsavedDraft = before + ' (unsaved edit form draft)';
         await editFormPrompt.fill(unsavedDraft);
 
-        // Simulate exactly the "browser tab/window regains focus" scenario: this field had
-        // focus, then something else stole it (e.g. the window losing and regaining focus can
-        // blur whatever element was previously active) - without the user ever having edited
-        // the value. A plain element.blur() is the faithful way to reproduce that: unlike
-        // focusing another element, it doesn't depend on some other specific element being
-        // focusable.
         await textarea.focus();
         await textarea.evaluate((el) => el.blur());
 
-        // Give the (previously unconditional) save its full debounce window to fire.
         await page.waitForTimeout(1500);
 
         await expect(textarea).toHaveValue(before);
@@ -99,7 +78,6 @@ test.describe('prompt manager quick-edit blur save', () => {
 
         expect(saveRequests.length).toBeGreaterThan(0);
 
-        // Restore the original value so the test doesn't leave a permanent edit behind.
         await textarea.focus();
         await textarea.fill(before);
         await textarea.evaluate((el) => el.blur());
@@ -151,7 +129,6 @@ async function openEditForm(page, identifier) {
 }
 
 /**
- * Puts the quick-edit's original text back and lets its debounced save run, so no edit is left behind.
  * @param {import('@playwright/test').Page} page
  * @param {import('@playwright/test').Locator} textarea
  * @param {string} original

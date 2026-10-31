@@ -4,16 +4,12 @@ import path from 'node:path';
 import { expect, test } from 'vite-plus/test';
 import { lintConfig } from './config.ts';
 
-// The rules run through the real config (./config.ts, minus the fixtures' ignore) over fixtures: each `expect:`
-// comment in a bad fixture names the diagnostics its line must get, and a good fixture gets none at all.
-
 const ROOT = path.resolve(import.meta.dirname, '../..');
 const FIXTURES = path.join(import.meta.dirname, 'fixtures');
 
 type Diagnostic = { code: string; filename: string; labels: { span: { line: number } }[] };
 
 function lint(): Diagnostic[] {
-    // The config's globs are relative to the repo root, so the config file has to sit there for the run.
     const config = path.join(ROOT, `.oxlintrc.rules-test-${process.pid}.json`);
     fs.writeFileSync(config, JSON.stringify(lintConfig));
     try {
@@ -28,7 +24,6 @@ function run(args: string[]): string {
     try {
         return execFileSync('npx', args, { cwd: ROOT, encoding: 'utf8' });
     } catch (error) {
-        // Errors found exit non-zero; the report is still on stdout.
         return (error as { stdout: string }).stdout;
     }
 }

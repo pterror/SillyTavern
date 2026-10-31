@@ -93,8 +93,7 @@ const a11yRules = {
 };
 
 /**
- * Keeps aria-selected in sync with which radio in a tab group is checked.
- * @param {Event} event The change event from an `.invisible-radio`.
+ * @param {Event} event
  */
 function onTabRadioChange(event) {
     const radio = event.target;

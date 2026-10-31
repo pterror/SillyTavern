@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// convertCharacterToPersona takes upstream's index into getContext().characters or an avatar key, and converts a
-// character the page doesn't hold from its full card on the server.
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -23,7 +20,7 @@ async function loadApp(page) {
  * @param {import('@playwright/test').Page} page
  * @param {string} name
  * @param {string} description
- * @returns {Promise<string>} its avatar key
+ * @returns {Promise<string>}
  */
 async function createCharacter(page, name, description) {
     return page.evaluate(async ({ name, description }) => {
@@ -76,7 +73,6 @@ test.describe('convertCharacterToPersona', () => {
     test('takes an index into getContext().characters, as upstream does', async ({ page }) => {
         const name = `PersonaIndex ${Date.now()}`;
         const avatar = await createCharacter(page, name, 'Keeps the lighthouse.');
-        // Extensions are shown the current character, so that is the one an index can name.
         await page.evaluate(async (avatar) => {
             const { getCharacters } = await import('./scripts/character-list.js');
             await getCharacters();

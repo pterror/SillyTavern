@@ -9,7 +9,6 @@ class GptSoVITSAdapterProvider {
     voices = [];
     separator = '. ';
     audioElement = document.createElement('audio');
-    // Text is sent as-is; the adapter server handles splitting/normalization.
     processText(text) {
         return text;
     }

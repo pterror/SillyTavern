@@ -1,18 +1,11 @@
 import { newSessionKey } from './chat-engine.js';
 
-/**
- * Which sessions a tab has open now: a session is in use while a tab holds a live changes stream for it
- * (`/api/characters/changes/stream`). Per user (their data root), in this process's memory. A tab is named by its
- * token, which it keeps across reloads, so its own stream from before a reload isn't another tab's.
- */
-
-/** @type {Map<string, Map<string, Map<string, number>>>} root → session → token → live streams */
+/** @type {Map<string, Map<string, Map<string, number>>>} */
 const live = new Map();
 /** @type {Map<string, Promise<unknown>>} */
 const queues = new Map();
 
 /**
- * Whether a tab other than `token`'s holds the session (`token` undefined: whether any tab does).
  * @param {string} root
  * @param {string} session
  * @param {string} [token]
@@ -25,7 +18,6 @@ export function heldByOther(root, session, token) {
 }
 
 /**
- * The tab's stream holds the session until the returned function is called.
  * @param {string} root
  * @param {string} session
  * @param {string} token
@@ -50,12 +42,9 @@ export function hold(root, session, token) {
 }
 
 /**
- * The session a tab's stream holds: the one it asks for (`asked`) unless another tab holds that (`held`: the tab
- * forks it and asks again); with none asked, the user's most recent session no tab holds, else a new one at the
- * most recent one's place, else a new one with nothing stored. Two tabs asking at once never get the same one.
  * @param {object} p
- * @param {string} p.root The user's data root.
- * @param {string} p.user The user's handle.
+ * @param {string} p.root
+ * @param {string} p.user
  * @param {import('./chat-engine.js').ChatEngine} p.chats
  * @param {string | null} p.asked
  * @param {string} p.token
@@ -88,8 +77,6 @@ export function claimTabSession({ root, user, chats, asked, token }) {
 }
 
 /**
- * Runs `claim` after every earlier claim of the user's has settled, so two tabs choosing a session never choose the
- * same one.
  * @template T
  * @param {string} root
  * @param {() => Promise<T>} claim

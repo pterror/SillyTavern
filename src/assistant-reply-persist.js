@@ -3,12 +3,9 @@ import { recordGenerationPersisted } from './generation-stop.js';
 import { finishReply } from './reply-reasoning.js';
 
 /**
- * The reply text in a non-streaming answer, read exactly as the page's `extractMessageFromData()`
- * (public/script.js) reads it for `api`, so the stored reply is the text the page shows.
- * @param {any} data The answer body sent to the page.
+ * @param {any} data
  * @param {'textgenerationwebui'|'openai'} api
- * @returns {string|null} null when no field the page reads holds text, or the page would throw on the
- * answer's shape.
+ * @returns {string|null}
  */
 export function replyTextAsPageShows(data, api) {
     function getResult() {
@@ -34,10 +31,8 @@ export function replyTextAsPageShows(data, api) {
 }
 
 /**
- * For a non-streaming answer whose reply can't be read: logs the answer's keys (never its content) and
- * returns the warning the page shows.
- * @param {any} data The answer body sent to the page.
- * @param {string} key The backend, as `api|type-or-source`.
+ * @param {any} data
+ * @param {string} key
  * @returns {{ kind: 'unreadable-reply', key: string, message: string }}
  */
 export function unreadableReplyWarning(data, key) {
@@ -51,56 +46,17 @@ export function unreadableReplyWarning(data, key) {
 }
 
 /**
- * Persists a raw-action `/generate` request's ASSISTANT reply into the chat, through the request's session,
- * once the full generated text is known.
- *
- * Extracted so BOTH the non-streaming response branch (where the full text is available
- * immediately, straight from the backend's JSON body) and the streaming branches (where it's the
- * final text accumulated from a live SSE/Ollama-JSON-lines/llama.cpp-compact stream, teed
- * alongside the unmodified bytes already forwarded to the client - see text-completions.js's own
- * streaming branches and llamacpp-compact-stream.js's `pipeLlamaCppCompactStream()`) can call the
- * SAME three persistence modes instead of duplicating this branching logic a second time.
- *
- * Implements the exact same three modes established for the non-streaming case (see
- * `git show ac42ce8c9`/`92b5d9177`/`ef1f18bcb` for the full design history/rationale):
- * - `isContinue`: in-place edit of the anchor's own text (`oldText + newText`) via `editMessage()`
- *   - a continue never introduces a new node, it lengthens the existing leaf's `mes`. Requires
- *     `anchorContent` (the anchor's real, current, full stored content) because `editMessage()`
- *     replaces the WHOLE stored content, not just `.mes`.
- * - `isSwipe`: a real, tested ALTERNATIVE alongside the message being replaced - a new SIBLING
- *   under the anchor's own real parent via `addAlternatives()`, immediately made the active
- *   alternative via `selectDefaultChild()`. Covers both `type === 'swipe'` and `type ===
- *   'regenerate'` - the client's own single `is_swipe` flag doesn't distinguish the two, and
- *   neither does tree persistence.
- * - plain (neither of the above): a new CHILD after the anchor via `appendMessages()`.
- *
- * A no-op when `generatedText` is empty/falsy - mirrors the non-streaming branch's own
- * `if (generatedText)` guard, so an empty/failed/aborted-before-any-text generation never creates
- * a spurious tree entry.
- *
  * @param {object} pending
- * @param {import('./chat-request.js').ChatContext} pending.chat The chat the request acts in.
- * @param {string | null} pending.anchorNodeId The message the reply attaches to/edits/replaces - see the
- *   per-mode description above for exactly how each mode uses it (null: the tree's root).
- * @param {string} pending.name2 The responding character's display name, stored as the new
- *   message's `name`.
+ * @param {import('./chat-request.js').ChatContext} pending.chat
+ * @param {string | null} pending.anchorNodeId
+ * @param {string} pending.name2
  * @param {boolean} pending.isSwipe
  * @param {boolean} pending.isContinue
- * @param {object|null} pending.anchorContent Required (and used) only when `isContinue` is true -
- *   the anchor's own real, current, full stored content, as loaded from the tree.
- * @param {import('./generation-stop.js').StopEntry} [pending.generationStop] The request's stop entry; told what the
- *   reply was stored as, so a stop can answer with it.
- * @param {string} generatedText The full, final generated text (raw, unprocessed backend output -
- *   not run through any client-side cleanup step, matching every other cut-over type's own
- *   already-accepted standard).
- * @param {{data?: any}} [answer] A non-streamed answer, as sent to the page: the reasoning the backend sent apart
- *   from the text is read from it (a stream notes its own, see src/reply-reasoning.js).
- * @returns {Promise<StoredReply|null>} `mes` is the node's whole stored text, `extra` the reasoning fields stored with it
- *   (the reply's reasoning is split off its text here, see `finishReply()`). `node_id` is the node the reply now lives at (the edited anchor
- *   for `isContinue`, the new alternative for `isSwipe`, the new child otherwise); callers send it to
- *   the page, which never stores a reply itself. `null` when there was no text, or when storing failed:
- *   a failure is kept on the generation for a retry and reported as a `reply-not-saved` warning (see
- *   `recordReplyNotSaved()`).
+ * @param {object|null} pending.anchorContent
+ * @param {import('./generation-stop.js').StopEntry} [pending.generationStop]
+ * @param {string} generatedText
+ * @param {{data?: any}} [answer]
+ * @returns {Promise<StoredReply|null>}
  */
 export async function persistAssistantReply(pending, generatedText, answer = {}) {
     if (pending) pending.answer = answer;
@@ -120,15 +76,10 @@ export async function persistAssistantReply(pending, generatedText, answer = {})
     return result;
 }
 
-/**
- * @typedef {{node_id: string, mes: string, extra: ReturnType<typeof finishReply>['extra']}} StoredReply A stored reply, as
- * the page is sent it: its node, its text and the reasoning fields of its `extra`.
- */
+/** @typedef {{node_id: string, mes: string, extra: ReturnType<typeof finishReply>['extra']}} StoredReply */
 
 /**
- * What the page is sent of a stored reply, alongside a non-streamed answer: `assistant_node_id`, and
- * `assistant_message` (its stored text and reasoning fields), which the page shows in place of its own copy.
- * @param {object} body The answer sent to the page.
+ * @param {object} body
  * @param {StoredReply|null} persisted
  */
 export function attachStoredReply(body, persisted) {
@@ -138,8 +89,6 @@ export function attachStoredReply(body, persisted) {
 }
 
 /**
- * Stores a reply whose first store failed, from the text the server kept. Same modes as
- * `persistAssistantReply()`.
  * @param {object} pending
  * @param {string} generatedText
  * @returns {Promise<StoredReply|{error: string}|null>}
@@ -153,9 +102,6 @@ export async function retryPersistReply(pending, generatedText) {
 }
 
 /**
- * The warning the page gets for a reply that was generated but couldn't be stored. It names the
- * generation, so the page can ask the server to try storing it again, and the state changes made while producing it
- * (`changes`, a variable's as `variables.<name>`), which weren't stored either.
  * @param {string} generationId
  * @param {string} reason
  * @param {import('./chat-engine.js').StateOp[]} [replyChanges]
@@ -175,9 +121,6 @@ export function replyNotSavedWarning(generationId, reason, replyChanges = []) {
 }
 
 /**
- * Keeps a failed reply's text on its generation, so a retry can store it, and adds the warning to the
- * request's warnings: a non-streaming answer sends them after storing, and a stream sends this one in
- * its own frame (`takeReplyNotSaved()`).
  * @param {object} pending
  * @param {string} generatedText
  * @param {string} reason
@@ -196,7 +139,6 @@ function recordReplyNotSaved(pending, generatedText, reason) {
 }
 
 /**
- * For a stream: the not-saved warning of this reply, if storing it failed, to send in its own frame.
  * @param {object|null|undefined} pending
  * @returns {object|null}
  */
@@ -205,7 +147,6 @@ export function takeReplyNotSaved(pending) {
 }
 
 /**
- * For a stream: the warning that the stored reply's itemization wasn't stored, if it wasn't, to send in its own frame.
  * @param {object|null|undefined} pending
  * @returns {object|null}
  */
@@ -214,8 +155,6 @@ export function takeItemizationNotSaved(pending) {
 }
 
 /**
- * When the reply was generated, as upstream's page stored it on every reply: ISO strings, the request's arrival
- * and the moment the text was complete. A retry keeps the first attempt's times.
  * @param {object} pending
  * @returns {{gen_started?: string, gen_finished: string}}
  */
@@ -228,9 +167,6 @@ function generationTimes(pending) {
 }
 
 /**
- * Stores the reply, then the itemization of the prompt it was generated from (`pending.itemization`) at the node it
- * was stored at. An itemization that can't be stored is reported, in `pending.warnings` and to a stream through
- * `takeItemizationNotSaved()`; the reply stays stored.
  * @returns {Promise<StoredReply|{error: string}|null>}
  */
 async function persistReply(pending, generatedText) {
@@ -248,7 +184,6 @@ async function persistReply(pending, generatedText) {
 }
 
 /**
- * The warning the page gets when a reply was stored but the itemization of its prompt wasn't.
  * @param {string} nodeId
  */
 export function itemizationNotSavedWarning(nodeId) {
@@ -260,8 +195,6 @@ export function itemizationNotSavedWarning(nodeId) {
 }
 
 /**
- * The reply's `extra.api` and `extra.model` (upstream's getGeneratingApi()/getGeneratingModel()), from the settings
- * read when the generation started; the model may come from a lookup still running then.
  * @param {object} pending
  * @returns {Promise<{api?: string, model?: string}>}
  */
@@ -287,7 +220,6 @@ async function storeReply(pending, generatedText) {
 
     const times = generationTimes(pending);
     const finished = finishReply(pending, generatedText, pending.answer);
-    // What generated it, as upstream's saveReply() records it.
     Object.assign(finished.extra, await generatedBy(pending));
     const title = typeof pending.title === 'string' ? pending.title : '';
     const replyContent = { name: name2, is_user: false, mes: finished.mes, title, extra: { ...finished.extra }, send_date: Date.now(), ...times };

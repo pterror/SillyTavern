@@ -10,7 +10,6 @@ import { write as writeCard } from '../character-card-parser.js';
 import { setConfigFilePath } from '../util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// chats.js's import chain reads process-wide config at import time, so the config path is set first.
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
 const { router: chatsRouter } = await import('./chats.js');
@@ -81,7 +80,6 @@ test('POST /api/chats/ancestry: a message\'s bookmark_link is the bookmark made 
 
     assert.equal(status, 200);
     assert.deepEqual(data.messages.map(m => m.mes), ['hi', 'hello']);
-    // Saving to a name no chat has made a bookmark labelled so at the chat's last message; the link is its name.
     assert.equal(saved.data.file_name, 'Main Chat');
     assert.equal(data.messages[0].extra?.bookmark_link, undefined);
     assert.equal(data.messages[1].extra?.bookmark_link, saved.data.file_name);

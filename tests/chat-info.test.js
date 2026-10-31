@@ -3,8 +3,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-// chats.js's direct import characters.js pulls in modules that read config.yaml at load (and exit the process when
-// it is missing). getChatInfo() doesn't use it, so mock it at chats.js's boundary.
 jest.unstable_mockModule('../src/endpoints/characters.js', () => ({
     readCardContent: jest.fn(),
 }));
@@ -13,7 +11,6 @@ jest.unstable_mockModule('../src/endpoints/characters.js', () => ({
 let chats;
 
 beforeAll(async () => {
-    // chats.js and what it imports read config values at module load.
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
     chats = await import('../src/endpoints/chats.js');

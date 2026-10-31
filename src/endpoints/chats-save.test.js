@@ -9,18 +9,8 @@ import express from 'express';
 import { setConfigFilePath } from '../util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// Modules imported transitively by chats.js read
-// process-wide config at import time - the config path must be set before that import chain runs,
-// same as every other route-level test file in this directory (see e.g. groups.test.js's own comment).
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
-// Route-level Express-integration test for /save's and /group/save's unique-name-minting behavior
-// against the real (SQLite-backed) message tree - the only storage path left once chats.js's JSONL
-// fallback was removed. Ported from chats-legacy-save.test.js (deleted alongside this file's
-// addition), which exercised the same pickUniqueChatFileName()/pickUniqueGroupChatId() collision
-// logic but only reachable, before that removal, by mocking getSqliteEngine() to force the
-// now-deleted JSONL fallback. Assertions here read back the real tree (loadBranch()/listBranches())
-// instead of JSONL files on disk, since a save no longer ever produces one.
 const { router: chatsRouter } = await import('./chats.js');
 const { router: groupsRouter } = await import('./groups.js');
 const { newSessionKey } = await import('../chat-engine.js');
@@ -39,7 +29,6 @@ for (const [avatar, name] of [['alice.png', 'Alice'], ['bob.png', 'Bob']]) {
 }
 
 /**
- * A chat of a tree by its name, as the tab that saved it shows it: its messages and the state there.
  * @param {{ avatar?: string, group?: string }} owner
  * @param {string} name
  * @param {string} tab
@@ -53,7 +42,6 @@ async function chatNamed(owner, name, tab) {
     return at === undefined ? null : await user.store.chats.load({ tree, at, session: tab });
 }
 
-/** The names of a tree's bookmarks. */
 async function bookmarkNames(owner) {
     const tree = await treeOf(user.store, owner);
     return (await user.store.chats.bookmarks({ tree, limit: 500 })).rows.map(b => b.name);
@@ -122,8 +110,6 @@ test('POST /api/chats/save with unique:true makes a bookmark labelled as asked, 
 
     const result = await chatNamed({ avatar: 'alice.png' }, data.file_name, tab);
     assert.ok(result, 'branch must exist in the tree');
-    // The client no longer fabricates chat_metadata.integrity - the value stored must be the one the
-    // server minted and reported back, not something asserted by the caller (there was none here).
     assert.equal(result.metadata.integrity, data.integrity);
 });
 
@@ -149,12 +135,10 @@ test('POST /api/chats/save with unique:true makes a new bookmark when a chat has
 
     assert.equal(status, 200);
     assert.equal(data.ok, true);
-    // A name a chat has is the next free one: a chat's name is once in its tree.
     assert.equal(data.file_name, 'Main Chat (2)');
 
     const original = await chatNamed({ avatar: 'bob.png' }, first.data.file_name, tab1);
     assert.equal(original.messages.length, 1, 'the original branch must be untouched by the collision save');
-    // The name still names the first.
     assert.equal((await chatNamed({ avatar: 'bob.png' }, 'Main Chat', tab1)).messages.length, 1);
 
     const branch = await chatNamed({ avatar: 'bob.png' }, data.file_name, tab2);
@@ -162,7 +146,6 @@ test('POST /api/chats/save with unique:true makes a new bookmark when a chat has
     assert.equal(branch.metadata.integrity, data.integrity);
     assert.equal(branch.messages.length, 2);
 
-    // Again: a third bookmark, the next free name.
     const second = await postJson(app, '/api/chats/save', {
         ch_name: 'Bob',
         file_name: 'Main Chat',
@@ -176,7 +159,6 @@ test('POST /api/chats/save with unique:true makes a new bookmark when a chat has
 });
 
 /**
- * A group, with a chat of each name in `chats` (a tab of its own saved it).
  * @param {string} id
  * @param {string[]} chats
  */
@@ -192,7 +174,6 @@ async function writeGroupFixture(id, chats) {
     return tabs;
 }
 
-/** A group as /api/groups/batch answers it. */
 async function groupOf(app, id, tab) {
     return (await postJson(app, '/api/groups/batch', { ids: [id] }, tab)).data[0];
 }
@@ -223,16 +204,8 @@ test('POST /api/chats/group/save with unique:true makes a new bookmark of the gr
     const original = await chatNamed({ group: 'group-1' }, first.data.chat_id, tab1);
     assert.equal(original.messages.length, 1, 'the original branch must be untouched by the collision save');
 
-    // The new id must already be registered in the group's own persisted `chats` list from this single
-    // request - a caller that used to need a second /api/groups/save-partial round trip just to append
-    // one string here (createBranch()'s/createNewBookmark()'s group case, "one action, one request")
-    // should have nothing left to do but update its own in-memory mirror.
     const groupOnDisk = await groupOf(app, 'group-1', tab2);
-    // Newest first; the save made the bookmark without opening it or moving the tab, which has no conversation of its own.
     assert.deepEqual(groupOnDisk.chats, [data.chat_id, first.data.chat_id]);
-    // Every other field on the descriptor must survive untouched - registration re-reads and rewrites
-    // the FULL descriptor (not the shallow {id, chats} view resolveGroupOwner() hands the route), or it
-    // would silently wipe the rest of the group's config.
     assert.equal(groupOnDisk.name, 'Group group-1');
 });
 
@@ -251,7 +224,6 @@ test('POST /api/chats/group/save with a fresh (non-unique) id also registers it 
     assert.equal(data.chat_id, 'Checkpoint #1');
     assert.deepEqual(await bookmarkNames({ group: 'group-3' }), ['Checkpoint #1']);
     const groupOnDisk = await groupOf(app, 'group-3', tab);
-    // The tab's own conversation (named as upstream names a group chat, its time), then the bookmark.
     assert.equal(groupOnDisk.chats.length, 2);
     assert.match(groupOnDisk.chats[0], /^\d{4}-\d{2}-\d{2}@\d{2}h\d{2}m\d{2}s\d{3}ms$/);
     assert.equal(groupOnDisk.chats[1], data.chat_id);
@@ -270,7 +242,6 @@ test('POST /api/chats/group/save with an already-registered id does not rewrite 
     }, tab);
 
     assert.equal(status, 200);
-    // A group's `chats` is read from its bookmarks, so a save writes nothing of the group.
     assert.equal(await stored(), before);
 });
 
@@ -280,7 +251,6 @@ test('a whole save to a bookmark\'s name edits what it names by id and its metad
     const save = (chat, from) => postJson(app, '/api/chats/group/save', { id: 'Moving Chat', group_id: 'group-6', chat }, from);
     const [seed] = (await chatNamed({ group: 'group-6' }, 'Moving Chat', tab)).messages;
 
-    // The stored message is edited by its id; a message without one isn't stored: the array can't say where it goes.
     const other = newSessionKey();
     const saved = await save([chatHeader({ note_prompt: 'kept' }), { ...seed, mes: 'seed, edited' }, charMsg('more')], other);
     assert.equal(saved.status, 200);
@@ -291,7 +261,6 @@ test('a whole save to a bookmark\'s name edits what it names by id and its metad
     assert.equal(shown.messages[0].node_id, seed.node_id);
     assert.equal(shown.metadata.note_prompt, 'kept');
 
-    // A save leaving the message out doesn't delete it.
     const without = await save([chatHeader({ note_prompt: 'kept' })], other);
     assert.deepEqual(without.data.not_deleted, [seed.node_id]);
     assert.deepEqual((await chatNamed({ group: 'group-6' }, 'Moving Chat', tab)).messages.map(m => m.mes), ['seed, edited']);

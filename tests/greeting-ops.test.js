@@ -4,7 +4,6 @@ import { hashGreetingText, opAppend, opDelete, opEdit, opMove, opSetDefault, opU
 const h = hashGreetingText;
 const modelOf = (greetings, defaultIndex = 0) => ({ greetings, defaultIndex });
 
-/** Moves the greeting at `from` next to the one at `to`, with both hashes read from the model as it stands. */
 const move = (model, from, side, to) => opMove(model, from, h(model.greetings[from]), side, to, h(model.greetings[to]));
 
 describe('opMove', () => {
@@ -80,7 +79,6 @@ describe('opMove', () => {
 
     test('next to either of two identical greetings gives the same result', () => {
         const model = modelOf(['x', 'same', 'same', 'y'], null);
-        // "After the first copy" and "before the second" name the same slot.
         expect(move(model, 3, 'after', 1)).toEqual({ ok: true, model: modelOf(['x', 'same', 'y', 'same'], null), sourcePosition: 3, targetPosition: 1 });
         expect(move(model, 3, 'before', 2)).toEqual({ ok: true, model: modelOf(['x', 'same', 'y', 'same'], null), sourcePosition: 3, targetPosition: 2 });
         expect(move(model, 0, 'after', 1)).toEqual({ ok: true, model: modelOf(['same', 'x', 'same', 'y'], null), sourcePosition: 0, targetPosition: 1 });

@@ -1,8 +1,3 @@
-/**
- * The metadata db holds the only complete copy of a card, so a card write it refuses must fail the request: nothing
- * may report success for an edit that was never stored, and a new character whose row couldn't be written leaves no
- * image behind.
- */
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jest } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -73,7 +68,6 @@ const post = (route, body) => fetch(`${baseUrl}/api/characters/${route}`, {
     body: JSON.stringify(body),
 });
 
-/** Makes every write to the characters table fail, as a full disk or a broken store would. */
 let commit = null;
 function breakCharacterWrites() {
     const store = user.store.lib.store;
@@ -86,7 +80,6 @@ function repairCharacterWrites() {
     commit = null;
 }
 
-/** What the user's image folder holds. */
 function imageFiles() {
     const dir = directories.characters;
     return fs.existsSync(dir) ? fs.readdirSync(dir).sort() : [];

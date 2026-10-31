@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// The server adds upstream's default tags to a new store (tags-default-seed.test.js). The page never makes up tags
-// of its own: it holds only tags the server answered when asked for some, and creates none.
-
 test('the page holds only tags the server answered, and creates none', async ({ page }) => {
     /** @type {string[]} */
     const creates = [];
@@ -30,7 +27,6 @@ test('the page holds only tags the server answered, and creates none', async ({ 
     });
     await page.waitForFunction(() => window['__appReady'], null, { timeout: 60000 });
 
-    // A response is taken in here a moment after the page has it.
     await expect.poll(async () => {
         const held = await page.evaluate(async () => {
             const { tagsStore } = await import('./scripts/tags.js');

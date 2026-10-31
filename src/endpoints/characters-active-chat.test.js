@@ -10,13 +10,8 @@ import { write as writeCard } from '../character-card-parser.js';
 import { setConfigFilePath } from '../util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// characters.js's import chain reads process-wide config at import time - the config path must be set before that
-// import chain runs, same as every other route-level test file in this directory (see e.g. groups.test.js's own comment).
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
-// Route-level test for POST /api/characters/chat: a character's current chat must be clearable to "no chat" (a new
-// one) - a real, valid state, not a malformed request. The write is the requesting tab's session moving to the chat
-// the name names, or to a new chat.
 const { router: charactersRouter } = await import('./characters.js');
 const { SESSION_HEADER } = await import('../request-session.js');
 const { convertedUser, writeLibraryCard, saveBranch, sessionPath } = await import('../../tests/converted-user.fixture.js');
@@ -56,7 +51,6 @@ async function postJson(app, urlPath, body, headers = {}) {
     }
 }
 
-/** Stores a character in the user's library. */
 async function seedCharacter(avatar, name) {
     const card = { name, spec: 'chara_card_v2', data: { name } };
     const cardJson = JSON.stringify(card);
@@ -64,7 +58,6 @@ async function seedCharacter(avatar, name) {
 }
 
 /**
- * Two chats of a character, each a session of its own (the second chat's session is the "tab").
  * @param {string} avatar
  */
 async function seedChats(avatar) {
@@ -92,8 +85,6 @@ test('POST /api/characters/chat accepts an empty string to clear the current cha
     await seedCharacter('bob.png', 'Bob');
     const { owner, tab } = await seedChats('bob.png');
 
-    // Mirrors replaceCurrentChat()/doNewChat() clearing the current chat before rebuilding opening state with no
-    // name to mint.
     const res = await postJson(app, '/api/characters/chat', { avatar: 'bob.png', chat: '' }, { [SESSION_HEADER]: tab });
     assert.equal(res.status, 200);
 

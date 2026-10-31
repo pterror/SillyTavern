@@ -63,7 +63,6 @@ fn append(id: u64, parent: Option<u64>, tree: u64, time: i64) -> Record {
     )
 }
 
-/// A store with user 1, whom every append names.
 fn open(dir: &std::path::Path) -> Store {
     let s = Store::open_in(dir, SMALL, small_pool()).unwrap();
     if s.derived(|v| super::chat::id_by_key(v, super::chat::KEYED_USER, b"user-1"))
@@ -114,7 +113,6 @@ impl Model {
             .any(|(r, ch)| matches!(ch, Change::Revert(t) if *t == c) && self.active(*r))
     }
 
-    /// The state at `at`, as a JavaScript object would hold it after each change in turn.
     fn state(&self, tree: u64, at: Option<u64>) -> Vec<Entry> {
         let mut path = Vec::new();
         let mut cur = at;
@@ -284,7 +282,6 @@ fn the_state_at_every_message_is_the_fold_of_its_path() {
     let s = open(&dir);
     model.check(&s);
     workload(&s, &mut model, &mut rng, 600, 600);
-    // Values written over and over among the changes, so cleaning copies live changes and reverts.
     for i in 0..3000u64 {
         s.commit_wait(vec![rec(
             "jsonValue",
@@ -369,16 +366,13 @@ fn a_change_moves_with_its_message_and_goes_with_it() {
             .collect::<Vec<_>>()
     };
     assert_eq!(at(&s, Some(1)), kv(&[("world", "1"), ("note", "\"a\"")]));
-    // A sibling branch doesn't see it; the tree's root change is seen everywhere.
     assert_eq!(at(&s, Some(2)), kv(&[("world", "1")]));
-    // Moved under message 2, message 1 takes its change along.
     s.commit_wait(vec![rec(
         "messageParent",
         vec![Value::Id(1), Value::Id(2), Value::Absent, Value::Absent],
     )])
     .unwrap();
     assert_eq!(at(&s, Some(1)), kv(&[("world", "1"), ("note", "\"a\"")]));
-    // Reverted, then the revert reverted: gone, then back.
     s.commit_wait(vec![rec(
         "stateRevert",
         vec![
@@ -407,7 +401,6 @@ fn a_change_moves_with_its_message_and_goes_with_it() {
     )])
     .unwrap();
     assert_eq!(at(&s, Some(1)), kv(&[("world", "1"), ("note", "\"a\"")]));
-    // The message goes, and its changes with it.
     s.commit_wait(vec![rec(
         "messageDelete",
         vec![Value::Id(1), Value::Absent, Value::Absent, Value::Time(NOW)],
@@ -418,7 +411,6 @@ fn a_change_moves_with_its_message_and_goes_with_it() {
             .unwrap(),
         vec![]
     );
-    // Refused: a change of a missing message, a taken id, a revert of nothing, an author that isn't one.
     for bad in [
         set(9, Hang::Message(77), "k", "1"),
         set(0, Hang::Tree(1), "k", "1"),
@@ -483,7 +475,6 @@ fn a_replys_produced_changes_read_back_reverted_or_not() {
         append(1, Some(0), 1, 1),
         change(0, Hang::Message(1), produced | VARIABLE, "hp", Some("3")),
         change(1, Hang::Message(1), produced, "scene", None),
-        // A later change on the reply isn't one made while producing it.
         change(2, Hang::Message(1), state::AUTHOR_USER, "note", Some("1")),
     ])
     .unwrap();
@@ -520,7 +511,6 @@ fn a_replys_produced_changes_read_back_reverted_or_not() {
             Js::Arr(vec![c("hp", true, Some("3")), c("scene", false, None)]),
         ])
     );
-    // Refused: a reply's change on a tree's root; a revert marked as one.
     for r in [
         change(4, Hang::Tree(1), produced, "x", Some("1")),
         rec(
@@ -580,8 +570,6 @@ fn a_root_clear_removes_the_roots_changes_and_their_reverts_in_slices_and_resume
             ],
         )
     };
-    // More changes at tree 1's root than a slice takes, a revert of one and a revert of that revert; one at tree
-    // 2's root and one on a message of tree 1, which stay.
     let n = (state::CLEAR_SLICE * 2 + 3) as u64;
     let mut recs = vec![append(0, None, 1, 0)];
     for c in 0..n {
@@ -592,7 +580,6 @@ fn a_root_clear_removes_the_roots_changes_and_their_reverts_in_slices_and_resume
     recs.push(set(n + 2, Hang::Tree(2), "other"));
     recs.push(set(n + 3, Hang::Message(0), "on message"));
     s.commit_wait(recs).unwrap();
-    // The clear commits without its slices, as after a crash.
     let (tx, rx) = std::sync::mpsc::channel();
     s.inner.submit(Job::Commit(
         vec![rec("rootStateClear", vec![Value::Id(1)])],
@@ -601,7 +588,6 @@ fn a_root_clear_removes_the_roots_changes_and_their_reverts_in_slices_and_resume
         }),
     ));
     rx.recv().unwrap().unwrap();
-    // A change made after it stays; the cleared ones read as gone at once, and can't be reverted.
     s.commit_wait(vec![set(n + 4, Hang::Tree(1), "after")])
         .unwrap();
     let keys = |s: &Store, tree: u64, at: Option<u64>| {
@@ -623,7 +609,6 @@ fn a_root_clear_removes_the_roots_changes_and_their_reverts_in_slices_and_resume
         s.commit_wait(vec![revert(n + 5, 1)]),
         Err(StoreError::Refused(_))
     ));
-    // A crash: the clear resumes on open and finishes, leaving no entry of the cleared changes or their reverts.
     s.abandon();
     std::mem::forget(s);
     let s = open(&dir);

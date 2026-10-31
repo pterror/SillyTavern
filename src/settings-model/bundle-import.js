@@ -8,18 +8,9 @@ import { quickReplySetFromUpstream, quickReplySetToUpstream } from './quick-repl
 import { readDraft } from './model-store.js';
 import { userConnections } from './settings-compat.js';
 
-/**
- * The bundles' files as the settings model's entities (step 9), and back: every sampler preset, template, theme
- * and quick reply set a user has. A chat completion preset's connection keys are its connection (Q4, §2.4.9): the
- * user's connection of that source when its values are the same, else a connection of its own.
- */
-
-/** A sampler preset family's group. */
 const PRESET_GROUP = Object.freeze({ openai: 'preset.openai', textgenerationwebui: 'preset.textgenerationwebui', novel: 'preset.novel', kobold: 'preset.kobold' });
 
-/**
- * @typedef {import('./entity-draft.js').EntityDraft} EntityDraft
- */
+/** @typedef {import('./entity-draft.js').EntityDraft} EntityDraft */
 
 /**
  * @param {unknown} a
@@ -30,8 +21,6 @@ function same(a, b) {
 }
 
 /**
- * A sampler preset's file as its draft: a chat completion preset's connection keys the connection among
- * `connections` of its source with the same values, else one of its own (returned, to write with it).
  * @param {string} api
  * @param {string} name
  * @param {Record<string, any>} file
@@ -44,7 +33,6 @@ export function presetDraft(api, name, file, connections, newKey) {
     /** @type {EntityDraft[]} */
     const made = [];
     if (from.connection) {
-        // The preset's own connection, if it is one, is keyed by the preset: not the user's of that source.
         const cc = chatConnectionsFromUpstream(from.connection, hint => newKey(`preset ${api}:${name} ${hint}`));
         const chosen = cc.connections.find(c => c.key === cc.selected);
         if (chosen) {
@@ -57,14 +45,12 @@ export function presetDraft(api, name, file, connections, newKey) {
 }
 
 /**
- * A bundle's file as its draft (a sampler preset's through presetDraft()).
  * @param {string} group
  * @param {string} name
  * @param {Record<string, any>} file
  * @param {EntityDraft[]} connections
  * @param {(hint: string) => string} newKey
- * @returns {{ drafts: EntityDraft[], warnings: string[] } | undefined} The bundle's and any connection it makes;
- *   undefined for a group there's none of.
+ * @returns {{ drafts: EntityDraft[], warnings: string[] } | undefined}
  */
 export function bundleDraftOf(group, name, file, connections, newKey) {
     if (group.startsWith('preset.')) {
@@ -86,7 +72,6 @@ export function bundleDraftOf(group, name, file, connections, newKey) {
 }
 
 /**
- * The entity type and key of a bundle by group and name; undefined for a group there's none of.
  * @param {string} group
  * @param {string} name
  * @returns {{ type: number, key: string } | undefined}
@@ -100,10 +85,9 @@ export function bundleEntityOf(group, name) {
 }
 
 /**
- * Every bundle file of a user as drafts, with the connections their chat completion presets need.
  * @param {import('../users.js').UserDirectoryList} directories
- * @param {EntityDraft[]} connections The user's connections, a preset's found among them.
- * @param {(hint: string) => string} newKey The key of what `hint` names; the same hint, the same key.
+ * @param {EntityDraft[]} connections
+ * @param {(hint: string) => string} newKey
  * @returns {{ bundles: EntityDraft[], connections: EntityDraft[], warnings: string[] }}
  */
 export function bundleDraftsFromFiles(directories, connections, newKey) {
@@ -113,7 +97,6 @@ export function bundleDraftsFromFiles(directories, connections, newKey) {
     const made = [];
     /** @type {string[]} */
     const warnings = [];
-    // §2.4.8: a file that isn't JSON is listed, and left as it is.
     const skipped = (/** @type {string} */ file) => warnings.push(`${file} isn't valid JSON; left as it is, not imported`);
     for (const api of PRESET_APIS) {
         for (const { name, file } of listBundleFiles(directories, PRESET_GROUP[api], { order: 'locale', skipped })) {
@@ -136,8 +119,6 @@ export function bundleDraftsFromFiles(directories, connections, newKey) {
 }
 
 /**
- * A bundle's upstream file from the store, by group and name; undefined when there's none. A chat completion
- * preset's connection keys come back from the connection it names (and the user's other connections).
  * @param {import('../library-engine.js').LibraryEngine} lib
  * @param {string} group
  * @param {string} name
@@ -169,7 +150,6 @@ export async function bundleFileFromStore(lib, group, name, connections) {
 }
 
 /**
- * The bundles a model's user level states, read from the store, as settings-compat.js's (synchronous) BundleFiles.
  * @param {import('../library-engine.js').LibraryEngine} lib
  * @param {import('./settings-compat.js').UserModel} model
  * @returns {Promise<import('./settings-compat.js').BundleFiles>}

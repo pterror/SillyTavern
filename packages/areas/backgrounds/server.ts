@@ -3,24 +3,16 @@ import type { Background, BackgroundsView, ChatBackgroundsView, Fitting, Ref, So
 import { defineArea } from '@st/server-ui';
 import type { ActionContext, ActionResult, Upload, User, ViewContext } from '@st/server-ui';
 
-// Backgrounds (packages/areas/backgrounds/protocol.ts), over what old server code stores: system backgrounds are files
-// in the user's backgrounds folder with metadata beside them; the user's choice and options are the settings'
-// `background`; a chat's backgrounds and lock are keys of its state, in upstream's form (`chat_backgrounds`, a list
-// of image paths, and `custom_background`, a CSS `url("...")`).
-
 export type SystemFile = {
     file: string;
     animated: boolean;
     color: string | null;
     aspect: number | null;
-    /** When it was added (ms), for sorting by age; null when unknown. */
     added: number | null;
     folders: string[];
-    /** The thumbnail route's version of its thumbnail, when one is made. */
     thumbnailVersion: string | null;
 };
 
-/** The settings' `background`, as upstream stores it. */
 export type StoredOptions = {
     name?: string;
     url?: string;
@@ -30,16 +22,12 @@ export type StoredOptions = {
     thumbnailColumns?: number;
 };
 
-/** What old server code does for this area. */
 export type Ports = {
     files: {
         list(user: User): Promise<SystemFile[]>;
         folders(user: User): Promise<{ id: string; name: string; cover: string | null }[]>;
-        /** Stores an upload as a system background; answers the file name it got. */
         save(user: User, upload: Upload): Promise<string>;
-        /** Copies an image (a chat background's path) in as a system background named `name`. */
         copyIn(user: User, path: string, name: string): Promise<string>;
-        /** false: no such file, or the new name is taken. */
         rename(user: User, file: string, to: string): Promise<boolean>;
         remove(user: User, file: string): Promise<void>;
         createFolder(user: User, name: string): Promise<void>;
@@ -50,11 +38,9 @@ export type Ports = {
         removeFromFolder(user: User, id: string, files: string[]): Promise<void>;
         setFolders(user: User, file: string, ids: string[]): Promise<void>;
     };
-    /** The open chat's state keys; null: the tab has no chat open. */
     chat: {
         read(context: ViewContext): Promise<{ list: string[]; locked: string | null } | null>;
         write(context: ViewContext, change: { list?: string[]; locked?: string | null }): Promise<void>;
-        /** Stores an upload as one of the chat's images; answers its path. */
         saveImage(context: ViewContext, upload: Upload): Promise<string>;
         deleteImage(context: ViewContext, path: string): Promise<void>;
     };
@@ -67,10 +53,8 @@ export type Ports = {
 const ANIMATED = /\.(mp4|webp|gif|apng)$/i;
 const DEFAULT_FILE = '__transparent.png';
 
-/** The user's stored background, or the default where there's none (an empty name is none). */
 const fileOrDefault = (name: string | undefined) => (name === undefined || name === '' ? DEFAULT_FILE : name);
 
-/** Whether a chat has a background locked to it (an empty lock is none). */
 const isLocked = (chat: { locked: string | null } | null) =>
     chat !== null && chat.locked !== null && chat.locked !== '';
 
@@ -83,7 +67,6 @@ const titleOf = (file: string) => {
     return dot > 0 ? name.slice(0, dot) : name;
 };
 
-/** A URL's escapes undone, or the text as it is when they aren't valid ones (an upstream lock written by hand). */
 const decoded = (text: string, decode: (text: string) => string) => {
     try {
         return decode(text);
@@ -92,7 +75,6 @@ const decoded = (text: string, decode: (text: string) => string) => {
     }
 };
 
-/** Upstream's stored CSS url back to what it names. */
 export function refOfCss(value: string | null | undefined): Ref | null {
     const url = /^url\(["']?(.*?)["']?\)$/.exec(value ?? '')?.[1];
     if (url === undefined || url === '') return null;
@@ -174,8 +156,6 @@ export function backgroundsArea(ports: Ports) {
         };
     };
 
-    // What depends on the open chat, kept apart from the system's list so a change of chat (or of its state) reads
-    // only the chat's state and the user's options, never the backgrounds folder.
     const readChat = async (context: ViewContext): Promise<ChatBackgroundsView> => {
         const [stored, chat] = await Promise.all([ports.options.read(context.user), ports.chat.read(context)]);
         const { sortOrder } = optionsOf(stored);
@@ -188,7 +168,6 @@ export function backgroundsArea(ports: Ports) {
                           chat.list,
                           sortOrder,
                           (path) => titleOf(path),
-                          // A chat lists its backgrounds in the order they were added.
                           (_path, index) => index,
                       ).map((path) => ({
                           id: path,
@@ -287,7 +266,6 @@ export function backgroundsArea(ports: Ports) {
                 if (wasLocked) await ports.chat.write(context, { locked: null });
                 const stored = await ports.options.read(context.user);
                 if (stored.name === file) {
-                    // The one after it in the list takes its place, else the one before.
                     const at = before.indexOf(file);
                     const next = before[at + 1] ?? before[at - 1];
                     await setUsers(context.user, next ?? DEFAULT_FILE);
@@ -318,7 +296,6 @@ export function backgroundsArea(ports: Ports) {
                     reply,
                 );
                 if (match === null) return { refused: 'No background matches that.' };
-                // As picking it by hand would: the open chat's lock, when it has one, else the user's.
                 if (isLocked(await ports.chat.read(context))) return lock(context, { file: match, chat: false });
                 await setUsers(context.user, match);
                 return changed;
@@ -366,10 +343,6 @@ export function backgroundsArea(ports: Ports) {
     });
 }
 
-/**
- * The file whose title the reply names: the title the reply contains, longest first (so "Forest at night" wins
- * over "Forest"), else the title sharing the most words with it.
- */
 export function bestTitle(files: string[], reply: string): string | null {
     const said = reply.toLowerCase();
     const titled = files

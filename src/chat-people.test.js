@@ -1,4 +1,3 @@
-// Speakers come from the library on the same engine store: a rename shows in every message that names the speaker.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -36,7 +35,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const said = { name: 'Cara', is_user: false, send_date: 1, mes: 'Hi.', extra: {}, original_avatar: 'cara.png' };
         const [inTree] = (await chats.appendMessages({ tree, treeSpeaker: speaker, after: null, contents: [said], actor })).node_ids;
         const [inGroup] = (await chats.appendMessages({ tree: group, treeSpeaker: null, after: null, contents: [said], actor })).node_ids;
-        // Renamed in the library: both messages show the new name, and nothing was written to them.
         await lib.writeCard({}, 'cara.png', card('Cara Prime'));
         for (const [t, at] of [[tree, inTree], [group, inGroup]]) {
             assert.equal((await chats.load({ tree: t, at })).messages[0].name, 'Cara Prime');

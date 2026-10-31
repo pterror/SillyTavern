@@ -5,20 +5,14 @@ import { setAdditionalHeadersByType } from './additional-headers.js';
 import { trimV1 } from './util.js';
 import { logBackendFailure } from './backend-unreachable.js';
 
-/**
- * Whether a backend's own tokenizer can be used, per `(api, type, url)`. One entry per backend
- * URL a user has pointed at, never per card.
- * @type {Map<string, boolean>}
- */
+/** @type {Map<string, boolean>} */
 const remoteTokenization = new Map();
 
-/** Model names the status lookups answer with when they don't know the model. */
 const UNKNOWN_MODEL_NAMES = new Set(['Valid', 'None', 'no_connection', 'ReadOnly']);
 
 const MIN_TOKENIZATION_KCPPVERSION = '1.41';
 
 /**
- * Cleans a backend URL the way that API's `/status` route does before calling it.
  * @param {string} api
  * @param {string} url
  * @returns {string}
@@ -54,7 +48,7 @@ export function rememberRemoteTokenization(api, type, url, supported) {
  * @param {string} api
  * @param {string|undefined} type
  * @param {string} url
- * @returns {boolean|undefined} undefined when nothing is remembered yet
+ * @returns {boolean|undefined}
  */
 export function recallRemoteTokenization(api, type, url) {
     return remoteTokenization.get(capabilityKey(api, type, url));
@@ -65,9 +59,6 @@ export function clearRemoteTokenizationMemory() {
 }
 
 /**
- * The client's `versionCompare(koboldCppVersion, '1.41')` (public/scripts/utils.js,
- * kai-settings.js). `/status` fills koboldCppVersion from the `result` field of `/extra/version`,
- * which KoboldCpp sets to 'KoboldCpp'; that sorts after any digit, so it passes.
  * @param {string|undefined} koboldCppVersion
  * @returns {boolean}
  */
@@ -76,11 +67,9 @@ export function koboldCanUseTokenization(koboldCppVersion) {
 }
 
 /**
- * The textgen `/status` lookup: the backend's model list, and for OOBA and Tabby the loaded model.
- * Throws on network errors.
- * @param {string} baseUrl Already cleaned (see cleanStatusUrl).
- * @param {string} apiType One of TEXTGEN_TYPES.
- * @param {{ headers: object }} args Fetch options with the backend's headers.
+ * @param {string} baseUrl
+ * @param {string} apiType
+ * @param {{ headers: object }} args
  * @returns {Promise<{ ok: false } | { ok: true, result: string, data: any[], supportsTokenization: boolean }>}
  */
 export async function fetchTextgenStatus(baseUrl, apiType, args) {
@@ -131,7 +120,6 @@ export async function fetchTextgenStatus(baseUrl, apiType, args) {
     /** @type {any} */
     let data = await modelsReply.json();
 
-    // Rewrap to OAI-like response
     if (apiType === TEXTGEN_TYPES.TOGETHERAI && Array.isArray(data)) {
         data = { data: data.map(x => ({ id: x.name, ...x })) };
     }
@@ -151,7 +139,6 @@ export async function fetchTextgenStatus(baseUrl, apiType, args) {
 
     const modelIds = data.data.map(x => x.id);
 
-    // Set result to the first model ID
     result = modelIds[0] || 'Valid';
 
     if (apiType === TEXTGEN_TYPES.OOBA && !isPossiblyLmStudio) {
@@ -182,8 +169,6 @@ export async function fetchTextgenStatus(baseUrl, apiType, args) {
                 console.debug('Tabby model info:', { id: modelName });
                 result = modelName || result;
             } else {
-                // TabbyAPI returns an error 400 if a model isn't loaded
-
                 result = 'None';
             }
         } catch (error) {
@@ -196,10 +181,9 @@ export async function fetchTextgenStatus(baseUrl, apiType, args) {
 
 /**
  * @param {string} url
- * @param {any} fallback Answer when the call fails or doesn't give JSON.
+ * @param {any} fallback
  */
 function fetchKoboldJson(url, fallback) {
-    // We catch errors both from the response not having a successful HTTP status and from JSON parsing failing
     return fetch(url).then(response => {
         if (!response.ok) throw new Error(`Kobold API error: ${response.status, response.statusText}`);
         return response.json();
@@ -207,8 +191,7 @@ function fetchKoboldJson(url, fallback) {
 }
 
 /**
- * KoboldCpp's version field, as `/status` reports it: the `result` of `/extra/version`.
- * @param {string} apiServer Already cleaned (see cleanStatusUrl).
+ * @param {string} apiServer
  * @returns {Promise<string|undefined>}
  */
 export async function fetchKoboldCppVersion(apiServer) {
@@ -218,8 +201,8 @@ export async function fetchKoboldCppVersion(apiServer) {
 }
 
 /**
- * @param {string} apiServer Already cleaned (see cleanStatusUrl).
- * @returns {Promise<string>} 'no_connection' when unknown
+ * @param {string} apiServer
+ * @returns {Promise<string>}
  */
 export async function fetchKoboldModel(apiServer) {
     /** @type {any} */
@@ -228,8 +211,7 @@ export async function fetchKoboldModel(apiServer) {
 }
 
 /**
- * The kobold `/status` lookup. Never throws: each failed call gives that call's default.
- * @param {string} apiServer Already cleaned (see cleanStatusUrl).
+ * @param {string} apiServer
  * @returns {Promise<{ koboldUnitedVersion: string, koboldCppVersion: string, model: string }>}
  */
 export async function fetchKoboldStatus(apiServer) {
@@ -244,9 +226,9 @@ export async function fetchKoboldStatus(apiServer) {
 /**
  * @typedef {object} BackendRef
  * @property {string} api
- * @property {string} [type] Textgen type.
+ * @property {string} [type]
  * @property {string} url
- * @property {import('./users.js').UserDirectoryList} [directories] For the backend's API key headers.
+ * @property {import('./users.js').UserDirectoryList} [directories]
  */
 
 /**
@@ -270,12 +252,10 @@ export function knownModelName(name) {
 }
 
 /**
- * The backend's current model, asked with the `/status` lookup. Only textgen and kobold have one.
  * @param {BackendRef} backend
- * @returns {Promise<string|null>} null when unknown, including a failed lookup
+ * @returns {Promise<string|null>}
  */
 export async function lookupBackendModel(backend) {
-    // No URL set: there is no backend to ask, which isn't a failure.
     if (!backend.url) return null;
     try {
         if (backend.api === 'textgenerationwebui') {
@@ -295,9 +275,6 @@ export async function lookupBackendModel(backend) {
 }
 
 /**
- * Whether the backend's own tokenizer can be used: remembered from `/status`, or probed with the
- * same lookup on first need. Only OOBA (encode endpoint) and kobold (version gate) depend on the
- * backend; the other textgen tokenizer types always have one.
  * @param {BackendRef} backend
  * @param {readonly string[]} textgenTokenizerTypes
  * @returns {Promise<boolean>}

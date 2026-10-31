@@ -38,7 +38,6 @@ export const testSetup = {
             }
         }
         await page.waitForFunction('document.getElementById("preloader") === null', { timeout: 0 });
-        // The loading overlay holds focus until it's removed; anything focused before then loses it.
         await awaitLoaderGone(page);
     },
 
@@ -53,8 +52,6 @@ export const testSetup = {
 };
 
 /**
- * Waits until the loading overlay is gone. It's a popup that holds focus, and it can still be closing after the
- * preloader is gone: focus given to anything before it's removed is lost.
  * @param {import('@playwright/test').Page} page
  */
 export async function awaitLoaderGone(page) {
@@ -62,7 +59,6 @@ export async function awaitLoaderGone(page) {
 }
 
 /**
- * Opens the character management drawer unless it is already open (a fresh data root starts with it closed).
  * @param {import('@playwright/test').Page} page
  */
 export async function openCharacterManagementDrawer(page) {
@@ -73,19 +69,16 @@ export async function openCharacterManagementDrawer(page) {
 }
 
 /**
- * Shows one tab of the character info panel, e.g. 'description'.
  * @param {import('@playwright/test').Page} page
- * @param {string} tab The tab's `charInfoTabs_tab` radio value.
+ * @param {string} tab
  */
 export async function openInfoTab(page, tab) {
     await page.locator(`label:has(> input[name="charInfoTabs_tab"][value="${tab}"])`).click();
 }
 
 /**
- * Waits until the server holds the page's value of a `power_user` setting. Not a save request: a change and its
- * undoing within one save's debounce window send nothing, the server having the value already.
  * @param {import('@playwright/test').Page} page
- * @param {string} key The setting's key in `power_user`
+ * @param {string} key
  */
 export async function awaitPowerUserSettingStored(page, key) {
     await expect.poll(() => page.evaluate(async (key) => {
@@ -99,8 +92,6 @@ export async function awaitPowerUserSettingStored(page, key) {
 }
 
 /**
- * Turns the Stacked Drawers setting on or off through its checkbox (styled out of view in the closed User Settings
- * drawer) and waits until the change is applied and saved, so it survives a reload.
  * @param {import('@playwright/test').Page} page
  * @param {boolean} on
  */
@@ -113,10 +104,8 @@ export async function setStackedDrawers(page, on) {
 }
 
 /**
- * Sets the Drawer Bar setting through its select (in the closed User Settings drawer) and waits until the change is
- * applied and saved, so it survives a reload.
  * @param {import('@playwright/test').Page} page
- * @param {string} value 'top', 'bottom', 'left' or 'right'
+ * @param {string} value
  */
 export async function setDrawerBarPosition(page, value) {
     const select = page.locator('#drawer_bar_position');
@@ -133,10 +122,8 @@ export async function setDrawerBarPosition(page, value) {
 }
 
 /**
- * Sets the Drawer Bar (Mobile) setting through its select (in the closed User Settings drawer) and waits until the
- * change is applied and saved, so it survives a reload.
  * @param {import('@playwright/test').Page} page
- * @param {string} value 'top' or 'bottom'
+ * @param {string} value
  */
 export async function setDrawerBarMobilePosition(page, value) {
     const select = page.locator('#drawer_bar_position_mobile');
@@ -150,9 +137,6 @@ export async function setDrawerBarMobilePosition(page, value) {
 }
 
 /**
- * Makes the page hold these characters' full cards, as opening them does, and keep holding them for the rest of the
- * test. The page holds only what is on screen and lets go of the rest, so a test about how held characters behave
- * first has the page hold them.
  * @param {import('@playwright/test').Page} page
  * @param {string[]} avatars
  */
@@ -178,7 +162,6 @@ export async function holdCharacters(page, avatars) {
 }
 
 /**
- * The avatar key of the character with this exact name, asked of the server.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
  * @returns {Promise<string|undefined>}
@@ -191,8 +174,6 @@ export async function findCharacterAvatarByName(page, name) {
 }
 
 /**
- * The chat box as it is on screen: the live editor on it once that is mounted, the plain textarea before. Act on
- * this (click, fill, press); read the text from `#send_textarea`, which always holds it.
  * @param {import('@playwright/test').Page} page
  */
 export function chatBox(page) {
@@ -200,15 +181,12 @@ export function chatBox(page) {
 }
 
 /**
- * With stacked drawers on, the sampled points where a layer shows wrongly: inside its own (rounded) box, it must show
- * exactly where no layer above it covers it, with that layer's own rounded corners. A point counts as showing when a
- * click there would land on the layer with every other layer let through. Points within 2px of an edge are skipped.
  * @param {import('@playwright/test').Page} page
  * @param {object} [options]
- * @param {string} [options.layers] The ordered layers, bottom first by when brought forward (the chat lowest)
- * @param {string} [options.overlays] What sits above every ordered layer, in html order, while shown
- * @param {number} [options.step] Distance between sampled points
- * @returns {Promise<string[]>} One line per wrong point, `x,y: layer shows under a cover | cut where uncovered`
+ * @param {string} [options.layers]
+ * @param {string} [options.overlays]
+ * @param {number} [options.step]
+ * @returns {Promise<string[]>}
  */
 export function stackMismatches(page, {
     layers = '#sheld, .drawer-content, #movingDivs > *, body > .draggable',
@@ -222,7 +200,6 @@ export function stackMismatches(page, {
         const ordered = /** @type {HTMLElement[]} */ ([...document.querySelectorAll(layers)]).filter(shown)
             .sort((a, b) => drawerOrder(a) - drawerOrder(b) || Number(b.id === 'sheld') - Number(a.id === 'sheld'));
         const all = [...ordered, ...(overlays ? /** @type {HTMLElement[]} */ ([...document.querySelectorAll(overlays)]).filter(shown) : [])];
-        /** Signed distance from the point to the element's rounded border box, negative inside. */
         const distance = (/** @type {HTMLElement} */ el, x, y) => {
             const r = el.getBoundingClientRect();
             const style = getComputedStyle(el);
@@ -240,10 +217,6 @@ export function stackMismatches(page, {
             }
             return Math.max(r.left - x, x - r.right, r.top - y, y - r.bottom);
         };
-        /**
-         * Whether the layer's clip (an evenodd polygon in its own coordinates, or none) leaves the point: what is
-         * painted, for when hit testing can't tell (a modal dialog makes the rest of the page inert).
-         */
         const inClip = (/** @type {HTMLElement} */ el, x, y) => {
             const clip = el.style.clipPath;
             if (!clip) return true;
@@ -264,7 +237,6 @@ export function stackMismatches(page, {
         const blockers = [...all, document.getElementById('top-bar'), document.getElementById('top-settings-holder')].filter(Boolean);
         const out = [];
         for (const [i, layer] of all.entries()) {
-            // A layer inside another is cut with it, so it doesn't cover it; unless it is in the top layer.
             const above = all.slice(i + 1).filter(other => !other.contains(layer) && (!layer.contains(other) || inTopLayer(other)));
             const saved = blockers.map(el => el.style.pointerEvents);
             blockers.forEach(el => { if (el !== layer && !el.contains(layer)) el.style.pointerEvents = 'none'; });

@@ -272,13 +272,11 @@ async function selectPreset(name) {
 
     textgenerationwebui_settings.preset = name;
     for (const name of setting_names) {
-        // The server's fields come from the preset there: selecting it is the save below.
         if (isServerOwned(name)) continue;
         const value = preset[name];
         setSettingByName(name, value, true);
     }
     displayLogitBias(preset.logit_bias, BIAS_KEY, 'textgenerationwebui_settings');
-    // Stored now, and the settings view read again, so whoever hears of the change reads the preset's values.
     await saveSettings('textgenerationwebui_settings');
     if (newUiStarted()) await newUi().settings.reread();
 }
@@ -328,15 +326,14 @@ function getBanSequences(settings) {
 }
 
 /**
- * @param {string} line A ban line.
- * @returns {boolean} Whether it is sent as token ids of its text: neither raw ids nor a quoted string.
+ * @param {string} line
+ * @returns {boolean}
  */
 function isTokenizedBanLine(line) {
     return !(line.startsWith('[') && line.endsWith(']')) && !(line.startsWith('"') && line.endsWith('"'));
 }
 
 /**
- * The texts the current entries encode: ban lines without macros, and the logit bias.
  * @returns {string[]}
  */
 function getTextgenEntryTexts() {
@@ -349,12 +346,11 @@ function getTextgenEntryTexts() {
 }
 
 /**
- * Gets the custom token bans from ban lines.
- * @param {string[]} sequences Ban lines, from getBanSequences()
- * @param {(text: string) => number[]|null} getIds Token ids for a line; null leaves it out.
- * @param {string[]} dropped Receives each line left out.
+ * @param {string[]} sequences
+ * @param {(text: string) => number[]|null} getIds
+ * @param {string[]} dropped
  * @typedef {{banned_tokens: string, banned_strings: string[]}} TokenBanResult
- * @returns {TokenBanResult} String with comma-separated banned token IDs
+ * @returns {TokenBanResult}
  */
 function getCustomTokenBans(sequences, getIds, dropped) {
     const banned_tokens = [];
@@ -432,13 +428,11 @@ function calculateLogitBias(settings, getIds, dropped) {
     return result;
 }
 
-/** Whether a text generation setting is the server's (the new page shows it; this page neither writes nor saves it). */
 const isServerOwned = (/** @type {string} */ key) => SERVER_OWNED.has(`textgenerationwebui_settings.${key}`);
 
 export async function loadTextGenSettings(data, loadedSettings) {
     textgenerationwebui_presets = convertPresets(data.textgenerationwebui_presets);
     textgenerationwebui_preset_names = data.textgenerationwebui_preset_names ?? [];
-    // The server's fields read its view once the new page has started; before, they hold what was loaded.
     for (const [key, value] of Object.entries(loadedSettings.textgenerationwebui_settings ?? {})) {
         if (isServerOwned(key) && newUiStarted()) continue;
         textgenerationwebui_settings[key] = value;
@@ -501,7 +495,6 @@ export async function loadTextGenSettings(data, loadedSettings) {
  * @param {any[]} orderArray Sampler order array.
  */
 function sortKoboldItemsByOrder(orderArray) {
-    // Pass the array raw, not string-concatenated - `+` forces an eager toString() every call.
     console.debug('Preset samplers order:', orderArray);
     const $draggableItems = $('#koboldcpp_order');
 
@@ -698,9 +691,6 @@ async function getStatusTextgen() {
 }
 
 /**
- * Once the new page shows the text generation fields: textgenerationwebui_settings' fields of them read its settings
- * view (a write is an action), this page's own blocks follow the sampler select, and the browser's old copy of the
- * sampler select moves to the server.
  * @param {import('/ui/entry.js').NewUi['settings']} settings
  */
 export function bindTextGenSettings(settings) {
@@ -796,7 +786,6 @@ export function initTextGenSettings() {
         const type = String($(this).val());
         textgenerationwebui_settings.type = type;
 
-        // Top K's off value and mirostat's modes follow the backend on the server (withinBackend, the view's ranges).
         showSamplerControls(type);
         setOnlineStatus('no_connection');
 
@@ -816,7 +805,6 @@ export function initTextGenSettings() {
     });
 
     for (const i of setting_names) {
-        // The new page's fields are its own (packages/areas/settings/page/tg.tsx).
         if (isServerOwned(i)) continue;
         $(`#${i}_textgenerationwebui`).attr('x-setting-id', i);
         $(document).on('input', `#${i}_textgenerationwebui`, function () {
@@ -849,7 +837,6 @@ export function initTextGenSettings() {
             return;
         }
 
-        // Loading the page re-applies the already-saved selection; don't persist a no-op.
         const providersChanged = !arraysEqual(selectedProviders, textgenerationwebui_settings.openrouter_providers ?? []);
         textgenerationwebui_settings.openrouter_providers = selectedProviders;
 
@@ -871,7 +858,6 @@ export function initTextGenSettings() {
             return;
         }
 
-        // Loading the page re-applies the already-saved selection; don't persist a no-op.
         const quantizationsChanged = !arraysEqual(selectedQuantizations, textgenerationwebui_settings.openrouter_quantizations ?? []);
         textgenerationwebui_settings.openrouter_quantizations = selectedQuantizations;
 
@@ -905,10 +891,6 @@ export function initTextGenSettings() {
             }
         }
 
-        // No save here on purpose. This handler assigns nothing in textgenerationwebui_settings: the
-        // writeSecret() calls above persist through /api/secrets/write, and validateTextGenUrl() only
-        // reformats the DOM control. Connecting is not a settings change, and RA_autoconnect fakes a
-        // click on this button during boot, so the save this replaces fired on every page load.
         validateTextGenUrl();
         startStatusLoading();
         getStatusTextgen();
@@ -929,8 +911,6 @@ function showSamplerControls(apiType = null) {
 
     showTypeSpecificControls(apiType ?? textgenerationwebui_settings.type);
 
-    // The sampler select is the server's (the settings view's, for the backend now); the new page's fields follow it
-    // themselves, this page's own blocks (logit bias, sampler orders) here.
     const select = newUiStarted() ? newUi().settings.samplers() : { manual: false, shown: [] };
     const prioritizeManualSamplerSelect = select.manual;
     const samplersActivatedManually = select.shown;
@@ -1102,16 +1082,8 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
         throw new Error(status);
     }
 
-    // Compact wire format - originally llama.cpp-only, now also used by the general (non-Ollama)
-    // text-completion streaming path (forwardAndPersistCompactStream() in text-completions.js) - both
-    // set the same header/decoder since the decoded event shape is identical either way. See
-    // llamacpp-compact-stream.js for the wire format itself.
     if (response.headers.get('X-ST-Stream-Format') === 'compact-v1') {
         return async function* streamData() {
-            // Transparently resumes from the server's generation buffer on a real dropped
-            // connection (see ResumableCompactStreamReader's own doc comment) instead of failing the
-            // generation outright - falls back to today's throw-on-error behavior if resume itself
-            // doesn't work out.
             const reader = new ResumableCompactStreamReader(response, '/api/backends/text-completions/generate/resume', getRequestHeaders);
             const decoder = new CompactStreamDecoder();
             let text = '';
@@ -1121,7 +1093,7 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
             const toolCalls = [];
             const state = { reasoning: '' };
             let currentIndex = 0;
-            /** @type {any} Probabilities frame waiting to be paired with the content event right after it. */
+            /** @type {any} */
             let pendingProbabilities = null;
 
             /** @param {{content: string}} event */
@@ -1171,8 +1143,6 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
         };
     }
 
-    // A request that failed before any stream began is answered with its error as JSON (`{ error: true, response }`,
-    // e.g. the backend refused the connection): show it.
     tryParseStreamingError(response, await response.text());
     throw new Error('Expected X-ST-Stream-Format: compact-v1 - every streaming response from this route uses the compact binary protocol.');
 }
@@ -1271,10 +1241,6 @@ function tryParseStreamingError(response, decoded) {
         // No JSON. Do nothing.
     }
 
-    // `data.error` can be a boolean flag (`{ error: true, message: '...' }`, this server's own shape)
-    // rather than a string or an object with its own `.message` - checking it before `data.message`
-    // let a truthy `true` win over the real string sitting right next to it.
-    // `{ error: true, response }` is the route's answer for a backend request that failed (its text, or the error).
     const message = data?.error?.message || data?.message || data?.detail
         || (typeof data?.error === 'string' ? data.error : undefined)
         || (data?.error === true && typeof data?.response === 'string' ? data.response : undefined);

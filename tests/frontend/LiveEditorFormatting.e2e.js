@@ -2,7 +2,6 @@ import { test, expect } from './fixtures.js';
 import { awaitLoaderGone, testSetup } from './frontent-test-utils.js';
 
 /**
- * Mounts an editor with the toolbar on a `.mdHotkeys` textarea, as the app's fields are, focused at the end.
  * @param {import('@playwright/test').Page} page
  * @param {string} value
  * @param {'ok'|'fail'} [upload]

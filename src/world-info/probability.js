@@ -1,8 +1,7 @@
 /**
- * Mirrors the verifyProbability() closure inside public/scripts/world-info.js's checkWorldInfo().
  * @param {{useProbability?: boolean, probability?: number}} entry
  * @param {boolean} isSticky
- * @param {() => number} [random] Injectable RNG (0-1), defaults to Math.random - tests pin this.
+ * @param {() => number} [random]
  * @returns {boolean}
  */
 export function verifyProbability(entry, isSticky, random = Math.random) {

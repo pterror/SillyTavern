@@ -1,9 +1,5 @@
 /**
- * Whether a parsed chat-file line is the file's header rather than a message. Group chat files written
- * before the group metadata-format migration (migrateGroupChatsMetadataFormat) have no header line, so
- * their first line is already the chat's first message. A message always carries `mes`; a header never
- * does, and carries at least one of the header fields.
- * @param {unknown} entry A parsed JSONL line
+ * @param {unknown} entry
  * @returns {boolean}
  */
 export function isChatHeaderEntry(entry) {
@@ -13,8 +9,6 @@ export function isChatHeaderEntry(entry) {
 }
 
 /**
- * Splits a JSONL chat file into its header (null when it has none) and its messages. Refuses the
- * whole file, naming the offending lines, rather than migrating part of it.
  * @param {string} raw
  * @returns {{ header: object | null, messages: object[] } | { error: string }}
  */

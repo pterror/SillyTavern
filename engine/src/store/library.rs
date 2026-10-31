@@ -1,19 +1,3 @@
-//! The library: characters, groups and tags as entities, their values, and what the list is read from.
-//!
-//! Every character and group is in the orders of each scope it belongs to: the whole library, each tag it
-//! carries, and (a character) each lorebook it links. Within a scope, each order is split by the entity's
-//! type and fav bit, so a filter on either, or sorting favourites first, reads at most four orders and merges
-//! them. An order's key is the sort key, then the entity's id, which breaks ties (so equal keys list in creation
-//! order); the entry holds nothing. Characters sort before groups on equal keys, which the reader does when
-//! merging.
-//!
-//! Each (scope, type, fav) also numbers its entities densely from 0 (a removal moves the last number into the
-//! hole), so a random order is a permutation of the numbers and needs no per-seed data. An entity's number in a
-//! scope is kept in the entry that already stands for the pair (`rank_host`), after the record place it holds.
-//!
-//! A tag merged into another stays in the orders until its carriers are moved: readers of the target take the
-//! merged tags' orders too (`MERGED_INTO`), and `FOLD` lists the tags whose carriers wait to move.
-
 use std::collections::BTreeSet;
 
 use super::StoreError;
@@ -29,37 +13,25 @@ use crate::keyspace::val::{Val, counter_value, get_bytes, get_u64, put_bytes, pu
 use crate::log::format::{FieldRef, Record, Value, get_uvarint, put_uvarint};
 use unicode_normalization::UnicodeNormalization;
 
-/// Entity types.
 pub const CHARACTER: u64 = 0;
 pub const GROUP: u64 = 1;
 pub const TAG: u64 = 2;
-/// An unowned tree: messages whose character or group is gone, kept under their old owner key until a character or
-/// group created with that key takes the id (a create in its place, in one commit with this entity's delete).
 pub const TREE: u64 = 6;
-/// A user's saved views of the character list: their holder (key `''`, its list 0 the views), a view (key its
-/// UUID, list 0 its conditions, list 1 its ranges), a view's condition (key `<view key>:<its id>`) and range (key
-/// `<view key>:<card field>`).
 pub const VIEW_LIST: u64 = 7;
 pub const VIEW: u64 = 8;
 pub const CONDITION: u64 = 9;
 pub const RANGE: u64 = 10;
-/// The settings model's types run from FIRST_SETTINGS_TYPE to LAST_TYPE (src/library-codes.js's `TYPE`); no
-/// deriver here reads their values.
 pub const FIRST_SETTINGS_TYPE: u64 = 11;
 pub const LAST_TYPE: u64 = 34;
 
-/// Whether an entity of `kind` is deleted with its history kept (`histEntityDelete`) and restored from it: a
-/// world-info entry, and every settings model type (each editable thing keeps its history, deletes included).
 pub fn history_kept(kind: u64) -> bool {
     kind == super::books::ENTRY || (FIRST_SETTINGS_TYPE..=LAST_TYPE).contains(&kind)
 }
 
-/// Field codes the derivers read: an entity's name, a character's lorebook, a tag's folder type.
 pub const NAME: u64 = 1;
 pub const WORLD: u64 = 4;
 pub const FOLDER_TYPE: u64 = 40;
 
-/// A list item's text is the text value of field `ITEM_BASE + item * LISTS + list`.
 pub const ITEM_BASE: u64 = 1024;
 pub const LISTS: u64 = 8;
 
@@ -67,7 +39,6 @@ pub fn item_field(list: u64, item: u64) -> FieldRef {
     FieldRef::Code(ITEM_BASE + item * LISTS + list)
 }
 
-/// Sort keys, in `State::nums` from `CREATED` on.
 pub const BY_NAME: u64 = 0;
 pub const CREATED: u64 = 1;
 pub const ADDED: u64 = 2;
@@ -76,13 +47,11 @@ pub const CHAT_SIZE: u64 = 4;
 pub const DATA: u64 = 5;
 pub const SORTS: u64 = 6;
 
-/// `cardHash` kinds.
 pub const HASH_IDENTITY: u64 = 0;
 pub const HASH_CONTENT: u64 = 1;
 pub const HASH_AVATAR: u64 = 2;
 pub const HASH_AVATAR_IDENTITY: u64 = 3;
 
-/// A set of entities with its own orders.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Scope {
     All,
@@ -91,7 +60,6 @@ pub enum Scope {
 }
 
 impl Scope {
-    /// The scope `put` wrote at `at`.
     pub fn get(k: &[u8], at: &mut usize) -> Option<Scope> {
         Some(match get_u64(k, at)? {
             0 => Scope::All,
@@ -116,17 +84,13 @@ impl Scope {
     }
 }
 
-/// What places a character or group in the orders.
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
     pub kind: u64,
     pub fav: bool,
-    /// The folded name.
     pub name: Vec<u8>,
-    /// Sort keys `CREATED..SORTS`; None sorts below every number.
     pub nums: [Option<f64>; 5],
     pub tags: Vec<u64>,
-    /// The scopes of the books a character links (`books::worlds`), sorted.
     pub worlds: Vec<Vec<u8>>,
 }
 
@@ -149,7 +113,6 @@ impl State {
     }
 }
 
-/// A number as bytes that sort as it does, None first; -0 as 0.
 pub fn num_key(k: &mut Vec<u8>, v: Option<f64>) {
     match v {
         None => k.push(0),
@@ -163,7 +126,6 @@ pub fn num_key(k: &mut Vec<u8>, v: Option<f64>) {
     }
 }
 
-/// The name as the list sorts it: lower case, compatibility-decomposed, U+0300–U+036F dropped.
 pub fn fold_name(name: &[u8]) -> Vec<u8> {
     let s = String::from_utf8_lossy(name);
     s.to_lowercase()
@@ -189,7 +151,6 @@ fn order_key(scope: &Scope, sort: u64, st: &State, e: u64) -> Vec<u8> {
     k
 }
 
-/// An order key's sort key and entity, after its prefix.
 pub fn split_order_key(rest: &[u8], sort: u64) -> Option<(Vec<u8>, u64)> {
     let mut at = 0;
     if sort == BY_NAME {
@@ -219,8 +180,6 @@ pub fn rand_key(scope: &Scope, kind: u64, fav: bool, n: u64) -> Vec<u8> {
     k
 }
 
-/// The entry keeping `e`'s number in `scope`'s numbering, keyed by the pair already: the entity's own (`ENTITY`)
-/// for the whole library, its membership (`MEMBER`) for a tag, its link (`books::LINKED`) for a lorebook.
 pub fn rank_host(scope: &Scope, e: u64) -> Vec<u8> {
     match scope {
         Scope::All => key::id(key::ENTITY, e),
@@ -229,12 +188,10 @@ pub fn rank_host(scope: &Scope, e: u64) -> Vec<u8> {
     }
 }
 
-/// The book of a lorebook scope's bytes (`books::scope_bytes`).
 fn world_book(w: &[u8]) -> u64 {
     parse_uvarint(w).expect("a lorebook scope is a book's id")
 }
 
-/// A host entry's value (`rank_host`, key `k`) with its number set to `n`.
 pub fn host_numbered(k: &[u8], v: &[u8], n: Option<u64>) -> Result<Vec<u8>, StoreError> {
     if k.starts_with(&key::of(books::LINKED)) {
         let (item, _) = books::parse_linked(v)?;
@@ -243,7 +200,6 @@ pub fn host_numbered(k: &[u8], v: &[u8], n: Option<u64>) -> Result<Vec<u8>, Stor
     Ok(host_bytes(parse_host(v)?.0, n))
 }
 
-/// A host entry's value (`rank_host`): its record's place, then the entity's number when it is numbered there.
 pub fn host_bytes(l: Loc, n: Option<u64>) -> Vec<u8> {
     let mut b = loc_bytes(l);
     if let Some(n) = n {
@@ -252,7 +208,6 @@ pub fn host_bytes(l: Loc, n: Option<u64>) -> Vec<u8> {
     b
 }
 
-/// A host entry's record place and number (`host_bytes`).
 pub fn parse_host(b: &[u8]) -> Result<(Loc, Option<u64>), StoreError> {
     let bad = || entry_err("a host entry doesn't decode");
     let mut at = 0;
@@ -269,7 +224,6 @@ pub fn parse_host(b: &[u8]) -> Result<(Loc, Option<u64>), StoreError> {
     Ok((Loc { pos, len }, n))
 }
 
-/// `e`'s number in `scope`'s numbering, as `view` has it.
 pub fn rank(view: &View, scope: &Scope, e: u64) -> Result<Option<u64>, StoreError> {
     if let Scope::World(w) = scope {
         return books::world_rank(view, world_book(w), e);
@@ -280,7 +234,6 @@ pub fn rank(view: &View, scope: &Scope, e: u64) -> Result<Option<u64>, StoreErro
     })
 }
 
-/// The value of `k` with `out`'s entries over `view`'s: the latest put or delete of it in `out`, else `view`'s.
 pub(super) fn current(view: &View, out: &Out, k: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
     for (ek, v) in out.entries.iter().rev() {
         if ek.as_slice() == k {
@@ -294,8 +247,6 @@ pub(super) fn current(view: &View, out: &Out, k: &[u8]) -> Result<Option<Vec<u8>
     view.get(k)
 }
 
-/// Sets `e`'s number in `scope` (None: takes it out) in its host entry, keeping the record place there. The host
-/// goes first: a number for a pair without one is an error, and taking it out of a gone one does nothing.
 fn set_rank(
     view: &View,
     out: &mut Out,
@@ -366,7 +317,6 @@ pub fn counter(view: &View, k: &[u8]) -> Result<i64, StoreError> {
     }
 }
 
-/// The record a pointer entry points at.
 fn pointed(view: &View, k: &[u8]) -> Result<Option<(Loc, Record)>, StoreError> {
     let Some(b) = view.get(k)? else {
         return Ok(None);
@@ -376,7 +326,6 @@ fn pointed(view: &View, k: &[u8]) -> Result<Option<(Loc, Record)>, StoreError> {
     Ok(Some((l, rec)))
 }
 
-/// An entity's type, key and date added.
 pub fn entity_info(view: &View, e: u64) -> Result<Option<(u64, Vec<u8>, f64)>, StoreError> {
     let Some(b) = view.get(&key::id(key::ENTITY, e))? else {
         return Ok(None);
@@ -395,8 +344,6 @@ pub fn entity_by_key(view: &View, kind: u64, k: &[u8]) -> Result<Option<u64>, St
         .transpose()
 }
 
-/// Entities of type `kind` in key order: those keyed after `after` (from the first when None), at most `limit`; and
-/// whether more follow. A deleted entity's key is gone with it, so none is listed.
 pub fn entities_of_type(
     view: &View,
     kind: u64,
@@ -405,7 +352,6 @@ pub fn entities_of_type(
 ) -> Result<(Vec<(Vec<u8>, u64)>, bool), StoreError> {
     let prefix = key::id(key::ENTITY_KEY, kind);
     let end = key::prefix_end(&prefix);
-    // The least key above `after`'s: its encoding followed by a zero byte.
     let mut start = match after {
         Some(k) => {
             let mut s = entity_key_key(kind, k);
@@ -438,7 +384,6 @@ pub fn entities_of_type(
     }
 }
 
-/// The tags an entity carries as stored (merged tags not resolved), in id order.
 pub fn tags_of(view: &View, e: u64) -> Result<Vec<u64>, StoreError> {
     let start = key::id(key::MEMBER_OF, e);
     let end = key::prefix_end(&start);
@@ -455,7 +400,6 @@ pub fn fav_of(view: &View, e: u64) -> Result<bool, StoreError> {
     Ok(pointed(view, &key::id(key::FAV, e))?.is_some_and(|(_, r)| r.values[1] == Value::Bit(true)))
 }
 
-/// The state a character or group is placed by, as it is in `view`; None for anything else.
 pub fn state(view: &View, e: u64) -> Result<Option<State>, StoreError> {
     let Some((kind, _, added)) = entity_info(view, e)? else {
         return Ok(None);
@@ -474,7 +418,6 @@ fn state_of(view: &View, e: u64, kind: u64, added: f64) -> Result<Option<State>,
     Ok(Some(st))
 }
 
-/// What places a character or group in each order (its kind, fav, name and sort numbers), with no scopes read.
 fn place_of(view: &View, e: u64, kind: u64, added: f64) -> Result<Option<State>, StoreError> {
     if kind != CHARACTER && kind != GROUP {
         return Ok(None);
@@ -493,8 +436,6 @@ fn place_of(view: &View, e: u64, kind: u64, added: f64) -> Result<Option<State>,
     }))
 }
 
-/// `e` joins (`joined`) or leaves one scope, its place in the orders the same: only that scope's orders and
-/// numbering change, so the scopes it is in otherwise aren't read.
 pub fn scope_changed(view: &View, out: &mut Out, e: u64, scope: &Scope, joined: bool) -> Result<(), StoreError> {
     let Some((kind, _, added)) = entity_info(view, e)? else {
         return Ok(());
@@ -512,8 +453,6 @@ fn folded_name(view: &View, e: u64) -> Result<Vec<u8>, StoreError> {
         .unwrap_or_default())
 }
 
-/// A character's or group's value of a numeric sort key (`CREATED..SORTS`); None sorts below every number.
-/// `added` is its date added, read here when the key needs it and it isn't given.
 pub fn sort_num(
     view: &View,
     e: u64,
@@ -548,11 +487,8 @@ pub fn sort_num(
     })
 }
 
-/// A character's or group's type and sort key (its id breaks ties).
 pub type Placement = (u64, Vec<u8>);
 
-/// Where a character or group sits in the orders of `sort`: its type and sort key, reading only what that order
-/// needs. None for anything else.
 pub fn sort_place(view: &View, e: u64, sort: u64) -> Result<Option<Placement>, StoreError> {
     let Some((kind, _, added)) = entity_info(view, e)? else {
         return Ok(None);
@@ -569,7 +505,6 @@ pub fn sort_place(view: &View, e: u64, sort: u64) -> Result<Option<Placement>, S
     Ok(Some((kind, sk)))
 }
 
-/// Moves the entity's entries in every order, numbering and count from `old` to `new`.
 pub fn reposition(
     view: &View,
     out: &mut Out,
@@ -579,9 +514,6 @@ pub fn reposition(
 ) -> Result<(), StoreError> {
     let in_old: BTreeSet<Scope> = old.map(State::scopes).unwrap_or_default().into_iter().collect();
     let in_new: BTreeSet<Scope> = new.map(State::scopes).unwrap_or_default().into_iter().collect();
-    // The keys and numbering don't depend on which scopes the entity is in: when its place in the orders is the same,
-    // a scope it stays in is left as it is, and only the ones it joins or leaves change (one tag assigned is one scope,
-    // not every scope the entity is in).
     let same_place = match (old, new) {
         (Some(o), Some(n)) => o.kind == n.kind && o.fav == n.fav && (0..SORTS).all(|sort| o.sort_key(sort) == n.sort_key(sort)),
         _ => false,
@@ -597,7 +529,6 @@ pub fn reposition(
     Ok(())
 }
 
-/// `reposition()` in one scope: `old` and `new` are the entity's state where it was or is in the scope.
 fn reposition_scope(
     view: &View,
     out: &mut Out,
@@ -642,7 +573,6 @@ fn reposition_scope(
     Ok(())
 }
 
-/// Takes `e` out of the numbering of (s, kind, fav): the last number moves into its place.
 fn unnumber(
     view: &View,
     out: &mut Out,
@@ -668,7 +598,6 @@ fn unnumber(
     set_rank(view, out, s, e, None)
 }
 
-/// Repositions `e` (if it is a character or group) for a change `f` makes to its state.
 pub fn change(
     view: &View,
     out: &mut Out,
@@ -686,12 +615,10 @@ pub fn change(
     Ok(())
 }
 
-/// Whether a text field's value places the entity in the orders: its name, and a character's link.
 pub fn places(f: &FieldRef) -> bool {
     matches!(f, FieldRef::Code(NAME)) || books::link_item(f).is_some()
 }
 
-/// A change to a text field's value: the name places the entity, and a link's text a character in a book's scope.
 pub fn text_changed(
     view: &View,
     out: &mut Out,
@@ -710,14 +637,12 @@ pub fn text_changed(
     }
 }
 
-/// The tag a tag's carriers belong to: itself, or where its merges lead (None: nowhere).
 pub fn resolve_tag(view: &View, tag: u64) -> Result<Option<u64>, StoreError> {
     let mut t = tag;
     for _ in 0..1024 {
         let Some((_, rec)) = pointed(view, &key::id(key::MERGE, t))? else {
             return Ok(Some(t));
         };
-        // A `tagPrune` merges into none.
         match rec.values.get(1) {
             Some(Value::Id(into)) => t = *into,
             _ => return Ok(None),
@@ -726,8 +651,6 @@ pub fn resolve_tag(view: &View, tag: u64) -> Result<Option<u64>, StoreError> {
     Err(entry_err("tag merges form a cycle"))
 }
 
-/// The tags whose orders a read of `tag`'s takes: itself and every tag merged into it whose carriers haven't
-/// moved yet. Empty when `tag` itself is merged away.
 pub fn tag_sources(view: &View, tag: u64) -> Result<Vec<u64>, StoreError> {
     if view.get(&key::id(key::MERGE, tag))?.is_some() {
         return Ok(Vec::new());
@@ -749,10 +672,6 @@ pub fn tag_sources(view: &View, tag: u64) -> Result<Vec<u64>, StoreError> {
     Ok(out)
 }
 
-// ---- derivers ----
-
-/// Values committed for the entity before its create (in the same commit) place it in the orders once, with
-/// them; a create first places it with none, then moves it.
 pub struct EntityCreate;
 
 impl Deriver for EntityCreate {
@@ -774,7 +693,6 @@ impl Deriver for EntityCreate {
                 "an entity of type {kind} has that key already"
             )));
         }
-        // The entity's entry first: the whole library's numbering keeps its number there.
         out.put(key::id(key::ENTITY, e), host_bytes(at, None));
         if kind == CHARACTER {
             books::linker_created(view, out, e)?;
@@ -796,7 +714,6 @@ impl Deriver for EntityCreate {
         Ok(())
     }
 
-    /// The entity's record, or (a deleted entry's) the one its history keeps for its restore.
     fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
         let e = id(rec, 0);
         Ok(live_host(view, &key::id(key::ENTITY, e), pos)?
@@ -817,8 +734,6 @@ impl Deriver for EntityCreate {
     }
 }
 
-/// The `entityCreate` or latest `entityUpdate` record is the entity's: `entity_info` reads its type, key and date
-/// added from it.
 pub struct EntityUpdate;
 
 impl Deriver for EntityUpdate {
@@ -864,7 +779,6 @@ impl Deriver for EntityUpdate {
         if let Some(b) = view.get(&ek)? {
             dead(out, parse_host(&b)?.0);
         }
-        // The entry keeps the entity's number in the whole library's numbering.
         let n = match current(view, out, &ek)? {
             Some(b) => parse_host(&b)?.1,
             None => None,
@@ -877,7 +791,6 @@ impl Deriver for EntityUpdate {
         Ok(())
     }
 
-    /// The entity's record, or (a deleted entry's) the one its history keeps for its restore.
     fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
         let e = id(rec, 0);
         Ok(live_host(view, &key::id(key::ENTITY, e), pos)?
@@ -913,7 +826,6 @@ fn repoint_at(view: &View, out: &mut Out, k: &[u8], from: u64, to: Loc) -> Resul
     Ok(())
 }
 
-/// `live_at` for a host entry (`rank_host`).
 pub(super) fn live_host(view: &View, k: &[u8], pos: u64) -> Result<bool, StoreError> {
     Ok(match view.get(k)? {
         Some(b) => parse_host(&b)?.0.pos == pos,
@@ -921,7 +833,6 @@ pub(super) fn live_host(view: &View, k: &[u8], pos: u64) -> Result<bool, StoreEr
     })
 }
 
-/// `repoint_at` for a host entry, its number kept.
 pub(super) fn repoint_host(
     view: &View,
     out: &mut Out,
@@ -938,7 +849,6 @@ pub(super) fn repoint_host(
     Ok(())
 }
 
-/// Every pointer entry under `prefix` dies with its record.
 fn drop_pointers(
     view: &View,
     out: &mut Out,
@@ -986,7 +896,6 @@ impl Deriver for EntityDelete {
     }
 }
 
-/// Everything entity `e` (of type `kind`, key `k`) holds goes, by the record at `at`.
 fn delete_entity(
     view: &View,
     out: &mut Out,
@@ -1015,7 +924,6 @@ fn delete_entity(
     }
     if let Some(st) = state(view, e)? {
         reposition(view, out, e, Some(&st), None)?;
-        // Each tag's carrier upkeep sees the ones before it.
         let mut local = std::collections::BTreeMap::new();
         for tag in &st.tags {
             let mut o = Out::default();
@@ -1033,7 +941,6 @@ fn delete_entity(
             out.map(key::member_block(*tag, e), vec![(key::member_slot(e), 0)]);
         }
     }
-    // Values (list items' texts included), then the rest of what the entity holds.
     let start = key::id(key::HEAD, e);
     let end = key::prefix_end(&start);
     for (hk, v) in view.scan(&start, &end, usize::MAX)? {
@@ -1042,7 +949,6 @@ fn delete_entity(
             Cur::Text(_) => {
                 drop_text_unsearched(view, out, e, &f)?;
             }
-            // A value written with its history: its records stay that history's.
             Cur::Json(h) => {
                 for n in 1..=h.edits() {
                     out.del(super::history::json_edit_key(e, &f, n));
@@ -1094,7 +1000,6 @@ fn delete_entity(
     Ok(())
 }
 
-/// The field of a `key::field` key, after its entity.
 fn field_of_key(k: &[u8], entity_end: usize) -> Result<FieldRef, StoreError> {
     let mut at = entity_end;
     let bad = || entry_err("a field key doesn't decode");
@@ -1112,7 +1017,6 @@ fn field_of_key(k: &[u8], entity_end: usize) -> Result<FieldRef, StoreError> {
     }
 }
 
-/// The field of a `key::field` key whose structure prefix is `structure`.
 pub fn field_after(k: &[u8], structure: u64) -> Result<FieldRef, StoreError> {
     field_of_key(k, key::of(structure).len())
 }
@@ -1188,8 +1092,6 @@ impl Deriver for JsonValue {
     }
 }
 
-/// Clears a JSON value from (e, f) before another value takes its place or the field goes: a whole value's record
-/// dies; a value written with its history keeps its records (they are that history's), its edit entries go.
 pub fn drop_json(view: &View, out: &mut Out, e: u64, f: &FieldRef) -> Result<(), StoreError> {
     drop_json_of(view, out, Holder::Entity(e), f)
 }
@@ -1383,7 +1285,6 @@ impl Deriver for ItemDelete {
     }
 }
 
-/// `dataSize`, `createDate`: the record is the entity's sort key.
 pub struct SortValue(pub u64);
 
 impl SortValue {
@@ -1510,7 +1411,6 @@ impl Deriver for TagMerge {
             )));
         }
         out.put(mk, loc_bytes(at));
-        // The tag stops existing: its name leaves the index, and its fold is its carriers' move off that name.
         if let Some((TAG, k, _)) = entity_info(view, tag)? {
             let mut moving = Out::default();
             super::carriers::merging(view, &mut moving, tag)?;
@@ -1527,7 +1427,6 @@ impl Deriver for TagMerge {
                 out.put(key::ids(key::MERGED_INTO, t, tag), Vec::new());
             }
         }
-        // Tags merged into this one whose carriers haven't moved now lead to the target.
         let start = key::id(key::MERGED_INTO, tag);
         for (k, _) in view.scan(&start, &key::prefix_end(&start), usize::MAX)? {
             let mut a = start.len();
@@ -1557,12 +1456,8 @@ impl Deriver for TagMerge {
     }
 }
 
-/// Carriers moved per step of a fold.
 pub const FOLD_SLICE: usize = 256;
 
-/// Moves up to `FOLD_SLICE` carriers of the first tag waiting for its fold to the tag it merged into (or drops
-/// them, when it merged into none); once the tag has none left, readers stop taking its orders. Returns whether
-/// any fold is left.
 pub fn fold_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
     let fp = key::of(key::FOLD);
     let Some((fk, _)) = view.scan(&fp, &key::prefix_end(&fp), 1)?.into_iter().next() else {
@@ -1591,7 +1486,6 @@ pub fn fold_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
             memo: view.memo,
         };
         let mut o = Out::default();
-        // The carrier upkeep for the target sees the one for the tag.
         let mut leaving = Out::default();
         super::carriers::changed(&lv, &mut leaving, tag, e, -1)?;
         let mut left = std::collections::BTreeMap::new();
@@ -1643,7 +1537,6 @@ pub fn fold_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
     Ok(true)
 }
 
-/// `tagPrune`: the tag goes as a merge into none would take it, if it is unused (`tags::unused`).
 pub struct TagPrune;
 
 impl Deriver for TagPrune {

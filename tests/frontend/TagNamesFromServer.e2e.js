@@ -1,15 +1,9 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, chatBox } from './frontent-test-utils.js';
 
-// Finding a tag by its name, in the tag input, the slash commands, a card's tag import, the delete popup's merge
-// picker and a lorebook entry's character filter, asks the server: none of them needs the page to hold the tag. Each
-// test makes its tags after the page has loaded and keeps the page from hearing of them, so the page doesn't hold
-// them.
-
 /** @param {import('@playwright/test').Page} page */
 async function loadApp(page) {
     await testSetup.awaitST({ page });
-    // APP_READY is an auto-fire event: a listener added after it was emitted still runs.
     await page.evaluate(() => {
         window['__appReady'] = false;
         const { eventSource, eventTypes } = window['SillyTavern'].getContext();
@@ -33,8 +27,6 @@ async function api(page, path, body = {}) {
 }
 
 /**
- * Keeps the page from hearing of tags made after this, as if they were made in another tab whose changes haven't
- * reached it.
  * @param {import('@playwright/test').Page} page
  */
 async function cutOffTagChanges(page) {
@@ -42,7 +34,6 @@ async function cutOffTagChanges(page) {
 }
 
 /**
- * Creates tags the page doesn't hold.
  * @param {import('@playwright/test').Page} page
  * @param {{ id: string, name: string }[]} list
  */
@@ -57,10 +48,9 @@ async function createUnheldTags(page, list) {
 }
 
 /**
- * Creates and opens a throwaway character.
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @returns {Promise<string>} its avatar key
+ * @returns {Promise<string>}
  */
 async function openNewCharacter(page, name) {
     await openCharacterManagementDrawer(page);
@@ -69,41 +59,40 @@ async function openNewCharacter(page, name) {
     const created = page.waitForResponse(response => response.url().endsWith('/api/characters/create'));
     await page.locator('#create_button_label').click();
     const avatar = await (await created).text();
-    // Creating a character opens it.
     await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
     await page.locator('#tagInput').waitFor({ state: 'visible', timeout: 10000 });
     return avatar;
 }
 
 /**
- * Types into the character's tag input and waits for its suggestions.
  * @param {import('@playwright/test').Page} page
  * @param {string} text
- * @returns {Promise<string[]>} the suggestions shown
+ * @returns {Promise<string[]>}
  */
 async function suggestionsFor(page, text) {
     const searched = page.waitForResponse(response => new URL(response.url()).pathname === '/api/tags/query'
         && response.request().postDataJSON()?.filter?.contains === text.trim());
     const lookedUp = page.waitForResponse(response => new URL(response.url()).pathname === '/api/tags/by-names'
         && response.request().postDataJSON()?.names?.[0] === text);
-    // The chat that opens with the character takes the focus when it has loaded; text filled before that is lost.
     await expect(async () => {
         await page.locator('#tagInput').fill(text);
         await expect(page.locator('#tagInput')).toHaveValue(text, { timeout: 500 });
     }).toPass({ timeout: 30000 });
     await Promise.all([searched, lookedUp]);
-    // The suggestions are drawn once both answers are in; an empty list draws nothing to wait for.
     await page.waitForTimeout(300);
     return page.locator('.ui-autocomplete:visible .ui-menu-item').allInnerTexts();
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} key @returns {Promise<string[]>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} key
+ * @returns {Promise<string[]>}
+ */
 async function serverTagsOf(page, key) {
     return (await api(page, '/api/tags/for', { ids: [key] }))[key] ?? [];
 }
 
 /**
- * Counts the /api/tags/create requests the page sends from now on.
  * @param {import('@playwright/test').Page} page
  */
 function countCreates(page) {
@@ -128,7 +117,6 @@ test.describe('tag names are looked up on the server', () => {
         await createUnheldTags(page, [{ id: `zebra-${stamp}`, name: `Zebra Stripes ${stamp}` }]);
         const creates = countCreates(page);
 
-        // The typed text first, as a new tag to create, since no tag has that name.
         expect(await suggestionsFor(page, `bra Stripes ${stamp}`)).toEqual([`bra Stripes ${stamp}`, `Zebra Stripes ${stamp}`]);
 
         const assigned = page.waitForRequest(request => request.url().endsWith('/api/tags/assign'));
@@ -195,7 +183,6 @@ test.describe('tag names are looked up on the server', () => {
         const input = chatBox(page);
         await input.click();
         await input.pressSequentially(`/random ${stamp}`);
-        // An optional argument's options show when asked for.
         await input.press('Control+Space');
         await expect(page.locator('.autoComplete .item', { hasText: `Randomused ${stamp}` })).toBeVisible();
         await expect(page.locator('.autoComplete .item', { hasText: `Randomunused ${stamp}` })).toHaveCount(0);
@@ -261,7 +248,6 @@ test.describe('tag names are looked up on the server', () => {
             await saveWorldInfo(worldName, data, true);
         }, worldName);
 
-        /** Opens the book's first entry, and returns its character filter's select2 box. */
         const openEntry = async () => {
             await page.evaluate(async (worldName) => {
                 const { openWorldInfoEditor } = await import('./scripts/world-info.js');
@@ -269,8 +255,6 @@ test.describe('tag names are looked up on the server', () => {
             }, worldName);
             const entryRow = page.locator('#world_popup_entries_list .world_entry').first();
             await entryRow.waitFor({ state: 'attached', timeout: 10000 });
-            // Opened only when closed (opening its book again needn't draw it again, and a click would close it), and
-            // again if the book is drawn again meanwhile: until it is open with its character filter's box drawn.
             await expect(async () => {
                 const open = await entryRow.evaluate(row => {
                     if (!$(row).find('.inline-drawer-content').first().is(':visible')) $(row).find('.inline-drawer-toggle').first().trigger('click');
@@ -292,14 +276,12 @@ test.describe('tag names are looked up on the server', () => {
             await option.click();
             expect((await saved).postDataJSON().data.characterFilter.tags).toEqual([`lore-${stamp}`]);
 
-            // Picking it from the search didn't make the page hold it.
             expect(await page.evaluate(async id => (await import('/scripts/tags.js')).tagsStore.getAll().some(tag => tag.id === id), `lore-${stamp}`)).toBe(false);
             console.log('PROBE ---- reopen');
             const again = await openEntry();
             const choices = again.locator('select[name="characterFilter"] + .select2-container .select2-selection__choice');
             await expect(choices).toHaveCount(1);
             await expect(choices).toContainText(`[Tag] Lore Tag ${stamp}`);
-            // Drawing the book again (its old entry taken down) commits nothing: the stored filter keeps the tag.
             await page.waitForTimeout(500);
             const stored = await page.evaluate(async (worldName) => {
                 // @ts-ignore

@@ -10,11 +10,8 @@ import { write as writeCard } from '../character-card-parser.js';
 import { setConfigFilePath } from '../util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// chats.js's import chain reads process-wide config at import time, so the config path is set first.
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
-// An imported chat goes into the message tree, or the import fails and says so; nothing is written to a chat file.
-// A new character has no chat name minted for it.
 const { router: chatsRouter } = await import('./chats.js');
 const { router: charactersRouter } = await import('./characters.js');
 const { convertedUser, writeLibraryCard, treeOf } = await import('../../tests/converted-user.fixture.js');
@@ -31,7 +28,6 @@ app.use((req, _res, next) => {
     req.user = { directories, profile: { handle: 'u' } };
     next();
 });
-// Stands in for the server's upload middleware: the test names a file it wrote under `uploads`.
 app.use((req, _res, next) => {
     const upload = req.get('X-Test-Upload');
     if (upload) req.file = /** @type {any} */ ({ destination: directories.uploads, filename: upload });
@@ -72,7 +68,6 @@ async function writeCharacter(avatar, name) {
 }
 
 /**
- * A tree's bookmarks (compat id, name and the messages shown down to it).
  * @param {{ avatar?: string, group?: string }} owner
  */
 async function bookmarksOf(owner) {
@@ -86,7 +81,6 @@ async function bookmarksOf(owner) {
     }
 }
 
-/** Writes an upload and names it for the next request. */
 function upload(text) {
     const name = `upload-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     fs.writeFileSync(path.join(directories.uploads, name), text);
@@ -111,7 +105,6 @@ test('an imported chat is stored in the tree, and no chat file is written', asyn
 });
 
 test('a group chat import that names no group fails and leaves no file', async () => {
-    // The converted user's group chat folder holds what the conversion left; the import adds nothing to it.
     const before = fs.readdirSync(directories.groupChats);
     const file = upload(jsonl);
     const { data } = await postJson('/api/chats/group/import', {}, { 'X-Test-Upload': file['X-Test-Upload'] });

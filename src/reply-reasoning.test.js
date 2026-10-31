@@ -8,9 +8,6 @@ import { setConfigFilePath } from './util.js';
 
 setConfigFilePath(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'config.yaml'));
 
-// The server finishes a generated reply before storing it: the reasoning block is split off its text, as upstream's
-// page did (public/scripts/reasoning.js), and the page only shows what was stored.
-
 const { cleanUpReply, trimToEndSentence } = await import('./reply-cleanup.js');
 const { finishReply, splitReasoningBlock, noteReplyReasoning, noteReplyText, extractReasoningFromData, extractReasoningSignatureFromData } = await import('./reply-reasoning.js');
 
@@ -21,7 +18,6 @@ function settings(overrides = {}) {
         autoParse: true, prefix: '<think>', suffix: '</think>', promptPrefix: '<think>', trimSpaces: true, replyBias: '',
         regexScripts: [], regexEnabled: true, macroContext: { name1: 'User', name2: 'Bot' },
         api: 'llamacpp', model: null,
-        // Cleaning up, with the page's defaults.
         name1: 'User', name2: 'Bot',
         stoppingStringsParams: {
             namesAsStopStrings: true, name1: 'User', name2: 'Bot', isGroup: false, groupMemberNames: [], singleLine: false,
@@ -182,7 +178,6 @@ describe('cleaning the reply up (cleanUpMessage(), before the reasoning split)',
     test('a stopping string the reply ends partway into is cut off', () => {
         const s = settings({ stoppingStringsParams: { ...settings().stoppingStringsParams, customStoppingStringsRaw: JSON.stringify(['###END']) } });
         assert.equal(cleanUpReply('A fine answer.\n###E', s, { isContinue: false }), 'A fine answer.');
-        // names as stop strings: "\nUser:" cut too
         assert.equal(cleanUpReply('Hello.\nUs', settings(), { isContinue: false }), 'Hello.');
     });
 

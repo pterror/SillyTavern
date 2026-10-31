@@ -33,7 +33,6 @@ function answer(overrides = {}) {
     };
 }
 
-/** Ids a fake tokenizer gives: one per character, the character's code. */
 function fakeIds(text) {
     return Array.from(text, c => c.charCodeAt(0));
 }
@@ -61,7 +60,6 @@ global.jQuery = {
     }),
 };
 
-// Every jQuery call gives back the same chainable stand-in.
 const jq = new Proxy(function () {}, {
     get: (_target, prop) => {
         if (prop === Symbol.toPrimitive) return () => '';
@@ -144,7 +142,6 @@ let textgen;
 let nai;
 
 /**
- * Loads the modules with `api` as main_api (a mocked module export is fixed when it loads).
  * @param {string} api
  */
 async function load(api) {

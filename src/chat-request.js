@@ -2,18 +2,15 @@ import { requestStore } from './user-stores.js';
 import { requestSession } from './request-session.js';
 
 /**
- * @typedef {object} ChatContext The chat a request acts in.
- * @property {import('./user-stores.js').UserStore} store The user's store.
- * @property {bigint} tree The character's or group's tree.
- * @property {import('./chat-codec.js').Speaker | null} treeSpeaker The tree's character (null for a group).
- * @property {import('./request-session.js').RequestSession} session The request's session in the tree.
- * @property {import('./chat-engine.js').StateOp[]} [replyChanges] The state changes the page made while producing the
- * reply the request generates (`reply_changes`), stored with the reply.
+ * @typedef {object} ChatContext
+ * @property {import('./user-stores.js').UserStore} store
+ * @property {bigint} tree
+ * @property {import('./chat-codec.js').Speaker | null} treeSpeaker
+ * @property {import('./request-session.js').RequestSession} session
+ * @property {import('./chat-engine.js').StateOp[]} [replyChanges]
  */
 
 /**
- * The chat a request acts in: a group's (by `group`) when it names one, else a character's (by `avatar`); null when
- * it names none that exists. A group's generation names its responding member too, so the group goes first.
  * @param {any} request
  * @param {{ avatar?: unknown, group?: unknown }} owner
  * @returns {Promise<ChatContext | null>}
@@ -32,8 +29,6 @@ export async function chatContext(request, { avatar, group }) {
 }
 
 /**
- * The request's session's compat chat id in its chat's tree (`getCurrentChatId()`): its current chat's label, else its
- * conversation's name (`ChatEngine.compatChatId()`).
  * @param {ChatContext} chat
  */
 export function compatChatIdOf(chat) {
@@ -41,21 +36,16 @@ export function compatChatIdOf(chat) {
 }
 
 /**
- * Whether a resolved chat name is the request's own conversation in the tree: its current chat's bookmark, or its own
- * conversation by its name.
  * @param {ChatContext} chat
  * @param {{ bookmark: bigint } | { session: string, derived?: true }} found
  */
 export async function isOwnChat(chat, found) {
-    // A read with no request (a caller's own context) has no conversation of its own.
     if (!chat.session) return false;
     if ('bookmark' in found) return await chat.store.chats.currentChat(chat.session.reader().session, chat.tree) === found.bookmark;
     return found.derived === true && found.session === chat.session.identifier;
 }
 
 /**
- * The asking session of a chat, as `resolveChatName()` takes it (`own`), so its conversation's name resolves before
- * its first write; none for a read with no request.
  * @param {ChatContext} chat
  */
 export function ownOf(chat) {
@@ -63,13 +53,9 @@ export function ownOf(chat) {
 }
 
 /**
- * Where a chat name upstream's routes take is in the chat's tree: the request's own conversation (its current chat's
- * label, its own conversation's name) where its session is (it lands); another bookmark of that name its message;
- * another session's conversation of that name that session's position there (where it lands, while it has none); a
- * session with that label or UUID its position in the tree; `undefined` when it names nothing there.
  * @param {ChatContext} chat
  * @param {string} name
- * @returns {Promise<string | null | undefined>} The message's outside id (null: the tree's root).
+ * @returns {Promise<string | null | undefined>}
  */
 export async function chatNamePosition(chat, name) {
     const { chats } = chat.store;
@@ -89,8 +75,6 @@ export async function chatNamePosition(chat, name) {
 }
 
 /**
- * Whether a generation that names no message may go on from the tree's root: only when the tree has no message yet,
- * or the request's session is at the root (a new chat). Otherwise the caller is behind and must name the message.
  * @param {ChatContext} chat
  */
 async function rootIsCurrent(chat) {
@@ -104,9 +88,6 @@ async function rootIsCurrent(chat) {
 }
 
 /**
- * A generation's chat history: the path from the tree's root down to the position it goes on from, and the state
- * there as `chat_metadata`. The position is the chat `branchName` names when it names one, else `nodeId` (a message
- * of the tree), else the tree's root when that is current (`rootIsCurrent()`); `ambiguous` when it isn't.
  * @param {ChatContext | null | undefined} chat
  * @param {{ branchName?: string, nodeId?: string | null }} at
  * @returns {Promise<{ chat: any[], metadata: Record<string, any>, resolvedNodeId: string | null, ambiguous?: true }>}
@@ -129,8 +110,6 @@ export async function loadChatHistory(chat, { branchName, nodeId }) {
 }
 
 /**
- * Tells the tab of its session on the answer, whatever sends it: the headers are set as they go out, so a session
- * made by any write before then is in them. A write after (a streamed reply's) has to make it before streaming.
  * @param {import('express').Response} response
  * @param {import('./request-session.js').RequestSession} session
  */
@@ -143,8 +122,6 @@ export function answerSessionOnHeaders(response, session) {
 }
 
 /**
- * Upstream's compat chat id of each tree for a request (`characters[].chat`, `group.chat_id`): the conversation the
- * request's session has there, its current chat's label, else its conversation's name (each tree's its own).
  * @param {import('./user-stores.js').UserStore} store
  * @param {any} request
  * @param {bigint[]} trees
@@ -161,15 +138,11 @@ export async function compatChatIds(store, request, trees) {
 }
 
 /**
- * Switches the requesting tab to the chat a name names in a character's or group's tree (answer 2 of the cut: a write
- * of "the current chat"; `openChatNamed()`); '' or null starts a new chat (no current chat). One naming nothing
- * changes nothing.
  * @param {import('express').Request} request
  * @param {import('express').Response} response
  * @param {{ avatar?: string, group?: string }} owner
  * @param {unknown} chat
- * @returns {Promise<ChatContext | null>} The chat it acted in (its session as it acted), null when the tree doesn't
- * exist.
+ * @returns {Promise<ChatContext | null>}
  */
 export async function moveToChatNamed(request, response, owner, chat) {
     const store = await requestStore(request);
@@ -189,14 +162,9 @@ export async function moveToChatNamed(request, response, owner, chat) {
 }
 
 /**
- * Opens a chat by name as upstream switched chat files (the current chat changes; moving inside a conversation never
- * does): the tab's own conversation (its current chat's label, its own conversation's name) stays where it is;
- * another bookmark moves the session to its message and becomes the current chat; another session's conversation (by
- * its name, or a session's UUID or label) moves the session to where that one is in the tree, no current chat (a tab
- * never takes over another's session). A name naming nothing changes nothing.
  * @param {ChatContext} chat
  * @param {string} name
- * @returns {Promise<boolean>} Whether it named a chat.
+ * @returns {Promise<boolean>}
  */
 export async function openChatNamed(chat, name) {
     const { chats } = chat.store;
@@ -214,7 +182,6 @@ export async function openChatNamed(chat, name) {
 }
 
 /**
- * The compat chat ids of a tree's bookmarks (upstream's chats of a character or group): each bookmark's label.
  * @param {import('../user-stores.js').UserStore} store
  * @param {bigint} tree
  * @returns {Promise<string[]>}
@@ -233,7 +200,6 @@ export async function chatNamesOf(store, tree) {
 }
 
 /**
- * The drops a tree edit answered (bookmarks and state changes that went), or null when nothing went.
  * @param {{ drops?: { bookmarks: unknown[], changes: unknown[] } }} answer
  */
 export function droppedOf(answer) {

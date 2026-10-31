@@ -1,8 +1,3 @@
-//! The derivers: current values for `fav`, `textValue` and `textEdit` (with the entity's version), search
-//! entries for the text fields that are searched, tag membership for `tagAssign`, a message's record and its
-//! the cleaner's `moved` marker, and the test kind `testSet`. Each store stage adds its kinds' derivers here or in
-//! its own module (`library`, `tags`, `chat`).
-
 use super::StoreError;
 use super::derive::{Deriver, Loc, Out, View};
 use super::library;
@@ -13,47 +8,29 @@ use crate::log::format::{
 };
 use crate::search::{self, Scope};
 
-/// Entry keys: a structure's id, then its key's components (`keyspace::val::put_u64` / `put_bytes`).
 pub mod key {
     use crate::keyspace::val::{put_bytes, put_u64};
     use crate::log::format::FieldRef;
 
-    /// Per log file: bytes of its records that nothing points at any more (a counter).
     pub const DEAD: u64 = 1;
-    /// Per log file: its live fraction has fallen under u; the cleaner's queue.
     pub const CLEAN: u64 = 2;
-    /// Per log file: cleaned; removed once the runs cover the log up to the position held.
     pub const GONE: u64 = 3;
-    /// Per entity: the position of its latest record.
     pub const VERSION: u64 = 16;
-    /// Per (position, entity): the entity last changed at that position (its `VERSION`); a deleted entity's entry
-    /// holds its kind and key.
     pub const ENTITY_CHANGE: u64 = 84;
-    /// Per entity: the record holding its fav bit.
     pub const FAV: u64 = 17;
-    /// Per (entity, field): its current value (`Cur`): a text or diffed JSON value's last full value, size and the
-    /// edits since, or a whole JSON value's record. One get reads any field, one scan all of an entity's.
     pub const HEAD: u64 = 18;
-    /// Per (entity, field, n): the n-th edit of a text value since the last full value.
     pub const TEXT_EDIT: u64 = 19;
-    /// Search (`crate::search`).
     pub const SEARCH_POSTING: u64 = 32;
     pub const SEARCH_LENGTH: u64 = 35;
-    /// Per (scope, term): its document counts (`crate::search::term_counts`).
     pub const SEARCH_TERM_COUNTS: crate::store::derive::AddMapKind =
         crate::store::derive::AddMapKind::new(208);
     pub const SEARCH_DOCS: u64 = 38;
     pub const SEARCH_MAX_DOC: u64 = 39;
     pub const SEARCH_BLOCK_MAX: u64 = 34;
     pub const SEARCH_SHORTEST: u64 = 44;
-    /// Per (tag, entity): the `tagAssign` record assigning it, then the entity's number in the tag's numbering (a
-    /// character or group).
     pub const MEMBER: u64 = 40;
-    /// Per (entity, tag): assigned.
     pub const MEMBER_OF: u64 = 41;
-    /// Per tag: its entities (a counter).
     pub const MEMBER_COUNT: u64 = 42;
-    /// Per (tag, block of `1 << MEMBER_BITS` entity ids): a map of the entity's place → 1 for each carrier.
     pub const MEMBER_BLOCK: u64 = 45;
     pub const MEMBER_BITS: u32 = 14;
 
@@ -61,139 +38,78 @@ pub mod key {
         ids(MEMBER_BLOCK, tag, entity >> MEMBER_BITS)
     }
 
-    /// An entity's place in its member block.
     pub fn member_slot(entity: u64) -> u32 {
         (entity & ((1 << MEMBER_BITS) - 1)) as u32
     }
-    /// Per message: its `messageAppend` record and its parent now (`chat::message_entry`).
     pub const MESSAGE: u64 = 43;
-    /// Chats (`store::chat`). Per (message, field): its text's head; the n-th edit; its JSON value's record.
     pub const MSG_TEXT: u64 = 90;
     pub const MSG_TEXT_EDIT: u64 = 91;
     pub const MSG_VALUE: u64 = 92;
-    /// Per (parent, time, message): a reply. Per (owner, time, message): a message opening the owner's tree.
     pub const CHILD: u64 = 93;
     pub const ROOT: u64 = 94;
-    /// Per (message, field): its `messageTime` record.
     pub const MSG_TIME: u64 = 95;
-    /// Per (space, key): the id an outside key names. Per (space, id): the `keyMap` record.
     pub const KEY_MAP: u64 = 96;
     pub const KEY_OF: u64 = 97;
-    /// Per position: its `positionCreate`, `positionName`, `positionMode` record.
     pub const POSITION: u64 = 98;
     pub const POSITION_NAME: u64 = 99;
     pub const POSITION_MODE: u64 = 100;
-    /// One more than the highest message, position, user id ever given (maxima).
     pub const NEXT_MESSAGE: u64 = 101;
     pub const NEXT_POSITION: u64 = 102;
     pub const NEXT_USER: u64 = 103;
-    /// Per message moved off its first parent: its `messageParent` record.
     pub const MESSAGE_PARENT: u64 = 104;
-    /// Per (owner, send key): the message stored for it.
     pub const SEND_KEY: u64 = 105;
-    /// Per bookmark: the message it is at. Per (message, bookmark): a bookmark at it. Per (owner, bookmark): a
-    /// bookmark in that owner's tree.
     pub const BOOKMARK_AT: u64 = 106;
     pub const BOOKMARKS_AT: u64 = 107;
     pub const TREE_BOOKMARK: u64 = 108;
-    /// Per bookmark at a tree's root: the tree. Per (tree, bookmark): a bookmark at its root.
     pub const BOOKMARK_ROOT: u64 = 109;
     pub const ROOT_BOOKMARKS: u64 = 110;
-    /// Per bookmark: the time key it has in its tree's order. Per (tree, time key, bookmark): a bookmark of the tree by
-    /// the receive time of the message it is at (one at the root: when it was made), the compat chat list's
-    /// newest-first order.
     pub const BOOKMARK_TIME: u64 = 156;
     pub const TREE_BOOKMARK_TIME: u64 = 157;
-    /// Per bookmark: its latest `positionMove` record.
     pub const POSITION_MOVE: u64 = 158;
-    /// The library (`store::library`).
-    /// Per entity: its `entityCreate` record, then its number in the whole library's numbering (a character or
-    /// group).
     pub const ENTITY: u64 = 50;
-    /// Per (type, key): the entity.
     pub const ENTITY_KEY: u64 = 51;
-    /// Per (scope, sort, type, fav, sort key, entity): nothing (the entity breaks ties).
     pub const ORDER: u64 = 52;
-    /// Per (scope, type, fav, number): the entity at that number of the dense numbering.
     pub const RAND: u64 = 53;
-    /// Per (scope, type, fav): its entities (a counter).
     pub const COUNT: u64 = 55;
-    /// Per entity: its `dataSize`, `createDate` record.
     pub const DATA_SIZE: u64 = 56;
     pub const CREATE_DATE: u64 = 57;
-    /// Per (entity, which): its `cardHash` record.
     pub const HASH: u64 = 58;
-    /// Per (which, hash, entity): present.
     pub const HASH_INDEX: u64 = 59;
-    /// Per (entity, list, position): the item.
     pub const ITEM: u64 = 60;
-    /// Per (entity, list, item): its position and `itemPlace` record.
     pub const ITEM_AT: u64 = 61;
-    /// Per tag: its `tagMerge` record.
     pub const MERGE: u64 = 63;
-    /// Per (target, tag): the tag merges into the target and its carriers aren't the target's yet.
     pub const MERGED_INTO: u64 = 64;
-    /// Per tag: merged, and its carriers not yet moved.
     pub const FOLD: u64 = 65;
-    /// One more than the highest entity id ever created (a maximum).
     pub const NEXT_ENTITY: u64 = 66;
-    /// Tags (`store::tags`). Per (sort, folder bit, used bit, sort key, tag): the tag's place.
     pub const TAG_ORDER: u64 = 67;
-    /// Per (folder bit, used bit): the live tags in that part (a counter).
     pub const TAG_PART_COUNT: u64 = 68;
-    /// Per live tag: its place (folded name, folder type, manual order).
     pub const TAG_PLACE: u64 = 69;
-    /// Per tag: its `tagOrder` record.
     pub const TAG_ORDER_REC: u64 = 70;
-    /// Per (position, tag): the tag's definition last changed at that position.
     pub const TAG_CHANGE: u64 = 71;
-    /// Per tag: the position of its `TAG_CHANGE` entry.
     pub const TAG_CHANGED: u64 = 72;
-    /// Per (position, entity): the tags the entity carries last changed at that position.
     pub const ENTITY_TAG_CHANGE: u64 = 73;
-    /// Per entity: the position of its `ENTITY_TAG_CHANGE` entry.
     pub const ENTITY_TAGS_CHANGED: u64 = 74;
-    /// Per deleted tag's key: the tag.
     pub const TAG_GONE_KEY: u64 = 75;
-    /// Per deleted tag: its key.
     pub const TAG_GONE_ID: u64 = 76;
-    /// Per folded name a deleted tag had: the last tag deleted with it.
     pub const TAG_GONE_NAME: u64 = 159;
-    /// Per queued move (by its record's position): its `tagQueue` record.
     pub const TAG_QUEUE: u64 = 77;
-    /// The `tagPass` record.
     pub const TAG_PASS: u64 = 78;
-    /// Per tag: the reorder pass that last wrote its order.
     pub const TAG_STAMP: u64 = 79;
-    /// Per reorder pass: the live tags it has written (a counter).
     pub const TAG_STAMPED: u64 = 80;
-    /// Per name: its `metaValue` record.
     pub const META: u64 = 81;
-    /// The pair postings' option and pass (`search::pairs`); per state: its `searchPairs` record.
     pub const SEARCH_PAIRS: u64 = 82;
     pub const SEARCH_PAIRS_REC: u64 = 83;
 
-    // ---- tag carriers by name term (`store::carriers`); a term is (`TermKind`, its text) ----
-    /// Per (term, member block): per carrier's place, how many of its light-mapped tags' names hold the term.
     pub const TAG_CARRIERS: crate::store::derive::AddMapKind =
         crate::store::derive::AddMapKind::new(200);
-    /// Per term: the carriers summed over the tags whose indexed name holds it (a counter).
     pub const TERM_CARRIERS: u64 = 201;
-    /// Per (term, tag): the tag is heavy, settled with the term in its name, or moving from heavy with it in its
-    /// mapped name.
     pub const TERM_HEAVY: u64 = 202;
-    /// Per (term, tag): the tag is moving, the term in its mapped, target or indexed name.
     pub const TERM_MOVING: u64 = 203;
-    /// Per tag that is heavy or moving: its side, and its move (`carriers::TagMap`).
     pub const TAG_MAP: u64 = 204;
-    /// Per moving tag: nothing (the move queue).
     pub const MOVING: u64 = 205;
-    /// Every tag's carriers, summed (a counter).
     pub const CARRIER_PAIRS: u64 = 206;
-    /// The sides' scale and a re-siding scan (`carriers::Reside`).
     pub const RESIDE: u64 = 207;
 
-    /// The prefix of a term's keys in a structure keyed by term first.
     pub fn term_key(structure: u64, kind: crate::search::TermKind, term: &str) -> Vec<u8> {
         let mut k = of(structure);
         put_u64(&mut k, kind as u64);
@@ -213,7 +129,6 @@ pub mod key {
         })
     }
 
-    /// The prefix of a term's `TAG_CARRIERS` entries, for reading them; each is followed by its block.
     pub fn tag_carriers_of(kind: crate::search::TermKind, term: &str) -> Vec<u8> {
         let mut k = TAG_CARRIERS.prefix();
         put_u64(&mut k, kind as u64);
@@ -243,7 +158,6 @@ pub mod key {
     pub const TEST_ORDER: u64 = 4097;
     #[cfg(any(test, feature = "measure"))]
     pub const TEST_COUNT: u64 = 4098;
-    /// Per id: a map of added counts.
     #[cfg(test)]
     pub const TEST_ADD_MAP: crate::store::derive::AddMapKind =
         crate::store::derive::AddMapKind::new(4099);
@@ -253,8 +167,6 @@ pub mod key {
         TEST_ADD_MAP.key(|k| put_u64(k, id))
     }
 
-    /// Whether `k` is in a structure whose keys are each put at most once (a change feed's, keyed by the position
-    /// that put it): a delete of one put in the same unpublished layer can drop both (`derive::apply`).
     pub fn written_once(k: &[u8]) -> bool {
         matches!(
             crate::keyspace::val::get_u64(k, &mut 0),
@@ -301,7 +213,6 @@ pub mod key {
         k
     }
 
-    /// The first key after every key starting with `prefix`.
     pub fn prefix_end(prefix: &[u8]) -> Vec<u8> {
         let mut end = prefix.to_vec();
         while let Some(last) = end.pop() {
@@ -339,9 +250,6 @@ pub(super) fn parse_varints<const N: usize>(b: &[u8]) -> Result<[u64; N], StoreE
     Ok(out)
 }
 
-/// What an entity field's head (`key::HEAD`) holds, told apart by a trailing tag: a text value (`Head`, no tag),
-/// a JSON value written with its history (`Head` over `histSet`/`histEdit` records, tag 1), or a JSON value
-/// written whole (its `jsonValue` record, tag 2). A message's text head (`key::MSG_TEXT`) is always text.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Cur {
     Text(Head),
@@ -399,7 +307,6 @@ impl Cur {
         }
     }
 
-    /// Entity `e`'s head of `f`.
     pub(super) fn get(view: &View, e: u64, f: &FieldRef) -> Result<Option<Cur>, StoreError> {
         view.get(&key::field(key::HEAD, e, f))?
             .map(|b| Cur::parse(&b))
@@ -407,7 +314,6 @@ impl Cur {
     }
 }
 
-/// Entity `e`'s whole JSON value of `f`: its `jsonValue` record's place, where its head is one.
 pub(super) fn whole_json(view: &View, e: u64, f: &FieldRef) -> Result<Option<Loc>, StoreError> {
     Ok(match Cur::get(view, e, f)? {
         Some(Cur::Whole(l)) => Some(l),
@@ -428,7 +334,6 @@ pub(super) fn dead(out: &mut Out, l: Loc) {
     out.add(key::id(key::DEAD, file_of(l.pos)), l.len as i64);
 }
 
-/// `entity` changed at `at`: its version, and its place at the end of the entity change feed (one entry per entity).
 pub(super) fn version(view: &View, out: &mut Out, entity: u64, at: Loc) -> Result<(), StoreError> {
     let vk = key::id(key::VERSION, entity);
     if let Some(b) = view.get(&vk)? {
@@ -443,8 +348,6 @@ pub(super) fn version(view: &View, out: &mut Out, entity: u64, at: Loc) -> Resul
     Ok(())
 }
 
-/// `entity` (of `kind`, keyed `k`) is deleted at `at`: its feed entry moves to the end, holding its kind and key, and
-/// its version goes.
 pub(super) fn version_gone(
     view: &View,
     out: &mut Out,
@@ -495,11 +398,9 @@ pub(super) fn bytes(rec: &Record, i: usize) -> &[u8] {
     }
 }
 
-/// A kind whose record is the current value of one key: the entry at `key` points at it.
 trait Pointer {
     fn key(&self, rec: &Record) -> Vec<u8>;
 
-    /// Entries besides the pointer, given the record it replaces.
     fn others(
         &self,
         rec: &Record,
@@ -545,7 +446,6 @@ impl<P: Pointer + Sync> Deriver for P {
     }
 }
 
-/// `searchPairs`: the latest is the option's record.
 struct SearchPairs;
 
 impl Pointer for SearchPairs {
@@ -587,10 +487,6 @@ impl Pointer for Fav {
     }
 }
 
-// ---- text ----
-
-/// What holds a value: a character, group or tag, or a message. Each has its own structures, so their ids never
-/// meet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Holder {
     Entity(u64),
@@ -598,7 +494,6 @@ pub enum Holder {
 }
 
 impl Holder {
-    /// The holder named by the record's `Sel(HOLDER)` value at `i`.
     pub fn of(rec: &Record, i: usize) -> Holder {
         match rec.values[i] {
             Value::Sel(1, m) => Holder::Message(m),
@@ -613,7 +508,6 @@ impl Holder {
         }
     }
 
-    /// The record value naming it.
     pub fn value(self) -> Value {
         match self {
             Holder::Entity(e) => Value::Sel(0, e),
@@ -641,7 +535,6 @@ impl Holder {
         }
     }
 
-    /// Where (h, f)'s whole JSON value is kept: an entity's head (`Cur::Whole`), a message's `MSG_VALUE`.
     pub fn value_key(self, f: &FieldRef) -> Vec<u8> {
         match self {
             Holder::Entity(e) => key::field(key::HEAD, e, f),
@@ -650,7 +543,6 @@ impl Holder {
     }
 }
 
-/// A text value: its last full value, its size in bytes, and the edits since (count and encoded bytes).
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Head {
     pub(super) full: Loc,
@@ -700,7 +592,6 @@ impl Head {
         ])
     }
 
-    /// The text head of (h, f); None where it holds no text (no value, or a JSON one).
     pub(super) fn get(view: &View, h: Holder, f: &FieldRef) -> Result<Option<Head>, StoreError> {
         Ok(match view.get(&h.text_key(f))? {
             Some(b) => match Cur::parse(&b)? {
@@ -712,7 +603,6 @@ impl Head {
     }
 }
 
-/// The edits since the head's full value, in order.
 fn edits(
     view: &View,
     h: Holder,
@@ -754,7 +644,6 @@ pub(super) fn apply_edit(
     Some(out)
 }
 
-/// The full text a head's record holds: a `textValue`'s, or a message's own text in its `messageAppend`.
 pub(super) fn full_text(rec: &Record) -> &[u8] {
     match rec.kind.name {
         "messageAppend" => bytes(rec, super::chat::APPEND_TEXT),
@@ -762,7 +651,6 @@ pub(super) fn full_text(rec: &Record) -> &[u8] {
     }
 }
 
-/// The text's current value: its full value with the edits since applied.
 fn materialize(view: &View, h: Holder, f: &FieldRef, head: &Head) -> Result<Vec<u8>, StoreError> {
     let (full, _) = view.record(head.full.pos)?;
     let mut text = full_text(&full).to_vec();
@@ -774,7 +662,6 @@ fn materialize(view: &View, h: Holder, f: &FieldRef, head: &Head) -> Result<Vec<
     Ok(text)
 }
 
-/// The text a head entry (`Holder::text_key`) of entity `entity`'s field `f` stands for; None where it holds JSON.
 pub(super) fn text_of_head(
     view: &View,
     entity: u64,
@@ -787,7 +674,6 @@ pub(super) fn text_of_head(
     }
 }
 
-/// The text entity `entity`'s text head `head` of `f` stands for.
 pub(super) fn text_of(
     view: &View,
     entity: u64,
@@ -816,8 +702,6 @@ pub(super) fn text_value_of(
     }
 }
 
-/// Whether the head's full value is a record other than the one holding the message itself, so it dies with
-/// the value (a message's own text lives in its `messageAppend`, which lives on).
 fn owns_full(view: &View, h: Holder, head: &Head) -> Result<bool, StoreError> {
     Ok(match h {
         Holder::Entity(_) => true,
@@ -827,8 +711,6 @@ fn owns_full(view: &View, h: Holder, head: &Head) -> Result<bool, StoreError> {
     })
 }
 
-/// Keeps a message's shape (`chat::SHAPE`) as its text head for `f` goes from the one the view holds to `after`
-/// (the full value's position and the edits since; None: no head).
 fn text_shape(
     view: &View,
     out: &mut Out,
@@ -851,7 +733,6 @@ fn text_shape(
     Ok(())
 }
 
-/// Removes the text value of (h, f), if it has one, with its search entries; its records die. Returns it.
 pub(super) fn drop_text(
     view: &View,
     out: &mut Out,
@@ -861,7 +742,6 @@ pub(super) fn drop_text(
     drop_text_of(view, out, Holder::Entity(entity), f)
 }
 
-/// `drop_text` for an entity whose searched fields `searched::gone` has removed already.
 pub(super) fn drop_text_unsearched(
     view: &View,
     out: &mut Out,
@@ -911,7 +791,6 @@ fn drop_text_with(
     Ok(Some(old))
 }
 
-/// Points the text's head or edit entry at `to` if it points at `from`; returns whether one did.
 pub(super) fn repoint_text_of(
     h: Holder,
     f: &FieldRef,
@@ -933,7 +812,6 @@ pub(super) fn repoint_text_of(
     for (k, l) in edits(view, h, f, &head)? {
         if l.pos == from {
             if let Some(to) = to {
-                // An edit's length counts toward the full-value rule, so the head follows the copy's.
                 head.edit_bytes = head.edit_bytes - l.len + to.len;
                 out.put(h.text_key(f), head.bytes());
                 out.put(k, loc_bytes(to));
@@ -1038,8 +916,6 @@ impl Deriver for TextEdit {
         true
     }
 
-    /// Applies the edit to the current value to check it; writes the new full value instead once the edits
-    /// since the last one would reach the value's size (design 4.1), so a read stays within about twice it.
     fn prepare(&self, rec: Record, view: &View) -> Result<Record, StoreError> {
         let (h, f) = (Holder::of(&rec, 0), field(&rec, 1).clone());
         if let Holder::Message(m) = h {
@@ -1152,9 +1028,6 @@ impl Deriver for TextEdit {
     }
 }
 
-// ---- search ----
-
-/// A searched field's values, for checking a phrase on them.
 pub fn search_texts(
     view: &View,
     scope: Scope,
@@ -1177,8 +1050,6 @@ pub fn search_texts(
         .collect())
 }
 
-/// Test and measurement builds search fields of documents that aren't entities: library field i is code
-/// `LIBRARY + i`, a tag's name `TAG_NAME`, a list field's items separated by `ITEM_SEPARATOR` in one text.
 #[cfg(any(test, feature = "measure"))]
 pub mod test_codes {
     use crate::log::format::FieldRef;
@@ -1186,12 +1057,10 @@ pub mod test_codes {
 
     pub const LIBRARY: u64 = 1000;
     pub const TAG_NAME: u64 = 1100;
-    /// The list fields: card tags and alternate greetings.
     pub const CARD_TAGS: u32 = 8;
     pub const ALTERNATE_GREETINGS: u32 = 9;
     pub const ITEM_SEPARATOR: u8 = 0x1e;
 
-    /// A searched text field: where, and whether its value is a list of items.
     #[derive(Debug, Clone, Copy)]
     pub struct SearchField {
         pub scope: Scope,
@@ -1277,13 +1146,8 @@ pub(super) fn test_texts(
         .collect())
 }
 
-// ---- tag membership ----
-
-/// `tagAssign`: the record assigning a tag to an entity is the (tag, entity) membership entry's value; an
-/// unassignment removes the entry and points at nothing.
 struct TagAssign;
 
-/// Takes `entity` out of `tag`'s carriers, its record dead.
 pub(super) fn unassign(
     view: &View,
     out: &mut Out,
@@ -1305,8 +1169,6 @@ pub(super) fn unassign(
     Ok(true)
 }
 
-/// Makes `entity` one of `tag`'s carriers, by the record at `at`; `n` is its number in the tag's numbering, kept
-/// in the membership entry (`library::rank_host`).
 pub(super) fn assign(out: &mut Out, entity: u64, tag: u64, at: Loc, existed: bool, n: Option<u64>) {
     if !existed {
         out.put(key::ids(key::MEMBER_OF, entity, tag), Vec::new());
@@ -1323,7 +1185,6 @@ pub(super) fn assign(out: &mut Out, entity: u64, tag: u64, at: Loc, existed: boo
 }
 
 impl Deriver for TagAssign {
-    /// A tag merged away is assigned as the tag it merged into (none: nothing is assigned).
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
         let (entity, raw) = (id(rec, 0), id(rec, 1));
         let tag = library::resolve_tag(view, raw)?;
@@ -1338,7 +1199,6 @@ impl Deriver for TagAssign {
                 dead(out, old);
                 assign(out, entity, tag, at, true, n);
             } else {
-                // The membership first: the tag's numbering keeps the entity's number in it.
                 assign(out, entity, tag, at, false, None);
                 library::scope_changed(view, out, entity, &library::Scope::Tag(tag), true)?;
                 tags::carriers_changed(view, out, tag, 1)?;
@@ -1347,8 +1207,6 @@ impl Deriver for TagAssign {
             }
         } else {
             dead(out, at);
-            // A merged tag's own membership goes, never its target's: an entity that also carries the target
-            // keeps it.
             if unassign(view, out, entity, raw)? {
                 tags::carriers_changed(view, out, raw, -1)?;
                 super::carriers::changed(view, out, raw, entity, -1)?;
@@ -1379,8 +1237,6 @@ impl Deriver for TagAssign {
 }
 
 impl TagAssign {
-    /// The membership entry pointing at the record at `pos`: under its own tag, or, once merged away, the
-    /// tag it leads to.
     fn live_key(&self, rec: &Record, pos: u64, view: &View) -> Result<Option<Vec<u8>>, StoreError> {
         let raw = id(rec, 1);
         let mut tags = vec![raw];
@@ -1399,10 +1255,8 @@ impl TagAssign {
     }
 }
 
-/// `metaValue`: the value of a name the app keeps for itself.
 struct MetaValue;
 
-/// The entry holding a name's `metaValue` record.
 pub fn meta_key(name: &[u8]) -> Vec<u8> {
     let mut k = key::of(key::META);
     crate::keyspace::val::put_bytes(&mut k, name);
@@ -1447,7 +1301,6 @@ impl Deriver for MetaValue {
     }
 }
 
-/// Each name's `metaValue` JSON, or None.
 pub fn meta(view: &View, names: &[Vec<u8>]) -> Result<Vec<Option<Vec<u8>>>, StoreError> {
     names
         .iter()
@@ -1464,7 +1317,6 @@ pub fn meta(view: &View, names: &[Vec<u8>]) -> Result<Vec<Option<Vec<u8>>>, Stor
         .collect()
 }
 
-/// `moved`: points nowhere; replay pairs it with the copy after it.
 struct Moved;
 
 impl Deriver for Moved {

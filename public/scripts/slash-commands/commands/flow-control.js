@@ -22,20 +22,17 @@ function setInputCallback(_, value) {
 
 /**
  * @typedef {object} ButtonLabel
- * @property {string} text - The button text
- * @property {string} [tooltip] - Optional tooltip text
- * @property {string} [icon] - Optional Font Awesome icon class (e.g., 'fa-floppy-disk')
+ * @property {string} text
+ * @property {string} [tooltip]
+ * @property {string} [icon]
  */
 
 /**
- * @param {object} args - Named arguments for the command
- * @param {string} args.labels - JSON string of an array of button labels (strings or ButtonLabel objects)
- * @param {string} [args.multiple=false] - Flag indicating if multiple buttons can be toggled
- * @param {string} text - The text content to be displayed within the popup
- *
- * @returns {Promise<string>} - A promise that resolves to a string of the button labels selected
- *                              If 'multiple' is true, returns a JSON string array of labels.
- *                              If 'multiple' is false, returns a single label string.
+ * @param {object} args
+ * @param {string} args.labels
+ * @param {string} [args.multiple=false]
+ * @param {string} text
+ * @returns {Promise<string>}
  */
 async function buttonsCallback(args, text) {
     try {
@@ -50,7 +47,6 @@ async function buttonsCallback(args, text) {
         /** @type {ButtonLabel[]} */
         const buttons = rawButtons.map(btn => typeof btn === 'string' ? { text: btn } : btn);
 
-        // Validate raw buttons: each entry must be a string or a non-null object with a string `text` field that has content
         if (!buttons.every(btn => typeof btn === 'object' && btn !== null && typeof btn.text === 'string' && btn.text)) {
             console.warn('WARN: Invalid button label entry provided for /buttons command: each entry must be a string or an object with a "text" property');
             return '';
@@ -60,7 +56,6 @@ async function buttonsCallback(args, text) {
         const multipleToggledState = new Set();
         const multiple = isTrueBoolean(args?.multiple);
 
-        // Custom buttons start at 2; 1 and 0 are reserved for ok and cancel
         /** @type {Map<number, ButtonLabel>} */
         const resultToButtonMap = new Map(buttons.map((button, index) => [index + 2, button]));
 
@@ -132,7 +127,10 @@ async function buttonsCallback(args, text) {
                 .then((result => resolve(getResult(result))))
                 .catch(() => resolve(''));
 
-            /** @returns {string} @param {string|number|boolean} result */
+            /**
+             * @returns {string}
+             * @param {string|number|boolean} result
+             */
             function getResult(result) {
                 if (multiple) {
                     const array = result === POPUP_RESULT.AFFIRMATIVE ? Array.from(multipleToggledState).map(r => resultToButtonMap.get(r)?.text ?? '') : [];
@@ -238,7 +236,7 @@ async function runCallback(args, name) {
         return (await name.execute())?.pipe;
     }
 
-    /**@type {import('../SlashCommandScope.js').SlashCommandScope} */
+    /** @type {import('../SlashCommandScope.js').SlashCommandScope} */
     const scope = args._scope;
     if (scope.existsVariable(name)) {
         const closure = scope.getVariable(name);
@@ -269,7 +267,7 @@ async function runCallback(args, name) {
 
     try {
         name = name.trim();
-        /**@type {import('../core.js').ExecuteSlashCommandsOptions} */
+        /** @type {import('../core.js').ExecuteSlashCommandsOptions} */
         const options = {
             abortController: args._abortController,
             debugController: args._debugController,
@@ -307,12 +305,10 @@ async function inputCallback(args, prompt) {
         tooltip: args?.tooltip !== undefined && typeof args?.tooltip === 'string' ? args.tooltip : null,
         onOpen: popup => addImageLightbox(popup.content),
     };
-    // Do not remove this delay: the prompt will not show up without it
     await delay(1);
     const result = await callGenericPopup(safeValue, POPUP_TYPE.INPUT, defaultInput, popupOptions);
     await delay(1);
 
-    // Input will return null on nothing entered, and false on cancel clicked
     if (result === null || result === false) {
         if (args?.onCancel) {
             if (!(args.onCancel instanceof SlashCommandClosure)) {
@@ -333,13 +329,10 @@ async function inputCallback(args, prompt) {
 }
 
 /**
- * Each item in "args.list" is searched within "search_item" using fuzzy search. If any matches it returns the matched "item".
- * @param {FuzzyCommandArgs} args - arguments containing "list" (JSON array) and optionaly "threshold" (float between 0.0 and 1.0)
- * @param {string} searchInValue - the string where items of list are searched
- * @returns {string} - the matched item from the list
- * @typedef {{list: string, threshold: string, mode:string}} FuzzyCommandArgs - arguments for /fuzzy command
- * @example /fuzzy list=["down","left","up","right"] "he looks up" | /echo // should return "up"
- * @link https://www.fusejs.io/
+ * @param {FuzzyCommandArgs} args
+ * @param {string} searchInValue
+ * @returns {string}
+ * @typedef {{list: string, threshold: string, mode:string}} FuzzyCommandArgs
  */
 function fuzzyCallback(args, searchInValue) {
     if (!searchInValue) {
@@ -365,7 +358,6 @@ function fuzzyCallback(args, searchInValue) {
             ignoreLocation: true,
             threshold: 0.4,
         };
-        // Low threshold is strict; near 1, almost everything matches
         if ('threshold' in args) {
             params.threshold = parseFloat(args.threshold);
             if (isNaN(params.threshold)) {
@@ -421,13 +413,11 @@ function fuzzyCallback(args, searchInValue) {
 }
 
 /**
- *
- * @param {{title?: string, severity?: string, timeout?: string, extendedTimeout?: string, preventDuplicates?: string, awaitDismissal?: string, cssClass?: string, color?: string, escapeHtml?: string, onClick?: SlashCommandClosure}} args - named arguments from the slash command
- * @param {string} value - The string to echo (unnamed argument from the slash command)
- * @returns {Promise<string>} The text that was echoed
+ * @param {{title?: string, severity?: string, timeout?: string, extendedTimeout?: string, preventDuplicates?: string, awaitDismissal?: string, cssClass?: string, color?: string, escapeHtml?: string, onClick?: SlashCommandClosure}} args
+ * @param {string} value
+ * @returns {Promise<string>}
  */
 async function echoCallback(args, value) {
-    // toastr escapes HTML by default, so input doesn't need sanitizing here
     if (value === '') {
         console.warn('WARN: No argument provided for /echo command');
         return '';
@@ -460,7 +450,6 @@ async function echoCallback(args, value) {
     if (args.onClick) {
         if (args.onClick instanceof SlashCommandClosure) {
             options.onclick = async () => {
-                // Execute the slash command directly, with its internal scope and everything. Clear progress handler so it doesn't interfere with command execution progress.
                 args.onClick.onProgress = null;
                 await args.onClick.execute();
             };
@@ -469,7 +458,6 @@ async function echoCallback(args, value) {
         }
     }
 
-    // HTML must be sanitized when allowed, to prevent XSS
     if (!options.escapeHtml) {
         if (title) title = DOMPurify.sanitize(title, { FORBID_TAGS: ['style'] });
         value = DOMPurify.sanitize(value, { FORBID_TAGS: ['style'] });
@@ -496,7 +484,6 @@ async function echoCallback(args, value) {
         toast.css('background-color', args.color);
     }
 
-    // No toast comes back for a suppressed duplicate
     if (!options.escapeHtml && toast) {
         addImageLightbox(toast);
     }
@@ -511,8 +498,6 @@ async function echoCallback(args, value) {
 }
 
 /**
- * Opens the help panel at a topic. Takes the same topic names and numbers as upstream's `/help`, plus the names of
- * registered topics; anything else opens the overview.
  * @param {unknown} _
  * @param {string} type
  * @returns {Promise<string>}
@@ -722,7 +707,6 @@ export function registerFlowControlCommands() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'pass',
         callback: (_, arg) => {
-            // We do not support arrays of closures. Arrays of strings will be send as JSON
             if (Array.isArray(arg) && arg.some(x => x instanceof SlashCommandClosure)) throw new Error(t`Command /pass does not support multiple closures`);
             if (Array.isArray(arg)) return JSON.stringify(arg);
             return arg;

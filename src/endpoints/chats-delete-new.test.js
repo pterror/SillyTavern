@@ -10,11 +10,8 @@ import { write as writeCard } from '../character-card-parser.js';
 import { setConfigFilePath } from '../util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// chats.js's import chain reads process-wide config at import time, so the config path is set first.
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
-// Deleting a chat moves its character to the most recently active remaining one when it was the current one, and
-// starting a new chat moves the character (or makes the group's new chat) and deletes the replaced one, in one request.
 const { router: chatsRouter } = await import('./chats.js');
 const { router: charactersRouter } = await import('./characters.js');
 const { router: groupsRouter } = await import('./groups.js');
@@ -65,10 +62,8 @@ async function writeCharacter(avatar, name) {
 }
 
 /**
- * Two chats of a character, "Old" and "Newer" (spoken in later), each saved by a tab of its own.
  * @param {string} avatar
- * @returns {Promise<{ Old: string, Newer: string, ids: { Old: string, Newer: string } }>} The tabs' sessions, and the
- * chats' compat ids (the bookmarks each save made).
+ * @returns {Promise<{ Old: string, Newer: string, ids: { Old: string, Newer: string } }>}
  */
 async function twoChats(avatar) {
     /** @type {any} */
@@ -85,16 +80,10 @@ async function twoChats(avatar) {
     return tabs;
 }
 
-/**
- * A tab's own conversation's chat id in a tree with no current chat: its name, the character's (none for a group)
- * and the session's time.
- */
 const ownId = (/** @type {string | null} */ character, /** @type {string} */ tab) => chatNameAt({ group: character === null, name: character ?? '' }, /** @type {number} */ (sessionTime(tab)));
 
-/** The character's current chat as the tab sees it (the character's `chat`). */
 const activeOf = async (avatar, tab) => (await postJson('/api/characters/get', { avatar_url: avatar }, { [SESSION_HEADER]: tab })).data.chat ?? null;
 
-/** The names of a tree's chats, as the chat list shows them. */
 async function chatNames(owner, tab) {
     const rows = [];
     for (let after; ;) {
@@ -110,7 +99,6 @@ test('deleting the current chat (the tab\'s session) lands the tab where the use
     const avatar = 'ida.png';
     await writeCharacter(avatar, 'Ida');
     const tabs = await twoChats(avatar);
-    // No current chat: the tab's own conversation in the tree.
     assert.equal(await activeOf(avatar, tabs.Old), ownId('Ida', tabs.Old));
 
     const { status, data } = await postJson('/api/chats/delete', { avatar_url: avatar, chatfile: `${ownId('Ida', tabs.Old)}.jsonl`, open: true }, { [SESSION_HEADER]: tabs.Old });
@@ -147,8 +135,6 @@ test('a new character chat moves the tab\'s session and deletes the one it repla
     const { status, data } = await postJson('/api/chats/new', { avatar_url: avatar, chat: '', replace: 'Newer' }, { [SESSION_HEADER]: tabs.Newer });
     assert.equal(status, 200);
     assert.deepEqual(data.deleted, ['Newer']);
-    // A new chat is the session at the first greeting, with no bookmark made, named anew as upstream names a new chat
-    // file: listed as the tab's session, first.
     assert.match(data.chat, /^Lea - \d{4}-/);
     assert.notEqual(data.chat, ownId('Lea', tabs.Newer));
     assert.equal(await activeOf(avatar, tabs.Newer), data.chat);
@@ -188,7 +174,6 @@ test('deleting the bookmark a group\'s tab is at leaves the tab there, listed as
     }
     const { status, data } = await postJson('/api/chats/group/delete', { id: 'b', group_id: groupId }, { [SESSION_HEADER]: tabs.b });
     assert.equal(status, 200);
-    // Newest first: the tab's own conversation (no current chat), then bookmark `a`, by its name.
     assert.equal(ids.a, 'a');
     const own = ownId(null, tabs.b);
     assert.deepEqual({ chats: data.chats, chat_id: data.chat_id }, { chats: [own, ids.a], chat_id: own });
@@ -203,7 +188,6 @@ test('deleting characters with their chats names the chats deleted', async () =>
     assert.deepEqual(data.results[0].chats.sort(), [ids.Newer, ids.Old].sort());
 });
 
-// Opening a chat records it in the settings, whose throttled autosave timer would hold the process open.
 after(async () => {
     await user.close();
     setImmediate(() => process.exit(0));

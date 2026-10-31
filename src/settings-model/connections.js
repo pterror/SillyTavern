@@ -3,22 +3,6 @@ import { default_settings as ccDefaults } from '../../public/scripts/chat-comple
 import { textgen_connection_defaults as tcDefaults } from '../../public/scripts/textgen-connection-defaults.js';
 import { draft } from './entity-draft.js';
 
-/**
- * Connections (§1.4, step 3c): each thing the app sends requests to, a catalog entity (`TYPE.connection`, key a
- * uuid) with its `type`, `model`, `url` and the type's own options. Made from upstream's flat settings, which remember
- * one model, URL and option set per chat completion source and text completion type, and given back as them.
- *
- * - Type: `openai:<source>`, `textgenerationwebui:<type>`, `kobold`, `novel`, `horde`, `extras`.
- * - A source or type gets a connection when it's the selected one or any of its own values isn't the default, so a
- *   user's 26 sources don't become 26 connections, and switching source still finds its own.
- * - A value upstream keeps once for every source of a family (`reverse_proxy`, `bypass_status_check`, …) is each of
- *   the family's connections' own, and is given back from the family's selected one.
- * - The connection text generation uses is one slot (`textGeneration`); `main_api`, `chat_completion_source` and the
- *   text completion `type` are read from its type. The other families' selected connections are remembered
- *   (`remembered`), so switching back to a family finds the one it had.
- */
-
-/** A chat completion key's home: its source (`*` every source's) and its field there. */
 const CC_FIELDS = Object.freeze({
     openai_model: ['openai', 'model'],
     claude_model: ['claude', 'model'],
@@ -74,10 +58,8 @@ const CC_FIELDS = Object.freeze({
     custom_prompt_post_processing: ['*', 'custom_prompt_post_processing'],
 });
 
-/** The chat completion connection keys that are the user's preferences, not a connection's (slots, default level user). */
 export const CC_PREFERENCE_KEYS = Object.freeze(['group_models', 'sort_models', 'show_external_models']);
 
-/** A text completion key's home, as CC_FIELDS; `server_urls` holds each type's URL. */
 const TC_FIELDS = Object.freeze({
     mancer_model: ['mancer', 'model'],
     togetherai_model: ['togetherai', 'model'],
@@ -98,31 +80,27 @@ const TC_FIELDS = Object.freeze({
     bypass_status_check: ['*', 'bypass_status_check'],
 });
 
-/** Horde's connection values, named as `horde_settings` names them. */
 const HORDE_FIELDS = Object.freeze(['models', 'auto_adjust_response_length', 'auto_adjust_context_length', 'trusted_workers_only']);
 
-/** `main_api` by family, and back. */
 const MAIN_API = Object.freeze({ openai: 'openai', textgenerationwebui: 'textgenerationwebui', kobold: 'kobold', novel: 'novel', horde: 'koboldhorde' });
 
 /**
  * @typedef {import('./entity-draft.js').EntityDraft} EntityDraft
- * @typedef {object} UpstreamConnectionSettings The parts of upstream's settings that are connections.
+ * @typedef {object} UpstreamConnectionSettings
  * @property {string} [main_api]
  * @property {Record<string, any>} [oai_settings]
  * @property {Record<string, any>} [textgenerationwebui_settings]
  * @property {Record<string, any>} [kai_settings]
  * @property {Record<string, any>} [nai_settings]
  * @property {Record<string, any>} [horde_settings]
- * @property {{ apiUrl?: string, apiKey?: string, autoConnect?: boolean }} [extras] `extension_settings`' Extras keys.
+ * @property {{ apiUrl?: string, apiKey?: string, autoConnect?: boolean }} [extras]
  * @typedef {object} ConnectionsFromUpstream
  * @property {EntityDraft[]} connections
- * @property {string | undefined} textGeneration The key of the connection text generation uses.
- * @property {Record<string, string>} remembered The other families' selected connections, by family.
- * @property {Record<string, unknown>} preferences The chat completion preference keys there were.
- * @property {string[]} sources The user's own connections: upstream's one per source and backend type (a preset's
- *   connection that isn't one of these is the preset's alone).
- * @property {{ connection: string, value: string }[]} secrets Keys to put in secrets.json, the connection then
- *   referring to their entry (`secret`).
+ * @property {string | undefined} textGeneration
+ * @property {Record<string, string>} remembered
+ * @property {Record<string, unknown>} preferences
+ * @property {string[]} sources
+ * @property {{ connection: string, value: string }[]} secrets
  */
 
 /**
@@ -134,7 +112,6 @@ function same(a, b) {
 }
 
 /**
- * The family's sources' values, from flat keys.
  * @param {Record<string, any>} flat
  * @param {Readonly<Record<string, readonly string[]>>} fields
  * @param {Record<string, any>} defaults
@@ -159,11 +136,8 @@ function bySource(flat, fields, defaults) {
 }
 
 /**
- * One chat completion connection per source in a flat set of upstream's chat completion keys (`oai_settings`, or
- * the connection keys of a chat completion preset) that is `selected` or has a value of its own that isn't the
- * default.
  * @param {Record<string, any>} flat
- * @param {(hint: string) => string} newKey The key of what `hint` names; the same hint, the same key.
+ * @param {(hint: string) => string} newKey
  * @returns {{ connections: EntityDraft[], selected: string | undefined, preferences: Record<string, unknown> }}
  */
 export function chatConnectionsFromUpstream(flat, newKey) {
@@ -187,9 +161,8 @@ export function chatConnectionsFromUpstream(flat, newKey) {
 }
 
 /**
- * Upstream's settings' connections.
  * @param {UpstreamConnectionSettings} settings
- * @param {(hint: string) => string} newKey Makes the key of what `hint` names (a uuid); the same hint, the same key.
+ * @param {(hint: string) => string} newKey
  * @returns {ConnectionsFromUpstream}
  */
 export function connectionsFromUpstream(settings, newKey) {
@@ -247,7 +220,6 @@ export function connectionsFromUpstream(settings, newKey) {
 }
 
 /**
- * The family of a connection type, and its source or backend type within it.
  * @param {string} type
  * @returns {{ family: string, name: string | undefined }}
  */
@@ -257,9 +229,6 @@ export function connectionFamily(type) {
 }
 
 /**
- * Flat keys of one family from its connections: each source's own values from the connection of its type (the
- * selected one for the selected source, else the first), the shared ones from the selected connection, and the
- * default for a source with none.
  * @param {EntityDraft[]} connections
  * @param {string} family
  * @param {Readonly<Record<string, readonly string[]>>} fields
@@ -285,8 +254,7 @@ function flatFrom(connections, family, fields, defaults, chosen) {
 }
 
 /**
- * Flat chat completion keys for a selected connection (an export of a chat completion preset re-merges these).
- * @param {EntityDraft[]} connections Every chat completion connection.
+ * @param {EntityDraft[]} connections
  * @param {EntityDraft | undefined} chosen
  * @param {Record<string, unknown>} [preferences]
  * @returns {Record<string, unknown>}
@@ -301,7 +269,6 @@ export function chatConnectionsToUpstream(connections, chosen, preferences = {})
 }
 
 /**
- * Upstream's flat settings from the connections.
  * @param {EntityDraft[]} connections
  * @param {{ textGeneration?: string, remembered?: Record<string, string>, preferences?: Record<string, unknown>, extrasApiKey?: string }} slots
  * @returns {Required<Omit<UpstreamConnectionSettings, 'main_api'>> & { main_api: string | undefined }}
@@ -337,13 +304,11 @@ export function connectionsToUpstream(connections, slots) {
         extras: extras ? {
             ...(Object.hasOwn(extras.values, 'url') ? { apiUrl: /** @type {string} */ (extras.values.url) } : {}),
             ...(Object.hasOwn(extras.values, 'autoConnect') ? { autoConnect: /** @type {boolean} */ (extras.values.autoConnect) } : {}),
-            // No key is an empty one, as the page holds it.
             apiKey: slots.extrasApiKey ?? '',
         } : {},
     };
 }
 
-/** For tests: the keys the tables cover, to hold them to the shared lists. */
 export const COVERED = Object.freeze({
     chat: Object.freeze([...Object.keys(CC_FIELDS), ...CC_PREFERENCE_KEYS, 'chat_completion_source']),
     text: Object.freeze([...Object.keys(TC_FIELDS), 'server_urls']),

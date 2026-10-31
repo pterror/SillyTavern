@@ -6,19 +6,7 @@ import { BUNDLE_TYPES, USER_LISTS } from './refs.js';
 import { FOLLOWS_TEXT_GENERATION } from './capabilities.js';
 import { keysOf, readCatalog, readDraft, writeDrafts } from './model-store.js';
 
-/**
- * A user's settings in the store (the settings model §1.2, step 9): the user record (`TYPE.user`, key the handle)
- * holding the user level's statements, the catalogs' entities, and the statements the user made at characters and
- * groups (STATEMENT_PREFIX values on them). Written from, and read back as, settings-compat.js's UserModel.
- *
- * The user record's values: `o:<field>` an override, `b:<group>` a bundle statement, `s:<slot>` a slot's statement
- * (text generation, the remembered connections, each capability, the proxy, profile, persona and regex preset, the
- * username kept, the data bank files turned off elsewhere), `ext:<key>` an extension's own settings, `key:<path>` an
- * unknown key. Its lists (refs.js USER_LISTS): the ordered regex scripts, regex presets and proxies, the data bank
- * files, the quick reply sets and the hidden ones, and the characters and groups holding its statements.
- */
 
-/** The catalogs a user's entities are of, read back a page at a time. */
 const CATALOG_TYPES = Object.freeze([
     TYPE.connection, TYPE.connectionProfile, TYPE.proxy, TYPE.persona, TYPE.serverHistory, TYPE.modelTemplateBinding,
     TYPE.regexScript, TYPE.regexPreset, TYPE.globalVariable, TYPE.dataBankFile, TYPE.biasList,
@@ -26,7 +14,6 @@ const CATALOG_TYPES = Object.freeze([
 
 const PAGE = 500;
 
-/** A character's or group's statements, by what they state. */
 const STATEMENTS = Object.freeze({
     settings: `${STATEMENT_PREFIX}settings`,
     personas: `${STATEMENT_PREFIX}personas`,
@@ -37,13 +24,11 @@ const STATEMENTS = Object.freeze({
 /**
  * @typedef {import('./entity-draft.js').EntityDraft} EntityDraft
  * @typedef {import('./settings-compat.js').UserModel} UserModel
- * @typedef {{ bundles?: Record<string, string>, overrides?: Record<string, unknown> }} LevelSettings A character's or
- *   group's statements of the bundle groups: its bundles by group (keys) and its overrides by field.
+ * @typedef {{ bundles?: Record<string, string>, overrides?: Record<string, unknown> }} LevelSettings
  * @typedef {{ personas?: string[], dataBank?: string[], quickReplies?: { items: string[], hidden: string[] }, settings?: LevelSettings }} HolderStatements
  */
 
 /**
- * A capability's statement as a value: a connection's key (a ref), else JSON.
  * @param {string | null} statement
  */
 function capabilityValue(statement) {
@@ -61,7 +46,6 @@ function capabilityOf(value) {
 }
 
 /**
- * A draft and every part under it.
  * @param {EntityDraft} d
  * @returns {EntityDraft[]}
  */
@@ -70,7 +54,6 @@ function partsAndSelf(d) {
 }
 
 /**
- * The statements the model makes at each character and group, by `character:<avatar>` or `group:<id>`.
  * @param {UserModel['statements']} statements
  * @returns {Map<string, { type: number, key: string, says: HolderStatements }>}
  */
@@ -93,7 +76,6 @@ function holdersOf(statements) {
 }
 
 /**
- * The user record's draft.
  * @param {string} handle
  * @param {UserModel} model
  * @param {Map<string, { type: number, key: string }>} holders
@@ -123,7 +105,6 @@ export function userDraftOf(handle, model, holders) {
     for (const [key, value] of Object.entries(model.ext)) values[`ext:${key}`] = value;
     for (const [key, value] of Object.entries(model.unknown)) values[`key:${key}`] = value;
     const holderList = (/** @type {number} */ type) => [...holders.values()].filter(h => h.type === type).map(h => h.key);
-    // A list the model has, even empty, is written; one it hasn't isn't, so it reads back as not there.
     /** @type {Record<number, string[] | undefined>} */
     const lists = {
         [USER_LISTS.regexScripts]: statements.regexScripts,
@@ -140,22 +121,16 @@ export function userDraftOf(handle, model, holders) {
 }
 
 /**
- * Writes a user's model: the user record, the catalogs' entities, and the user's statements at characters and
- * groups (a character or group not in the library is left out, warned), as one commit.
  * @param {import('../library-engine.js').LibraryEngine} lib
  * @param {string} handle
  * @param {UserModel} model
  * @param {{ actor?: import('../world-info-engine.js').Actor | null, bundles?: EntityDraft[], previous?: UserModel }} [options]
- *   `bundles`: the bundles (presets, templates, themes, quick reply sets) written with it. `previous`: the model as
- *   stored now, so only the entities that differ are written and those it no longer has deleted (history kept).
- * @returns {Promise<{ warnings: string[], kept: string[] }>} `kept`: the characters and groups whose statements are kept
- *   aside as they came (not in the library).
+ * @returns {Promise<{ warnings: string[], kept: string[] }>}
  */
 export async function writeUserModel(lib, handle, model, { actor = null, bundles = [], previous } = {}) {
     /** @type {string[]} */
     const warnings = [];
     const holders = holdersOf(model.statements);
-    // A character or group not in the library can't hold a statement: kept on the user record as it came.
     const holderIds = await lib.store.libraryIds([...holders.values()].map(h => [h.type, h.key]));
     /** @type {{ type: number, key: string, says: HolderStatements }[]} */
     const orphans = [];
@@ -163,7 +138,6 @@ export async function writeUserModel(lib, handle, model, { actor = null, bundles
         if (holderIds[i] !== null) return;
         orphans.push(holder);
         holders.delete(id);
-        // Warned once, when its statements are first kept aside, not again at every write that still keeps them.
         if (!previous?.kept?.includes(holder.key)) warnings.push(`${holder.key} isn't in the library: the statements made at it are kept as they came`);
     });
     /** @type {[number, string][]} */
@@ -186,7 +160,6 @@ export async function writeUserModel(lib, handle, model, { actor = null, bundles
         actor, warnings, refs,
         extra: async (ids, stamp) => {
             const writes = historyWrites(stamp);
-            // What the model no longer has goes, its parts with it.
             const goneIds = await lib.store.libraryIds(gone.flatMap(partsAndSelf).map(d => [d.type, d.key]));
             const removed = goneIds.filter(x => x !== null).map(entity => ({ kind: 'histEntityDelete', entity, ...stamp() }));
             const idOf = (/** @type {number} */ type, /** @type {string} */ key) => ids.get(`${type}:${key}`);
@@ -226,7 +199,6 @@ export async function writeUserModel(lib, handle, model, { actor = null, bundles
 }
 
 /**
- * Reads a user's model back.
  * @param {import('../library-engine.js').LibraryEngine} lib
  * @param {string} handle
  * @returns {Promise<UserModel | null>}
@@ -245,7 +217,6 @@ export async function readUserModel(lib, handle) {
             after = page.last;
         }
     }
-    // The proxies in the user's order.
     const proxyOrder = /** @type {string[]} */ (user.lists?.[USER_LISTS.proxies] ?? []);
     entities.sort((a, b) => (a.type === TYPE.proxy && b.type === TYPE.proxy ? proxyOrder.indexOf(a.key) - proxyOrder.indexOf(b.key) : 0));
 
@@ -274,7 +245,6 @@ export async function readUserModel(lib, handle) {
         else if (name === 'orphans') orphans = /** @type {any[]} */ (value);
         else if (name !== 'dataBank') statements[name] = value;
     }
-    /** The list as written; undefined for one the model hadn't. */
     const list = (/** @type {number} */ n) => /** @type {string[] | undefined} */ (user.lists?.[n]);
     if (list(USER_LISTS.regexScripts)) statements.regexScripts = list(USER_LISTS.regexScripts);
     if (list(USER_LISTS.regexPresets)) statements.regexPresets = list(USER_LISTS.regexPresets);
@@ -286,7 +256,6 @@ export async function readUserModel(lib, handle) {
     }
     statements.personasConnected = [];
 
-    // The statements at characters and groups, refs back to keys.
     const holders = [
         ...(list(USER_LISTS.characters) ?? []).map(key => ({ type: TYPE.character, kind: 'character', key })),
         ...(list(USER_LISTS.groups) ?? []).map(key => ({ type: TYPE.group, kind: 'group', key })),
@@ -325,11 +294,9 @@ export async function readUserModel(lib, handle) {
 
 
 /**
- * Deletes a user's model from the store (its history kept): every settings entity, placeholders too, and the
- * statements the user record names at characters and groups. For a conversion run again before the model is read.
  * @param {import('../library-engine.js').LibraryEngine} lib
  * @param {string} handle
- * @returns {Promise<number>} How many entities went.
+ * @returns {Promise<number>}
  */
 export async function deleteUserModel(lib, handle) {
     const user = await readDraft(lib, TYPE.user, handle);

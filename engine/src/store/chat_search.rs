@@ -1,19 +1,3 @@
-//! A tree's chats searched (design S5), as two searches; neither reads a whole path:
-//!
-//! - Messages: the tree's messages a query matches, best first, from the owner's chat postings (whole words; a
-//!   closed-quote phrase as a phrase). On top, a substring scan (upstream's match: each clause's text, lower-cased,
-//!   inside the message's text; a negated one in none) reads messages newest first, a message's text at a time,
-//!   under a cap of text bytes (`SCAN_BYTES`), answering the ones whole words don't match; where it stopped is a
-//!   cursor a scan-only read goes on from.
-//! - The chat list (a tree's bookmarks, and a tab's session there when it has no current chat there): an item
-//!   matches by its name (every clause's text inside it, lower-cased, as upstream's file names) or by its path
-//!   holding every positive clause in some message and no negated one in any: each clause's matching messages come
-//!   from the postings, and a message is on an item's path when it is the item's ancestor at its depth, reached
-//!   through jump pointers (`sessions::climb`), the item's climb going down the clause's depths in one pass.
-//!
-//! Every read counts as work (`query::Ctx` units, about 0.16 µs each; a point read `READ`); past `WORK` a read
-//! stops and says it may be incomplete.
-
 use std::collections::{HashMap, HashSet};
 
 use super::StoreError;
@@ -26,13 +10,9 @@ use crate::log::format::FieldRef;
 use crate::search::query::{After, Clause, Limits, Matching, Order, Query, StatsCache};
 use crate::search::{LENGTH_BITS, Scope, lengths};
 
-/// Work a read does at most (about 0.3 s).
 pub const WORK: u64 = 2_000_000;
-/// Work a point read counts.
 const READ: u64 = 6;
-/// Text bytes a message search's substring scan reads at most per call.
 pub const SCAN_BYTES: u64 = 3 << 20;
-/// What the scan counts per message read besides its text's bytes.
 const SCAN_MESSAGE: u64 = 64;
 
 fn query(
@@ -54,7 +34,6 @@ fn query(
     }
 }
 
-/// The clauses with a word to look up (a clause of punctuation only has none).
 fn worded(clauses: &[Clause]) -> Vec<Clause> {
     clauses
         .iter()
@@ -66,7 +45,6 @@ fn worded(clauses: &[Clause]) -> Vec<Clause> {
         .collect()
 }
 
-/// The substring clauses: each clause's text as the scan matches it (`scan_text`), and whether it is negated.
 fn substrings(clauses: &[Clause]) -> Vec<(bool, String)> {
     clauses
         .iter()
@@ -77,16 +55,12 @@ fn substrings(clauses: &[Clause]) -> Vec<(bool, String)> {
         .collect()
 }
 
-/// A clause's text as a substring: lower-cased and trimmed, a leading dash dropped (a chat query has no negation:
-/// the index reads `-foo` as the word `foo`). A phrase's quotes aren't in its text.
 fn scan_text(c: &Clause) -> String {
     let t = lower(&c.text);
     let t = t.trim();
     t.strip_prefix('-').unwrap_or(t).trim().to_string()
 }
 
-/// The chat list scan's substrings: the positive clauses' texts as one (the query without its search syntax),
-/// and each negated one's.
 fn list_substrings(clauses: &[Clause]) -> Vec<(bool, String)> {
     let whole: Vec<String> = clauses
         .iter()
@@ -106,20 +80,14 @@ fn lower(b: &[u8]) -> String {
     String::from_utf8_lossy(b).to_lowercase()
 }
 
-/// Whether `text` holds every positive substring and no negated one.
 fn holds(subs: &[(bool, String)], text: &[u8]) -> bool {
     let t = lower(text);
     subs.iter()
         .all(|(negate, s)| t.contains(s.as_str()) != *negate)
 }
 
-// ---- messages ----
-
-/// Where a message search starts: an index page and the scan from the newest message, or the scan alone from below
-/// a message (a `Messages::scan` cursor).
 #[derive(Debug, Clone)]
 pub enum Start {
-    /// `after`: the last hit before, and `weights` the idfs ranked by, as `Messages::next` gives them.
     Index {
         after: Option<(f64, u64)>,
         weights: Option<Vec<f64>>,
@@ -129,21 +97,14 @@ pub enum Start {
 
 #[derive(Debug, Default)]
 pub struct Messages {
-    /// From the index, best first: (message, score).
     pub hits: Vec<(u64, f64)>,
-    /// From the scan, newest first: messages whole words don't match.
     pub scanned: Vec<u64>,
-    /// The index has more after the page's last hit.
     pub more: bool,
-    /// With `more`, a later index page's `after`: the last hit's rank (`query::Hit::rank`) and message, and the
-    /// idfs ranked by (`query::Found::weights`).
     pub next: Option<(f64, u64)>,
     pub weights: Option<Vec<f64>>,
     pub total: u64,
     pub total_exact: bool,
-    /// The scan stopped (at its cap, at `limit` or at `WORK`): messages below this one are still to scan.
     pub scan: Option<u64>,
-    /// The search's reports of blocks with maxima too high (`query::Found::tighten`).
     pub tighten: Vec<crate::search::query::Tighten>,
 }
 
@@ -161,7 +122,6 @@ pub fn messages(
     let subs = substrings(clauses);
     let mut out = Messages::default();
     let mut work = 0u64;
-    // Messages of a subtree being deleted read as deleted.
     let pending = super::prune::pending_in(view, tree)?;
     let below = match start {
         Start::Index { after, weights } => {
@@ -193,7 +153,6 @@ pub fn messages(
                 out.hits = hits.iter().map(|h| (h.doc, h.score)).collect();
             }
             if after.is_some() {
-                // Later index pages read no scan: the first page's cursor goes on with it.
                 return Ok(out);
             }
             u64::MAX
@@ -228,18 +187,12 @@ pub fn messages(
     Ok(out)
 }
 
-/// What a text scan (`scan_texts`) feeds: it is asked for each message's text, newest first.
 trait ScanSink {
-    /// Work the sink itself has spent.
     fn extra_work(&self) -> u64;
-    /// Whether the sink wants no more messages.
     fn full(&self) -> bool;
     fn take(&mut self, message: u64, text: &[u8]) -> Result<(), StoreError>;
 }
 
-/// Reads the tree's messages' texts below `below`, newest first, a message at a time, under a cap of text bytes
-/// (`scan_bytes`), `WORK` and the sink's wish, handing each to the sink. Returns where it stopped early (the
-/// cursor: messages below it are still to read), or None when it read them all.
 fn scan_texts(
     view: &View,
     tree: u64,
@@ -248,7 +201,6 @@ fn scan_texts(
     work: &mut u64,
     sink: &mut dyn ScanSink,
 ) -> Result<Option<u64>, StoreError> {
-    // The scope's length entries list the messages with text, LENGTH_BITS of ids an entry; read last first.
     let p = lengths(Scope::chat(tree));
     let end = if below == u64::MAX {
         crate::store::kinds::key::prefix_end(&p)
@@ -285,7 +237,6 @@ fn scan_texts(
             for &m in docs.iter().rev() {
                 let spent = *work + scanned / 32 + sink.extra_work();
                 if scanned > scan_bytes || sink.full() || spent > WORK {
-                    // `m` isn't read: the next scan starts with it.
                     return Ok(Some(m + 1));
                 }
                 let t = kinds::text_value_of(view, Holder::Message(m), &FieldRef::Code(chat::MES))?
@@ -301,8 +252,6 @@ fn scan_texts(
     }
 }
 
-/// A message search's scan: the messages holding every positive substring and no negated one that whole words
-/// don't match.
 struct MessageSink<'a> {
     view: &'a View<'a>,
     tree: u64,
@@ -326,7 +275,6 @@ impl ScanSink for MessageSink<'_> {
         {
             return Ok(());
         }
-        // Whole words found it: the index answers it.
         if let Some(w) = &mut self.words_match
             && w.matches(m)?
         {
@@ -337,63 +285,40 @@ impl ScanSink for MessageSink<'_> {
     }
 }
 
-// ---- the chat list ----
-
-/// An item of a tree's chat list: a bookmark, or a tab's session; at a message (None: the tree's root).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {
     pub bookmark: Option<u64>,
     pub session: Option<u64>,
     pub at: Option<u64>,
-    /// Its place in the list: (time key, bookmark), the session's (time key, `u64::MAX`).
     pub key: (u64, u64),
 }
 
 #[derive(Debug, Default)]
 pub struct ListPage {
     pub hits: Vec<Item>,
-    /// Items follow: read on `after` `next`.
     pub more: bool,
     pub next: Option<(u64, u64)>,
-    /// Every match was weighed (not cut by `WORK`, no depth rewrite under way).
     pub exact: bool,
-    /// From the scan, newest messages first: items whose path holds the query's text, that the index and names
-    /// don't match.
     pub scanned: Vec<Item>,
-    /// The scan stopped (at its cap, or at `WORK`): messages below this one are still to scan.
     pub scan: Option<u64>,
 }
 
-/// Where a chat list search starts: the items, from after a key (and the scan from the newest message when that
-/// is the first page), or the scan alone from below a message (a `ListPage::scan` cursor).
 #[derive(Debug, Clone, Copy)]
 pub enum ListStart {
     Items { after: Option<(u64, u64)> },
     ScanBelow(u64),
 }
 
-/// The substring scan of a chat list search: the cap of text bytes it reads.
 #[derive(Debug, Clone)]
 pub struct ListScan {
     pub bytes: u64,
 }
 
-/// A clause's matching messages by depth.
 struct Candidates {
     negate: bool,
-    /// Depths, deepest first, each with its messages.
     by_depth: Vec<(u64, HashSet<u64>)>,
 }
 
-/// The items of the tree's chat list whose name or path matches, up to `limit`, newest first: the tree's bookmarks
-/// by the receive time of the message each is at (one at the root by when it was made), and the tab's session by its
-/// pointer's message's (at the root: by when it got there) when it is in the tree and has no current chat there
-/// (`sessions::current_chat`; before bookmarks of the same time). `start` is where to read from (`Item::key` of the
-/// last item read before).
-///
-/// With a `scan`, a first page (or the scan alone, `ListStart::ScanBelow`) also scans the tree's messages' texts
-/// for the query's text without its search syntax as a substring (`list_substrings`, `scan_texts`); every item whose path holds a message found, that the
-/// index and names didn't match, is in `scanned` (all of them, under `WORK`).
 #[allow(clippy::too_many_arguments)]
 pub fn chat_list(
     view: &View,
@@ -413,7 +338,6 @@ pub fn chat_list(
     let words = worded(clauses);
     let mut work = 0u64;
     let mut reads = 0u64;
-    // Each worded clause's matching messages, read once a call.
     let mut cands: Option<Vec<Candidates>> = None;
     let mut index_hit = |item: &Item,
                          name: &[u8],
@@ -489,7 +413,6 @@ pub fn chat_list(
             let Some(at) = item.at else {
                 return Ok(false);
             };
-            // Matched by the index or its name: that answer has it.
             Ok(holds_any(view, at, &found, reads)? && !index_hit(item, name, work, reads, exact)?)
         },
     )?;
@@ -498,7 +421,6 @@ pub fn chat_list(
     Ok(out)
 }
 
-/// A chat list search's scan: the messages holding the query's text, newest first.
 struct TextSink<'a> {
     view: &'a View<'a>,
     tree: u64,
@@ -524,12 +446,9 @@ impl ScanSink for TextSink<'_> {
     }
 }
 
-/// Whether an item is a hit: its place, its name, then work, reads and whether the answer is exact so far.
 type Hit<'a> =
     dyn FnMut(&Item, &[u8], &mut u64, &mut u64, &mut bool) -> Result<bool, StoreError> + 'a;
 
-/// Walks the tree's chat list from after `after`, newest first, putting the items `hit` accepts in `out.hits` up to
-/// `limit` (then `out.more` and `out.next`), or until `WORK` is spent (then `out.exact` is false too).
 #[allow(clippy::too_many_arguments)]
 fn walk(
     view: &View,
@@ -628,7 +547,6 @@ fn walk(
             if capped || out.hits.len() == limit {
                 out.more = true;
                 out.exact &= !capped;
-                // The next page starts with this item.
                 out.next = last;
                 return Ok(());
             }
@@ -643,7 +561,6 @@ fn walk(
     }
 }
 
-/// Whether the path down to `at` holds every positive worded clause in some message and no negated one in any.
 #[allow(clippy::too_many_arguments)]
 fn path_holds(
     view: &View,
@@ -686,7 +603,6 @@ fn path_holds(
     holds_any(view, at, cands.as_ref().expect("read above"), reads)
 }
 
-/// Messages grouped by depth, deepest first.
 fn by_depth(
     view: &View,
     docs: &[u64],
@@ -709,7 +625,6 @@ fn by_depth(
     Ok(by_depth)
 }
 
-/// Whether the path down to `at` holds, for each of `cands`, a message of it (or none, if it is negated).
 fn holds_any(
     view: &View,
     at: u64,
@@ -721,7 +636,6 @@ fn holds_any(
         return Ok(false);
     };
     for c in cands {
-        // Down the clause's depths from the item's: its ancestor at each, through one climb.
         let (mut v, mut dv, mut jv) = (at, d0, j0);
         let mut found = false;
         for (d, ms) in &c.by_depth {

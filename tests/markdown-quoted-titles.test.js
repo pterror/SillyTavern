@@ -2,10 +2,6 @@ import { describe, test, expect, jest, beforeAll } from '@jest/globals';
 import { Marked } from 'marked';
 import showdown from 'showdown';
 
-// messageFormatting wraps quoted dialogue in <q> before markdown runs. A double-quoted title in link, image or
-// reference-definition syntax is markdown, not dialogue, so it's left for marked to read as the title.
-// messageFormatting's DOM-bound and app-wide imports are replaced; DOMPurify needs a window, so sanitize is the
-// identity here.
 
 
 jest.unstable_mockModule('../public/lib.js', () => ({

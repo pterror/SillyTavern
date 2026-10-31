@@ -1,5 +1,3 @@
-// A tree's edits on the engine (build path 5b addendum): the deletes and the two cuts, each removing only what
-// belongs to the path alone; swiping; a new chat's greeting; bookmark names unique in a tree and a route's chat name.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -26,8 +24,6 @@ const msg = (/** @type {string} */ mes) => ({ name: mes.startsWith('u') ? 'You' 
 
 let n = 0;
 /**
- * A fresh store and tree. `build` adds messages: `send(after, texts, actor)` appends through the actor's session
- * (null after: openings) and answers the ids by text.
  * @param {any} engine
  */
 async function fresh(engine) {
@@ -58,35 +54,28 @@ async function fresh(engine) {
 
 for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm: loadEngine({ platform: null }).binding })) {
     test(`${kind}: the deletes remove only what belongs to the path`, async () => {
-        // g - u1 - b1 - u2 - b2 (a), and b's branch b1x - u2x under u1.
         const { store, chats, t, id, send, shown, replies } = await fresh(engine);
         await send(null, ['g']);
         await send('g', ['u1', 'b1', 'u2', 'b2']);
         await send('u1', ['b1x', 'u2x'], b);
 
-        // Delete this path from u2: u2 and b2 go, a moves to b1.
         assert.deepEqual(await chats.deletePath({ tree: t, node_id: id.u2, actor: a }), { ok: true });
         assert.deepEqual(await shown(a), ['g', 'u1', 'b1']);
         assert.deepEqual(await replies('b1'), []);
-        // From g, only what is the path's alone: b1 (u1 has b's branch under it too).
         assert.deepEqual(await chats.deletePath({ tree: t, node_id: id.g, actor: a }), { ok: true });
         assert.deepEqual(await shown(a), ['g', 'u1']);
         assert.deepEqual(await replies('u1'), ['b1x']);
         assert.deepEqual(await shown(b), ['g', 'u1', 'b1x', 'u2x']);
-        // A message not on the session's path is refused.
         assert.deepEqual(await chats.deletePath({ tree: t, node_id: id.u2x, actor: a }), { ok: false, reason: 'not on the path' });
-        // Its path ends at u1, which has b's branch below: nothing is its alone.
         assert.deepEqual(await chats.deletePath({ tree: t, node_id: id.u1, actor: a }), { ok: true });
         assert.deepEqual(await replies('u1'), ['b1x']);
 
-        // Delete all descendants but keep the message: b's branch goes, b moves up to u1.
         await send('u1', ['b1y']);
         assert.deepEqual(await chats.deleteBelow({ tree: t, node_id: id.u1, actor: a }), { ok: true });
         assert.deepEqual(await replies('u1'), []);
         assert.deepEqual(await shown(b), ['g', 'u1']);
         assert.deepEqual(await shown(a), ['g', 'u1']);
 
-        // Delete this swipe and below, and every swipe at a position and below.
         await send('u1', ['c1', 'c2']);
         await send('u1', ['d1', 'd2'], b);
         assert.deepEqual(await chats.deleteSubtree({ tree: t, node_id: id.c1, actor: a }), { ok: true });
@@ -94,7 +83,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual(await shown(a), ['g', 'u1'], 'the session moves to the nearest message left above');
         assert.deepEqual(await chats.deleteAlternatives({ tree: t, node_id: id.d1, actor: a }), { ok: true });
         assert.deepEqual(await replies('u1'), []);
-        // Every opening: the whole tree; the sessions are at its root, and nothing is saved.
         assert.deepEqual(await chats.deleteAlternatives({ tree: t, node_id: id.g, actor: a }), { ok: true });
         assert.deepEqual(await replies(null), []);
         assert.deepEqual(await chats.pointer(a.session), { tree: t, at: null });
@@ -115,14 +103,12 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
             changes: [{ id: change.ok ? change.changes[0] : '', key: 'hp', variable: true, node_id: id.b1 }],
         };
         assert.deepEqual(preview, { ok: true, preview: true, drops });
-        // Not confirmed, or confirmed in part: refused, nothing written.
         assert.deepEqual(await chats.deleteSubtree({ tree: t, node_id: id.b1, actor: a }), { ok: false, reason: 'confirm', drops });
         assert.deepEqual(await chats.deleteSubtree({ tree: t, node_id: id.b1, actor: a, confirm: { bookmarks: [drops.bookmarks[0].id] } }), { ok: false, reason: 'confirm', drops });
         assert.deepEqual(await replies('u1'), ['b1']);
         const confirm = { bookmarks: [drops.bookmarks[0].id], changes: [drops.changes[0].id] };
         assert.deepEqual(await chats.deleteSubtree({ tree: t, node_id: id.b1, actor: a, confirm }), { ok: true });
         assert.deepEqual(await replies('u1'), []);
-        // The following bookmark moved to the nearest message left above; the pinned one went.
         assert.deepEqual((await chats.bookmarks({ tree: t, limit: 10 })).rows.map(r => [r.name, r.at]), [['Following', id.u1]]);
         assert.deepEqual(await shown(a), ['g', 'u1']);
         await store.close();
@@ -130,7 +116,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
 
     test(`${kind}: a cut from this path forks it; a cut everywhere closes the gap`, async () => {
         const { store, chats, t, id, send, shown, replies } = await fresh(engine);
-        // g - u1 - b1 - u2 - b2 - u3 (a); b's branch u3x under b2.
         await send(null, ['g']);
         await send('g', ['u1', 'b1', 'u2', 'b2', 'u3']);
         await chats.select({ tree: t, node_id: id.b2, actor: b });
@@ -140,8 +125,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await chats.revertChange({ change: gone.ok ? gone.changes[0] : '', actor: a });
         const stateBefore = (await chats.stateAt({ tree: t, at: id.u3 }))?.state;
 
-        // Cut b1 .. u2 from a's path: b2 is shared (b's branch passes it), so a gets its own copy; u3 is a's alone
-        // and moves under the copy. b1 and u2 stay: b's path passes through them.
         const cut = /** @type {any} */ (await chats.cutFromPath({ tree: t, first: id.b1, last: id.u2, actor: a }));
         assert.equal(cut.ok, true);
         assert.deepEqual(Object.keys(cut.copied), [id.b2]);
@@ -150,24 +133,20 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual(await shown(b), ['g', 'u1', 'b1', 'u2', 'b2', 'u3x']);
         assert.deepEqual(await replies('u1'), ['b1', 'b2']);
         assert.deepEqual(await replies('b2'), ['u3x']);
-        // The copy holds the state changes in effect on b2, so the state down the new branch is the same.
         const at = (await chats.pointer(a.session)).at;
         assert.deepEqual((await chats.stateAt({ tree: t, at }))?.state, stateBefore);
         assert.equal(at, id.u3, 'u3 moved, it is the same message');
 
-        // A cut whose tail is the path's alone: the tail moves up and the cut messages go.
         const c = await fresh(engine);
         await c.send(null, ['g']);
         await c.send('g', ['u1', 'b1', 'u2', 'b2']);
         assert.deepEqual(await c.chats.cutFromPath({ tree: c.t, first: c.id.u1, last: c.id.b1, actor: a }), { ok: true });
         assert.deepEqual(await c.shown(a), ['g', 'u2', 'b2']);
         assert.deepEqual(await c.replies('g'), ['u2']);
-        // A cut at the path's end: the path ends before it.
         assert.deepEqual(await c.chats.cutFromPath({ tree: c.t, first: c.id.b2, last: c.id.b2, actor: a }), { ok: true });
         assert.deepEqual(await c.shown(a), ['g', 'u2']);
         assert.deepEqual(await c.replies('u2'), []);
 
-        // Cut everywhere: every path through the cut closes the gap.
         const e = await fresh(engine);
         await e.send(null, ['g']);
         await e.send('g', ['u1', 'b1', 'u2', 'b2']);
@@ -177,7 +156,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual(await e.shown(a), ['g', 'u2', 'b2']);
         assert.deepEqual(await e.shown(b), ['g', 'u2x']);
         assert.deepEqual(await e.replies('g'), ['u2', 'u2x']);
-        // The messages below keep their depths right (the chat list's counts).
         assert.equal((await e.chats.chatList({ tree: e.t, session: a.session, limit: 5 })).rows[0].message_count, 3);
         await Promise.all([store.close(), c.store.close(), e.store.close()]);
     });
@@ -190,23 +168,19 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await send('u2', ['b2x', 'u3x'], b);
         await chats.select({ tree: t, node_id: id.b2, actor: a });
         assert.deepEqual(await shown(a), ['g', 'u1', 'b1', 'u2', 'b2']);
-        // The last message swiped: the alternative and the branch below it.
         await chats.select({ tree: t, node_id: id.b2x, actor: a });
         assert.deepEqual(await shown(a), ['g', 'u1', 'b1', 'u2', 'b2x', 'u3x']);
         await chats.select({ tree: t, node_id: id.b2, actor: a });
         assert.deepEqual(await shown(a), ['g', 'u1', 'b1', 'u2', 'b2']);
-        // Mid-chat to an alternative nothing continues, and back: the choices below are still remembered.
         await chats.select({ tree: t, node_id: id.b1x, actor: a });
         assert.deepEqual(await shown(a), ['g', 'u1', 'b1x']);
         await chats.select({ tree: t, node_id: id.b1, actor: a });
         assert.deepEqual(await shown(a), ['g', 'u1', 'b1', 'u2', 'b2']);
 
-        // After a new chat, swiping the greetings is the same rule.
         await send(null, ['g2']);
         await send('g2', ['u9'], b);
         await chats.newChat({ tree: t, actor: a });
         assert.deepEqual(await shown(a), []);
-        // A group's new chat is its root with no card greeting chosen.
         await chats.select({ tree: t, node_id: id.g2, actor: a });
         await chats.newChat({ tree: t, actor: a, group: true });
         assert.deepEqual(await shown(a), []);
@@ -225,20 +199,17 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await send('g', ['u1', 'b1']);
         await send('u1', ['b1x'], b);
         const [stored] = await chats.decoded([(await chats.stored([(await chats.messageIds([id.b1x]))[0]])).values().next().value]);
-        // The other alternative's text and extra, by its own id; its other fields as stored.
         const patched = await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: id.b1x, patch: { mes: 'b1x edited', extra: { note: 1 } } }], actor: a });
         assert.deepEqual(patched, { ok: true, applied: 1, refused: [] });
         assert.deepEqual((await replies('u1')).sort(), ['b1', 'b1x edited']);
         const [after] = await chats.decoded([(await chats.stored([(await chats.messageIds([id.b1x]))[0]])).values().next().value]);
         assert.deepEqual(after, { ...stored, mes: 'b1x edited', extra: { note: 1 } });
-        // `extra.<key>` sets or removes one key of extra, keeping the others.
         await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: id.b1x, patch: { 'extra.bias': 'b' }, unset: ['extra.missing'] }], actor: a });
         const [keyed] = await chats.decoded([(await chats.stored([(await chats.messageIds([id.b1x]))[0]])).values().next().value]);
         assert.deepEqual(keyed.extra, { note: 1, bias: 'b' });
         await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: id.b1x, unset: ['extra.bias'] }], actor: a });
         const [unkeyed] = await chats.decoded([(await chats.stored([(await chats.messageIds([id.b1x]))[0]])).values().next().value]);
         assert.deepEqual(unkeyed.extra, { note: 1 });
-        // A field unset goes; a patch changing nothing writes nothing.
         await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: id.b1x, unset: ['extra'] }], actor: a });
         const [unset] = await chats.decoded([(await chats.stored([(await chats.messageIds([id.b1x]))[0]])).values().next().value]);
         assert.equal(unset.extra, undefined);
@@ -246,7 +217,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const same = await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: id.b1x, patch: { mes: 'b1x edited' } }], actor: a });
         assert.deepEqual(same, { ok: true, applied: 1, refused: [] });
         assert.deepEqual(await store.chatRead('nextIds', {}), before);
-        // Blanking stored text, an unknown id, or an edit stating nothing is refused.
         const refused = await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [
             { node_id: id.b1, patch: { mes: '' } }, { node_id: 'no-such-message', patch: { mes: 'x' } }, { node_id: id.b1 },
         ], actor: a });
@@ -261,13 +231,11 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await send('g', ['u1']);
         assert.equal((await chats.openingAlternatives({ tree: t, actor: a })).has_saved_chats, true);
         const first = /** @type {any} */ (await chats.createBookmark({ tree: t, node_id: id.g, name: 'Morning', actor: a }));
-        // A name the user gives is refused when another chat of the tree has it; a suggested one is the next free one.
         assert.deepEqual(await chats.createBookmark({ tree: t, node_id: id.u1, name: 'Morning', actor: a }), { ok: false, reason: 'name taken' });
         const second = /** @type {any} */ (await chats.createBookmark({ tree: t, node_id: id.u1, name: 'Morning', suggested: true, actor: a }));
         assert.equal(second.name, 'Morning (2)');
         assert.deepEqual(await chats.resolveChatName({ tree: t, name: 'Morning' }), { bookmark: first.bookmark });
         assert.deepEqual(await chats.resolveChatName({ tree: t, name: 'Morning (2)' }), { bookmark: second.bookmark });
-        // No other form names a chat: not `b<id>`, not a bare decimal, not a message's id.
         assert.equal(await chats.resolveChatName({ tree: t, name: `b${first.bookmark}` }), null);
         assert.equal(await chats.resolveChatName({ tree: t, name: String(first.bookmark) }), null);
         assert.equal(await chats.resolveChatName({ tree: t, name: id.u1 }), null);
@@ -276,15 +244,12 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual(await chats.changeBookmark({ tree: t, bookmark: String(second.bookmark), change: { name: 'Noon' } }), { ok: true, name: 'Noon' });
         assert.deepEqual(await chats.resolveChatName({ tree: t, name: 'Noon' }), { bookmark: second.bookmark });
         assert.equal(await chats.resolveChatName({ tree: t, name: 'Morning (2)' }), null);
-        // A session: by its UUID, or by a label one session has.
         await chats.goTo({ tree: t, node_id: id.u1, actor: b });
         await chats.nameSession({ session: b.session, name: 'Evening', actor: b });
         assert.deepEqual(await chats.resolveChatName({ tree: t, name: b.session }), { session: b.session });
         assert.deepEqual(await chats.resolveChatName({ tree: t, name: 'Evening' }), { session: b.session });
         assert.equal(await chats.resolveChatName({ tree: t, name: 'Dusk' }), null);
-        // A name alone finds a group's chat only (a character's tree is named in every character route).
         assert.equal(await chats.treeOfChatId('Morning'), null);
-        // A label another bookmark holds (as a store made before names were checked may have it) names neither.
         await store.commit([{ kind: 'positionName', id: first.bookmark, name: 'Noon' }]);
         assert.equal(await chats.resolveChatName({ tree: t, name: 'Noon' }), null);
         await store.close();
@@ -296,13 +261,11 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await chats.importChat({ tree: t, treeSpeaker: cara, name: 'Second', messages: [msg('h')], metadata: {}, actor: a });
         const end = imported.node_ids[1];
         assert.deepEqual(await chats.rememberUserPosition({ tree: t, at: end, user: a.user }), { ok: true });
-        // A tab with no session of its own, and a caller with no tab, land there; no session was moved.
         assert.equal(await chats.landingOf(t, { user: a.user, session: null }), end);
         assert.equal(await chats.pointer(a.session), null);
         const v5 = (await chats.resolveSession({ tree: t, user: a.user, header: 'none' })).identifier;
         assert.deepEqual(await chats.resolveSession({ tree: t, user: a.user, header: undefined }), { session: v5, identifier: v5 });
         assert.deepEqual(await chats.rememberUserPosition({ tree: t, at: 'no-such-message', user: a.user }), { ok: false, reason: 'unknown node' });
-        // A session's own move replaces it.
         await chats.goTo({ tree: t, node_id: imported.node_ids[0], actor: b });
         assert.equal(await chats.landingOf(t, { user: a.user, session: null }), imported.node_ids[0]);
         await store.close();
@@ -331,7 +294,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await chats.goTo({ tree: t, node_id: id.r12, actor: a });
         const loaded = (await chats.load({ tree: t, at: id.r12 })).messages;
         const reply = loaded[1];
-        // Five on each side of the shown one, the others holes, at full length.
         assert.equal(reply.swipe_id, 12);
         assert.deepEqual(reply.swipes, texts.map((x, i) => (i >= 7 && i <= 17 ? x : null)));
         assert.deepEqual(reply.swipe_info.map((/** @type {any} */ x) => x?.node_id ?? null), texts.map((x, i) => (i >= 7 && i <= 17 ? id[x] : null)));

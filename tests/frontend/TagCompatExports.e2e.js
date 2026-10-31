@@ -1,14 +1,9 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, holdCharacters } from './frontent-test-utils.js';
 
-// Things upstream exports around tags that extensions can call: `renameTagKey` and `loadTagsSettings(settings)` from
-// tags.js, `accountStorage.getState()`, and the `filter_state` field of a tag object. Upstream keeps all of it in the
-// settings file. Here tags are the server's and a tag's filter is this browser's, so each is backed by that.
-
 /** @param {import('@playwright/test').Page} page */
 async function loadApp(page) {
     await testSetup.awaitST({ page });
-    // APP_READY is an auto-fire event: a listener added after it was emitted still runs.
     await page.evaluate(() => {
         window['__appReady'] = false;
         const { eventSource, eventTypes } = window['SillyTavern'].getContext();
@@ -32,7 +27,11 @@ async function api(page, path, body = {}) {
     }, { path, body });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<string>} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
@@ -44,7 +43,11 @@ async function createCharacter(page, name) {
     }, name);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} id @param {object} [fields] */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} id
+ * @param {object} [fields]
+ */
 async function createTag(page, id, fields = {}) {
     await api(page, '/api/tags/create', {
         tag: {
@@ -55,21 +58,25 @@ async function createTag(page, id, fields = {}) {
     return id;
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} key @returns {Promise<string[]>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} key
+ * @returns {Promise<string[]>}
+ */
 async function serverTagsOf(page, key) {
     return [...(await api(page, '/api/tags/for', { ids: [key] }))[key] ?? []].sort();
 }
 
 /**
- * @param {import('@playwright/test').Page} page @param {string} id
- * @returns {Promise<object | null>} the tag as the server stores it
+ * @param {import('@playwright/test').Page} page
+ * @param {string} id
+ * @returns {Promise<object | null>}
  */
 async function serverTag(page, id) {
     return (await api(page, '/api/tags/by-ids', { ids: [id] })).tags.find(tag => tag.id === id) ?? null;
 }
 
 /**
- * Runs `fn` from a throwaway browser context, the way another tab would.
  * @param {import('@playwright/test').Browser} browser
  * @param {(page: import('@playwright/test').Page) => Promise<T>} fn
  * @template T
@@ -87,7 +94,7 @@ async function withOtherTab(browser, fn) {
 
 /**
  * @param {import('@playwright/test').Page} page
- * @returns {string[]} every tag write the page sends from now on, as `path body`
+ * @returns {string[]}
  */
 function recordWrites(page) {
     /** @type {string[]} */
@@ -100,9 +107,8 @@ function recordWrites(page) {
 }
 
 /**
- * Runs `fn` in the page with the tags.js module, the way an extension module would use its exports.
  * @param {import('@playwright/test').Page} page
- * @param {string} fn Body of `async (tagsModule, arg, saveSettingsDebounced) => ...`
+ * @param {string} fn
  * @param {any} [arg]
  */
 async function withTagsModule(page, fn, arg) {
@@ -114,7 +120,11 @@ async function withTagsModule(page, fn, arg) {
     }, { fn, arg });
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} card @returns {Promise<string[]>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} card
+ * @returns {Promise<string[]>}
+ */
 async function residentTagsOf(page, card) {
     return page.evaluate(async (card) => {
         const { charactersStore } = await import('/scripts/character-store.js');
@@ -122,14 +132,19 @@ async function residentTagsOf(page, card) {
     }, card);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} id @returns {Promise<string | undefined>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} id
+ * @returns {Promise<string | undefined>}
+ */
 async function filterStateOf(page, id) {
     return withTagsModule(page, 'return tagsModule.tags.find(tag => tag.id === arg)?.filter_state;', id);
 }
 
 /**
- * Opens `avatar`: extensions are shown the tags of the current character (`tags`, D17).
- * @param {import('@playwright/test').Page} page @param {string} avatar @param {string[]} tagIds - shown once opened
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ * @param {string[]} tagIds
  */
 async function selectCharacter(page, avatar, tagIds) {
     await page.evaluate(async (avatar) => {
@@ -139,12 +154,15 @@ async function selectCharacter(page, avatar, tagIds) {
     await expect.poll(() => withTagsModule(page, 'return arg.filter(id => !tagsModule.tags.some(tag => tag.id === id));', tagIds)).toEqual([]);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} id @returns {Promise<string | null>} */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} id
+ * @returns {Promise<string | null>}
+ */
 async function savedFilterOf(page, id) {
     return page.evaluate(id => localStorage.getItem(`CharacterList_tag_${id}`), id);
 }
 
-// Long enough for a request the page should not send to have shown up.
 const NO_WRITE_SETTLE_MS = 1500;
 
 test.describe('upstream tag exports', () => {
@@ -187,12 +205,10 @@ test.describe('upstream tag exports', () => {
         });
         await loadApp(page);
         await holdCharacters(page, [fixture.from]);
-        // The current character is the one `tag_map` has an entry for.
         await page.evaluate(async (to) => {
             const { selectCharacterByAvatar } = await import('/script.js');
             await selectCharacterByAvatar(to);
         }, fixture.to);
-        // Assigned after this page read the character, so its copy of the old key lacks it.
         await withOtherTab(browser, setup => api(setup, '/api/tags/assign', { id: fixture.from, tagId: fixture.unseen }));
         expect(await residentTagsOf(page, fixture.from)).toEqual([fixture.seen]);
         const writes = recordWrites(page);
@@ -201,7 +217,6 @@ test.describe('upstream tag exports', () => {
             window['__settingsUpdated'] = 0;
             const { eventSource, eventTypes } = window['SillyTavern'].getContext();
             eventSource.on(eventTypes.SETTINGS_UPDATED, () => { window['__settingsUpdated']++; });
-            // A module that imports it by name loads only if tags.js exports it.
             const source = `import { renameTagKey } from "${location.origin}/scripts/tags.js"; export default renameTagKey;`;
             const { default: renameTagKey } = await import(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })));
             return String(renameTagKey(from, to));
@@ -264,9 +279,7 @@ test.describe('upstream tag exports', () => {
         expect(atOnce).toEqual({ isPromise: true, holdsAdded: true, sameArray: true });
 
         await expect.poll(() => serverTag(page, fixture.added)).toMatchObject({ id: fixture.added, color: '#445566' });
-        // The character keeps the tag the given map didn't name, and gains the two it did.
         await expect.poll(() => serverTagsOf(page, fixture.card)).toEqual([fixture.had, fixture.leftOut, fixture.added].sort());
-        // The tag the given list left out is still a tag, here and on the server.
         expect(await serverTag(page, fixture.leftOut)).not.toBeNull();
         expect(await withTagsModule(page, 'return tagsModule.tags.some(tag => tag.id === arg);', fixture.leftOut)).toBe(true);
         expect(writes.filter(w => w.startsWith('/api/tags/delete') || w.startsWith('/api/tags/unassign'))).toEqual([]);
@@ -276,7 +289,6 @@ test.describe('upstream tag exports', () => {
     test('a tag\'s filter_state is the filter this browser saved for it, not what the stored tag carries', async ({ browser, page }) => {
         const stamp = Date.now();
         const fixture = await withOtherTab(browser, async (setup) => {
-            // As a tag saved by upstream, or by another browser, carries it.
             const tag = await createTag(setup, `tagcompat-filter-${stamp}`, { filter_state: 'EXCLUDED' });
             const card = await createCharacter(setup, `TagCompatFilter-${stamp}`);
             await api(setup, '/api/tags/assign', { id: card, tagId: tag });
@@ -285,7 +297,6 @@ test.describe('upstream tag exports', () => {
         await loadApp(page);
         await selectCharacter(page, fixture.card, [fixture.tag]);
         expect(await filterStateOf(page, fixture.tag)).toBe('UNDEFINED');
-        // The bar reads the used tags once it is on screen and shows them.
         await openCharacterManagementDrawer(page);
         const showTags = page.locator('#rm_characters_block .rm_tag_filter .showTagList');
         if (!(await showTags.evaluate(el => el.classList.contains('selected')))) await showTags.click();
@@ -300,7 +311,6 @@ test.describe('upstream tag exports', () => {
         await selectCharacter(page, fixture.card, [fixture.tag]);
         expect(await filterStateOf(page, fixture.tag)).toBe('SELECTED');
         await expect(page.locator(`#rm_characters_block .rm_tag_filter [id="${fixture.tag}"]`)).toHaveClass(/selected/);
-        // The stored tag is every browser's: the click changed nothing on it.
         expect((await serverTag(page, fixture.tag)).filter_state).toBe('EXCLUDED');
         expect(writes).toEqual([]);
     });
@@ -352,7 +362,6 @@ test.describe('upstream tag exports', () => {
         expect(typeof id).toBe('string');
         await expect.poll(() => serverTag(page, id)).toMatchObject({ id, name: tagName });
         expect(Object.hasOwn(await serverTag(page, id), 'filter_state')).toBe(false);
-        // No filter is saved for it in this browser.
         expect(await savedFilterOf(page, id)).toBeNull();
     });
 });

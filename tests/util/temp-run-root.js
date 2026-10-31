@@ -1,10 +1,3 @@
-// Every test run gets one run root in the system temp folder, and TMPDIR points into it, so whatever a
-// test (or a server it starts) makes with os.tmpdir() / mkdtemp lands inside it. Removing the run root
-// at the end of the run removes all of it, whether or not each test cleaned up after itself.
-//
-// A run that dies before it can clean up (killed, crashed) leaves its run root behind. The next run
-// removes those: a run root's name carries the pid of the run that made it, and one whose process is
-// gone is removed. Nothing else in the temp folder is touched.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,7 +18,6 @@ function isAlive(pid) {
 }
 
 /**
- * Removes run roots left in `base` by runs whose process is gone.
  * @param {string} base
  */
 function removeDeadRunRoots(base) {
@@ -38,11 +30,8 @@ function removeDeadRunRoots(base) {
 }
 
 /**
- * Opens this process's run root and points TMPDIR into it, so child processes and test workers started
- * afterwards inherit it. Does nothing (and returns the open one) when a run root is already open, which is
- * how a test worker or subprocess that loads the same setup sees it.
- * @param {string} kind A short name for the kind of run (`jest`, `node-test`, `e2e`)
- * @returns {string} The run root
+ * @param {string} kind
+ * @returns {string}
  */
 export function openRunRoot(kind) {
     const open = process.env.ST_TEST_RUN_ROOT;
@@ -59,7 +48,6 @@ export function openRunRoot(kind) {
 }
 
 /**
- * The temp folder outside the run root, for anything that has to outlive the run.
  * @returns {string}
  */
 export function realTmpdir() {
@@ -67,7 +55,6 @@ export function realTmpdir() {
 }
 
 /**
- * Removes the run root and everything in it.
  * @param {string} runRoot
  */
 export function closeRunRoot(runRoot) {

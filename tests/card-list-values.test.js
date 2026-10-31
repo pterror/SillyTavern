@@ -14,7 +14,6 @@ beforeAll(async () => {
 });
 
 /**
- * A generator of random cards over the keys list rows read, each with a random creator-notes setting.
  * @param {number} seed
  */
 function randomCards(seed) {
@@ -65,8 +64,6 @@ const cards = [
 ];
 
 /**
- * The list row values for `card` as getCharaCardV2() and toShallow() make them (the extensions' fav aside: a row
- * takes it from the store).
  * @param {unknown} card
  * @param {boolean} notes
  */

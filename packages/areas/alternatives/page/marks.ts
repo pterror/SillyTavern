@@ -1,16 +1,9 @@
-// Marks a search's matches in a rendered row. The server says which ranges of the row's source text matched; the
-// rendered text isn't the source (markdown, regex scripts), so the words those ranges cover are marked wherever they
-// show. A word is what the server's search takes as one (a run of letters and digits), compared as it folds them
-// (accents dropped, lowercased). Exact positions in the rendered text wait for the one markdown parser (ED31).
-
 const WORD = /[\p{Alphabetic}\p{N}]+/gu;
 
-/** A word as the search compares it. */
 export function fold(word: string): string {
     return word.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
 }
 
-/** The words the ranges cover in the source text (flat [start, end) pairs, UTF-16). */
 export function matchedWords(text: string, spans: readonly number[]): Set<string> {
     const words = new Set<string>();
     for (let i = 0; i + 1 < spans.length; i += 2) {
@@ -19,7 +12,6 @@ export function matchedWords(text: string, spans: readonly number[]): Set<string
     return words;
 }
 
-/** Wraps each shown word that is one of `words` in `<mark class="match">`; answers how many it marked. */
 export function markWords(root: HTMLElement, words: ReadonlySet<string>): number {
     if (words.size === 0) return 0;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);

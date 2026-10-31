@@ -20,11 +20,8 @@ function noCardData(message) {
 }
 
 /**
- * sha256 over a PNG's concatenated IDAT chunk payload bytes (still-compressed pixel stream), not a decode-to-
- * pixels hash — cheap, and stable across encoder-side changes that touch other chunks but not IDAT. Not immune
- * to a re-encode that picks different zlib settings for identical pixels.
- * @param {Array<{name: string, data: Uint8Array}>} chunks Already-extracted chunk list (read-only).
- * @returns {string} sha256 hex digest
+ * @param {Array<{name: string, data: Uint8Array}>} chunks
+ * @returns {string}
  */
 export function computeAvatarIdentityHashFromChunks(chunks) {
     const hash = crypto.createHash('sha256');
@@ -35,9 +32,7 @@ export function computeAvatarIdentityHashFromChunks(chunks) {
 }
 
 /**
- * computeAvatarIdentityHashFromChunks() for the bundled default avatar (constants.js's DEFAULT_AVATAR_PATH).
- * Cached forever — the asset never changes at runtime.
- * @returns {string} sha256 hex digest
+ * @returns {string}
  */
 export function computeDefaultAvatarIdentityHash() {
     if (defaultAvatarIdentityHashCache === null) {
@@ -50,10 +45,8 @@ export function computeDefaultAvatarIdentityHash() {
 let defaultAvatarIdentityHashCache = null;
 
 /**
- * computeAvatarIdentityHashFromChunks() for a PNG buffer with no pre-extracted chunk list (e.g. a Buffer
- * upload, or a crop that changed pixels).
  * @param {Buffer} image
- * @returns {string} sha256 hex digest
+ * @returns {string}
  */
 export function computeAvatarIdentityHashFromImageBuffer(image) {
     return computeAvatarIdentityHashFromChunks(extract(new Uint8Array(image)));
@@ -67,17 +60,13 @@ export function computeAvatarIdentityHashFromImageBuffer(image) {
  * @returns {Buffer} PNG image buffer with metadata
  */
 /**
- * The chunk-list-manipulation half of write() — factored out so a caller that already extracted `image`'s
- * chunks (writeCardToFile()) can reuse them instead of extracting twice.
- * @param {Array<{name: string, data: Uint8Array}>} chunks Already-extracted chunk list, mutated in place.
- * @param {string} data Character data to write (same contract as write()).
- * @returns {Array<{name: string, data: Uint8Array}>} `chunks`, mutated: existing chara/ccv3 tEXt chunks
- * removed, a fresh 'chara' chunk inserted immediately before IEND.
+ * @param {Array<{name: string, data: Uint8Array}>} chunks
+ * @param {string} data
+ * @returns {Array<{name: string, data: Uint8Array}>}
  */
 function spliceCardDataIntoChunks(chunks, data) {
     removeCharaChunks(chunks);
 
-    // Add the chara chunk before IEND, holding `data` as-is.
     const base64EncodedData = Buffer.from(data, 'utf8').toString('base64');
     chunks.splice(-1, 0, PNGtext.encode('chara', base64EncodedData));
 
@@ -92,10 +81,8 @@ export const write = (image, data) => {
 };
 
 /**
- * Removes any 'chara'/'ccv3' tEXt chunks in place, leaving the pure image chunks with no embedded character
- * data.
- * @param {Array<{name: string, data: Uint8Array}>} chunks Mutated in place.
- * @returns {Array<{name: string, data: Uint8Array}>} `chunks`
+ * @param {Array<{name: string, data: Uint8Array}>} chunks
+ * @returns {Array<{name: string, data: Uint8Array}>}
  */
 function removeCharaChunks(chunks) {
     for (const chunk of chunks.filter(c => c.name === 'tEXt')) {
@@ -109,7 +96,7 @@ function removeCharaChunks(chunks) {
 
 /**
  * @param {Buffer} image
- * @returns {Buffer} `image` with any embedded chara/ccv3 tEXt chunk removed - pure image bytes.
+ * @returns {Buffer}
  */
 export function stripCardData(image) {
     const chunks = extract(new Uint8Array(image));
@@ -129,9 +116,8 @@ export const read = (image) => {
 };
 
 /**
- * The chunk-list half of read() above — for a caller that already extracted `image`'s chunks.
- * @param {Array<{name: string, data: Uint8Array}>} chunks Already-extracted chunk list (read-only).
- * @returns {string} Character data, same ccv3-preferring contract as read().
+ * @param {Array<{name: string, data: Uint8Array}>} chunks
+ * @returns {string}
  */
 export function readFromChunks(chunks) {
     const textChunks = chunks.filter((chunk) => chunk.name === 'tEXt').map((chunk) => PNGtext.decode(chunk.data));
@@ -156,18 +142,12 @@ export function readFromChunks(chunks) {
 }
 
 /**
- * Reads ONLY the 'chara' tEXt chunk, verbatim - never falls through to 'ccv3' the way read() prefers to.
- * Recovers pre-v3-bump original content for cards written by the old write() that force-upgraded every card
- * to a v3-bumped 'ccv3' chunk while leaving the unmutated original in 'chara'.
- *
- * Falls back to whatever other tEXt chunk exists if 'chara' itself is absent (e.g. a foreign-tool-written file).
- * @param {Buffer} image PNG image buffer
- * @returns {string} Character data, exactly as written into 'chara' (or the best available fallback chunk).
+ * @param {Buffer} image
+ * @returns {string}
  */
 /**
- * The chunk-list half of readCharaChunkPristine() below.
- * @param {Array<{name: string, data: Uint8Array}>} chunks Already-extracted chunk list (read-only).
- * @returns {string} Character data, same contract as readCharaChunkPristine().
+ * @param {Array<{name: string, data: Uint8Array}>} chunks
+ * @returns {string}
  */
 export function readCharaChunkPristineFromChunks(chunks) {
     const textChunks = chunks.filter((chunk) => chunk.name === 'tEXt').map((chunk) => PNGtext.decode(chunk.data));
@@ -192,10 +172,8 @@ export function readCharaChunkPristineFromChunks(chunks) {
 export const readCharaChunkPristine = (image) => readCharaChunkPristineFromChunks(extract(new Uint8Array(image)));
 
 /**
- * Promise-based counterpart to parse(), returning the PRISTINE 'chara' chunk content (see
- * readCharaChunkPristine()) rather than read()'s ccv3-preferring result.
- * @param {string} cardUrl Path to the card image
- * @returns {Promise<string>} Character data, pristine (see readCharaChunkPristine())
+ * @param {string} cardUrl
+ * @returns {Promise<string>}
  */
 export const parsePristine = async (cardUrl) => {
     const buffer = await fs.promises.readFile(cardUrl);
@@ -223,14 +201,8 @@ export const parse = async (cardUrl, format) => {
 };
 
 /**
- * Finds the byte offset in `srcBuf` up to which `write()`'s output is guaranteed byte-identical to `srcBuf`,
- * so a caller can reflink just that prefix instead of copying the whole file.
- *
- * Only holds when the chara/ccv3 chunks write() removes form one contiguous run immediately before IEND with
- * nothing surviving after them (e.g. a foreign tool could place a chara chunk before IDAT, which would shift
- * every following byte). Returns `null` when that condition doesn't hold — caller must fall back to a full write.
- * @param {Buffer} srcBuf The source PNG buffer to inspect.
- * @returns {number | null} Shared-prefix byte offset, or `null` if the layout is ineligible.
+ * @param {Buffer} srcBuf
+ * @returns {number | null}
  */
 export function findReflinkablePrefixOffset(srcBuf) {
     /** @type {Array<{name: string, data: Uint8Array}>} */
@@ -245,9 +217,8 @@ export function findReflinkablePrefixOffset(srcBuf) {
 }
 
 /**
- * The chunk-list half of findReflinkablePrefixOffset() above, for a caller that already extracted the chunks.
- * @param {Array<{name: string, data: Uint8Array}>} chunks Already-extracted chunk list (read-only).
- * @returns {number | null} Same contract as findReflinkablePrefixOffset().
+ * @param {Array<{name: string, data: Uint8Array}>} chunks
+ * @returns {number | null}
  */
 function findReflinkablePrefixOffsetFromChunks(chunks) {
     if (chunks.length === 0 || chunks[chunks.length - 1].name !== 'IEND') {
@@ -264,68 +235,45 @@ function findReflinkablePrefixOffsetFromChunks(chunks) {
         }
     });
 
-    const lastIdx = chunks.length - 1; // IEND's index
+    const lastIdx = chunks.length - 1;
     const sortedRemoveIdxs = [...removeIdxs].sort((a, b) => a - b);
     const contiguousTail = sortedRemoveIdxs.every((idx, k) => idx === lastIdx - sortedRemoveIdxs.length + k);
     if (!contiguousTail) {
         return null;
     }
 
-    const keepCount = lastIdx - sortedRemoveIdxs.length; // chunks strictly before the removed run (or before IEND, if nothing's removed)
-    let offset = 8; // PNG signature
+    const keepCount = lastIdx - sortedRemoveIdxs.length;
+    let offset = 8;
     for (let i = 0; i < keepCount; i++) {
-        offset += 12 + chunks[i].data.length; // 4-byte length + 4-byte type + data + 4-byte CRC
+        offset += 12 + chunks[i].data.length;
     }
     return offset;
 }
 
 /**
- * Writes character metadata into a PNG file on disk, preserving btrfs/XFS reflink extent-sharing with
- * `sourcePath` for the untouched image bytes whenever the layout allows it (findReflinkablePrefixOffset()),
- * instead of always paying a full-file rewrite for a change that typically only touches a few KB of metadata.
- *
- * Strategy, cheapest first: compute the rewritten buffer via write(); if a safe prefix is found and verified
- * byte-identical, reflink-clone `sourcePath`, truncate to the shared prefix, append the changed tail, and
- * atomically rename over `destPath`; otherwise fall back to a full write-file-atomic write.
- * @param {string} sourcePath Absolute path to the source PNG already on disk.
- * @param {string} destPath Absolute path to write the result to. May already exist.
- * @param {string} data Character data to embed (same contract as write()).
- * @param {string|null} [crossReflinkCandidatePath] Absolute path to a different character's current file that
- * might share content with this write (verified before being trusted — see writeCardFromChunks()).
+ * @param {string} sourcePath
+ * @param {string} destPath
+ * @param {string} data
+ * @param {string|null} [crossReflinkCandidatePath]
  * @returns {Promise<{reflinked: boolean, avatarIdentityHash: string}>}
  */
 export async function writeCardToFile(sourcePath, destPath, data, crossReflinkCandidatePath = null) {
     const srcBuf = await fs.promises.readFile(sourcePath);
 
-    // Extract once and reuse for both the rewritten-buffer build and the reflinkable-prefix computation.
     const chunks = extract(new Uint8Array(srcBuf));
     return writeCardFromChunks(sourcePath, destPath, srcBuf, chunks, data, crossReflinkCandidatePath);
 }
 
 /**
- * The core of writeCardToFile() above, factored out to accept an already-extracted chunk list and buffer for
- * a caller that extracted them for another reason already.
- *
- * `crossReflinkCandidatePath`, if given, is tried before `sourcePath`: a successful cross-character reflink is
- * the only outcome that actually converges two independently-stored files onto shared extents. Content-identity
- * hash alone says nothing about whether the candidate's avatar image bytes match this write's — two characters
- * can share identical JSON with different portraits — so the candidate is byte-verified against its own current
- * on-disk bytes before ever being trusted; on failure this silently falls through to the ordinary path.
- *
- * Both `sourcePath` and any `crossReflinkCandidatePath` are only ever reflinked FROM, never opened for writing.
- * @param {string} sourcePath Absolute path to the PNG `chunks`/`srcBuf` were extracted from.
- * @param {string} destPath Absolute path to write the result to. May already exist.
- * @param {Buffer} srcBuf The exact bytes `chunks` was extracted from.
- * @param {Array<{name: string, data: Uint8Array}>} chunks Already-extracted chunk list for `srcBuf`, mutated
- * in place by spliceCardDataIntoChunks().
- * @param {string} data Character data to embed (same contract as write()).
- * @param {string|null} [crossReflinkCandidatePath] Absolute path to a different character's current file that
- * might carry the same content as this write.
+ * @param {string} sourcePath
+ * @param {string} destPath
+ * @param {Buffer} srcBuf
+ * @param {Array<{name: string, data: Uint8Array}>} chunks
+ * @param {string} data
+ * @param {string|null} [crossReflinkCandidatePath]
  * @returns {Promise<{reflinked: boolean, avatarIdentityHash: string}>}
  */
 export async function writeCardFromChunks(sourcePath, destPath, srcBuf, chunks, data, crossReflinkCandidatePath = null) {
-    // Must be computed before spliceCardDataIntoChunks() mutates `chunks` below; spliceCardDataIntoChunks()
-    // only touches tEXt chunks, so IDAT (and this hash) is unaffected by which write branch ends up taken.
     const avatarIdentityHash = computeAvatarIdentityHashFromChunks(chunks);
 
     const offset = findReflinkablePrefixOffsetFromChunks(chunks);
@@ -365,13 +313,9 @@ export async function writeCardFromChunks(sourcePath, destPath, srcBuf, chunks, 
 }
 
 /**
- * The reflink-preserving fast path's actual write. Reflinks `sourcePath` into a same-directory temp file (so
- * the closing rename is same-filesystem-atomic), truncates to the shared prefix, appends the changed tail,
- * matches an existing `destPath`'s mode/uid/gid, then renames over `destPath`. On failure, cleans up the temp
- * file and rethrows — `destPath` itself is never touched until the final atomic rename.
  * @param {string} sourcePath
  * @param {string} destPath
- * @param {Buffer|Uint8Array} tail Bytes to append after truncating the reflinked clone to `offset`.
+ * @param {Buffer|Uint8Array} tail
  * @param {number} offset
  * @returns {Promise<void>}
  */
@@ -387,7 +331,6 @@ async function writeSharedPrefixThenAppend(sourcePath, destPath, tail, offset) {
         await fsPromises.truncate(tempPath, offset);
         await fsPromises.appendFile(tempPath, tail);
 
-        // Mirror write-file-atomic's own behavior of preserving an existing target's mode/uid/gid.
         try {
             const existingStat = await fsPromises.stat(destPath);
             await fsPromises.chmod(tempPath, existingStat.mode);
@@ -406,23 +349,9 @@ async function writeSharedPrefixThenAppend(sourcePath, destPath, tail, offset) {
 }
 
 /**
- * Retroactively reclaims reflink extent-sharing for a character file already fully written out (independent
- * bytes, no sharing) before writeCardToFile() existed.
- *
- * The caller is expected to have already matched `existingPath`/`sourcePath` some way; this function does the
- * verification of whether that match is safe to act on before touching anything, one of two ways - see
- * `options`.
- * @param {string} existingPath Absolute path to the already-imported character file to repair in place.
- * @param {string} sourcePath Absolute path to the believed-original source file, still on disk.
- * @param {{skipByteVerification?: boolean, expectedAvatarHash?: string}} [options] At most one of the two.
- * `skipByteVerification`: the caller's own match key already guarantees prefix identity (e.g. an IDAT-only hash
- * where the prefix is IDAT-only too), so skip both reading `existingPath`'s prefix bytes and comparing them -
- * only its tail (past the shared prefix) is read, since that's the only part of `existingPath` this function
- * ever uses. `expectedAvatarHash`: the caller's match isn't independently verified yet (e.g. a provenance
- * record, not a content match) - checked here against `sourcePath`'s own IDAT hash, computed from the same
- * chunk list already extracted to find the prefix offset (no extra read), and treated as `skipByteVerification`
- * on a match; declines immediately on a mismatch, without ever reading `existingPath`. Neither option: full
- * read-and-compare of both files' prefix bytes, for a match with no independent verification at all.
+ * @param {string} existingPath
+ * @param {string} sourcePath
+ * @param {{skipByteVerification?: boolean, expectedAvatarHash?: string}} [options]
  * @returns {Promise<{reflinked: boolean, reason?: string}>}
  */
 export async function reclaimReflinkPrefix(existingPath, sourcePath, { skipByteVerification = false, expectedAvatarHash } = {}) {

@@ -1,16 +1,4 @@
 #!/usr/bin/env node
-/**
- * Fills DATA_ROOT/_cache with the tokenizer file of every fixture in tests/fixtures/tokenizer-reference,
- * the way SillyTavern downloads it, so `node src/tokenizer-exactness.test.js` runs every fixture.
- * A fixture whose file has the same content as another fixture's fetches nothing of its own: the
- * other fixture's file is the one SillyTavern reads.
- *
- * Usage, from the project root:
- *   node scripts/fetch-tokenizer-fixtures.js
- *   node scripts/fetch-tokenizer-fixtures.js --dataRoot ./some-data-root
- *
- * Without --dataRoot, config.yaml's dataRoot is used.
- */
 
 import fs from 'node:fs';
 import path from 'node:path';

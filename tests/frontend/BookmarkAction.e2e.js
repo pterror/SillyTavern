@@ -5,10 +5,10 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// Bookmarking, branching and forking are one request each: the branch is opened from the bookmark's own answer,
-// and it carries the chat's metadata.
-
-/** @param {import('@playwright/test').Page} page @param {string} name */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
@@ -22,7 +22,10 @@ async function createCharacter(page, name) {
     }, name);
 }
 
-/** @param {import('@playwright/test').Page} page @param {string} avatar */
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
 async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
@@ -52,13 +55,11 @@ test('a fork is one request and opens the branch with the chat\'s metadata', asy
     const avatar = await createCharacter(page, `Bookmark-${stamp}`);
     await openCharacter(page, avatar);
 
-    // A stored chat: the greeting, two more messages, and a metadata key.
     await page.evaluate(async (avatar) => {
         // @ts-ignore
         const context = SillyTavern.getContext();
         const { ensureOpeningRow } = await import('/scripts/chat-store.js');
         const opening = await ensureOpeningRow(0);
-        // The tab is at the opening: the key set here holds below it.
         const set = await fetch('/api/chats/metadata', {
             method: 'POST',
             headers: context.getRequestHeaders(),
@@ -85,8 +86,6 @@ test('a fork is one request and opens the branch with the chat\'s metadata', asy
         const { forkChat } = await import('/scripts/bookmarks.js');
         return forkChat(1);
     });
-    // The fork's compat chat id, its label (as upstream names a chat by its file name); the tab's session moves there
-    // and the fork is its current chat.
     expect(name).toMatch(/ - Branch #1$/);
     expect(requests).toEqual(['/api/chats/bookmark']);
 
@@ -97,7 +96,6 @@ test('a fork is one request and opens the branch with the chat\'s metadata', asy
         return { chatId: context.getCurrentChatId(), session: tabSession(), messages: context.chat.map(m => m.mes), note: context.chatMetadata.note_prompt ?? null };
     });
     expect(state.chatId).toBe(name);
-    // The fork's place: the path down to the forked message, nothing below it.
     expect(state.messages).toEqual(['Hello.', 'Where to?']);
     expect(state.note).toBe('Stay calm.');
 });

@@ -16,7 +16,6 @@ import cacheBuster from '../middleware/cacheBuster.js';
 
 export const router = express.Router();
 
-// thumbnailVersions lets the client emit the thumbnail route's `?v=` up front instead of hitting its no-cache redirect.
 router.post('/get', function (request, response) {
     const avatars = getImages(request.user.directories.avatars);
 
@@ -49,10 +48,6 @@ router.post('/delete', getFileNameValidationFunction('avatar'), function (reques
     return response.sendStatus(404);
 });
 
-/**
- * Makes a persona image from a character's card image, cut and sized as an upload is, without the image passing
- * through the page. Body: `{ avatar, overwrite_name }`. Answers `{ path }`.
- */
 router.post('/from-character', getFileNameValidationFunction('overwrite_name'), async (request, response) => {
     const { avatar, overwrite_name: overwriteName } = request.body ?? {};
     if (typeof avatar !== 'string' || !avatar || avatar !== sanitize(avatar) || typeof overwriteName !== 'string' || !overwriteName) {

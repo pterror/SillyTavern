@@ -1,40 +1,31 @@
 /**
- * A view: everything that decides what the character list shows.
  * @typedef {object} CharacterView
- * @property {string} text Free search text, without its conditions.
- * @property {CharacterViewCondition[]} conditions Field conditions, in the order they were added.
- * @property {{ include: string[], exclude: string[], mode?: 'and'|'or' }} tags Tag ids the list must carry / must not carry.
- *   `mode` 'or': a row needs any one of `include`, not all of them.
- * @property {boolean|undefined} fav `true` favorites only, `false` no favorites, `undefined` either.
- * @property {Record<string, { min?: number, max?: number }>} [ranges] Inclusive bounds on the fields of RANGE_FIELDS;
- *   a missing end is open.
- * @property {boolean|undefined} group `true` groups only, `false` no groups, `undefined` either.
+ * @property {string} text
+ * @property {CharacterViewCondition[]} conditions
+ * @property {{ include: string[], exclude: string[], mode?: 'and'|'or' }} tags
+ * @property {boolean|undefined} fav
+ * @property {Record<string, { min?: number, max?: number }>} [ranges]
+ * @property {boolean|undefined} group
  * @property {CharacterViewSort} sort
- * @property {string|null} folderCase The closed-folder case shown: `'none'` for rows in no closed folder, a closed
- *   folder's tag id for its rows, `null` for every row ("Tags as Folders" off).
+ * @property {string|null} folderCase
  */
 
 /**
  * @typedef {object} CharacterViewCondition
- * @property {string} field A canonical field name from SEARCH_FIELDS.
+ * @property {string} field
  * @property {'contains'|'not_contains'} op
- * @property {string} value As typed, quotes included when the value has spaces.
+ * @property {string} value
  */
 
 /**
  * @typedef {object} CharacterViewSort
- * @property {string} field A `/query` sort field, or `'search'` / `'random'`.
+ * @property {string} field
  * @property {'asc'|'desc'} order
- * @property {number} [seed] Set when `field` is `'random'`.
- * @property {{ field: string, order: 'asc'|'desc', seed?: number }} [tie] With `field` `'search'`: the list's own sort,
- *   which orders the matches only tag names match (they all score alike).
+ * @property {number} [seed]
+ * @property {{ field: string, order: 'asc'|'desc', seed?: number }} [tie]
  */
 
-/**
- * The fields a condition can name: the canonical label, then the aliases typing turns into it. These are the labels
- * the server's library search accepts (`LIBRARY_LABELS`, src/search-clauses.js).
- * @type {Readonly<Record<string, readonly string[]>>}
- */
+/** @type {Readonly<Record<string, readonly string[]>>} */
 export const SEARCH_FIELDS = Object.freeze({
     name: Object.freeze([]),
     tag: Object.freeze(['tags']),
@@ -50,12 +41,11 @@ export const SEARCH_FIELDS = Object.freeze({
     id: Object.freeze([]),
 });
 
-/** @type {Map<string, string>} Every accepted label, lowercased, to its canonical field. */
+/** @type {Map<string, string>} */
 const LABEL_TO_FIELD = new Map(Object.entries(SEARCH_FIELDS).flatMap(([field, aliases]) =>
     [[field, field], ...aliases.map(alias => [alias, field])]));
 
 /**
- * The canonical field a typed label names, or null when the server wouldn't treat it as a field.
  * @param {string} label
  * @returns {string|null}
  */
@@ -63,12 +53,10 @@ export function canonicalSearchField(label) {
     return LABEL_TO_FIELD.get(String(label).toLowerCase()) ?? null;
 }
 
-// The server's tokens (`searchClauses()`, src/search-clauses.js), except that an unclosed quote isn't kept as one token here.
 const TOKEN_PATTERN = /[^\s"]*"[^"]*"|\S+/g;
 const CONDITION_PATTERN = /^(-)?([A-Za-z][A-Za-z0-9_]*):(.+)$/;
 
 /**
- * Splits a search string into free text and conditions, the way the server reads it.
  * @param {string} searchText
  * @returns {{ text: string, conditions: CharacterViewCondition[] }}
  */
@@ -91,7 +79,6 @@ export function parseSearchText(searchText) {
 }
 
 /**
- * The search string a view sends: its conditions, then its free text.
  * @param {Pick<CharacterView, 'text'|'conditions'>} view
  * @returns {string}
  */
@@ -104,7 +91,6 @@ export function serializeSearchText({ text, conditions }) {
 }
 
 /**
- * What `buildCharacterQuery()` (character-repository.js) takes to make the `/api/characters/query` request a view asks for.
  * @param {CharacterView} view
  * @param {{ includeGroups?: boolean }} [options]
  * @returns {import('./character-repository.js').CharacterQueryStateInput}
@@ -127,11 +113,7 @@ export function viewToQueryState(view, { includeGroups = false } = {}) {
     };
 }
 
-/**
- * The fields a range can bound: the server's `filter.ranges` fields (src/library-engine.js query's `ranges`).
- * `unit` says how the pill reads and writes the stored number.
- * @type {Readonly<Record<string, { unit: 'date'|'kb'|'count' }>>}
- */
+/** @type {Readonly<Record<string, { unit: 'date'|'kb'|'count' }>>} */
 export const RANGE_FIELDS = Object.freeze({
     create_date: { unit: 'date' },
     date_last_chat: { unit: 'date' },
@@ -140,7 +122,6 @@ export const RANGE_FIELDS = Object.freeze({
 });
 
 /**
- * A view's ranges with empty bounds and unknown fields dropped, in field order; undefined when nothing is bounded.
  * @param {CharacterView['ranges']} ranges
  * @returns {CharacterView['ranges'] | undefined}
  */
@@ -160,7 +141,6 @@ export function cleanRanges(ranges) {
 }
 
 /**
- * How a view's included tags combine. With fewer than two there is nothing to combine, so it is 'and'.
  * @param {CharacterView['tags']} tags
  * @returns {'and'|'or'}
  */
@@ -169,7 +149,6 @@ export function tagMode(tags) {
 }
 
 /**
- * Whether two views show the same list.
  * @param {CharacterView} a
  * @param {CharacterView} b
  * @returns {boolean}

@@ -1,74 +1,19 @@
 import { getStoppingStrings } from './stopping-strings.js';
 import { tokenizers } from './tokenizer-resolve.js';
 
-/**
- * Server-side port of public/scripts/nai-settings.js's getNovelGenerationData() - builds the
- * request-body payload for NovelAI text generation, matching the shape already done for textgen
- * (src/textgen-generation-data.js) and chat-completion (src/chat-completion-generation-data.js).
- *
- * Also ports these nai-settings.js helpers, which getNovelGenerationData() calls directly:
- * - selectPrefix() - picks the instruct prefix ('special_instruct' / user-selected / 'vanilla').
- * - getBadWordIds()/getBadWordPermutations() - turns settings.banned_tokens lines into bad-word
- *   token id lists.
- * - calculateNovelLogitBias() - a faithful port of nai-settings.js's private, module-scoped
- *   `calculateLogitBias()` (via public/scripts/logit-bias.js's getLogitBiasListResult()). This is
- *   NOT the same function as src/token-bans-and-bias.js's exported `calculateLogitBias` - that one
- *   is the *textgen* generation port, for `textgenerationwebui_settings`, and returns a
- *   token-id-keyed bias OBJECT (`{ [tokenId]: value }`), matching what OOBA/etc. backends expect.
- *   NovelAI's own logit-bias wire format is an ARRAY of per-sequence objects instead
- *   (`{ bias, ensure_sequence_finish, generate_once, sequence }`, one per resolved token-id
- *   sequence) - a meaningfully different shape, not just a naming coincidence - so reusing
- *   src/token-bans-and-bias.js's version here would silently produce the wrong wire format. This
- *   module therefore ports NovelAI's own version as a separate function rather than reusing that
- *   one. (Judgment call, flagged per the task.)
- * - getNovelMaxResponseTokens() - maps a NovelAI account tier (1/2/3) to a max response length.
- *
- * Deliberately taken as explicit context parameters instead of resolved here:
- * - encodeTokens - turns (tokenizerType, text) into token ids. The client's getTextTokens()
- *   (public/scripts/tokenizers.js) ultimately calls encodeTextByLocalTokenizerType()
- *   (src/endpoints/tokenizers.js), which is `async`, so encodeTokens here is likewise treated as
- *   returning a Promise (and this whole module's functions that need encoding are `async`,
- *   `await`-ing every call) - even though the fake encoder in the test file is deliberately
- *   synchronous, to show the signature tolerates either (an `async` function returning a
- *   already-resolved value works fine when awaited).
- * - tokenizerType - the caller resolves which tokenizer the send uses; this module does no
- *   tokenizer resolution.
- * - stoppingStringsParams - forwarded to src/stopping-strings.js's getStoppingStrings(), minus
- *   isImpersonate/isContinue/api (which this module supplies itself: api is fixed to a non-'openai'
- *   value, since NovelAI is never a chat-completion source).
- * - macroContext - merged into the getStoppingStrings() call args (that function's own
- *   `customStoppingStringsMacro` path uses it); not used anywhere else in this module, since
- *   getNovelGenerationData() itself never calls substituteParams().
- *
- * Documented simplifications (intentional, not gaps):
- * - `badWordsCache` (nai-settings.js) and `BIAS_CACHE`/`BIAS_KEY` (logit-bias.js, read via
- *   nai-settings.js's calculateLogitBias() call site) are BOTH purely client-side performance
- *   caches - keyed by a content hash of the banned-word/logit-bias settings, so a browser session
- *   doesn't re-tokenize the same banned words/bias entries on every chat turn. They have zero
- *   effect on the actual *value* returned - only on how often it's recomputed. Neither is ported
- *   here: getBadWordIds() and calculateNovelLogitBias() below always compute fresh. A server-side
- *   equivalent cache (if ever wanted) would need its own invalidation story tied to request
- *   lifecycle, which is out of scope for this port.
- */
-
-/** Mirrors nai-settings.js's `maximum_output_length` constant. */
 const MAXIMUM_OUTPUT_LENGTH = 150;
 
-/** Mirrors nai-settings.js's `default_order` constant. */
 const DEFAULT_ORDER = [1, 5, 0, 2, 3, 4];
 
-/** Trivial reimplementation of public/scripts/utils.js's onlyUnique array filter. */
 function onlyUnique(value, index, array) {
     return array.indexOf(value) === index;
 }
 
 /**
- * Mirrors nai-settings.js's selectPrefix(selected_prefix, finalPrompt), taking the NovelAI model
- * name as an explicit parameter instead of reading the module-level nai_settings.model_novel.
- * @param {string} selectedPrefix nai_settings.prefix equivalent.
+ * @param {string} selectedPrefix
  * @param {string} finalPrompt
- * @param {string} model nai_settings.model_novel equivalent.
- * @returns {string} 'special_instruct', `selectedPrefix`, or 'vanilla'.
+ * @param {string} model
+ * @returns {string}
  */
 export function selectPrefix(selectedPrefix, finalPrompt, model) {
     const clio = model.includes('clio');
@@ -77,7 +22,6 @@ export function selectPrefix(selectedPrefix, finalPrompt, model) {
     const isNewModel = clio || kayra || erato;
 
     if (isNewModel) {
-        // NovelAI claims they scan backwards 1000 characters (not tokens!) to look for instruct brackets. That's really short.
         const tail = finalPrompt.slice(-1500);
         const useInstruct = tail.includes('}');
         return useInstruct ? 'special_instruct' : selectedPrefix;
@@ -87,7 +31,6 @@ export function selectPrefix(selectedPrefix, finalPrompt, model) {
 }
 
 /**
- * Mirrors nai-settings.js's getBadWordPermutations(text) exactly.
  * @param {string} text
  * @returns {string[]}
  */
@@ -110,20 +53,16 @@ export function getBadWordPermutations(text) {
 
 /**
  * @callback EncodeTokensFn
- * @param {number} tokenizerType A `tokenizers` value.
+ * @param {number} tokenizerType
  * @param {string} text
- * @returns {Promise<number[]|null>|number[]|null} null when there are no ids for the text (a
- * tokenizer that failed): the entry needing them is left out.
+ * @returns {Promise<number[]|null>|number[]|null}
  */
 
 /**
- * Mirrors nai-settings.js's getBadWordIds(banned_tokens, tokenizerType), minus the `badWordsCache`
- * perf cache (see module doc comment - always computes fresh here).
- * @param {string} bannedTokens nai_settings.banned_tokens equivalent (newline-separated lines).
- * @param {number} tokenizerType A `tokenizers` value. NONE means no tokenizer: only raw-id lines
- * go through.
+ * @param {string} bannedTokens
+ * @param {number} tokenizerType
  * @param {EncodeTokensFn} encodeTokens
- * @param {string[]} [dropped] Receives each line left out because it has no token ids.
+ * @param {string[]} [dropped]
  * @returns {Promise<number[][]>}
  */
 export async function getBadWordIds(bannedTokens, tokenizerType, encodeTokens, dropped) {
@@ -181,10 +120,8 @@ export async function getBadWordIds(bannedTokens, tokenizerType, encodeTokens, d
 
 /**
  * @typedef {object} NovelLogitBiasEntry
- * @property {string} text One of: `{verbatim text}` (braces stripped, tokenized as-is), `[1,2,3]`
- * (raw token ids), or plain text (tokenized with a leading space prepended).
- * @property {number} value Bias value to apply to every token id sequence the entry resolves to.
- *
+ * @property {string} text
+ * @property {number} value
  * @typedef {object} NovelLogitBiasObject
  * @property {number} bias
  * @property {boolean} ensure_sequence_finish
@@ -193,17 +130,10 @@ export async function getBadWordIds(bannedTokens, tokenizerType, encodeTokens, d
  */
 
 /**
- * Mirrors nai-settings.js's private calculateLogitBias(), which itself delegates to
- * public/scripts/logit-bias.js's getLogitBiasListResult() with a NovelAI-specific
- * `getBiasObject(bias, sequence)` transformer. See the module doc comment for why this is a
- * separate port from src/token-bans-and-bias.js's `calculateLogitBias` rather than a reuse of it -
- * that one returns a token-id-keyed object, this one returns an array of per-sequence objects.
- * Minus the `BIAS_CACHE`/`BIAS_KEY` perf cache (always computes fresh here).
- * @param {NovelLogitBiasEntry[]} logitBiasEntries nai_settings.logit_bias equivalent.
- * @param {number} tokenizerType A `tokenizers` value. NONE means no tokenizer: only raw-id entries
- * go through.
+ * @param {NovelLogitBiasEntry[]} logitBiasEntries
+ * @param {number} tokenizerType
  * @param {EncodeTokensFn} encodeTokens
- * @param {string[]} [dropped] Receives each entry's text left out because it has no token ids.
+ * @param {string[]} [dropped]
  * @returns {Promise<NovelLogitBiasObject[]>}
  */
 export async function calculateNovelLogitBias(logitBiasEntries, tokenizerType, encodeTokens, dropped) {
@@ -226,7 +156,6 @@ export async function calculateNovelLogitBias(logitBiasEntries, tokenizerType, e
         if (!(entry.text?.length > 0)) continue;
         const text = entry.text.trim();
 
-        // Skip empty lines
         if (text.length === 0) continue;
 
         const isRawIds = text.startsWith('[') && text.endsWith(']');
@@ -236,7 +165,6 @@ export async function calculateNovelLogitBias(logitBiasEntries, tokenizerType, e
         }
 
         if (text.startsWith('{') && text.endsWith('}')) {
-            // Verbatim text
             const tokenIds = await encodeTokens(tokenizerType, text.slice(1, -1));
             if (tokenIds === null) {
                 dropped?.push(text);
@@ -244,7 +172,6 @@ export async function calculateNovelLogitBias(logitBiasEntries, tokenizerType, e
             }
             result.push(getBiasObject(entry.value, tokenIds));
         } else if (isRawIds) {
-            // Raw token ids, JSON serialized
             try {
                 const tokenIds = JSON.parse(text);
 
@@ -257,7 +184,6 @@ export async function calculateNovelLogitBias(logitBiasEntries, tokenizerType, e
                 console.log(`Failed to parse logit bias token list: ${text}`, err);
             }
         } else {
-            // Text with a leading space
             const biasText = ` ${text}`;
             const tokenIds = await encodeTokens(tokenizerType, biasText);
             if (tokenIds === null) {
@@ -272,9 +198,7 @@ export async function calculateNovelLogitBias(logitBiasEntries, tokenizerType, e
 }
 
 /**
- * Mirrors nai-settings.js's getNovelMaxResponseTokens(), taking novel_data?.tier as a plain param
- * instead of reading the module-level novel_data.
- * @param {number} [novelDataTier] novel_data?.tier equivalent (1/2/3, from NovelAI's own API).
+ * @param {number} [novelDataTier]
  * @returns {number}
  */
 export function getNovelMaxResponseTokens(novelDataTier) {
@@ -291,7 +215,7 @@ export function getNovelMaxResponseTokens(novelDataTier) {
 }
 
 /**
- * @typedef {object} NovelSettings Equivalent of nai_settings.
+ * @typedef {object} NovelSettings
  * @property {string} model_novel
  * @property {number} temperature
  * @property {number} min_length
@@ -316,38 +240,25 @@ export function getNovelMaxResponseTokens(novelDataTier) {
  * @property {NovelLogitBiasEntry[]} logit_bias
  * @property {string} prefix
  * @property {number[]} [order]
- *
  * @typedef {object} CreateNovelGenerationDataParams
  * @property {string} finalPrompt
- * @property {NovelSettings} settings Equivalent of nai_settings.
- * @property {number} maxLength Equivalent of the original function's `maxLength` param.
+ * @property {NovelSettings} settings
+ * @property {number} maxLength
  * @property {boolean} [isImpersonate]
  * @property {boolean} [isContinue]
- * @property {string} [type] 'quiet'/'impersonate'/'continue'/'normal' equivalent - only used for a debug log line.
- * @property {number} [novelDataTier] novel_data?.tier equivalent, forwarded to getNovelMaxResponseTokens().
- * @property {number[]} [presetOrder] The original function's second positional `settings` param's
- * `.order` field - a distinct object from `settings` above (some preset-merge object), used only as
- * a fallback when `settings.order` (nai_settings.order) is unset. Kept separate to match the
- * original's two-different-`settings`-objects behavior (`nai_settings.order || settings.order || default_order`)
- * without conflating them into one param.
- * @property {boolean} [consoleLogPrompts] power_user.console_log_prompts equivalent.
- * @property {boolean} [requestTokenProbabilities] power_user.request_token_probabilities equivalent.
+ * @property {string} [type]
+ * @property {number} [novelDataTier]
+ * @property {number[]} [presetOrder]
+ * @property {boolean} [consoleLogPrompts]
+ * @property {boolean} [requestTokenProbabilities]
  * @property {import('./stopping-strings.js').GetStoppingStringsParams} [stoppingStringsParams]
- * Forwarded to getStoppingStrings(), minus isImpersonate/isContinue/api (supplied by this function).
- * @property {number} tokenizerType The send's resolved `tokenizers` value, passed back to
- * `encodeTokens`. NONE (an estimate resolution) leaves out every stop string, bad word and bias
- * entry that needs ids; raw-id entries still go through.
+ * @property {number} tokenizerType
  * @property {EncodeTokensFn} encodeTokens
- * @property {string[]} [dropped] Receives each entry left out because it has no token ids.
- * @property {import('./macro-substitution.js').SubstituteParamsContext} [macroContext] Forwarded
- * into the getStoppingStrings() call (merged into stoppingStringsParams).
+ * @property {string[]} [dropped]
+ * @property {import('./macro-substitution.js').SubstituteParamsContext} [macroContext]
  */
 
 /**
- * Server-side port of public/scripts/nai-settings.js's getNovelGenerationData(finalPrompt,
- * settings, maxLength, isImpersonate, isContinue, _cfgValues, type). Note `_cfgValues` is unused
- * in the original (its leading underscore is the original's own naming, not a typo) and is
- * therefore not a parameter here either.
  * @param {CreateNovelGenerationDataParams} params
  * @returns {Promise<object>}
  */
@@ -383,7 +294,6 @@ export async function createNovelGenerationData({
         macroContext,
     });
 
-    // Llama 3 tokenizer, huh?
     if (isErato) {
         const additionalStopStrings = [];
         for (const stoppingString of stoppingStrings) {
@@ -427,8 +337,6 @@ export async function createNovelGenerationData({
 
     const prefix = selectPrefix(settings.prefix, finalPrompt, settings.model_novel);
 
-    // With no tokenizer only raw-id entries are sent, and a field left with none is `undefined`,
-    // like `stop_sequences`. (The client sends `logit_bias_exp: []` there.)
     const logitBias = (Array.isArray(settings.logit_bias) && settings.logit_bias.length)
         ? await calculateNovelLogitBias(settings.logit_bias, tokenizerType, encodeTokens, dropped)
         : [];

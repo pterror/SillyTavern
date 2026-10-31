@@ -1,17 +1,12 @@
-/* The AI response configuration panel's new-page parts (packages/ui/src/areas/settings). */
-
-/* Where a run of fields is mounted: no box of its own, so the fields lay out as the old markup's did. */
 .settings_mount {
     display: contents;
 }
 
-/* A value a chat's level sets (a group's or a character's): marked at the block's edge, without moving anything. */
 [data-settings-level="group"],
 [data-settings-level="character"] {
     box-shadow: inset 3px 0 0 var(--SmartThemeQuoteColor);
 }
 
-/* A range above the defaults where nothing sets the field: what's shown is what lies under it. */
 [data-settings-level="unset"] {
     opacity: 0.5;
 }

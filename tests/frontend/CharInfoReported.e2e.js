@@ -5,16 +5,13 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// Reported bugs in the character info panel and the character list.
-
 const stamp = () => `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
 /**
- * Creates a character whose greetings are `greetings`, in order, with the first one as the default, and opens it.
  * @param {import('@playwright/test').Page} page
  * @param {string[]} greetings
  * @param {string} [name]
- * @returns {Promise<string>} The new character's avatar filename.
+ * @returns {Promise<string>}
  */
 async function createAndOpen(page, greetings, name = `CharInfo-${stamp()}`) {
     const avatar = await page.evaluate(async ({ name, greetings }) => {
@@ -40,7 +37,7 @@ async function createAndOpen(page, greetings, name = `CharInfo-${stamp()}`) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} avatar
- * @returns {Promise<string[]>} The stored greetings, default first.
+ * @returns {Promise<string[]>}
  */
 async function storedGreetings(page, avatar) {
     return page.evaluate(async (avatar) => {
@@ -53,7 +50,6 @@ async function storedGreetings(page, avatar) {
 }
 
 /**
- * Replaces the greeting field's text in its live editor and confirms it.
  * @param {import('@playwright/test').Page} page
  * @param {string} text
  */
@@ -79,7 +75,6 @@ test.describe('character info greeting pager', () => {
         await page.locator('.field_edit_toggle[data-for="greeting_field"]').click();
         await writeGreeting(page, 'three edited');
         await expect.poll(() => storedGreetings(page, avatar)).toEqual(['one', 'two', 'three edited']);
-        // Time for a late re-render (the save's CHARACTER_EDITED and what follows it) to move the pager.
         // eslint-disable-next-line playwright/no-wait-for-timeout
         await page.waitForTimeout(500);
         await expect(page.locator('.greeting-pager-input')).toHaveValue('3');
@@ -93,7 +88,6 @@ test.describe('character info greeting pager', () => {
         await expect(page.locator('.greeting-pager-input')).toHaveValue('3');
         await writeGreeting(page, 'added');
         await expect.poll(() => storedGreetings(page, avatar)).toEqual(['one', 'two', 'added']);
-        // Time for a late re-render (the save's CHARACTER_EDITED and what follows it) to move the pager.
         // eslint-disable-next-line playwright/no-wait-for-timeout
         await page.waitForTimeout(500);
         await expect(page.locator('.greeting-pager-input')).toHaveValue('3');
@@ -107,7 +101,6 @@ test.describe('character info greeting pager', () => {
         await page.locator('.greeting-pager-next').click();
         await expect(page.locator('#greeting_field')).toHaveValue('two');
 
-        // Saying no keeps it.
         await page.locator('.greeting-pager-delete').click();
         await page.locator('.popup .popup-button-cancel').last().click();
         await expect(page.locator('.greeting-pager-total')).toHaveText('/3');
@@ -172,7 +165,6 @@ test.describe('character info greeting pager', () => {
         await page.locator('#charInfoTab_greeting .cm-content').click();
         await page.keyboard.press('Control+A');
         await page.keyboard.press('Backspace');
-        // Past the autosave's pause: an empty autosave neither removes the greeting nor reports a conflict.
         // eslint-disable-next-line playwright/no-wait-for-timeout
         await page.waitForTimeout(1600);
         expect(await storedGreetings(page, avatar)).toEqual(['one', 'two']);
@@ -207,7 +199,6 @@ test.describe('character list', () => {
         await expect(row).toHaveCount(1, { timeout: 10000 });
         await expect(row).not.toHaveClass(/\bis_fav\b/);
 
-        // Every re-read of characters or the list waits until the end.
         /** @type {() => void} */
         let release = () => {};
         const held = new Promise(resolve => { release = () => resolve(undefined); });
@@ -220,7 +211,6 @@ test.describe('character list', () => {
         expect((await stored).ok()).toBe(true);
         await expect(row).toHaveClass(/\bis_fav\b/, { timeout: 2000 });
         release();
-        // And the re-reads, once back, keep it.
         // eslint-disable-next-line playwright/no-wait-for-timeout
         await page.waitForTimeout(500);
         await expect(row).toHaveClass(/\bis_fav\b/);
@@ -233,7 +223,6 @@ test.describe('character info avatar', () => {
     test('CL8: a loaded avatar preview keeps its size', async ({ page }) => {
         await createAndOpen(page, ['hi']);
         const preview = page.locator('#avatar_load_preview');
-        // A static image, so the check doesn't depend on the thumbnail being made: a broken image keeps its box anyway.
         await preview.evaluate(element => new Promise((resolve, reject) => {
             const img = /** @type {HTMLImageElement} */ (element);
             img.addEventListener('load', resolve, { once: true });

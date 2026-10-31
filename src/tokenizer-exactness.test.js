@@ -8,23 +8,6 @@ import yaml from 'yaml';
 
 import { setConfigFilePath } from './util.js';
 
-// Every fixture in tests/fixtures/tokenizer-reference holds the ids the vendor's own tool gives for
-// the samples. Each file is read through the reader SillyTavern uses for it, and must give the same
-// ids. A file that isn't in the cache is not run; `node scripts/fetch-tokenizer-fixtures.js` fills it.
-//
-// A fixture is named by its tokenizer's identity: the file's sha256, then `.<config hash>` for a
-// registry entry with a tokenizer config (src/tokenizer-sources.js getTokenizerIdentity()). A
-// registry fixture's name must be its entry's identity, so an entry whose config changed fails.
-//
-// A fixture whose `file` is {"sameContentAs": <identity>, ...} was made from a file with the same
-// content as the file of fixture <identity>, which is the file SillyTavern reads. That fixture must
-// exist; its format may differ (a `.model` whose json SillyTavern reads). Its file is located and
-// sha-checked through that fixture's own `file`, `format` and `sha256`, so it is not run when that
-// file isn't in the cache, and it must give this fixture's ids.
-//
-// Usage: node src/tokenizer-exactness.test.js [--dataRoot <dir>]
-// Without --dataRoot, config.yaml's dataRoot is used.
-
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const configPath = path.join(root, 'config.yaml');
 const fixturesDir = path.join(root, 'tests', 'fixtures', 'tokenizer-reference');
@@ -43,8 +26,7 @@ const { loadPinnedTokenizer } = await import('./tokenizer-loader.js');
 const { TOKENIZER_SOURCES, CACHE_EXTENSIONS, getTokenizerIdentity } = await import('./tokenizer-sources.js');
 
 /**
- * Where SillyTavern keeps a fixture's file, and how it encodes with it.
- * @param {any} file The fixture's `file` descriptor
+ * @param {any} file
  * @param {string} format
  * @returns {{ filePath: string, getEncode: () => Promise<(text: string) => Promise<number[]>> }}
  */
@@ -92,7 +74,6 @@ for (const name of fixtureFiles) {
         }
     }
 
-    // The fixture that says where SillyTavern keeps the file and which sha256 it has.
     let read = fixture;
     if (fixture.file.sameContentAs) {
         const referencedPath = path.join(fixturesDir, `${fixture.file.sameContentAs}.json`);

@@ -1,20 +1,12 @@
 /**
- * An entity of the settings model as its modules make it from upstream's files and give it back (the settings model
- * §1): its type and key, its values by field name, and its ordered lists, each item a text or an entity of its own
- * (a part). The store writes and reads these; the modules convert them, and nothing else.
- */
-
-/**
  * @typedef {object} EntityDraft
- * @property {number} type One of library-codes.js's TYPE.
+ * @property {number} type
  * @property {string} key
- * @property {Record<string, unknown>} values A value per field name; an object or array that isn't modeled is kept as
- *   it came (JSON).
- * @property {Record<number, (string | EntityDraft)[]>} [lists] Ordered lists by number.
+ * @property {Record<string, unknown>} values
+ * @property {Record<number, (string | EntityDraft)[]>} [lists]
  */
 
 /**
- * A part of an entity: an entity of its own, keyed under its holder.
  * @param {number} type
  * @param {string} key
  * @param {Record<string, unknown>} values
@@ -26,24 +18,20 @@ export function draft(type, key, values, lists) {
 }
 
 /**
- * A part keyed by its natural id under its holder, `<holder>:<id>`. The id isn't kept again among its values, which
- * the key gives back; a missing, malformed or repeated id gets a fallback key by its place (`<holder>:#<index>`), the
- * record kept whole, warned.
  * @param {number} type
- * @param {string} holder The holder's key.
+ * @param {string} holder
  * @param {Record<string, any>} record
  * @param {object} options
  * @param {string} options.idField
  * @param {number} options.index
- * @param {Set<string>} options.seen The ids taken so far under the holder.
+ * @param {Set<string>} options.seen
  * @param {string[]} options.warnings
- * @param {string} options.what What the part is, for the warning.
- * @param {(id: unknown) => boolean} [options.valid] Whether an id can be given back from the key.
+ * @param {string} options.what
+ * @param {(id: unknown) => boolean} [options.valid]
  * @returns {EntityDraft}
  */
 export function keyedPart(type, holder, record, { idField, index, seen, warnings, what, valid = id => typeof id === 'string' && id !== '' }) {
     const id = record?.[idField];
-    // An id of the fallback's form would read back as one.
     if (valid(id) && !String(id).startsWith('#') && !seen.has(String(id))) {
         seen.add(String(id));
         return draft(type, `${holder}:${id}`, without(record, [idField]));
@@ -53,7 +41,6 @@ export function keyedPart(type, holder, record, { idField, index, seen, warnings
 }
 
 /**
- * A part's record, its id given back from its key unless its values hold it.
  * @param {EntityDraft} part
  * @param {string} holder
  * @param {string} idField
@@ -66,7 +53,6 @@ export function partRecord(part, holder, idField, parse = text => text) {
 }
 
 /**
- * The values of an object, less some keys.
  * @param {Record<string, unknown>} object
  * @param {Iterable<string>} keys
  * @returns {Record<string, unknown>}
@@ -77,7 +63,6 @@ export function without(object, keys) {
 }
 
 /**
- * The values of an object, only some keys, those it has.
  * @param {Record<string, unknown>} object
  * @param {Iterable<string>} keys
  * @returns {Record<string, unknown>}

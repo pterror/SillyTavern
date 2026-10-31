@@ -66,9 +66,6 @@ declare global {
      */
     var DATA_ROOT: string;
 
-    /**
-     * The directory for global (all-user) third-party extensions.
-     */
     var GLOBAL_EXTENSIONS_PATH: string;
 
     /**

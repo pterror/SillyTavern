@@ -18,37 +18,22 @@ import type { ActionResult, ChatRef, User, ViewContext } from '@st/server-ui';
 import { MINUS_ONE_BACKENDS, limitsOfSettings } from './model-limits.ts';
 import type { ModelLists, ModelRecord } from './model-limits.ts';
 
-// The AI response configuration panel's settings (packages/areas/settings/protocol.ts): a tab's chat's settings over
-// the range of levels the tab shows, and edits of one field at a time, each written where its level says (the old
-// server's settings document routes them).
-
 const FULL: LevelRange = { from: 'default', to: 'character' };
 
-/** What old server code does for this area (src/settings-document.js). */
 export type Ports = {
-    /** A chat's settings over a range, upstream-shaped, and the level each bundle field's value comes from. */
     view(
         user: User,
         owner: ChatOwner | null,
         range: LevelRange,
     ): Promise<{ settings: Record<string, unknown>; sources: Record<string, string> }>;
-    /**
-     * Writes paths where an edit over the range goes, all in one write (a value of undefined takes its path away).
-     */
     write(
         user: User,
         owner: ChatOwner | null,
         range: LevelRange,
         entries: [path: string, value: unknown][],
     ): Promise<void>;
-    /** Whose a chat is. */
     ownerOf(user: User, chat: ChatRef): Promise<ChatOwner | null>;
-    /** A chat completion source's model list as it last answered the user (empty when it hasn't). */
     models(user: User, source: string): readonly ModelRecord[];
-    /**
-     * The app's defaults, upstream-shaped: what a field is where no level states it (the settings model stores a
-     * field at its default as nothing, as the old page filled it from its code).
-     */
     defaults(): Record<string, unknown>;
 };
 
@@ -65,11 +50,6 @@ const textAt = (settings: Record<string, unknown>, path: string): string => {
     return typeof value === 'string' ? value : '';
 };
 
-/**
- * Each field's range for these settings where it isn't its declaration's: the context and response limits by whether
- * they're unlocked, what the chat completion source and model allow for its context size, temperature and penalties,
- * and none for the fields lab mode frees.
- */
 function rangesFor(settings: Record<string, unknown>, models: ModelLists) {
     const ranges: Record<string, Range> = {};
     const unlocked = valueAt(settings, 'power_user.max_context_unlocked') === true;
@@ -83,7 +63,6 @@ function rangesFor(settings: Record<string, unknown>, models: ModelLists) {
     ranges['temp_openai'] = { min: 0, max: limits.temperature, step: 0.01 };
     ranges['freq_pen_openai'] = { ...limits.penalties, step: 0.01 };
     ranges['pres_pen_openai'] = { ...limits.penalties, step: 0.01 };
-    // Backends that turn top K off with -1 go down to it, and have no mirostat mode 1.
     const minusOne = MINUS_ONE_BACKENDS.includes(textAt(settings, 'textgenerationwebui_settings.type'));
     ranges['top_k_textgenerationwebui'] = { min: minusOne ? -1 : 0, max: 500, step: 1 };
     ranges['mirostat_mode_textgenerationwebui'] = { min: 0, max: 2, step: minusOne ? 2 : 1 };
@@ -95,10 +74,8 @@ function rangesFor(settings: Record<string, unknown>, models: ModelLists) {
     return ranges;
 }
 
-/** Where the sampler select is kept: the user's own, by text generation backend. */
 const SAMPLER_SELECT = 'power_user.sampler_select';
 
-/** The neutral value of each text generation sampler (the old page's Neutralize Samplers), by setting key. */
 function neutralOf(backend: string): Record<string, unknown> {
     return {
         temp: 1,
@@ -150,7 +127,6 @@ function neutralOf(backend: string): Record<string, unknown> {
     };
 }
 
-/** The sampler selects as stored, by backend (anything else stored there is read as none). */
 function samplerSelectsOf(settings: Record<string, unknown>): Record<string, SamplerSelect> {
     const stored = valueAt(settings, SAMPLER_SELECT);
     if (typeof stored !== 'object' || stored === null || Array.isArray(stored)) return {};
@@ -170,8 +146,6 @@ const isLevel = (value: string): value is Exclude<Level, 'default'> =>
     (LEVELS as readonly string[]).includes(value) && value !== 'default';
 
 export function settingsArea(ports: Ports) {
-    // The range each tab shows (its slider). The server's, so it's what the view says; a tab whose server restarted
-    // shows the user's own range again, and its slider shows that.
     const ranges = new Map<string, LevelRange>();
     const rangeOfTab = (session: string) => ranges.get(session) ?? DEFAULT_RANGE;
     const ownerOf = async (context: ViewContext) => (context.chat ? ports.ownerOf(context.user, context.chat) : null);

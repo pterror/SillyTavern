@@ -1,5 +1,3 @@
-// How a tab gets its session: the server's choice for a fresh tab, and the fork a tab makes of a session another tab
-// holds (public/scripts/tab-session.js).
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -35,7 +33,6 @@ for (const kind of ['native', 'wasm']) {
             const chats = await ChatEngine.open(store, people);
             const claim = (/** @type {string} */ token, /** @type {string | null} */ asked = null) => claimTabSession({ root: userRoot, user, chats, asked, token });
 
-            // No session at all: a new one, nothing stored until it moves.
             const none = await claim('tab-zero-0');
             assert.equal(none.reused, false);
             assert.equal(await chats.sessionPlace(none.session), null);
@@ -44,23 +41,19 @@ for (const kind of ['native', 'wasm']) {
             const [a] = (await chats.appendMessages({ tree: t, treeSpeaker: cara, after: null, contents: [say('a')], actor: { user, session: S1 } })).node_ids;
             await chats.appendMessages({ tree: t, treeSpeaker: cara, after: a, contents: [say('b')], actor: { user, session: S2 } });
 
-            // Two fresh tabs at once (two devices): the most recent, then the next; never the same.
             const [one, two] = await Promise.all([claim('device-one'), claim('device-two')]);
             assert.deepEqual([one.session, two.session], [S2, S1]);
-            // Every session open: a new one where the most recent is, its history that one move.
             const three = await claim('device-three');
             assert.ok(![S1, S2].includes(three.session));
             assert.deepEqual(await chats.pointer(three.session), await chats.pointer(S2));
             assert.deepEqual(await chats.sessionPlace(three.session), { length: 1, cursor: 1 });
             assert.equal(await chats.currentChat(three.session, t), null);
 
-            // Close and reopen: the same session again.
             one.release();
             assert.equal(heldByOther(userRoot, S2), false);
             const reopened = await claim('device-four');
             assert.equal(reopened.session, S2);
 
-            // A tab asking for its own: held by another tab's token, or its own (a reload's stream still open).
             assert.equal((await claim('device-five', S2)).held, true);
             const reload = await claim('device-four', S2);
             assert.equal(reload.held, false);
@@ -86,7 +79,6 @@ for (const kind of ['native', 'wasm']) {
             const place = await chats.sessionPlace(S1);
             assert.deepEqual(place, { length: 3, cursor: 2 });
 
-            // A duplicated tab: every entry, forward ones included, at the original's cursor.
             const dup = await chats.forkSession({ from: S1, ...place, chats: [{ tree: t, bookmark }], user });
             assert.equal(dup.ok, true);
             const fork = /** @type {any} */ (dup).session;
@@ -97,7 +89,6 @@ for (const kind of ['native', 'wasm']) {
             assert.deepEqual(await chats.pointer(fork), { tree: t, at: c });
             assert.deepEqual(await chats.pointer(S1), { tree: t, at: b });
 
-            // Each moves on its own from then on.
             await chats.goTo({ tree: t, node_id: a, actor: { user, session: fork } });
             await chats.goTo({ tree: t, node_id: c, actor });
             assert.deepEqual(await chats.pointer(fork), { tree: t, at: a });
@@ -105,16 +96,13 @@ for (const kind of ['native', 'wasm']) {
             assert.deepEqual(await chats.sessionPlace(fork), { length: 4, cursor: 4 });
             assert.deepEqual(await chats.sessionPlace(S1), { length: 4, cursor: 4 });
 
-            // A restored tab whose session was taken: from its own last place, not the session's now.
             const restored = await chats.forkSession({ from: S1, length: 3, cursor: 2, chats: [], user });
             const r = /** @type {any} */ (restored).session;
             assert.deepEqual(await chats.sessionPlace(r), { length: 3, cursor: 2 });
             assert.deepEqual(await chats.pointer(r), { tree: t, at: b });
             assert.equal(await chats.currentChat(r, t), null);
 
-            // A session the server doesn't have isn't forked.
             assert.deepEqual(await chats.forkSession({ from: S2, length: 0, cursor: 0, chats: [], user }), { ok: false, reason: 'unknown session' });
-            // The original's delete leaves the forks' history whole.
             await chats.deleteSession(S1);
             assert.deepEqual(await chats.sessionPlace(r), { length: 3, cursor: 2 });
             assert.equal((await chats.step({ back: true, actor: { user, session: r } })).ok, true);

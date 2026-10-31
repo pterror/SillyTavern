@@ -1,8 +1,6 @@
 import { test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import path from 'node:path';
 
-// SQLite's ORDER BY compares UTF-8 bytes and JS sort UTF-16 code units; these two ids order differently under
-// each (SQLite: HIGH_BMP first, JS: ASTRAL first), so they tell a JS-sorted list from a SQL-ordered one.
 const HIGH_BMP = 'tag\uE000';
 const ASTRAL = 'tag\u{10000}';
 const JS_SORTED = [ASTRAL, HIGH_BMP];

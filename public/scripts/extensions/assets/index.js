@@ -20,7 +20,7 @@ let ASSETS_JSON_URL = 'https://raw.githubusercontent.com/SillyTavern/SillyTavern
 
 let availableAssets = {};
 let currentAssets = {};
-/** @type {Set<string>} Ids of the listed character assets that are already in the library. */
+/** @type {Set<string>} */
 let installedCharacterAssets = new Set();
 
 //#############################//
@@ -264,7 +264,6 @@ async function downloadAssetsList(url) {
         }
         await populateAssetsMenu(json);
     } catch (error) {
-        // In case they meant to install a custom extension instead
         const installButton = $('#third_party_extension_button');
         flashHighlight(installButton, 10_000);
         toastr.info('Click the flashing button at the top right corner of the menu.', 'Trying to install a custom extension?', { timeOut: 10_000 });
@@ -307,7 +306,6 @@ async function refreshInstalledCharacterAssets(ids) {
     const avatarOf = (/** @type {string} */ id) => `${id.replace(/\.[^/.]+$/, '')}.png`;
     const found = await checkCharactersExistOrNull([...new Set(ids.map(avatarOf))]);
     if (found === null) {
-        // Unverifiable: fall back to the characters the page holds rather than showing everything as missing.
         installedCharacterAssets = new Set(ids.filter(id => charactersStore.has(avatarOf(id))));
         return;
     }

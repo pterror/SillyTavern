@@ -1,25 +1,16 @@
 /**
- * Expanded editors. An expanded editor is an ordinary layer, never a modal: it has no backdrop and blocks nothing, so
- * the chat and the drawers around it stay usable. With stacked drawers on it is ordered like any other layer
- * (drawer-stack.js finds it among #movingDivs' children): clicking something else brings that forward, and clicking
- * the editor brings it back. It spans the three columns, capped to Chat Width Max, like fullscreen character info.
- */
-
-/**
  * @typedef {object} EditorLayer
- * @property {HTMLElement} element The layer.
- * @property {() => void} close Closes it; `onClose` runs once.
+ * @property {HTMLElement} element
+ * @property {() => void} close
  */
 
 /**
- * Opens `content` in a new expanded editor layer.
- * @param {HTMLElement} content What the layer shows. It is moved into the layer, not copied.
+ * @param {HTMLElement} content
  * @param {object} options
- * @param {string} options.closeTitle Tooltip of the button that closes it.
- * @param {string} [options.closeIcon] Font Awesome class of that button.
- * @param {() => boolean} [options.escapeCloses] Whether Escape, pressed inside the layer, closes it now. By default
- * it always does.
- * @param {() => void} [options.onClose] Runs when the layer closes, by its button, Escape or `close()`.
+ * @param {string} options.closeTitle
+ * @param {string} [options.closeIcon]
+ * @param {() => boolean} [options.escapeCloses]
+ * @param {() => void} [options.onClose]
  * @returns {EditorLayer}
  */
 export function openEditorLayer(content, { closeTitle, closeIcon = 'fa-minimize', escapeCloses = () => true, onClose = () => {} }) {
@@ -67,10 +58,8 @@ export function openEditorLayer(content, { closeTitle, closeIcon = 'fa-minimize'
 }
 
 /**
- * What moving an element out of the page and back loses, kept so it can be put back: focus, every text field's
- * cursor and selection (a field keeps them after losing focus, until it is moved), and every scroll position inside.
  * @param {HTMLElement} root
- * @returns {() => void} Puts it back.
+ * @returns {() => void}
  */
 export function keepViewState(root) {
     const all = [root, ...root.querySelectorAll('*')];

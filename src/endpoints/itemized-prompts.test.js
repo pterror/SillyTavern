@@ -11,14 +11,11 @@ import { setConfigFilePath } from '../util.js';
 
 setConfigFilePath(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'config.yaml'));
 
-// Prompt itemizations are kept per message: recorded with the reply, flagged on loaded messages, read one at a time.
-
 const { router } = await import('./itemized-prompts.js');
 const { persistAssistantReply } = await import('../assistant-reply-persist.js');
 const { itemizationOf } = await import('../itemization-of.js');
 const { encodeStoredReplyFrame } = await import('./backends/llamacpp-compact-stream.js');
 const { newSessionKey } = await import('../chat-engine.js');
-// The flag a loaded message carries when it has an itemization.
 const ITEMIZED_PROMPT_FLAG = 'has_itemized_prompt';
 const { RequestSession } = await import('../request-session.js');
 const { convertedUser, treeOf, seedMessages } = await import('../../tests/converted-user.fixture.js');
@@ -59,8 +56,7 @@ const said = (mes) => ({ name: 'You', is_user: true, mes, send_date: 1, extra: {
 const alice = { avatar: 'Alice.png' };
 
 /**
- * A chat of Alice's, through a session of its own: greeting, user, reply, user, reply.
- * @param {string} label Makes the texts the chat's own.
+ * @param {string} label
  */
 async function makeChat(label) {
     const session = newSessionKey();
@@ -70,7 +66,6 @@ async function makeChat(label) {
     return { ids, session };
 }
 
-/** The chat context a reply is stored through. */
 async function chatOf(session = newSessionKey()) {
     const tree = await treeOf(user.store, alice);
     const treeSpeaker = (await user.store.people.byAvatar([alice.avatar])).get(alice.avatar) ?? null;

@@ -1,6 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, jest } from '@jest/globals';
 
-/** A Storage over a Map. */
 function storage() {
     const m = new Map();
     return {
@@ -14,7 +13,7 @@ const V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}
 
 /** @type {any[]} */
 let streams;
-/** @type {string[]} Locks other tabs of this browser hold. */
+/** @type {string[]} */
 let othersLocks;
 /** @type {string[]} */
 let ourLocks;
@@ -52,13 +51,12 @@ class FakeChannel {
     postMessage(data) {
         this.posted.push(data);
     }
-    /** @param {any} data What another tab said. */
+    /** @param {any} data */
     hear(data) {
         this.onmessage?.({ data });
     }
 }
 
-/** This browser gives no Web Locks (plain http to a LAN address). */
 function withoutLocks() {
     Object.defineProperty(globalThis, 'navigator', { configurable: true, value: {} });
 }
@@ -66,7 +64,6 @@ function withoutLocks() {
 const lastStream = () => streams[streams.length - 1];
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
-/** A page load of tab-session.js, with this tab's sessionStorage. */
 async function load() {
     /** @type {any} */
     let mod;
@@ -122,7 +119,6 @@ describe('how a tab gets its session', () => {
         expect(tab.tabPlace()).toEqual({ length: 3, cursor: 2 });
         expect(tab.tabChats()).toEqual({ 'a:cara.png': '9' });
         expect(ourLocks).toEqual(['st-session:s1']);
-        // Its stream rebuilt names the session and the same token.
         lastStream().onopen();
         lastStream().onerror();
         await new Promise(resolve => setTimeout(resolve, 1100));
@@ -193,7 +189,6 @@ describe('how a tab gets its session', () => {
         lastStream().send({ type: 'current-chat', tree: { group: 'g2' }, bookmark: '3' });
         expect(tab.tabPlace()).toEqual({ length: 4, cursor: 3 });
         expect(tab.tabChats()).toEqual({ 'g:g2': '3' });
-        // Other frames go to the page, those before it listened included.
         lastStream().send({ type: 'tags-changed' });
         /** @type {any[]} */
         const got = [];
@@ -265,7 +260,6 @@ describe('answers about the tab\'s session', () => {
 });
 
 describe('tabs sharing a token without Web Locks', () => {
-    /** A tab with session s9 and token tok-9, open and told its session. */
     async function openTab() {
         globalThis.sessionStorage.setItem('st:tab-session', 's9');
         globalThis.sessionStorage.setItem('st:tab-token', 'tok-9tok-9');
@@ -316,7 +310,6 @@ describe('tabs sharing a token without Web Locks', () => {
         expect(lastStream().url.searchParams.get('token')).toBe(tab.tabToken());
         expect(streams[0].closed).toBe(true);
         expect(tab.tabPlace()).toEqual({ length: 2, cursor: 2 });
-        // It now has its own token: the other tab's talk about the old one is not about it.
         channels[0].hear({ type: 'here', session: 's9', token: 'tok-9tok-9', loaded: loaded - 9, tie });
         await tick();
         expect(forks.length).toBe(1);
@@ -388,7 +381,6 @@ describe('a stream that does not answer', () => {
         expect(tab.tabSession()).toBeNull();
         const stream = lastStream();
         expect(stream.url.searchParams.get('claim')).toBe('1');
-        // The browser's retry is of the same stream; when it connects, the tab takes what it is given.
         const before = streams.length;
         stream.send({ type: 'session', session: 's12', held: false, place: { length: 1, cursor: 1 } });
         expect(streams.length).toBe(before);

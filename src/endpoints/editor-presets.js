@@ -5,10 +5,6 @@ import crypto from 'node:crypto';
 import express from 'express';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
-/**
- * The editor's find-and-replace presets and preset lists, per user, in one file. Each route is one action; the file
- * is read, changed and written in one synchronous step, so actions from two tabs don't lose each other's changes.
- */
 export const router = express.Router();
 
 const FILE_NAME = 'editor-presets.json';
@@ -40,7 +36,6 @@ function hashStore(store) {
 }
 
 /**
- * Runs a change on the store and answers with the stored result and its hash. Writes only when something changed.
  * @param {import('express').Request} request
  * @param {import('express').Response} response
  * @param {(store: EditorPresetStore) => { changed: boolean, result?: object } | { error: string }} change

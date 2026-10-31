@@ -30,13 +30,12 @@ test('foldReasoningIntoMessage: !isPrefix past the limit returns content unchang
     const result = foldReasoningIntoMessage(state, 'hello', 'some reasoning', false, null, config);
     assert.equal(result.content, 'hello');
     assert.equal(result.state.counter, 3);
-    assert.equal(result.state, state); // returns the same state object unchanged (no new state needed)
+    assert.equal(result.state, state);
 });
 
 test('foldReasoningIntoMessage: isPrefix past the limit still folds in (divergent from isReasoningLimitReached)', () => {
     const state = { ...createReasoningFoldState(), counter: 5 };
     const config = { addToPrompts: true, maxAdditions: 3, reasoningPrefix: '[', reasoningSeparator: '|', reasoningSuffix: ']' };
-    // Sanity: the limit IS reached according to isReasoningLimitReached.
     assert.equal(isReasoningLimitReached(state, config), true);
     const result = foldReasoningIntoMessage(state, 'body', 'thinking', true, null, config);
     assert.equal(result.content, '[thinking]|body');

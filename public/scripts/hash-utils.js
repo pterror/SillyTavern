@@ -1,14 +1,7 @@
-/** Dependency-free string-hashing helpers - must stay importable outside a browser DOM (e.g. under Node tests). */
-
 /**
- * Calculates a hash code for a string.
- * cyrb53 (c) 2018 bryc ({@link https://github.com/bryc/code/blob/master/jshash/experimental/cyrb53.js|github.com/bryc})
- * License: Public domain (or MIT if needed). Attribution appreciated.
- * A fast and simple 53-bit string hash function with decent collision resistance.
- * Largely inspired by MurmurHash2/3, but with a focus on speed/simplicity.
- * @param {string} str The string to hash.
- * @param {number} [seed=0] The seed to use for the hash.
- * @returns {number} The hash code.
+ * @param {string} str
+ * @param {number} [seed=0]
+ * @returns {number}
  */
 export function getStringHash(str, seed = 0) {
     if (typeof str !== 'string') {
@@ -30,11 +23,9 @@ export function getStringHash(str, seed = 0) {
 }
 
 /**
- * Resolves a dot-separated path to a value within a nested object.
- * e.g. getAtPath({ a: { b: 3 } }, 'a.b') => 3
  * @param {object|null|undefined} obj
- * @param {string} dottedPath Dot-separated path (e.g. 'power_user.font_scale')
- * @returns {*} The value at the path, or undefined if any segment is missing
+ * @param {string} dottedPath
+ * @returns {*}
  */
 export function getAtPath(obj, dottedPath) {
     let current = obj;
@@ -46,11 +37,9 @@ export function getAtPath(obj, dottedPath) {
 }
 
 /**
- * Sets a value at a dot-separated path within a nested object, creating intermediate objects as needed.
- * e.g. setAtPath({}, 'a.b', 3) => { a: { b: 3 } }
  * @param {object} obj
- * @param {string} dottedPath Dot-separated path (e.g. 'power_user.font_scale')
- * @param {*} value Value to set
+ * @param {string} dottedPath
+ * @param {*} value
  */
 export function setAtPath(obj, dottedPath, value) {
     const parts = dottedPath.split('.');
@@ -64,16 +53,9 @@ export function setAtPath(obj, dottedPath, value) {
     current[parts[parts.length - 1]] = value;
 }
 
-/**
- * Where upstream's `charLore` sits in settings: each character's extra lorebook links. They are the store's, changed
- * only by `/api/worldinfo/additional-books`: no settings write stores them, and no settings hash covers them.
- */
 export const CHAR_LORE_PATH = Object.freeze(['world_info_settings', 'world_info', 'charLore']);
 
 /**
- * A settings value without `charLore` (CHAR_LORE_PATH), as written or hashed at settings key `key` (a top-level key,
- * a dotted path, or '' for the whole settings object): `value` itself when it holds none there, else a copy with it
- * left out. `skip` when `key` is `charLore` itself or inside it. `charLore` is what it held there.
  * @param {string} key
  * @param {*} value
  * @returns {{ value: *, skip: boolean, charLore: * }}
@@ -93,7 +75,6 @@ export function settingsWithoutCharLore(key, value) {
     }
     const last = rest[rest.length - 1];
     if (holder == null || typeof holder !== 'object' || Array.isArray(holder) || !Object.hasOwn(holder, last)) return { value, skip: false, charLore: undefined };
-    // A copy of each object on the way down, the rest shared.
     const copy = { ...value };
     let at = copy;
     for (const part of rest.slice(0, -1)) {
@@ -106,13 +87,10 @@ export function settingsWithoutCharLore(key, value) {
 }
 
 /**
- * Recursively hashes every dotted path in a settings-shaped object into `map`, for partial-update conflict checks.
- * A path absent from `map` means "unknown", not "hash is 0" (0 is a real hash) - callers must check presence.
- * Cycle-safe via an `ancestors` walk-stack; a stringify failure only taints that one path, not its children.
- * @param {Record<string, number>} map Populated in place
- * @param {*} obj Value to walk
- * @param {string} [prefix] Dotted path prefix for `obj` itself
- * @param {Set<object>} [ancestors] Internal cycle guard
+ * @param {Record<string, number>} map
+ * @param {*} obj
+ * @param {string} [prefix]
+ * @param {Set<object>} [ancestors]
  */
 export function seedKeyHashes(map, obj, prefix = '', ancestors = new Set()) {
     if (prefix) {
@@ -137,7 +115,6 @@ export function seedKeyHashes(map, obj, prefix = '', ancestors = new Set()) {
     }
 }
 
-/** Hashes each top-level (or dotted) key of a settings-shaped object independently, for partial-update conflict checks. */
 export function hashSettingsKeys(obj, keys) {
     /** @type {Record<string, number>} */
     const result = {};
@@ -149,10 +126,6 @@ export function hashSettingsKeys(obj, keys) {
 }
 
 /**
- * JSON.stringify with object keys sorted at every level, so equal objects serialize identically regardless of
- * insertion order. Deliberately does NOT strip fields (fav/chat/create_date) the way the server-only
- * canonicalStringify() in character-card-normalize.js does - this one must reflect everything the client would
- * see, so a desync in those fields is not silently hidden.
  * @param {*} value
  * @returns {string}
  */
@@ -161,32 +134,15 @@ export function canonicalStringify(value) {
         return `[${value.map(canonicalStringify).join(',')}]`;
     }
     if (value !== null && typeof value === 'object') {
-        // Filters out undefined-VALUED keys too, matching JSON.stringify()'s own semantics.
         const keys = Object.keys(value).filter(k => value[k] !== undefined).sort();
         return `{${keys.map(k => `${JSON.stringify(k)}:${canonicalStringify(value[k])}`).join(',')}}`;
     }
     return JSON.stringify(value);
 }
 
-/**
- * Anti-entropy/Merkle-style state-digest helpers: partition an id-keyed replica into fixed buckets, keep one
- * order-independent digest per bucket, and only re-fetch a bucket whose digest mismatches - same shape as
- * MySQL pt-table-checksum / Cassandra anti-entropy repair.
- *
- * Digest input is always a hash of each record's actual content (`contentHashOf()`), never a stored revision
- * counter - a stored counter sitting next to corrupted data is just as capable of being wrong as the data
- * itself, with nothing to independently catch it. `rev` (the change-log cursor) still answers "what changed
- * since I last looked"; this answers "is what I already have still correct" - the two must not be conflated.
- *
- * Not cryptographic or collision-resistant - the threat model is accidental divergence, not a hostile peer.
- */
-
-/** Bucket count for state-digest partitioning - see `bucketOf()`. */
 export const DEFAULT_DIGEST_BUCKET_COUNT = 256;
 
 /**
- * Deterministic bucket assignment for one id - client and server must agree without asking each other. Keyed
- * on `id` alone (not `id:rev`) so a record always lands in the same bucket regardless of edits.
  * @param {string} id
  * @param {number} [bucketCount]
  * @returns {number}
@@ -196,7 +152,6 @@ export function bucketOf(id, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
 }
 
 /**
- * Recomputed fresh every call, never persisted as its own trusted value - see the anti-entropy section header.
  * @param {object} content
  * @returns {number}
  */
@@ -205,8 +160,6 @@ export function contentHashOf(content) {
 }
 
 /**
- * fav is true iff the value is `true`, `'true'` or `1`; everything else (`false`, `'false'`, `0`, null, missing,
- * anything else) is false.
  * @param {*} value
  * @returns {boolean}
  */
@@ -215,9 +168,6 @@ export function normalizeFav(value) {
 }
 
 /**
- * The stored form of an entity's tag_ids, on the server and in the client caches: a sorted copy, and `[]` for
- * anything that isn't an array (absent included). The tag_ids digests read it the same way, so two records with
- * equal digests hold equal tag_ids.
  * @param {*} tagIds
  * @returns {string[]}
  */
@@ -226,8 +176,6 @@ export function normalizeTagIds(tagIds) {
 }
 
 /**
- * The form two tag names are compared in: equal keys are the same tag. Matches upstream's
- * equalsIgnoreCaseAndAccents() (utils.js), which getTag() uses: accents stripped, then lower-cased.
  * @param {string} name
  * @returns {string}
  */
@@ -236,10 +184,8 @@ export function tagNameKey(name) {
 }
 
 /**
- * The `data` object of a shallow character (the server's toShallow(), src/character-shallow.js): each field
- * falls back to its default only when absent.
  * @param {object} character
- * @param {boolean} includeCreatorNotes The server's `performance.shallowCharactersIncludeCreatorNotes`.
+ * @param {boolean} includeCreatorNotes
  * @returns {object}
  */
 export function shallowCharacterData(character, includeCreatorNotes) {
@@ -259,8 +205,6 @@ export function shallowCharacterData(character, includeCreatorNotes) {
 }
 
 /**
- * The card's list fields an edit can change, apart from fav: what the edit route's conflict check compares
- * (`characterDigestFieldsHash()`), alongside `characterCardBodyFingerprint()`.
  * @param {object} character
  * @returns {object}
  */
@@ -282,8 +226,6 @@ export function characterContentFieldsFingerprint(character) {
 }
 
 /**
- * Fixed-shape fast path for `contentHashOf(characterContentFieldsFingerprint(character))` - must stay
- * byte-identical to the generic path (verified in tests).
  * @param {object} character
  * @returns {number}
  */
@@ -321,10 +263,6 @@ export function characterDigestFieldsHash(character) {
 }
 
 /**
- * A group's three digests (its `/query` hash-mode cache key): fav, tag_ids and content.
- * `content` is intentionally the whole group object minus `id`/`fav`/`tag_ids` rather than a narrowed field
- * list - unlike characters, a group's `/query` projection already returns the full object, so narrowing here
- * would silently miss changes to fields not explicitly named.
  * @param {object} group
  * @returns {object}
  */
@@ -332,37 +270,50 @@ export function groupFavFingerprint(group) {
     return { fav: normalizeFav(group?.fav) };
 }
 
-/** @param {object} group @returns {object} */
+/**
+ * @param {object} group
+ * @returns {object}
+ */
 export function groupTagIdsFingerprint(group) {
     const tagIds = group?.tag_ids;
     return { tag_ids: Array.isArray(tagIds) && tagIds.length > 0 ? [...tagIds].sort() : null };
 }
 
-/** @param {object} group @returns {object} */
+/**
+ * @param {object} group
+ * @returns {object}
+ */
 export function groupContentFingerprint(group) {
     if (!group || typeof group !== 'object') return {};
     const { id, fav, tag_ids, ...content } = group;
     return content;
 }
 
-/** @param {object} group @returns {number} 32-bit unsigned integer */
+/**
+ * @param {object} group
+ * @returns {number}
+ */
 export function groupDigestFavHash(group) {
     return contentHashOf(groupFavFingerprint(group)) % 4294967296;
 }
 
-/** @param {object} group @returns {number} 32-bit unsigned integer */
+/**
+ * @param {object} group
+ * @returns {number}
+ */
 export function groupDigestTagIdsHash(group) {
     return contentHashOf(groupTagIdsFingerprint(group)) % 4294967296;
 }
 
-/** @param {object} group @returns {number} 32-bit unsigned integer */
+/**
+ * @param {object} group
+ * @returns {number}
+ */
 export function groupDigestContentHash(group) {
     return contentHashOf(groupContentFingerprint(group)) % 4294967296;
 }
 
 /**
- * The card-body fields that change when a user edits the character through the form. Paired with
- * `characterContentFieldsFingerprint()` (metadata fields) for full coverage of the edit endpoint.
  * @param {object} character
  * @returns {object}
  */
@@ -389,8 +340,6 @@ export function characterCardBodyFingerprint(character) {
 }
 
 /**
- * Fixed-shape fast path for `contentHashOf(characterCardBodyFingerprint(character))` - must stay byte-identical
- * to the generic path.
  * @param {object} character
  * @returns {number}
  */
@@ -448,7 +397,6 @@ export function characterDigestCardBodyHash(character) {
 }
 
 /**
- * The starting value for a bucket digest accumulator - see `combineDigest()`.
  * @returns {{ hi: number, lo: number }}
  */
 export function emptyDigest() {
@@ -456,12 +404,9 @@ export function emptyDigest() {
 }
 
 /**
- * Order-independent fold of one `{id, contentHash}` pair into a running bucket digest. XOR (not addition) keeps
- * this on plain 32-bit-safe bitwise ops with no BigInt, and lets callers fold rows in any order and still land
- * on the same digest for the same set.
- * @param {{ hi: number, lo: number }} digest Accumulator so far (start from `emptyDigest()`)
+ * @param {{ hi: number, lo: number }} digest
  * @param {string} id
- * @param {number} contentHash From `contentHashOf()`
+ * @param {number} contentHash
  * @returns {{ hi: number, lo: number }}
  */
 export function combineDigest(digest, id, contentHash) {
@@ -481,7 +426,6 @@ export function digestsEqual(a, b) {
 }
 
 /**
- * The hash of a JSON value as it serializes, so the page and the server agree on a stored value's version.
  * @param {unknown} value
  * @returns {number}
  */
@@ -492,13 +436,10 @@ export function jsonHash(value) {
 /** @param {unknown} value */
 const isPlainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
-/** @param {unknown} value An object with a defined key (an empty one is a field itself, so it keeps being there). */
+/** @param {unknown} value */
 const opens = value => isPlainObject(value) && Object.values(/** @type {object} */ (value)).some(v => v !== undefined);
 
 /**
- * A character row's fields, the card's values as they are stored: every top-level key but `data`, every key of
- * `data` but `extensions`, every key of `data.extensions` (a `data` or `extensions` that isn't an object, or is an
- * empty one, is a field itself). Each is named by its path, the JSON of its keys (`'["data","extensions","fav"]'`).
  * @param {Record<string, any>} row
  * @returns {Map<string, unknown>}
  */
@@ -526,8 +467,6 @@ export function characterRowFields(row) {
 }
 
 /**
- * The hash of each of a character row's fields (`characterRowFields()`), by its path: what the page holds, sent to
- * `/api/characters/batch` so only the fields that differ come back.
  * @param {Record<string, any>} row
  * @returns {Record<string, number>}
  */
@@ -539,11 +478,9 @@ export function characterRowFieldHashes(row) {
 }
 
 /**
- * Applies what `/api/characters/batch` answered for a row's field hashes: each path in `unset` removed, then each
- * in `set` written (objects made along the way, a value that isn't an object replaced by one).
- * @param {Record<string, any>} row Changed in place.
+ * @param {Record<string, any>} row
  * @param {{ set?: Record<string, unknown>, unset?: string[] }} changes
- * @returns {Record<string, any>} The row.
+ * @returns {Record<string, any>}
  */
 export function applyCharacterRowFields(row, { set = {}, unset = [] }) {
     for (const path of unset) {
@@ -558,7 +495,6 @@ export function applyCharacterRowFields(row, { set = {}, unset = [] }) {
         }
         if (chain.length !== keys.length) continue;
         delete chain[chain.length - 1][keys[keys.length - 1]];
-        // An object this leaves empty goes too: one the row has empty is a field of its own, so `set` holds it.
         for (let i = chain.length - 1; i > 0 && Object.keys(chain[i]).length === 0; i--) delete chain[i - 1][keys[i - 1]];
     }
     for (const [path, value] of Object.entries(set)) {

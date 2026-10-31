@@ -1,6 +1,3 @@
-// Removes the emscripten glue's empty process-wide uncaughtException listener from
-// @agnai/web-tokenizers. That listener swallows every uncaught exception once a tokenizer has
-// loaded, so the process keeps running (and `node --test` files exit 0) after a crash.
 const fs = require('node:fs');
 const path = require('node:path');
 

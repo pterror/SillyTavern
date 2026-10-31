@@ -9,15 +9,8 @@ import { classes } from '@st/page/classes';
 import { useUi } from '@st/page/context';
 import { ask } from '@st/page/dialog';
 
-// The backgrounds drawer: the system's backgrounds (with folders) and the open chat's, each shown from the server's
-// view. What's only this drawer's (the tab, the search, the folder open, what's ticked) is the drawer's own.
-
 type Actions = typeof actions;
 
-/**
- * Asks the model which system background suits the chat now, and selects the one its reply names; answers why
- * nothing was selected, or null.
- */
 export async function pickByModel(
     client: Client,
     view: Accessor<BackgroundsView | undefined>,
@@ -33,7 +26,6 @@ export async function pickByModel(
 }
 
 export type BackgroundsOptions = {
-    /** Asks the model a quiet question (the old page's quiet prompt); answers its reply. */
     quietPrompt: (prompt: string) => Promise<string>;
 };
 
@@ -54,7 +46,6 @@ const SORT_LABELS: Record<(typeof SORT_ORDERS)[number], string> = {
     oldest: 'Oldest',
 };
 
-/** A video can be a background once a converter (the Video Background Loader extension) makes it an animated webp. */
 type VideoConverter = (input: { buffer: Uint8Array; name: string }) => Promise<ArrayBuffer | Uint8Array>;
 
 export type BackgroundsTab = 'system' | 'chat';
@@ -62,7 +53,6 @@ export type BackgroundsTab = 'system' | 'chat';
 export function Backgrounds(props: {
     options: BackgroundsOptions;
     container: HTMLElement;
-    /** Which tab shows (upstream's getActiveBackgroundTab() reads it). */
     tab: BackgroundsTab;
     onTab: (tab: BackgroundsTab) => void;
 }) {
@@ -88,7 +78,6 @@ export function Backgrounds(props: {
     };
 
     const matches = (b: { title: string }) => b.title.toLowerCase().includes(search().trim().toLowerCase());
-    // The folder open: the one chosen, while the view still has it (another tab may delete it).
     const openFolder = createMemo(() => view()?.folders.find((f) => f.id === folder()) ?? null);
     const activeFolder = () => openFolder()?.id ?? null;
     const system = createMemo(() => {
@@ -205,7 +194,6 @@ export function Backgrounds(props: {
 
     const upload = async (input: HTMLInputElement) => {
         const files = [...(input.files ?? [])].filter((f) => f.size > 0);
-        // The same file can be chosen again.
         input.value = '';
         for (const chosen of files) {
             const file = chosen.type.startsWith('video/') ? await videoAsImage(chosen) : chosen;
@@ -246,7 +234,6 @@ export function Backgrounds(props: {
         }
     };
 
-    // The user's column count, else the layout's own (the stylesheet's, by screen width).
     const chosenColumns = () => view()?.options.columns ?? null;
     const layoutColumns = () => {
         const stated = Number(getComputedStyle(props.container).getPropertyValue('--bg-thumb-columns'));
@@ -258,7 +245,6 @@ export function Backgrounds(props: {
         if (next !== columns()) void act('backgrounds.options', { columns: next });
     };
 
-    // The drawer's own classes on the container the old page gave it (its CSS keys off them).
     createEffect(() => {
         props.container.classList.toggle('bg-selection-mode', ticking());
         props.container.classList.toggle('in-folder-view', activeFolder() !== null);
@@ -287,10 +273,7 @@ export function Backgrounds(props: {
                             const select = event.currentTarget;
                             void act('backgrounds.options', {
                                 fitting: select.value as (typeof FITTINGS)[number],
-                            }).then(
-                                // Refused: back to what the server has (the view didn't change, so nothing redraws it).
-                                (ok) => ok || (select.value = view()?.options.fitting ?? 'classic'),
-                            );
+                            }).then((ok) => ok || (select.value = view()?.options.fitting ?? 'classic'));
                         }}
                     >
                         <For each={FITTINGS}>
@@ -623,11 +606,7 @@ function Thumbnail(props: {
     onPick: (event: MouseEvent) => void;
     onAction: (action: ThumbnailAction) => void;
 }) {
-    // Everything about the background is read where it's drawn: the list keeps one Thumbnail per background (by its
-    // id), and its thumbnail's version or its metadata can change while it's shown.
     const [menuOpen, setMenuOpen] = createSignal(false);
-    // An animated background shows its first frame unless animation is on: a still drawn from the image once loaded,
-    // or a video's first frame.
     const isVideo = () => /\.mp4$/i.test(props.background.file);
     const still = () => props.background.animated && !props.animation && !isVideo();
     return (
@@ -693,10 +672,6 @@ function Thumbnail(props: {
     );
 }
 
-/**
- * An animated image's first frame, drawn onto a canvas so it doesn't play. The image loads lazily (when it scrolls
- * near), like the thumbnails, and is dropped once drawn.
- */
 function Still(props: { url: string }) {
     let canvas: HTMLCanvasElement | undefined;
     const draw = (image: HTMLImageElement) => {

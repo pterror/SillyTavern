@@ -1,64 +1,32 @@
 import { substituteParams } from './macro-substitution.js';
 
 /**
- * Server-side port of public/scripts/textgen-settings.js's getCustomTokenBans() and
- * calculateLogitBias() (the latter via public/scripts/logit-bias.js's getLogitBiasListResult()).
- *
- * Both client functions resolve a tokenizer via getTokenizerForTokenIds() (which picks a
- * tokenizer based on power_user.tokenizer/backend type/model, including remote-backend and
- * OpenRouter-model-specific cases) before turning text into token ids. That resolution step is
- * explicitly OUT OF SCOPE here - a separate future piece. Instead, both functions below take an
- * already-resolved `encode` function as a plain dependency-injected parameter, so they're pure
- * and testable without any tokenizer resolution logic. In production this would be something
- * like `(text) => encodeTextByLocalTokenizerType(resolvedType, text)` from
- * src/endpoints/tokenizers.js, but this module must NOT import that file directly - keeping
- * `encode` injected also makes it reusable for a future remote-backend tokenizer.
- *
- * @typedef {(text: string) => number[] | null | Promise<number[] | null>} EncodeFn Turns text into token ids for one
- * already-resolved tokenizer. May be async (e.g. a remote-backend tokenizer call) - always awaited.
- * null means there is no tokenizer: the entry is left out and listed in `dropped`.
- *
+ * @typedef {(text: string) => number[] | null | Promise<number[] | null>} EncodeFn
  * @typedef {object} CustomTokenBansParams
- * @property {string} [bannedTokensRaw] Raw value of settings.banned_tokens (newline-separated lines).
- * @property {string} [globalBannedTokensRaw] Raw value of settings.global_banned_tokens (newline-separated lines).
- * @property {boolean} sendBannedTokens Raw value of settings.send_banned_tokens; when falsy, bans are disabled entirely.
- * @property {string[]} [bannedWordsFromMacros] Words collected by the `{{banned "..."}}` macro side effect for this
- * generation turn - the client's textgenerationwebui_banned_in_macros. The macro itself is ported elsewhere
- * (src/macro-substitution.js's bannedWordsSink); this just takes its output as a plain array.
- * @property {EncodeFn} encode Already-resolved tokenizer encode function, used for plain-text lines.
- * May return a Promise - always awaited, so a synchronous stub (e.g. in tests) works unchanged.
- * @property {object} [macroContext] Forwarded to substituteParams() for each ban line; optional, defaults to {}.
- * @property {string[]} [dropped] Receives each line left out because `encode` gave null.
- *
+ * @property {string} [bannedTokensRaw]
+ * @property {string} [globalBannedTokensRaw]
+ * @property {boolean} sendBannedTokens
+ * @property {string[]} [bannedWordsFromMacros]
+ * @property {EncodeFn} encode
+ * @property {object} [macroContext]
+ * @property {string[]} [dropped]
  * @typedef {object} CustomTokenBansResult
- * @property {string} banned_tokens Comma-separated, deduped token ids.
- * @property {string[]} banned_strings Literal strings (from `"quoted"` lines) to ban verbatim, untokenized.
- *
+ * @property {string} banned_tokens
+ * @property {string[]} banned_strings
  * @typedef {object} LogitBiasEntry
- * @property {string} text One of: `{verbatim text}` (braces stripped, tokenized as-is), `[1,2,3]` (raw token ids),
- * or plain text (tokenized with a leading space prepended).
- * @property {number} value Bias value to apply to every token id the entry resolves to.
- *
+ * @property {string} text
+ * @property {number} value
  * @typedef {object} LogitBiasParams
- * @property {LogitBiasEntry[]} [logitBiasEntries] Raw value of settings.logit_bias.
- * @property {EncodeFn} encode Already-resolved tokenizer encode function.
- * @property {string[]} [dropped] Receives each entry's text left out because `encode` gave null.
+ * @property {LogitBiasEntry[]} [logitBiasEntries]
+ * @property {EncodeFn} encode
+ * @property {string[]} [dropped]
  */
 
-/** Trivial reimplementation of public/scripts/utils.js's onlyUnique array filter. */
 function onlyUnique(value, index, array) {
     return array.indexOf(value) === index;
 }
 
 /**
- * Mirrors public/scripts/textgen-settings.js's getCustomTokenBans(). Turns the three ban sources
- * (banned_tokens, global_banned_tokens, and macro-sourced banned words) into token ids and literal
- * ban strings. Three line formats, checked in order:
- * - `[1,2,3]` - JSON-serialized array of integers -> pushed as raw token ids.
- * - `"literal string"` - quoted string -> pushed to banned_strings verbatim (NOT tokenized).
- * - anything else - tokenized via `encode` and the resulting ids are pushed as token ids.
- * Each line has substituteParams() applied before parsing. Malformed `[...]` JSON is caught,
- * logged, and skipped (matches the client's try/catch), rather than throwing.
  * @param {CustomTokenBansParams} params
  * @returns {Promise<CustomTokenBansResult>}
  */
@@ -89,7 +57,6 @@ export async function getCustomTokenBans({
         .map(x => substituteParams(x, macroContext));
 
     for (const line of sequences) {
-        // Raw token ids, JSON serialized
         if (line.startsWith('[') && line.endsWith(']')) {
             try {
                 const tokens = JSON.parse(line);
@@ -103,7 +70,6 @@ export async function getCustomTokenBans({
                 console.log(`Failed to parse bad word token list: ${line}`, err);
             }
         } else if (line.startsWith('"') && line.endsWith('"')) {
-            // Remove the enclosing quotes
             banned_strings.push(line.slice(1, -1));
         } else {
             try {
@@ -125,12 +91,6 @@ export async function getCustomTokenBans({
     };
 }
 
-/**
- * Mirrors public/scripts/logit-bias.js's getLogitBiasListResult(), inlined into
- * calculateLogitBias() below rather than kept as a separate export, since its only caller in this
- * module is calculateLogitBias() and it needs no reuse beyond that (the client keeps them separate
- * because getLogitBiasListResult() is also used by a UI preview).
- */
 async function resolveLogitBiasEntries(entries, encode, dropped) {
     /** @type {{value: number, tokens: number[]}[]} */
     const resolved = [];
@@ -139,11 +99,9 @@ async function resolveLogitBiasEntries(entries, encode, dropped) {
         if (!(entry.text?.length > 0)) continue;
         const text = entry.text.trim();
 
-        // Skip empty lines
         if (text.length === 0) continue;
 
         if (text.startsWith('{') && text.endsWith('}')) {
-            // Verbatim text
             const tokens = await encode(text.slice(1, -1));
             if (tokens === null) {
                 dropped?.push(text);
@@ -151,7 +109,6 @@ async function resolveLogitBiasEntries(entries, encode, dropped) {
             }
             resolved.push({ value: entry.value, tokens });
         } else if (text.startsWith('[') && text.endsWith(']')) {
-            // Raw token ids, JSON serialized
             try {
                 const tokens = JSON.parse(text);
 
@@ -164,7 +121,6 @@ async function resolveLogitBiasEntries(entries, encode, dropped) {
                 console.log(`Failed to parse logit bias token list: ${text}`, err);
             }
         } else {
-            // Text with a leading space
             const tokens = await encode(` ${text}`);
             if (tokens === null) {
                 dropped?.push(text);
@@ -178,11 +134,8 @@ async function resolveLogitBiasEntries(entries, encode, dropped) {
 }
 
 /**
- * Mirrors public/scripts/textgen-settings.js's calculateLogitBias(). Turns settings.logit_bias
- * into a token-id-keyed bias object; later entries for the same token id overwrite earlier ones,
- * same as the client's addBias().
  * @param {LogitBiasParams} params
- * @returns {Promise<object>} Object keyed by string token id -> bias number.
+ * @returns {Promise<object>}
  */
 export async function calculateLogitBias({ logitBiasEntries, encode, dropped }) {
     if (!Array.isArray(logitBiasEntries) || logitBiasEntries.length === 0) {

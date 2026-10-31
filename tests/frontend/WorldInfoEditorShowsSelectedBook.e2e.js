@@ -1,8 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// The World Info panel shows the entries of the lorebook its selector is on, also after a reload.
-
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} name
@@ -48,7 +46,6 @@ test.describe('World Info panel shows the selected lorebook', () => {
                 $('#world_editor_select').val(String(world_names.indexOf(name))).trigger('change');
             }, { name });
             await expect(page.locator('#world_popup_entries_list .world_entry')).toHaveCount(1);
-            // The selection is a setting; it has to be stored before the reload.
             await page.evaluate(async () => {
                 const { saveSettings } = await import('./script.js');
                 await saveSettings();

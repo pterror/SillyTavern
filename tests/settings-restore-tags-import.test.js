@@ -38,7 +38,6 @@ beforeEach(async () => {
     directories = user.directories;
     globalThis.DATA_ROOT = user.dataRoot;
     fs.mkdirSync(directories.backups, { recursive: true });
-    // An existing store, which never gets the default tags (tags-default-seed.test.js).
     await user.store.lib.store.commit([{ kind: 'metaValue', key: 'tags_seed_pending' }]);
 });
 
@@ -48,12 +47,15 @@ async function flag() {
     return (await user.store.lib.store.meta(['settings_tags_migrated']))[0] ?? undefined;
 }
 
-/** Waits for what `ready()` reads to be true: the import after a restore runs on its own. @param {() => Promise<boolean>} ready */
+/** @param {() => Promise<boolean>} ready */
 async function until(ready) {
     for (let i = 0; i < 100 && !await ready(); i++) await new Promise(resolve => setTimeout(resolve, 50));
 }
 
-/** @param {string} name @param {object} snapshot */
+/**
+ * @param {string} name
+ * @param {object} snapshot
+ */
 function restore(name, snapshot) {
     const fileName = `settings_u_${name}.json`;
     fs.writeFileSync(path.join(directories.backups, fileName), JSON.stringify(snapshot));

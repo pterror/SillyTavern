@@ -2,10 +2,6 @@ import { test, expect } from './fixtures.js';
 import { testSetup, chatBox } from './frontent-test-utils.js';
 import { startLlamaCpp, connectLlamaCpp, openCharacter } from './llamacpp-mock.js';
 
-// A prompt the server builds fills in its macros as the page would: from the user's settings (global variables, the
-// context size, the instruct template) and from what only the page knows, sent with the generation (what is typed,
-// which extensions are on, the chat's id).
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -41,8 +37,6 @@ test('a server-built prompt fills in variables, settings and the page\'s facts',
     }, description);
     await openCharacter(page, avatar);
 
-    // What the page fills in for the same text: the server's must agree. Nothing has been generated on the page yet;
-    // the server's is the send's own type.
     const expected = (await page.evaluate(async (description) => {
         const { substituteParams } = await import('/script.js');
         return substituteParams(description);
@@ -82,12 +76,10 @@ test('variables a server-built prompt\'s macros set are kept: the chat\'s stored
         return { weather: chat_metadata.variables?.weather, turns: chat_metadata.variables?.turns, season };
     });
     await expect.poll(variables, { timeout: 10000 }).toEqual({ weather: 'rainy', turns: 1, season: 'autumn' });
-    // The settings save is debounced.
     await page.evaluate(async () => {
         const { saveSettings } = await import('/script.js');
         await saveSettings();
     });
-    // Stored: the chat opened again has them.
     await page.reload();
     await testSetup.awaitST({ page });
     await openCharacter(page, avatar);

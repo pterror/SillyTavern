@@ -2,13 +2,9 @@ import { describe, test, expect, jest, beforeAll, afterAll, beforeEach, afterEac
 import path from 'node:path';
 import { groupContentFingerprint } from '../public/scripts/hash-utils.js';
 
-// The real client path (character-repository.js -> character-cache.js) against the real server routes. Only the
-// modules that can't load in node are replaced: IndexedDB (localforage) by an in-memory store that structured-
-// clones like IndexedDB does, and the DOM-bound script.js/character-store.js/request-headers.js/user.js.
-
 const USER_HANDLE = 'group-hash-test-user';
 
-/** @type {Map<string, Map<string, any>>} localforage instance name -> key -> record */
+/** @type {Map<string, Map<string, any>>} */
 const localforageStores = new Map();
 
 function createFakeLocalforageInstance({ name }) {
@@ -68,7 +64,6 @@ beforeAll(async () => {
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
     fixture = await import('./converted-user.fixture.js');
-    // The routes' own module instance: clientResolve() resets modules between tests.
     stores = await import('../src/user-stores.js');
     ({ TYPE } = await import('../src/library-codes.js'));
     groupsModule = await import('../src/endpoints/groups.js');
@@ -94,7 +89,6 @@ beforeEach(async () => {
     user = await fixture.emptyUser('st-group-hash-client-server-test-', stores);
     globalThis.DATA_ROOT = user.dataRoot;
     localforageStores.clear();
-    // The client issues root-relative URLs; route them to the test server.
     globalThis.fetch = jest.fn((url, init) => realFetch(`${baseUrl}${url}`, init));
 });
 
@@ -113,20 +107,20 @@ async function postJson(urlPath, body) {
     return response.json();
 }
 
-/** @param {string} id @returns {Promise<Record<string, any>>} The group as stored. */
+/**
+ * @param {string} id
+ * @returns {Promise<Record<string, any>>}
+ */
 async function readGroupFile(id) {
     return /** @type {any} */ ((await user.store.lib.groups([id]))[0]);
 }
 
-/** Assigns a tag (made if there is none) to a group. */
 async function assignGroupTag(id, tagId) {
     await user.store.lib.writeTag({ id: tagId, name: tagId });
     return (await user.store.lib.assignTag(TYPE.group, id, tagId, true));
 }
 
 /**
- * The hashes hash-mode /query ships for each group (layout: serializeQueryHashesBinary() in
- * src/endpoints/characters.js) - the server's digests as the client compares against them.
  * @returns {Promise<Map<string, {fav: number, tagIds: number, content: number}>>}
  */
 async function serverGroupHashes() {
@@ -156,14 +150,15 @@ async function serverGroupHashes() {
     return result;
 }
 
-/** @param {string} id @returns {{group: object, hashes: {fav: number, tagIds: number, content: number, v: number}} | undefined} */
+/**
+ * @param {string} id
+ * @returns {{group: object, hashes: {fav: number, tagIds: number, content: number, v: number}} | undefined}
+ */
 function cachedGroupRecord(id) {
     return localforageStores.get(`SillyTavern_GroupCache_${USER_HANDLE}`)?.get(id);
 }
 
 /**
- * One hash-mode page through a freshly imported client (so its per-request response cache starts empty and every
- * call resolves its hash rows against the group cache).
  * @returns {Promise<{groups: Map<string, object>, urls: string[]}>}
  */
 async function clientResolve() {
@@ -214,7 +209,6 @@ describe('an unchanged group is a cache hit: the client caches the hashes the se
         const file = await readGroupFile(created.id);
         expect(cachedGroupRecord(created.id).group).toEqual(batched);
         expect(batched).toMatchObject({ ...file, id: created.id, fav: true, tag_ids: ['tag-a'] });
-        // chat_id and chats aren't stored: they are the requesting tab's (its session, the group's chat list).
         expect(file.chat_id).toBeUndefined();
         expect(file.chats).toBeUndefined();
         expect(typeof batched.chat_id).toBe('string');
@@ -233,7 +227,6 @@ function changedValue(value) {
 }
 
 describe('no false hit: a changed group field changes the server digest, and the client refetches', () => {
-    // Every field POST /api/groups/create writes, plus one it doesn't.
     const FIELDS = [
         'name', 'members', 'allow_self_responses', 'activation_strategy', 'generation_mode', 'disabled_members',
         'fav', 'chat_id', 'chats', 'auto_mode_delay', 'generation_mode_join_prefix', 'generation_mode_join_suffix',
@@ -255,8 +248,6 @@ describe('no false hit: a changed group field changes the server digest, and the
         const edited = { ...file, [field]: changedValue(file[field]) };
         expect(await postJson('/api/groups/edit', edited)).toEqual({ ok: true });
 
-        // chat_id and chats aren't stored: a `chats` write is ignored, and a `chat_id` naming no chat moves the tab
-        // nowhere, so neither changes the group.
         const stored = field !== 'chat_id' && field !== 'chats';
         const after = (await serverGroupHashes()).get(created.id);
         expect({ changed: JSON.stringify(after) !== JSON.stringify(before) }).toEqual({ changed: stored });
