@@ -19,8 +19,7 @@
 - "remember we only support migrations from upstream"
 
 ## Compat
-- "compat: breaks are unacceptable"
-- "all extensions must still work"
+- "we break extension compat, it's degrading our architecture"
 - "our upstream parity requirement is compat not behavior, especially wrong behavior"
 
 ## UX
