@@ -1,50 +1,50 @@
-# Rules (the user's words, verbatim)
+# Rules
 
 ## Architecture
-- "client sends user actions only / server sends state updates"
-- "to be clear, code to maintain client state is fine too, i.e. applying the state updates the server sends back for example"
-- "1 action = 1 request"
-- "minimize round trips full stop"
-- "if it needs fucking token ids or token counts, then the server fucking returns them"
-- "ssot everywhere"
-- "make them impossible by construction"
-- "how dare the server EXIST in a broken state, EVER"
+- The page sends only user actions; the server sends state updates. The page may keep state by applying the updates
+  it receives.
+- One user action is one request. Whatever the server has to supply for it (token ids, token counts, ...) comes back
+  in that response, never in a separate request.
+- Minimize round trips.
+- Every piece of state has one source of truth.
+- Make wrong states impossible by construction instead of detecting or repairing them.
+- The server is never in a broken state.
 
 ## Scale and storage
-- "the entire architecture MUST scale to 10 billion cards"
-- "any per row cost at all is unacceptable"
-- "we want ssot + minimum asymptotic latency + minimum asymptotic writes + minimum asymptotic disk space"
-- "do you understand that it's unacceptable if we have write amplification again"
-- "while there are no users, migrations should be hard cutovers"
-- "remember we only support migrations from upstream"
+- Everything must work at 10 billion cards: no cost per card or per row in any operation, and no read of the whole
+  library or a whole table.
+- Storage minimizes asymptotic latency, writes and disk space: nothing is stored, derived or written unless a read
+  needs it.
+- No write amplification.
+- The only migrations are from upstream SillyTavern's data. Our own format changes are hard cutovers while there are
+  no users: no transition period, no side-by-side rebuild.
 
 ## Compat
-- "our upstream parity requirement is compat not behavior, especially wrong behavior"
+- Extensions written for upstream are not supported.
+- Parity with upstream means reading its data and formats, not copying its behaviour, least of all where it is wrong.
 
 ## UX
-- "i want a best-in-class ui reasoned from first principles"
-- "behavior should be maximally intuitive"
-- "ideally all names should be clear and unambiguous to a layperson no?"
-- "consider sending a message should have <200ms latency over vpn and 3g (for example)"
-- "any other option causes layout shift which is bad"
+- The UI is designed from first principles to be best in class; nothing in it ships without the owner's approval.
+- Behaviour is as intuitive as possible; "upstream does it" is not a reason.
+- Every name is clear and unambiguous to a layperson.
+- Sending a message takes under 200ms, also over a VPN or 3G.
+- No layout shift.
 
 ## Work
-- "stop fucking making bandaids"
-- "posthoc fixes is unacceptable since it means context and architecture are already poisoned"
-- "when i say something and you go off and fucking poison the codebase by fixing one specific thing leaving everything fucking else unfixed"
-- "i don't understand why you think it's acceptable to do any work on any project without a full mental model."
-- "waste of quota + bug for bug repro is idiotic"
-- "any old is the biggest risk"
-- "why are we wasting so much time measuring approaches that can be reasoned through perf wise"
+- Change the design that causes a problem, not its symptom. A fix to one instance that leaves the others, or a fix
+  after the fact, is not acceptable.
+- No work without a full mental model of the code it touches.
+- New code is written from the requirements, not ported bug for bug; don't spend effort recording old behaviour.
+- Old code left in place next to new code is the biggest risk.
+- Reason about performance where it can be reasoned; measure only what can't.
 
 ## Agents and context
-- "please dont poison main context" / "why the hell are you impling in main context?"
-- "why parallel/in worktrees at all"
-- "ui/ux backlog first. i think all the various stuff in sequence, no parallelism (but decomposing tasks is fine)"
-- "subagents are (typically) for splitting work not for dropping context thats no longer relevant"
-- "use forking liberally to skip re-reading context"
-- "WHY THE HELL DO YOU KEEP DRIPFEEDING"
+- Work that would poison further thinking doesn't happen in the main context, implementation included.
+- Subagents split work; they are not for shedding stale context. Fork to skip re-reading context; a fresh agent pays
+  to rediscover it.
+- One task at a time, no parallel agents; decomposing a task is fine.
+- Give complete answers and complete questions at once, never piece by piece.
 
 ## Asking and stopping
-- "keep going? hello? don't stop until there's actually ambiguity????"
-- "you understand that if i wanted to make all the decisions it'd be faster and less friction for me to do it by hand?"
+- Keep going until there is real ambiguity.
+- Make the decisions that can be made from the code and these rules; only bring the owner the ones that are theirs.
