@@ -1392,7 +1392,10 @@ body .panelControlBar {
     }
 }
 
-.mes:not(.last_mes) .swipes-counter[data-alternatives="1"],
+.mes:not(.last_mes) .swipes-counter[data-alternatives="1"] {
+    opacity: 0.15;
+}
+
 /* Hide non-visible swipe_left. */
 .mes:not(.swipes_visible) .swipe_left,
 /* Only hide swipe_right if it's not visible, and not the last swipe. */
