@@ -199,7 +199,7 @@ test.describe('the alternatives of a message', () => {
         await expect(list(page).locator('mark.match')).toHaveCount(0);
     });
 
-    test('the counter shows on every message with more than one alternative, user messages too, and stays off one with one', async ({ page }) => {
+    test('the counter shows on every message, user messages too, dimmed on an earlier one with one alternative', async ({ page }) => {
         const s = stamp();
         const avatar = await createCharacter(page, `AltCounter-${s}`, [`First ${s}.`, `Second ${s}.`]);
         await openCharacter(page, avatar);
@@ -208,15 +208,22 @@ test.describe('the alternatives of a message', () => {
             const context = SillyTavern.getContext();
             await context.executeSlashCommandsWithOptions(`/send Hi ${s}`);
             await context.executeSlashCommandsWithOptions(`/sendas name=Narrator One more ${s}`);
+            await context.executeSlashCommandsWithOptions(`/sendas name=Narrator Last ${s}`);
             const { chatOpAddAlternative } = await import('/scripts/chat-store.js');
             await chatOpAddAlternative(1, `Hello ${s}`);
             const { reloadCurrentChat } = await import('/script.js');
             await reloadCurrentChat();
         }, s);
-        await expect(page.locator('#chat .mes')).toHaveCount(3);
+        await expect(page.locator('#chat .mes')).toHaveCount(4);
         await expect(page.locator('#chat .mes[mesid="0"] .swipes-counter')).toBeVisible();
         await expect(page.locator('#chat .mes[mesid="1"] .swipes-counter')).toBeVisible();
         await expect(page.locator('#chat .mes[mesid="1"] .swipes-counter')).toHaveText('1/2');
+        const single = page.locator('#chat .mes[mesid="2"] .swipes-counter');
+        await expect(single).toBeVisible();
+        await expect(single).toHaveText('1​/​1');
+        const opacity = (/** @type {number} */ mesId) => page.locator(`#chat .mes[mesid="${mesId}"] .swipes-counter`)
+            .evaluate(el => Number(getComputedStyle(el).opacity));
+        await expect.poll(async () => (await opacity(2)) < (await opacity(1))).toBe(true);
         await page.locator('#chat .mes[mesid="1"] .swipes-counter').click();
         await expect(rows(page)).toHaveCount(2);
         await expect(rows(page).nth(0).locator('.alternative-text')).toContainText(`Hi ${s}`);
