@@ -29,6 +29,24 @@ function ensureDirectoryExistence(filePath) {
     fs.mkdirSync(dirname);
 }
 
+/**
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {object} lib
+ * @param {{ buffer: Buffer, format: string, subFolder?: string, filename?: string, crop?: object | null }} image
+ * @returns {Promise<{ path: string, facts: object | null }>}
+ */
+export async function saveUserImageFile(directories, lib, { buffer, format, subFolder, filename, crop = null }) {
+    const name = filename ? `${removeFileExtension(filename)}.${format}` : `${Date.now()}.${format}`;
+    const pathToNewFile = subFolder
+        ? path.join(directories.userImages, sanitize(subFolder), sanitize(name))
+        : path.join(directories.userImages, sanitize(name));
+    ensureDirectoryExistence(pathToNewFile);
+    await fs.promises.writeFile(pathToNewFile, new Uint8Array(buffer));
+    const relative = clientRelativePath(directories.root, pathToNewFile);
+    if (!IMAGE_FORMATS.has(String(format).toLowerCase())) return { path: relative, facts: null };
+    return { path: relative, facts: await writeUserImage(lib, relative, buffer, crop) };
+}
+
 export const router = express.Router();
 
 /**
@@ -59,28 +77,12 @@ router.post('/upload', async (request, response) => {
             return response.status(400).send({ error: 'Invalid image format' });
         }
 
-        // Constructing filename and path
-        let filename;
-        if (request.body.filename) {
-            filename = `${removeFileExtension(request.body.filename)}.${format}`;
-        } else {
-            filename = `${Date.now()}.${format}`;
-        }
-
-        // if character is defined, save to a sub folder for that character
-        let pathToNewFile = path.join(request.user.directories.userImages, sanitize(filename));
-        if (request.body.ch_name) {
-            pathToNewFile = path.join(request.user.directories.userImages, sanitize(request.body.ch_name), sanitize(filename));
-        }
-
-        ensureDirectoryExistence(pathToNewFile);
-        const imageBuffer = Buffer.from(image, 'base64');
-        await fs.promises.writeFile(pathToNewFile, new Uint8Array(imageBuffer));
-        const relative = clientRelativePath(request.user.directories.root, pathToNewFile);
-        if (!IMAGE_FORMATS.has(String(format).toLowerCase())) return response.send({ path: relative });
         const crop = normalizeCrop(request.body.crop);
-        const facts = await writeUserImage((await requestStore(request)).lib, relative, imageBuffer, crop);
-        response.send({ path: relative, ...thumbnailsFor(facts, 'avatar', crop) });
+        const saved = await saveUserImageFile(request.user.directories, (await requestStore(request)).lib, {
+            buffer: Buffer.from(image, 'base64'), format, subFolder: request.body.ch_name, filename: request.body.filename, crop,
+        });
+        if (saved.facts === null) return response.send({ path: saved.path });
+        response.send({ path: saved.path, ...thumbnailsFor(saved.facts, 'avatar', crop) });
     } catch (error) {
         console.error(error);
         response.status(500).send({ error: 'Failed to save the image' });

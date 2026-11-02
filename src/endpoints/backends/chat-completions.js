@@ -76,6 +76,7 @@ import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { attachStoredReply, persistAssistantReply, replyTextAsPageShows, unreadableReplyWarning } from '../../assistant-reply-persist.js';
 import { noteReplyReasoning, noteReplyText, readReplyFinishSettings } from '../../reply-reasoning.js';
+import { noteReplyImages } from '../../reply-images.js';
 import { itemizationOf } from '../../itemization-of.js';
 import { answerSessionOnHeaders, chatContext } from '../../chat-request.js';
 import { storedForm } from '../../chat-engine.js';
@@ -2787,6 +2788,7 @@ async function forwardAndPersistCompactStream(fetchResponse, response, persist, 
             lastIndex = index;
         }
 
+        noteReplyImages(persist, json);
         const reasoningText = extractReasoning ? extractReasoning(json) : undefined;
         if (reasoningText) {
             noteReplyReasoning(persist, reasoningText);
@@ -2932,6 +2934,7 @@ async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, resp
                 continue;
             }
 
+            noteReplyImages(persist, json);
             const delta = json?.choices?.[0]?.delta;
             const contentDelta = delta?.content;
             if (typeof contentDelta === 'string' && contentDelta) {
@@ -3366,7 +3369,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             if (!skipPersistence) {
                 chat.session.actor();
                 pendingAssistantPersist = {
-                    chat, anchorNodeId: replyAnchorNodeId, name2: built.name2,
+                    chat, directories, anchorNodeId: replyAnchorNodeId, name2: built.name2,
                     isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
                     activations: built.activations,
                     sentNodeId: replyAnchorNodeId !== built.anchorNodeId ? replyAnchorNodeId : null,

@@ -7,6 +7,8 @@ import {
     updateMessageBlock,
 } from '../../../script.js';
 import { getRequestHeaders } from '../../request-headers.js';
+import { chatOpPatch } from '../../chat-store.js';
+import { isStoredNodeId } from '../../node-identity.js';
 import { eventSource, event_types } from '../../events.js';
 import { extension_settings, getContext, renderExtensionTemplateAsync } from '../../extensions.js';
 import { POPUP_TYPE, callGenericPopup } from '../../popup.js';
@@ -633,7 +635,19 @@ async function onMessageTranslateClick() {
 const handleIncomingMessage = createEventHandler(async (messageId) => {
     await translateIncomingMessageReasoning(messageId);
     await translateIncomingMessage(messageId);
+    await storeDisplayTexts(messageId);
 }, () => shouldTranslate(incomingTypes));
+
+/** @param {number} messageId */
+async function storeDisplayTexts(messageId) {
+    const message = getContext().chat[messageId];
+    if (!isStoredNodeId(message?.node_id)) return;
+    /** @type {Record<string, unknown>} */
+    const patch = {};
+    if (typeof message.extra?.display_text === 'string') patch['extra.display_text'] = message.extra.display_text;
+    if (typeof message.extra?.reasoning_display_text === 'string') patch['extra.reasoning_display_text'] = message.extra.reasoning_display_text;
+    if (Object.keys(patch).length) await chatOpPatch([{ node_id: message.node_id, patch }]);
+}
 const handleOutgoingMessage = createEventHandler(translateOutgoingMessage, () => shouldTranslate(outgoingTypes));
 const handleImpersonateReady = createEventHandler(translateImpersonate, () => shouldTranslate(incomingTypes));
 const handleMessageEdit = createEventHandler(translateMessageEdit, () => true);

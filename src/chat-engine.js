@@ -1455,6 +1455,19 @@ export class ChatEngine {
 
     /**
      * @param {bigint} tree
+     * @param {string} nodeId
+     * @returns {Promise<Record<string, any> | null>}
+     */
+    async shownMessage(tree, nodeId) {
+        const s = await this.messageOf(tree, nodeId);
+        if (!s) return null;
+        const [message] = await this.decoded([s]);
+        if (s.itemized) message.extra = { ...(message.extra && typeof message.extra === 'object' ? message.extra : {}), [ITEMIZED_PROMPT_FLAG]: true };
+        return message;
+    }
+
+    /**
+     * @param {bigint} tree
      * @param {bigint | null} session
      * @returns {Promise<bigint[] | null>}
      */

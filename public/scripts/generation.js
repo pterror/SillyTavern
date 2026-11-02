@@ -3,24 +3,24 @@ import {
     baseChatReplace, cleanUpMessage,
     deactivateSendButtons, dropLastMessage, depth_prompt_depth_default, depth_prompt_role_default,
     doChatInject, extension_prompts, extension_prompt_types,
-    extractImagesFromData, extractJsonFromData, extractMessageFromData, extractMultiSwipes, extractTitleFromData,
+    extractJsonFromData, extractMessageFromData, extractMultiSwipes, extractTitleFromData,
     flushWIInjections, formatMessageHistoryItem,
     getAllExtensionPrompts, getBiasStrings, getCharacterCardFields, getCurrentCharacter, getCurrentDraftContext,
     getExtensionPrompt, getExtensionPromptRoleByName, getMaxPromptTokens,
     hideStopButton, hideSwipeButtons, isStreamingEnabled,
     menu_type, name2, online_status,
-    parseAndSaveLogprobs, parseMesExamples, parseTokenCounts, pingServer, processCommands,
+    parseAndSaveLogprobs, parseMesExamples, parseTokenCounts, processCommands,
     removeDepthPrompts, removeLastMessage, removeMacros, requestedResponseLength, resolveClientToolHandoffLoop, responseLengthFor,
     saveReply, sendGenerationRequest, sendMessageAsUser, sendStreamingRequest, storeSentMessage,
     setCharacterName, setExtensionPrompt, setGenerationProgress, setInContextMessages, setSendButtonState,
-    showStopButton, storePageChatChanges, StreamingProcessor, substituteParams, swipe,
+    showStopButton, StreamingProcessor, substituteParams, swipe,
     triggerAutoContinue, unblockGeneration, unshallowCharacter, updateMessageBlock, updateMessageItemizedPromptButton,
 } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { main_api, max_context } from './generation-params.js';
 import { name1 } from './app-selection-state.js';
 import { setCharacterId } from './character-store.js';
-import { changedMetadata, noteMetadataSent } from './metadata-store.js';
+import { changedMetadata, noteMetadataChangesStored, noteMetadataSent } from './metadata-store.js';
 import { changeOps, changesSince } from './state-sync.js';
 import { isProvisionalNodeId, isStoredNodeId, provisionalNodeId } from './node-identity.js';
 import { setFloatingPrompt } from './authors-note.js';
@@ -39,7 +39,6 @@ import { generateGroupWrapper, getGroupDepthPrompts, groupsStore, is_group_gener
 import { adjustHordeGenerationParams, horde_settings, isHordeGenerationNotAllowed, MIN_LENGTH } from './horde.js';
 import { t } from './i18n.js';
 import { force_output_sequence, formatInstructModeChat, formatInstructModeExamples, formatInstructModePrompt, formatInstructModeStoryString } from './instruct-mode.js';
-import { ITEMIZED_PROMPT_FLAG } from './itemized-prompts.js';
 import { getKoboldGenerationData, kai_flags, kai_settings, koboldai_setting_names, koboldai_settings } from './kai-settings.js';
 import { adjustNovelInstructionPrompt, getNovelGenerationData, nai_settings, novelai_setting_names, novelai_settings } from './nai-settings.js';
 import { user_avatar, getPersonaDescriptionPosition } from './personas.js';
@@ -167,8 +166,6 @@ export function beginSwipeReply(mesId, nodeId) {
     swipeAnchor = { index: mesId, nodeId };
 }
 
-let replyItemizationSent = false;
-
 /**
  * @param {number} mesId
  * @param {string} nodeId
@@ -182,14 +179,10 @@ export function stampReplyNode(mesId, nodeId) {
     const selected = msg.swipe_id ?? 0;
     /** @type {Partial<ChatMessage>} */
     const updates = { node_id: nodeId };
-    if (replyItemizationSent) {
-        updates.extra = { ...msg.extra, [ITEMIZED_PROMPT_FLAG]: true };
-    }
     const swipeInfoEntry = Array.isArray(msg.swipe_info) ? /** @type {SwipeInfo | undefined} */ (msg.swipe_info[selected]) : undefined;
-    if (swipeInfoEntry != null && (!isStoredNodeId(swipeInfoEntry.node_id) || replyItemizationSent)) {
+    if (swipeInfoEntry != null && !isStoredNodeId(swipeInfoEntry.node_id)) {
         const newSwipeInfo = [...msg.swipe_info];
         newSwipeInfo[selected] = { ...newSwipeInfo[selected], node_id: nodeId };
-        if (replyItemizationSent) newSwipeInfo[selected].extra = { ...newSwipeInfo[selected].extra, [ITEMIZED_PROMPT_FLAG]: true };
         updates.swipe_info = newSwipeInfo;
     }
     const already = msg.node_id === nodeId;
@@ -201,9 +194,23 @@ export function stampReplyNode(mesId, nodeId) {
     if (stamped) updateMessageItemizedPromptButton(stamped, { messageId: mesId });
 }
 
+/** @type {import('./state-sync.js').MetadataChanges|null} */
+let replyChangesInFlight = null;
+/** @type {Map<string, import('./state-sync.js').MetadataChanges>} */
+const replyChangesNotSaved = new Map();
+
 /** @param {string} nodeId */
 function _stampAssistantNodeId(nodeId) {
     stampReplyNode(chat.length - 1, nodeId);
+    _noteReplyChangesStored(replyChangesInFlight);
+    replyChangesInFlight = null;
+}
+
+/** @param {import('./state-sync.js').MetadataChanges|null|undefined} changes */
+function _noteReplyChangesStored(changes) {
+    chat_metadata.tainted = true;
+    const stored = changes ?? { set: {}, unset: [], variables: { set: {}, unset: [] } };
+    noteMetadataChangesStored({ ...stored, set: { ...stored.set, tainted: true } });
 }
 
 /** @type {string|null} */
@@ -217,7 +224,10 @@ function _markReplyNotSaved() {
     swipeAnchor = null;
     const generationId = notSavedGenerationId;
     notSavedGenerationId = null;
+    const changes = replyChangesInFlight;
+    replyChangesInFlight = null;
     if (generationId == null) return;
+    if (changes) replyChangesNotSaved.set(generationId, changes);
     const mesId = chat.length - 1;
     const msg = /** @type {ChatMessage | undefined} */ (chat[mesId]);
     if (msg == null) return;
@@ -228,6 +238,9 @@ window.addEventListener(REPLY_STORED_EVENT, (/** @type {any} */ event) => {
     const { generationId, node_id: nodeId, mes } = event.detail ?? {};
     const mesId = chat.findIndex(m => m.extra?.reply_not_saved === generationId);
     if (mesId < 0 || !isStoredNodeId(nodeId)) return;
+    const changes = replyChangesNotSaved.get(generationId);
+    replyChangesNotSaved.delete(generationId);
+    _noteReplyChangesStored(changes);
     const msg = /** @type {ChatMessage} */ (chat[mesId]);
     const extra = { ...msg.extra };
     delete extra.reply_not_saved;
@@ -259,15 +272,8 @@ export function applyStoredReply(mesId, stored, { received = false } = {}) {
     const msg = /** @type {ChatMessage | undefined} */ (chat[mesId]);
     if (msg == null || msg.is_user === true) return null;
     const storedExtra = stored.extra && typeof stored.extra === 'object' ? stored.extra : {};
-    /** @param {Record<string, any>|undefined} base */
-    const withStored = (base) => {
-        const extra = { ...(base ?? {}), ...storedExtra };
-        if (!('reasoning_type' in storedExtra)) delete extra.reasoning_type;
-        if (!('activations' in storedExtra)) delete extra.activations;
-        return extra;
-    };
     /** @type {Partial<ChatMessage>} */
-    const updates = { mes: stored.mes, extra: withStored(msg.extra) };
+    const updates = { mes: stored.mes, extra: structuredClone(storedExtra) };
     const selected = msg.swipe_id ?? 0;
     if (Array.isArray(msg.swipes)) {
         const swipes = [...msg.swipes];
@@ -277,11 +283,12 @@ export function applyStoredReply(mesId, stored, { received = false } = {}) {
     const swipeInfoEntry = Array.isArray(msg.swipe_info) ? /** @type {SwipeInfo | undefined} */ (msg.swipe_info[selected]) : undefined;
     if (swipeInfoEntry != null) {
         const swipeInfo = [...msg.swipe_info];
-        swipeInfo[selected] = { ...swipeInfoEntry, extra: withStored(swipeInfoEntry.extra) };
+        swipeInfo[selected] = { ...swipeInfoEntry, extra: structuredClone(storedExtra) };
         updates.swipe_info = swipeInfo;
     }
     const updated = updateMessage(mesId, updates);
     if (received) markServerFinishedReply(mesId);
+    if (updated) updateMessageItemizedPromptButton(updated, { messageId: mesId });
     return updated ?? null;
 }
 
@@ -503,6 +510,7 @@ function rawActionWritesFor(type, lastMessage, lastMessageIndex, atStart) {
         writes.page_metadata = { ref, ...sent };
     }
     if (produced) writes.reply_changes = changeOps(produced);
+    replyChangesInFlight = produced ?? null;
     return writes;
 }
 
@@ -583,14 +591,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     }
 
     if (!dryRun) {
-        const pingResult = await pingServer();
-
-        if (!pingResult) {
-            unblockGeneration(type);
-            toastr.error(t`Verify that the server is running and accessible.`, t`ST Server cannot be reached`);
-            throw new Error('Server unreachable');
-        }
-
         hideSwipeButtons();
         chat_metadata.tainted = true;
     }
@@ -1689,7 +1689,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         };
 
         const rawAction = rawActionGenerateData ?? rawActionChatCompletionData;
-        replyItemizationSent = rawAction !== null && type !== 'quiet' && !isImpersonate;
+        const replyItemizationSent = rawAction !== null && type !== 'quiet' && !isImpersonate;
         if (rawAction !== null && replyItemizationSent) {
             rawAction.itemization = additionalPromptStuff;
             const onMessage = type === 'swipe' || isContinue;
@@ -1844,7 +1844,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         let getMessage = extractMessageFromData(data);
         let title = extractTitleFromData(data);
         let reasoning = extractReasoningFromData(data);
-        let imageUrls = extractImagesFromData(data);
         const reasoningSignature = extractReasoningSignatureFromData(data);
         kobold_horde_model = title;
 
@@ -1887,9 +1886,9 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             const storedReply = data.assistant_message ?? takeStoredReply(data.assistant_node_id);
             const storedNodeId = isStoredNodeId(data.assistant_node_id) ? data.assistant_node_id : null;
             if (originalType !== 'continue') {
-                ({ type, getMessage } = await saveReply({ type, getMessage, title, swipes, reasoning, imageUrls, reasoningSignature, storedReply, storedNodeId }));
+                ({ type, getMessage } = await saveReply({ type, getMessage, title, swipes, reasoning, reasoningSignature, storedReply, storedNodeId }));
             } else {
-                ({ type, getMessage } = await saveReply({ type: 'appendFinal', getMessage, title, swipes, reasoning, imageUrls, reasoningSignature, storedReply, storedNodeId }));
+                ({ type, getMessage } = await saveReply({ type: 'appendFinal', getMessage, title, swipes, reasoning, reasoningSignature, storedReply, storedNodeId }));
             }
 
             parseAndSaveLogprobs(data, continue_mag);
@@ -1931,7 +1930,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             return await swipe(/** @type {SwipeEvent} */ (/** @type {unknown} */ (null)), SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.AUTO_SWIPE, repeated: true, forceMesId: chat.length - 1 });
         }
 
-        await storePageChatChanges();
         saveTokenCache();
         unblockGeneration(type);
         streamingProcessor = null;

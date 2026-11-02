@@ -214,33 +214,3 @@ for (const streaming of [true, false]) {
         }
     });
 }
-
-for (const streaming of [true, false]) {
-    test(`a change an extension makes in place to a reply when it arrives, without saving, is stored (${streaming ? 'streaming' : 'not streaming'})`, async ({ page }) => {
-        test.setTimeout(120000);
-        const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-        const mock = await startLlamaCpp(stamp);
-        try {
-            const avatar = await chatWithOneReply(page, mock, stamp, streaming, (page) => page.evaluate(() => {
-                // @ts-ignore
-                const ctx = SillyTavern.getContext();
-                ctx.eventSource.on(ctx.eventTypes.MESSAGE_RECEIVED, (/** @type {number} */ id) => {
-                    const message = ctx.chat[id];
-                    if (!String(message?.mes ?? '').startsWith('Reply number')) return;
-                    message.mes = `${message.mes} (noted)`;
-                    message.extra.noted_by = 'an extension';
-                });
-            }));
-            const storedReply = () => page.evaluate(async (avatar) => {
-                // @ts-ignore
-                const context = SillyTavern.getContext();
-                const response = await fetch('/api/chats/open', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar }) });
-                const reply = (await response.json()).messages[2];
-                return { mes: reply?.mes, noted: reply?.extra?.noted_by ?? null };
-            }, avatar);
-            await expect.poll(storedReply, { timeout: 10000 }).toEqual({ mes: `Reply number 1 ${stamp}. (noted)`, noted: 'an extension' });
-        } finally {
-            await mock.close();
-        }
-    });
-}
