@@ -7,7 +7,7 @@ import { getCharacterCardFields, getGroupCharacterDepthPrompts } from './charact
 import { buildChatCompletionMessages, buildChatCompletionMessageExamples, character_names_behavior } from './chat-completion-messages.js';
 import { TokenHandler } from './chat-completion-budget.js';
 import { chat_completion_sources } from './chat-completion-tool-capabilities.js';
-import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './world-info/candidate-resolution.js';
+import { resolveWorldInfoCandidates } from './world-info/candidate-resolution.js';
 import { activateWorldInfoEntries } from './world-info/activation.js';
 import { buildActivationRecord } from './world-info/activation-record.js';
 import { userStore } from './user-stores.js';
@@ -26,6 +26,7 @@ import { formatMessageHistoryItem, getBiasStrings } from './prompt-line-formatti
 import { appendFileAttachments } from './file-attachment-inline.js';
 import { substituteParams } from './macro-substitution.js';
 import { exampleBlocks } from './example-blocks.js';
+import { worldInfoGlobalsOf } from '../public/scripts/world-info-globals.js';
 
 /**
  * @typedef {Pick<import('./users.js').UserDirectoryList, 'root'>} Directories
@@ -272,7 +273,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     const withDefaults = /** @type {OaiSettingsShape} */ (chatCompletionSettingsWithDefaults(savedOaiSettings));
     const oaiSettings = responseLength === undefined ? withDefaults : { ...withDefaults, openai_max_tokens: responseLength };
     const worldInfoSelection = /** @type {WorldInfoSelectionShape} */ (worldInfoSettings.world_info ?? {});
-    const worldInfoCharacterStrategySetting = worldInfoSettings.world_info_character_strategy;
+    const worldInfoGlobals = worldInfoGlobalsOf(worldInfoSettings);
     const activePersona = powerUser.persona_data?.[userAvatar] ?? {};
 
     const isGroup = Boolean(groupId);
@@ -327,7 +328,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
             characterExtraBooks,
             chatWorldName: /** @type {string | null} */ (chatMetadata[WORLD_INFO_METADATA_KEY] ?? null),
             personaWorldLorebook: activePersona.lorebook ?? null,
-            worldInfoCharacterStrategy: worldInfoCharacterStrategySetting ?? world_info_insertion_strategy.character_first,
+            worldInfoCharacterStrategy: worldInfoGlobals.world_info_character_strategy,
         }));
     }
 
@@ -378,8 +379,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
         tokenHandler = new TokenHandler(createOpenAITokenCounter(resolved, tokenizerOutcome, directories, storedCounter));
     }
 
-    const worldInfoIncludeNames = Boolean(worldInfoSettings.world_info_include_names ?? false);
-    const chatForWI = promptChat.map(x => worldInfoIncludeNames ? `${x.name}: ${x.mes}` : (x.mes ?? '')).reverse();
+    const chatForWI = promptChat.map(x => worldInfoGlobals.world_info_include_names ? `${x.name}: ${x.mes}` : (x.mes ?? '')).reverse();
     const generationTrigger = type !== undefined && GENERATION_TYPE_TRIGGERS.includes(type) ? type : 'normal';
     const globalScanData = {
         personaDescription: fields.persona,
@@ -400,17 +400,10 @@ export async function resolveChatCompletionGenerationInput(directories, {
     ].filter(([, text]) => Boolean(text));
     const { activatedEntries, trace } = await activateWorldInfoEntries(worldInfoCandidates, chatForWI, {
         maxContext: oaiSettings.openai_max_context ?? 4095,
-        budgetPercent: worldInfoSettings.world_info_budget ?? 25,
-        budgetCap: worldInfoSettings.world_info_budget_cap ?? 0,
-        depth: worldInfoSettings.world_info_depth ?? 2,
-        recursive: Boolean(worldInfoSettings.world_info_recursive ?? true),
-        maxRecursionSteps: worldInfoSettings.world_info_max_recursion_steps ?? 0,
+        globals: worldInfoGlobals,
         globalScanData, macroContext, countTokens: countTokensForWorldInfo,
         chatMetadata, isDryRun: Boolean(dryRun),
-        useGroupScoring: Boolean(worldInfoSettings.world_info_use_group_scoring ?? false),
         entryFilterContext: { trigger: generationTrigger, characterFilename: charFilename ?? undefined },
-        minActivations: worldInfoSettings.world_info_min_activations ?? 0,
-        minActivationsDepthMax: worldInfoSettings.world_info_min_activations_depth_max ?? 0,
         additionalScanInjects: scanInjects.map(([, text]) => text),
     });
     const activations = dryRun === true ? null : await buildActivationRecord(trace, {

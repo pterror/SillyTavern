@@ -4,7 +4,8 @@ import { loadChatHistory } from './chat-request.js';
 import { readExtraBooks } from './endpoints/characters.js';
 import { resolveSpeakers } from './macro-scope.js';
 import { extension_prompt_types, extension_prompt_roles } from './extension-prompt-table.js';
-import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './world-info/candidate-resolution.js';
+import { resolveWorldInfoCandidates } from './world-info/candidate-resolution.js';
+import { worldInfoGlobalsOf } from '../public/scripts/world-info-globals.js';
 import { apiTokenLimits, generationMacroFacts, variablesBefore } from './macro-facts.js';
 import { storyStringWithAnchors } from '../public/scripts/story-string-anchors.js';
 import { persona_description_defaults, persona_description_positions } from '../public/scripts/constants.js';
@@ -204,7 +205,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
     ]));
     const activePersona = powerUser.persona_data?.[userAvatar] ?? {};
     const worldInfoSelection = worldInfoSettings.world_info ?? {};
-    const worldInfoCharacterStrategySetting = worldInfoSettings.world_info_character_strategy;
+    const worldInfoGlobals = worldInfoGlobalsOf(worldInfoSettings);
 
     const backendSettings = mainApi === 'kobold' ? koboldSettings : mainApi === 'novel' ? novelSettings : textgenSettings;
 
@@ -238,7 +239,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
             characterExtraBooks,
             chatWorldName: chatMetadata[WORLD_INFO_METADATA_KEY] ?? null,
             personaWorldLorebook: activePersona.lorebook ?? null,
-            worldInfoCharacterStrategy: worldInfoCharacterStrategySetting ?? world_info_insertion_strategy.character_first,
+            worldInfoCharacterStrategy: worldInfoGlobals.world_info_character_strategy,
         }));
     }
 
@@ -295,15 +296,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
         },
 
         worldInfoCandidates,
-        worldInfoIncludeNames: Boolean(worldInfoSettings.world_info_include_names ?? false),
-        worldInfoBudgetPercent: worldInfoSettings.world_info_budget ?? 25,
-        worldInfoBudgetCap: worldInfoSettings.world_info_budget_cap ?? 0,
-        worldInfoDepth: worldInfoSettings.world_info_depth ?? 2,
-        worldInfoRecursive: Boolean(worldInfoSettings.world_info_recursive ?? true),
-        worldInfoMaxRecursionSteps: worldInfoSettings.world_info_max_recursion_steps ?? 0,
-        worldInfoMinActivations: worldInfoSettings.world_info_min_activations ?? 0,
-        worldInfoMinActivationsDepthMax: worldInfoSettings.world_info_min_activations_depth_max ?? 0,
-        worldInfoUseGroupScoring: Boolean(worldInfoSettings.world_info_use_group_scoring ?? false),
+        worldInfoGlobals,
 
         noteSettings, hasCharacterOrGroup,
 

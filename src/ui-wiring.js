@@ -9,6 +9,9 @@ import { alternativesArea } from '@st/alternatives/server';
 import { activationsArea } from '@st/activations/server';
 import { referencesArea } from '@st/references/server';
 import { References } from './world-info/references.js';
+import { matchDefaultsOf } from './world-info/key-matching.js';
+import { worldInfoGlobalsOf } from '../public/scripts/world-info-globals.js';
+import { readUserSettings } from './settings-reads.js';
 
 import { userStore } from './user-stores.js';
 import { TYPE } from './library-engine.js';
@@ -494,7 +497,9 @@ const activationsPorts = {
 /**
  * @param {import('@st/server-ui').User} user
  */
-const referencesOf = async user => new References((await userStore(directoriesOf(user), user.handle)).lib);
+const referencesOf = async user => new References((await userStore(directoriesOf(user), user.handle)).lib, {
+    defaults: matchDefaultsOf(worldInfoGlobalsOf(readUserSettings(directoriesOf(user), ['world_info_settings']).world_info_settings)),
+});
 
 /**
  * @template {{ entry: bigint }} T

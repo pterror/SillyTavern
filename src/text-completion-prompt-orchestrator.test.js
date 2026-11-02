@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import { write as writeCardIntoPng } from './character-card-parser.js';
 import { regex_placement } from './regex-scripts-engine.js';
+import { worldInfoGlobalsOf } from '../public/scripts/world-info-globals.js';
 import { setConfigFilePath } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -72,7 +73,7 @@ function baseFixture(directories, avatar) {
                 order: 100, position: 0,
             },
         ],
-        worldInfoIncludeNames: false,
+        worldInfoGlobals: worldInfoGlobalsOf({ world_info_include_names: false, world_info_recursive: true }),
         storyStringTemplate: '{{#if anchorBefore}}{{anchorBefore}}\n{{/if}}{{#if system}}{{system}}\n{{/if}}{{#if wiBefore}}{{wiBefore}}\n{{/if}}{{#if description}}{{description}}\n{{/if}}{{#if personality}}{{personality}}\n{{/if}}{{#if scenario}}{{scenario}}\n{{/if}}{{#if wiAfter}}{{wiAfter}}\n{{/if}}{{#if persona}}{{persona}}\n{{/if}}{{#if anchorAfter}}{{anchorAfter}}\n{{/if}}{{trim}}',
         settings: { type: 'ooba', temp: 0.7, top_p: 0.9, rep_pen: 1.1 },
         model: 'test-model',
@@ -1093,4 +1094,27 @@ test('assembleTextCompletionPrompt: an empty reasoning block is sent as its pref
 
     const off = await assembleTextCompletionPrompt({ ...baseFixture(directories, avatar), chat, ...block, reasoningAddToPrompts: false, reasoningMaxAdditions: 10 });
     assert.ok(!off.combinedPrompt.includes('<|channel>thought'));
+});
+
+test('assembleTextCompletionPrompt: a key without its own flags follows the global case and whole-word settings', async () => {
+    const { charactersDir, chatsDir, root } = makeDirectories();
+    const avatar = 'aria.png';
+    const directories = { characters: charactersDir, root, chats: chatsDir };
+    await writeSimpleCharacter(directories, avatar);
+    const worldInfoCandidates = [
+        { uid: '1', world: 'test', key: ['SWORD'], content: 'Upper case key content.', order: 100, position: 0 },
+        { uid: '2', world: 'test', key: ['moon'], content: 'Part of a word content.', order: 101, position: 0 },
+    ];
+    const promptWith = async (flags) => (await assembleTextCompletionPrompt({
+        ...baseFixture(directories, avatar),
+        worldInfoCandidates,
+        worldInfoGlobals: worldInfoGlobalsOf({ world_info_include_names: false, ...flags }),
+    })).combinedPrompt;
+
+    const loose = await promptWith({ world_info_case_sensitive: false, world_info_match_whole_words: false });
+    assert.ok(loose.includes('Upper case key content.'));
+    assert.ok(loose.includes('Part of a word content.'));
+    const strict = await promptWith({ world_info_case_sensitive: true, world_info_match_whole_words: true });
+    assert.ok(!strict.includes('Upper case key content.'));
+    assert.ok(!strict.includes('Part of a word content.'));
 });

@@ -558,6 +558,30 @@ async function run() {
         assert.equal(fresh.rawChatLength, 0, 'a genuinely new owner correctly resolves to an empty chat, not an error');
     }
 
+    {
+        await writeLorebook('FlagLore', [
+            { uid: 'f1', key: ['TRAVELER'], keysecondary: [], comment: '', content: 'Upper case key content.', constant: false, selective: false, order: 10, position: 0, disable: false },
+            { uid: 'f2', key: ['travel'], keysecondary: [], comment: '', content: 'Part of a word content.', constant: false, selective: false, order: 11, position: 0, disable: false },
+        ]);
+        const shownWith = async (worldInfoFlags) => {
+            const settings = buildSettingsFixture();
+            settings.world_info_settings.world_info.globalSelect = ['FlagLore'];
+            Object.assign(settings.world_info_settings, worldInfoFlags);
+            writeAllSettings(directories, settings);
+            const resolved = await resolveChatCompletionGenerationInput(directories, {
+                avatar, chatContext: await ctxOf({ avatar }, branchName), branchName, type: 'normal', dryRun: true,
+            });
+            return resolved.worldInfoBefore;
+        };
+        const loose = await shownWith({ world_info_case_sensitive: false, world_info_match_whole_words: false });
+        assert.ok(loose.includes('Upper case key content.'), 'with the global case setting off, a key without its own flag matches in any case');
+        assert.ok(loose.includes('Part of a word content.'), 'with the global whole-words setting off, a key without its own flag matches inside a word');
+        const strict = await shownWith({ world_info_case_sensitive: true, world_info_match_whole_words: true });
+        assert.ok(!strict.includes('Upper case key content.'), 'with the global case setting on, a key without its own flag matches only in its own case');
+        assert.ok(!strict.includes('Part of a word content.'), 'with the global whole-words setting on, a key without its own flag matches only whole words');
+        writeAllSettings(directories, buildSettingsFixture());
+    }
+
     console.log('chat-completion-generation-input.test.js: all assertions passed');
 }
 

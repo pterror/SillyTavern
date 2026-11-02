@@ -1,5 +1,15 @@
 import { substituteParams } from '../macro-substitution.js';
 
+/** @typedef {{caseSensitive: boolean, matchWholeWords: boolean}} MatchDefaults */
+
+/**
+ * @param {import('../../public/scripts/world-info-globals.js').WorldInfoGlobals} globals
+ * @returns {MatchDefaults}
+ */
+export function matchDefaultsOf(globals) {
+    return { caseSensitive: globals.world_info_case_sensitive, matchWholeWords: globals.world_info_match_whole_words };
+}
+
 export function escapeRegex(string) {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -21,18 +31,18 @@ export function parseRegexFromString(input) {
  * @param {string} haystack
  * @param {string} needle
  * @param {{caseSensitive?: boolean, matchWholeWords?: boolean}} entry
- * @param {{caseSensitive?: boolean, matchWholeWords?: boolean}} globalDefaults
+ * @param {MatchDefaults} globalDefaults
  * @returns {boolean}
  */
-export function matchKeys(haystack, needle, entry, globalDefaults = {}) {
+export function matchKeys(haystack, needle, entry, globalDefaults) {
     const keyRegex = parseRegexFromString(needle);
     if (keyRegex) return keyRegex.test(haystack);
 
-    const caseSensitive = entry.caseSensitive ?? globalDefaults.caseSensitive ?? false;
+    const caseSensitive = entry.caseSensitive ?? globalDefaults.caseSensitive;
     const transform = (str) => caseSensitive ? str : str.toLowerCase();
     haystack = transform(haystack);
     const transformedNeedle = transform(needle);
-    const matchWholeWords = entry.matchWholeWords ?? globalDefaults.matchWholeWords ?? false;
+    const matchWholeWords = entry.matchWholeWords ?? globalDefaults.matchWholeWords;
 
     if (!matchWholeWords) return haystack.includes(transformedNeedle);
 
@@ -49,10 +59,10 @@ export const MAX_SPANS = 32;
  * @param {string} haystack
  * @param {string} needle
  * @param {{caseSensitive?: boolean, matchWholeWords?: boolean}} entry
- * @param {{caseSensitive?: boolean, matchWholeWords?: boolean}} [globalDefaults]
+ * @param {MatchDefaults} globalDefaults
  * @returns {[number, number][]}
  */
-export function findKeySpans(haystack, needle, entry, globalDefaults = {}) {
+export function findKeySpans(haystack, needle, entry, globalDefaults) {
     /** @type {[number, number][]} */
     const spans = [];
     const keyRegex = parseRegexFromString(needle);
@@ -60,8 +70,8 @@ export function findKeySpans(haystack, needle, entry, globalDefaults = {}) {
     if (keyRegex) {
         pattern = new RegExp(keyRegex.source, keyRegex.flags.replace('g', '') + 'gd');
     } else {
-        const caseSensitive = entry.caseSensitive ?? globalDefaults.caseSensitive ?? false;
-        const matchWholeWords = entry.matchWholeWords ?? globalDefaults.matchWholeWords ?? false;
+        const caseSensitive = entry.caseSensitive ?? globalDefaults.caseSensitive;
+        const matchWholeWords = entry.matchWholeWords ?? globalDefaults.matchWholeWords;
         const flags = caseSensitive ? 'gdu' : 'gdiu';
         if (!needle) return spans;
         const singleWord = needle.split(/\s+/).length === 1;
@@ -107,12 +117,12 @@ export class WorldInfoBuffer {
     /**
      * @param {string[]} messages
      * @param {object} globalScanData
-     * @param {{depth?: number, caseSensitive?: boolean, matchWholeWords?: boolean}} [globalDefaults]
+     * @param {import('../../public/scripts/world-info-globals.js').WorldInfoGlobals} globals
      * @param {Map<string, object>} [externalActivations]
      */
-    constructor(messages, globalScanData, globalDefaults = {}, externalActivations = new Map()) {
-        this.#globalDefaults = globalDefaults;
-        this.#worldInfoDepth = globalDefaults.depth ?? 0;
+    constructor(messages, globalScanData, globals, externalActivations = new Map()) {
+        this.#globalDefaults = matchDefaultsOf(globals);
+        this.#worldInfoDepth = globals.world_info_depth;
         for (let depth = 0; depth < MAX_SCAN_DEPTH; depth++) {
             if (messages[depth]) this.#depthBuffer[depth] = messages[depth].trim();
             if (depth === messages.length - 1) break;
@@ -208,6 +218,9 @@ export class WorldInfoBuffer {
 
         return primaryScore;
     }
+
+    /** @returns {MatchDefaults} */
+    get matchDefaults() { return this.#globalDefaults; }
 
     matchKeys(haystack, needle, entry) {
         return matchKeys(haystack, needle, entry, this.#globalDefaults);

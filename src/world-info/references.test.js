@@ -3,6 +3,7 @@ import { after, test } from 'node:test';
 
 import { matchKeys } from './key-matching.js';
 import { References } from './references.js';
+import { LOOSE } from './test-globals.js';
 
 const { emptyUser } = await import('../../tests/converted-user.fixture.js');
 const user = await emptyUser('st-references-test-');
@@ -61,7 +62,7 @@ function expected(entries) {
         for (const t of entries) {
             if (s === t) continue;
             const flags = { caseSensitive: t.caseSensitive ?? undefined, matchWholeWords: t.matchWholeWords ?? undefined };
-            const name = t.key.map(k => k.trim()).find(k => k && !k.includes('{{') && matchKeys(s.content, k, flags, {}));
+            const name = t.key.map(k => k.trim()).find(k => k && !k.includes('{{') && matchKeys(s.content, k, flags, LOOSE));
             if (name === undefined) continue;
             if (!from.has(s.uid)) from.set(s.uid, new Set());
             from.get(s.uid).add(t.uid);
@@ -85,7 +86,7 @@ async function all(read) {
 }
 
 async function check(name, entries, label) {
-    const refs = new References(lib);
+    const refs = new References(lib, { defaults: LOOSE });
     const book = await bookOf(name);
     const uidOf = await ids(book);
     const back = new Map([...uidOf].map(([uid, id]) => [id, uid]));
@@ -136,7 +137,7 @@ test('a name that only the index can answer reads candidates, never the whole bo
         return original(op, args);
     };
     try {
-        const refs = new References(lib);
+        const refs = new References(lib, { defaults: LOOSE });
         const to = await refs.to(book, uidOf.get(0));
         assert.equal(to.scanned, false);
         assert.deepEqual(to.references.map(r => r.entry), [uidOf.get(1)]);
@@ -162,11 +163,11 @@ test('a mention by a form the name doesn\'t match is an unlinked mention; a macr
     });
     const book = await bookOf('Forms');
     const uidOf = await ids(book);
-    const to = await new References(lib).to(book, uidOf.get(0));
+    const to = await new References(lib, { defaults: LOOSE }).to(book, uidOf.get(0));
     assert.deepEqual(to.references, []);
     assert.deepEqual(to.unlinked, [{ entry: uidOf.get(1), name: 'Elara' }]);
     assert.deepEqual(to.unresolved, ['{{char}}']);
-    const withContext = await new References(lib, { macroContext: { name2: 'Elara' } }).to(book, uidOf.get(0));
+    const withContext = await new References(lib, { defaults: LOOSE, macroContext: { name2: 'Elara' } }).to(book, uidOf.get(0));
     assert.deepEqual(withContext.unresolved, []);
 });
 
@@ -185,7 +186,7 @@ test('issues: never comes up, shared names and heavy entries, paged', async () =
     const book = await bookOf('Issues');
     const uidOf = await ids(book);
     const back = new Map([...uidOf].map(([uid, id]) => [id, uid]));
-    const refs = new References(lib);
+    const refs = new References(lib, { defaults: LOOSE });
     const found = new Map();
     let after;
     for (;;) {
@@ -206,7 +207,7 @@ test('a book\'s size and hash follow its entries\' own writes and come back to t
     await lib.books.write('Sized', book0);
     const book = await bookOf('Sized');
     const uidOf = await ids(book);
-    const refs = new References(lib);
+    const refs = new References(lib, { defaults: LOOSE });
     const first = await refs.sizes(book, [uidOf.get(0)]);
     assert.equal(first.entries, 2);
     await lib.books.editEntry('Sized', 0, { ...book0.entries[0], content: 'alpha and more' });
@@ -230,7 +231,7 @@ test('an entry deleted with its history kept leaves the book\'s totals, and rest
     });
     const book = await bookOf('Kept');
     const uidOf = await ids(book);
-    const refs = new References(lib);
+    const refs = new References(lib, { defaults: LOOSE });
     const before = await refs.sizes(book, []);
     const fromBefore = await refs.from(book, uidOf.get(1));
     assert.deepEqual(fromBefore.references.map(r => r.entry), [uidOf.get(0)]);
@@ -265,8 +266,26 @@ test('a card\'s own book answers the same way', async () => {
     const [book] = await lib.ids(4, [`${character}:c`]);
     assert.ok(book);
     const uidOf = await ids(book);
-    const to = await new References(lib).to(book, uidOf.get(0));
+    const to = await new References(lib, { defaults: LOOSE }).to(book, uidOf.get(0));
     assert.deepEqual(to.references.map(r => r.entry), [uidOf.get(1)]);
+});
+
+test('a name without its own flags follows the global case and whole-word settings, as activation does', async () => {
+    await lib.books.write('GlobalFlags', {
+        entries: {
+            0: { uid: 0, key: ['Elara'], content: 'x' },
+            1: { uid: 1, key: ['mill'], content: 'y' },
+            2: { uid: 2, key: [], content: 'ELARA walked past the millstone.' },
+        },
+    });
+    const book = await bookOf('GlobalFlags');
+    const uidOf = await ids(book);
+    const linkedTo = async (defaults, uid) => (await new References(lib, { defaults }).to(book, uidOf.get(uid))).references.map(r => r.entry);
+    assert.deepEqual(await linkedTo(LOOSE, 0), [uidOf.get(2)]);
+    assert.deepEqual(await linkedTo(LOOSE, 1), [uidOf.get(2)]);
+    const strict = { caseSensitive: true, matchWholeWords: true };
+    assert.deepEqual(await linkedTo(strict, 0), []);
+    assert.deepEqual(await linkedTo(strict, 1), []);
 });
 
 after(async () => {
