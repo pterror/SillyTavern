@@ -675,61 +675,49 @@ function Dialog(props: {
                                             </button>
                                             <button
                                                 type="button"
-                                                class="alternative-button alternative-copy"
+                                                class="alternative-button alternative-copy fa-solid fa-copy"
                                                 title={t('Copy')}
                                                 aria-label={t('Copy')}
                                                 onClick={() => void props.old.copy(item.text)}
-                                            >
-                                                <i class="fa-solid fa-copy" />
-                                            </button>
+                                            />
                                             <Show when={isCardRow(item)}>
                                                 <button
                                                     type="button"
-                                                    class="alternative-button alternative-default"
+                                                    class="alternative-button alternative-default fa-star"
+                                                    classList={{
+                                                        'fa-solid':
+                                                            list()?.card?.defaultPosition === item.card?.position,
+                                                        'fa-regular':
+                                                            list()?.card?.defaultPosition !== item.card?.position,
+                                                    }}
                                                     title={t('Default greeting')}
                                                     aria-label={t('Default greeting')}
                                                     aria-pressed={list()?.card?.defaultPosition === item.card?.position}
                                                     onClick={() => setDefault(item)}
-                                                >
-                                                    <i
-                                                        class="fa-star"
-                                                        classList={{
-                                                            'fa-solid':
-                                                                list()?.card?.defaultPosition === item.card?.position,
-                                                            'fa-regular':
-                                                                list()?.card?.defaultPosition !== item.card?.position,
-                                                        }}
-                                                    />
-                                                </button>
+                                                />
                                                 <button
                                                     type="button"
-                                                    class="alternative-button alternative-edit"
+                                                    class="alternative-button alternative-edit fa-solid fa-pencil"
                                                     title={t('Edit')}
                                                     aria-label={t('Edit')}
                                                     onClick={() => setEditing({ id: item.id })}
-                                                >
-                                                    <i class="fa-solid fa-pencil" />
-                                                </button>
+                                                />
                                                 <button
                                                     type="button"
-                                                    class="alternative-button alternative-delete-greeting"
+                                                    class="alternative-button alternative-delete-greeting fa-solid fa-trash-can"
                                                     title={t('Delete from the card')}
                                                     aria-label={t('Delete from the card')}
                                                     onClick={() => void removeGreeting(item)}
-                                                >
-                                                    <i class="fa-solid fa-trash-can" />
-                                                </button>
+                                                />
                                             </Show>
                                             <Show when={canRemove(item)}>
                                                 <button
                                                     type="button"
-                                                    class="alternative-button alternative-delete"
+                                                    class="alternative-button alternative-delete fa-solid fa-comment-slash"
                                                     title={t('Delete from the chat')}
                                                     aria-label={t('Delete from the chat')}
                                                     onClick={() => void remove(item.index)}
-                                                >
-                                                    <i class="fa-solid fa-comment-slash" />
-                                                </button>
+                                                />
                                             </Show>
                                         </span>
                                     </div>

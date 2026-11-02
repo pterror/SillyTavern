@@ -202,7 +202,7 @@ body.no-blur dialog.alternatives::backdrop {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font: inherit;
+    font-size: inherit;
 }
 
 .alternative-button:hover {
