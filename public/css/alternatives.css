@@ -16,9 +16,9 @@ dialog.alternatives {
     padding: 4px 14px;
     background-color: var(--SmartThemeBlurTintColor);
     border-radius: 10px;
-    width: max(var(--sheldWidth), 60dvw);
+    width: var(--sheldWidth);
     height: 90dvh;
-    max-width: 90dvw;
+    max-width: calc(100dvw - 32px);
     max-height: calc(100dvh - 2em);
     overflow: hidden;
 }
@@ -128,7 +128,11 @@ body.no-blur dialog.alternatives::backdrop {
     contain-intrinsic-size: auto 12em;
 }
 
-.alternatives-list.filtering > .alternative:not(.matched, .alternatives-new) {
+.alternative.laid {
+    content-visibility: visible;
+}
+
+.alternatives-list.filtering > .alternative:not(.matched) {
     content-visibility: hidden;
     contain-intrinsic-size: none;
     height: 0;
@@ -250,6 +254,27 @@ body.no-blur dialog.alternatives::backdrop {
     display: flex;
     gap: 6px;
     justify-content: flex-end;
+}
+
+.alternatives-add {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    padding-bottom: 6px;
+}
+
+.alternatives-add textarea {
+    flex: 1;
+    margin: 0;
+    resize: none;
+    field-sizing: content;
+    min-height: calc(1lh + 10px);
+    max-height: 30dvh;
+    overflow-y: auto;
+}
+
+.alternatives-add .menu_button {
+    margin: 0;
 }
 
 .alternatives-markers {

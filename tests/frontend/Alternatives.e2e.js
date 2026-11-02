@@ -72,9 +72,9 @@ async function pageModel(page, avatar) {
 /** @param {import('@playwright/test').Page} page */
 const list = page => page.locator('dialog.alternatives');
 /** @param {import('@playwright/test').Page} page */
-const rows = page => list(page).locator('li.alternative:not(.alternatives-new)');
+const rows = page => list(page).locator('li.alternative');
 /** @param {import('@playwright/test').Page} page */
-const shownRows = page => list(page).locator('li.alternative:not(.alternatives-new):visible');
+const shownRows = page => list(page).locator('li.alternative:visible');
 
 /**
  * @param {import('@playwright/test').Page} page
@@ -197,6 +197,47 @@ test.describe('the alternatives of a message', () => {
         await expect(shownRows(page)).toHaveCount(60);
         await expect(rows(page).nth(54)).toBeInViewport();
         await expect(list(page).locator('mark.match')).toHaveCount(0);
+    });
+
+    test('opened on one near the end, the current one is centred on the first frame it is shown and never moves while the rest draws', async ({ page }) => {
+        const s = stamp();
+        const avatar = await createCharacter(page, `AltPlace-${s}`, Array.from({ length: 60 }, (_, n) => n % 3 === 0 ? longGreeting(n) : `Short ${n} ${s}.`));
+        await openCharacter(page, avatar);
+        await swipeGo(page, 56);
+        await expect.poll(async () => (await chatSwipe(page)).id).toBe(55);
+        await page.evaluate(() => {
+            /** @type {{ t: number, offset: number, centre: number }[]} */
+            const samples = [];
+            // @ts-ignore
+            window.placeSamples = samples;
+            const t0 = performance.now();
+            const sample = () => {
+                const scroller = document.querySelector('dialog.alternatives .alternatives-list');
+                const row = scroller?.querySelector('li.alternative.current');
+                if (scroller && row) {
+                    const box = scroller.getBoundingClientRect();
+                    const at = row.getBoundingClientRect();
+                    samples.push({
+                        t: performance.now() - t0,
+                        offset: at.top - box.top,
+                        centre: at.top + at.height / 2 - (box.top + scroller.clientHeight / 2),
+                    });
+                }
+                if (performance.now() - t0 < 3000) requestAnimationFrame(sample);
+                // @ts-ignore
+                else window.placeDone = true;
+            };
+            requestAnimationFrame(sample);
+        });
+        await page.locator('#chat .mes[mesid="0"] .swipes-counter').click();
+        // @ts-ignore
+        await expect.poll(() => page.evaluate(() => window.placeDone), { timeout: 10000 }).toBe(true);
+        /** @type {{ t: number, offset: number, centre: number }[]} */
+        // @ts-ignore
+        const samples = await page.evaluate(() => window.placeSamples);
+        expect(samples.length).toBeGreaterThan(10);
+        expect(Math.abs(samples[0].centre)).toBeLessThanOrEqual(1);
+        expect(samples.filter(x => Math.abs(x.offset - samples[0].offset) > 0.5)).toEqual([]);
     });
 
     test('the counter shows on every message, user messages too, dimmed on an earlier one with one alternative', async ({ page }) => {
@@ -331,11 +372,61 @@ test.describe('the alternatives of a message', () => {
         await expect.poll(() => pageModel(page, avatar)).toEqual(stored);
         await expect(page.locator('.greeting-pager-total')).toHaveText('/3');
 
-        await list(page).locator('.alternatives-add').click();
-        await list(page).locator('.alternatives-new textarea').fill(`Four ${s}`);
-        await list(page).locator('.alternatives-new').getByRole('button', { name: 'Save' }).click();
+        await list(page).locator('.alternatives-add textarea').fill(`Four ${s}`);
+        await list(page).locator('.alternatives-add').getByRole('button', { name: 'Add' }).click();
         await expect(rows(page)).toHaveCount(4);
         expect((await storedModel(page, avatar)).greetings[3]).toBe(`Four ${s}`);
+    });
+
+    test('the greetings list is the chat\'s width, counts its greetings when none is the default, and adds one from the box at its bottom without moving the list or setting off the page\'s Ctrl+Enter', async ({ page }) => {
+        const s = stamp();
+        const one = await createCharacter(page, `AltOne-${s}`, [`Only ${s}`]);
+        const avatar = await createCharacter(page, `AltBox-${s}`, Array.from({ length: 12 }, (_, i) => longGreeting(i)));
+        await openCharacterManagementDrawer(page);
+        await openCharacter(page, one);
+        await openInfoTab(page, 'greeting');
+        await page.locator('.open_alternate_greetings').click();
+        await expect(rows(page)).toHaveCount(1);
+        await expect(list(page).locator('.alternatives-place')).toHaveText('#1 of 1');
+        await rows(page).nth(0).locator('.alternative-default').click();
+        await expect(list(page).locator('.alternatives-place')).toHaveText('1 greeting');
+        await list(page).locator('.alternatives-close').click();
+        await expect(list(page)).toBeHidden();
+
+        await openCharacter(page, avatar);
+        await openInfoTab(page, 'greeting');
+        await page.locator('.open_alternate_greetings').click();
+        await expect(rows(page)).toHaveCount(12);
+        await rows(page).nth(0).locator('.alternative-default').click();
+        await expect(list(page).locator('.alternatives-place')).toHaveText('12 greetings');
+        expect(await list(page).locator('.alternatives-list').evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+        const width = async (/** @type {string} */ selector) => (await page.locator(selector).boundingBox())?.width;
+        expect(await width('dialog.alternatives')).toBeCloseTo(/** @type {number} */ (await width('#sheld')), 0);
+
+        const box = list(page).locator('.alternatives-add textarea');
+        const add = list(page).locator('.alternatives-add').getByRole('button', { name: 'Add' });
+        await expect(add).toBeDisabled();
+        const scrolled = () => list(page).locator('.alternatives-list').evaluate(el => el.scrollTop);
+        expect(await scrolled()).toBe(0);
+        await box.fill(`Ctrl ${s}`);
+        await box.press('Control+Enter');
+        await expect(rows(page)).toHaveCount(13);
+        await expect(box).toHaveValue('');
+        expect(await scrolled()).toBe(0);
+        await expect(page.locator('dialog.popup')).toHaveCount(0);
+        await box.fill(`Button ${s}`);
+        await add.click();
+        await expect(rows(page)).toHaveCount(14);
+        await expect(box).toHaveValue('');
+        await expect(list(page).locator('.alternatives-place')).toHaveText('14 greetings');
+        expect((await storedModel(page, avatar)).greetings.slice(12)).toEqual([`Ctrl ${s}`, `Button ${s}`]);
+
+        await box.fill(`Dropped ${s}`);
+        await box.press('Escape');
+        await expect(box).toHaveValue('');
+        await expect(list(page)).toBeVisible();
+        await box.press('Escape');
+        await expect(list(page)).toBeHidden();
     });
 
     test('an edit the server refuses (the greeting changed elsewhere) says why, and the typing stays in the editor', async ({ page }) => {
@@ -408,9 +499,8 @@ test.describe('the alternatives of a message', () => {
         await rows(page).nth(0).locator('.alternative-drag').press('End');
         await expect.poll(async () => (await storedModel(page, avatar)).greetings).toEqual([`One edited ${s}`, g[2], g[0]]);
 
-        await list(page).locator('.alternatives-add').click();
-        await list(page).locator('.alternatives-new textarea').fill(`Three ${s}`);
-        await list(page).locator('.alternatives-new').getByRole('button', { name: 'Save' }).click();
+        await list(page).locator('.alternatives-add textarea').fill(`Three ${s}`);
+        await list(page).locator('.alternatives-add textarea').press('Control+Enter');
         await expect.poll(async () => (await storedModel(page, avatar)).greetings).toHaveLength(4);
 
         await list(page).locator('li.alternative', { hasText: `Three ${s}` }).locator('.alternative-delete-greeting').click();
@@ -576,6 +666,9 @@ test.describe('on a phone', () => {
         await counter.tap();
         await expect(list(page)).toBeVisible();
         await expect(rows(page)).toHaveCount(2);
+        const dialog = /** @type {{ x: number, width: number }} */ (await list(page).boundingBox());
+        expect(dialog.x).toBeGreaterThanOrEqual(16);
+        expect(dialog.x + dialog.width).toBeLessThanOrEqual(viewport.width - 16);
         const go = await rows(page).nth(0).locator('.alternative-go').boundingBox();
         expect(go?.height).toBeGreaterThanOrEqual(44);
         await rows(page).nth(1).locator('.alternative-go').tap();

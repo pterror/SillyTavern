@@ -101,7 +101,6 @@ function Dialog(props: {
     const [query, setQuery] = createSignal('');
     const [notice, setNotice] = createSignal<string | null>(null);
     const [editing, setEditing] = createSignal<{ id: string; at?: number } | null>(null);
-    const [adding, setAdding] = createSignal(false);
     const [drop, setDrop] = createSignal<{ id: string; side: 'before' | 'after' } | null>(null);
     const [ticks, setTicks] = createSignal<{ top: number; current: boolean }[]>([]);
 
@@ -252,9 +251,21 @@ function Dialog(props: {
         if (placed || items().length === 0) return;
         placed = true;
         const at = props.look.at ?? current() ?? 0;
-        for (let i = Math.max(0, at - 3); i <= at + 3; i++) {
+        const view = scroller?.clientHeight ?? 0;
+        const lay = (row: RowState) => {
+            paint(row);
+            row.li.classList.add('laid');
+            return row.li.offsetHeight;
+        };
+        for (let i = at, below = 0; below < view; i++) {
             const row = rowOf(i);
-            if (row) paint(row);
+            if (!row) break;
+            below += lay(row);
+        }
+        for (let i = at - 1, above = 0; above < view; i--) {
+            const row = rowOf(i);
+            if (!row) break;
+            above += lay(row);
         }
         scrollTo(at, false);
         paintRest();
@@ -367,18 +378,8 @@ function Dialog(props: {
         if (card) props.old.greetingsChanged(structuredClone(unwrap(card)), edit);
         return true;
     };
-    const save = async (item: Item | null, text: string) => {
-        if (item === null) {
-            if (text.trim() === '') {
-                setAdding(false);
-                return;
-            }
-            if (await greeting({ op: 'add', text }, null)) {
-                setAdding(false);
-                queueMicrotask(() => scrollTo(total() - 1, false));
-            }
-            return;
-        }
+    const add = async (text: string) => text.trim() !== '' && (await greeting({ op: 'add', text }, null));
+    const save = async (item: Item, text: string) => {
         if (text.trim() === '') {
             const sure = await ask({ kind: 'confirm', message: t('This greeting is empty now. Delete it?') }, t);
             if (!sure) return;
@@ -471,6 +472,17 @@ function Dialog(props: {
 
     const title = () =>
         greetingsList ? t('Greetings') : props.look.title !== '' ? props.look.title : t('Alternatives');
+    const counted = () => {
+        const one = total() === 1;
+        const words = greetingsList
+            ? one
+                ? t('${0} greeting')
+                : t('${0} greetings')
+            : one
+              ? t('${0} alternative')
+              : t('${0} alternatives');
+        return words.replace('${0}', total().toLocaleString());
+    };
 
     return (
         <dialog
@@ -487,13 +499,10 @@ function Dialog(props: {
                     <h3 class="alternatives-title">{title()}</h3>
                     <span class="alternatives-place" aria-live="polite">
                         <Show when={list()} fallback={t('Loading…')}>
-                            <Show
-                                when={current() !== null}
-                                fallback={t('${0} in all').replace('${0}', String(total()))}
-                            >
+                            <Show when={current() !== null} fallback={counted()}>
                                 {t('#${0} of ${1}')
-                                    .replace('${0}', String((current() ?? 0) + 1))
-                                    .replace('${1}', String(total()))}
+                                    .replace('${0}', ((current() ?? 0) + 1).toLocaleString())
+                                    .replace('${1}', total().toLocaleString())}
                             </Show>
                         </Show>
                     </span>
@@ -549,23 +558,6 @@ function Dialog(props: {
                             {greetingsList ? t('Show in chat') : t('Go')}
                         </button>
                     </form>
-                    <Show when={list()?.card}>
-                        <button
-                            type="button"
-                            class="menu_button alternatives-add"
-                            disabled={adding()}
-                            onClick={() => {
-                                setAdding(true);
-                                queueMicrotask(() =>
-                                    scroller
-                                        ?.querySelector('.alternatives-new textarea')
-                                        ?.scrollIntoView({ block: 'center' }),
-                                );
-                            }}
-                        >
-                            <i class="fa-solid fa-plus" /> {t('Add greeting')}
-                        </button>
-                    </Show>
                 </div>
                 <Show when={notice()}>
                     {(text) => (
@@ -740,15 +732,6 @@ function Dialog(props: {
                                 </li>
                             )}
                         </For>
-                        <Show when={adding()}>
-                            <li class="alternative alternatives-new">
-                                <Editor
-                                    text=""
-                                    onSave={(text) => void save(null, text)}
-                                    onCancel={() => setAdding(false)}
-                                />
-                            </li>
-                        </Show>
                     </ol>
                     <div class="alternatives-markers" aria-hidden="true">
                         <For each={ticks()}>
@@ -762,8 +745,57 @@ function Dialog(props: {
                         </For>
                     </div>
                 </div>
+                <Show when={list()?.card}>
+                    <AddBox onAdd={add} />
+                </Show>
             </div>
         </dialog>
+    );
+}
+
+function AddBox(props: { onAdd: (text: string) => Promise<boolean> }) {
+    const { t } = useUi();
+    const [text, setText] = createSignal('');
+    const [busy, setBusy] = createSignal(false);
+    const submit = async () => {
+        if (busy() || text().trim() === '') return;
+        setBusy(true);
+        try {
+            if (await props.onAdd(text())) setText('');
+        } finally {
+            setBusy(false);
+        }
+    };
+    return (
+        <form
+            class="alternatives-add"
+            onSubmit={(event) => {
+                event.preventDefault();
+                void submit();
+            }}
+        >
+            <textarea
+                class="text_pole textarea_compact"
+                rows="1"
+                placeholder={t('New greeting…')}
+                aria-label={t('New greeting')}
+                value={text()}
+                onInput={(event) => setText(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+                        event.preventDefault();
+                        void submit();
+                    } else if (event.key === 'Escape' && text() !== '') {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setText('');
+                    }
+                }}
+            />
+            <button type="submit" class="menu_button" disabled={busy() || text().trim() === ''}>
+                {t('Add')}
+            </button>
+        </form>
     );
 }
 
