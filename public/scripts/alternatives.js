@@ -8,6 +8,7 @@ import { messageFormatting } from './message-formatting.js';
 import { isStoredNodeId } from './node-identity.js';
 import { selected_group } from './group-chats.js';
 import { newUi } from './new-ui-page.js';
+import { editPosition } from './live-editor/positions.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from './slash-commands/SlashCommandArgument.js';
@@ -88,6 +89,9 @@ export const alternativesOldPage = {
     },
     greetingsChanged(card, edit) {
         void applyServerGreetings(card.avatar, card, edit);
+    },
+    editAt(event, rendered, source) {
+        return editPosition(event, rendered, source, power_user.click_to_edit);
     },
 };
 
