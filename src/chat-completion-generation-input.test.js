@@ -304,6 +304,23 @@ async function run() {
     assert.equal(input.worldInfoCandidates.length, 2, 'worldInfoCandidates is auto-resolved for real from the on-disk lorebook named in settings.world_info_settings.world_info.globalSelect (wi1 + the new @Depth wi2)');
     assert.equal(input.worldInfoCandidates[0].content, 'The ancient tower looms over the village.');
 
+    const { lib } = await (await import('./user-stores.js')).userStore(directories);
+    const refOf = async (uid) => {
+        const found = await lib.books.entryOf('TestLore', uid);
+        assert.equal(typeof found, 'object');
+        return { book: String(/** @type {any} */ (found).book), entry: String(/** @type {any} */ (found).id) };
+    };
+    const storedNodes = (await loadBranch(user.store, { avatar }, branchName)).messages.map(m => m.node_id);
+    assert.ok(input.activations, 'the generation keeps a record of what came up');
+    assert.deepEqual(input.activations.cut, []);
+    const recorded = Object.fromEntries(input.activations.entries.map(e => [JSON.stringify(e.ref), e]));
+    const tower = recorded[JSON.stringify(await refOf('wi1'))];
+    assert.equal(tower.why, 'key');
+    assert.deepEqual(tower.keys, [{ key: 'traveler', in: [{ node: storedNodes.at(-3), spans: [[13, 21]] }] }], 'the matched name, in the stored message it was found in, at its place in that message\'s text');
+    const secret = recorded[JSON.stringify(await refOf('wi2'))];
+    assert.deepEqual(secret.keys, [{ key: 'nice to meet', in: [{ node: storedNodes.at(-2), spans: [[8, 20]] }] }]);
+    assert.deepEqual([secret.position, secret.depth, secret.role], [world_info_position.atDepth, WI_DEPTH_TEST_DEPTH, WI_DEPTH_TEST_ROLE]);
+
     assert.equal(input.worldInfoAfter, '', 'the test entry is position:before, so worldInfoAfter stays empty');
     assert.ok(
         input.worldInfoBefore.includes('The ancient tower looms over the village.'),

@@ -6,6 +6,7 @@ import { createUi } from '@st/server-ui';
 import { backgroundsArea } from '@st/backgrounds/server';
 import { settingsArea } from '@st/settings/server';
 import { alternativesArea } from '@st/alternatives/server';
+import { activationsArea } from '@st/activations/server';
 
 import { userStore } from './user-stores.js';
 import { TYPE } from './library-engine.js';
@@ -383,7 +384,85 @@ const alternativesPorts = {
     },
 };
 
-export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts), alternativesArea(alternativesPorts)], {
+/**
+ * @param {unknown} comment
+ * @param {unknown} keys
+ * @returns {string}
+ */
+function entryTitle(comment, keys) {
+    if (typeof comment === 'string' && comment.trim()) return comment.trim();
+    const first = Array.isArray(keys) ? keys.find(k => typeof k === 'string' && k.trim()) : null;
+    return first ? first.trim() : 'Untitled entry';
+}
+
+/**
+ * @param {any[]} sources
+ * @returns {import('@st/activations/protocol').Where[]}
+ */
+const whereOf = sources => sources.flatMap(s => {
+    if (typeof s?.node === 'string') return [{ message: s.node, spans: Array.isArray(s.spans) ? s.spans : [] }];
+    if (typeof s?.field === 'string') return [{ field: s.field }];
+    if (typeof s?.inject === 'string') return [{ inject: s.inject }];
+    return [];
+});
+
+/** @type {import('@st/activations/server').Ports} */
+const activationsPorts = {
+    async panel(user, message) {
+        const store = await userStore(directoriesOf(user), user.handle);
+        const [id] = await store.chats.messageIds([message]);
+        const stored = id === null ? undefined : (await store.chats.stored([id])).get(id);
+        if (!stored) return null;
+        const [content] = await store.chats.decoded([stored]);
+        const record = content?.extra?.activations;
+        if (!record || !Array.isArray(record.entries)) return null;
+        const refs = [...record.entries.map(e => e.ref), ...(Array.isArray(record.cut) ? record.cut.map(c => c.ref) : [])];
+
+        const entryIds = [...new Set(refs.filter(r => typeof r?.entry === 'string').map(r => r.entry))];
+        const entries = new Map((await store.lib.books.describeEntries(entryIds.map(BigInt))).map((e, i) => [entryIds[i], e]));
+
+        let avatar = typeof content.original_avatar === 'string' ? content.original_avatar : null;
+        if (avatar === null) {
+            const [key] = await store.lib.store.libraryKeys([stored.owner]);
+            avatar = key && key.type !== TYPE.group ? key.key : null;
+        }
+        const [card] = refs.some(r => typeof r?.card === 'string') && avatar ? await store.lib.cards([avatar]) : [null];
+        const cardEntries = Array.isArray(card?.data?.character_book?.entries) ? card.data.character_book.entries : [];
+        const cardName = typeof card?.data?.name === 'string' ? card.data.name : (typeof card?.name === 'string' ? card.name : '');
+
+        /** @returns {{ title: string, book: string, open: import('@st/activations/protocol').Opener }} */
+        const described = ref => {
+            if (typeof ref?.card === 'string') {
+                const found = cardEntries.find((e, index) => String(e.id ?? index) === ref.card);
+                return {
+                    title: found ? entryTitle(found.comment, found.keys) : 'A removed entry',
+                    book: cardName ? `${cardName}'s card` : 'The character card',
+                    open: avatar ? { card: avatar } : null,
+                };
+            }
+            const entry = entries.get(ref?.entry) ?? null;
+            if (!entry) return { title: 'A removed entry', book: 'A lorebook', open: null };
+            const uid = Number(entry.uid);
+            return {
+                title: entryTitle(entry.comment, entry.key),
+                book: entry.bookName,
+                open: Number.isFinite(uid) ? { book: entry.book, uid } : null,
+            };
+        };
+
+        return {
+            entries: record.entries.map(e => ({
+                ...described(e.ref),
+                why: e.why,
+                keys: (Array.isArray(e.keys) ? e.keys : []).map(k => ({ key: String(k.key), where: whereOf(Array.isArray(k.in) ? k.in : []) })),
+                via: Array.isArray(e.via) ? e.via.filter(v => Number.isInteger(v)) : [],
+            })),
+            cut: (Array.isArray(record.cut) ? record.cut : []).map(c => ({ ...described(c.ref), why: c.why })),
+        };
+    },
+};
+
+export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts), alternativesArea(alternativesPorts), activationsArea(activationsPorts)], {
     userOf: request => (request.user ? uiUser(request) : null),
     async chatOf(user, owner) {
         const store = await userStore(directoriesOf(user), user.handle);

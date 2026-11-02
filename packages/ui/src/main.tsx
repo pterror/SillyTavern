@@ -24,6 +24,8 @@ import {
 import type { Support } from '@st/settings/page';
 import { Alternatives, alternativesCompat } from '@st/alternatives/page';
 import type { Look, OldPage } from '@st/alternatives/page';
+import { Activations } from '@st/activations/page';
+import type { Look as ActivationsLook, OldPage as ActivationsOldPage } from '@st/activations/page';
 import { render } from 'solid-js/web';
 import type { JSX } from 'solid-js';
 
@@ -33,6 +35,7 @@ export type StartOptions = {
     quietPrompt: (prompt: string) => Promise<string>;
     currentChat: () => ChatOwner | null;
     alternatives: OldPage;
+    activations: ActivationsOldPage;
     containers: {
         backgrounds: HTMLElement;
         backgroundLayer: HTMLElement;
@@ -89,6 +92,13 @@ export function start(options: StartOptions) {
         <Alternatives look={look()} old={options.alternatives} onClose={() => setLook(null)} />
     ));
 
+    const [activationsLook, setActivationsLook] = createSignal<ActivationsLook | null>(null);
+    const activationsHost = document.createElement('div');
+    document.body.append(activationsHost);
+    mount(activationsHost, () => (
+        <Activations look={activationsLook()} old={options.activations} onClose={() => setActivationsLook(null)} />
+    ));
+
     return {
         receive: (push: ViewPush) => {
             client.receive(push);
@@ -97,6 +107,10 @@ export function start(options: StartOptions) {
         closeChat: () => client.send('chat.close', {}),
         backgrounds: backgroundsCompat(client, tab, options.quietPrompt, options.t),
         alternatives: alternativesCompat(setLook),
+        activations: {
+            open: (message: string) => setActivationsLook({ message }),
+            close: () => setActivationsLook(null),
+        },
         settings: {
             ...settingsCompat(client),
             setSupport,

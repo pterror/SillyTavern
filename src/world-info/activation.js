@@ -1,4 +1,4 @@
-import { WorldInfoBuffer, matchesEntryKeys, scan_state } from './key-matching.js';
+import { WorldInfoBuffer, findKeySpans, matchedKeys, matchesEntryKeys, scan_state } from './key-matching.js';
 import { verifyProbability } from './probability.js';
 import { WorldInfoTimedEffects } from './timed-effects.js';
 import { filterByInclusionGroups } from './inclusion-groups.js';
@@ -30,6 +30,42 @@ import { substituteParams } from '../macro-substitution.js';
  */
 
 /**
+ * @typedef {'always' | 'sticky' | 'decorator' | 'external' | 'key'} ActivationWhy
+ * @typedef {{
+ *   entry: WIEntry,
+ *   why: ActivationWhy,
+ *   step: number,
+ *   keys: {key: string, sources: import('./key-matching.js').ScanSource[]}[],
+ *   via: WIEntry[],
+ * }} ActivatedTrace
+ * @typedef {{ entry: WIEntry, why: 'budget' | 'chance' | 'group' }} CutTrace
+ * @typedef {{ activated: ActivatedTrace[], cut: CutTrace[] }} ActivationTrace
+ */
+
+/**
+ * @param {{key: string, sources: import('./key-matching.js').ScanSource[]}[]} keys
+ * @param {{entry: WIEntry, from: number, to: number}[][]} recurseParts
+ * @param {string[]} recurseTexts
+ * @param {WIEntry} entry
+ * @returns {WIEntry[]}
+ */
+function viaOf(keys, recurseParts, recurseTexts, entry) {
+    /** @type {Set<WIEntry>} */
+    const via = new Set();
+    for (const { key, sources } of keys) {
+        for (const source of sources) {
+            if (!('recurse' in source)) continue;
+            const parts = recurseParts[source.recurse] ?? [];
+            for (const [from] of findKeySpans(recurseTexts[source.recurse] ?? '', key, entry)) {
+                const part = parts.find(p => from >= p.from && from < p.to);
+                if (part && part.entry !== entry) via.add(part.entry);
+            }
+        }
+    }
+    return [...via];
+}
+
+/**
  * @param {WIEntry[]} entries
  * @param {string[]} chatMessages
  * @param {object} options
@@ -51,7 +87,7 @@ import { substituteParams } from '../macro-substitution.js';
  * @param {number} [options.minActivationsDepthMax]
  * @param {Map<string, WIEntry>} [options.externalActivations]
  * @param {string[]} [options.additionalScanInjects]
- * @returns {Promise<{activatedEntries: WIEntry[], content: string}>}
+ * @returns {Promise<{activatedEntries: WIEntry[], content: string, trace: ActivationTrace}>}
  */
 export async function activateWorldInfoEntries(entries, chatMessages, options) {
     const {
@@ -67,7 +103,9 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
     if (budgetCap > 0 && budget > budgetCap) budget = budgetCap;
 
     const candidateEntries = entries.filter(e => !e.disable);
-    if (candidateEntries.length === 0) return { activatedEntries: [], content: '' };
+    /** @type {ActivationTrace} */
+    const trace = { activated: [], cut: [] };
+    if (candidateEntries.length === 0) return { activatedEntries: [], content: '', trace };
 
     const buffer = new WorldInfoBuffer(chatMessages, globalScanData, { depth }, externalActivations);
     for (const text of additionalScanInjects) {
@@ -88,6 +126,16 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
     let activatedText = '';
     let scanState = scan_state.INITIAL;
     let step = 0;
+    /** @type {Map<WIEntry, {why: ActivationWhy, keys: {key: string, sources: import('./key-matching.js').ScanSource[]}[]}>} */
+    const why = new Map();
+    /** @type {Map<WIEntry, CutTrace['why']>} */
+    const cut = new Map();
+    /** @type {{entry: WIEntry, from: number, to: number}[][]} */
+    const recurseParts = [];
+    /** @type {string[]} */
+    const recurseTexts = [];
+    /** @type {Map<WIEntry, number>} */
+    const stepOf = new Map();
 
     while (scanState && step < maxRecursionSteps) {
         step++;
@@ -110,6 +158,7 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
             const decoratorActivation = getDecoratorActivation(entry.decorators);
             if (decoratorActivation === 'activate') {
                 activatedNow.push(entry);
+                why.set(entry, { why: 'decorator', keys: [] });
                 continue;
             }
             if (decoratorActivation === 'suppress') continue;
@@ -117,34 +166,46 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
             const externallyActivated = buffer.getExternallyActivated(entry);
             if (externallyActivated) {
                 activatedNow.push(externallyActivated);
+                why.set(externallyActivated, { why: 'external', keys: [] });
                 continue;
             }
 
             if (entry.constant) {
                 activatedNow.push(entry);
+                why.set(entry, { why: 'always', keys: [] });
                 continue;
             }
 
             if (isSticky) {
                 activatedNow.push(entry);
+                why.set(entry, { why: 'sticky', keys: [] });
                 continue;
             }
 
             const textToScan = buffer.get(entry, scanState);
             if (matchesEntryKeys(textToScan, entry, buffer, macroContext)) {
                 activatedNow.push(entry);
+                why.set(entry, { why: 'key', keys: matchedKeys(entry, buffer, scanState, macroContext) });
             }
         }
 
         let newContent = '';
         const scanTokens = await countTokens(activatedText);
+        const beforeGroups = [...activatedNow];
         filterByInclusionGroups(activatedNow, activated, buffer, scanState, timedEffects, { useGroupScoring, random });
+        for (const entry of beforeGroups) {
+            if (!activatedNow.includes(entry)) cut.set(entry, 'group');
+        }
         for (const entry of activatedNow) {
-            if (tokenBudgetOverflowed && !entry.ignoreBudget) continue;
+            if (tokenBudgetOverflowed && !entry.ignoreBudget) {
+                cut.set(entry, 'budget');
+                continue;
+            }
 
             const isSticky = timedEffects.isEffectActive('sticky', entry);
             if (!verifyProbability(entry, isSticky, random)) {
                 failedProbability.add(entry);
+                cut.set(entry, 'chance');
                 continue;
             }
 
@@ -155,11 +216,14 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
                 const contentTokens = await countTokens(newContent);
                 if (scanTokens + contentTokens >= budget) {
                     tokenBudgetOverflowed = true;
+                    cut.set(entry, 'budget');
                     continue;
                 }
             }
 
             activated.set(`${entry.world}.${entry.uid}`, entry);
+            stepOf.set(entry, step);
+            cut.delete(entry);
         }
 
         const successfulForRecursion = activatedNow.filter(e => activated.has(`${e.world}.${e.uid}`) && !e.preventRecursion);
@@ -192,6 +256,15 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
         if (scanState) {
             const text = successfulForRecursion.map(x => x.content).join('\n');
             if (text) {
+                /** @type {{entry: WIEntry, from: number, to: number}[]} */
+                const parts = [];
+                let at = 0;
+                for (const x of successfulForRecursion) {
+                    parts.push({ entry: x, from: at, to: at + x.content.length });
+                    at += x.content.length + 1;
+                }
+                recurseParts.push(parts);
+                recurseTexts.push(text);
                 buffer.addRecurse(text);
                 activatedText = text + '\n' + activatedText;
             }
@@ -203,5 +276,15 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
     timedEffects.cleanUp();
 
     const content = activatedEntries.map(e => e.content).join('\n');
-    return { activatedEntries, content };
+    for (const entry of activatedEntries) {
+        const found = why.get(entry) ?? { why: 'key', keys: [] };
+        trace.activated.push({
+            entry, why: found.why, step: stepOf.get(entry) ?? 1, keys: found.keys,
+            via: viaOf(found.keys, recurseParts, recurseTexts, entry),
+        });
+    }
+    for (const [entry, reason] of cut) {
+        if (!activated.has(`${entry.world}.${entry.uid}`)) trace.cut.push({ entry, why: reason });
+    }
+    return { activatedEntries, content, trace };
 }

@@ -196,7 +196,7 @@ router.post('/status', async function (req, res) {
  * @param {import('../macro-facts.js').PageMacroFacts} [params.pageFacts]
  * @param {import('../extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections]
  * @param {object} [params.userMessageExtra]
- * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, tokenCountRows: import('../token-count-store.js').PendingTokenRows, name1: string, name2: string, warnings: object[] }>}
+ * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, activations: import('../world-info/activation-record.js').ActivationRecord|null, tokenCountRows: import('../token-count-store.js').PendingTokenRows, name1: string, name2: string, warnings: object[] }>}
  */
 export async function buildRawActionNovelRequest(directories, {
     request, characterAvatar, groupId, chat, nodeId,
@@ -268,7 +268,7 @@ export async function buildRawActionNovelRequest(directories, {
     const anchorContent = orchestratorInput.chat.length > 0 ? orchestratorInput.chat[orchestratorInput.chat.length - 1] : null;
 
     return {
-        params: assembled.generate_data, anchorNodeId, anchorContent, tokenCountRows: storedCounter.pending,
+        params: assembled.generate_data, anchorNodeId, anchorContent, activations: assembled.activations, tokenCountRows: storedCounter.pending,
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
         warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
         macroVariables: macroVariableChanges(orchestratorInput.chatMetadata, orchestratorInput.macroFacts.globalVariables, orchestratorInput.variablesBefore),
@@ -332,6 +332,8 @@ router.post('/generate', withGenerationStop(async function (req, res) {
             pendingAssistantPersist = {
                 chat, anchorNodeId: replyAnchorNodeId, name2: built.name2,
                 isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
+                activations: built.activations,
+                sentNodeId: replyAnchorNodeId !== built.anchorNodeId ? replyAnchorNodeId : null,
                 warnings, generationStop: res.locals.generationStop,
                 itemization: itemizationOf(req.body.itemization, null),
                 finish: await readReplyFinishSettings(req.user.directories, {

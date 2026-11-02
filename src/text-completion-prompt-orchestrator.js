@@ -5,6 +5,8 @@ import { createReasoningFoldState, foldReasoningIntoMessage, isReasoningLimitRea
 import { getGuidanceScale, adjustMaxContextForCfg } from './cfg-prompt-resolve.js';
 import { parseDecorators } from './world-info/decorators.js';
 import { activateWorldInfoEntries } from './world-info/activation.js';
+import { buildActivationRecord } from './world-info/activation-record.js';
+import { userStore } from './user-stores.js';
 import { bucketActivatedEntries, world_info_position } from './world-info/result-bucketing.js';
 import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
 import { appendFileAttachments } from './file-attachment-inline.js';
@@ -53,6 +55,7 @@ const GENERATION_TYPE_TRIGGERS = ['normal', 'continue', 'impersonate', 'swipe', 
  * @property {string} [personaDescription]
  * @property {object} [chatMetadata]
  * @property {object[]} chat
+ * @property {object|null} [sentMessage]
  * @property {string} [textareaText]
  * @property {string} [userPromptBias]
  * @property {boolean} [alwaysForceName2]
@@ -154,7 +157,7 @@ export async function assembleTextCompletionPrompt(input) {
         generationTrigger = GENERATION_TYPE_TRIGGERS.includes(type) ? type : 'normal',
         name1 = '', name2 = '',
         directories, avatar, groupId, preferCharacterPrompt = false, preferCharacterJailbreak = false,
-        personaDescription, chatMetadata = {}, chat, textareaText = '', userPromptBias = '',
+        personaDescription, chatMetadata = {}, chat, sentMessage = null, textareaText = '', userPromptBias = '',
         alwaysForceName2 = false, forceName2Override,
         reasoningAddToPrompts = false, reasoningMaxAdditions = 999999, reasoningPrefix = '', reasoningSeparator = '', reasoningSuffix = '',
         regexScripts = [], regexExtensionEnabled = true,
@@ -216,6 +219,7 @@ export async function assembleTextCompletionPrompt(input) {
     };
 
     let coreChat = buildCoreChat(chat, { canUseTools, isSwipe });
+    const scannedMessages = coreChat.map(m => ({ nodeId: m === sentMessage ? null : (m.node_id ?? ''), text: m.mes ?? '' })).reverse();
 
     const coreChatLengthForRegex = coreChat.length;
     coreChat = await Promise.all(coreChat.map(async (chatItem, index) => {
@@ -275,17 +279,23 @@ export async function assembleTextCompletionPrompt(input) {
         creatorNotes: fields.creatorNotes,
         trigger: generationTrigger,
     };
-    const additionalScanInjects = [
-        quiet_prompt,
-        authorsNote.disabled === false && authorsNote.scan ? authorsNote.value : '',
-    ].filter(Boolean);
-    const { activatedEntries } = await activateWorldInfoEntries(decoratedCandidates, chatForWI, {
+    const scanInjects = [
+        ['quiet', quiet_prompt],
+        ['note', authorsNote.disabled === false && authorsNote.scan ? authorsNote.value : ''],
+    ].filter(([, text]) => Boolean(text));
+    const additionalScanInjects = scanInjects.map(([, text]) => text);
+    const { activatedEntries, trace } = await activateWorldInfoEntries(decoratedCandidates, chatForWI, {
         maxContext: thisMaxContext, budgetPercent: worldInfoBudgetPercent, budgetCap: worldInfoBudgetCap,
         depth: worldInfoDepth, recursive: worldInfoRecursive, maxRecursionStepsSetting: worldInfoMaxRecursionSteps,
         globalScanData, macroContext, countTokens, random: worldInfoRandom, chatMetadata, isDryRun,
         useGroupScoring: worldInfoUseGroupScoring, entryFilterContext,
         minActivations: worldInfoMinActivations, minActivationsDepthMax: worldInfoMinActivationsDepthMax,
         externalActivations, additionalScanInjects,
+    });
+    const activations = isDryRun || !directories ? null : await buildActivationRecord(trace, {
+        messages: scannedMessages,
+        injects: scanInjects.map(([label]) => label),
+        books: (await userStore(directories)).lib.books,
     });
     const WI_DEFAULT_DEPTH = 4;
     const { worldInfoBefore, worldInfoAfter, worldInfoExamples, worldInfoDepth: worldInfoDepthEntries, anBefore, anAfter, outletEntries } =
@@ -479,6 +489,7 @@ export async function assembleTextCompletionPrompt(input) {
         coreChat: coreChatWithJailbreak,
         thisMaxContext, negativePrompt, positivePrompt,
         worldInfoBefore, worldInfoAfter, worldInfoExamples, worldInfoDepth: worldInfoDepthEntries, anBefore, anAfter, outletEntries,
+        activations,
         authorsNote,
         resolvedBeforeScenarioAnchor, resolvedAfterScenarioAnchor,
         system, combinedStoryString, storyStringInjection, mesExamplesArray, mesExamplesRawArray, examplesString,

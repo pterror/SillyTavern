@@ -222,9 +222,10 @@ export async function resolveTextCompletionGenerationInput(directories, {
     const { name2, character, groupMembers: groupMemberNames, groupDisabledMembers } = await resolveSpeakers(directories, { avatar, groupId });
     const name1 = (username != null && username !== '') ? username : 'User';
 
-    const chat = typeof userMessageText === 'string'
-        ? [...loadedChat, { is_user: true, name: name1, mes: userMessageText, extra: userMessageExtra && typeof userMessageExtra === 'object' ? userMessageExtra : {}, send_date: Date.now() }]
-        : loadedChat;
+    const sentMessage = typeof userMessageText === 'string'
+        ? { is_user: true, name: name1, mes: userMessageText, extra: userMessageExtra && typeof userMessageExtra === 'object' ? userMessageExtra : {}, send_date: Date.now() }
+        : null;
+    const chat = sentMessage ? [...loadedChat, sentMessage] : loadedChat;
 
     const WORLD_INFO_METADATA_KEY = 'world_info';
     let worldInfoCandidates = worldInfoCandidatesOverride;
@@ -262,7 +263,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
         resolvedNodeId,
         chatResolutionAmbiguous: Boolean(chatResolutionAmbiguous),
         personaDescription: activePersona.description,
-        chatMetadata, chat, textareaText,
+        chatMetadata, chat, sentMessage, textareaText,
         variablesBefore: stateBefore,
         userPromptBias: powerUser.user_prompt_bias,
         alwaysForceName2: Boolean(powerUser.always_force_name2),

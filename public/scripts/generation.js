@@ -262,6 +262,7 @@ export function applyStoredReply(mesId, stored, { received = false } = {}) {
     const withStored = (base) => {
         const extra = { ...(base ?? {}), ...storedExtra };
         if (!('reasoning_type' in storedExtra)) delete extra.reasoning_type;
+        if (!('activations' in storedExtra)) delete extra.activations;
         return extra;
     };
     /** @type {Partial<ChatMessage>} */

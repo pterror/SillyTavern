@@ -425,7 +425,7 @@ router.post('/props', async function (request, response) {
  * @param {import('../../extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections]
  * @param {object} [params.userMessageExtra]
  * @param {import('../../page-writes.js').QuietPrompt} [params.quiet]
- * @returns {Promise<{ params: object, backend: {type: string, serverUrl: string, model: string|undefined}, anchorNodeId: string|null, anchorContent: object|null, tokenizerIdentity: string|null, tokenCountRows: import('../../token-count-store.js').PendingTokenRows, name1: string, name2: string, warnings: object[] }>}
+ * @returns {Promise<{ params: object, backend: {type: string, serverUrl: string, model: string|undefined}, anchorNodeId: string|null, anchorContent: object|null, activations: import('../../world-info/activation-record.js').ActivationRecord|null, tokenizerIdentity: string|null, tokenCountRows: import('../../token-count-store.js').PendingTokenRows, name1: string, name2: string, warnings: object[] }>}
  */
 export async function buildRawActionTextCompletionRequest(directories, {
     request, characterAvatar, groupId, chat, nodeId,
@@ -509,7 +509,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
     const anchorContent = orchestratorInput.chat.length > 0 ? orchestratorInput.chat[orchestratorInput.chat.length - 1] : null;
 
     return {
-        params: assembled.generate_data, backend, anchorNodeId, anchorContent, tokenizerIdentity: identity,
+        params: assembled.generate_data, backend, anchorNodeId, anchorContent, activations: assembled.activations, tokenizerIdentity: identity,
         macroVariables: macroVariableChanges(orchestratorInput.chatMetadata, orchestratorInput.macroFacts.globalVariables, orchestratorInput.variablesBefore),
         model: backend.model
             ?? (llamaCppProps.props ? llamaCppPropsModelName(llamaCppProps.props) : undefined)
@@ -645,6 +645,8 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 pendingAssistantPersist = {
                     chat, anchorNodeId: replyAnchorNodeId, name2: built.name2,
                     isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
+                    activations: built.activations,
+                    sentNodeId: replyAnchorNodeId !== built.anchorNodeId ? replyAnchorNodeId : null,
                     warnings,
                     generationStop: response.locals.generationStop,
                     itemization: itemizationOf(request.body.itemization, built.itemization),
