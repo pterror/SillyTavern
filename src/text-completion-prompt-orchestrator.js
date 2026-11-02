@@ -27,6 +27,7 @@ import { createExtensionPromptTable, getExtensionPrompt, doChatInject, extension
 import { persona_description_defaults } from '../public/scripts/constants.js';
 import { addDepthInjections, addNoteAndPersona, addPageInjections } from './prompt-injections.js';
 import { exampleBlocks } from './example-blocks.js';
+import { reasoningOf } from '../public/scripts/reasoning-block.js';
 
 const GENERATION_TYPE_TRIGGERS = ['normal', 'continue', 'impersonate', 'swipe', 'regenerate'];
 
@@ -242,10 +243,10 @@ export async function assembleTextCompletionPrompt(input) {
         const isPrefix = isContinue && i === coreChat.length - 1;
         const isOtherGroupMember = isGroup && coreChat[i].name !== name2;
         if (!isOtherGroupMember) {
-            const reasoning = String(coreChat[i].extra?.reasoning ?? '');
+            const reasoning = reasoningOf(coreChat[i].extra);
             const duration = coreChat[i].extra?.reasoning_duration ?? null;
             const reasoningDepth = coreChat.length - i - (isContinue ? 2 : 1);
-            const regexedReasoning = getRegexedString(reasoning, regex_placement.REASONING, regexScripts, {
+            const regexedReasoning = reasoning === null ? null : getRegexedString(reasoning, regex_placement.REASONING, regexScripts, {
                 isPrompt: true, depth: reasoningDepth, macroContext, regexExtensionEnabled,
             });
             const { content, state } = foldReasoningIntoMessage(reasoningState, coreChat[i].mes, regexedReasoning, isPrefix, duration, reasoningConfig);

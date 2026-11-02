@@ -46,6 +46,7 @@ import { user_avatar, getPersonaDescriptionPosition } from './personas.js';
 import { collapseNewlines, generatedTextFiltered, persona_description_positions, playMessageSound, power_user, renderStoryString } from './power-user.js';
 import { getPresetManager } from './preset-manager.js';
 import { extractReasoningFromData, extractReasoningSignatureFromData, markServerFinishedReply, PromptReasoning } from './reasoning.js';
+import { reasoningOf } from './reasoning-block.js';
 import { takeStoredReply } from './llamacpp-compact-stream.js';
 import { sendSystemMessage, system_message_types } from './system-messages.js';
 import { getTextGenGenerationData, textgenerationwebui_settings as textgen_settings } from './textgen-settings.js';
@@ -791,6 +792,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         const isPrefix = isContinue && i === coreChat.length - 1;
 
         const isOtherGroupMember = selected_group != null && coreChat[i].name !== name2;
+        const reasoning = reasoningOf(coreChat[i].extra);
 
         coreChat[i] = {
             ...coreChat[i],
@@ -798,11 +800,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 ? coreChat[i].mes
                 : promptReasoning.addToMessage(
                     coreChat[i].mes ?? '',
-                    getRegexedString(
-                        String(coreChat[i].extra?.reasoning ?? ''),
-                        regex_placement.REASONING,
-                        { isPrompt: true, depth: depth },
-                    ),
+                    reasoning === null ? null : getRegexedString(reasoning, regex_placement.REASONING, { isPrompt: true, depth: depth }),
                     isPrefix,
                     coreChat[i].extra?.reasoning_duration ?? null,
                 ),

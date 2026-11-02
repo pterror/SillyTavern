@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-    REASONING_PLACEHOLDER,
     createReasoningFoldState,
     isReasoningLimitReached,
     foldReasoningIntoMessage,
@@ -42,20 +41,35 @@ test('foldReasoningIntoMessage: isPrefix past the limit still folds in (divergen
     assert.equal(result.state.counter, 6);
 });
 
-test('foldReasoningIntoMessage: missing reasoning returns content unchanged', () => {
+test('foldReasoningIntoMessage: no block returns content unchanged', () => {
     const state = createReasoningFoldState();
-    const config = { addToPrompts: true, maxAdditions: 10 };
-    const result = foldReasoningIntoMessage(state, 'hello', '', false, null, config);
+    const config = { addToPrompts: true, maxAdditions: 10, reasoningPrefix: '<think>', reasoningSuffix: '</think>' };
+    const result = foldReasoningIntoMessage(state, 'hello', null, false, null, config);
     assert.equal(result.content, 'hello');
     assert.equal(result.state.counter, 0);
 });
 
-test('foldReasoningIntoMessage: REASONING_PLACEHOLDER reasoning returns content unchanged', () => {
+test('foldReasoningIntoMessage: an empty block is sent as the prefix and suffix with nothing between', () => {
     const state = createReasoningFoldState();
-    const config = { addToPrompts: true, maxAdditions: 10 };
-    const result = foldReasoningIntoMessage(state, 'hello', REASONING_PLACEHOLDER, false, null, config);
+    const config = { addToPrompts: true, maxAdditions: 10, reasoningPrefix: '<|channel>thought\n', reasoningSeparator: '\n\n', reasoningSuffix: '<channel|>' };
+    const result = foldReasoningIntoMessage(state, 'hello', '', false, null, config);
+    assert.equal(result.content, '<|channel>thought\n<channel|>\n\nhello');
+    assert.equal(result.state.counter, 1);
+});
+
+test('foldReasoningIntoMessage: an empty block on a continued message with no text yet opens the block', () => {
+    const state = createReasoningFoldState();
+    const config = { addToPrompts: true, maxAdditions: 10, reasoningPrefix: '<think>', reasoningSuffix: '</think>' };
+    const result = foldReasoningIntoMessage(state, '', '', true, null, config);
+    assert.equal(result.content, '<think>');
+    assert.equal(result.state.prefixIncomplete, true);
+});
+
+test('foldReasoningIntoMessage: with add to prompts off, an empty block is not sent', () => {
+    const state = createReasoningFoldState();
+    const config = { addToPrompts: false, maxAdditions: 10, reasoningPrefix: '<think>', reasoningSuffix: '</think>' };
+    const result = foldReasoningIntoMessage(state, 'hello', '', false, null, config);
     assert.equal(result.content, 'hello');
-    assert.equal(result.state.counter, 0);
 });
 
 test('foldReasoningIntoMessage: isPrefix && !content branch builds prefix+reasoning and marks prefixIncomplete true', () => {

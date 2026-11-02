@@ -1,7 +1,5 @@
 import { substituteParams } from './macro-substitution.js';
 
-export const REASONING_PLACEHOLDER = '​';
-
 /**
  * @typedef {object} ReasoningFoldState
  * @property {number} counter
@@ -43,7 +41,7 @@ export function isReasoningLimitReached(state, { addToPrompts, maxAdditions }) {
 /**
  * @param {ReasoningFoldState} state
  * @param {string} content
- * @param {string} reasoning
+ * @param {string | null} reasoning the block's text, '' for an empty block, null for none
  * @param {boolean} isPrefix
  * @param {number|null} duration
  * @param {object} config
@@ -67,7 +65,7 @@ export function foldReasoningIntoMessage(state, content, reasoning, isPrefix, du
         return { content, state };
     }
 
-    if (!reasoning || reasoning === REASONING_PLACEHOLDER) {
+    if (reasoning === null) {
         return { content, state };
     }
 

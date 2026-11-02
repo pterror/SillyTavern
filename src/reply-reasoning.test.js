@@ -10,6 +10,7 @@ setConfigFilePath(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 
 
 const { cleanUpReply, trimToEndSentence } = await import('./reply-cleanup.js');
 const { finishReply, splitReasoningBlock, noteReplyReasoning, noteReplyText, extractReasoningFromData, extractReasoningSignatureFromData } = await import('./reply-reasoning.js');
+const { reasoningOf } = await import('../public/scripts/reasoning-block.js');
 
 /** @returns {import('./reply-reasoning.js').ReplyFinishSettings} */
 function settings(overrides = {}) {
@@ -61,6 +62,33 @@ describe('splitReasoningBlock', () => {
 });
 
 describe('finishReply', () => {
+    const gemma = { prefix: '<|channel>thought\n', suffix: '<channel|>', promptPrefix: '<|channel>thought\n' };
+
+    test('an empty block is kept as an empty block, streamed or not, and with the block started by the reply prefill', () => {
+        for (const stream of [false, true]) {
+            for (const [replyBias, text] of [['', '<|channel>thought\n<channel|>Hello.'], ['<|channel>thought\n', '<channel|>Hello.']]) {
+                const p = pending({ finish: settings({ ...gemma, replyBias }) });
+                if (stream) noteReplyText(p, text);
+                const finished = finishReply(p, text);
+                assert.equal(finished.mes, 'Hello.');
+                assert.equal(reasoningOf(finished.extra), '', `stream ${stream}, prefill ${JSON.stringify(replyBias)}`);
+            }
+        }
+    });
+
+    test('a reply with no block has no block', () => {
+        const finished = finishReply(pending({ finish: settings(gemma) }), 'Hello.');
+        assert.equal(finished.mes, 'Hello.');
+        assert.equal(reasoningOf(finished.extra), null);
+    });
+
+    test('continuing a message whose empty block is still open sends it back as the reply prefix', () => {
+        const anchorContent = { mes: '', is_user: false, extra: { reasoning: '', reasoning_type: 'manual' } };
+        const finished = finishReply(pending({ isContinue: true, anchorContent, finish: settings(gemma) }), 'Short.<channel|>Hello.');
+        assert.equal(finished.mes, 'Hello.');
+        assert.equal(reasoningOf(finished.extra), 'Short.');
+    });
+
     test('auto-parse moves the block into extra.reasoning, type parsed (not streamed: no duration)', () => {
         const finished = finishReply(pending(), '<think>plan</think>\nHello there');
         assert.deepEqual(finished, {
