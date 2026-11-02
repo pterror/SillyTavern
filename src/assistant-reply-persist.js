@@ -1,6 +1,7 @@
 import { storedForm } from './chat-engine.js';
 import { recordGenerationPersisted } from './generation-stop.js';
 import { finishReply } from './reply-reasoning.js';
+import { storeReplyImages } from './reply-images.js';
 import { mergeRecords, withSentMessage } from './world-info/activation-record.js';
 
 /**
@@ -181,7 +182,9 @@ async function persistReply(pending, generatedText) {
             if (Array.isArray(pending.warnings)) pending.warnings.push(pending.itemizationNotSaved);
         }
     }
-    return result;
+    if (!result || 'error' in result) return result;
+    const shown = await pending.chat.store.chats.shownMessage(pending.chat.tree, result.node_id);
+    return shown ? { node_id: result.node_id, mes: shown.mes, extra: shown.extra ?? {} } : result;
 }
 
 /**
@@ -222,6 +225,8 @@ function activationsOf(pending) {
     return pending.isContinue ? mergeRecords(pending.anchorContent?.extra?.activations, own) : own;
 }
 
+const REPLIED = Object.freeze({ key: 'tainted', value: true });
+
 /** @returns {Promise<StoredReply|{error: string}|null>} */
 async function storeReply(pending, generatedText) {
     const { chat, anchorNodeId, name2, isSwipe, isContinue, anchorContent } = pending;
@@ -229,12 +234,14 @@ async function storeReply(pending, generatedText) {
         return null;
     }
     const { store, tree, treeSpeaker, session } = chat;
+    const changes = [...(Array.isArray(chat.replyChanges) ? chat.replyChanges : []), REPLIED];
 
     const times = generationTimes(pending);
     const finished = finishReply(pending, generatedText, pending.answer);
     Object.assign(finished.extra, await generatedBy(pending));
     const activations = activationsOf(pending);
     if (activations) /** @type {Record<string, unknown>} */ (finished.extra).activations = activations;
+    await storeReplyImages(pending, /** @type {Record<string, unknown>} */ (finished.extra));
     const title = typeof pending.title === 'string' ? pending.title : '';
     const replyContent = { name: name2, is_user: false, mes: finished.mes, title, extra: { ...finished.extra }, send_date: Date.now(), ...times };
 
@@ -247,7 +254,7 @@ async function storeReply(pending, generatedText) {
         const mes = finished.mes;
         const extra = { ...(anchorContent.extra && typeof anchorContent.extra === 'object' ? anchorContent.extra : {}), ...finished.extra };
         const edited = await store.chats.editMessages({
-            tree, treeSpeaker, edits: [{ node_id: anchorNodeId, content: storedForm({ ...anchorContent, mes, title, extra, ...times }), changes: chat.replyChanges }], actor: session.actor(),
+            tree, treeSpeaker, edits: [{ node_id: anchorNodeId, content: storedForm({ ...anchorContent, mes, title, extra, ...times }), changes }], actor: session.actor(),
         });
         if (edited.refused.length) {
             console.error('Failed to persist continue edit:', edited.refused[0].reason);
@@ -265,7 +272,7 @@ async function storeReply(pending, generatedText) {
         after = replaced.parent === null ? null : (await store.chats.externalIds([replaced.parent]))[0];
     }
     const appended = await store.chats.appendMessages({
-        tree, treeSpeaker, after, contents: [replyContent], changes: [chat.replyChanges], regenerated: isSwipe, actor: session.actor(),
+        tree, treeSpeaker, after, contents: [replyContent], changes: [changes], regenerated: isSwipe, actor: session.actor(),
     });
     if (!appended.ok || !appended.node_ids.length) {
         console.error('Failed to persist assistant reply:', appended.reason);

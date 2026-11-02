@@ -4,7 +4,6 @@ import {
     DOMPurify,
     hljs,
     Handlebars,
-    SVGInject,
     Popper,
     initLibraryShims,
     default as libs,
@@ -160,7 +159,6 @@ import {
     isElementInViewport,
     copyText,
     escapeHtml,
-    saveBase64AsFile,
     equalsIgnoreCaseAndAccents,
     importFromExternalUrl,
     trimSpaces,
@@ -172,7 +170,7 @@ import {
     uuidv4,
 } from './scripts/utils.js';
 import { getAtPath, seedKeyHashes, settingsWithoutCharLore, characterDigestFieldsHash, characterDigestCardBodyHash, normalizeFav } from './scripts/hash-utils.js';
-import { debounce_timeout, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
+import { debounce_timeout, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
 
 import { cancelDebouncedMetadataSave, doDailyExtensionUpdatesCheck, extension_settings, initExtensions, loadExtensionSettings, UNSET_VALUE } from './scripts/extensions.js';
 import { CONNECT_API_MAP, executeSlashCommandsOnChatInput, initDefaultSlashCommands, initSlashCommandAutoComplete, isExecutingCommandsFromChatInput, pauseScriptExecution, stopScriptExecution, UNIQUE_APIS } from './scripts/slash-commands.js';
@@ -1246,28 +1244,6 @@ $.ajaxPrefilter((options, originalOptions, xhr) => {
     xhr.setRequestHeader('X-CSRF-Token', token);
 });
 
-/**
- * Pings the STserver to check if it is reachable.
- * @returns {Promise<boolean>} True if the server is reachable, false otherwise.
- */
-export async function pingServer() {
-    try {
-        const result = await fetch('api/ping', {
-            method: 'POST',
-            headers: getRequestHeaders({ omitContentType: true }),
-        });
-
-        if (!result.ok) {
-            return false;
-        }
-
-        return true;
-    } catch (error) {
-        console.error('Error pinging server', error);
-        return false;
-    }
-}
-
 //MARK: firstLoadInit
 async function firstLoadInit() {
     observeSessionAnswers();
@@ -2166,27 +2142,45 @@ function insertSVGIcon(mes, extra) {
         return;
     }
 
-    const insertOrReplaceSVG = (image, className, targetSelector, insertBefore) => {
-        image.onload = async function () {
-            let existingSVG = insertBefore ? mes.find(targetSelector).prev(`.${className}`) : mes.find(targetSelector).next(`.${className}`);
-            if (existingSVG.length) {
-                existingSVG.replaceWith(image);
-            } else {
-                if (insertBefore) mes.find(targetSelector).before(image);
-                else mes.find(targetSelector).after(image);
-            }
-            await SVGInject(image);
+    void modelIconSvg(apiName).then(svg => {
+        if (!svg) return;
+        const place = (/** @type {string} */ className, /** @type {string} */ targetSelector, insertBefore = false) => {
+            const icon = /** @type {SVGSVGElement} */ (svg.cloneNode(true));
+            icon.classList.add('icon-svg', className);
+            const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+            title.textContent = extra?.model ? `${apiName} - ${extra.model}` : apiName;
+            icon.prepend(title);
+            const target = mes.find(targetSelector);
+            const existing = insertBefore ? target.prev(`.${className}`) : target.next(`.${className}`);
+            if (existing.length) existing.replaceWith(icon);
+            else if (insertBefore) target.before(icon);
+            else target.after(icon);
         };
-    };
+        place('timestamp-icon', '.timestamp');
+        place('thinking-icon', '.mes_reasoning_header_title', true);
+    });
+}
 
-    const insertIcon = (className, targetSelector, insertBefore) => {
-        const image = createModelIcon(apiName, extra?.model);
-        image.classList.add(className);
-        insertOrReplaceSVG(image, className, targetSelector, insertBefore);
-    };
+/** @type {Map<string, Promise<SVGSVGElement|null>>} */
+const modelIconSvgs = new Map();
 
-    insertIcon('timestamp-icon', '.timestamp');
-    insertIcon('thinking-icon', '.mes_reasoning_header_title', true);
+/**
+ * @param {string} apiName
+ * @returns {Promise<SVGSVGElement|null>}
+ */
+function modelIconSvg(apiName) {
+    let svg = modelIconSvgs.get(apiName);
+    if (!svg) {
+        svg = fetch(`/img/${apiName}.svg`)
+            .then(response => (response.ok ? response.text() : null))
+            .then(text => {
+                const root = text ? new DOMParser().parseFromString(text, 'image/svg+xml').documentElement : null;
+                return root instanceof SVGSVGElement ? root : null;
+            })
+            .catch(() => null);
+        modelIconSvgs.set(apiName, svg);
+    }
+    return svg;
 }
 
 /**
@@ -3681,8 +3675,6 @@ export class StreamingProcessor {
         this.reasoningHandler = new ReasoningHandler(timeStarted);
         /** @type {PromptReasoning} */
         this.promptReasoning = promptReasoning;
-        /** @type {string[]} */
-        this.images = [];
         /** @type {string?} */
         this.reasoningSignature = null;
     }
@@ -3878,14 +3870,6 @@ export class StreamingProcessor {
         syncMesToSwipe(messageId);
         saveLogprobsForActiveMessage(this.messageLogprobs.filter(Boolean), this.continueMessage);
 
-        if (Array.isArray(this.images) && this.images.length > 0) {
-            const mutableMsg = structuredClone(chat[messageId]);
-            await processImageAttachment(mutableMsg, { imageUrls: this.images });
-            updateMessage(messageId, { extra: mutableMsg.extra });
-            message = chat[messageId];
-            appendMediaToMessage(message, $(this.messageDom));
-        }
-
         // Store reasoning signature for models that support multi-turn context
         if (this.reasoningSignature) {
             updateMessage(messageId, {
@@ -3908,6 +3892,7 @@ export class StreamingProcessor {
             if (shown) {
                 message = shown;
                 updateMessageBlock(messageId, shown);
+                if (Array.isArray(shown.extra?.media) && shown.extra.media.length) appendMediaToMessage(shown, $(this.messageDom));
             }
             if (isStoredNodeId(chat[messageId]?.node_id) && chat[messageId].node_id === this.assistantNodeId) {
                 markStoredAs(chat[messageId].node_id, chat[messageId]);
@@ -3929,7 +3914,6 @@ export class StreamingProcessor {
             return await swipe(null, SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.AUTO_SWIPE, repeated: true, forceMesId: chat.length - 1 });
         }
         await finishStreamedReplyPersistence({ assistantNodeId: this.assistantNodeId });
-        await storePageChatChanges();
 
         playMessageSound();
     }
@@ -4041,7 +4025,6 @@ export class StreamingProcessor {
                 }
                 // Get the updated reasoning string into the handler
                 this.reasoningHandler.updateReasoning(this.messageId, state?.reasoning);
-                this.images = state?.images ?? [];
                 this.reasoningSignature = state?.signature ?? null;
                 await eventSource.emit(event_types.STREAM_TOKEN_RECEIVED, text);
                 await requestDraw();
@@ -5166,39 +5149,6 @@ export function extractTitleFromData(data) {
 }
 
 /**
- * Extracts the image from the response data.
- * @param {object} data Response data
- * @param {object} [options] Extraction options
- * @param {string} [options.mainApi] Main API to use
- * @param {string} [options.chatCompletionSource] Chat completion source
- * @returns {string[]} Extracted images or empty array
- */
-export function extractImagesFromData(data, { mainApi = null, chatCompletionSource = null } = {}) {
-    switch (mainApi ?? main_api) {
-        case 'openai': {
-            switch (chatCompletionSource ?? oai_settings.chat_completion_source) {
-                case chat_completion_sources.VERTEXAI:
-                case chat_completion_sources.MAKERSUITE: {
-                    const inlineData = data?.responseContent?.parts?.filter(x => x.inlineData && !x.thought)?.map(x => x.inlineData);
-                    if (Array.isArray(inlineData) && inlineData.length > 0) {
-                        return inlineData.map(x => `data:${x.mimeType};base64,${x.data}`).filter(isDataURL);
-                    }
-                } break;
-                case chat_completion_sources.OPENROUTER: {
-                    const imageUrl = data?.choices[0]?.message?.images?.filter(x => x.type === 'image_url')?.map(x => x?.image_url?.url);
-                    if (Array.isArray(imageUrl) && imageUrl.length > 0) {
-                        return imageUrl.filter(isDataURL);
-                    }
-                    // TODO: Handle remote URLs
-                }
-            }
-        } break;
-    }
-
-    return [];
-}
-
-/**
  * parseAndSaveLogprobs receives the full data response for a non-streaming
  * generation, parses logprobs for all tokens in the message, and saves them
  * to the currently active message.
@@ -5562,34 +5512,6 @@ export function cleanUpMessage({ getMessage, isImpersonate, isContinue, displayI
 }
 
 /**
- * Adds an image to the message.
- * @param {object} message Message object
- * @param {object} sources Image sources
- * @param {string[]} [sources.imageUrls] Image URLs
- *
- * @returns {Promise<void>}
- */
-async function processImageAttachment(message, { imageUrls }) {
-    if (!Array.isArray(imageUrls) || imageUrls.length === 0) {
-        return;
-    }
-
-    for (const [index, imageUrl] of imageUrls.filter(onlyUnique).entries()) {
-        if (!imageUrl) {
-            continue;
-        }
-
-        let url = imageUrl;
-        if (isDataURL(url)) {
-            const fileName = `inline_image_${Date.now().toString()}_${index}`;
-            const [mime, base64] = /^data:(.*?);base64,(.*)$/.exec(imageUrl).slice(1);
-            url = await saveBase64AsFile(base64, message.name, fileName, mime.split('/')[1]);
-        }
-        saveImageToMessage({ image: url, inline: true }, message);
-    }
-}
-
-/**
  * Saves a resulting message to the chat.
  * @param {SaveReplyParams} params
  * @returns {Promise<SaveReplyResult>} Promise when the message is saved
@@ -5601,7 +5523,6 @@ async function processImageAttachment(message, { imageUrls }) {
  * @property {string} [title] Message tooltip
  * @property {string[]} [swipes] Extra swipes
  * @property {string} [reasoning] Message reasoning
- * @property {string[]} [imageUrls] Links to images
  * @property {string?} [reasoningSignature] Encrypted signature of the reasoning text
  * @property {{mes: string, extra?: Record<string, any>}|null} [storedReply] The reply as the server stored it (its
  * reasoning split off), shown in place of the text and reasoning given here.
@@ -5612,13 +5533,7 @@ async function processImageAttachment(message, { imageUrls }) {
  * @property {string} type Type of generation
  * @property {string} getMessage Generated message
  */
-export async function saveReply({ type, getMessage, fromStreaming = false, title = '', swipes = [], reasoning = '', imageUrls = [], reasoningSignature = null, storedReply = null, storedNodeId = null }) {
-    // Backward compatibility
-    if (arguments.length > 1 && typeof arguments[0] !== 'object') {
-        console.trace('saveReply called with positional arguments. Please use an object instead.');
-        [type, getMessage, fromStreaming, title, swipes, reasoning, imageUrls, reasoningSignature] = arguments;
-    }
-
+export async function saveReply({ type, getMessage, fromStreaming = false, title = '', swipes = [], reasoning = '', reasoningSignature = null, storedReply = null, storedNodeId = null }) {
     let lastMessage = chat[chat.length - 1];
     const lastMesId = chat.length - 1;
 
@@ -5629,12 +5544,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
 
     if (chat.length && (!lastMessage.extra || typeof lastMessage.extra !== 'object')) {
         updateMessage(lastMesId, { extra: {} });
-        lastMessage = chat[lastMesId];
-    }
-
-    // Coerce null/undefined to empty string
-    if (chat.length && !lastMessage.extra.reasoning) {
-        updateMessage(lastMesId, { extra: { ...lastMessage.extra, reasoning: '' } });
         lastMessage = chat[lastMesId];
     }
 
@@ -5658,7 +5567,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
 
         if (lastMessage.swipe_id === lastMessage.swipes.length - 1) {
             const newExtra = {
-                ...lastMessage.extra,
                 api: getGeneratingApi(), model: getGeneratingModel(),
                 reasoning, reasoning_duration: null, reasoning_signature: reasoningSignature,
             };
@@ -5668,12 +5576,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
                 send_date: getMessageTimeStamp(), extra: newExtra,
             });
             lastMessage = chat[lastMesId];
-            if (imageUrls?.length) {
-                const mutableMsg = structuredClone(lastMessage);
-                await processImageAttachment(mutableMsg, { imageUrls });
-                updateMessage(lastMesId, { extra: mutableMsg.extra });
-                lastMessage = chat[lastMesId];
-            }
             const chat_id = lastMesId;
             if (storedNodeId !== null) stampReplyNode(chat_id, storedNodeId);
             applyStoredReply(chat_id, storedReply, { received: !fromStreaming });
@@ -5698,12 +5600,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
             send_date: getMessageTimeStamp(), extra: newExtra,
         });
         lastMessage = chat[lastMesId];
-        if (imageUrls?.length) {
-            const mutableMsg = structuredClone(lastMessage);
-            await processImageAttachment(mutableMsg, { imageUrls });
-            updateMessage(lastMesId, { extra: mutableMsg.extra });
-            lastMessage = chat[lastMesId];
-        }
         const chat_id = lastMesId;
         if (storedNodeId !== null) stampReplyNode(chat_id, storedNodeId);
         applyStoredReply(chat_id, storedReply, { received: !fromStreaming });
@@ -5725,12 +5621,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
             send_date: getMessageTimeStamp(), extra: newExtra,
         });
         lastMessage = chat[lastMesId];
-        if (imageUrls?.length) {
-            const mutableMsg = structuredClone(lastMessage);
-            await processImageAttachment(mutableMsg, { imageUrls });
-            updateMessage(lastMesId, { extra: mutableMsg.extra });
-            lastMessage = chat[lastMesId];
-        }
         const chat_id = lastMesId;
         if (storedNodeId !== null) stampReplyNode(chat_id, storedNodeId);
         applyStoredReply(chat_id, storedReply, { received: !fromStreaming });
@@ -5764,7 +5654,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
             newMessage.extra.gen_id = group_generation_id;
         }
 
-        await processImageAttachment(newMessage, { imageUrls });
         const chat_id = (chat.length - 1);
         if (storedNodeId !== null) stampReplyNode(chat_id, storedNodeId);
         applyStoredReply(chat_id, storedReply, { received: !fromStreaming });
@@ -6187,28 +6076,6 @@ export function syncSwipeToMes(messageId = null, swipeId = null, targetMessage =
     return true;
 }
 
-/**
- * Saves the image to the message object.
- * @param {ParsedImage} img Image object
- * @param {ChatMessage} mes Chat message object
- * @typedef {{ image?: string, title?: string, inline?: boolean }} ParsedImage
- */
-function saveImageToMessage(img, mes) {
-    if (mes && img.image) {
-        const extra = { ...(typeof mes.extra === 'object' && mes.extra !== null ? mes.extra : {}) };
-        extra.media = Array.isArray(extra.media) ? [...extra.media] : [];
-        extra.media.push({ url: img.image, type: MEDIA_TYPE.IMAGE, title: img.title, source: MEDIA_SOURCE.API });
-        extra.inline_image = img.inline;
-
-        const mesId = chat.indexOf(mes);
-        if (mesId >= 0) {
-            updateIn(mesId, ['extra'], extra);
-        } else {
-            mes.extra = extra;
-        }
-    }
-}
-
 export function getGeneratingApi() {
     switch (main_api) {
         case 'openai':
@@ -6302,6 +6169,7 @@ export function setOnlineStatus(value) {
     const previousStatus = online_status;
     online_status = value;
     displayOnlineStatus();
+    if (online_status !== 'no_connection') void modelIconSvg(getGeneratingApi());
     if (previousStatus !== online_status) {
         eventSource.emitAndWait(event_types.ONLINE_STATUS_CHANGED, online_status);
     }
@@ -10752,29 +10620,6 @@ export async function swipe(event, direction, { source, repeated, message = chat
         }
 
         /**
-         * @param {ChatMessage} message
-         * @returns {Partial<ChatMessage>}
-         */
-        function clearMessageData(message) {
-            const updates = { gen_started: undefined, gen_finished: undefined };
-            if (message.extra && typeof message.extra === 'object') {
-                const extra = { ...message.extra };
-                delete extra.memory;
-                delete extra.display_text;
-                delete extra.media;
-                delete extra.inline_image;
-                delete extra.files;
-                delete extra.fileLength;
-                delete extra.generationType;
-                delete extra.negative;
-                delete extra.title;
-                delete extra.append_title;
-                updates.extra = extra;
-            }
-            return updates;
-        }
-
-        /**
          * @param {number} mesId
          * @param {number} newSwipeId
          */
@@ -10789,7 +10634,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
 
             await hydrateSwipes(mesId, { index: newSwipeId });
 
-            updateMessage(mesId, { swipe_id: newSwipeId, ...clearMessageData(chat[mesId]) });
+            updateMessage(mesId, { swipe_id: newSwipeId });
 
             if (syncSwipeToMes(mesId, newSwipeId) == false) {
                 let errorMessage = t`When swiping ${direction} on message ${mesId}, syncSwipeToMes has returned false. Attempting to swipe back!`;
@@ -10912,11 +10757,13 @@ export async function swipe(event, direction, { source, repeated, message = chat
             const wasAtBottom = isChatAtBottom();
 
             if (run_generate) {
+                addOneMessage(chat[mesId], { type: 'swipe', forceId: mesId, scroll: false, showSwipes: false });
+                thisMesDiv = chatElement.children('.mes').filter(`[mesid="${mesId}"]`);
+                thisMesText = thisMesDiv.find('.mes_block .mes_text');
                 await updateSwipeCounter(mesId);
                 thisMesDiv.find('.mes_text').html('...');
                 thisMesDiv.find('.mes_timer').html('');
                 thisMesDiv.find('.tokenCounterDisplay').text('');
-                updateReasoningUI(thisMesDiv, { reset: true });
             } else {
                 addOneMessage(chat[mesId], { type: 'swipe', forceId: mesId, scroll: false, showSwipes: false });
                 await redrawSwipedContinuation();
@@ -10924,10 +10771,6 @@ export async function swipe(event, direction, { source, repeated, message = chat
 
             const pinned = wasAtBottom ? getMessageBottomHeight() : null;
             if (pinned !== null) chatElement.scrollTop(pinned);
-
-            if (run_generate) {
-                appendMediaToMessage(chat[mesId], thisMesDiv);
-            }
 
             await eventSource.emit(event_types.MESSAGE_SWIPED, (mesId));
 
@@ -11014,7 +10857,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
 
                     const swipedFrom = chat[mesId].node_id;
                     /** @type {Partial<ChatMessage>} */
-                    const inFlight = { ...clearMessageData(chat[mesId]), node_id: undefined };
+                    const inFlight = { extra: {}, gen_started: undefined, gen_finished: undefined, node_id: undefined };
                     if (isStoredNodeId(swipedFrom)) {
                         const swipeInfo = [...(chat[mesId].swipe_info ?? [])];
                         if (swipeInfo[originalSwipeId] && !isStoredNodeId(swipeInfo[originalSwipeId].node_id)) {
