@@ -10,12 +10,9 @@ import { activationsArea } from '@st/activations/server';
 
 import { userStore } from './user-stores.js';
 import { TYPE } from './library-engine.js';
-import { getImages, clientRelativePath, humanizedDateTime, isPathUnderParent } from './util.js';
-import { getThumbnailVersion, invalidateThumbnail } from './endpoints/thumbnails.js';
-import {
-    readMetadataIndex, getOrGenerateMetadataBatch, renameMetadata, removeMetadata, createFolder, updateFolder,
-    deleteFolder, assignImagesToFolder, unassignImagesFromFolder, setImageFolderMembership,
-} from './endpoints/image-metadata.js';
+import { clientRelativePath, humanizedDateTime, isPathUnderParent } from './util.js';
+import { createFolder, deleteFolder, readFolders, retargetCovers, updateFolder } from './background-folders.js';
+import { backgroundOf, changeBackgroundFolders, imagesOf, removeImage, renameImage, writeBackground } from './image-entities.js';
 import { settingsDocumentOf } from './settings-documents.js';
 import { modelListOf, rememberModelList } from './model-lists.js';
 import { default_settings as chatCompletionDefaults } from '../public/scripts/chat-completion-defaults.js';
@@ -43,9 +40,6 @@ const LOCK_KEY = 'custom_background';
  */
 const directoriesOf = user => /** @type {any} */ (user.directories);
 
-/** @param {string} file */
-const backgroundPath = file => path.posix.join('backgrounds', file);
-
 /**
  * @param {ViewContext} context
  */
@@ -59,46 +53,45 @@ async function openChat(context) {
 }
 
 /**
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} file
+ * @param {User} user
  */
-async function describe(directories, file) {
-    await getOrGenerateMetadataBatch(directories.root, [backgroundPath(file)], 'bg').catch(error => {
-        console.warn(`[backgrounds] No metadata for ${file}:`, error.message);
-    });
+const libOf = async user => (await userStore(directoriesOf(user), user.handle)).lib;
+
+/**
+ * @param {User} user
+ * @param {string} file
+ * @param {string} source
+ */
+async function putBackground(user, file, source) {
+    const directories = directoriesOf(user);
+    const image = await fs.promises.readFile(source);
+    await fs.promises.mkdir(directories.backgrounds, { recursive: true });
+    await fs.promises.writeFile(path.join(directories.backgrounds, file), image);
+    await writeBackground(await libOf(user), file, image);
+}
+
+/**
+ * @param {User} user
+ * @param {string[]} ids
+ */
+async function knownFolders(user, ids) {
+    const known = new Set((await readFolders(user.directories.root)).map(f => f.id));
+    return ids.filter(id => known.has(id));
 }
 
 /** @type {import('@st/backgrounds/server').Ports} */
 const backgroundPorts = {
     files: {
         async list(user) {
-            const directories = directoriesOf(user);
-            const files = getImages(directories.backgrounds);
-            const { results } = await getOrGenerateMetadataBatch(directories.root, files.map(backgroundPath), 'bg');
-            return files.map(file => {
-                const meta = results[backgroundPath(file)];
-                const version = getThumbnailVersion(directories, 'bg', file);
-                return {
-                    file,
-                    animated: meta?.isAnimated ?? false,
-                    color: meta?.dominantColor ?? null,
-                    aspect: typeof meta?.aspectRatio === 'number' ? meta.aspectRatio : null,
-                    added: typeof meta?.addedTimestamp === 'number' ? meta.addedTimestamp : null,
-                    folders: Array.isArray(meta?.folderIds) ? meta.folderIds : [],
-                    thumbnailVersion: version === null || version === undefined ? null : String(version),
-                };
-            });
+            const lib = await libOf(user);
+            return (await imagesOf(lib, TYPE.background)).map(backgroundOf).sort((a, b) => Intl.Collator().compare(a.file, b.file));
         },
         async folders(user) {
-            const index = await readMetadataIndex(user.directories.root);
-            return (index.folders ?? []).map(f => ({ id: f.id, name: f.name, cover: f.thumbnailFile || null }));
+            return (await readFolders(user.directories.root)).map(f => ({ id: f.id, name: f.name, cover: f.thumbnailFile || null }));
         },
         async save(user, upload) {
-            const directories = directoriesOf(user);
             const file = sanitize(upload.name);
-            await fs.promises.copyFile(upload.path, path.join(directories.backgrounds, file));
-            invalidateThumbnail(directories, 'bg', file);
-            await describe(directories, file);
+            await putBackground(user, file, upload.path);
             return file;
         },
         async copyIn(user, from, name) {
@@ -106,9 +99,7 @@ const backgroundPorts = {
             const source = path.join(directories.root, from);
             if (!isPathUnderParent(directories.userImages, source)) throw new Error(`Not a user image: ${from}`);
             const file = sanitize(name);
-            await fs.promises.copyFile(source, path.join(directories.backgrounds, file));
-            invalidateThumbnail(directories, 'bg', file);
-            await describe(directories, file);
+            await putBackground(user, file, source);
             return file;
         },
         async rename(user, file, to) {
@@ -117,16 +108,19 @@ const backgroundPorts = {
             const target = path.join(directories.backgrounds, sanitize(to));
             if (sanitize(file) !== file || sanitize(to) !== to || !fs.existsSync(from) || fs.existsSync(target)) return false;
             await fs.promises.rename(from, target);
-            invalidateThumbnail(directories, 'bg', file);
-            await renameMetadata(directories.root, backgroundPath(file), backgroundPath(to));
+            if (!(await renameImage(await libOf(user), TYPE.background, file, to))) {
+                await fs.promises.rename(target, from);
+                return false;
+            }
+            await retargetCovers(user.directories.root, file, to);
             return true;
         },
         async remove(user, file) {
             const directories = directoriesOf(user);
             if (sanitize(file) !== file) throw new Error(`Not a background's name: ${file}`);
+            await removeImage(await libOf(user), TYPE.background, file);
             await fs.promises.rm(path.join(directories.backgrounds, file), { force: true });
-            invalidateThumbnail(directories, 'bg', file);
-            await removeMetadata(directories.root, backgroundPath(file));
+            await retargetCovers(user.directories.root, file, '');
         },
         async createFolder(user, name) {
             await createFolder(user.directories.root, name);
@@ -136,18 +130,26 @@ const backgroundPorts = {
         },
         async deleteFolder(user, id) {
             await deleteFolder(user.directories.root, id);
+            const lib = await libOf(user);
+            for (const background of (await imagesOf(lib, TYPE.background)).map(backgroundOf)) {
+                if (background.folders.includes(id)) await changeBackgroundFolders(lib, background.file, folders => folders.filter(f => f !== id));
+            }
         },
         async setCover(user, id, file) {
             await updateFolder(user.directories.root, id, { thumbnailFile: file });
         },
         async addToFolder(user, id, files) {
-            await assignImagesToFolder(user.directories.root, id, files.map(backgroundPath));
+            if (!(await knownFolders(user, [id])).length) throw new Error(`Folder '${id}' not found.`);
+            const lib = await libOf(user);
+            for (const file of files) await changeBackgroundFolders(lib, file, folders => [...folders, id]);
         },
         async removeFromFolder(user, id, files) {
-            await unassignImagesFromFolder(user.directories.root, id, files.map(backgroundPath));
+            const lib = await libOf(user);
+            for (const file of files) await changeBackgroundFolders(lib, file, folders => folders.filter(f => f !== id));
         },
         async setFolders(user, file, ids) {
-            await setImageFolderMembership(user.directories.root, backgroundPath(file), ids);
+            const valid = await knownFolders(user, ids);
+            await changeBackgroundFolders(await libOf(user), file, () => valid);
         },
     },
     chat: {
@@ -205,8 +207,6 @@ const backgroundPorts = {
         },
     },
 };
-
-export const BACKGROUND_VIEWS = ['backgrounds', 'backgrounds.chat'];
 
 export const SETTINGS_VIEWS = ['settings'];
 

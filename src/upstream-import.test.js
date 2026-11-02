@@ -69,7 +69,7 @@ test('groups, books, chats and group chats go in, every swipe kept; a second run
     write('worlds/Lore.json', JSON.stringify({ entries: { 0: { uid: 0, key: ['dragon'], keysecondary: ['red'], comment: 'Dragons', content: 'Dragons are red.', constant: false, selective: true, order: 100, position: 0, disable: false, probability: 100, useProbability: true, depth: 4 } } }));
 
     const first = await importUpstreamData(store, directories);
-    assert.deepEqual(first.imported, { groups: 1, worlds: 1, chats: 1, groupChats: 1, messages: 5 });
+    assert.deepEqual(first.imported, { groups: 1, worlds: 1, chats: 1, groupChats: 1, messages: 5, backgrounds: 0, personas: 0 });
     assert.deepEqual(first.notImported, []);
 
     const chat = await chatNamed({ avatar: 'nia.png' }, 'Nia - 2024-01-01@10h00m00s');
@@ -87,7 +87,7 @@ test('groups, books, chats and group chats go in, every swipe kept; a second run
     assert.match(map.chats['group chats/Party chat.jsonl'], /^b\d+$/);
 
     const again = await importUpstreamData(store, directories);
-    assert.deepEqual(again.imported, { groups: 0, worlds: 0, chats: 0, groupChats: 0, messages: 0 });
+    assert.deepEqual(again.imported, { groups: 0, worlds: 0, chats: 0, groupChats: 0, messages: 0, backgrounds: 0, personas: 0 });
     assert.equal(again.present.length, 4);
     assert.equal((await store.chats.bookmarks({ tree: await treeOf(store, { avatar: 'nia.png' }), limit: 500 })).rows.length, 1);
 });

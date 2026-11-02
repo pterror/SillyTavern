@@ -19,7 +19,13 @@ beforeAll(async () => {
     globalThis.DATA_ROOT = fixtureRoot;
 
     contentManager = await import('../src/endpoints/content-manager.js');
+    stores = await import('../src/user-stores.js');
+    const engine = (await import('../engine/load.js')).loadEngine().binding;
+    stores.setStoreEngine(() => engine);
 });
+
+/** @type {typeof import('../src/user-stores.js')} */
+let stores;
 
 afterAll(() => {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
@@ -51,8 +57,9 @@ describe('content-manager content.log write path', () => {
         appendSpy = jest.spyOn(fs, 'appendFileSync');
     });
 
-    afterEach(() => {
+    afterEach(async () => {
         jest.restoreAllMocks();
+        await stores.closeUserStores();
         fs.rmSync(userRoot, { recursive: true, force: true });
     });
 
@@ -65,6 +72,9 @@ describe('content-manager content.log write path', () => {
         expect(fs.readFileSync(logPath, 'utf8')).toBe('a.png\nb.png');
         expect(fs.existsSync(path.join(backgroundsDir, 'a.png'))).toBe(true);
         expect(fs.existsSync(path.join(backgroundsDir, 'b.png'))).toBe(true);
+        const { TYPE } = await import('../src/library-codes.js');
+        const { lib } = await stores.userStore(directories);
+        expect((await lib.ids(TYPE.background, ['a.png', 'b.png'])).every(id => id !== null)).toBe(true);
     });
 
     test('a seed pass with nothing new to add never touches content.log', async () => {

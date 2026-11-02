@@ -11,13 +11,15 @@ import { textEdit, wtf8Length } from './text-edit.js';
 import { itemField, pushAll, storedValues, valueRecords, withoutStatements } from './entity-values.js';
 import { SPACE, actorIds } from './actor-ids.js';
 import { LINKS, linkListRecords, storedLinks } from './character-links.js';
-import { FIELD, NAME_HISTORY, STATEMENT_PREFIX, TAG_KEY_PREFIX, TYPE, renameItem, renamesOf } from './library-codes.js';
+import { FIELD, HASH, NAME_HISTORY, STATEMENT_PREFIX, TAG_KEY_PREFIX, TYPE, renameItem, renamesOf } from './library-codes.js';
+import { thumbnailOf } from './thumbnail-urls.js';
+import { avatarRefString } from './avatar-refs.js';
 import { bookKey } from './world-info-keys.js';
 import { LIBRARY_LABELS, cursorWeights, cursorWeightsOf, searchClauses } from './search-clauses.js';
 import { SLOT, WorldInfoEngine, isEntryList } from './world-info-engine.js';
 import { groupDigestContentHash, groupDigestFavHash, groupDigestTagIdsHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
 
-export { FIELD, TAG_KEY_PREFIX, TYPE, textEdit, wtf8Length, itemField, valueRecords };
+export { FIELD, HASH, TAG_KEY_PREFIX, TYPE, textEdit, wtf8Length, itemField, valueRecords };
 
 /** @typedef {import('./entity-values.js').StoredEntity} StoredEntity */
 
@@ -47,8 +49,6 @@ const GROUP_READ_KEYS = new Set(['id', 'fav', 'tag_ids', 'date_added', 'create_d
 export function ownerKeyOf(avatar) {
     return String(avatar).replace('.png', '');
 }
-
-export const HASH = Object.freeze({ identity: 0, content: 1, avatarIdentity: 3 });
 
 /**
  * @param {string} cursor
@@ -128,6 +128,8 @@ export function listRowValues(includeCreatorNotes) {
 }
 
 const NO_VALUES = Object.freeze({ fields: [], lists: [] });
+
+const COLLAGE_MEMBERS = 4;
 
 /**
  * @param {import('./character-card-storage.js').CardParts} parts
@@ -766,7 +768,23 @@ export class LibraryEngine {
         const entities = await this.entities(await this.ids(TYPE.group, keys));
         const present = /** @type {StoredEntity[]} */ (entities.filter(e => e !== null));
         const tagKeys = new Map((await this.tagKeys(present)).map((t, i) => [present[i].id, t]));
-        return entities.map(e => (e ? { ...groupObject(e), id: e.key, fav: e.fav, tag_ids: tagKeys.get(e.id) ?? [] } : null));
+        const groups = entities.map(e => (e ? { ...groupObject(e), id: e.key, fav: e.fav, tag_ids: tagKeys.get(e.id) ?? [] } : null));
+        await this.withMemberThumbnails(/** @type {Record<string, any>[]} */ (groups.filter(Boolean)));
+        return groups;
+    }
+
+    /**
+     * @param {Record<string, any>[]} groups
+     */
+    async withMemberThumbnails(groups) {
+        const shown = (/** @type {Record<string, any>} */ g) => (Array.isArray(g.members) ? g.members.filter(m => typeof m === 'string').slice(0, COLLAGE_MEMBERS) : []);
+        const members = [...new Set(groups.flatMap(shown))];
+        const found = members.length ? await this.entities(await this.ids(TYPE.character, members), NO_VALUES) : [];
+        const thumbnailOfMember = new Map(members.map((m, i) => [m, thumbnailOf(found[i], 'avatar')]));
+        for (const g of groups) {
+            g.member_thumbnails = Object.fromEntries(shown(g).map(m => [m, thumbnailOfMember.get(m) ?? null]));
+        }
+        return groups;
     }
 
     /**
@@ -1191,6 +1209,8 @@ export class LibraryEngine {
             const row = { shallow: true };
             if (values.name !== undefined) row.name = values.name;
             row.avatar = e.key;
+            row.thumbnail = thumbnailOf(e, 'avatar');
+            row.avatar_ref = avatarRefString(TYPE.character, e.key);
             row.fav = e.fav;
             row.date_added = e.added;
             if (values.create_date !== undefined) row.create_date = values.create_date;
@@ -1333,7 +1353,8 @@ export class LibraryEngine {
         const stats = await this.chatStats(entities.map(e => e.id));
         const statsOf = (/** @type {bigint} */ id) => stats.get(id) ?? { date_last_chat: 0, chat_size: 0 };
         if (wantHashes) {
-            const hashRows = entities.map(e => this.hashRow(groupOf.get(e.id) ?? e, groupTags.get(e.id) ?? characterTags.get(e.id) ?? [], statsOf(e.id)));
+            const memberThumbnails = new Map((await this.withMemberThumbnails(groups.map(groupObject))).map((g, i) => [groups[i].id, g.member_thumbnails]));
+            const hashRows = entities.map(e => this.hashRow(groupOf.get(e.id) ?? e, groupTags.get(e.id) ?? characterTags.get(e.id) ?? [], statsOf(e.id), memberThumbnails.get(e.id)));
             return { ...out, rows: undefined, hashRows, ...(await hiddenOf(hashRows.length)) };
         }
         if (!wantRows) return { ...out, rows: undefined, hashRows: undefined, ...(await hiddenOf(0)) };
@@ -1349,6 +1370,7 @@ export class LibraryEngine {
                 ? { ...groupObject(groupOf.get(e.id) ?? e), fav: e.fav, date_added: e.added, ...statsOf(e.id), tag_ids: groupTags.get(e.id) ?? [] }
                 : listRows.get(e.id) ?? null,
         }));
+        await this.withMemberThumbnails(rows.filter(r => r.type === 'group').map(r => /** @type {Record<string, any>} */ (r.item)));
         return { ...out, hashRows: undefined, rows, ...(await hiddenOf(rows.length)) };
     }
 
@@ -1356,8 +1378,9 @@ export class LibraryEngine {
      * @param {StoredEntity} e
      * @param {string[]} tagKeys
      * @param {{ date_last_chat: number, chat_size: number }} stats
+     * @param {Record<string, string | null>} [memberThumbnails]
      */
-    hashRow(e, tagKeys, stats) {
+    hashRow(e, tagKeys, stats, memberThumbnails = {}) {
         const row = {
             id: e.key,
             isGroup: e.type === TYPE.group,
@@ -1373,7 +1396,7 @@ export class LibraryEngine {
             contentHash: 0,
         };
         if (e.type === TYPE.group) {
-            const group = { ...groupObject(e), id: e.key, fav: e.fav, tag_ids: tagKeys };
+            const group = { ...groupObject(e), id: e.key, fav: e.fav, tag_ids: tagKeys, member_thumbnails: memberThumbnails };
             row.favHash = groupDigestFavHash(group) >>> 0;
             row.tagIdsHash = groupDigestTagIdsHash(group) >>> 0;
             row.contentHash = groupDigestContentHash(group) >>> 0;

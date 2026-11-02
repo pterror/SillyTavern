@@ -53,7 +53,8 @@ import {
     showSwipeButtons,
     hideSwipeButtons,
     updateChatMetadata,
-    getThumbnailUrl,
+    characterAvatar,
+    characterThumbnail,
     setMenuType,
     menu_type,
     select_selected_character,
@@ -855,10 +856,7 @@ async function getFirstCharacterMessage(character) {
     mes.mes = messageText
         ? substituteParams(messageText.trim(), { name2Override: character.name })
         : '';
-    mes.force_avatar =
-        character.avatar != 'none'
-            ? getThumbnailUrl('avatar', character.avatar)
-            : default_avatar;
+    Object.assign(mes, characterAvatar(character));
     mes.node_id = provisionalNodeId(mes.name, mes.mes);
     return mes;
 }
@@ -1075,7 +1073,7 @@ function getGroupAvatar(group) {
         for (const member of group.members) {
             const memberAvatar = charactersStore.get(member)?.avatar ?? (/\.(png|webp|jpe?g|gif)$/i.test(member) ? member : undefined);
             if (memberAvatar && memberAvatar !== 'none') {
-                memberAvatars.push(getThumbnailUrl('avatar', memberAvatar));
+                memberAvatars.push(group.member_thumbnails?.[member] ?? characterThumbnail(charactersStore.get(member) ?? memberAvatar));
             }
             if (memberAvatars.length === 4) {
                 break;
@@ -1926,7 +1924,7 @@ async function printGroupMembers() {
  * @returns {JQuery<HTMLElement>} jQuery element representing the group character block
  */
 function getGroupCharacterBlock(character) {
-    const avatar = getThumbnailUrl('avatar', character.avatar);
+    const avatar = characterThumbnail(character);
     const template = $('#group_member_template .group_member').clone();
     const isFav = normalizeFav(character.fav);
     template.data('id', character.avatar);

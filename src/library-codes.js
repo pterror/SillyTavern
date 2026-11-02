@@ -3,8 +3,10 @@ export const TYPE = Object.freeze({
     user: 11, samplerPreset: 12, template: 13, chatPrompt: 14, chatPromptOrder: 15, biasList: 16, biasEntry: 17,
     connection: 18, connectionProfile: 19, proxy: 20, persona: 21, theme: 22, quickReplySet: 23, quickReply: 24,
     regexScript: 25, regexPreset: 26, globalVariable: 27, dataBankFile: 28, modelTemplateBinding: 29,
-    movingUiPreset: 31, serverHistory: 32, movingUiLayout: 33, device: 34,
+    movingUiPreset: 31, serverHistory: 32, movingUiLayout: 33, device: 34, background: 35, personaImage: 36,
 });
+
+export const HASH = Object.freeze({ identity: 0, content: 1, avatarIdentity: 3, animated: 4 });
 
 export const FIELD = Object.freeze({
     name: 1,

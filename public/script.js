@@ -226,6 +226,8 @@ import {
     getPersonaDescriptionPosition,
     getPersonaDescriptionDepth,
     getPersonaDescriptionRole,
+    personaAvatar,
+    personaThumbnail,
 } from './scripts/personas.js';
 import { startNewUi, takeViews, chatClosed, newUi, newUiStarted } from './scripts/new-ui.js';
 import { loader } from './scripts/action-loader.js';
@@ -2827,18 +2829,16 @@ async function fillTokenCounters(mesIds, { recount = false } = {}) {
  * @returns {JQuery<HTMLElement>} Rendered HTMLElement.
  */
 export function updateMessageElement(mes, { messageId = chat.length - 1, messageElement = messageTemplate.clone(), adjustMediaScroll = SCROLL_BEHAVIOR.NONE } = {}) {
-    let avatarImg = getThumbnailUrl('persona', user_avatar);
+    let avatarImg = personaThumbnail(user_avatar);
 
     //for non-user messages
     if (!mes.is_user) {
         if (mes.force_avatar) {
-            avatarImg = mes.force_avatar;
+            avatarImg = shownAvatar(mes);
         } else if (getSelectionState().type !== 'character') {
             avatarImg = system_avatar;
-        } else if (getCurrentCharacter() && getCurrentCharacter().avatar !== 'none') {
-            avatarImg = getThumbnailUrl('avatar', getCurrentCharacter().avatar);
         } else {
-            avatarImg = default_avatar;
+            avatarImg = characterThumbnail(getCurrentCharacter());
         }
         //old processing:
         //if message is from system, use the name provided in the message JSONL to proceed,
@@ -2846,7 +2846,7 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
         //characterName = mes.is_system || mes.force_avatar ? mes.name : name2;
     } else if (mes.is_user && mes.force_avatar) {
         // Special case for persona images.
-        avatarImg = mes.force_avatar;
+        avatarImg = shownAvatar(mes);
     }
     const momentDate = timestampToMoment(mes.send_date);
     const timestamp = momentDate.isValid() ? momentDate.format('LL LT') : '';
@@ -4719,7 +4719,7 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
 
     // Lock user avatar to a persona.
     if (personaStore.has(avatar)) {
-        message.force_avatar = getThumbnailUrl('persona', avatar);
+        Object.assign(message, personaAvatar(avatar));
     }
 
     if (messageBias) {
@@ -5757,11 +5757,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         newMessage.gen_finished = generationFinished;
 
         if (selected_group) {
-            let avatarImg = 'img/ai4.png';
-            if (getCurrentCharacter().avatar != 'none') {
-                avatarImg = getThumbnailUrl('avatar', getCurrentCharacter().avatar);
-            }
-            newMessage.force_avatar = avatarImg;
+            Object.assign(newMessage, characterAvatar(getCurrentCharacter()));
             newMessage.original_avatar = getCurrentCharacter().avatar;
             newMessage.extra.gen_id = group_generation_id;
         }
@@ -6514,41 +6510,54 @@ async function read_avatar_load(input) {
         }
 
         const avatarKey = getEditorCharacterAvatar();
+        const before = characterThumbnail(avatarKey);
         if (!await saveCharacterAvatar(avatarKey, file)) {
             return;
         }
-
-        // Bust cache for the avatar thumbnail and character image
-        const thumbnailUrl = getThumbnailUrl('avatar', avatarKey);
-        await fetch(thumbnailUrl, { method: 'GET', cache: 'reload' });
         await fetch(`/characters/${avatarKey}`, { method: 'GET', cache: 'reload' });
-
-        // Refresh all visible avatar images that use this thumbnail URL
-        // This handles messages, character list, and any other place using the thumbnail
-        const avatarImages = document.querySelectorAll(`img[src^="${thumbnailUrl}"]`);
-        for (const img of avatarImages) {
-            if (img instanceof HTMLImageElement) {
-                const originalSrc = img.src;
-                img.src = '';
-                img.src = originalSrc;
-            }
-        }
-        console.debug(`Refreshed ${avatarImages.length} avatar images for ${avatarKey}`);
-
-        console.log('Avatar refreshed');
+        replaceShownImage(before, characterThumbnail(avatarKey));
     }
 }
 
-const thumbnailVersionCache = new Map();
+/**
+ * @param {string} before
+ * @param {string} after
+ */
+export function replaceShownImage(before, after) {
+    if (before === after) return;
+    for (const img of document.querySelectorAll('img')) {
+        if (img.getAttribute('src') === before) img.setAttribute('src', after);
+    }
+}
 
 /**
- * @param {import('../src/endpoints/thumbnails.js').ThumbnailType} type
- * @param {string} file
- * @param {string|number|null|undefined} version
+ * @param {string | { avatar?: string, thumbnail?: string | null } | undefined | null} character
+ * @returns {string}
  */
-export function setThumbnailVersion(type, file, version) {
-    if (version === null || version === undefined || version === '') return;
-    thumbnailVersionCache.set(`${type}:${file}`, String(version));
+export function characterThumbnail(character) {
+    const avatar = typeof character === 'string' ? character : character?.avatar;
+    if (!avatar || avatar === 'none') return default_avatar;
+    const own = typeof character === 'object' ? character?.thumbnail : undefined;
+    return own ?? charactersStore.get(avatar)?.thumbnail ?? default_avatar;
+}
+
+/**
+ * @param {string | { avatar?: string, avatar_ref?: string, thumbnail?: string | null } | undefined | null} character
+ * @returns {{ force_avatar: string, force_avatar_url: string | undefined }}
+ */
+export function characterAvatar(character) {
+    const avatar = typeof character === 'string' ? character : character?.avatar;
+    const own = typeof character === 'object' ? character?.avatar_ref : undefined;
+    const ref = own ?? (avatar && avatar !== 'none' ? charactersStore.get(avatar)?.avatar_ref : undefined);
+    return ref ? { force_avatar: ref, force_avatar_url: characterThumbnail(character) } : { force_avatar: default_avatar, force_avatar_url: undefined };
+}
+
+/**
+ * @param {{ force_avatar?: string, force_avatar_url?: string }} mes
+ * @returns {string | undefined}
+ */
+export function shownAvatar(mes) {
+    return typeof mes?.force_avatar_url === 'string' ? mes.force_avatar_url : mes?.force_avatar;
 }
 
 /**
@@ -6559,27 +6568,14 @@ export function setThumbnailVersion(type, file, version) {
 export function macroPerson(macroName, { avatar, name } = {}) {
     const which = macroName.toLowerCase();
     if (which === 'user') {
-        return { name: name1, avatarUrl: getThumbnailUrl('persona', user_avatar), about: getPersonaDescription() };
+        return { name: name1, avatarUrl: personaThumbnail(user_avatar), about: getPersonaDescription() };
     }
     if (which !== 'char' && which !== 'charifnotgroup') return null;
     const found = (avatar ? charactersStore.get(avatar) : undefined)
         ?? (name ? exposedCharacters.find(c => c?.name === name) : undefined)
         ?? getCurrentCharacter();
     if (!found) return null;
-    return { name: name || found.name, avatarUrl: getThumbnailUrl('avatar', found.avatar), about: String(found.data?.creator_notes ?? found.creatorcomment ?? '') };
-}
-
-/**
- * Gets the URL for a thumbnail of a specific type and file.
- * @param {import('../src/endpoints/thumbnails.js').ThumbnailType} type The type of the thumbnail to get
- * @param {string} file The file name or path for which to get the thumbnail URL
- * @param {boolean} [t=false] Whether to add a cache-busting timestamp to the URL
- * @returns {string} The URL for the thumbnail
- */
-export function getThumbnailUrl(type, file, t = false) {
-    const version = !t && thumbnailVersionCache.get(`${type}:${file}`);
-    const versionParam = version ? `&v=${encodeURIComponent(version)}` : '';
-    return `/thumbnail?type=${type}&file=${encodeURIComponent(file)}${versionParam}${t ? `&t=${Date.now()}` : ''}`;
+    return { name: name || found.name, avatarUrl: characterThumbnail(found), about: String(found.data?.creator_notes ?? found.creatorcomment ?? '') };
 }
 
 export function buildAvatarList(block, entities, { templateId = 'inline_avatar_template', empty = true, interactable = false, highlightFavs = true } = {}) {
@@ -6593,10 +6589,7 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
         // Populate the template
         const avatarTemplate = $(`#${templateId} .avatar`).clone();
 
-        let this_avatar = default_avatar;
-        if (entity.item.avatar !== undefined && entity.item.avatar != 'none') {
-            this_avatar = getThumbnailUrl('avatar', entity.item.avatar);
-        }
+        const this_avatar = characterThumbnail(entity.item);
 
         avatarTemplate.attr('data-type', entity.type);
         if (entity.type === 'character') {
@@ -6621,7 +6614,7 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
             avatarTemplate.attr('title', entity.item.name);
         } else if (entity.type === 'persona') {
             avatarTemplate.attr({ 'data-pid': id });
-            avatarTemplate.find('img').attr('src', getThumbnailUrl('persona', entity.item.avatar));
+            avatarTemplate.find('img').attr('src', personaThumbnail(entity.item.avatar));
             avatarTemplate.attr('title', `${entity.item.name}\nFile: ${entity.item.avatar}`);
         }
 
@@ -8058,7 +8051,7 @@ export function getCurrentChatDetails() {
     const group = selected_group ? groupsStore.get(selected_group) : null;
     const currentChat = selected_group ? group?.chat_id : getCurrentCharacter().chat;
     const displayName = selected_group ? group?.name : getCurrentCharacter().name;
-    const avatarImg = selected_group ? group?.avatar_url : getThumbnailUrl('avatar', getCurrentCharacter().avatar);
+    const avatarImg = selected_group ? group?.avatar_url : characterThumbnail(getCurrentCharacter());
     return { sessionName: currentChat, group: group, characterName: displayName, avatarImgURL: avatarImg };
 }
 
@@ -8536,7 +8529,7 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
 
     updateFavButtonState(normalizeFav(character.fav));
 
-    const avatarUrl = character.avatar != 'none' ? getThumbnailUrl('avatar', character.avatar) : default_avatar;
+    const avatarUrl = characterThumbnail(character);
     $('#avatar_load_preview').attr('src', avatarUrl);
     setGreetingsButton(character?.avatar ?? null);
     $('#set_character_world').data('avatar', character?.avatar ?? null);
@@ -11315,12 +11308,7 @@ async function importCharacter(file, { preserveFileName = '', sourceUrl = '' } =
         }
 
         if (data.file_name !== undefined) {
-            let avatarFileName = `${data.file_name}.png`;
-
-            // Refresh existing thumbnail
-            if (exists && getSelectionState().type === 'character') {
-                await fetch(getThumbnailUrl('avatar', avatarFileName), { cache: 'reload' });
-            }
+            const avatarFileName = `${data.file_name}.png`;
 
             $('#character_search_bar').val('').trigger('input');
 
@@ -13153,13 +13141,11 @@ jQuery(async function () {
         const messageElement = $(this).closest('.mes');
         const thumbURL = $(this).children('img').attr('src');
         const charsPath = '/characters/';
-        let targetAvatarImg;
-        try {
-            const fileParam = new URL(thumbURL, window.location.origin).searchParams.get('file');
-            targetAvatarImg = fileParam !== null ? encodeURIComponent(fileParam) : thumbURL.substring(thumbURL.lastIndexOf('=') + 1);
-        } catch {
-            targetAvatarImg = thumbURL.substring(thumbURL.lastIndexOf('=') + 1);
-        }
+        const message = chat[Number(messageElement.attr('mesid'))];
+        const avatarKey = messageElement.attr('is_user') == 'true'
+            ? (message?.persona ?? user_avatar)
+            : (message?.original_avatar ?? (messageElement.attr('is_system') == 'true' ? '' : getCurrentCharacter()?.avatar ?? ''));
+        const targetAvatarImg = avatarKey ? encodeURIComponent(avatarKey) : thumbURL;
         const charname = targetAvatarImg.replace('.png', '');
         let isValidCharacter = false;
         if (messageElement.attr('is_system') == 'true') {

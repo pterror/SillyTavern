@@ -108,6 +108,7 @@ jest.unstable_mockModule('../public/scripts/events.js', () => ({ event_types: {}
 jest.unstable_mockModule('../public/script.js', () => ({
     default_avatar: '',
     getCurrentCharacter: noop,
+    characterThumbnail: () => '',
     per_page_default: 50,
     selectCharacterByAvatar: async () => {},
 }));

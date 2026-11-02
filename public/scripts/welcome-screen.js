@@ -7,7 +7,8 @@ import {
     getCurrentCharacter,
     getCurrentChatId,
     getSystemMessageByType,
-    getThumbnailUrl,
+    characterAvatar,
+    characterThumbnail,
     is_send_press,
     neutralCharacterName,
     newAssistantChat,
@@ -275,12 +276,12 @@ function getAssistantGreeting(character) {
 /** @param {Character|undefined} character */
 function sendAssistantMessage(character) {
     const name = character ? character.name : neutralCharacterName;
-    const avatar = character ? getThumbnailUrl('avatar', character.avatar) : system_avatar;
+    const avatar = character ? characterAvatar(character) : { force_avatar: system_avatar, force_avatar_url: undefined };
     const greeting = getAssistantGreeting(character);
 
     const message = {
         name: name,
-        force_avatar: avatar,
+        ...avatar,
         mes: greeting,
         is_system: false,
         is_user: false,
@@ -839,7 +840,7 @@ async function getRecentChats({ before = null } = {}) {
         chat.date_long = chatTimestamp.format('LL LT');
         chat.chat_name = chat.file_name.replace('.jsonl', '');
         chat.display_name = chat.label ?? chat.char_name;
-        chat.char_thumbnail = character ? getThumbnailUrl('avatar', character.avatar) : system_avatar;
+        chat.char_thumbnail = character ? characterThumbnail(character) : system_avatar;
         chat.is_group = !!group;
         chat.hidden = before === null && index >= settings.collapsedDisplayed;
         chat.avatar = chat.avatar || '';

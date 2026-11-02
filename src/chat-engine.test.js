@@ -448,6 +448,7 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
 function normalizedGroup(messages, mapped) {
     return mapped(messages).map(m => {
         if (m.extra) delete m.extra[tree.ITEMIZED_PROMPT_FLAG];
+        delete m.force_avatar_url;
         return m;
     });
 }

@@ -258,11 +258,14 @@ describe('the library on the engine', () => {
         const ents = await library.entities(await library.ids(lib.TYPE.character, avatars));
         const rows = await library.listRows(/** @type {any[]} */ (ents), false);
         for (const [i, avatar] of avatars.entries()) {
-            expect(rows[i]).toEqual(old[avatar]);
+            const { thumbnail, avatar_ref: ref, ...row } = rows[i];
+            expect(thumbnail).toBeNull();
+            expect(ref).toBe(`/thumbnail?type=avatar&file=${encodeURIComponent(avatar)}`);
+            expect(row).toEqual(old[avatar]);
         }
         for (const notes of [false, true]) {
             const narrow = await library.entities(ents.map(e => e?.id ?? null), lib.listRowValues(notes));
-            expect(narrow.every(e => e?.hashes.length === 0)).toBe(true);
+            expect(narrow.map(e => e?.hashes)).toEqual(ents.map(e => e?.hashes));
             expect(await library.listRows(/** @type {any[]} */ (narrow), notes)).toEqual(await library.listRows(/** @type {any[]} */ (ents), notes));
         }
     });
@@ -344,7 +347,9 @@ describe('the library on the engine', () => {
         for (const [i, row] of engRows.entries()) {
             const o = oldRows[i];
             const hydrated = { ...withoutChats(files[o.id]), fav: o.fav, date_added: o.date_added, date_last_chat: o.date_last_chat, chat_size: o.chat_size, tag_ids: [...oldTags[o.id]].sort() };
-            expect(row.item).toEqual(hydrated);
+            const { member_thumbnails: memberThumbnails, ...item } = /** @type {Record<string, any>} */ (row.item);
+            expect(item).toEqual(hydrated);
+            expect(Object.keys(memberThumbnails)).toEqual((hydrated.members ?? []).slice(0, 4));
         }
         const oldHashes = /** @type {any} */ (await metadataDb.queryEntities(directories, { ...params, wantRows: false, wantHashes: true })).hashRows;
         const engHashes = /** @type {any[]} */ ((await library.query({ ...params, wantRows: false, wantHashes: true })).hashRows);
@@ -390,7 +395,8 @@ describe('the library on the engine', () => {
             expect((await library.writeGroup(/** @type {any} */ (next))).records).toBe(records);
             const [stored] = await library.groups([group.id]);
             const want = withoutChats(/** @type {any} */ (next));
-            expect(stored).toEqual({ ...want, fav: !!want.fav, tag_ids: [] });
+            const shown = Object.fromEntries(want.members.slice(0, 4).map((/** @type {string} */ m) => [m, null]));
+            expect(stored).toEqual({ ...want, fav: !!want.fav, tag_ids: [], member_thumbnails: shown });
         }
     });
 
@@ -418,7 +424,12 @@ describe('the library on the engine', () => {
         const avatars = [renamed, ...entries.slice(1).map(e => e.avatar)];
         const old = await metadataDb.getShallowByIds(directories, avatars);
         const rows = await library.listRows(/** @type {any[]} */ (await library.entities(await library.ids(lib.TYPE.character, avatars))), false);
-        for (const [i, avatar] of avatars.entries()) expect(rows[i]).toEqual(old[avatar]);
+        for (const [i, avatar] of avatars.entries()) {
+            const { thumbnail, avatar_ref: ref, ...row } = rows[i];
+            expect(thumbnail).toBeNull();
+            expect(ref).toBe(`/thumbnail?type=avatar&file=${encodeURIComponent(avatar)}`);
+            expect(row).toEqual(old[avatar]);
+        }
         expect(await library.ids(lib.TYPE.character, [a.avatar])).toEqual([null]);
         for (const [field, order] of [['name', 'asc'], ['date_added', 'desc'], ['fav', 'desc']]) {
             const { old: o, eng } = await bothPages({ tags: { include: ['t-red'] } }, field, order);

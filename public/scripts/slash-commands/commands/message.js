@@ -1,6 +1,6 @@
 import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
-import { Generate, addOneMessage, chatElement, chatOpAddAlternative, chatOpEdit, comment_avatar, default_avatar, deleteSwipe, extractMessageBias, getCurrentCharacter, getThumbnailUrl, is_send_press, neutralCharacterName, refreshSwipeButtons, reloadCurrentChat, saveMetadata, sendMessageAsUser, setCharacterName, storeSentMessage, substituteParams, swipe, system_message_types, updateMessage, updateMessageElement, updateSwipeCounter } from '../../../script.js';
+import { Generate, addOneMessage, chatElement, chatOpAddAlternative, chatOpEdit, comment_avatar, default_avatar, deleteSwipe, extractMessageBias, getCurrentCharacter, is_send_press, neutralCharacterName, refreshSwipeButtons, reloadCurrentChat, saveMetadata, sendMessageAsUser, setCharacterName, storeSentMessage, substituteParams, swipe, system_message_types, updateMessage, updateMessageElement, updateSwipeCounter } from '../../../script.js';
 import { chat, chat_metadata } from '../../chat-state.js';
 import { setActiveCharacter, setActiveGroup } from '../../app-selection-state.js';
 import { charactersStore, setCharacterId } from '../../character-store.js';
@@ -12,7 +12,7 @@ import { getRegexedString, regex_placement } from '../../extensions/regex/engine
 import { groups } from '../../group-store.js';
 import { findGroupMemberId, is_group_generating, openGroupById, regenerateGroup, resetSelectedGroup, selected_group } from '../../group-chats.js';
 import { t } from '../../i18n.js';
-import { user_avatar } from '../../personas.js';
+import { personaAvatar, user_avatar } from '../../personas.js';
 import { chat_styles } from '../../power-user.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '../SlashCommandArgument.js';
 import { commonEnumProviders, enumIcons } from '../SlashCommandCommonEnumsProvider.js';
@@ -149,7 +149,7 @@ async function askCharacter(args, text) {
 
     setCharacterId(character);
 
-    const { name, force_avatar, original_avatar } = getNameAndAvatarForMessage(character, args?.name);
+    const { name, force_avatar, force_avatar_url, original_avatar } = getNameAndAvatarForMessage(character, args?.name);
 
     setCharacterName(name);
 
@@ -168,7 +168,7 @@ async function askCharacter(args, text) {
 
         const lastMessage = chat[chat.length - 1];
         if (lastMessage && lastMessage?.name === name) {
-            updateMessage(chat.length - 1, { force_avatar, original_avatar });
+            updateMessage(chat.length - 1, { force_avatar, force_avatar_url, original_avatar });
         }
     };
 
@@ -499,11 +499,12 @@ async function messageNameCallback(args, name) {
         const persona = findPersona({ name: name });
         if (persona) {
             updates.name = newName = persona.name;
-            updates.force_avatar = getThumbnailUrl('persona', persona.avatar);
+            Object.assign(updates, personaAvatar(persona.avatar));
             updates.original_avatar = persona.avatar;
         } else {
             updates.name = newName = name;
             updates.force_avatar = default_avatar;
+            updates.force_avatar_url = undefined;
             updates.original_avatar = default_avatar;
         }
     } else {
@@ -512,10 +513,12 @@ async function messageNameCallback(args, name) {
             const characterInfo = getNameAndAvatarForMessage(character, name);
             updates.name = newName = characterInfo.name;
             updates.force_avatar = characterInfo.force_avatar;
+            updates.force_avatar_url = characterInfo.force_avatar_url;
             updates.original_avatar = characterInfo.original_avatar;
         } else {
             updates.name = newName = name;
             updates.force_avatar = default_avatar;
+            updates.force_avatar_url = undefined;
             updates.original_avatar = default_avatar;
         }
     }

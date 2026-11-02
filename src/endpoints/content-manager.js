@@ -18,6 +18,7 @@ import { sessionHeaderOf } from '../request-session.js';
 import { userStore } from '../user-stores.js';
 import { TYPE } from '../library-codes.js';
 import { avatarImage, writeWithAvatar } from '../character-avatars.js';
+import { writeBackground, writePersonaImage } from '../image-entities.js';
 import { readUserSettings } from '../settings-reads.js';
 
 const contentDirectory = path.join(serverDirectory, 'default/content');
@@ -209,6 +210,13 @@ async function seedContent(contentIndex, contentLogPath, resolveTarget, forceCat
             await importWorldInfoFromRaw(directories, basePath, fs.readFileSync(contentPath, 'utf8'));
         } else {
             fs.cpSync(contentPath, targetPath, { recursive: true, force: false });
+            const imageWrite = !directories ? null
+                : contentItem.type === CONTENT_TYPES.BACKGROUND ? writeBackground
+                    : contentItem.type === CONTENT_TYPES.AVATAR ? writePersonaImage : null;
+            if (imageWrite && fs.statSync(targetPath).isFile()) {
+                const { lib: images } = await userStore(/** @type {any} */ (directories));
+                await imageWrite(images, basePath, fs.readFileSync(targetPath));
+            }
         }
 
         if (!inStore) setPermissionsSync(targetPath);

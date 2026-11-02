@@ -1,5 +1,5 @@
 import { SlashCommandParser } from './SlashCommandParser.js';
-import { addOneMessage, default_avatar, extractMessageBias, generateQuietPrompt, getCurrentCharacter, getThumbnailUrl, name2, neutralCharacterName, reloadCurrentChat, removeMacros, setExtensionPrompt, storeSentMessage, substituteParams, system_avatar, system_message_types } from '../../script.js';
+import { addOneMessage, default_avatar, extractMessageBias, generateQuietPrompt, getCurrentCharacter, characterAvatar, name2, neutralCharacterName, reloadCurrentChat, removeMacros, setExtensionPrompt, storeSentMessage, substituteParams, system_avatar, system_message_types } from '../../script.js';
 import { name1 } from '../app-selection-state.js';
 import { chat, chat_metadata } from '../chat-state.js';
 import { eventSource, event_types } from '../events.js';
@@ -156,17 +156,17 @@ export function validateArrayArg(arg, name, { allowUndefined = true } = {}) {
 /**
  * @param {object?} character
  * @param {string?} name
- * @returns {{name: string, force_avatar: string, original_avatar: string}}
+ * @returns {{name: string, force_avatar: string, force_avatar_url: string | undefined, original_avatar: string}}
  */
 export function getNameAndAvatarForMessage(character, name = null) {
     const isNeutralCharacter = !character && name2 === neutralCharacterName && name === neutralCharacterName;
     const currentChar = getCurrentCharacter();
 
-    let force_avatar, original_avatar;
+    let force_avatar, force_avatar_url, original_avatar;
     if (character?.avatar === currentChar?.avatar || isNeutralCharacter) {
         // Skip forcing an avatar when the target is already the selected character in a solo chat
     } else if (character && character.avatar !== 'none') {
-        force_avatar = getThumbnailUrl('avatar', character.avatar);
+        ({ force_avatar, force_avatar_url } = characterAvatar(character));
         original_avatar = character.avatar;
     } else {
         force_avatar = default_avatar;
@@ -176,6 +176,7 @@ export function getNameAndAvatarForMessage(character, name = null) {
     return {
         name: character?.name || name,
         force_avatar: force_avatar,
+        force_avatar_url: force_avatar_url,
         original_avatar: original_avatar,
     };
 }
@@ -208,7 +209,7 @@ export async function sendMessageAs(args, text) {
         return '';
     }
 
-    const { name: avatarCharName, force_avatar, original_avatar } = getNameAndAvatarForMessage(avatarCharacter, name);
+    const { name: avatarCharName, force_avatar, force_avatar_url, original_avatar } = getNameAndAvatarForMessage(avatarCharacter, name);
 
     const message = {
         name: character?.name || name || avatarCharName,
@@ -217,6 +218,7 @@ export async function sendMessageAs(args, text) {
         send_date: getMessageTimeStamp(),
         mes: substituteParams(mesText),
         force_avatar: force_avatar,
+        force_avatar_url: force_avatar_url,
         original_avatar: original_avatar,
         extra: {
             bias: bias.trim().length ? bias : null,

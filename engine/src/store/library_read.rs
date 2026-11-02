@@ -1244,6 +1244,13 @@ pub fn entities_only(
             }
         }
         ent.tags.sort_unstable();
+        let hp = key::id(key::HASH, e);
+        for (_, v) in view.scan(&hp, &key::prefix_end(&hp), usize::MAX)? {
+            let (r, _) = view.record(parse_loc(&v)?.pos)?;
+            if let Value::Bytes(h) = &r.values[2] {
+                ent.hashes.push((super::kinds::id(&r, 1), h.clone()));
+            }
+        }
         if kind == library::CHARACTER
             && let Some(b) = books::first_link(view, e)?
         {

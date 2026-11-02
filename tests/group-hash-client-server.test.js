@@ -236,7 +236,24 @@ describe('no false hit: a changed group field changes the server digest, and the
     test('FIELDS covers every field of a created group except id', async () => {
         const created = await createGroup({});
         const [batched] = await postJson('/api/groups/batch', { ids: [created.id] });
-        expect(Object.keys(batched).filter(k => k !== 'id' && k !== 'tag_ids').sort()).toEqual(FIELDS.filter(f => f !== 'extra_field').sort());
+        expect(Object.keys(batched).filter(k => k !== 'id' && k !== 'tag_ids' && k !== 'member_thumbnails').sort()).toEqual(FIELDS.filter(f => f !== 'extra_field').sort());
+        expect(batched.member_thumbnails).toEqual({ 'a.png': null, 'b.png': null });
+    });
+
+    test('a member\'s new avatar changes the server digest, and the client refetches the group with its new thumbnail', async () => {
+        const card = JSON.stringify({ name: 'a', data: { name: 'a', extensions: {} } });
+        await user.store.lib.writeCard(user.directories, 'a.png', card, { avatarIdentityHash: '1'.repeat(64) });
+        const created = await createGroup({});
+        await clientResolve();
+        const before = (await serverGroupHashes()).get(created.id);
+
+        await user.store.lib.writeCard(user.directories, 'a.png', card, { avatarIdentityHash: '2'.repeat(64) });
+
+        const after = (await serverGroupHashes()).get(created.id);
+        expect(after.content).not.toBe(before.content);
+        const resolved = await clientResolve();
+        expect(resolved.urls).toContain('/api/groups/batch');
+        expect(resolved.groups.get(created.id).member_thumbnails['a.png']).toBe(`/thumbnail/${'2'.repeat(64)}.c120x180.webp`);
     });
 
     test.each(FIELDS)('%s', async (field) => {

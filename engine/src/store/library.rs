@@ -22,10 +22,13 @@ pub const VIEW: u64 = 8;
 pub const CONDITION: u64 = 9;
 pub const RANGE: u64 = 10;
 pub const FIRST_SETTINGS_TYPE: u64 = 11;
-pub const LAST_TYPE: u64 = 34;
+pub const LAST_SETTINGS_TYPE: u64 = 34;
+pub const BACKGROUND: u64 = 35;
+pub const PERSONA_IMAGE: u64 = 36;
+pub const LAST_TYPE: u64 = PERSONA_IMAGE;
 
 pub fn history_kept(kind: u64) -> bool {
-    kind == super::books::ENTRY || (FIRST_SETTINGS_TYPE..=LAST_TYPE).contains(&kind)
+    kind == super::books::ENTRY || (FIRST_SETTINGS_TYPE..=LAST_SETTINGS_TYPE).contains(&kind)
 }
 
 pub const NAME: u64 = 1;

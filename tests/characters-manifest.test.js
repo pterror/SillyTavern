@@ -88,26 +88,6 @@ describe('POST /api/characters/manifest', () => {
         expect(after.mtime).not.toBe(before.mtime);
     });
 
-    test('thumbnailVersion is null when no cached thumbnail exists yet', async () => {
-        await seedCharacter('Alice.png');
-
-        const manifest = await (await postJson('/api/characters/manifest', {})).json();
-        expect(manifest[0].thumbnailVersion).toBeNull();
-    });
-
-    test('thumbnailVersion is the cached thumbnail\'s own mtime', async () => {
-        await seedCharacter('Alice.png');
-        const cachedThumbPath = path.join(user.directories.thumbnailsAvatar, 'Alice.png');
-        fs.mkdirSync(path.dirname(cachedThumbPath), { recursive: true });
-        fs.writeFileSync(cachedThumbPath, 'cached thumbnail bytes');
-        const when = new Date(Date.now() + 5000);
-        fs.utimesSync(cachedThumbPath, when, when);
-
-        const manifest = await (await postJson('/api/characters/manifest', {})).json();
-        const entry = manifest.find(e => e.avatar === 'Alice.png');
-        expect(entry.thumbnailVersion).toBe(String(Math.round(fs.statSync(cachedThumbPath).mtimeMs)));
-        expect(entry.thumbnailVersion).not.toBe(String(Math.round(entry.mtime)));
-    });
 });
 
 describe('POST /api/characters/batch', () => {

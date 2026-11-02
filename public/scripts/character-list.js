@@ -25,7 +25,7 @@ import { getPermanentAssistantAvatar } from './welcome-screen.js';
 import { event_types, eventSource } from './events.js';
 import { getRequestHeaders } from './request-headers.js';
 import { checkCharactersExistOrNull } from './character-existence-check.js';
-import { default_avatar, getCurrentCharacter, per_page_default, selectCharacterByAvatar } from '../script.js';
+import { characterThumbnail, getCurrentCharacter, per_page_default, selectCharacterByAvatar } from '../script.js';
 
 let saveCharactersPage = 0;
 
@@ -85,10 +85,7 @@ function arraysHaveSameMembers(a, b) {
 }
 
 function renderCharacterBlock(template, item, id) {
-    let this_avatar = default_avatar;
-    if (item.avatar && item.avatar != 'none') {
-        this_avatar = `/characters/${encodeURIComponent(item.avatar)}`;
-    }
+    const this_avatar = characterThumbnail(item);
     template.attr({ 'data-avatar': item.avatar });
     template.find('img').attr('src', this_avatar).attr('loading', 'lazy').attr('alt', item.name);
     template.find('.avatar').attr('title', `${item.name}\nFile: ${item.avatar}`);

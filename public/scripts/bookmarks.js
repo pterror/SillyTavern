@@ -3,7 +3,8 @@ import {
     getSelectionState,
     system_message_types,
     openCharacterChat,
-    getThumbnailUrl,
+    characterAvatar,
+    characterThumbnail,
     updateMessage,
     hydrateSwipes,
     switchToNode,
@@ -364,7 +365,7 @@ export async function convertSoloToGroupChat() {
     const groupChat = [...chat].map(m => structuredClone(m));
 
     const name = `Group: ${character.name}`;
-    const avatar = getThumbnailUrl('avatar', character.avatar);
+    const avatar = characterThumbnail(character);
     const members = [character.avatar];
     const favChecked = normalizeFav(character.fav);
     /** @type {ChatMetadata} */
@@ -432,7 +433,7 @@ export async function convertSoloToGroupChat() {
         // Set force fields for solo character
         message.name = character.name;
         message.original_avatar = character.avatar;
-        message.force_avatar = getThumbnailUrl('avatar', character.avatar);
+        Object.assign(message, characterAvatar(character));
     }
 
     // Save group chat
