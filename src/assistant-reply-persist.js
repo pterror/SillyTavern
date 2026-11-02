@@ -1,6 +1,7 @@
 import { storedForm } from './chat-engine.js';
 import { recordGenerationPersisted } from './generation-stop.js';
 import { finishReply } from './reply-reasoning.js';
+import { mergeRecords, withSentMessage } from './world-info/activation-record.js';
 
 /**
  * @param {any} data
@@ -210,6 +211,17 @@ async function generatedBy(pending) {
     return { api: finish.api, model: typeof model === 'string' ? model : String(model) };
 }
 
+/**
+ * @param {object} pending
+ * @returns {import('./world-info/activation-record.js').ActivationRecord | null}
+ */
+function activationsOf(pending) {
+    const record = pending.activations;
+    if (!record) return null;
+    const own = typeof pending.sentNodeId === 'string' ? withSentMessage(record, pending.sentNodeId) : record;
+    return pending.isContinue ? mergeRecords(pending.anchorContent?.extra?.activations, own) : own;
+}
+
 /** @returns {Promise<StoredReply|{error: string}|null>} */
 async function storeReply(pending, generatedText) {
     const { chat, anchorNodeId, name2, isSwipe, isContinue, anchorContent } = pending;
@@ -221,6 +233,8 @@ async function storeReply(pending, generatedText) {
     const times = generationTimes(pending);
     const finished = finishReply(pending, generatedText, pending.answer);
     Object.assign(finished.extra, await generatedBy(pending));
+    const activations = activationsOf(pending);
+    if (activations) /** @type {Record<string, unknown>} */ (finished.extra).activations = activations;
     const title = typeof pending.title === 'string' ? pending.title : '';
     const replyContent = { name: name2, is_user: false, mes: finished.mes, title, extra: { ...finished.extra }, send_date: Date.now(), ...times };
 

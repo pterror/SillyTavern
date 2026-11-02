@@ -8,9 +8,9 @@ import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 
 /**
- * @param {{ quietPrompt: (prompt: string) => Promise<string>, currentChat: () => ({ avatar: string } | { group: string } | null), alternatives: import('/ui/entry.js').StartOptions['alternatives'] }} options
+ * @param {{ quietPrompt: (prompt: string) => Promise<string>, currentChat: () => ({ avatar: string } | { group: string } | null), alternatives: import('/ui/entry.js').StartOptions['alternatives'], activations: import('/ui/entry.js').StartOptions['activations'] }} options
  */
-export function startNewUi({ quietPrompt, currentChat, alternatives }) {
+export function startNewUi({ quietPrompt, currentChat, alternatives, activations }) {
     if (newUiStarted()) return newUi();
     const element = (/** @type {string} */ id) => {
         const found = document.getElementById(id);
@@ -23,6 +23,7 @@ export function startNewUi({ quietPrompt, currentChat, alternatives }) {
         quietPrompt,
         currentChat,
         alternatives,
+        activations,
         containers: {
             backgrounds: element('Backgrounds'),
             backgroundLayer: element('bg1'),

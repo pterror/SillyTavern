@@ -324,6 +324,7 @@ import { MacroEngine } from './scripts/macros/engine/MacroEngine.js';
 import { addChatBackupsBrowser } from './scripts/chat-backups.js';
 import { compressRequest, setRequestCompressionConfig } from './scripts/request-compression.js';
 import { alternativesOldPage, canJumpToSwipeForMessage, canOpenSwipePickerForMessage, initSwipePicker } from './scripts/alternatives.js';
+import { activationsOldPage, initLoreMarks, updateLoreMark } from './scripts/activations.js';
 
 // API OBJECT FOR EXTERNAL WIRING
 globalThis.SillyTavern = {
@@ -1456,6 +1457,7 @@ async function firstLoadInit() {
             return typeof avatar === 'string' && avatar !== '' && chat.length > 0 ? { avatar } : null;
         },
         alternatives: alternativesOldPage,
+        activations: activationsOldPage,
     });
     bindChatCompletionSettings(newUi().settings);
     bindTextGenSettings(newUi().settings);
@@ -1491,6 +1493,7 @@ async function firstLoadInit() {
     initItemizedPrompts();
     initAccessibility();
     initSwipePicker();
+    initLoreMarks();
     addDebugFunctions();
     doDailyExtensionUpdatesCheck();
     await eventSource.emit(event_types.APP_INITIALIZED);
@@ -2194,6 +2197,7 @@ export function updateMessageBlock(messageId, message, { rerenderMessage = true 
 
     updateReasoningUI(messageElement);
     updateMessageItemizedPromptButton(message, { messageId, messageElement });
+    updateLoreMark(message, messageElement);
 
     addCopyToCodeBlocks(messageElement);
     appendMediaToMessage(message, messageElement);
@@ -2885,6 +2889,7 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
     }
 
     updateMessageItemizedPromptButton(mes, { messageId, messageElement });
+    updateLoreMark(mes, messageElement);
 
     messageElement.find('.avatar img').on('error', function () {
         $(this).hide();

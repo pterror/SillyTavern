@@ -9,6 +9,8 @@ import { TokenHandler } from './chat-completion-budget.js';
 import { chat_completion_sources } from './chat-completion-tool-capabilities.js';
 import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './world-info/candidate-resolution.js';
 import { activateWorldInfoEntries } from './world-info/activation.js';
+import { buildActivationRecord } from './world-info/activation-record.js';
+import { userStore } from './user-stores.js';
 import { bucketActivatedEntries, world_info_position } from './world-info/result-bucketing.js';
 import { createExtensionPromptTable } from './extension-prompt-table.js';
 import { addDepthInjections, addNoteAndPersona, addPageInjections } from './prompt-injections.js';
@@ -242,7 +244,7 @@ async function resolveChatHistory(chat, { branchName, nodeId }) {
  * @param {import('./extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections]
  * @param {import('./llamacpp-props.js').LlamaCppPropsCheck} [params.llamaCppProps]
  * @param {import('./token-count-store.js').PendingTokenRows} [params.tokenCountRows]
- * @returns {Promise<import('./chat-completion-prepare-messages.js').PrepareOpenAIMessagesInput & { worldInfoCandidates: WIEntry[], tokenizerOutcome: import('./tokenizer-resolve.js').TokenizerOutcome, tokenCountRows: import('./token-count-store.js').PendingTokenRows }>}
+ * @returns {Promise<import('./chat-completion-prepare-messages.js').PrepareOpenAIMessagesInput & { worldInfoCandidates: WIEntry[], activations: import('./world-info/activation-record.js').ActivationRecord | null, tokenizerOutcome: import('./tokenizer-resolve.js').TokenizerOutcome, tokenCountRows: import('./token-count-store.js').PendingTokenRows }>}
  */
 export async function resolveChatCompletionGenerationInput(directories, {
     avatar, groupId, chatContext, branchName, nodeId,
@@ -284,10 +286,12 @@ export async function resolveChatCompletionGenerationInput(directories, {
     const hasCharacter = character !== null;
     const name1 = (username != null && username !== '') ? username : 'User';
 
+    /** @type {TreeChatMessage | null} */
+    const sentMessage = typeof userMessageText === 'string'
+        ? { is_user: true, name: name1, mes: userMessageText, extra: /** @type {ChatMessageExtra} */ (userMessageExtra && typeof userMessageExtra === 'object' ? userMessageExtra : {}), send_date: Date.now() }
+        : null;
     /** @type {TreeChatMessage[]} */
-    const chat = typeof userMessageText === 'string'
-        ? [...loadedChat, { is_user: true, name: name1, mes: userMessageText, extra: /** @type {ChatMessageExtra} */ (userMessageExtra && typeof userMessageExtra === 'object' ? userMessageExtra : {}), send_date: Date.now() }]
-        : loadedChat;
+    const chat = sentMessage !== null ? [...loadedChat, sentMessage] : loadedChat;
 
     const promptChatBeforeFileInline = isSwipe && chat.length ? chat.slice(0, -1) : chat;
 
@@ -390,7 +394,11 @@ export async function resolveChatCompletionGenerationInput(directories, {
     const countTokensForWorldInfo = async (text) => tokenHandler.countTokenAsyncFn([{ content: text }]);
     const noteSettings = extensionSettings.note ?? {};
     const authorsNote = resolveAuthorsNote({ chatMetadata, noteSettings, chat: promptChat, avatar, hasCharacterOrGroup: Boolean(avatar) || Boolean(groupId) });
-    const { activatedEntries } = await activateWorldInfoEntries(worldInfoCandidates, chatForWI, {
+    const scanInjects = [
+        ['quiet', quietPrompt],
+        ['note', authorsNote.disabled === false && authorsNote.scan ? authorsNote.value : ''],
+    ].filter(([, text]) => Boolean(text));
+    const { activatedEntries, trace } = await activateWorldInfoEntries(worldInfoCandidates, chatForWI, {
         maxContext: oaiSettings.openai_max_context ?? 4095,
         budgetPercent: worldInfoSettings.world_info_budget ?? 25,
         budgetCap: worldInfoSettings.world_info_budget_cap ?? 0,
@@ -403,7 +411,12 @@ export async function resolveChatCompletionGenerationInput(directories, {
         entryFilterContext: { trigger: generationTrigger, characterFilename: charFilename ?? undefined },
         minActivations: worldInfoSettings.world_info_min_activations ?? 0,
         minActivationsDepthMax: worldInfoSettings.world_info_min_activations_depth_max ?? 0,
-        additionalScanInjects: [quietPrompt, authorsNote.disabled === false && authorsNote.scan ? authorsNote.value : ''].filter(Boolean),
+        additionalScanInjects: scanInjects.map(([, text]) => text),
+    });
+    const activations = dryRun === true ? null : await buildActivationRecord(trace, {
+        messages: promptChatBeforeFileInline.map(m => ({ nodeId: m === sentMessage ? null : (m.node_id ?? ''), text: m.mes ?? '' })).reverse(),
+        injects: scanInjects.map(([label]) => label),
+        books: (await userStore(directories)).lib.books,
     });
     const { worldInfoBefore, worldInfoAfter, worldInfoExamples, worldInfoDepth: worldInfoDepthEntries, anBefore, anAfter } = bucketActivatedEntries(/** @type {WIActivatedEntry[]} */ (/** @type {unknown} */ (activatedEntries)), {
         resolveContent: (entry) => {
@@ -458,6 +471,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
         worldInfoBefore,
         worldInfoAfter,
         worldInfoCandidates,
+        activations,
         wiFormat: oaiSettings.wi_format ?? '{0}',
 
         bias: promptBias,

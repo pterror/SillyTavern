@@ -570,6 +570,45 @@ async function run() {
     }
 
     {
+        const { lib } = await (await import('../../user-stores.js')).userStore(directories);
+        await lib.books.write('ReplyLore', { entries: { 0: { uid: 0, key: ['lantern'], keysecondary: [], comment: 'The lantern', content: 'The lantern never goes out.', position: 0, order: 10, disable: false } } });
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'It hangs by the door.' } }] }));
+        });
+        const settings = buildSettingsFixture();
+        settings.oai_settings.custom_url = fakeBackend.url;
+        settings.world_info_settings = { world_info: { globalSelect: ['ReplyLore'] } };
+        writeAllSettings(directories, settings);
+        const chatName = 'activation-record-chat';
+        await saveBranch(user.store, { avatar: ownerId }, chatName, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: 'Welcome in.', send_date: 1, extra: {} },
+        ]);
+        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, chatName);
+        try {
+            const { status, data } = await postGenerate(buildTestApp(), {
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Where is the lantern?' }, stream: false,
+            });
+            assert.equal(status, 200);
+            const [userMsg, reply] = (await loadBranch(user.store, { avatar: ownerId }, chatName)).messages.slice(-2);
+            const found = await lib.books.entryOf('ReplyLore', 0);
+            assert.equal(typeof found, 'object');
+            const ref = { book: String(/** @type {any} */ (found).book), entry: String(/** @type {any} */ (found).id) };
+            assert.deepEqual(reply.extra.activations, {
+                entries: [{ ref, why: 'key', step: 1, keys: [{ key: 'lantern', in: [{ node: userMsg.node_id, spans: [[13, 20]] }] }], via: [], position: 0, depth: null, role: null }],
+                cut: [],
+            }, 'the reply is stored with what came up for it, the match placed in the user message stored in the same request');
+            assert.deepEqual(data.assistant_message.extra.activations, reply.extra.activations, 'and the answer carries the same record, so the page needs no other request');
+            assert.equal(userMsg.extra?.activations, undefined, 'only the reply carries a record');
+        } finally {
+            fakeBackend.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+    }
+
+    {
         const requestedPaths = [];
         const fakeBackend = await startFakeBackend((req, res) => {
             requestedPaths.push((req.url ?? '').split('?')[0]);

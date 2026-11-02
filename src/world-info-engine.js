@@ -815,6 +815,56 @@ export class WorldInfoEngine {
     }
 
     /**
+     * @param {{ world: string, uid: string | number }[]} entries
+     * @returns {Promise<({ book: bigint, entry: bigint } | null)[]>}
+     */
+    async entryRefs(entries) {
+        /** @type {Map<string, bigint | null>} */
+        const books = new Map();
+        for (const { world } of entries) {
+            if (books.has(world)) continue;
+            const found = await this.find(world);
+            books.set(world, found?.defined ? found.id : null);
+        }
+        const keys = entries.map(({ world, uid }) => {
+            const book = books.get(world);
+            return book === null || book === undefined ? null : `${book}:${String(uid)}`;
+        });
+        const asked = keys.filter(k => k !== null);
+        const ids = asked.length ? await this.lib.ids(TYPE.entry, asked) : [];
+        let next = 0;
+        return keys.map((key, i) => {
+            if (key === null) return null;
+            const id = ids[next++];
+            return id === null ? null : { book: /** @type {bigint} */ (books.get(entries[i].world)), entry: id };
+        });
+    }
+
+    /**
+     * @param {bigint[]} ids
+     * @returns {Promise<({ book: string, bookName: string, uid: string, comment: unknown, key: unknown } | null)[]>}
+     */
+    async describeEntries(ids) {
+        const entities = await this.lib.entities(ids);
+        const bookOf = (/** @type {import('./entity-values.js').StoredEntity} */ e) => BigInt(e.key.slice(0, e.key.indexOf(':')));
+        const bookIds = [...new Set(entities.flatMap(e => (e ? [bookOf(e)] : [])))];
+        const books = new Map((await this.lib.entities(bookIds)).map((b, i) => [bookIds[i], b]));
+        return entities.map(e => {
+            const book = e ? books.get(bookOf(e)) : null;
+            if (!e || !book) return null;
+            const name = book.values.find(v => v.field === 'name')?.text;
+            const entry = /** @type {Record<string, unknown>} */ (entryObject(e, false));
+            return {
+                book: book.key,
+                bookName: typeof name === 'string' && name ? name : book.key,
+                uid: e.key.slice(e.key.indexOf(':') + 1),
+                comment: entry.comment,
+                key: entry.key,
+            };
+        });
+    }
+
+    /**
      * @param {bigint} entity
      * @param {number | string | null} field
      * @param {{ before?: bigint, limit?: number }} [page]

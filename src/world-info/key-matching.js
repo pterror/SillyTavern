@@ -43,7 +43,53 @@ export function matchKeys(haystack, needle, entry, globalDefaults = {}) {
     return regex.test(haystack);
 }
 
+export const MAX_SPANS = 32;
+
+/**
+ * @param {string} haystack
+ * @param {string} needle
+ * @param {{caseSensitive?: boolean, matchWholeWords?: boolean}} entry
+ * @param {{caseSensitive?: boolean, matchWholeWords?: boolean}} [globalDefaults]
+ * @returns {[number, number][]}
+ */
+export function findKeySpans(haystack, needle, entry, globalDefaults = {}) {
+    /** @type {[number, number][]} */
+    const spans = [];
+    const keyRegex = parseRegexFromString(needle);
+    let pattern;
+    if (keyRegex) {
+        pattern = new RegExp(keyRegex.source, keyRegex.flags.replace('g', '') + 'gd');
+    } else {
+        const caseSensitive = entry.caseSensitive ?? globalDefaults.caseSensitive ?? false;
+        const matchWholeWords = entry.matchWholeWords ?? globalDefaults.matchWholeWords ?? false;
+        const flags = caseSensitive ? 'gdu' : 'gdiu';
+        if (!needle) return spans;
+        const singleWord = needle.split(/\s+/).length === 1;
+        pattern = matchWholeWords && singleWord
+            ? new RegExp(`(?:^|\\W)(${escapeRegex(needle)})(?=$|\\W)`, flags)
+            : new RegExp(`(${escapeRegex(needle)})`, flags);
+    }
+    for (const match of haystack.matchAll(pattern)) {
+        const indices = /** @type {RegExpIndicesArray} */ (match.indices);
+        const [from, to] = keyRegex ? indices[0] : indices[1];
+        if (to > from) spans.push([from, to]);
+        if (spans.length >= MAX_SPANS) break;
+    }
+    return spans;
+}
+
 const MAX_SCAN_DEPTH = 1000;
+
+/** @typedef {{depth: number} | {field: string} | {inject: number} | {recurse: number}} ScanSource */
+
+const GLOBAL_SCAN_FIELDS = /** @type {const} */ ([
+    ['matchPersonaDescription', 'personaDescription'],
+    ['matchCharacterDescription', 'characterDescription'],
+    ['matchCharacterPersonality', 'characterPersonality'],
+    ['matchCharacterDepthPrompt', 'characterDepthPrompt'],
+    ['matchScenario', 'scenario'],
+    ['matchCreatorNotes', 'creatorNotes'],
+]);
 
 export const scan_state = { NONE: 0, INITIAL: 1, RECURSION: 2, MIN_ACTIVATIONS: 3 };
 
@@ -101,6 +147,31 @@ export class WorldInfoBuffer {
         if (this.#recurseBuffer.length > 0 && scanState !== scan_state.MIN_ACTIVATIONS) result += JOINER + this.#recurseBuffer.join(JOINER);
 
         return result;
+    }
+
+    /**
+     * @param {object} entry
+     * @param {number} scanState
+     * @returns {{source: ScanSource, text: string}[]}
+     */
+    sources(entry, scanState) {
+        /** @type {{source: ScanSource, text: string}[]} */
+        const out = [];
+        let depth = entry.scanDepth ?? this.getDepth();
+        if (depth <= this.#startDepth || depth < 0) return out;
+        if (depth > MAX_SCAN_DEPTH) depth = MAX_SCAN_DEPTH;
+        for (let d = this.#startDepth; d < depth; d++) {
+            if (this.#depthBuffer[d] !== undefined) out.push({ source: { depth: d }, text: this.#depthBuffer[d] });
+        }
+        const g = this.#globalScanData;
+        for (const [flag, field] of GLOBAL_SCAN_FIELDS) {
+            if (entry[flag] && g[field]) out.push({ source: { field }, text: g[field] });
+        }
+        this.#injectBuffer.forEach((text, inject) => out.push({ source: { inject }, text }));
+        if (scanState !== scan_state.MIN_ACTIVATIONS) {
+            this.#recurseBuffer.forEach((text, recurse) => out.push({ source: { recurse }, text }));
+        }
+        return out;
     }
 
     getScore(entry, scanState) {
@@ -172,6 +243,29 @@ export function matchesEntryKeys(textToScan, entry, buffer, macroContext = {}) {
 }
 
 export const world_info_logic = { AND_ANY: 0, NOT_ALL: 1, NOT_ANY: 2, AND_ALL: 3 };
+
+/**
+ * @param {object} entry
+ * @param {WorldInfoBuffer} buffer
+ * @param {number} scanState
+ * @param {{name1?: string, name2?: string}} [macroContext]
+ * @returns {{key: string, sources: ScanSource[]}[]}
+ */
+export function matchedKeys(entry, buffer, scanState, macroContext = {}) {
+    const sources = buffer.sources(entry, scanState);
+    const logic = entry.selectiveLogic ?? world_info_logic.AND_ANY;
+    const secondaryCounts = entry.selective && (logic === world_info_logic.AND_ANY || logic === world_info_logic.AND_ALL);
+    const keys = [...(entry.key ?? []), ...(secondaryCounts ? entry.keysecondary ?? [] : [])];
+    /** @type {{key: string, sources: ScanSource[]}[]} */
+    const out = [];
+    for (const raw of keys) {
+        const key = substituteParams(raw, macroContext)?.trim();
+        if (!key) continue;
+        const where = sources.filter(s => buffer.matchKeys(s.text, key, entry)).map(s => s.source);
+        if (where.length) out.push({ key, sources: where });
+    }
+    return out;
+}
 
 function matchSecondaryKeys(textToScan, entry, buffer, macroContext) {
     const selectiveLogic = entry.selectiveLogic ?? world_info_logic.AND_ANY;

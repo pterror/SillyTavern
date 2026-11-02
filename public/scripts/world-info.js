@@ -2220,14 +2220,14 @@ function registerWorldInfoSlashCommands() {
  * @param {string} name - The name of the world
  * @return {Promise<void>} A promise that resolves when the world editor is loaded
  */
-export async function showWorldEditor(name) {
+export async function showWorldEditor(name, navigation = navigation_option.none) {
     if (!name) {
         await hideWorldEditor();
         return;
     }
 
     const wiData = await loadWorldInfo(name);
-    await displayWorldEntries(name, wiData);
+    await displayWorldEntries(name, wiData, navigation);
 }
 
 /**
@@ -7491,6 +7491,46 @@ export function openWorldInfoEditor(worldName) {
 }
 
 /**
+ * @param {string} worldName
+ * @param {number} uid
+ * @returns {Promise<void>}
+ */
+export async function openWorldInfoEntry(worldName, uid) {
+    if (!$('#WorldInfo').is(':visible')) {
+        $('#WIDrawerIcon').trigger('click');
+    }
+    $('#world_editor_select').val(world_names.indexOf(worldName));
+    await selectEditorBook(uid);
+}
+
+/**
+ * @param {number} [navigation]
+ * @returns {Promise<void>}
+ */
+async function selectEditorBook(navigation = navigation_option.none) {
+    $('#world_info_search').val('');
+    worldInfoFilter.setFilterData(FILTER_TYPES.WORLD_INFO_SEARCH, '', true);
+    const selectedIndex = String($('#world_editor_select').find(':selected').val());
+
+    if (selectedIndex === '') {
+        const changed = power_user.wi_last_editor_book !== '';
+        power_user.wi_last_editor_book = '';
+        if (changed) {
+            saveSettingsDebounced('power_user.wi_last_editor_book');
+        }
+        await hideWorldEditor();
+        return;
+    }
+    const worldName = world_names[selectedIndex];
+    const changed = power_user.wi_last_editor_book !== worldName;
+    power_user.wi_last_editor_book = worldName;
+    if (changed) {
+        saveSettingsDebounced('power_user.wi_last_editor_book');
+    }
+    await showWorldEditor(worldName, navigation);
+}
+
+/**
  * Assigns a lorebook to the current chat.
  * @param {Pick<JQuery.ClickEvent, 'shiftKey' | 'altKey'>} event Click event
  * @returns {Promise<void>}
@@ -7773,28 +7813,7 @@ export function initWorldInfo() {
         }
     });
 
-    $('#world_editor_select').on('change', async () => {
-        $('#world_info_search').val('');
-        worldInfoFilter.setFilterData(FILTER_TYPES.WORLD_INFO_SEARCH, '', true);
-        const selectedIndex = String($('#world_editor_select').find(':selected').val());
-
-        if (selectedIndex === '') {
-            const changed = power_user.wi_last_editor_book !== '';
-            power_user.wi_last_editor_book = '';
-            if (changed) {
-                saveSettingsDebounced('power_user.wi_last_editor_book');
-            }
-            await hideWorldEditor();
-        } else {
-            const worldName = world_names[selectedIndex];
-            const changed = power_user.wi_last_editor_book !== worldName;
-            power_user.wi_last_editor_book = worldName;
-            if (changed) {
-                saveSettingsDebounced('power_user.wi_last_editor_book');
-            }
-            showWorldEditor(worldName);
-        }
-    });
+    $('#world_editor_select').on('change', () => selectEditorBook());
     $('#world_editor_select').trigger('change');
 
     const saveSettings = () => {
