@@ -860,6 +860,7 @@ export class WorldInfoEngine {
                 uid: e.key.slice(e.key.indexOf(':') + 1),
                 comment: entry.comment,
                 key: entry.key,
+                content: entry.content,
             };
         });
     }

@@ -3,6 +3,7 @@ import { activateWorldInfoEntries } from './activation.js';
 import { buildActivationRecord, mergeRecords, withSentMessage } from './activation-record.js';
 import { findKeySpans } from './key-matching.js';
 import { EMBEDDED_WORLD_NAME } from './candidate-resolution.js';
+import { getStringHash } from '../../public/scripts/hash-utils.js';
 
 const countTokens = async (text) => Math.ceil(text.length / 4);
 /** @param {import('./activation-record.js').EntryRef} ref */
@@ -42,7 +43,7 @@ const books = {
     const dragon = byUid['101'];
     assert.equal(dragon.why, 'key');
     assert.deepEqual(dragon.ref, { book: '7', entry: '101' });
-    assert.deepEqual(dragon.keys, [{ key: 'dragon', in: [{ sent: true, spans: [[8, 14]] }] }]);
+    assert.deepEqual(dragon.keys, [{ key: 'dragon', in: [{ sent: true, spans: [[8, 14]], of: getStringHash('I see a dragon') }] }]);
     assert.deepEqual([dragon.position, dragon.depth, dragon.role], [4, 2, 0]);
     const cave = byUid['102'];
     assert.equal(cave.why, 'key');
@@ -52,7 +53,7 @@ const books = {
     assert.deepEqual(record.cut, []);
 
     const sent = withSentMessage(record, 'n2');
-    assert.deepEqual(sent.entries.find(e => e === sent.entries[record.entries.indexOf(dragon)]).keys[0].in, [{ node: 'n2', spans: [[8, 14]] }]);
+    assert.deepEqual(sent.entries.find(e => e === sent.entries[record.entries.indexOf(dragon)]).keys[0].in, [{ node: 'n2', spans: [[8, 14]], of: getStringHash('I see a dragon') }]);
 }
 
 {
@@ -98,7 +99,7 @@ const books = {
     });
     const record = await buildActivationRecord(trace, { messages: [{ nodeId: 'n', text: 'the inn' }], injects: ['note'], books });
     assert.deepEqual(record?.entries.map(e => e.ref), [{ card: '4' }], 'a card book entry is named by its uid; an entry with no stored id is left out');
-    assert.deepEqual(record?.entries[0].keys[0].in, [{ node: 'n', spans: [[4, 7]] }, { inject: 'note' }]);
+    assert.deepEqual(record?.entries[0].keys[0].in, [{ node: 'n', spans: [[4, 7]], of: getStringHash('the inn') }, { inject: 'note' }]);
 }
 
 {

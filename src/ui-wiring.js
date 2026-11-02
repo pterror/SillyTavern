@@ -395,6 +395,18 @@ function entryTitle(comment, keys) {
     return first ? first.trim() : 'Untitled entry';
 }
 
+const START_LENGTH = 200;
+
+/**
+ * @param {unknown} content
+ * @returns {string}
+ */
+function startOf(content) {
+    if (typeof content !== 'string') return '';
+    const text = content.trim();
+    return text.length > START_LENGTH ? `${text.slice(0, START_LENGTH).trimEnd()}…` : text;
+}
+
 /**
  * @param {any[]} sources
  * @returns {import('@st/activations/protocol').Where[]}
@@ -430,22 +442,24 @@ const activationsPorts = {
         const cardEntries = Array.isArray(card?.data?.character_book?.entries) ? card.data.character_book.entries : [];
         const cardName = typeof card?.data?.name === 'string' ? card.data.name : (typeof card?.name === 'string' ? card.name : '');
 
-        /** @returns {{ title: string, book: string, open: import('@st/activations/protocol').Opener }} */
+        /** @returns {{ title: string, book: string, start: string, open: import('@st/activations/protocol').Opener }} */
         const described = ref => {
             if (typeof ref?.card === 'string') {
                 const found = cardEntries.find((e, index) => String(e.id ?? index) === ref.card);
                 return {
                     title: found ? entryTitle(found.comment, found.keys) : 'A removed entry',
                     book: cardName ? `${cardName}'s card` : 'The character card',
+                    start: startOf(found?.content),
                     open: avatar ? { card: avatar } : null,
                 };
             }
             const entry = entries.get(ref?.entry) ?? null;
-            if (!entry) return { title: 'A removed entry', book: 'A lorebook', open: null };
+            if (!entry) return { title: 'A removed entry', book: 'A lorebook', start: '', open: null };
             const uid = Number(entry.uid);
             return {
                 title: entryTitle(entry.comment, entry.key),
                 book: entry.bookName,
+                start: startOf(entry.content),
                 open: Number.isFinite(uid) ? { book: entry.book, uid } : null,
             };
         };

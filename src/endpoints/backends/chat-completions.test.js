@@ -596,8 +596,9 @@ async function run() {
             const found = await lib.books.entryOf('ReplyLore', 0);
             assert.equal(typeof found, 'object');
             const ref = { book: String(/** @type {any} */ (found).book), entry: String(/** @type {any} */ (found).id) };
+            const { getStringHash } = await import('../../../public/scripts/hash-utils.js');
             assert.deepEqual(reply.extra.activations, {
-                entries: [{ ref, why: 'key', step: 1, keys: [{ key: 'lantern', in: [{ node: userMsg.node_id, spans: [[13, 20]] }] }], via: [], position: 0, depth: null, role: null }],
+                entries: [{ ref, why: 'key', step: 1, keys: [{ key: 'lantern', in: [{ node: userMsg.node_id, spans: [[13, 20]], of: getStringHash(userMsg.mes) }] }], via: [], position: 0, depth: null, role: null }],
                 cut: [],
             }, 'the reply is stored with what came up for it, the match placed in the user message stored in the same request');
             assert.deepEqual(data.assistant_message.extra.activations, reply.extra.activations, 'and the answer carries the same record, so the page needs no other request');
