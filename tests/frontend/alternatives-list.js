@@ -9,7 +9,7 @@ export const greetingsList = page => page.locator('dialog.alternatives');
  * @param {number|string} which
  */
 export function greetingRow(page, which) {
-    const rows = greetingsList(page).locator('li.alternative:not(.alternatives-new)');
+    const rows = greetingsList(page).locator('li.alternative');
     if (typeof which === 'number') return rows.nth(which);
     const exactly = new RegExp(`^\\s*${which.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`);
     return rows.filter({ has: page.locator('.alternative-text', { hasText: exactly }) });
@@ -22,7 +22,7 @@ export function greetingRow(page, which) {
 export async function openGreetingsList(page, count) {
     await openInfoTab(page, 'greeting');
     await page.locator('.open_alternate_greetings').click();
-    await expect(greetingsList(page).locator('li.alternative:not(.alternatives-new)')).toHaveCount(count, { timeout: 10000 });
+    await expect(greetingsList(page).locator('li.alternative')).toHaveCount(count, { timeout: 10000 });
 }
 
 /**
@@ -69,10 +69,9 @@ export async function listEdit(page, index, text, options) {
  * @param {string} text
  */
 export async function listAdd(page, text) {
-    await greetingsList(page).locator('.alternatives-add').click();
-    const editor = greetingsList(page).locator('.alternatives-new');
-    await editor.locator('textarea').fill(text);
-    await operate(page, () => editor.getByRole('button', { name: 'Save' }).click());
+    const box = greetingsList(page).locator('.alternatives-add');
+    await box.locator('textarea').fill(text);
+    await operate(page, () => box.getByRole('button', { name: 'Add' }).click());
 }
 
 /**
