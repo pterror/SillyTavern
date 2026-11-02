@@ -303,11 +303,11 @@ function deleteExistingByBaseName(dirPath, baseName) {
  * @param {Map<string, Buffer>} bufferMap - Extracted file buffers
  * @param {Object} directories - User directories object
  * @param {string} characterFolder - Character folder name (sanitized)
- * @returns {{sprites: number, backgrounds: number, misc: number}}
+ * @returns {{sprites: number, backgrounds: number, misc: number, userImages: string[]}}
  */
 export function persistCharXAssets(assets, bufferMap, directories, characterFolder) {
-    /** @type {{sprites: number, backgrounds: number, misc: number}} */
-    const summary = { sprites: 0, backgrounds: 0, misc: 0 };
+    /** @type {{sprites: number, backgrounds: number, misc: number, userImages: string[]}} */
+    const summary = { sprites: 0, backgrounds: 0, misc: 0, userImages: [] };
     if (!Array.isArray(assets) || assets.length === 0) {
         return summary;
     }
@@ -388,6 +388,7 @@ export function persistCharXAssets(assets, bufferMap, directories, characterFold
                 const filePath = path.join(miscDir, `${asset.baseName}.${asset.ext || 'png'}`);
                 writeFileAtomicSync(filePath, buffer);
                 summary.misc += 1;
+                summary.userImages.push(filePath);
             }
         } catch (error) {
             console.warn(`CharX: Failed to save asset "${asset.name}": ${error.message}`);

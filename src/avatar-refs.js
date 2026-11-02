@@ -1,8 +1,9 @@
 import { TYPE } from './library-codes.js';
-import { parseThumbnailUrl, thumbnailOf } from './thumbnail-urls.js';
+import { CROP_FIELDS, parseThumbnailUrl, thumbnailsOf } from './thumbnail-urls.js';
 
-const NONE = Object.freeze({ fields: [], lists: [] });
+const NONE = Object.freeze({ fields: [...CROP_FIELDS], lists: [] });
 export const SHOWN = 'force_avatar_url';
+export const SHOWN_STILL = 'force_avatar_url_still';
 /** @type {Readonly<Record<number, string>>} */
 const NO_IMAGE = Object.freeze({ [TYPE.character]: 'img/ai4.png', [TYPE.personaImage]: 'img/user-default.png' });
 const REF = /^\/thumbnail\?(.+)$/;
@@ -55,15 +56,18 @@ function refsIn(messages) {
  */
 function apply(messages, refs, ids, entities) {
     const byId = new Map(entities.filter(Boolean).map(e => [e.id, e]));
-    /** @type {Map<string, string>} */
+    /** @type {Map<string, { thumbnail: string, thumbnail_still: string | null }>} */
     const urls = new Map();
     [...refs.entries()].forEach(([value, ref], i) => {
-        const url = ids[i] === null ? null : thumbnailOf(byId.get(ids[i]), 'avatar');
-        urls.set(value, url ?? NO_IMAGE[ref.type]);
+        const shown = ids[i] === null ? null : thumbnailsOf(byId.get(ids[i]), 'avatar');
+        urls.set(value, { thumbnail: shown?.thumbnail ?? NO_IMAGE[ref.type], thumbnail_still: shown?.thumbnail_still ?? null });
     });
     for (const m of messages) {
-        const url = typeof m?.force_avatar === 'string' ? urls.get(m.force_avatar) : undefined;
-        if (url !== undefined) m[SHOWN] = url;
+        const shown = typeof m?.force_avatar === 'string' ? urls.get(m.force_avatar) : undefined;
+        if (shown === undefined) continue;
+        m[SHOWN] = shown.thumbnail;
+        if (shown.thumbnail_still) m[SHOWN_STILL] = shown.thumbnail_still;
+        else delete m[SHOWN_STILL];
     }
     return messages;
 }
@@ -98,9 +102,10 @@ export function resolveAvatarsSync(store, messages) {
  */
 export function withoutShownAvatar(message) {
     if (parseThumbnailUrl(message?.force_avatar) !== null) throw new ShownAvatarError();
-    if (!message || !(SHOWN in message)) return message;
+    if (!message || !(SHOWN in message || SHOWN_STILL in message)) return message;
     const stored = { ...message };
     delete stored[SHOWN];
+    delete stored[SHOWN_STILL];
     return stored;
 }
 

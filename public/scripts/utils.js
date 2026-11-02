@@ -1610,12 +1610,24 @@ export async function getSanitizedFilename(fileName) {
  *                              Rejects with an error if the upload fails.
  */
 export async function saveBase64AsFile(base64Data, subFolder, fileName, extension) {
-    // Prepare the request body
+    return (await saveUserImage(base64Data, subFolder, fileName, extension)).path;
+}
+
+/**
+ * @param {string} base64Data
+ * @param {string} subFolder
+ * @param {string} [fileName]
+ * @param {string} [extension]
+ * @param {{ x: number, y: number, width: number, height: number } | null} [crop]
+ * @returns {Promise<{ path: string, thumbnail?: string | null, thumbnail_still?: string | null }>}
+ */
+export async function saveUserImage(base64Data, subFolder, fileName, extension, crop = null) {
     const requestBody = {
         image: base64Data,
         format: extension,
         ch_name: subFolder,
         filename: fileName ? String(fileName).replace(/\./g, '_') : undefined,
+        ...(crop ? { crop } : {}),
     };
 
     // Send the data URL to your backend using fetch
@@ -1627,8 +1639,7 @@ export async function saveBase64AsFile(base64Data, subFolder, fileName, extensio
 
     // If the response is successful, get the saved image path from the server's response
     if (response.ok) {
-        const responseData = await response.json();
-        return responseData.path;
+        return await response.json();
     } else {
         const errorData = await response.json();
         throw new Error(errorData.error || 'Failed to upload the image to the server');

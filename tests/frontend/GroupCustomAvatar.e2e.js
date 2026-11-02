@@ -39,8 +39,6 @@ test('a group\'s own image is stored and shown, and restoring brings the collage
     const id = await page.evaluate(async () => {
         // @ts-ignore
         const ctx = SillyTavern.getContext();
-        const { power_user } = await import('/scripts/power-user.js');
-        power_user.never_resize_avatars = true;
         const response = await fetch('/api/groups/create', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ name: `Avatar group ${Date.now()}`, members: ['default_Seraphina.png'] }) });
         if (!response.ok) throw new Error(`group create failed: ${response.status}`);
         return String((await response.json()).id);
@@ -50,8 +48,18 @@ test('a group\'s own image is stored and shown, and restoring brings the collage
     await expect(page.locator('#rm_group_restore_avatar')).toBeHidden();
 
     await page.locator('#group_avatar_button').setInputFiles(IMAGE);
-    await expect.poll(() => storedAvatarUrl(page, id)).toMatch(/\.jpg/);
-    const url = await storedAvatarUrl(page, id);
+    await expect(page.locator('dialog.popup[open] .cropper-container')).toBeVisible();
+    await page.locator('dialog.popup[open] .popup-button-ok').click();
+    await expect.poll(() => storedAvatarUrl(page, id)).toMatch(/^\/user\/images\/.+\.png$/);
+    const stored = await storedAvatarUrl(page, id);
+    const url = await page.evaluate(async (id) => {
+        // @ts-ignore
+        const ctx = SillyTavern.getContext();
+        const response = await fetch('/api/groups/batch', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ ids: [id] }) });
+        return (await response.json())[0]?.avatar_thumbnail ?? '';
+    }, id);
+    expect(url).toMatch(/^\/thumbnail\/s[0-9a-f]{64}\.c120x180\.\d+-\d+-\d+-\d+\.webp$/);
+    expect(stored).not.toBe(url);
     await expect(page.locator('#group_avatar_preview img').first()).toHaveAttribute('src', url);
     await expect(page.locator('#rm_group_restore_avatar')).toBeVisible();
 

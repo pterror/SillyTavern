@@ -4,10 +4,9 @@ import encode from './png/encode.js';
 import { imageSize } from 'image-size';
 
 import { Jimp } from './jimp.js';
-import { computeAvatarIdentityHashFromChunks } from './character-card-parser.js';
+import { computeAnimatedHashFromChunks, computeAvatarIdentityHashFromChunks } from './character-card-parser.js';
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-const FRAME_CHUNKS = new Set(['acTL', 'fcTL', 'IDAT', 'fdAT']);
 
 /**
  * @param {Buffer} buffer
@@ -82,17 +81,7 @@ export function stillHash(buffer) {
  * @returns {string | null}
  */
 export function animatedHash(buffer) {
-    if (isPng(buffer)) {
-        const chunks = pngChunks(buffer);
-        if (!chunks.some(c => c.name === 'acTL')) return null;
-        const hash = crypto.createHash('sha256');
-        for (const chunk of chunks) {
-            if (!FRAME_CHUNKS.has(chunk.name)) continue;
-            hash.update(chunk.name);
-            hash.update(chunk.data);
-        }
-        return hash.digest('hex');
-    }
+    if (isPng(buffer)) return computeAnimatedHashFromChunks(pngChunks(buffer));
     if (!isAnimatedImage(buffer)) return null;
     return crypto.createHash('sha256').update(buffer).digest('hex');
 }

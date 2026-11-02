@@ -9,7 +9,6 @@ import { eventSource, event_types } from '../../events.js';
 import { is_group_generating } from '../../group-chats.js';
 import { t } from '../../i18n.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup } from '../../popup.js';
-import { power_user } from '../../power-user.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '../SlashCommandArgument.js';
 import { SlashCommandClosure } from '../SlashCommandClosure.js';
 import { commonEnumMatchProviders, commonEnumProviders } from '../SlashCommandCommonEnumsProvider.js';
@@ -23,26 +22,28 @@ import { validateArrayArgString } from '../core.js';
  * @param {string} base64Data
  * @param {object} [options={}]
  * @param {boolean} [options.resizePrompt=false]
- * @returns {Promise<Blob|null>}
+ * @returns {Promise<{ blob: Blob, crop: object | null } | null>}
  */
 async function resolveFinalAvatarBlob(base64Data, { resizePrompt = false } = {}) {
-    let finalImageData = base64Data;
-
+    let crop = null;
     if (resizePrompt) {
-        if (power_user.never_resize_avatars) {
-            toastr.warning(t`Avatar resizing is disabled in settings. The image will be uploaded as-is.`);
-        } else {
-            const dlg = new Popup(t`Set the crop position of the avatar image`, POPUP_TYPE.CROP, '', { cropImage: base64Data });
-            const croppedImage = await dlg.show();
-            if (!croppedImage) {
-                return null;
-            }
-            finalImageData = String(croppedImage);
+        const dlg = new Popup(t`Set the crop position of the avatar image`, POPUP_TYPE.CROP, '', { cropImage: base64Data });
+        if (!await dlg.show()) {
+            return null;
         }
+        crop = dlg.cropData ?? null;
     }
 
-    const response = await fetch(finalImageData);
-    return await response.blob();
+    const response = await fetch(base64Data);
+    return { blob: await response.blob(), crop };
+}
+
+/**
+ * @param {string} url
+ * @param {{ crop: object | null } | null} avatar
+ */
+function withCrop(url, avatar) {
+    return avatar?.crop ? `${url}?crop=${encodeURIComponent(JSON.stringify(avatar.crop))}` : url;
 }
 
 /**
@@ -95,10 +96,10 @@ async function createCharacterCallback(args) {
             formData.append(key, value ?? '');
         }
         if (avatarBlob) {
-            formData.append('avatar', avatarBlob, 'avatar.png');
+            formData.append('avatar', avatarBlob.blob, 'avatar');
         }
 
-        const response = await fetch('/api/characters/create', {
+        const response = await fetch(withCrop('/api/characters/create', avatarBlob), {
             method: 'POST',
             headers: getRequestHeaders({ omitContentType: true }),
             body: formData,
@@ -253,9 +254,9 @@ async function updateCharacterCallback(args) {
         let response;
         if (avatarBlob) {
             const formData = new FormData();
-            formData.append('avatar', avatarBlob, 'avatar.png');
+            formData.append('avatar', avatarBlob.blob, 'avatar');
             formData.append('payload', JSON.stringify(updateData));
-            response = await fetch('/api/characters/merge-attributes', {
+            response = await fetch(withCrop('/api/characters/merge-attributes', avatarBlob), {
                 method: 'POST',
                 headers: getRequestHeaders({ omitContentType: true }),
                 body: formData,

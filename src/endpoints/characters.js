@@ -14,17 +14,18 @@ import extractPngChunks from 'png-chunks-extract';
 import { Jimp, JimpMime } from '../jimp.js';
 import storage from 'node-persist';
 
-import { AVATAR_WIDTH, AVATAR_HEIGHT, DEFAULT_AVATAR_PATH } from '../constants.js';
+import { DEFAULT_AVATAR_PATH } from '../constants.js';
 import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction, forbiddenRegExp } from '../middleware/validateFileName.js';
 import { deepMerge, humanizedDateTime, tryParse, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7, writeBackpressured } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { importFailure, NO_CARD_DATA } from '../character-import-error.js';
-import { computeAvatarIdentityHashFromChunks, parse, write } from '../character-card-parser.js';
+import { computeAnimatedHashFromChunks, computeAvatarIdentityHashFromChunks, parse, write } from '../character-card-parser.js';
+import { decodeFrames, encodeApng } from '../image-frames.js';
 import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, unsetPrivateFields, omitInstallLocalFields, omitFavField, omitChatField, V1_V2_FIELD_MAPPINGS } from '../character-card-normalize.js';
 import { calculateDataSize, toShallow, shallowCharactersIncludeCreatorNotes } from '../character-shallow.js';
 import { touchBrowserPresence, PRESENCE_PING_INTERVAL_MS } from '../browser-presence.js';
 import { claimTabSession } from '../session-presence.js';
-import { thumbnailOf } from '../thumbnail-urls.js';
+import { assignThumbnails, cropOf, normalizeCrop, thumbnailsOf } from '../thumbnail-urls.js';
 import { avatarRefString } from '../avatar-refs.js';
 import { importRisuSprites, importChubExpressions, importChubRelatedLorebooks } from './sprites.js';
 import { ByafParser } from '../byaf.js';
@@ -39,6 +40,7 @@ import { requestStore, userStore } from '../user-stores.js';
 import { FIELD, HASH, TYPE } from '../library-engine.js';
 import { convertedFileKey } from '../library-codes.js';
 import { avatarFile, avatarImage, avatarPathOf, inAvatarLane, linkWithAvatar, writeWithAvatar } from '../character-avatars.js';
+import { writeUserImage } from '../image-entities.js';
 import { chatNamesOf, compatChatIdOf, compatChatIds, droppedOf, moveToChatNamed } from '../chat-request.js';
 import { requestSession } from '../request-session.js';
 import { ALTERNATIVES_VIEWS, ui, uiUser } from '../ui-wiring.js';
@@ -298,26 +300,27 @@ async function writeCharacter(request, avatar, data, { image, crop, contentHash 
     const card = await keepStoredGreetings(directories, avatar, data, freshFieldPaths);
     const options = { contentHash, ...(fav === undefined ? {} : { fav }), ...(dateAdded === undefined ? {} : { dateAdded }), ...(renamed === undefined ? {} : { renamed }) };
     if (image === undefined) {
-        await lib.writeCard(directories, avatar, card, options);
+        await lib.writeCard(directories, avatar, cardWithCrop(card, cropOf(await lib.entity(TYPE.character, avatar))), options);
         return;
     }
+    const withCrop = cardWithCrop(card, crop);
     let bytes;
     /** @type {Array<{ name: string, data: Uint8Array }>} */
     let chunks;
     try {
-        bytes = Buffer.isBuffer(image) ? await parseImageBuffer(image, crop) : await tryReadImage(image, crop);
+        bytes = await cardImage(Buffer.isBuffer(image) ? image : await fs.promises.readFile(image));
         chunks = extractPngChunks(new Uint8Array(bytes));
     } catch (error) {
         throw new ImageReadError(imageDisplayName(image, request), error);
     }
-    if (typeof image === 'string' && crop === undefined && await isPngFile(image)) {
-        const avatarIdentityHash = computeAvatarIdentityHashFromChunks(chunks);
-        await linkWithAvatar(lib, directories, avatar, image, () => lib.writeCard(directories, avatar, card, { ...options, avatarIdentityHash }));
+    if (typeof image === 'string' && await isPngFile(image)) {
+        const hashes = { avatarIdentityHash: computeAvatarIdentityHashFromChunks(chunks), animatedHash: computeAnimatedHashFromChunks(chunks) };
+        await linkWithAvatar(lib, directories, avatar, image, () => lib.writeCard(directories, avatar, withCrop, { ...options, ...hashes }));
         return;
     }
     const stored = avatarImage(bytes);
-    await writeWithAvatar(lib, directories, avatar, stored, () => lib.writeCard(directories, avatar, card, {
-        ...options, avatarIdentityHash: stored.avatarIdentityHash,
+    await writeWithAvatar(lib, directories, avatar, stored, () => lib.writeCard(directories, avatar, withCrop, {
+        ...options, avatarIdentityHash: stored.avatarIdentityHash, animatedHash: stored.animatedHash,
     }));
 }
 
@@ -327,56 +330,35 @@ async function writeCharacter(request, avatar, data, { image, crop, contentHash 
  * @property {number} y Y-coordinate
  * @property {number} width Width
  * @property {number} height Height
- * @property {boolean} want_resize Resize the image to the standard avatar size
  */
 
 /**
- * Applies avatar crop and resize operations to an image.
- * I couldn't fix the type issue, so the first argument has {any} type.
- * @param {object} jimp Jimp image instance
- * @param {Crop|undefined} [crop] Crop parameters
- * @returns {Promise<Buffer>} Processed image buffer
+ * @param {string} card
+ * @param {unknown} crop
+ * @returns {string}
  */
-export async function applyAvatarCropResize(jimp, crop) {
-    if (!(jimp instanceof Jimp)) {
-        throw new TypeError('Expected a Jimp instance');
-    }
-
-    const image = /** @type {InstanceType<typeof Jimp>} */ (jimp);
-    let finalWidth = image.bitmap.width, finalHeight = image.bitmap.height;
-
-    // Apply crop if defined
-    if (typeof crop == 'object' && [crop.x, crop.y, crop.width, crop.height].every(x => typeof x === 'number')) {
-        image.crop({ x: crop.x, y: crop.y, w: crop.width, h: crop.height });
-        // Apply standard resize if requested
-        if (crop.want_resize) {
-            finalWidth = AVATAR_WIDTH;
-            finalHeight = AVATAR_HEIGHT;
-        } else {
-            finalWidth = crop.width;
-            finalHeight = crop.height;
-        }
-    }
-
-    image.cover({ w: finalWidth, h: finalHeight });
-    return await image.getBuffer(JimpMime.png);
+function cardWithCrop(card, crop) {
+    const parsed = JSON.parse(card);
+    parsed.data = parsed.data && typeof parsed.data === 'object' ? parsed.data : {};
+    parsed.data.extensions = parsed.data.extensions && typeof parsed.data.extensions === 'object' ? parsed.data.extensions : {};
+    const rect = normalizeCrop(crop);
+    if (rect) parsed.data.extensions.avatar_crop = rect;
+    else delete parsed.data.extensions.avatar_crop;
+    return JSON.stringify(parsed);
 }
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 /**
- * Parses an image buffer and applies crop if defined. Skips the Jimp round trip (and its re-encode churn)
- * when no crop is requested and `buffer` is already a PNG.
- * @param {Buffer} buffer Buffer of the image
- * @param {Crop|undefined} [crop] Crop parameters
- * @returns {Promise<Buffer>} Image buffer
+ * @param {Buffer} buffer
+ * @returns {Promise<Buffer>}
  */
-async function parseImageBuffer(buffer, crop) {
-    if (crop === undefined && buffer.subarray(0, 8).equals(PNG_SIGNATURE)) {
-        return buffer;
-    }
+async function cardImage(buffer) {
+    if (buffer.subarray(0, 8).equals(PNG_SIGNATURE)) return buffer;
+    const frames = await decodeFrames(buffer);
+    if (frames) return encodeApng(frames);
     const image = await Jimp.fromBuffer(buffer);
-    return await applyAvatarCropResize(image, crop);
+    return Buffer.from(await image.getBuffer(JimpMime.png));
 }
 
 /**
@@ -391,35 +373,6 @@ async function isPngFile(file) {
         return bytesRead === head.length && head.equals(PNG_SIGNATURE);
     } finally {
         await handle.close();
-    }
-}
-
-/**
- * Reads an image file and applies crop if defined. Same no-op-reencode avoidance as parseImageBuffer().
- * @param {string} imgPath Path to the image file
- * @param {Crop|undefined} crop Crop parameters
- * @returns {Promise<Buffer>} Image buffer
- */
-async function tryReadImage(imgPath, crop) {
-    if (crop === undefined) {
-        try {
-            const raw = await fs.promises.readFile(imgPath);
-            if (raw.subarray(0, 8).equals(PNG_SIGNATURE)) {
-                return raw;
-            }
-        } catch (error) {
-            // Fall through to the Jimp path below, which has its own error handling.
-        }
-    }
-    try {
-        const rawImg = await Jimp.read(imgPath);
-        return await applyAvatarCropResize(rawImg, crop);
-    } catch (error) {
-        const raw = fs.readFileSync(imgPath);
-        if (raw.subarray(0, 8).equals(PNG_SIGNATURE)) {
-            return raw;
-        }
-        throw error;
     }
 }
 
@@ -491,7 +444,7 @@ export async function characterObjects(request, avatars, { shallow }) {
         const json = JSON.stringify(card);
         const character = getCharaCardV2(JSON.parse(json), request.user.directories, false);
         character.avatar = e.key;
-        character.thumbnail = thumbnailOf(e, 'avatar');
+        assignThumbnails(character, thumbnailsOf(e, 'avatar'));
         character.avatar_ref = avatarRefString(TYPE.character, e.key);
         character.json_data = json;
         character.date_added = e.added;
@@ -575,7 +528,11 @@ async function importFromCharX(uploadPath, { request, contentHash }, preservedFi
 
     if (auxiliaryAssets.length > 0) {
         try {
-            persistCharXAssets(auxiliaryAssets, extractedBuffers, request.user.directories, characterFolder);
+            const { userImages } = persistCharXAssets(auxiliaryAssets, extractedBuffers, request.user.directories, characterFolder);
+            const { lib } = await userStore(request.user.directories);
+            for (const file of userImages) {
+                await writeUserImage(lib, clientRelativePath(request.user.directories.root, file), await fs.promises.readFile(file));
+            }
         } catch (error) {
             console.warn(`CharX: Failed to persist auxiliary assets for ${characterFolder}`, error);
         }
@@ -2847,7 +2804,7 @@ async function duplicateOneCharacter(request, avatarUrl) {
             const copied = fs.existsSync(from);
             if (copied) fs.copyFileSync(from, to, fs.constants.COPYFILE_FICLONE);
             try {
-                await lib.writeCard(request.user.directories, newAvatar, JSON.stringify(card), { avatarIdentityHash: hashOf(HASH.avatarIdentity), fav: source.fav, tags });
+                await lib.writeCard(request.user.directories, newAvatar, JSON.stringify(card), { avatarIdentityHash: hashOf(HASH.avatarIdentity), animatedHash: hashOf(HASH.animated), fav: source.fav, tags });
             } catch (err) {
                 if (copied) fs.rmSync(to, { force: true });
                 throw err;

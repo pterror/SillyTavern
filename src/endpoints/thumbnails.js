@@ -6,11 +6,11 @@ import sanitize from 'sanitize-filename';
 import writeFileAtomic from 'write-file-atomic';
 
 import { Jimp } from '../jimp.js';
-import { getConfigValue } from '../util.js';
+import { getConfigValue, isPathUnderParent } from '../util.js';
 import { userStore } from '../user-stores.js';
 import { HASH, TYPE } from '../library-codes.js';
-import { stripCardData } from '../character-card-parser.js';
-import { animatedHash, isPng, stillHash, stillImage } from '../image-identity.js';
+import { animatedHash, isAnimatedImage, stillHash, stillImage } from '../image-identity.js';
+import { decodeFrames, encodeAnimatedWebp } from '../image-frames.js';
 import { THUMBNAIL_QUALITY, parseThumbnailName } from '../thumbnail-urls.js';
 
 export const router = express.Router();
@@ -74,24 +74,15 @@ export async function accountCache(dir, added, limit = cacheBytes()) {
  * @returns {string | null}
  */
 function originalPath(directories, type, key) {
+    if (type === TYPE.userImage) {
+        const file = path.join(directories.root, key);
+        return isPathUnderParent(directories.userImages, file) ? file : null;
+    }
     if (sanitize(key) !== key) return null;
     if (type === TYPE.character) return path.join(directories.characters, key);
     if (type === TYPE.personaImage) return path.join(directories.avatars, key);
     if (type === TYPE.background) return path.join(directories.backgrounds, key);
     return null;
-}
-
-/**
- * @param {Buffer} buffer
- * @param {string} name
- */
-function contentType(buffer, name) {
-    if (isPng(buffer)) return 'image/png';
-    const head = buffer.subarray(0, 12).toString('latin1');
-    if (head.startsWith('GIF8')) return 'image/gif';
-    if (head.startsWith('RIFF') && head.slice(8, 12) === 'WEBP') return 'image/webp';
-    const extension = path.extname(name).toLowerCase();
-    return extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg' : 'application/octet-stream';
 }
 
 /**
@@ -116,12 +107,17 @@ export async function originalOf(lib, directories, wanted) {
 }
 
 /**
- * @param {Buffer} buffer
+ * @param {InstanceType<typeof Jimp>} image
  * @param {import('../thumbnail-urls.js').ThumbnailSpec} spec
- * @returns {Promise<Buffer>}
+ * @param {import('../thumbnail-urls.js').Crop | null} crop
  */
-export async function renderThumbnail(buffer, spec) {
-    const image = await Jimp.read(stillImage(buffer));
+function shape(image, spec, crop) {
+    if (crop) {
+        const { width, height } = image.bitmap;
+        const x = Math.min(crop.x, width - 1);
+        const y = Math.min(crop.y, height - 1);
+        image.crop({ x, y, w: Math.max(1, Math.min(crop.width, width - x)), h: Math.max(1, Math.min(crop.height, height - y)) });
+    }
     if (spec.cover) {
         image.cover({ w: spec.cover.w, h: spec.cover.h });
     } else if (spec.fit) {
@@ -129,6 +125,26 @@ export async function renderThumbnail(buffer, spec) {
         const scale = Math.min(1, spec.fit / Math.max(width, height));
         if (scale < 1) image.resize({ w: Math.max(1, Math.round(width * scale)), h: Math.max(1, Math.round(height * scale)) });
     }
+    return image;
+}
+
+/**
+ * @param {Buffer} buffer
+ * @param {import('../thumbnail-urls.js').ThumbnailSpec} spec
+ * @param {{ crop?: import('../thumbnail-urls.js').Crop | null, animate?: boolean }} [options]
+ * @returns {Promise<Buffer>}
+ */
+export async function renderThumbnail(buffer, spec, { crop = null, animate = false } = {}) {
+    const decoded = isAnimatedImage(buffer) ? await decodeFrames(buffer) : null;
+    if (decoded && animate) {
+        const frames = decoded.frames.map(f => ({ image: shape(Jimp.fromBitmap({ data: Buffer.from(f.rgba), width: decoded.width, height: decoded.height }), spec, crop), delay: f.delay }));
+        const { width, height } = frames[0].image.bitmap;
+        return encodeAnimatedWebp({ width, height, frames: frames.map(f => ({ rgba: f.image.bitmap.data, delay: f.delay })) }, THUMBNAIL_QUALITY);
+    }
+    const image = decoded
+        ? Jimp.fromBitmap({ data: Buffer.from(decoded.frames[0].rgba), width: decoded.width, height: decoded.height })
+        : await Jimp.read(stillImage(buffer));
+    shape(image, spec, crop);
     return Buffer.from(await image.getBuffer('image/webp', { quality: THUMBNAIL_QUALITY }));
 }
 
@@ -139,7 +155,7 @@ router.get('/:name', async function (request, response) {
         if (!wanted) return response.sendStatus(404);
         const directories = request.user.directories;
         const cached = path.join(directories.thumbnails, name);
-        if (wanted.spec !== null && fs.existsSync(cached)) {
+        if (fs.existsSync(cached)) {
             const now = new Date();
             fs.promises.utimes(cached, now, now).catch(() => {});
             response.setHeader('Cache-Control', IMMUTABLE);
@@ -148,22 +164,7 @@ router.get('/:name', async function (request, response) {
         const { lib } = await userStore(directories);
         const original = await originalOf(lib, directories, wanted);
         if (!original) return response.sendStatus(404);
-        if (wanted.spec === null) {
-            const bytes = original.type === TYPE.character ? stripCardData(original.buffer) : original.buffer;
-            response.setHeader('Cache-Control', IMMUTABLE);
-            response.setHeader('Content-Type', contentType(bytes, original.key));
-            return response.send(bytes);
-        }
-        let rendered;
-        try {
-            rendered = await renderThumbnail(original.buffer, wanted.spec);
-        } catch (error) {
-            console.warn(`[thumbnails] ${original.key} doesn't decode to a still; its original is shown:`, error.message);
-            const bytes = original.type === TYPE.character ? stripCardData(original.buffer) : original.buffer;
-            response.setHeader('Cache-Control', IMMUTABLE);
-            response.setHeader('Content-Type', contentType(bytes, original.key));
-            return response.send(bytes);
-        }
+        const rendered = await renderThumbnail(original.buffer, wanted.spec, { crop: wanted.crop, animate: wanted.animate });
         await fs.promises.mkdir(directories.thumbnails, { recursive: true });
         await writeFileAtomic(cached, rendered);
         void accountCache(directories.thumbnails, rendered.length).catch(error => console.warn('[thumbnails] Evicting failed:', error));

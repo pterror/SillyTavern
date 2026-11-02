@@ -3,13 +3,15 @@ import path from 'node:path';
 
 import { HASH, TYPE } from './library-codes.js';
 import { imageFacts } from './image-identity.js';
-import { animatedOf, thumbnailOf } from './thumbnail-urls.js';
+import { hashHex, normalizeCrop, thumbnailsOf } from './thumbnail-urls.js';
 import { getImages } from './util.js';
 import { storedFolderIds } from './background-folders.js';
 
 const PAGE = 500;
 
 export const BACKGROUND_FIELD = Object.freeze({ aspect: 'aspect', color: 'color', added: 'added', folders: 'folders' });
+
+export const CROP_FIELD = 'crop';
 
 /**
  * @typedef {import('./library-engine.js').LibraryEngine} LibraryEngine
@@ -98,17 +100,77 @@ export async function writeBackground(lib, file, image, { added = Date.now(), fo
 
 /**
  * @param {LibraryEngine} lib
- * @param {string} file
+ * @param {number} type
+ * @param {string} key
  * @param {Buffer} image
+ * @param {import('./thumbnail-urls.js').Crop | null | undefined} crop
  */
-export async function writePersonaImage(lib, file, image) {
+async function writeCroppedImage(lib, type, key, image, crop) {
     const facts = await imageFacts(image, { color: false });
-    return lib.serialized(TYPE.personaImage, file, async () => {
-        const stored = await lib.entity(TYPE.personaImage, file);
-        const records = imageRecords(lib, TYPE.personaImage, file, stored, facts, {}, Date.now());
+    return lib.serialized(type, key, async () => {
+        const stored = await lib.entity(type, key);
+        const values = crop === undefined ? {} : { [CROP_FIELD]: normalizeCrop(crop) };
+        const records = imageRecords(lib, type, key, stored, facts, values, Date.now());
         if (records.length) await lib.store.commit(records);
         return facts;
     });
+}
+
+/**
+ * @param {LibraryEngine} lib
+ * @param {string} file
+ * @param {Buffer} image
+ * @param {import('./thumbnail-urls.js').Crop | null} [crop]
+ */
+export function writePersonaImage(lib, file, image, crop) {
+    return writeCroppedImage(lib, TYPE.personaImage, file, image, crop);
+}
+
+/**
+ * @param {LibraryEngine} lib
+ * @param {string} relative
+ * @param {Buffer} image
+ * @param {import('./thumbnail-urls.js').Crop | null} [crop]
+ */
+export function writeUserImage(lib, relative, image, crop) {
+    return writeCroppedImage(lib, TYPE.userImage, userImageKey(relative), image, crop);
+}
+
+/**
+ * @param {string} relative
+ */
+export function userImageKey(relative) {
+    return relative.replaceAll('\\', '/').replace(/^\/+/, '');
+}
+
+/**
+ * @param {LibraryEngine} lib
+ * @param {number} type
+ * @param {string} key
+ * @param {import('./thumbnail-urls.js').Crop | null} crop
+ */
+export function setImageCrop(lib, type, key, crop) {
+    return lib.serialized(type, key, async () => {
+        const stored = await lib.entity(type, key);
+        if (!stored) return false;
+        const records = valueRecords(stored.id, stored, { [CROP_FIELD]: normalizeCrop(crop) });
+        if (records.length) await lib.store.commit(records);
+        return true;
+    });
+}
+
+/**
+ * @param {LibraryEngine} lib
+ * @param {number} type
+ * @param {string[]} keys
+ * @param {import('./thumbnail-urls.js').ThumbnailKind} kind
+ * @returns {Promise<Map<string, import('./thumbnail-urls.js').Thumbnails>>}
+ */
+export async function imageThumbnails(lib, type, keys, kind) {
+    const unique = [...new Set(keys)];
+    const ids = unique.length ? await lib.ids(type, unique) : [];
+    const found = ids.length ? await lib.entities(ids, { fields: [CROP_FIELD], lists: [] }) : [];
+    return new Map(unique.map((key, i) => [key, thumbnailsOf(found[i], kind)]));
 }
 
 /**
@@ -177,23 +239,22 @@ export function backgroundOf(e) {
     const color = jsonOf(e, BACKGROUND_FIELD.color);
     return {
         file: e.key,
-        animated: animatedOf(e) !== null,
+        animated: hashHex(e, HASH.animated) !== null,
         color: typeof color === 'string' ? color : null,
         aspect: typeof aspect === 'number' ? aspect : null,
         added: typeof added === 'number' ? added : e.added,
         folders: Array.isArray(folders) ? folders.filter(f => typeof f === 'string') : [],
-        thumbnail: thumbnailOf(e, 'bg'),
-        original: animatedOf(e),
+        ...thumbnailsOf(e, 'bg'),
     };
 }
 
 /**
  * @param {LibraryEngine} lib
  * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<{ backgrounds: number, personas: number, failed: { file: string, why: string }[] }>}
+ * @returns {Promise<{ backgrounds: number, personas: number, userImages: number, failed: { file: string, why: string }[] }>}
  */
 export async function importImageFiles(lib, directories) {
-    const report = { backgrounds: 0, personas: 0, failed: /** @type {{ file: string, why: string }[]} */ ([]) };
+    const report = { backgrounds: 0, personas: 0, userImages: 0, failed: /** @type {{ file: string, why: string }[]} */ ([]) };
     const folderIds = storedFolderIds(directories.root);
     const kinds = /** @type {const} */ ([
         [directories.backgrounds, TYPE.background, 'backgrounds'],
@@ -219,7 +280,34 @@ export async function importImageFiles(lib, directories) {
             }
         }
     }
+    const userImages = userImageFiles(directories);
+    const present = userImages.length ? await lib.ids(TYPE.userImage, userImages.map(f => userImageKey(f.relative))) : [];
+    for (const [i, f] of userImages.entries()) {
+        if (present[i] !== null) continue;
+        try {
+            await writeUserImage(lib, f.relative, await fs.promises.readFile(f.file));
+            report.userImages++;
+        } catch (error) {
+            report.failed.push({ file: f.relative, why: error instanceof Error ? error.message : String(error) });
+        }
+    }
     return report;
+}
+
+const USER_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.apng', '.bmp', '.avif']);
+
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {{ file: string, relative: string }[]}
+ */
+export function userImageFiles(directories) {
+    if (!fs.existsSync(directories.userImages)) return [];
+    return fs.readdirSync(directories.userImages, { recursive: true, withFileTypes: true })
+        .filter(d => d.isFile() && USER_IMAGE_EXTENSIONS.has(path.extname(d.name).toLowerCase()))
+        .map(d => {
+            const file = path.join(d.parentPath, d.name);
+            return { file, relative: path.relative(directories.root, file).split(path.sep).join('/') };
+        });
 }
 
 /**

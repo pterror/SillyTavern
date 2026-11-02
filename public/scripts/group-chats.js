@@ -1,3 +1,4 @@
+import { shownThumbnail } from './shown-thumbnail.js';
 import { blockWhileFieldEditing } from './character-field-editor.js';
 import { Fuse } from '../lib.js';
 
@@ -10,9 +11,8 @@ import {
     debounce,
     delay,
     isDataURL,
-    createThumbnail,
     extractAllWords,
-    saveBase64AsFile,
+    saveUserImage,
     PAGINATION_TEMPLATE,
     getBase64Async,
     resetScrollHeight,
@@ -94,7 +94,7 @@ import { _setCurrentTarget } from './chat-store.js';
 import { provisionalNodeId } from './node-identity.js';
 import { FILTER_TYPES, FILTER_STATES, FilterHelper, isFilterState } from './filters.js';
 import { isExternalMediaAllowed } from './chats.js';
-import { POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
+import { POPUP_TYPE, Popup } from './popup.js';
 import { t } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { compressRequest } from './request-compression.js';
@@ -1064,7 +1064,7 @@ function getGroupAvatar(group) {
     }
     if (isValidImageUrl(group.avatar_url)) {
         const avatar = $('<div class="avatar"><img loading="lazy"></div>').attr('title', group.name);
-        avatar.find('img').attr('src', group.avatar_url);
+        avatar.find('img').attr('src', shownThumbnail(group.avatar_thumbnail, group.avatar_thumbnail_still) ?? group.avatar_url);
         return avatar;
     }
 
@@ -1073,7 +1073,8 @@ function getGroupAvatar(group) {
         for (const member of group.members) {
             const memberAvatar = charactersStore.get(member)?.avatar ?? (/\.(png|webp|jpe?g|gif)$/i.test(member) ? member : undefined);
             if (memberAvatar && memberAvatar !== 'none') {
-                memberAvatars.push(group.member_thumbnails?.[member] ?? characterThumbnail(charactersStore.get(member) ?? memberAvatar));
+                const own = group.member_thumbnails?.[member];
+                memberAvatars.push(own ? shownThumbnail(own, group.member_thumbnails_still?.[member]) : characterThumbnail(charactersStore.get(member) ?? memberAvatar));
             }
             if (memberAvatars.length === 4) {
                 break;
@@ -2143,30 +2144,26 @@ async function uploadGroupAvatar(event) {
 
     const result = await getBase64Async(file);
 
-    $('#dialogue_popup').addClass('large_dialogue_popup wide_dialogue_popup');
-
-    const croppedImage = power_user.never_resize_avatars ? result :
-        await callGenericPopup('Set the crop position of the avatar image', POPUP_TYPE.CROP, '', { cropImage: result });
-
-    if (!croppedImage) {
+    const dlg = new Popup('Set the crop position of the avatar image', POPUP_TYPE.CROP, '', { cropImage: result });
+    if (!await dlg.show()) {
         return;
     }
 
-    let thumbnail = await createThumbnail(String(croppedImage), 300, 300);
-    //remove data:image/whatever;base64
-    thumbnail = thumbnail.replace(/^data:image\/[a-z]+;base64,/, '');
-    let _thisGroup = groupsStore.get(openGroupId);
-    let thumbnailUrl = await saveBase64AsFile(thumbnail, String(openGroupId ?? ''), undefined, 'jpg');
+    const [, mime = 'image/png', base64 = ''] = /^data:([^;]+);base64,(.*)$/.exec(String(result)) ?? [];
+    const extension = mime.split('/')[1] ?? 'png';
+    const saved = await saveUserImage(base64, String(openGroupId ?? ''), undefined, extension, dlg.cropData ?? null);
+    const shown = { avatar_url: saved.path, avatar_thumbnail: saved.thumbnail ?? null, ...(saved.thumbnail_still ? { avatar_thumbnail_still: saved.thumbnail_still } : {}) };
     if (!openGroupId) {
-        $('#group_avatar_preview img').attr('src', thumbnailUrl);
+        $('#group_avatar_preview img').attr('src', shownThumbnail(shown.avatar_thumbnail, shown.avatar_thumbnail_still) ?? saved.path);
         $('#rm_group_restore_avatar').show();
         return;
     }
 
-    groupsStore.update(openGroupId, { avatar_url: thumbnailUrl });
+    let _thisGroup = groupsStore.get(openGroupId);
+    groupsStore.update(openGroupId, shown);
     $('#group_avatar_preview').empty().append(getGroupAvatar(_thisGroup));
     $('#rm_group_restore_avatar').show();
-    await saveGroupField(openGroupId, { avatar_url: thumbnailUrl }, true, true, { silentGroups: true });
+    await saveGroupField(openGroupId, { avatar_url: saved.path }, true, true, { silentGroups: true });
 }
 
 async function restoreGroupAvatar() {

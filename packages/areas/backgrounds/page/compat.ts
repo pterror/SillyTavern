@@ -9,7 +9,7 @@ export type BackgroundSettings = {
     name: string;
     url: string;
     fitting: Fitting;
-    animation: boolean;
+    animatedThumbnails: boolean;
     sortOrder: SortOrder;
     thumbnailColumns: number | undefined;
 };
@@ -39,10 +39,10 @@ export function backgroundsCompat(
             get: () => options()?.fitting ?? 'classic',
             set: (fitting: Fitting) => void client.send('backgrounds.options', { fitting }),
         },
-        animation: {
+        animatedThumbnails: {
             enumerable: true,
-            get: () => options()?.animation ?? false,
-            set: (animation: boolean) => void client.send('backgrounds.options', { animation }),
+            get: () => options()?.animatedThumbnails ?? true,
+            set: (animatedThumbnails: boolean) => void client.send('backgrounds.options', { animatedThumbnails }),
         },
         sortOrder: {
             enumerable: true,

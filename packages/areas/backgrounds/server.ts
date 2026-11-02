@@ -11,14 +11,16 @@ export type SystemFile = {
     added: number | null;
     folders: string[];
     thumbnail: string | null;
-    original: string | null;
+    thumbnail_still: string | null;
 };
+
+export type ImageThumbnails = { thumbnail: string | null; thumbnail_still: string | null; animated: boolean };
 
 export type StoredOptions = {
     name?: string;
     url?: string;
     fitting?: string;
-    animation?: boolean;
+    animatedThumbnails?: boolean;
     sortOrder?: string;
     thumbnailColumns?: number;
 };
@@ -44,6 +46,7 @@ export type Ports = {
         write(context: ViewContext, change: { list?: string[]; locked?: string | null }): Promise<void>;
         saveImage(context: ViewContext, upload: Upload): Promise<string>;
         deleteImage(context: ViewContext, path: string): Promise<void>;
+        images(context: ViewContext, paths: string[]): Promise<Record<string, ImageThumbnails>>;
     };
     options: {
         read(user: User): Promise<StoredOptions>;
@@ -51,7 +54,6 @@ export type Ports = {
     };
 };
 
-const ANIMATED = /\.(mp4|webp|gif|apng)$/i;
 const DEFAULT_FILE = '__transparent.png';
 
 const fileOrDefault = (name: string | undefined) => (name === undefined || name === '' ? DEFAULT_FILE : name);
@@ -107,7 +109,7 @@ function optionsOf(stored: StoredOptions): BackgroundsView['options'] {
         fitting: (FITTINGS as readonly string[]).includes(stored.fitting ?? '')
             ? (stored.fitting as Fitting)
             : 'classic',
-        animation: stored.animation === true,
+        animatedThumbnails: stored.animatedThumbnails !== false,
         sortOrder: (SORT_ORDERS as readonly string[]).includes(stored.sortOrder ?? '')
             ? (stored.sortOrder as SortOrder)
             : 'az',
@@ -127,7 +129,8 @@ export function backgroundsArea(ports: Ports) {
         ]);
         const options = optionsOf(stored);
         const shownOf = (f: SystemFile) =>
-            (options.animation && f.original !== null ? f.original : f.thumbnail) ?? systemUrl(f.file);
+            (!options.animatedThumbnails && f.thumbnail_still !== null ? f.thumbnail_still : f.thumbnail) ??
+            systemUrl(f.file);
         const system: Background[] = sortBy(
             files,
             options.sortOrder,
@@ -159,7 +162,14 @@ export function backgroundsArea(ports: Ports) {
 
     const readChat = async (context: ViewContext): Promise<ChatBackgroundsView> => {
         const [stored, chat] = await Promise.all([ports.options.read(context.user), ports.chat.read(context)]);
-        const { sortOrder } = optionsOf(stored);
+        const { sortOrder, animatedThumbnails } = optionsOf(stored);
+        const images = chat ? await ports.chat.images(context, chat.list) : {};
+        const shownOf = (path: string) => {
+            const image = images[path];
+            const still = image?.thumbnail_still ?? null;
+            const thumbnail = !animatedThumbnails && still !== null ? still : image?.thumbnail;
+            return thumbnail ?? chatUrl(path);
+        };
         const locked = chat ? refOfCss(chat.locked) : null;
         const shown = locked ?? { file: fileOrDefault(stored.name), chat: false };
         return {
@@ -175,8 +185,8 @@ export function backgroundsArea(ports: Ports) {
                           file: path,
                           title: titleOf(path),
                           url: chatUrl(path),
-                          thumbnail: chatUrl(path),
-                          animated: ANIMATED.test(path),
+                          thumbnail: shownOf(path),
+                          animated: images[path]?.animated ?? false,
                           color: null,
                           aspect: null,
                           folders: [],
@@ -306,7 +316,9 @@ export function backgroundsArea(ports: Ports) {
                 await ports.options.write(context.user, {
                     ...stored,
                     ...(change.fitting === undefined ? {} : { fitting: change.fitting }),
-                    ...(change.animation === undefined ? {} : { animation: change.animation }),
+                    ...(change.animatedThumbnails === undefined
+                        ? {}
+                        : { animatedThumbnails: change.animatedThumbnails }),
                     ...(change.sortOrder === undefined ? {} : { sortOrder: change.sortOrder }),
                     ...(change.columns === undefined ? {} : { thumbnailColumns: change.columns }),
                 });

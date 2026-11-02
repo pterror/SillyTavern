@@ -7,6 +7,12 @@ import sanitize from 'sanitize-filename';
 
 import { clientRelativePath, removeFileExtension, getImages, isPathUnderParent } from '../util.js';
 import { MEDIA_EXTENSIONS, MEDIA_REQUEST_TYPE } from '../constants.js';
+import { requestStore } from '../user-stores.js';
+import { TYPE } from '../library-codes.js';
+import { removeImage, userImageKey, writeUserImage } from '../image-entities.js';
+import { normalizeCrop, thumbnailsFor } from '../thumbnail-urls.js';
+
+const IMAGE_FORMATS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'apng', 'bmp', 'avif']);
 
 /**
  * Ensure the directory for the provided file path exists.
@@ -70,7 +76,11 @@ router.post('/upload', async (request, response) => {
         ensureDirectoryExistence(pathToNewFile);
         const imageBuffer = Buffer.from(image, 'base64');
         await fs.promises.writeFile(pathToNewFile, new Uint8Array(imageBuffer));
-        response.send({ path: clientRelativePath(request.user.directories.root, pathToNewFile) });
+        const relative = clientRelativePath(request.user.directories.root, pathToNewFile);
+        if (!IMAGE_FORMATS.has(String(format).toLowerCase())) return response.send({ path: relative });
+        const crop = normalizeCrop(request.body.crop);
+        const facts = await writeUserImage((await requestStore(request)).lib, relative, imageBuffer, crop);
+        response.send({ path: relative, ...thumbnailsFor(facts, 'avatar', crop) });
     } catch (error) {
         console.error(error);
         response.status(500).send({ error: 'Failed to save the image' });
@@ -133,14 +143,15 @@ router.post('/folders', (request, response) => {
 /**
  * @param {import('express').Request} request
  * @param {string} relativePath
- * @returns {{ok: true}|{ok: false, status: number}}
+ * @returns {Promise<{ok: true}|{ok: false, status: number}>}
  */
-function deleteOneImage(request, relativePath) {
+async function deleteOneImage(request, relativePath) {
     const pathToDelete = path.join(request.user.directories.root, relativePath);
     if (!isPathUnderParent(request.user.directories.userImages, pathToDelete)) {
         return { ok: false, status: 400 };
     }
 
+    await removeImage((await requestStore(request)).lib, TYPE.userImage, userImageKey(relativePath));
     if (!fs.existsSync(pathToDelete)) {
         return { ok: false, status: 404 };
     }
@@ -153,12 +164,12 @@ function deleteOneImage(request, relativePath) {
 router.post('/delete', async (request, response) => {
     try {
         if (Array.isArray(request.body.paths)) {
-            const results = request.body.paths.map(p => {
+            const results = await Promise.all(request.body.paths.map(async p => {
                 if (typeof p !== 'string' || !p) {
                     return { path: p, ok: false };
                 }
-                return { path: p, ok: deleteOneImage(request, p).ok };
-            });
+                return { path: p, ok: (await deleteOneImage(request, p)).ok };
+            }));
             return response.send({ results });
         }
 
@@ -166,7 +177,7 @@ router.post('/delete', async (request, response) => {
             return response.status(400).send('No path specified');
         }
 
-        const result = deleteOneImage(request, request.body.path);
+        const result = await deleteOneImage(request, request.body.path);
         if (!result.ok) {
             return response.status(result.status).send(result.status === 404 ? 'File not found' : 'Invalid path');
         }

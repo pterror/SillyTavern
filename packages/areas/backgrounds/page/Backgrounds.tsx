@@ -425,7 +425,6 @@ export function Backgrounds(props: {
                                 <Thumbnail
                                     background={background}
                                     chat={false}
-                                    animation={view()?.options.animation ?? false}
                                     selected={isSelected({ file: background.file, chat: false })}
                                     locked={isLocked({ file: background.file, chat: false })}
                                     ticked={ticked().has(background.file)}
@@ -475,7 +474,6 @@ export function Backgrounds(props: {
                                 <Thumbnail
                                     background={background}
                                     chat={true}
-                                    animation={view()?.options.animation ?? false}
                                     selected={false}
                                     locked={isLocked({ file: background.file, chat: true })}
                                     ticked={false}
@@ -598,7 +596,6 @@ const buttonClass = (icon: string) => `jg-button fa-solid fa-fw pointer ${icon}`
 function Thumbnail(props: {
     background: Background;
     chat: boolean;
-    animation: boolean;
     selected: boolean;
     locked: boolean;
     ticked: boolean;
@@ -608,7 +605,6 @@ function Thumbnail(props: {
 }) {
     const [menuOpen, setMenuOpen] = createSignal(false);
     const isVideo = () => /\.mp4$/i.test(props.background.file);
-    const still = () => props.chat && props.background.animated && !props.animation && !isVideo();
     return (
         <div
             class={classes('bg_example flex-container', {
@@ -632,10 +628,9 @@ function Thumbnail(props: {
                 class="thumbnail-clipper"
                 style={{
                     ...(props.background.color !== null ? { 'background-color': props.background.color } : {}),
-                    ...(still() || isVideo() ? {} : { 'background-image': `url("${props.background.thumbnail}")` }),
+                    ...(isVideo() ? {} : { 'background-image': `url("${props.background.thumbnail}")` }),
                 }}
             >
-                <Show when={still()}>{<Still url={props.background.url} />}</Show>
                 <Show when={isVideo()}>
                     {<video src={props.background.url} muted preload="metadata" class="thumbnail-still" />}
                 </Show>
@@ -669,30 +664,6 @@ function Thumbnail(props: {
                 </For>
             </div>
         </div>
-    );
-}
-
-function Still(props: { url: string }) {
-    let canvas: HTMLCanvasElement | undefined;
-    const draw = (image: HTMLImageElement) => {
-        if (!canvas) return;
-        canvas.width = image.naturalWidth;
-        canvas.height = image.naturalHeight;
-        canvas.getContext('2d')?.drawImage(image, 0, 0);
-        image.remove();
-    };
-    return (
-        <>
-            <canvas class="thumbnail-still" ref={(element: HTMLCanvasElement) => (canvas = element)} />
-            <img
-                class="thumbnail-still thumbnail-loading"
-                loading="lazy"
-                decoding="async"
-                alt=""
-                src={props.url}
-                onLoad={(event) => draw(event.currentTarget)}
-            />
-        </>
     );
 }
 

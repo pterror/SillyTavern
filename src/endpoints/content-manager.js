@@ -192,7 +192,7 @@ async function seedContent(contentIndex, contentLogPath, resolveTarget, forceCat
             const sourceData = await parse(contentPath, 'png');
             const image = avatarImage(await fs.promises.readFile(contentPath));
             const seed = () => writeWithAvatar(lib, directories, basePath, image, () => lib.writeCard(directories, basePath, sourceData, {
-                avatarIdentityHash: image.avatarIdentityHash,
+                avatarIdentityHash: image.avatarIdentityHash, animatedHash: image.animatedHash,
             }));
             try {
                 await seed();

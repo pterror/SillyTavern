@@ -155,7 +155,6 @@ export const power_user = {
     toastr_position: defaultToastPosition,
     chat_width: 50,
     chat_width_max: 120,
-    never_resize_avatars: false,
     show_card_avatar_urls: false,
     hold_recent_characters: false,
     hold_recent_characters_count: 100,
@@ -1937,7 +1936,6 @@ export async function loadPowerUserSettings(settings, data) {
     $('#auto_continue_target_length').val(power_user.auto_continue.target_length);
     $('#play_message_sound').prop('checked', power_user.play_message_sound);
     $('#play_sound_unfocused').prop('checked', power_user.play_sound_unfocused);
-    $('#never_resize_avatars').prop('checked', power_user.never_resize_avatars);
     $('#show_card_avatar_urls').prop('checked', power_user.show_card_avatar_urls);
     $('#hold_recent_characters').prop('checked', !!power_user.hold_recent_characters);
     $('#hold_recent_characters_count').val(clampRecentCharacterCount(power_user.hold_recent_characters_count));
@@ -3513,11 +3511,6 @@ jQuery(() => {
     $('#ui-preset-save-button').on('click', () => saveTheme());
     $('#ui-preset-update-button').on('click', () => updateTheme());
     $('#ui-preset-delete-button').on('click', () => deleteTheme());
-
-    $('#never_resize_avatars').on('input', function () {
-        power_user.never_resize_avatars = !!$(this).prop('checked');
-        saveSettingsDebounced('power_user.never_resize_avatars');
-    });
 
     $('#show_card_avatar_urls').on('input', function () {
         power_user.show_card_avatar_urls = !!$(this).prop('checked');

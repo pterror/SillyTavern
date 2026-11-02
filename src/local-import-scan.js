@@ -397,15 +397,15 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     await pipelineResult.finish({ type: 'no-write' });
                     console.warn(`[local-import] Failed to import ${sourcePath} (unrecognized content or import error) - will retry next pass.`);
                 } else {
-                    const writeCard = (/** @type {string} */ avatarIdentityHash) => () => lib.writeCard(directories, `${pngName}.png`, data, {
-                        contentHash, avatarIdentityHash, dateAdded: Math.round(stat.mtimeMs),
+                    const writeCard = (/** @type {string} */ avatarIdentityHash, /** @type {string | null} */ animatedHash = null) => () => lib.writeCard(directories, `${pngName}.png`, data, {
+                        contentHash, avatarIdentityHash, animatedHash, dateAdded: Math.round(stat.mtimeMs),
                     });
                     let stored = true;
                     if (format === 'png') {
                         await pipelineResult.finish({ type: 'no-write' });
                         if (!pipelineResult.avatarIdentityHash) throw new Error('the import worker answered no image hash');
                         stored = await linkWithAvatar(lib, directories, `${pngName}.png`, sourcePath, async () => {
-                            await writeCard(pipelineResult.avatarIdentityHash)();
+                            await writeCard(pipelineResult.avatarIdentityHash, pipelineResult.animatedHash ?? null)();
                             return true;
                         }, { size: stat.size, mtimeMs: stat.mtimeMs }) ?? false;
                     } else {
