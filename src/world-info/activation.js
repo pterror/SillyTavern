@@ -1,4 +1,4 @@
-import { WorldInfoBuffer, findKeySpans, matchedKeys, matchesEntryKeys, scan_state } from './key-matching.js';
+import { WorldInfoBuffer, findKeySpans, matchDefaultsOf, matchedKeys, matchesEntryKeys, scan_state } from './key-matching.js';
 import { verifyProbability } from './probability.js';
 import { WorldInfoTimedEffects } from './timed-effects.js';
 import { filterByInclusionGroups } from './inclusion-groups.js';
@@ -39,7 +39,7 @@ import { substituteParams } from '../macro-substitution.js';
  *   via: WIEntry[],
  * }} ActivatedTrace
  * @typedef {{ entry: WIEntry, why: 'budget' | 'chance' | 'group' }} CutTrace
- * @typedef {{ activated: ActivatedTrace[], cut: CutTrace[] }} ActivationTrace
+ * @typedef {{ activated: ActivatedTrace[], cut: CutTrace[], defaults: import('./key-matching.js').MatchDefaults }} ActivationTrace
  */
 
 /**
@@ -47,16 +47,17 @@ import { substituteParams } from '../macro-substitution.js';
  * @param {{entry: WIEntry, from: number, to: number}[][]} recurseParts
  * @param {string[]} recurseTexts
  * @param {WIEntry} entry
+ * @param {import('./key-matching.js').MatchDefaults} defaults
  * @returns {WIEntry[]}
  */
-function viaOf(keys, recurseParts, recurseTexts, entry) {
+function viaOf(keys, recurseParts, recurseTexts, entry, defaults) {
     /** @type {Set<WIEntry>} */
     const via = new Set();
     for (const { key, sources } of keys) {
         for (const source of sources) {
             if (!('recurse' in source)) continue;
             const parts = recurseParts[source.recurse] ?? [];
-            for (const [from] of findKeySpans(recurseTexts[source.recurse] ?? '', key, entry)) {
+            for (const [from] of findKeySpans(recurseTexts[source.recurse] ?? '', key, entry, defaults)) {
                 const part = parts.find(p => from >= p.from && from < p.to);
                 if (part && part.entry !== entry) via.add(part.entry);
             }
@@ -70,44 +71,39 @@ function viaOf(keys, recurseParts, recurseTexts, entry) {
  * @param {string[]} chatMessages
  * @param {object} options
  * @param {number} options.maxContext
- * @param {number} options.budgetPercent
- * @param {number} [options.budgetCap]
- * @param {number} [options.depth]
- * @param {boolean} [options.recursive]
- * @param {number} [options.maxRecursionSteps]
+ * @param {import('../../public/scripts/world-info-globals.js').WorldInfoGlobals} options.globals
  * @param {object} [options.globalScanData]
  * @param {{name1?: string, name2?: string}} [options.macroContext]
  * @param {(text: string) => Promise<number>} options.countTokens
  * @param {() => number} [options.random]
  * @param {object} [options.chatMetadata]
  * @param {boolean} [options.isDryRun]
- * @param {boolean} [options.useGroupScoring]
  * @param {{trigger?: string, characterFilename?: string, characterTags?: string[]}} [options.entryFilterContext]
- * @param {number} [options.minActivations]
- * @param {number} [options.minActivationsDepthMax]
  * @param {Map<string, WIEntry>} [options.externalActivations]
  * @param {string[]} [options.additionalScanInjects]
  * @returns {Promise<{activatedEntries: WIEntry[], content: string, trace: ActivationTrace}>}
  */
 export async function activateWorldInfoEntries(entries, chatMessages, options) {
     const {
-        maxContext, budgetPercent, budgetCap = 0, depth = 0, recursive = true,
-        maxRecursionStepsSetting = 0, globalScanData = {}, macroContext = {}, countTokens, random = Math.random,
-        chatMetadata = {}, isDryRun = false, useGroupScoring = false, entryFilterContext = {},
-        minActivations = 0, minActivationsDepthMax = 0, externalActivations = new Map(),
+        maxContext, globals, globalScanData = {}, macroContext = {}, countTokens, random = Math.random,
+        chatMetadata = {}, isDryRun = false, entryFilterContext = {}, externalActivations = new Map(),
         additionalScanInjects = [],
     } = options;
-    const maxRecursionSteps = maxRecursionStepsSetting > 0 ? maxRecursionStepsSetting : 25;
+    const recursive = globals.world_info_recursive;
+    const useGroupScoring = globals.world_info_use_group_scoring;
+    const minActivations = globals.world_info_min_activations;
+    const minActivationsDepthMax = globals.world_info_min_activations_depth_max;
+    const maxRecursionSteps = globals.world_info_max_recursion_steps > 0 ? globals.world_info_max_recursion_steps : 25;
 
-    let budget = Math.round(budgetPercent * maxContext / 100) || 1;
-    if (budgetCap > 0 && budget > budgetCap) budget = budgetCap;
+    let budget = Math.round(globals.world_info_budget * maxContext / 100) || 1;
+    if (globals.world_info_budget_cap > 0 && budget > globals.world_info_budget_cap) budget = globals.world_info_budget_cap;
 
     const candidateEntries = entries.filter(e => !e.disable);
     /** @type {ActivationTrace} */
-    const trace = { activated: [], cut: [] };
+    const trace = { activated: [], cut: [], defaults: matchDefaultsOf(globals) };
     if (candidateEntries.length === 0) return { activatedEntries: [], content: '', trace };
 
-    const buffer = new WorldInfoBuffer(chatMessages, globalScanData, { depth }, externalActivations);
+    const buffer = new WorldInfoBuffer(chatMessages, globalScanData, globals, externalActivations);
     for (const text of additionalScanInjects) {
         if (text) buffer.addInject(text);
     }
@@ -280,7 +276,7 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
         const found = why.get(entry) ?? { why: 'key', keys: [] };
         trace.activated.push({
             entry, why: found.why, step: stepOf.get(entry) ?? 1, keys: found.keys,
-            via: viaOf(found.keys, recurseParts, recurseTexts, entry),
+            via: viaOf(found.keys, recurseParts, recurseTexts, entry, buffer.matchDefaults),
         });
     }
     for (const [entry, reason] of cut) {

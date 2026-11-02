@@ -68,7 +68,7 @@ export async function buildActivationRecord(trace, { messages, injects, books })
                 if ('depth' in source) {
                     const message = messages[source.depth];
                     if (!message || message.nodeId === '') return [];
-                    const spans = findKeySpans(message.text, key, a.entry);
+                    const spans = findKeySpans(message.text, key, a.entry, trace.defaults);
                     const of = getStringHash(message.text);
                     return [message.nodeId === null ? { sent: true, spans, of } : { node: message.nodeId, spans, of }];
                 }

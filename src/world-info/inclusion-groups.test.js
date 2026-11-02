@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { filterByInclusionGroups } from './inclusion-groups.js';
 import { WorldInfoBuffer, scan_state } from './key-matching.js';
+import { globalsWith } from './test-globals.js';
 import { WorldInfoTimedEffects } from './timed-effects.js';
 
 function makeTimedEffects() {
     return new WorldInfoTimedEffects(['a'], [], {});
 }
-const buffer = new WorldInfoBuffer(['a dragon appears'], {}, { depth: 1 });
+const buffer = new WorldInfoBuffer(['a dragon appears'], {}, globalsWith({ world_info_depth: 1 }));
 
 {
     const activatedNow = [{ uid: '1', world: 'w', content: 'a' }];

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { activateWorldInfoEntries } from './activation.js';
+import { activate as activateWorldInfoEntries } from './test-globals.js';
 import { parseDecorators } from './decorators.js';
 
 const countTokens = async (text) => Math.ceil(text.length / 4);

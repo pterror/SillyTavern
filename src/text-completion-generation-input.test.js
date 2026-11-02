@@ -299,10 +299,10 @@ async function run() {
         'a real file-attachment reference forwarded via userMessageExtra is actually inlined into the assembled prompt, via the already-generic file-attachment-inline.js machinery',
     );
 
-    assert.equal(input.worldInfoDepth, 3, 'worldInfoDepth resolves from the NESTED world_info_settings.world_info_depth, not a top-level key');
-    assert.equal(input.worldInfoBudgetPercent, 30);
-    assert.equal(input.worldInfoIncludeNames, true);
-    assert.equal(input.worldInfoRecursive, false);
+    assert.equal(input.worldInfoGlobals.world_info_depth, 3, 'world info settings resolve from the NESTED world_info_settings, not a top-level key');
+    assert.equal(input.worldInfoGlobals.world_info_budget, 30);
+    assert.equal(input.worldInfoGlobals.world_info_include_names, true);
+    assert.equal(input.worldInfoGlobals.world_info_recursive, false);
 
     assert.equal(input.model, 'test-model-7b', 'model resolves via the real, reused resolveTextGenBackend()');
     assert.equal(input.settings.type, 'ooba', 'settings forwards the real textgenerationwebui_settings object');

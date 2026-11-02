@@ -36,6 +36,7 @@ import { checkCharactersExistOrNull } from './character-existence-check.js';
 import { character_world_link, resolveCharacterWorldLink } from './character-world-link.js';
 import { bindFieldDraft, clearDraftsUnder, clearThingDrafts, hasFieldDrafts, readFieldDraft, revertChanges, writeFieldDraft } from './field-drafts.js';
 import { isUserEvent } from './live-editor/registry.js';
+import { WORLD_INFO_GLOBAL_DEFAULTS } from './world-info-globals.js';
 
 /**
  * @returns {boolean}
@@ -86,20 +87,20 @@ export let world_info = {};
 export let selected_world_info = [];
 /** @type {string[]} */
 export let world_names;
-export let world_info_depth = 2;
-export let world_info_min_activations = 0; // if > 0, will continue seeking chat until minimum world infos are activated
-export let world_info_min_activations_depth_max = 0; // used when (world_info_min_activations > 0)
+export let world_info_depth = WORLD_INFO_GLOBAL_DEFAULTS.world_info_depth;
+export let world_info_min_activations = WORLD_INFO_GLOBAL_DEFAULTS.world_info_min_activations;
+export let world_info_min_activations_depth_max = WORLD_INFO_GLOBAL_DEFAULTS.world_info_min_activations_depth_max;
 
-export let world_info_budget = 25;
-export let world_info_include_names = true;
-export let world_info_recursive = false;
-export let world_info_overflow_alert = false;
-export let world_info_case_sensitive = false;
-export let world_info_match_whole_words = false;
-export let world_info_use_group_scoring = false;
-export let world_info_character_strategy = world_info_insertion_strategy.character_first;
-export let world_info_budget_cap = 0;
-export let world_info_max_recursion_steps = 0;
+export let world_info_budget = WORLD_INFO_GLOBAL_DEFAULTS.world_info_budget;
+export let world_info_include_names = WORLD_INFO_GLOBAL_DEFAULTS.world_info_include_names;
+export let world_info_recursive = WORLD_INFO_GLOBAL_DEFAULTS.world_info_recursive;
+export let world_info_overflow_alert = WORLD_INFO_GLOBAL_DEFAULTS.world_info_overflow_alert;
+export let world_info_case_sensitive = WORLD_INFO_GLOBAL_DEFAULTS.world_info_case_sensitive;
+export let world_info_match_whole_words = WORLD_INFO_GLOBAL_DEFAULTS.world_info_match_whole_words;
+export let world_info_use_group_scoring = WORLD_INFO_GLOBAL_DEFAULTS.world_info_use_group_scoring;
+export let world_info_character_strategy = WORLD_INFO_GLOBAL_DEFAULTS.world_info_character_strategy;
+export let world_info_budget_cap = WORLD_INFO_GLOBAL_DEFAULTS.world_info_budget_cap;
+export let world_info_max_recursion_steps = WORLD_INFO_GLOBAL_DEFAULTS.world_info_max_recursion_steps;
 /** @type {Map<string, {data: any, save: () => void}>} */
 const pendingWorldSaves = new Map();
 

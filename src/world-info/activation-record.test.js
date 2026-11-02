@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import { activateWorldInfoEntries } from './activation.js';
+import { activate as activateWorldInfoEntries } from './test-globals.js';
 import { buildActivationRecord, mergeRecords, withSentMessage } from './activation-record.js';
 import { findKeySpans } from './key-matching.js';
+import { LOOSE } from './test-globals.js';
 import { EMBEDDED_WORLD_NAME } from './candidate-resolution.js';
 import { getStringHash } from '../../public/scripts/hash-utils.js';
 
@@ -15,12 +16,12 @@ const books = {
 };
 
 {
-    assert.deepEqual(findKeySpans('The Dragon and the dragonfly', 'dragon', {}), [[4, 10], [19, 25]]);
-    assert.deepEqual(findKeySpans('The Dragon and the dragonfly', 'dragon', { matchWholeWords: true }), [[4, 10]]);
-    assert.deepEqual(findKeySpans('The Dragon', 'dragon', { caseSensitive: true }), []);
-    assert.deepEqual(findKeySpans('dragon dragon', 'dragon', { matchWholeWords: true }), [[0, 6], [7, 13]]);
-    assert.deepEqual(findKeySpans('a red dragon, a blue drake', '/dra(gon|ke)/i', {}), [[6, 12], [21, 26]]);
-    assert.deepEqual(findKeySpans('x', '', {}), []);
+    assert.deepEqual(findKeySpans('The Dragon and the dragonfly', 'dragon', {}, LOOSE), [[4, 10], [19, 25]]);
+    assert.deepEqual(findKeySpans('The Dragon and the dragonfly', 'dragon', { matchWholeWords: true }, LOOSE), [[4, 10]]);
+    assert.deepEqual(findKeySpans('The Dragon', 'dragon', { caseSensitive: true }, LOOSE), []);
+    assert.deepEqual(findKeySpans('dragon dragon', 'dragon', { matchWholeWords: true }, LOOSE), [[0, 6], [7, 13]]);
+    assert.deepEqual(findKeySpans('a red dragon, a blue drake', '/dra(gon|ke)/i', {}, LOOSE), [[6, 12], [21, 26]]);
+    assert.deepEqual(findKeySpans('x', '', {}, LOOSE), []);
 }
 
 {

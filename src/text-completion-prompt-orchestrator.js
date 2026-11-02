@@ -88,15 +88,7 @@ const GENERATION_TYPE_TRIGGERS = ['normal', 'continue', 'impersonate', 'swipe', 
  * @property {number} [promptInsertionDepth]
  * @property {import('./cfg-prompt-resolve.js').ChatMetadataCfgPrompts} [chatMetadataPrompts]
  * @property {import('./world-info/activation.js').WIEntry[]} [worldInfoCandidates]
- * @property {boolean} [worldInfoIncludeNames]
- * @property {number} [worldInfoBudgetPercent]
- * @property {number} [worldInfoBudgetCap]
- * @property {number} [worldInfoDepth]
- * @property {boolean} [worldInfoRecursive]
- * @property {number} [worldInfoMaxRecursionSteps]
- * @property {number} [worldInfoMinActivations]
- * @property {number} [worldInfoMinActivationsDepthMax]
- * @property {boolean} [worldInfoUseGroupScoring]
+ * @property {import('../public/scripts/world-info-globals.js').WorldInfoGlobals} worldInfoGlobals
  * @property {object} [entryFilterContext]
  * @property {Map<string, object>} [externalActivations]
  * @property {() => number} [worldInfoRandom]
@@ -164,9 +156,7 @@ export async function assembleTextCompletionPrompt(input) {
         regexScripts = [], regexExtensionEnabled = true,
         tokenPadding = 0, countTokens, countPromptTokens = countTokens, encodeTokens, encodeTokensByType, novelTokenizerType, amountGen = 0, requestTokenProbabilities = false,
         chatGuidanceScale, groupchatIndividualChars = false, charaCfg, globalCfg, promptCombine = [], promptSeparator, promptInsertionDepth = 1, chatMetadataPrompts = {},
-        worldInfoCandidates = [], worldInfoIncludeNames = false, worldInfoBudgetPercent = 25, worldInfoBudgetCap = 0,
-        worldInfoDepth = 2, worldInfoRecursive = true, worldInfoMaxRecursionSteps = 0,
-        worldInfoMinActivations = 0, worldInfoMinActivationsDepthMax = 0, worldInfoUseGroupScoring = false,
+        worldInfoCandidates = [], worldInfoGlobals,
         entryFilterContext = {}, externalActivations = new Map(), worldInfoRandom = Math.random,
         noteSettings = {}, hasCharacterOrGroup = false,
         storyStringTemplate = '', storyStringPosition = 0, storyStringDepth = 1, storyStringRole = 0,
@@ -266,7 +256,7 @@ export async function assembleTextCompletionPrompt(input) {
 
     const authorsNote = resolveAuthorsNote({ chatMetadata, noteSettings, chat, avatar, hasCharacterOrGroup });
 
-    const chatForWI = coreChat.map(x => worldInfoIncludeNames ? `${x.name}: ${x.mes}` : x.mes).reverse();
+    const chatForWI = coreChat.map(x => worldInfoGlobals.world_info_include_names ? `${x.name}: ${x.mes}` : x.mes).reverse();
     const decoratedCandidates = worldInfoCandidates.map(entry => {
         const [decorators, content] = parseDecorators(entry.content || '');
         return { ...entry, decorators, content };
@@ -286,12 +276,9 @@ export async function assembleTextCompletionPrompt(input) {
     ].filter(([, text]) => Boolean(text));
     const additionalScanInjects = scanInjects.map(([, text]) => text);
     const { activatedEntries, trace } = await activateWorldInfoEntries(decoratedCandidates, chatForWI, {
-        maxContext: thisMaxContext, budgetPercent: worldInfoBudgetPercent, budgetCap: worldInfoBudgetCap,
-        depth: worldInfoDepth, recursive: worldInfoRecursive, maxRecursionStepsSetting: worldInfoMaxRecursionSteps,
+        maxContext: thisMaxContext, globals: worldInfoGlobals,
         globalScanData, macroContext, countTokens, random: worldInfoRandom, chatMetadata, isDryRun,
-        useGroupScoring: worldInfoUseGroupScoring, entryFilterContext,
-        minActivations: worldInfoMinActivations, minActivationsDepthMax: worldInfoMinActivationsDepthMax,
-        externalActivations, additionalScanInjects,
+        entryFilterContext, externalActivations, additionalScanInjects,
     });
     const activations = isDryRun || !directories ? null : await buildActivationRecord(trace, {
         messages: scannedMessages,

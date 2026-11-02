@@ -10,7 +10,7 @@ export const HEAVY_FACTOR = 4;
 export const HEAVY_MIN_ENTRIES = 4;
 
 /**
- * @typedef {{ caseSensitive?: boolean, matchWholeWords?: boolean }} Defaults
+ * @typedef {import('./key-matching.js').MatchDefaults} Defaults
  * @typedef {{ name1?: string, name2?: string }} MacroContext
  * @typedef {{ id: bigint, key: string[], content: string, constant: boolean, caseSensitive: boolean | null, matchWholeWords: boolean | null, broken: string | null }} Facts
  * @typedef {{ entry: bigint, name: string, spans: [number, number][] }} Reference
@@ -90,9 +90,9 @@ export function mention(text, name, target, defaults) {
 export class References {
     /**
      * @param {import('../library-engine.js').LibraryEngine} lib
-     * @param {{ defaults?: Defaults, macroContext?: MacroContext | null }} [options]
+     * @param {{ defaults: Defaults, macroContext?: MacroContext | null }} options
      */
-    constructor(lib, { defaults = {}, macroContext = null } = {}) {
+    constructor(lib, { defaults, macroContext = null }) {
         this.lib = lib;
         this.store = lib.store;
         this.defaults = defaults;
