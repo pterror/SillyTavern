@@ -6,6 +6,7 @@
         "test": "npm run test:unit && npm run test:e2e",
         "test:unit": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config jest.config.json",
         "test:e2e": "playwright test",
+        "test:network": "unshare -rn sh -c 'ip link set lo up && exec playwright test -c network.config.js \"$@\"' sh",
         "lint": "eslint \"**/*.js\" ./*.js",
         "lint:fix": "eslint \"**/*.js\" ./*.js --fix"
     },
