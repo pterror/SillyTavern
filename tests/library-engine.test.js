@@ -347,7 +347,8 @@ describe('the library on the engine', () => {
         for (const [i, row] of engRows.entries()) {
             const o = oldRows[i];
             const hydrated = { ...withoutChats(files[o.id]), fav: o.fav, date_added: o.date_added, date_last_chat: o.date_last_chat, chat_size: o.chat_size, tag_ids: [...oldTags[o.id]].sort() };
-            const { member_thumbnails: memberThumbnails, ...item } = /** @type {Record<string, any>} */ (row.item);
+            const { member_thumbnails: memberThumbnails, avatar_thumbnail: avatarThumbnail, ...item } = /** @type {Record<string, any>} */ (row.item);
+            expect(avatarThumbnail).toBeNull();
             expect(item).toEqual(hydrated);
             expect(Object.keys(memberThumbnails)).toEqual((hydrated.members ?? []).slice(0, 4));
         }
@@ -396,7 +397,7 @@ describe('the library on the engine', () => {
             const [stored] = await library.groups([group.id]);
             const want = withoutChats(/** @type {any} */ (next));
             const shown = Object.fromEntries(want.members.slice(0, 4).map((/** @type {string} */ m) => [m, null]));
-            expect(stored).toEqual({ ...want, fav: !!want.fav, tag_ids: [], member_thumbnails: shown });
+            expect(stored).toEqual({ ...want, fav: !!want.fav, tag_ids: [], member_thumbnails: shown, avatar_thumbnail: null });
         }
     });
 

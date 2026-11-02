@@ -5,7 +5,8 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import { DEFAULT_AVATAR_PATH } from './constants.js';
 import { copyCharacterFile } from './local-import-copy.js';
-import { computeAvatarIdentityHashFromImageBuffer, stripCardData } from './character-card-parser.js';
+import extract from 'png-chunks-extract';
+import { computeAnimatedHashFromChunks, computeAvatarIdentityHashFromChunks, stripCardData } from './character-card-parser.js';
 import { TYPE } from './library-engine.js';
 
 const LANE = -1;
@@ -33,11 +34,12 @@ export async function avatarPathOf(lib, directories, avatar) {
 
 /**
  * @param {Buffer} image
- * @returns {{ image: Buffer, avatarIdentityHash: string }}
+ * @returns {{ image: Buffer, avatarIdentityHash: string, animatedHash: string | null }}
  */
 export function avatarImage(image) {
     const stripped = stripCardData(image);
-    return { image: stripped, avatarIdentityHash: computeAvatarIdentityHashFromImageBuffer(stripped) };
+    const chunks = extract(new Uint8Array(stripped));
+    return { image: stripped, avatarIdentityHash: computeAvatarIdentityHashFromChunks(chunks), animatedHash: computeAnimatedHashFromChunks(chunks) };
 }
 
 /**

@@ -7561,3 +7561,14 @@ textarea.live-editor-textarea {
 .cm-editor.live-editor .live-paste-picker-item[aria-checked="true"] {
     border-color: var(--SmartThemeQuoteColor);
 }
+
+.framed_image {
+    position: relative;
+    overflow: hidden;
+    border-radius: 10px;
+}
+
+.framed_image > img {
+    position: absolute;
+    max-width: none !important;
+}

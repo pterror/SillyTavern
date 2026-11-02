@@ -71,6 +71,32 @@ async function apng(still, secondFrame) {
 }
 
 /**
+ * @param {number} w
+ * @param {number} h
+ * @param {[number, number, number][]} colors
+ */
+async function realApng(w, h, colors) {
+    const UPNG = (await import('upng-js')).default;
+    const frames = colors.map(([r, g, b]) => {
+        const px = new Uint8Array(w * h * 4);
+        for (let i = 0; i < w * h; i++) px.set([r, g, b, 255], i * 4);
+        return px.buffer;
+    });
+    return Buffer.from(UPNG.encode(frames, w, h, 0, colors.map(() => 100)));
+}
+
+/**
+ * @param {Buffer} webp
+ */
+async function webpFrames(webp) {
+    const WebP = (await import('node-webpmux')).default;
+    await WebP.Image.initLib();
+    const image = new WebP.Image();
+    await image.load(webp);
+    return { animated: image.hasAnim, frames: image.hasAnim ? image.frames.length : 1, width: image.width, height: image.height };
+}
+
+/**
  * @param {string} url
  */
 async function get(url) {
@@ -102,7 +128,9 @@ beforeAll(async () => {
 
     const express = (await import('express')).default;
     const app = express();
-    app.use(express.json());
+    app.use(express.json({ limit: '50mb' }));
+    const multer = (await import('multer')).default;
+    app.use(multer({ dest: fs.mkdtempSync(path.join(os.tmpdir(), 'st-thumbnail-uploads-')) }).single('avatar'));
     app.use((req, res, next) => {
         req.user = user.user;
         next();
@@ -111,6 +139,7 @@ beforeAll(async () => {
     app.use('/thumbnail', thumbnails.router);
     app.use('/api/avatars', (await import('../src/endpoints/avatars.js')).router);
     app.use('/api/characters', (await import('../src/endpoints/characters.js')).router);
+    app.use('/api/images', (await import('../src/endpoints/images.js')).router);
     server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
     baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -135,7 +164,22 @@ afterEach(() => user.close());
 async function seedCharacter(avatar, image) {
     const name = avatar.replace(/\.png$/, '');
     fs.writeFileSync(path.join(user.directories.characters, avatar), image);
-    await user.store.lib.writeCard(user.directories, avatar, JSON.stringify({ name, data: { name, extensions: {} } }), { avatarIdentityHash: identity.stillHash(image) });
+    await user.store.lib.writeCard(user.directories, avatar, JSON.stringify({ name, data: { name, extensions: {} } }), { avatarIdentityHash: identity.stillHash(image), animatedHash: identity.animatedHash(image) });
+}
+
+/**
+ * @param {string} name
+ * @param {Buffer} image
+ * @param {object | null} [crop]
+ */
+async function createCharacter(name, image, crop = null) {
+    const form = new FormData();
+    form.set('ch_name', name);
+    form.set('avatar', new Blob([image]), 'upload');
+    const query = crop ? `?crop=${encodeURIComponent(JSON.stringify(crop))}` : '';
+    const response = await fetch(`${baseUrl}/api/characters/create${query}`, { method: 'POST', body: form });
+    expect(response.status).toBe(200);
+    return (await response.text()).trim();
 }
 
 describe('an image\'s identity', () => {
@@ -154,11 +198,14 @@ describe('an image\'s identity', () => {
         expect(identity.stillHash(write(png, JSON.stringify({ name: 'x' })))).toBe(identity.stillHash(png));
     });
 
-    test('a thumbnail name parses back to its hash and spec, and an unknown spec names nothing', () => {
+    test('a thumbnail name parses back to its hash, spec, crop and whether it moves; an unknown spec names nothing', () => {
         const hex = 'a'.repeat(64);
-        expect(urls.parseThumbnailUrl(urls.stillUrl(hex, 'avatar'))).toEqual({ hex, which: codes.HASH.avatarIdentity, spec: urls.THUMBNAIL_SPECS.avatar });
-        expect(urls.parseThumbnailUrl(urls.animatedUrl(hex))).toEqual({ hex, which: codes.HASH.animated, spec: null });
-        expect(urls.parseThumbnailName(`${hex}.c1x1.webp`)).toBeNull();
+        const crop = { x: 1, y: 2, width: 30, height: 40 };
+        expect(urls.parseThumbnailUrl(urls.stillUrl(hex, 'avatar'))).toEqual({ hex, which: codes.HASH.avatarIdentity, spec: urls.THUMBNAIL_SPECS.avatar, crop: null, animate: false });
+        expect(urls.parseThumbnailUrl(urls.animatedUrl(hex, 'avatar', crop))).toEqual({ hex, which: codes.HASH.animated, spec: urls.THUMBNAIL_SPECS.avatar, crop, animate: true });
+        expect(urls.stillUrl(hex, 'avatar', crop)).not.toBe(urls.stillUrl(hex, 'avatar'));
+        expect(urls.parseThumbnailName(`s${hex}.c1x1.full.webp`)).toBeNull();
+        expect(urls.parseThumbnailName(`s${hex}.c120x180.0-0-0-5.webp`)).toBeNull();
         expect(urls.parseThumbnailName('../x.webp')).toBeNull();
     });
 });
@@ -181,12 +228,34 @@ describe('GET /thumbnail/<hash>.<spec>.webp', () => {
         expect((await get(character.thumbnail)).bytes.equals(first.bytes)).toBe(true);
     });
 
-    test('an APNG character\'s thumbnail is a still of its first frame', async () => {
-        await seedCharacter('Moving.png', await apng(png, 3));
+    test('an animated character\'s thumbnail moves, every frame at the avatar spec, and its still is the first frame', async () => {
+        const moving = await realApng(60, 90, [[200, 0, 0], [0, 200, 0], [0, 0, 200]]);
+        await seedCharacter('Moving.png', moving);
         const character = await (await post('/api/characters/get', { avatar_url: 'Moving.png' })).json();
-        expect(character.thumbnail).toBe(urls.stillUrl(identity.stillHash(png), 'avatar'));
-        const shown = await get(character.thumbnail);
-        expect([shown.status, shown.type]).toEqual([200, 'image/webp']);
+        expect(character.thumbnail).toBe(urls.animatedUrl(/** @type {string} */ (identity.animatedHash(moving)), 'avatar'));
+        expect(character.thumbnail_still).toBe(urls.stillUrl(identity.stillHash(moving), 'avatar'));
+        const animated = await get(character.thumbnail);
+        expect([animated.status, animated.type]).toEqual([200, 'image/webp']);
+        expect(await webpFrames(animated.bytes)).toEqual({ animated: true, frames: 3, width: 120, height: 180 });
+        const still = await get(character.thumbnail_still);
+        expect(await webpFrames(still.bytes)).toEqual({ animated: false, frames: 1, width: 120, height: 180 });
+    });
+
+    test('a GIF uploaded as a character\'s avatar becomes an APNG card that keeps every frame', async () => {
+        const UPNG = (await import('upng-js')).default;
+        const omggif = (await import('omggif')).default;
+        const w = 20, h = 30;
+        const out = Buffer.alloc(4096);
+        const writer = new omggif.GifWriter(out, w, h, { loop: 0, palette: [0xff0000, 0x00ff00] });
+        writer.addFrame(0, 0, w, h, new Array(w * h).fill(0), { delay: 10 });
+        writer.addFrame(0, 0, w, h, new Array(w * h).fill(1), { delay: 10 });
+        const gif = out.subarray(0, writer.end());
+        const avatar = await createCharacter('Gif', gif);
+        const stored = fs.readFileSync(path.join(user.directories.characters, avatar));
+        expect(UPNG.decode(stored).frames.length).toBe(2);
+        const character = await (await post('/api/characters/get', { avatar_url: avatar })).json();
+        expect(character.thumbnail.startsWith('/thumbnail/a')).toBe(true);
+        expect((await webpFrames((await get(character.thumbnail)).bytes)).frames).toBe(2);
     });
 
     test('a background\'s thumbnail keeps its aspect within 200px', async () => {
@@ -210,7 +279,7 @@ describe('GET /thumbnail/<hash>.<spec>.webp', () => {
         expect((await get('/thumbnail?type=avatar&file=Alice.png')).status).toBe(404);
     });
 
-    test('an animated background\'s still is its first frame, and its animation is its own bytes at a URL of every frame', async () => {
+    test('two animations with the same first frame share their still thumbnail and have their own animated ones', async () => {
         const a = await apng(png, 1);
         const b = await apng(png, 2);
         for (const [file, image] of /** @type {[string, Buffer][]} */ ([['a.png', a], ['b.png', b]])) {
@@ -219,12 +288,10 @@ describe('GET /thumbnail/<hash>.<spec>.webp', () => {
         }
         const [bgA, bgB] = (await images.imagesOf(user.store.lib, codes.TYPE.background)).map(images.backgroundOf);
         expect(bgA.animated && bgB.animated).toBe(true);
-        expect(bgA.thumbnail).toBe(bgB.thumbnail);
-        expect(bgA.original).not.toBe(bgB.original);
-        const original = await get(/** @type {string} */ (bgB.original));
-        expect(original.status).toBe(200);
-        expect(original.bytes.equals(b)).toBe(true);
-        expect((await get(/** @type {string} */ (bgA.thumbnail))).type).toBe('image/webp');
+        expect(bgA.thumbnail_still).toBe(bgB.thumbnail_still);
+        expect(bgA.thumbnail).not.toBe(bgB.thumbnail);
+        expect((await get(/** @type {string} */ (bgA.thumbnail_still))).type).toBe('image/webp');
+        expect('original' in bgA).toBe(false);
     });
 });
 
@@ -250,10 +317,10 @@ describe('persona images', () => {
         fs.writeFileSync(path.join(user.directories.avatars, 'me.png'), png);
         await images.writePersonaImage(user.store.lib, 'me.png', png);
         const listed = await (await post('/api/avatars/get')).json();
-        expect(listed).toEqual({ avatars: ['me.png'], thumbnails: { 'me.png': urls.stillUrl(identity.stillHash(png), 'avatar') }, refs: { 'me.png': '/thumbnail?type=persona&file=me.png' } });
+        expect(listed).toEqual({ avatars: ['me.png'], thumbnails: { 'me.png': urls.stillUrl(identity.stillHash(png), 'avatar') }, thumbnails_still: {}, crops: {}, refs: { 'me.png': '/thumbnail?type=persona&file=me.png' } });
         expect((await get(listed.thumbnails['me.png'])).status).toBe(200);
         expect((await post('/api/avatars/delete', { avatar: 'me.png' })).status).toBe(200);
-        expect(await (await post('/api/avatars/get')).json()).toEqual({ avatars: [], thumbnails: {}, refs: {} });
+        expect(await (await post('/api/avatars/get')).json()).toEqual({ avatars: [], thumbnails: {}, thumbnails_still: {}, crops: {}, refs: {} });
     });
 });
 
@@ -267,10 +334,10 @@ describe('an upstream data directory\'s images', () => {
         fs.writeFileSync(path.join(meta, 'room.png.json'), JSON.stringify({ folderIds: ['f1'] }));
 
         const report = await images.importImageFiles(user.store.lib, user.directories);
-        expect(report).toEqual({ backgrounds: 1, personas: 1, failed: [] });
+        expect(report).toEqual({ backgrounds: 1, personas: 1, userImages: 0, failed: [] });
         const [room] = (await images.imagesOf(user.store.lib, codes.TYPE.background)).map(images.backgroundOf);
         expect(room).toMatchObject({ file: 'room.png', folders: ['f1'], animated: false, thumbnail: urls.stillUrl(identity.stillHash(png), 'bg') });
-        expect(await images.importImageFiles(user.store.lib, user.directories)).toEqual({ backgrounds: 0, personas: 0, failed: [] });
+        expect(await images.importImageFiles(user.store.lib, user.directories)).toEqual({ backgrounds: 0, personas: 0, userImages: 0, failed: [] });
     });
 });
 
@@ -343,7 +410,7 @@ describe('a message\'s avatar', () => {
         const shown = await readBack();
         const edit = (/** @type {Record<string, any>} */ content) => post('/api/chats/message/edit', { avatar_url: 'Alice.png', node_id: shown.node_id, content });
         expect((await edit({ ...shown, mes: 'changed', force_avatar: shown.force_avatar_url })).ok).toBe(false);
-        expect((await edit({ ...shown, mes: 'changed', force_avatar: urls.animatedUrl('b'.repeat(64)) })).ok).toBe(false);
+        expect((await edit({ ...shown, mes: 'changed', force_avatar: urls.animatedUrl('b'.repeat(64), 'avatar') })).ok).toBe(false);
         expect((await readBack()).mes).toBe('hi');
         expect((await edit({ ...shown, mes: 'changed' })).status).toBe(200);
         expect(await readBack()).toMatchObject({ mes: 'changed', force_avatar: ref });
@@ -359,6 +426,11 @@ describe('the cutover', () => {
         await user.store.lib.writeCard(user.directories, 'Old.png', JSON.stringify({ name: 'Old', data: { name: 'Old', extensions: {} } }));
         fs.writeFileSync(path.join(user.directories.backgrounds, 'room.png'), png);
         fs.writeFileSync(path.join(user.directories.avatars, 'me.png'), png);
+        const moving = await realApng(10, 10, [[1, 2, 3], [4, 5, 6]]);
+        fs.writeFileSync(path.join(user.directories.characters, 'Moving.png'), moving);
+        await user.store.lib.writeCard(user.directories, 'Moving.png', JSON.stringify({ name: 'Moving', data: { name: 'Moving', extensions: {} } }), { avatarIdentityHash: identity.stillHash(moving) });
+        fs.mkdirSync(path.join(user.directories.userImages, 'Old'), { recursive: true });
+        fs.writeFileSync(path.join(user.directories.userImages, 'Old', 'chat-bg.png'), png);
         for (const d of stores.NAMED_THUMBNAILS) fs.mkdirSync(path.join(user.root, d), { recursive: true });
         await stores.closeUserStores();
         await expect(stores.userStore(user.directories, 'u')).rejects.toThrow(/image-entities\.js --apply/);
@@ -374,9 +446,81 @@ describe('the cutover', () => {
 
         user.store = await stores.userStore(user.directories, 'u');
         const old = await user.store.lib.entity(codes.TYPE.character, 'Old.png');
-        expect(urls.thumbnailOf(old, 'avatar')).toBe(urls.stillUrl(identity.stillHash(png), 'avatar'));
+        expect(urls.thumbnailsOf(old, 'avatar').thumbnail).toBe(urls.stillUrl(identity.stillHash(png), 'avatar'));
+        const movingEntity = await user.store.lib.entity(codes.TYPE.character, 'Moving.png');
+        expect(urls.thumbnailsOf(movingEntity, 'avatar').thumbnail).toBe(urls.animatedUrl(/** @type {string} */ (identity.animatedHash(moving)), 'avatar'));
+        expect((await user.store.lib.ids(codes.TYPE.userImage, ['user/images/Old/chat-bg.png']))[0]).not.toBeNull();
         expect((await user.store.lib.ids(codes.TYPE.background, ['room.png']))[0]).not.toBeNull();
         expect((await user.store.lib.ids(codes.TYPE.personaImage, ['me.png']))[0]).not.toBeNull();
         expect(await run(true)).toBe(0);
+    });
+});
+
+describe('a crop', () => {
+    test('is kept with the image: the card holds the image byte for byte and the rectangle in its data, and the thumbnail is framed by it', async () => {
+        const image = await solidPng(10, 120, 200, 400, 600);
+        const crop = { x: 100, y: 150, width: 200, height: 300 };
+        const avatar = await createCharacter('Framed', image, crop);
+        const exported = Buffer.from(await (await post('/api/characters/export', { format: 'png', avatar_url: avatar })).arrayBuffer());
+        const { stripCardData, parse } = await import('../src/character-card-parser.js');
+        expect(stripCardData(exported).equals(stripCardData(image))).toBe(true);
+        const file = path.join(os.tmpdir(), `st-export-${Date.now()}.png`);
+        fs.writeFileSync(file, exported);
+        try {
+            expect(JSON.parse(await parse(file, 'png')).data.extensions.avatar_crop).toEqual(crop);
+        } finally {
+            fs.rmSync(file, { force: true });
+        }
+        const character = await (await post('/api/characters/get', { avatar_url: avatar })).json();
+        expect(character.thumbnail).toBe(urls.stillUrl(identity.stillHash(image), 'avatar', crop));
+        expect((await get(character.thumbnail)).status).toBe(200);
+    });
+
+    test('a new crop of the same image is a new thumbnail address, and an edit without an image keeps the crop', async () => {
+        const image = await solidPng(10, 120, 200, 400, 600);
+        const first = { x: 0, y: 0, width: 200, height: 300 };
+        const avatar = await createCharacter('Recrop', image, first);
+        const before = (await (await post('/api/characters/get', { avatar_url: avatar })).json()).thumbnail;
+        const form = new FormData();
+        form.set('avatar_url', avatar);
+        form.set('ch_name', 'Recrop');
+        form.set('avatar', new Blob([image]), 'upload');
+        const second = { x: 200, y: 300, width: 200, height: 300 };
+        expect((await fetch(`${baseUrl}/api/characters/edit?crop=${encodeURIComponent(JSON.stringify(second))}`, { method: 'POST', body: form })).status).toBe(200);
+        const after = (await (await post('/api/characters/get', { avatar_url: avatar })).json()).thumbnail;
+        expect(after).toBe(urls.stillUrl(identity.stillHash(image), 'avatar', second));
+        expect(after).not.toBe(before);
+        const plain = new FormData();
+        plain.set('avatar_url', avatar);
+        plain.set('ch_name', 'Recrop');
+        plain.set('description', 'changed');
+        expect((await fetch(`${baseUrl}/api/characters/edit`, { method: 'POST', body: plain })).status).toBe(200);
+        expect((await (await post('/api/characters/get', { avatar_url: avatar })).json()).thumbnail).toBe(after);
+    });
+
+    test('a persona image is stored as uploaded with its crop on its entity', async () => {
+        const image = await realApng(40, 60, [[9, 9, 9], [90, 90, 90]]);
+        const crop = { x: 0, y: 0, width: 20, height: 30 };
+        const form = new FormData();
+        form.set('avatar', new Blob([image]), 'upload');
+        form.set('overwrite_name', 'moving.png');
+        const saved = await (await fetch(`${baseUrl}/api/avatars/upload?crop=${encodeURIComponent(JSON.stringify(crop))}`, { method: 'POST', body: form })).json();
+        expect(fs.readFileSync(path.join(user.directories.avatars, 'moving.png')).equals(image)).toBe(true);
+        expect(saved.thumbnail).toBe(urls.animatedUrl(/** @type {string} */ (identity.animatedHash(image)), 'avatar', crop));
+        expect(saved.thumbnail_still).toBe(urls.stillUrl(identity.stillHash(image), 'avatar', crop));
+    });
+});
+
+describe('a user image', () => {
+    test('uploaded is an entity with its thumbnail, and leaves the store when deleted', async () => {
+        const saved = await (await post('/api/images/upload', { image: png.toString('base64'), format: 'png', ch_name: 'Alice', filename: 'bg' })).json();
+        expect(saved.path).toBe('/user/images/Alice/bg.png');
+        expect(saved.thumbnail).toBe(urls.stillUrl(identity.stillHash(png), 'avatar'));
+        const shown = await images.imageThumbnails(user.store.lib, codes.TYPE.userImage, [images.userImageKey(saved.path)], 'bg');
+        const tile = /** @type {string} */ (shown.get('user/images/Alice/bg.png')?.thumbnail);
+        expect(tile).toBe(urls.stillUrl(identity.stillHash(png), 'bg'));
+        expect((await get(tile)).status).toBe(200);
+        expect((await post('/api/images/delete', { path: saved.path })).status).toBe(200);
+        expect((await user.store.lib.ids(codes.TYPE.userImage, ['user/images/Alice/bg.png']))[0]).toBeNull();
     });
 });

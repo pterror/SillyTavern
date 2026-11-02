@@ -1,7 +1,7 @@
 import type { BackgroundsView, ChatBackgroundsView } from './protocol.ts';
 import { expect, test } from 'vite-plus/test';
 import { backgroundsArea, bestTitle, refOfCss } from './server.ts';
-import type { Ports, StoredOptions, SystemFile } from './server.ts';
+import type { ImageThumbnails, Ports, StoredOptions, SystemFile } from './server.ts';
 import type { ActionContext, ActionResult, User } from '@st/server-ui';
 
 const user: User = { handle: 'u', directories: { root: '/u' } };
@@ -10,6 +10,7 @@ function world(
     files: Partial<SystemFile>[],
     options: StoredOptions = {},
     chat: { list: string[]; locked: string | null } | null = { list: [], locked: null },
+    images: Record<string, ImageThumbnails> = {},
 ) {
     const state = {
         files: files.map((f) => ({
@@ -19,7 +20,7 @@ function world(
             added: null,
             folders: [],
             thumbnail: null,
-            original: null,
+            thumbnail_still: null,
             file: '',
             ...f,
         })),
@@ -72,6 +73,7 @@ function world(
             },
             saveImage: async (_c, upload) => `user/images/Cara/${upload.name}`,
             deleteImage: async (_c, path) => void state.deletedImages.push(path),
+            images: async (_c, paths) => Object.fromEntries(paths.flatMap((p) => (images[p] ? [[p, images[p]]] : []))),
         },
         options: { read: async () => state.options, write: async (_u, next) => void (state.options = next) },
     };
@@ -203,17 +205,47 @@ test("sorting: by title either way, by age either way (a chat's by the order it 
 
 test('options from storage are made valid: unknown values fall back, columns are kept in range', async () => {
     const w = world([{ file: 'a.png' }], { fitting: 'sideways', sortOrder: 'random', thumbnailColumns: 40 });
-    expect((await w.view()).options).toEqual({ fitting: 'classic', animation: false, sortOrder: 'az', columns: 8 });
+    expect((await w.view()).options).toEqual({
+        fitting: 'classic',
+        animatedThumbnails: true,
+        sortOrder: 'az',
+        columns: 8,
+    });
     expect((await world([{ file: 'a.png' }]).view()).options.columns).toBeNull();
 });
 
-test("an animated background's thumbnail is the animation itself only while animation is on", async () => {
+test("an animated background's thumbnail moves unless animated thumbnails are off, when it is the first frame", async () => {
     const w = world([
-        { file: 'loop.gif', animated: true, thumbnail: '/thumbnail/still.f200.webp', original: '/thumbnail/all.anim' },
+        {
+            file: 'loop.gif',
+            animated: true,
+            thumbnail: '/thumbnail/a1.f200.full.webp',
+            thumbnail_still: '/thumbnail/s1.f200.full.webp',
+        },
     ]);
-    expect((await w.view()).system[0]?.thumbnail).toBe('/thumbnail/still.f200.webp');
-    await w.act('backgrounds.options', { animation: true });
-    expect((await w.view()).system[0]?.thumbnail).toBe('/thumbnail/all.anim');
+    expect((await w.view()).system[0]?.thumbnail).toBe('/thumbnail/a1.f200.full.webp');
+    await w.act('backgrounds.options', { animatedThumbnails: false });
+    expect((await w.view()).system[0]?.thumbnail).toBe('/thumbnail/s1.f200.full.webp');
+});
+
+test("a chat's backgrounds show the thumbnails the server keeps for them, not their full images", async () => {
+    const path = 'user/images/Cara/loop.gif';
+    const w = world(
+        [{ file: 'a.png' }],
+        {},
+        { list: [path], locked: null },
+        {
+            [path]: {
+                thumbnail: '/thumbnail/a2.f200.full.webp',
+                thumbnail_still: '/thumbnail/s2.f200.full.webp',
+                animated: true,
+            },
+        },
+    );
+    const tile = (await w.view()).chat?.backgrounds[0];
+    expect(tile).toMatchObject({ thumbnail: '/thumbnail/a2.f200.full.webp', animated: true, url: path });
+    await w.act('backgrounds.options', { animatedThumbnails: false });
+    expect((await w.view()).chat?.backgrounds[0]?.thumbnail).toBe('/thumbnail/s2.f200.full.webp');
 });
 
 test("a folder's cover is its cover file's thumbnail, else its first member's", async () => {
@@ -261,6 +293,7 @@ test("a chat change reads only the chat's view, never the backgrounds folder", a
             write: async () => {},
             saveImage: async () => '',
             deleteImage: async () => {},
+            images: async () => ({}),
         },
         options: { read: async () => ({}), write: async () => {} },
     });

@@ -1,7 +1,7 @@
 import dialogPolyfill from '../lib/dialog-polyfill.esm.js';
 import { shouldSendOnEnter } from './RossAscends-mods.js';
 import { t } from './i18n.js';
-import { power_user, toastPositionClasses } from './power-user.js';
+import { toastPositionClasses } from './power-user.js';
 import { clamp, removeFromArray, runAfterAnimation, uuidv4 } from './utils.js';
 import { getFocusedField } from './live-editor/registry.js';
 
@@ -501,7 +501,6 @@ export class Popup {
                     rotatable: false,
                     crop: (event) => {
                         this.cropData = event.detail;
-                        this.cropData.want_resize = !power_user.never_resize_avatars;
                     },
                 });
                 // Crop shows OK if not explicitly set to false, and CANCEL if not explicitly set to false

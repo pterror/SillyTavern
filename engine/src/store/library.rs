@@ -25,7 +25,8 @@ pub const FIRST_SETTINGS_TYPE: u64 = 11;
 pub const LAST_SETTINGS_TYPE: u64 = 34;
 pub const BACKGROUND: u64 = 35;
 pub const PERSONA_IMAGE: u64 = 36;
-pub const LAST_TYPE: u64 = PERSONA_IMAGE;
+pub const USER_IMAGE: u64 = 37;
+pub const LAST_TYPE: u64 = USER_IMAGE;
 
 pub fn history_kept(kind: u64) -> bool {
     kind == super::books::ENTRY || (FIRST_SETTINGS_TYPE..=LAST_SETTINGS_TYPE).contains(&kind)

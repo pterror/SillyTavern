@@ -5,7 +5,7 @@ import { parentPort } from 'node:worker_threads';
 import extract from 'png-chunks-extract';
 
 import { classifyJsonCandidate, computeCandidateContentIdentityHash, computeContentIdentityHashFromRawText } from './local-import-classify.js';
-import { readFromChunks, computeAvatarIdentityHashFromChunks, computeAvatarIdentityHashFromImageBuffer, computeDefaultAvatarIdentityHash, stripCardData } from './character-card-parser.js';
+import { readFromChunks, computeAnimatedHashFromChunks, computeAvatarIdentityHashFromChunks, computeAvatarIdentityHashFromImageBuffer, computeDefaultAvatarIdentityHash, stripCardData } from './character-card-parser.js';
 import { DEFAULT_AVATAR_PATH } from './constants.js';
 
 /** @type {Map<number, { sourcePath: string, sourceBuffer: Buffer, chunks: Array<{name: string, data: Uint8Array}> | null, format: string }>} */
@@ -58,14 +58,15 @@ parentPort.on('message', async (msg) => {
         const avatarIdentityHash = decoded?.chunks
             ? computeAvatarIdentityHashFromChunks(decoded.chunks)
             : (!jsonClassification && (format === 'json' || format === 'yaml' || format === 'yml')) ? computeDefaultAvatarIdentityHash() : null;
+        const animatedHash = decoded?.chunks ? computeAnimatedHashFromChunks(decoded.chunks) : null;
 
         if (decoded) {
             pendingTasks.set(id, { sourcePath, sourceBuffer, chunks: decoded.chunks, format });
-            parentPort.postMessage({ id, phase: 'parsed', ok: true, contentHash, jsonClassification, identityHash, avatarIdentityHash, rawText: decoded.rawText });
+            parentPort.postMessage({ id, phase: 'parsed', ok: true, contentHash, jsonClassification, identityHash, avatarIdentityHash, animatedHash, rawText: decoded.rawText });
             return;
         }
 
-        parentPort.postMessage({ id, phase: 'done', ok: true, contentHash, jsonClassification, identityHash, avatarIdentityHash });
+        parentPort.postMessage({ id, phase: 'done', ok: true, contentHash, jsonClassification, identityHash, avatarIdentityHash, animatedHash });
     } catch (err) {
         parentPort.postMessage({ id, phase: 'done', ok: false, error: /** @type {any} */ (err)?.message ?? String(err) });
     }

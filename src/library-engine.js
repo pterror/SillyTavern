@@ -12,7 +12,8 @@ import { itemField, pushAll, storedValues, valueRecords, withoutStatements } fro
 import { SPACE, actorIds } from './actor-ids.js';
 import { LINKS, linkListRecords, storedLinks } from './character-links.js';
 import { FIELD, HASH, NAME_HISTORY, STATEMENT_PREFIX, TAG_KEY_PREFIX, TYPE, renameItem, renamesOf } from './library-codes.js';
-import { thumbnailOf } from './thumbnail-urls.js';
+import { assignThumbnails, cropOf, thumbnailsOf } from './thumbnail-urls.js';
+import { imageThumbnails, userImageKey } from './image-entities.js';
 import { avatarRefString } from './avatar-refs.js';
 import { bookKey } from './world-info-keys.js';
 import { LIBRARY_LABELS, cursorWeights, cursorWeightsOf, searchClauses } from './search-clauses.js';
@@ -121,13 +122,15 @@ export function listRowValues(includeCreatorNotes) {
         fields: [
             FIELD.name, FIELD.creator, FIELD.character_version, FIELD.world, FIELD.create_date, FIELD.allow_global_styles,
             ...(includeCreatorNotes ? [FIELD.creator_notes, ...LIST_CREATOR_NOTES_PATHS] : []),
-            `${EXTENSION_PREFIX}world`, ...LIST_EXTRA_PATHS,
+            `${EXTENSION_PREFIX}world`, `${EXTENSION_PREFIX}avatar_crop`, ...LIST_EXTRA_PATHS,
         ],
         lists: [LIST.tags],
     };
 }
 
 const NO_VALUES = Object.freeze({ fields: [], lists: [] });
+
+const THUMBNAIL_FIELDS = Object.freeze(['member_thumbnails', 'member_thumbnails_still', 'avatar_thumbnail', 'avatar_thumbnail_still']);
 
 const COLLAGE_MEMBERS = 4;
 
@@ -508,13 +511,14 @@ export class LibraryEngine {
      * @param {object} [options]
      * @param {string | null} [options.contentHash]
      * @param {string | null} [options.avatarIdentityHash]
+     * @param {string | null} [options.animatedHash]
      * @param {number} [options.dateAdded]
      * @param {boolean} [options.fav]
      * @param {{ from: string, pastChats: boolean, at?: number }} [options.renamed]
      * @param {bigint[]} [options.tags]
      * @returns {Promise<{ id: bigint, records: number }>}
      */
-    writeCard(directories, avatar, cardJson, { contentHash = null, avatarIdentityHash = null, dateAdded = Date.now(), fav, renamed, tags = [] } = {}) {
+    writeCard(directories, avatar, cardJson, { contentHash = null, avatarIdentityHash = null, animatedHash, dateAdded = Date.now(), fav, renamed, tags = [] } = {}) {
         return this.serialized(TYPE.character, avatar, async () => {
             const card = JSON.parse(cardJson);
             const stored = await this.entity(TYPE.character, avatar);
@@ -558,6 +562,15 @@ export class LibraryEngine {
                 const had = stored?.hashes.find(h => h.which === which);
                 if (had && had.hash.toString('hex') === hex) continue;
                 records.push({ kind: 'cardHash', entity: id, which, hash: Buffer.from(hex, 'hex') });
+            }
+            if (animatedHash !== undefined) {
+                const had = stored?.hashes.find(h => h.which === HASH.animated);
+                const hadHex = had ? had.hash.toString('hex') : null;
+                if (hadHex !== animatedHash) {
+                    records.push(animatedHash === null
+                        ? { kind: 'cardHash', entity: id, which: HASH.animated }
+                        : { kind: 'cardHash', entity: id, which: HASH.animated, hash: Buffer.from(animatedHash, 'hex') });
+                }
             }
             records.push(...this.tags.addRecords(stored ?? { id, tags: [] }, tags));
             if (!stored) records.push({ kind: 'entityCreate', entity: id, type: TYPE.character, key: avatar, added: dateAdded });
@@ -779,10 +792,20 @@ export class LibraryEngine {
     async withMemberThumbnails(groups) {
         const shown = (/** @type {Record<string, any>} */ g) => (Array.isArray(g.members) ? g.members.filter(m => typeof m === 'string').slice(0, COLLAGE_MEMBERS) : []);
         const members = [...new Set(groups.flatMap(shown))];
-        const found = members.length ? await this.entities(await this.ids(TYPE.character, members), NO_VALUES) : [];
-        const thumbnailOfMember = new Map(members.map((m, i) => [m, thumbnailOf(found[i], 'avatar')]));
+        const found = members.length ? await this.entities(await this.ids(TYPE.character, members), { fields: [`${EXTENSION_PREFIX}avatar_crop`], lists: [] }) : [];
+        const thumbnailsOfMember = new Map(members.map((m, i) => [m, thumbnailsOf(found[i], 'avatar')]));
+        const avatars = groups.map(g => (typeof g.avatar_url === 'string' && g.avatar_url ? userImageKey(g.avatar_url) : null));
+        const avatarThumbnails = await imageThumbnails(this, TYPE.userImage, /** @type {string[]} */ (avatars.filter(Boolean)), 'avatar');
+        for (const [i, g] of groups.entries()) {
+            const own = avatars[i] === null ? undefined : avatarThumbnails.get(avatars[i]);
+            if (own?.thumbnail) assignThumbnails(g, own, 'avatar_thumbnail');
+            else assignThumbnails(g, { thumbnail: null, thumbnail_still: null }, 'avatar_thumbnail');
+        }
         for (const g of groups) {
-            g.member_thumbnails = Object.fromEntries(shown(g).map(m => [m, thumbnailOfMember.get(m) ?? null]));
+            g.member_thumbnails = Object.fromEntries(shown(g).map(m => [m, thumbnailsOfMember.get(m)?.thumbnail ?? null]));
+            const stills = shown(g).flatMap(m => (thumbnailsOfMember.get(m)?.thumbnail_still ? [[m, thumbnailsOfMember.get(m)?.thumbnail_still]] : []));
+            if (stills.length) g.member_thumbnails_still = Object.fromEntries(stills);
+            else delete g.member_thumbnails_still;
         }
         return groups;
     }
@@ -1209,7 +1232,7 @@ export class LibraryEngine {
             const row = { shallow: true };
             if (values.name !== undefined) row.name = values.name;
             row.avatar = e.key;
-            row.thumbnail = thumbnailOf(e, 'avatar');
+            assignThumbnails(row, thumbnailsOf(e, 'avatar'));
             row.avatar_ref = avatarRefString(TYPE.character, e.key);
             row.fav = e.fav;
             row.date_added = e.added;
@@ -1220,7 +1243,8 @@ export class LibraryEngine {
             if (values.tags !== undefined) row.tags = values.tags;
             row.tag_ids = tagKeys[i];
             const { world, ...dataValues } = values.data;
-            row.data = { ...dataValues, extensions: { fav: e.fav, world } };
+            const avatarCrop = cropOf(e);
+            row.data = { ...dataValues, extensions: { fav: e.fav, world, ...(avatarCrop ? { avatar_crop: avatarCrop } : {}) } };
             const allow = e.values.find(v => v.field === FIELD.allow_global_styles);
             if (allow?.json !== undefined) row.allow_global_styles = !!JSON.parse(allow.json);
             return row;
@@ -1353,7 +1377,8 @@ export class LibraryEngine {
         const stats = await this.chatStats(entities.map(e => e.id));
         const statsOf = (/** @type {bigint} */ id) => stats.get(id) ?? { date_last_chat: 0, chat_size: 0 };
         if (wantHashes) {
-            const memberThumbnails = new Map((await this.withMemberThumbnails(groups.map(groupObject))).map((g, i) => [groups[i].id, g.member_thumbnails]));
+            const thumbnailFields = (/** @type {Record<string, any>} */ g) => Object.fromEntries(Object.entries(g).filter(([k]) => THUMBNAIL_FIELDS.includes(k)));
+            const memberThumbnails = new Map((await this.withMemberThumbnails(groups.map(groupObject))).map((g, i) => [groups[i].id, thumbnailFields(g)]));
             const hashRows = entities.map(e => this.hashRow(groupOf.get(e.id) ?? e, groupTags.get(e.id) ?? characterTags.get(e.id) ?? [], statsOf(e.id), memberThumbnails.get(e.id)));
             return { ...out, rows: undefined, hashRows, ...(await hiddenOf(hashRows.length)) };
         }
@@ -1378,9 +1403,9 @@ export class LibraryEngine {
      * @param {StoredEntity} e
      * @param {string[]} tagKeys
      * @param {{ date_last_chat: number, chat_size: number }} stats
-     * @param {Record<string, string | null>} [memberThumbnails]
+     * @param {Record<string, unknown>} [thumbnails]
      */
-    hashRow(e, tagKeys, stats, memberThumbnails = {}) {
+    hashRow(e, tagKeys, stats, thumbnails = { member_thumbnails: {}, avatar_thumbnail: null }) {
         const row = {
             id: e.key,
             isGroup: e.type === TYPE.group,
@@ -1396,7 +1421,7 @@ export class LibraryEngine {
             contentHash: 0,
         };
         if (e.type === TYPE.group) {
-            const group = { ...groupObject(e), id: e.key, fav: e.fav, tag_ids: tagKeys, member_thumbnails: memberThumbnails };
+            const group = { ...groupObject(e), id: e.key, fav: e.fav, tag_ids: tagKeys, ...thumbnails };
             row.favHash = groupDigestFavHash(group) >>> 0;
             row.tagIdsHash = groupDigestTagIdsHash(group) >>> 0;
             row.contentHash = groupDigestContentHash(group) >>> 0;

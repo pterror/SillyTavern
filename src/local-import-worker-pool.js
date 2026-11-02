@@ -94,7 +94,7 @@ export class LocalImportWorkerPool {
      * @param {string} format
      * @param {import('./users.js').UserDirectoryList} directories
      * @param {boolean} allowIdentityFallback
-     * @returns {Promise< { contentHash: string, jsonClassification: string | null, identityHash: string | null, avatarIdentityHash: string | null, needsWrite: false } | { contentHash: string, jsonClassification: null, identityHash: string | null, avatarIdentityHash: string | null, needsWrite: true, rawText: string, finish: (outcome: { type: 'no-write' } | { type: 'write' }) => Promise<{ outcome: string, image?: { image: Buffer, avatarHash: string, avatarIdentityHash: string } }> } >}
+     * @returns {Promise< { contentHash: string, jsonClassification: string | null, identityHash: string | null, avatarIdentityHash: string | null, animatedHash?: string | null, needsWrite: false } | { contentHash: string, jsonClassification: null, identityHash: string | null, avatarIdentityHash: string | null, animatedHash?: string | null, needsWrite: true, rawText: string, finish: (outcome: { type: 'no-write' } | { type: 'write' }) => Promise<{ outcome: string, image?: { image: Buffer, avatarHash: string, avatarIdentityHash: string } }> } >}
      */
     runPipeline(sourcePath, format, directories, allowIdentityFallback) {
         const id = this.nextId++;
@@ -109,6 +109,7 @@ export class LocalImportWorkerPool {
                         jsonClassification: result.jsonClassification,
                         identityHash: result.identityHash,
                         avatarIdentityHash: result.avatarIdentityHash,
+                        animatedHash: result.animatedHash ?? null,
                         needsWrite: true,
                         rawText: result.rawText,
                         finish: (outcome) => this._finish(id, outcome),
@@ -120,6 +121,7 @@ export class LocalImportWorkerPool {
                         jsonClassification: result.jsonClassification,
                         identityHash: result.identityHash,
                         avatarIdentityHash: result.avatarIdentityHash,
+                        animatedHash: result.animatedHash ?? null,
                         needsWrite: false,
                     });
                 },

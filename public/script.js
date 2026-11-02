@@ -227,8 +227,10 @@ import {
     getPersonaDescriptionDepth,
     getPersonaDescriptionRole,
     personaAvatar,
+    personaCrop,
     personaThumbnail,
 } from './scripts/personas.js';
+import { frameImage, shownThumbnail } from './scripts/shown-thumbnail.js';
 import { startNewUi, takeViews, chatClosed, newUi, newUiStarted } from './scripts/new-ui.js';
 import { loader } from './scripts/action-loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
@@ -6491,19 +6493,13 @@ async function read_avatar_load(input) {
         const file = input.files[0];
         const fileData = await getBase64Async(file);
 
-        if (!power_user.never_resize_avatars) {
-            const dlg = new Popup('Set the crop position of the avatar image', POPUP_TYPE.CROP, '', { cropImage: fileData });
-            const croppedImage = await dlg.show();
-
-            if (!croppedImage) {
-                return;
-            }
-
-            crop_data = dlg.cropData;
-            $('#avatar_load_preview').attr('src', String(croppedImage));
-        } else {
-            $('#avatar_load_preview').attr('src', fileData);
+        const dlg = new Popup('Set the crop position of the avatar image', POPUP_TYPE.CROP, '', { cropImage: fileData });
+        const croppedImage = await dlg.show();
+        if (!croppedImage) {
+            return;
         }
+        crop_data = dlg.cropData;
+        $('#avatar_load_preview').attr('src', String(croppedImage));
 
         if (menu_type == 'create') {
             return;
@@ -6531,33 +6527,44 @@ export function replaceShownImage(before, after) {
 }
 
 /**
- * @param {string | { avatar?: string, thumbnail?: string | null } | undefined | null} character
- * @returns {string}
+ * @param {string | { avatar?: string, thumbnail?: string | null, thumbnail_still?: string | null } | undefined | null} character
+ * @returns {{ thumbnail: string, thumbnail_still: string | undefined }}
  */
-export function characterThumbnail(character) {
+function characterThumbnails(character) {
     const avatar = typeof character === 'string' ? character : character?.avatar;
-    if (!avatar || avatar === 'none') return default_avatar;
-    const own = typeof character === 'object' ? character?.thumbnail : undefined;
-    return own ?? charactersStore.get(avatar)?.thumbnail ?? default_avatar;
+    if (!avatar || avatar === 'none') return { thumbnail: default_avatar, thumbnail_still: undefined };
+    const own = typeof character === 'object' && character?.thumbnail ? character : charactersStore.get(avatar);
+    return { thumbnail: own?.thumbnail ?? default_avatar, thumbnail_still: own?.thumbnail ? own?.thumbnail_still ?? undefined : undefined };
 }
 
 /**
- * @param {string | { avatar?: string, avatar_ref?: string, thumbnail?: string | null } | undefined | null} character
- * @returns {{ force_avatar: string, force_avatar_url: string | undefined }}
+ * @param {string | { avatar?: string, thumbnail?: string | null, thumbnail_still?: string | null } | undefined | null} character
+ * @returns {string}
+ */
+export function characterThumbnail(character) {
+    const { thumbnail, thumbnail_still } = characterThumbnails(character);
+    return shownThumbnail(thumbnail, thumbnail_still) ?? default_avatar;
+}
+
+/**
+ * @param {string | { avatar?: string, avatar_ref?: string, thumbnail?: string | null, thumbnail_still?: string | null } | undefined | null} character
+ * @returns {{ force_avatar: string, force_avatar_url: string | undefined, force_avatar_url_still?: string }}
  */
 export function characterAvatar(character) {
     const avatar = typeof character === 'string' ? character : character?.avatar;
     const own = typeof character === 'object' ? character?.avatar_ref : undefined;
     const ref = own ?? (avatar && avatar !== 'none' ? charactersStore.get(avatar)?.avatar_ref : undefined);
-    return ref ? { force_avatar: ref, force_avatar_url: characterThumbnail(character) } : { force_avatar: default_avatar, force_avatar_url: undefined };
+    if (!ref) return { force_avatar: default_avatar, force_avatar_url: undefined };
+    const { thumbnail, thumbnail_still } = characterThumbnails(character);
+    return { force_avatar: ref, force_avatar_url: thumbnail, ...(thumbnail_still ? { force_avatar_url_still: thumbnail_still } : {}) };
 }
 
 /**
- * @param {{ force_avatar?: string, force_avatar_url?: string }} mes
+ * @param {{ force_avatar?: string, force_avatar_url?: string, force_avatar_url_still?: string }} mes
  * @returns {string | undefined}
  */
 export function shownAvatar(mes) {
-    return typeof mes?.force_avatar_url === 'string' ? mes.force_avatar_url : mes?.force_avatar;
+    return typeof mes?.force_avatar_url === 'string' ? shownThumbnail(mes.force_avatar_url, mes.force_avatar_url_still) ?? undefined : mes?.force_avatar;
 }
 
 /**
@@ -13189,6 +13196,7 @@ jQuery(async function () {
                     const personaSrc = getUserAvatar(targetAvatarImg);
                     zoomedAvatarImgElement.attr('src', personaSrc);
                     zoomedAvatarImgElement.attr('data-izoomify-url', personaSrc);
+                    frameImage(zoomedAvatarImgElement[0], personaCrop(decodeURIComponent(targetAvatarImg)));
                 } else {
                     zoomedAvatarImgElement.attr('src', thumbURL);
                     zoomedAvatarImgElement.attr('data-izoomify-url', thumbURL);
@@ -13196,6 +13204,7 @@ jQuery(async function () {
             } else if (messageElement.attr('is_user') == 'false') { //handle char avatars
                 zoomedAvatarImgElement.attr('src', avatarSrc);
                 zoomedAvatarImgElement.attr('data-izoomify-url', avatarSrc);
+                frameImage(zoomedAvatarImgElement[0], charactersStore.get(decodeURIComponent(targetAvatarImg))?.data?.extensions?.avatar_crop);
             }
             $(`.zoomed_avatar[forChar="${charname}"]`).css('display', 'flex');
             dragElement(newElement);

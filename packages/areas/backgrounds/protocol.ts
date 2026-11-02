@@ -31,7 +31,7 @@ export type BackgroundsView = {
     system: Background[];
     folders: Folder[];
     selected: Ref;
-    options: { fitting: Fitting; animation: boolean; sortOrder: SortOrder; columns: number | null };
+    options: { fitting: Fitting; animatedThumbnails: boolean; sortOrder: SortOrder; columns: number | null };
 };
 
 export type ChatBackgroundsView = {
@@ -55,7 +55,7 @@ export const actions = {
     'backgrounds.options': v.partial(
         v.object({
             fitting: v.picklist(FITTINGS),
-            animation: v.boolean(),
+            animatedThumbnails: v.boolean(),
             sortOrder: v.picklist(SORT_ORDERS),
             columns: v.pipe(v.number(), v.integer(), v.minValue(COLUMNS.min), v.maxValue(COLUMNS.max)),
         }),

@@ -23,22 +23,24 @@ export function AnimationOption() {
     const view = client.view<BackgroundsView>(VIEW);
     return (
         <label
-            for="background_thumbnails_animation"
+            for="animated_thumbnails"
             class="checkbox_label"
-            title={t('Allow animations for WEBP backgrounds. This is only a change for the selection menu.')}
+            title={t(
+                'Show animated images (characters, personas, backgrounds) moving in every list. Off shows their first frame.',
+            )}
         >
             <input
-                id="background_thumbnails_animation"
+                id="animated_thumbnails"
                 type="checkbox"
-                checked={view()?.options.animation ?? false}
+                checked={view()?.options.animatedThumbnails ?? true}
                 onChange={(event) => {
                     const box = event.currentTarget;
                     void client
-                        .send('backgrounds.options', { animation: box.checked })
-                        .then((result) => result.ok || (box.checked = view()?.options.animation ?? false));
+                        .send('backgrounds.options', { animatedThumbnails: box.checked })
+                        .then((result) => result.ok || (box.checked = view()?.options.animatedThumbnails ?? true));
                 }}
             />
-            <small>{t('Animated background thumbnails')}</small>
+            <small>{t('Animated thumbnails')}</small>
         </label>
     );
 }

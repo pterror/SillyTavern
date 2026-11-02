@@ -1,3 +1,4 @@
+import { shownThumbnail } from './shown-thumbnail.js';
 import {
     buildAvatarList,
     getCurrentCharacter,
@@ -167,20 +168,31 @@ function reloadUserAvatar() {
     });
 }
 
-/** @type {Map<string, string>} */
+/** @type {Map<string, { thumbnail: string, thumbnail_still?: string }>} */
 const personaThumbnails = new Map();
 /** @type {Map<string, string>} */
 const personaRefs = new Map();
+/** @type {Map<string, { x: number, y: number, width: number, height: number }>} */
+const personaCrops = new Map();
+
+/**
+ * @param {string | undefined | null} avatar
+ */
+export function personaCrop(avatar) {
+    return avatar ? personaCrops.get(avatar) ?? null : null;
+}
 
 /**
  * @param {string} avatar
  * @param {unknown} thumbnail
+ * @param {unknown} [still]
  */
-function rememberPersonaThumbnail(avatar, thumbnail) {
+function rememberPersonaThumbnail(avatar, thumbnail, still) {
     if (typeof thumbnail !== 'string') return;
-    const before = personaThumbnails.get(avatar);
-    personaThumbnails.set(avatar, thumbnail);
-    if (before !== undefined) replaceShownImage(before, thumbnail);
+    const had = personaThumbnails.has(avatar);
+    const before = personaThumbnail(avatar);
+    personaThumbnails.set(avatar, { thumbnail, ...(typeof still === 'string' ? { thumbnail_still: still } : {}) });
+    if (had) replaceShownImage(before, personaThumbnail(avatar));
 }
 
 /**
@@ -188,7 +200,7 @@ function rememberPersonaThumbnail(avatar, thumbnail) {
  * @param {{ thumbnail?: unknown, ref?: unknown } | null | undefined} saved
  */
 function rememberPersonaImage(avatar, saved) {
-    rememberPersonaThumbnail(avatar, saved?.thumbnail);
+    rememberPersonaThumbnail(avatar, saved?.thumbnail, /** @type {any} */ (saved)?.thumbnail_still);
     if (typeof saved?.ref === 'string') personaRefs.set(avatar, saved.ref);
 }
 
@@ -197,16 +209,19 @@ function rememberPersonaImage(avatar, saved) {
  * @returns {string}
  */
 export function personaThumbnail(avatar) {
-    return (avatar ? personaThumbnails.get(avatar) : undefined) ?? default_user_avatar;
+    const shown = avatar ? personaThumbnails.get(avatar) : undefined;
+    return (shown ? shownThumbnail(shown.thumbnail, shown.thumbnail_still) : undefined) ?? default_user_avatar;
 }
 
 /**
  * @param {string | undefined | null} avatar
- * @returns {{ force_avatar: string, force_avatar_url: string | undefined }}
+ * @returns {{ force_avatar: string, force_avatar_url: string | undefined, force_avatar_url_still?: string }}
  */
 export function personaAvatar(avatar) {
     const ref = avatar ? personaRefs.get(avatar) : undefined;
-    return ref ? { force_avatar: ref, force_avatar_url: personaThumbnail(avatar) } : { force_avatar: default_user_avatar, force_avatar_url: undefined };
+    const shown = avatar ? personaThumbnails.get(avatar) : undefined;
+    if (!ref) return { force_avatar: default_user_avatar, force_avatar_url: undefined };
+    return { force_avatar: ref, force_avatar_url: shown?.thumbnail ?? default_user_avatar, ...(shown?.thumbnail_still ? { force_avatar_url_still: shown.thumbnail_still } : {}) };
 }
 
 /**
@@ -319,7 +334,7 @@ export async function getUserAvatars(doRender = true, openPageAt = '') {
         headers: getRequestHeaders({ omitContentType: true }),
     });
     if (response.ok) {
-        /** @type {{avatars: string[], thumbnails: Record<string, string>, refs: Record<string, string>}} */
+        /** @type {{avatars: string[], thumbnails: Record<string, string>, thumbnails_still?: Record<string, string>, refs: Record<string, string>, crops?: Record<string, { x: number, y: number, width: number, height: number }>}} */
         const data = await response.json();
         const allEntities = data?.avatars;
 
@@ -328,9 +343,11 @@ export async function getUserAvatars(doRender = true, openPageAt = '') {
         }
 
         for (const [avatar, thumbnail] of Object.entries(data.thumbnails ?? {})) {
-            rememberPersonaThumbnail(avatar, thumbnail);
+            rememberPersonaThumbnail(avatar, thumbnail, data.thumbnails_still?.[avatar]);
         }
         for (const [avatar, ref] of Object.entries(data.refs ?? {})) personaRefs.set(avatar, ref);
+        personaCrops.clear();
+        for (const [avatar, crop] of Object.entries(data.crops ?? {})) personaCrops.set(avatar, crop);
 
         if (!doRender) {
             return allEntities;
@@ -453,17 +470,12 @@ async function changeUserAvatar(e) {
     const dataUrl = await getBase64Async(file);
     let url = '/api/avatars/upload';
 
-    if (!power_user.never_resize_avatars) {
-        const dlg = new Popup(t`Set the crop position of the avatar image`, POPUP_TYPE.CROP, '', { cropImage: dataUrl });
-        const result = await dlg.show();
-
-        if (!result) {
-            return;
-        }
-
-        if (dlg.cropData !== undefined) {
-            url += `?crop=${encodeURIComponent(JSON.stringify(dlg.cropData))}`;
-        }
+    const dlg = new Popup(t`Set the crop position of the avatar image`, POPUP_TYPE.CROP, '', { cropImage: dataUrl });
+    if (!await dlg.show()) {
+        return;
+    }
+    if (dlg.cropData !== undefined) {
+        url += `?crop=${encodeURIComponent(JSON.stringify(dlg.cropData))}`;
     }
 
     const rawFile = formData.get('avatar');
@@ -2193,24 +2205,21 @@ function parsePersonaRole(value) {
 async function uploadPersonaAvatar(avatarId, base64Data, { resizePrompt = false } = {}) {
     if (!base64Data || !avatarId) return false;
 
-    let finalImageData = base64Data;
-
-    if (resizePrompt && !power_user.never_resize_avatars) {
+    let crop = null;
+    if (resizePrompt) {
         const dlg = new Popup(t`Set the crop position of the avatar image`, POPUP_TYPE.CROP, '', { cropImage: base64Data });
-        const croppedImage = await dlg.show();
-        if (!croppedImage) return false;
-        finalImageData = String(croppedImage);
+        if (!await dlg.show()) return false;
+        crop = dlg.cropData ?? null;
     }
 
     try {
-        const response = await fetch(finalImageData);
+        const response = await fetch(base64Data);
         const blob = await response.blob();
-        const file = new File([blob], 'avatar.png', { type: 'image/png' });
         const formData = new FormData();
-        formData.append('avatar', file);
+        formData.append('avatar', new File([blob], 'avatar', { type: blob.type }));
         formData.append('overwrite_name', avatarId);
 
-        const uploadResponse = await fetch('/api/avatars/upload', {
+        const uploadResponse = await fetch(crop ? `/api/avatars/upload?crop=${encodeURIComponent(JSON.stringify(crop))}` : '/api/avatars/upload', {
             method: 'POST',
             headers: getRequestHeaders({ omitContentType: true }),
             cache: 'no-cache',

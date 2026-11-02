@@ -31,6 +31,23 @@ export function computeAvatarIdentityHashFromChunks(chunks) {
     return hash.digest('hex');
 }
 
+const FRAME_CHUNKS = new Set(['acTL', 'fcTL', 'IDAT', 'fdAT']);
+
+/**
+ * @param {Array<{name: string, data: Uint8Array}>} chunks
+ * @returns {string | null}
+ */
+export function computeAnimatedHashFromChunks(chunks) {
+    if (!chunks.some(c => c.name === 'acTL')) return null;
+    const hash = crypto.createHash('sha256');
+    for (const chunk of chunks) {
+        if (!FRAME_CHUNKS.has(chunk.name)) continue;
+        hash.update(chunk.name);
+        hash.update(chunk.data);
+    }
+    return hash.digest('hex');
+}
+
 /**
  * @returns {string}
  */

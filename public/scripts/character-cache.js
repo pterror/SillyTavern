@@ -2,7 +2,7 @@ import { localforage } from '../lib.js';
 import { getCurrentUserHandle } from './user.js';
 import { groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeTagIds } from './hash-utils.js';
 
-const HASH_VERSION = 6;
+const HASH_VERSION = 7;
 
 const DUPLICATE_FIELDS = ['description', 'first_mes', 'mes_example', 'scenario', 'tags', 'personality'];
 
@@ -226,7 +226,7 @@ export async function clearCharacterCache() {
     }
 }
 
-const GROUP_HASH_VERSION = 4;
+const GROUP_HASH_VERSION = 5;
 
 /** @type {Map<string, LocalForage>} */
 const groupStoresByHandle = new Map();

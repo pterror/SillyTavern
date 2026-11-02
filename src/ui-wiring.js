@@ -12,7 +12,7 @@ import { userStore } from './user-stores.js';
 import { TYPE } from './library-engine.js';
 import { clientRelativePath, humanizedDateTime, isPathUnderParent } from './util.js';
 import { createFolder, deleteFolder, readFolders, retargetCovers, updateFolder } from './background-folders.js';
-import { backgroundOf, changeBackgroundFolders, imagesOf, removeImage, renameImage, writeBackground } from './image-entities.js';
+import { backgroundOf, changeBackgroundFolders, imageThumbnails, imagesOf, removeImage, renameImage, userImageKey, writeBackground, writeUserImage } from './image-entities.js';
 import { settingsDocumentOf } from './settings-documents.js';
 import { modelListOf, rememberModelList } from './model-lists.js';
 import { default_settings as chatCompletionDefaults } from '../public/scripts/chat-completion-defaults.js';
@@ -186,14 +186,27 @@ const backgroundPorts = {
             if (!IMAGE_EXTENSIONS.has(extension.slice(1))) throw new Error(`Not an image to keep: ${upload.name}`);
             const target = path.join(directories.userImages, folder, sanitize(`${folder}_${humanizedDateTime()}${extension}`));
             await fs.promises.mkdir(path.dirname(target), { recursive: true });
-            await fs.promises.copyFile(upload.path, target);
-            return clientRelativePath(directories.root, target);
+            const image = await fs.promises.readFile(upload.path);
+            await fs.promises.writeFile(target, image);
+            const relative = clientRelativePath(directories.root, target);
+            await writeUserImage(chat.store.lib, relative, image);
+            return relative;
         },
         async deleteImage(context, relative) {
             const directories = directoriesOf(context.user);
             const target = path.join(directories.root, relative);
             if (!isPathUnderParent(directories.userImages, target)) throw new Error(`Not a user image: ${relative}`);
+            await removeImage(await libOf(context.user), TYPE.userImage, userImageKey(relative));
             await fs.promises.rm(target, { force: true });
+        },
+        async images(context, paths) {
+            const lib = await libOf(context.user);
+            const keys = paths.map(userImageKey);
+            const shown = await imageThumbnails(lib, TYPE.userImage, keys, 'bg');
+            return Object.fromEntries(paths.map((p, i) => {
+                const found = shown.get(keys[i]);
+                return [p, { thumbnail: found?.thumbnail ?? null, thumbnail_still: found?.thumbnail_still ?? null, animated: (found?.thumbnail_still ?? null) !== null }];
+            }));
         },
     },
     options: {

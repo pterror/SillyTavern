@@ -1521,6 +1521,7 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
                 const clean = /** @type {Record<string, unknown>} */ ({ ...m });
                 delete clean.node_id;
                 delete clean.force_avatar_url;
+                delete clean.force_avatar_url_still;
                 return JSON.stringify(clean);
             }).join('\n');
             return response.status(200).json({ message: `Chat saved to ${exportfilename}`, result: jsonl });

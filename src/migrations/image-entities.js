@@ -15,6 +15,30 @@ import { getConfigValue, setConfigFilePath } from '../util.js';
 
 const LOG_PREFIX = '[image-entities]';
 const PAGE = 500;
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/**
+ * @param {string} file
+ * @returns {Promise<boolean>}
+ */
+async function isAnimatedPng(file) {
+    const handle = await fs.promises.open(file, 'r').catch(() => null);
+    if (!handle) return false;
+    try {
+        const head = Buffer.alloc(8);
+        if ((await handle.read(head, 0, 8, 0)).bytesRead < 8 || !head.equals(PNG_SIGNATURE)) return false;
+        let at = 8;
+        for (;;) {
+            if ((await handle.read(head, 0, 8, at)).bytesRead < 8) return false;
+            const type = head.toString('latin1', 4, 8);
+            if (type === 'acTL') return true;
+            if (type === 'IDAT' || type === 'IEND') return false;
+            at += 12 + head.readUInt32BE(0);
+        }
+    } finally {
+        await handle.close();
+    }
+}
 
 /**
  * @param {string} host
@@ -75,8 +99,8 @@ export async function runMigration(options) {
     const { LibraryEngine } = await import('../library-engine.js');
     const { HASH, TYPE } = await import('../library-codes.js');
     const { USER_DIRECTORY_TEMPLATE } = await import('../constants.js');
-    const { importImageFiles } = await import('../image-entities.js');
-    const { stillHash } = await import('../image-identity.js');
+    const { importImageFiles, userImageFiles, userImageKey } = await import('../image-entities.js');
+    const { animatedHash, stillHash } = await import('../image-identity.js');
     const { getImages } = await import('../util.js');
     const { removeImageMetadataFiles } = await import('../background-folders.js');
 
@@ -101,19 +125,28 @@ export async function runMigration(options) {
         await lib.store.ready();
         /** @type {{ id: bigint, key: string }[]} */
         const unhashed = [];
+        /** @type {{ id: bigint, key: string }[]} */
+        const animated = [];
         /** @type {string | null} */
         let after = null;
         for (;;) {
             const { entities, more } = await lib.store.libraryOfType(TYPE.character, after, PAGE);
-            const stored = await lib.entities(entities.map((/** @type {{ id: bigint }} */ e) => e.id));
+            const stored = await lib.entities(entities.map((/** @type {{ id: bigint }} */ e) => e.id), { fields: [], lists: [] });
             for (const e of stored) {
-                if (e && !e.hashes.some(h => h.which === HASH.avatarIdentity)) unhashed.push({ id: e.id, key: e.key });
+                if (!e) continue;
+                if (!e.hashes.some(h => h.which === HASH.avatarIdentity)) unhashed.push({ id: e.id, key: e.key });
+                const file = path.join(directories.characters, e.key);
+                if (!e.hashes.some(h => h.which === HASH.animated) && await isAnimatedPng(file)) animated.push({ id: e.id, key: e.key });
             }
             if (!more || entities.length === 0) break;
             after = entities[entities.length - 1].key;
         }
         const withFile = unhashed.filter(c => fs.existsSync(path.join(directories.characters, c.key)));
         log(`${LOG_PREFIX} characters without an image hash: ${unhashed.length}, ${withFile.length} of them with an image file`);
+        log(`${LOG_PREFIX} animated character images without their all-frames hash: ${animated.length}`);
+        const userImages = userImageFiles(directories);
+        const userIds = userImages.length ? await lib.ids(TYPE.userImage, userImages.map(f => userImageKey(f.relative))) : [];
+        log(`${LOG_PREFIX} user images not in the store: ${userIds.filter(id => id === null).length}`);
         const missing = async (/** @type {string} */ dir, /** @type {number} */ type) => {
             const files = fs.existsSync(dir) ? getImages(dir) : [];
             const ids = files.length ? await lib.ids(type, files) : [];
@@ -132,13 +165,22 @@ export async function runMigration(options) {
             const hex = stillHash(await fs.promises.readFile(path.join(directories.characters, c.key)));
             await lib.store.commit([{ kind: 'cardHash', entity: c.id, which: HASH.avatarIdentity, hash: Buffer.from(hex, 'hex') }]);
         }
+        for (const c of animated) {
+            const hex = animatedHash(await fs.promises.readFile(path.join(directories.characters, c.key)));
+            if (hex) await lib.store.commit([{ kind: 'cardHash', entity: c.id, which: HASH.animated, hash: Buffer.from(hex, 'hex') }]);
+        }
         const images = await importImageFiles(lib, directories);
-        log(`${LOG_PREFIX} written: ${withFile.length} character image hash(es), ${images.backgrounds} background(s), ${images.personas} persona image(s)`);
+        log(`${LOG_PREFIX} written: ${withFile.length} character image hash(es), ${animated.length} all-frames hash(es), ${images.backgrounds} background(s), ${images.personas} persona image(s), ${images.userImages} user image(s)`);
         for (const f of images.failed) warnLine(`${LOG_PREFIX} NOT AN IMAGE (left out): ${f.file}: ${f.why}`);
 
         const left = [
             ...(await missing(directories.backgrounds, TYPE.background)).map(f => `backgrounds/${f}`),
             ...(await missing(directories.avatars, TYPE.personaImage)).map(f => `User Avatars/${f}`),
+            ...(await (async () => {
+                const files = userImageFiles(directories);
+                const ids = files.length ? await lib.ids(TYPE.userImage, files.map(f => userImageKey(f.relative))) : [];
+                return files.filter((_, i) => ids[i] === null).map(f => f.relative);
+            })()),
         ].filter(f => !images.failed.some(x => x.file.endsWith(f)));
         if (left.length) {
             warnLine(`${LOG_PREFIX} FAILED: ${left.length} image(s) still not in the store: ${left.slice(0, 20).join(', ')}`);

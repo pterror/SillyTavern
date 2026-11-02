@@ -264,6 +264,7 @@ jest.unstable_mockModule('../public/scripts/utils.js', () => ({
     createThumbnail: jest.fn(),
     extractAllWords: jest.fn(),
     saveBase64AsFile: jest.fn(),
+    saveUserImage: jest.fn(),
     PAGINATION_TEMPLATE: '',
     getBase64Async: jest.fn(),
     resetScrollHeight: jest.fn(),
