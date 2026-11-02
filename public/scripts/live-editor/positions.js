@@ -25,6 +25,24 @@ export function renderedOffset(dom, event) {
     return { text, offset: range.toString().length };
 }
 
+/**
+ * @param {MouseEvent} event
+ * @param {HTMLElement} rendered
+ * @param {string} source
+ * @param {boolean} clickToEdit
+ * @returns {number | null}
+ */
+export function editPosition(event, rendered, source, clickToEdit) {
+    if (event.type === 'click' && (!clickToEdit || window.getSelection()?.toString())) return null;
+    const target = event.target;
+    if (target instanceof Element) {
+        const link = target.closest('a[href]');
+        if (link && rendered.contains(link)) return null;
+    }
+    if (target instanceof HTMLImageElement && !target.closest('[data-result]')) return null;
+    return source ? sourcePosition(source, renderedOffset(rendered, event)) : 0;
+}
+
 const WORD = /[\p{L}\p{N}_]+/gu;
 
 /**

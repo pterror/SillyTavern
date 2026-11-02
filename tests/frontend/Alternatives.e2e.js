@@ -227,6 +227,63 @@ test.describe('the alternatives of a message', () => {
         await page.locator('#chat .mes[mesid="1"] .swipes-counter').click();
         await expect(rows(page)).toHaveCount(2);
         await expect(rows(page).nth(0).locator('.alternative-text')).toContainText(`Hi ${s}`);
+        await rows(page).nth(0).locator('.alternative-text').dblclick();
+        await expect(list(page).locator('textarea')).toHaveCount(0);
+    });
+
+    test('a greeting\'s text edits on a double-click, and on a click when click to edit is on, at the word clicked; a link opens instead', async ({ page }) => {
+        const s = stamp();
+        const g = [`Alpha bravo charlie ${s}.`, `Read [the guide](https://example.com/guide) first ${s}.`];
+        const avatar = await createCharacter(page, `AltClickEdit-${s}`, g);
+        await openCharacter(page, avatar);
+        await page.evaluate(async () => {
+            const { power_user } = await import('/scripts/power-user.js');
+            power_user.click_to_edit = false;
+            document.addEventListener('click', event => {
+                if (/** @type {Element} */ (event.target).closest('a[href]')) event.preventDefault();
+            }, true);
+        });
+        await page.locator('#chat .mes[mesid="0"] .swipes-counter').click();
+        await expect(rows(page)).toHaveCount(2);
+        const text = rows(page).nth(0).locator('.alternative-text');
+        const editor = rows(page).nth(0).locator('textarea');
+        const charlie = await text.evaluate(el => {
+            const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+            for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+                const at = node.textContent?.indexOf('charlie') ?? -1;
+                if (at < 0) continue;
+                const range = document.createRange();
+                range.setStart(node, at + 2);
+                range.setEnd(node, at + 3);
+                const box = range.getBoundingClientRect();
+                return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+            }
+            throw new Error('no charlie');
+        });
+        const start = g[0].indexOf('charlie');
+
+        await page.mouse.click(charlie.x, charlie.y);
+        await expect(editor).toHaveCount(0);
+        await page.mouse.dblclick(charlie.x, charlie.y);
+        await expect(editor).toBeFocused();
+        let caret = await editor.evaluate(el => /** @type {HTMLTextAreaElement} */ (el).selectionStart);
+        expect(caret).toBeGreaterThanOrEqual(start);
+        expect(caret).toBeLessThanOrEqual(start + 'charlie'.length);
+        await rows(page).nth(0).getByRole('button', { name: 'Cancel' }).click();
+
+        await page.evaluate(async () => {
+            const { power_user } = await import('/scripts/power-user.js');
+            power_user.click_to_edit = true;
+        });
+        await page.mouse.click(charlie.x, charlie.y);
+        await expect(editor).toBeFocused();
+        caret = await editor.evaluate(el => /** @type {HTMLTextAreaElement} */ (el).selectionStart);
+        expect(caret).toBeGreaterThanOrEqual(start);
+        expect(caret).toBeLessThanOrEqual(start + 'charlie'.length);
+        await rows(page).nth(0).getByRole('button', { name: 'Cancel' }).click();
+
+        await rows(page).nth(1).locator('.alternative-text a[href]').click();
+        await expect(rows(page).nth(1).locator('textarea')).toHaveCount(0);
     });
 
     test('greetings: edit, reorder, set the default, remove one emptied; the card and the old page take each', async ({ page }) => {
@@ -334,6 +391,10 @@ test.describe('the alternatives of a message', () => {
             await expect(rows(page).nth(1).locator(control)).toHaveCount(1);
         }
         await expect(list(page).locator('.alternatives-add')).toBeVisible();
+        const notIcons = await list(page).evaluate(dialog => [...dialog.querySelectorAll('[class*="fa-"]')]
+            .filter(el => !getComputedStyle(el, '::before').fontFamily.includes('Font Awesome'))
+            .map(el => el.className));
+        expect(notIcons).toEqual([]);
 
         await rows(page).nth(1).locator('.alternative-edit').click();
         await rows(page).nth(1).locator('textarea').fill(`One edited ${s}`);

@@ -6,7 +6,7 @@ import { withFilledAbout, withMacroPlaceholders } from './safe-macros.js';
 import { MacroValues } from './macro-values.js';
 import { insertMacroPills } from './macro-pill.js';
 import { EDITOR_ESCAPE_TAKERS, isEditorEvent, isUserEvent, mountLiveEditor } from './live-editor/registry.js';
-import { renderedOffset, sourcePosition } from './live-editor/positions.js';
+import { editPosition } from './live-editor/positions.js';
 import { drawerStackChanged } from './drawer-stack.js';
 
 /**
@@ -712,30 +712,13 @@ function setMaximizeButton(panel, maximized) {
 }
 
 /**
- * @param {EventTarget} target
- * @param {Element} preview
- * @returns {boolean}
- */
-function isOnLink(target, preview) {
-    return target instanceof Element && $(target).closest('a[href]', preview).length > 0;
-}
-
-/**
- * @param {EventTarget} target
- * @returns {boolean}
- */
-function isOnLightboxImage(target) {
-    return target instanceof HTMLImageElement && !target.closest('[data-result]');
-}
-
-/**
  * @param {HTMLElement} preview
  * @param {MouseEvent} event
  */
 function beginEditAtClick(preview, event) {
     const id = String($(preview).attr('data-for'));
-    const text = String(getTextarea(id).val() ?? '');
-    beginEdit(id, text ? sourcePosition(text, renderedOffset(preview, event)) : 0);
+    const at = editPosition(event, preview, String(getTextarea(id).val() ?? ''), deps.power_user.click_to_edit);
+    if (at !== null) beginEdit(id, at);
 }
 
 /** @param {CharacterFieldEditorDeps} dependencies */
@@ -769,15 +752,7 @@ export function initCharacterFieldEditor(dependencies) {
         toggleMaximize(this);
     });
 
-    $(document).on('dblclick', '.field_preview', function (event) {
-        if (isOnLink(event.target, this) || isOnLightboxImage(event.target)) return;
-        beginEditAtClick(this, event.originalEvent);
-    });
-
-    $(document).on('click', '.field_preview', function (event) {
-        if (!deps.power_user.click_to_edit) return;
-        if (isOnLink(event.target, this)) return;
-        if (window.getSelection().toString()) return;
+    $(document).on('click dblclick', '.field_preview', function (event) {
         beginEditAtClick(this, event.originalEvent);
     });
 

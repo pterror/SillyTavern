@@ -18,6 +18,7 @@ export type OldPage = {
     remove(mesId: number, index: number): Promise<void>;
     copy(text: string): Promise<void>;
     greetingsChanged(card: NonNullable<ListView['card']>, edit: { hash: number; text: string } | null): void;
+    editAt(event: MouseEvent, rendered: HTMLElement, source: string): number | null;
 };
 
 export type Look = { target: Target; mesId: number | null; title: string; at?: number };
@@ -99,7 +100,7 @@ function Dialog(props: {
 
     const [query, setQuery] = createSignal('');
     const [notice, setNotice] = createSignal<string | null>(null);
-    const [editing, setEditing] = createSignal<string | null>(null);
+    const [editing, setEditing] = createSignal<{ id: string; at?: number } | null>(null);
     const [adding, setAdding] = createSignal(false);
     const [drop, setDrop] = createSignal<{ id: string; side: 'before' | 'after' } | null>(null);
     const [ticks, setTicks] = createSignal<{ top: number; current: boolean }[]>([]);
@@ -386,6 +387,11 @@ function Dialog(props: {
         if (await greeting({ op: 'edit', position: card.position, hash: card.hash, text }, { hash: card.hash, text }))
             setEditing(null);
     };
+    const editAt = (item: Item, event: MouseEvent) => {
+        if (!isCardRow(item) || editing()?.id === item.id) return;
+        const at = props.old.editAt(event, event.currentTarget as HTMLElement, item.text);
+        if (at !== null) setEditing({ id: item.id, at });
+    };
     const setDefault = (item: Item) => {
         const card = item.card!;
         const isDefault = list()?.card?.defaultPosition === card.position;
@@ -669,59 +675,79 @@ function Dialog(props: {
                                             </button>
                                             <button
                                                 type="button"
-                                                class="alternative-button alternative-copy fa-solid fa-copy"
+                                                class="alternative-button alternative-copy"
                                                 title={t('Copy')}
                                                 aria-label={t('Copy')}
                                                 onClick={() => void props.old.copy(item.text)}
-                                            />
+                                            >
+                                                <i class="fa-solid fa-copy" />
+                                            </button>
                                             <Show when={isCardRow(item)}>
                                                 <button
                                                     type="button"
-                                                    class="alternative-button alternative-default fa-star"
-                                                    classList={{
-                                                        'fa-solid':
-                                                            list()?.card?.defaultPosition === item.card?.position,
-                                                        'fa-regular':
-                                                            list()?.card?.defaultPosition !== item.card?.position,
-                                                    }}
+                                                    class="alternative-button alternative-default"
                                                     title={t('Default greeting')}
                                                     aria-label={t('Default greeting')}
                                                     aria-pressed={list()?.card?.defaultPosition === item.card?.position}
                                                     onClick={() => setDefault(item)}
-                                                />
+                                                >
+                                                    <i
+                                                        class="fa-star"
+                                                        classList={{
+                                                            'fa-solid':
+                                                                list()?.card?.defaultPosition === item.card?.position,
+                                                            'fa-regular':
+                                                                list()?.card?.defaultPosition !== item.card?.position,
+                                                        }}
+                                                    />
+                                                </button>
                                                 <button
                                                     type="button"
-                                                    class="alternative-button alternative-edit fa-solid fa-pencil"
+                                                    class="alternative-button alternative-edit"
                                                     title={t('Edit')}
                                                     aria-label={t('Edit')}
-                                                    onClick={() => setEditing(item.id)}
-                                                />
+                                                    onClick={() => setEditing({ id: item.id })}
+                                                >
+                                                    <i class="fa-solid fa-pencil" />
+                                                </button>
                                                 <button
                                                     type="button"
-                                                    class="alternative-button alternative-delete-greeting fa-solid fa-trash-can"
+                                                    class="alternative-button alternative-delete-greeting"
                                                     title={t('Delete from the card')}
                                                     aria-label={t('Delete from the card')}
                                                     onClick={() => void removeGreeting(item)}
-                                                />
+                                                >
+                                                    <i class="fa-solid fa-trash-can" />
+                                                </button>
                                             </Show>
                                             <Show when={canRemove(item)}>
                                                 <button
                                                     type="button"
-                                                    class="alternative-button alternative-delete fa-solid fa-comment-slash"
+                                                    class="alternative-button alternative-delete"
                                                     title={t('Delete from the chat')}
                                                     aria-label={t('Delete from the chat')}
                                                     onClick={() => void remove(item.index)}
-                                                />
+                                                >
+                                                    <i class="fa-solid fa-comment-slash" />
+                                                </button>
                                             </Show>
                                         </span>
                                     </div>
-                                    <div class="mes_text alternative-text" hidden={editing() === item.id} />
-                                    <Show when={editing() === item.id}>
-                                        <Editor
-                                            text={item.text}
-                                            onSave={(text) => void save(item, text)}
-                                            onCancel={() => setEditing(null)}
-                                        />
+                                    <div
+                                        class="mes_text alternative-text"
+                                        hidden={editing()?.id === item.id}
+                                        onClick={(event) => editAt(item, event)}
+                                        onDblClick={(event) => editAt(item, event)}
+                                    />
+                                    <Show when={editing()?.id === item.id ? editing() : null}>
+                                        {(edit) => (
+                                            <Editor
+                                                text={item.text}
+                                                at={edit().at}
+                                                onSave={(text) => void save(item, text)}
+                                                onCancel={() => setEditing(null)}
+                                            />
+                                        )}
                                     </Show>
                                 </li>
                             )}
@@ -753,11 +779,19 @@ function Dialog(props: {
     );
 }
 
-function Editor(props: { text: string; onSave: (text: string) => void; onCancel: () => void }) {
+function Editor(props: {
+    text: string;
+    at?: number | undefined;
+    onSave: (text: string) => void;
+    onCancel: () => void;
+}) {
     const { t } = useUi();
     const [text, setText] = createSignal(props.text);
     let area: HTMLTextAreaElement | undefined;
-    onMount(() => area?.focus());
+    onMount(() => {
+        area?.focus();
+        if (props.at !== undefined) area?.setSelectionRange(props.at, props.at);
+    });
     return (
         <div class="alternative-editor">
             <textarea
