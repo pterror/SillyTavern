@@ -1,9 +1,10 @@
 import { findKeySpans } from './key-matching.js';
 import { EMBEDDED_WORLD_NAME as CARD_BOOK } from './candidate-resolution.js';
+import { getStringHash } from '../../public/scripts/hash-utils.js';
 
 /**
  * @typedef {{ book: string, entry: string } | { card: string }} EntryRef
- * @typedef {{ node: string, spans: [number, number][] } | { sent: true, spans: [number, number][] } | { field: string } | { inject: string }} RecordSource
+ * @typedef {{ node: string, spans: [number, number][], of: number } | { sent: true, spans: [number, number][], of: number } | { field: string } | { inject: string }} RecordSource
  * @typedef {{
  *   ref: EntryRef,
  *   why: import('./activation.js').ActivationWhy,
@@ -68,7 +69,8 @@ export async function buildActivationRecord(trace, { messages, injects, books })
                     const message = messages[source.depth];
                     if (!message || message.nodeId === '') return [];
                     const spans = findKeySpans(message.text, key, a.entry);
-                    return [message.nodeId === null ? { sent: true, spans } : { node: message.nodeId, spans }];
+                    const of = getStringHash(message.text);
+                    return [message.nodeId === null ? { sent: true, spans, of } : { node: message.nodeId, spans, of }];
                 }
                 if ('field' in source) return [{ field: source.field }];
                 if ('inject' in source) return [{ inject: injects[source.inject] ?? 'other' }];
@@ -103,7 +105,7 @@ export function withSentMessage(record, nodeId) {
             ...e,
             keys: e.keys.map(k => ({
                 ...k,
-                in: k.in.map(s => ('sent' in s ? { node: nodeId, spans: s.spans } : s)),
+                in: k.in.map(s => ('sent' in s ? { node: nodeId, spans: s.spans, of: s.of } : s)),
             })),
         })),
     };

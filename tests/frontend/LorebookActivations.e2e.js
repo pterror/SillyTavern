@@ -153,3 +153,74 @@ test('a reply that a lorebook entry came up for is marked; the mark lists the en
         await mock.close();
     }
 });
+
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} value
+ */
+async function setLoreMarks(page, value) {
+    // @ts-ignore
+    await page.evaluate((value) => $('#lore_marks').val(value).trigger('input'), value);
+}
+
+test('the words that brought an entry in are underlined where they were written; hover previews it, a click opens it; the setting hides them without moving anything', async ({ page }) => {
+    test.setTimeout(120000);
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const book = `Marks-${stamp}`;
+    const mock = await startLlamaCpp();
+    try {
+        await testSetup.awaitST({ page });
+        await setLoreMarks(page, 'on');
+        const avatar = await createCharacterAndBook(page, `Marker-${stamp}`, book);
+        await openCharacter(page, avatar);
+        await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1);
+        await connectLlamaCpp(page, mock.url);
+        await page.waitForTimeout(2500);
+
+        await chatBox(page).fill('Where is the old *lantern* kept?');
+        await page.locator('#send_but').click();
+        await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText('It hangs by the door.', { timeout: 30000 });
+
+        const sent = page.locator('#chat .mes[mesid="1"] .mes_text');
+        const marks = sent.locator('.lore-mark');
+        await expect(marks).toHaveCount(1, { timeout: 10000 });
+        await expect(marks).toHaveText('lantern');
+        await expect(sent.locator('em .lore-mark')).toHaveCount(1);
+        await expect(sent).toHaveText('Where is the old lantern kept?');
+        await expect(page.locator('#chat .mes[mesid="2"] .lore-mark')).toHaveCount(0);
+        await expect(marks).toHaveCSS('text-decoration-style', 'dotted');
+        await expect(marks).toHaveCSS('text-decoration-line', 'underline');
+        const withMarks = await sent.evaluate(el => el.getBoundingClientRect().height);
+
+        await marks.hover();
+        const tip = page.locator('.macro-tooltip');
+        await expect(tip).toBeVisible({ timeout: 5000 });
+        await expect(tip).toContainText('The lantern');
+        await expect(tip).toContainText(book);
+        await expect(tip).toContainText('The lantern never goes out.');
+
+        await page.mouse.move(0, 0);
+        await setLoreMarks(page, 'hover');
+        await expect(marks).toHaveCount(1);
+        await expect(marks).toHaveCSS('text-decoration-line', 'none');
+        await page.locator('#chat .mes[mesid="1"]').hover();
+        await expect(marks).toHaveCSS('text-decoration-line', 'underline');
+
+        await setLoreMarks(page, 'off');
+        await expect(marks).toHaveCount(0);
+        await expect(sent).toHaveText('Where is the old lantern kept?');
+        expect(await sent.evaluate(el => el.getBoundingClientRect().height)).toBe(withMarks);
+
+        await setLoreMarks(page, 'on');
+        await expect(marks).toHaveCount(1);
+
+        await marks.click();
+        await expect(page.locator('#WorldInfo')).toBeVisible();
+        await expect(page.locator('#world_popup_entries_list .world_entry[uid="0"]')).toBeVisible({ timeout: 10000 });
+        await expect.poll(() => page.locator('#world_editor_select option:checked').textContent()).toBe(book);
+        await expect(page.locator('#curEditTextarea')).toHaveCount(0);
+    } finally {
+        await setLoreMarks(page, 'on').catch(() => {});
+        await mock.close();
+    }
+});

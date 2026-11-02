@@ -356,6 +356,7 @@ export const power_user = {
     always_allow_custom_css: false,
     pin_styles: true,
     click_to_edit: false,
+    lore_marks: 'on',
     media_display: MEDIA_DISPLAY.LIST,
     image_overswipe: IMAGE_OVERSWIPE.GENERATE,
 };
@@ -2018,6 +2019,7 @@ export async function loadPowerUserSettings(settings, data) {
     $('#always_allow_custom_css').prop('checked', power_user.always_allow_custom_css);
     $('#pin_styles').prop('checked', power_user.pin_styles);
     $('#click_to_edit').prop('checked', power_user.click_to_edit);
+    $('#lore_marks').val(power_user.lore_marks);
     $('#media_display').val(power_user.media_display);
     $('#image_overswipe').val(power_user.image_overswipe);
 

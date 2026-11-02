@@ -24,7 +24,7 @@ import {
 import type { Support } from '@st/settings/page';
 import { Alternatives, alternativesCompat } from '@st/alternatives/page';
 import type { Look, OldPage } from '@st/alternatives/page';
-import { Activations } from '@st/activations/page';
+import { Activations, activationsCompat } from '@st/activations/page';
 import type { Look as ActivationsLook, OldPage as ActivationsOldPage } from '@st/activations/page';
 import { render } from 'solid-js/web';
 import type { JSX } from 'solid-js';
@@ -93,10 +93,11 @@ export function start(options: StartOptions) {
     ));
 
     const [activationsLook, setActivationsLook] = createSignal<ActivationsLook | null>(null);
+    const activations = activationsCompat(client, setActivationsLook, options.activations);
     const activationsHost = document.createElement('div');
     document.body.append(activationsHost);
     mount(activationsHost, () => (
-        <Activations look={activationsLook()} old={options.activations} onClose={() => setActivationsLook(null)} />
+        <Activations look={activationsLook()} old={options.activations} onClose={() => activations.close()} />
     ));
 
     return {
@@ -107,10 +108,7 @@ export function start(options: StartOptions) {
         closeChat: () => client.send('chat.close', {}),
         backgrounds: backgroundsCompat(client, tab, options.quietPrompt, options.t),
         alternatives: alternativesCompat(setLook),
-        activations: {
-            open: (message: string) => setActivationsLook({ message }),
-            close: () => setActivationsLook(null),
-        },
+        activations,
         settings: {
             ...settingsCompat(client),
             setSupport,

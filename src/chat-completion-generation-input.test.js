@@ -310,15 +310,17 @@ async function run() {
         assert.equal(typeof found, 'object');
         return { book: String(/** @type {any} */ (found).book), entry: String(/** @type {any} */ (found).id) };
     };
-    const storedNodes = (await loadBranch(user.store, { avatar }, branchName)).messages.map(m => m.node_id);
+    const storedMessages = (await loadBranch(user.store, { avatar }, branchName)).messages;
+    const storedNodes = storedMessages.map(m => m.node_id);
+    const { getStringHash } = await import('../public/scripts/hash-utils.js');
     assert.ok(input.activations, 'the generation keeps a record of what came up');
     assert.deepEqual(input.activations.cut, []);
     const recorded = Object.fromEntries(input.activations.entries.map(e => [JSON.stringify(e.ref), e]));
     const tower = recorded[JSON.stringify(await refOf('wi1'))];
     assert.equal(tower.why, 'key');
-    assert.deepEqual(tower.keys, [{ key: 'traveler', in: [{ node: storedNodes.at(-3), spans: [[13, 21]] }] }], 'the matched name, in the stored message it was found in, at its place in that message\'s text');
+    assert.deepEqual(tower.keys, [{ key: 'traveler', in: [{ node: storedNodes.at(-3), spans: [[13, 21]], of: getStringHash(storedMessages.at(-3).mes) }] }], 'the matched name, in the stored message it was found in, at its place in that message\'s text, with the text those offsets are into');
     const secret = recorded[JSON.stringify(await refOf('wi2'))];
-    assert.deepEqual(secret.keys, [{ key: 'nice to meet', in: [{ node: storedNodes.at(-2), spans: [[8, 20]] }] }]);
+    assert.deepEqual(secret.keys, [{ key: 'nice to meet', in: [{ node: storedNodes.at(-2), spans: [[8, 20]], of: getStringHash(storedMessages.at(-2).mes) }] }]);
     assert.deepEqual([secret.position, secret.depth, secret.role], [world_info_position.atDepth, WI_DEPTH_TEST_DEPTH, WI_DEPTH_TEST_ROLE]);
 
     assert.equal(input.worldInfoAfter, '', 'the test entry is position:before, so worldInfoAfter stays empty');

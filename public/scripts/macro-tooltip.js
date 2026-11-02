@@ -21,11 +21,32 @@ let hoverTimer = 0;
 let frame = 0;
 let placed = '';
 
+/** @type {{ selector: string, content: (el: Element, refresh: () => void) => Node[] }[]} */
+const providers = [];
+let anchors = MACRO_TOOLTIP_ANCHOR;
+
+/**
+ * @param {string} selector
+ * @param {(el: Element, refresh: () => void) => Node[]} content
+ */
+export function addTooltipProvider(selector, content) {
+    providers.push({ selector, content });
+    anchors = [MACRO_TOOLTIP_ANCHOR, ...providers.map(p => p.selector)].join(', ');
+}
+
 /**
  * @param {Element} el
  * @returns {Node[]}
  */
 function tooltipContent(el) {
+    const provider = providers.find(p => el.matches(p.selector));
+    if (provider) {
+        return provider.content(el, () => {
+            if (shownFor !== el || !tooltip) return;
+            tooltip.replaceChildren(...provider.content(el, () => {}));
+            placed = '';
+        });
+    }
     const source = el.getAttribute('data-macro-source') ?? '';
     const person = el.getAttribute('data-macro-person');
     if (person) return [macroPersonCard(JSON.parse(person), source)];
@@ -134,7 +155,7 @@ function hover(el) {
 
 export function initMacroTooltips() {
     document.addEventListener('pointerover', (event) => {
-        hover(event.target instanceof Element ? event.target.closest(MACRO_TOOLTIP_ANCHOR) : null);
+        hover(event.target instanceof Element ? event.target.closest(anchors) : null);
     });
     document.addEventListener('pointerout', (event) => {
         if (!event.relatedTarget) hover(null);

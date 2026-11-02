@@ -324,7 +324,7 @@ import { MacroEngine } from './scripts/macros/engine/MacroEngine.js';
 import { addChatBackupsBrowser } from './scripts/chat-backups.js';
 import { compressRequest, setRequestCompressionConfig } from './scripts/request-compression.js';
 import { alternativesOldPage, canJumpToSwipeForMessage, canOpenSwipePickerForMessage, initSwipePicker } from './scripts/alternatives.js';
-import { activationsOldPage, initLoreMarks, updateLoreMark } from './scripts/activations.js';
+import { activationsOldPage, chatMessageHtml, initLoreMarks, updateLoreMark } from './scripts/activations.js';
 
 // API OBJECT FOR EXTERNAL WIRING
 globalThis.SillyTavern = {
@@ -1493,7 +1493,11 @@ async function firstLoadInit() {
     initItemizedPrompts();
     initAccessibility();
     initSwipePicker();
-    initLoreMarks();
+    initLoreMarks({
+        rerender: messageId => updateMessageBlock(messageId, chat[messageId]),
+        editing: () => this_edit_mes_id,
+        save: key => saveSettingsDebounced(key),
+    });
     addDebugFunctions();
     doDailyExtensionUpdatesCheck();
     await eventSource.emit(event_types.APP_INITIALIZED);
@@ -2192,7 +2196,8 @@ export function updateMessageBlock(messageId, message, { rerenderMessage = true 
     const messageElement = chatElement.find(`[mesid="${messageId}"]`);
     if (rerenderMessage) {
         const text = message?.extra?.display_text ?? message.mes;
-        messageElement.find('.mes_text').html(messageFormatting(text, message.name, message.is_system, message.is_user, messageId, {}, false));
+        messageElement.find('.mes_text').html(chatMessageHtml(message, text,
+            shown => messageFormatting(shown, message.name, message.is_system, message.is_user, messageId, {}, false)));
     }
 
     updateReasoningUI(messageElement);
@@ -2689,15 +2694,15 @@ function getMessageTextHTML(message, { messageId = chat.indexOf(message) }) {
     /** @type {Partial<DOMPurify.Config>} */
     const sanitizerOverrides = message.extra?.uses_system_ui ? { MESSAGE_ALLOW_SYSTEM_UI: true } : {};
 
-    return messageFormatting(
-        message.extra?.display_text || message.mes,
+    return chatMessageHtml(message, message.extra?.display_text || message.mes, shown => messageFormatting(
+        shown,
         message.name,
         message.is_system,
         message.is_user,
         messageId,
         sanitizerOverrides,
         false,
-    );
+    ));
 }
 
 /**
@@ -7860,15 +7865,15 @@ async function messageEditCancel(messageId = this_edit_mes_id) {
     thisMesDiv.find('.mes_edit_buttons').css('display', 'none');
     thisMesBlock.find('.mes_buttons').css('display', '');
     thisMesBlock.find('.mes_text')
-        .append(messageFormatting(
-            text,
+        .append(chatMessageHtml(chat[messageId], text, shown => messageFormatting(
+            shown,
             this_edit_mes_chname,
             chat[messageId].is_system,
             chat[messageId].is_user,
             messageId,
             {},
             false,
-        ));
+        )));
     appendMediaToMessage(chat[messageId], thisMesDiv);
     addCopyToCodeBlocks(thisMesDiv);
 
@@ -7912,15 +7917,15 @@ async function messageEditDone(div) {
     mesBlock.find('.mes_edit_buttons').css('display', 'none');
     mesBlock.find('.mes_buttons').css('display', '');
     mesBlock.find('.mes_text').append(
-        messageFormatting(
-            text,
+        chatMessageHtml(mes, text, shown => messageFormatting(
+            shown,
             this_edit_mes_chname,
             mes.is_system,
             mes.is_user,
             this_edit_mes_id,
             {},
             false,
-        ),
+        )),
     );
     mesBlock.find('.mes_bias').empty();
     mesBlock.find('.mes_bias').append(messageFormatting(bias, '', false, false, -1, {}, false));
