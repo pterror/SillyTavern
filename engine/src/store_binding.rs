@@ -2705,6 +2705,48 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
             let book = req_integer(a, "book")?;
             Box::new(move |s| s.chat_read(|v| b::resolving_page(v, book)).map(JsTree))
         }
+        "nameCandidates" | "mentionCandidates" => {
+            use crate::store::references as r;
+            let (book, after, limit) = (
+                req_integer(a, "book")?,
+                opt_integer(a, "after")?,
+                req_integer(a, "limit")? as usize,
+            );
+            let text = string(
+                "text",
+                a.get::<Unknown>("text")?
+                    .ok_or_else(|| invalid(format!("{op} needs a text")))?,
+            )?;
+            let names = op == "nameCandidates";
+            Box::new(move |s| {
+                s.chat_read(|v| {
+                    if names {
+                        r::name_candidates(v, book, &text, after, limit)
+                    } else {
+                        r::mention_candidates(v, book, &text, after, limit)
+                    }
+                })
+                .map(JsTree)
+            })
+        }
+        "unindexedNames" => {
+            let (book, after, limit) = (
+                req_integer(a, "book")?,
+                opt_integer(a, "after")?,
+                req_integer(a, "limit")? as usize,
+            );
+            Box::new(move |s| {
+                s.chat_read(|v| crate::store::references::unindexed_page(v, book, after, limit))
+                    .map(JsTree)
+            })
+        }
+        "bookStats" => {
+            let (book, entries) = (req_integer(a, "book")?, integers(a, "entries")?);
+            Box::new(move |s| {
+                s.chat_read(|v| crate::store::references::stats(v, book, &entries))
+                    .map(JsTree)
+            })
+        }
         "history" => {
             let (entity, before, limit) = (
                 req_integer(a, "entity")?,

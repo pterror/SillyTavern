@@ -315,6 +315,7 @@ pub fn json_written(
     f: &FieldRef,
     new: Option<&[u8]>,
 ) -> Result<(), StoreError> {
+    super::book_stats::value_changed(view, out, e, f, true, new)?;
     let FieldRef::Code(code) = f else {
         return Ok(());
     };
