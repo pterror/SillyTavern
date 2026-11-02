@@ -1,3 +1,5 @@
+import { focusCounterpart, splitSelectorList } from './focus-selector.js';
+
 /** @type {CSSStyleSheet} */
 let dynamicStyleSheet = null;
 /** @type {CSSStyleSheet} */
@@ -33,8 +35,8 @@ const observer = new MutationObserver(mutations => {
  * @param {boolean} [options.fromExtension=false] - Indicates if the styles are from an extension
  */
 function applyDynamicFocusStyles(styleSheet, { fromExtension = false } = {}) {
-    /** @typedef {{ type: 'media'|'supports'|'container', conditionText: string }} WrapperCond */
-    /** @type {{baseSelector: string, rule: CSSStyleRule, wrappers: WrapperCond[]}[]} */
+    /** @typedef {{ type: 'media'|'supports'|'container'|'style', conditionText: string }} WrapperCond */
+    /** @type {{selector: string, baseSelector: string, rule: CSSStyleRule, wrappers: WrapperCond[]}[]} */
     const hoverRules = [];
     /** @type {Set<string>} */
     const focusRules = new Set();
@@ -68,20 +70,24 @@ function applyDynamicFocusStyles(styleSheet, { fromExtension = false } = {}) {
                 }
                 processImportedStylesheet(rule.styleSheet, [...wrappers, ...extra]);
             } else if (rule instanceof CSSStyleRule) {
-                const selectors = rule.selectorText.split(',').map(s => s.trim());
+                const selectors = splitSelectorList(rule.selectorText);
+                const underHover = wrappers.some(w => w.type === 'style' && w.conditionText.includes(':hover'));
 
                 selectors.forEach(selector => {
                     const isHover = selector.includes(':hover'), isFocus = selector.includes(':focus');
-                    if (isHover && isFocus) {
+                    if (isHover && (isFocus || underHover)) {
                         // Rules with both are specific enough that they shouldn't be auto-touched
                     } else if (isHover) {
                         const baseSelector = selector.replace(/:hover/g, PLACEHOLDER).trim();
-                        hoverRules.push({ baseSelector, rule, wrappers: [...wrappers] });
+                        hoverRules.push({ selector, baseSelector, rule, wrappers: [...wrappers] });
                     } else if (isFocus) {
                         const baseSelector = selector.replace(/:focus(-within|-visible)?/g, PLACEHOLDER).trim();
                         focusRules.add(`${baseSelector}|${wrapperSignature(wrappers)}`);
                     }
                 });
+                if (rule.cssRules?.length) {
+                    processRules(rule.cssRules, [...wrappers, { type: 'style', conditionText: rule.selectorText }]);
+                }
             } else if (rule instanceof CSSMediaRule) {
                 processRules(rule.cssRules, [...wrappers, { type: 'media', conditionText: rule.conditionText }]);
             } else if (rule instanceof CSSSupportsRule) {
@@ -112,31 +118,35 @@ function applyDynamicFocusStyles(styleSheet, { fromExtension = false } = {}) {
     /** @type {CSSStyleSheet} */
     let targetStyleSheet = null;
 
-    hoverRules.forEach(({ baseSelector, rule, wrappers }) => {
-        if (!focusRules.has(`${baseSelector}|${wrapperSignature(wrappers)}`)) {
-            targetStyleSheet ??= getDynamicStyleSheet({ fromExtension });
+    /** @type {Map<CSSStyleRule, {wrappers: WrapperCond[], selectors: string[]}>} */
+    const copies = new Map();
+    hoverRules.forEach(({ selector, baseSelector, rule, wrappers }) => {
+        if (focusRules.has(`${baseSelector}|${wrapperSignature(wrappers)}`)) return;
+        const focusSelector = focusCounterpart(selector);
+        if (focusSelector === null || focusSelector.includes('::')) return;
+        const copy = copies.get(rule) ?? { wrappers, selectors: [] };
+        copy.selectors.push(focusSelector);
+        copies.set(rule, copy);
+    });
 
-            const focusSelector = rule.selectorText.replace(/:hover/g, ':focus-visible');
+    copies.forEach(({ wrappers, selectors }, rule) => {
+        targetStyleSheet ??= getDynamicStyleSheet({ fromExtension });
+        let focusRule = `${selectors.join(', ')} { ${rule.style.cssText} }`;
 
-            if (focusSelector.includes('::')) {
-                return;
-            }
-            let focusRule = `${focusSelector} { ${rule.style.cssText} }`;
+        if (wrappers.length > 0) {
+            focusRule = wrappers.reduceRight((inner, w) => {
+                if (w.type === 'media') return `@media ${w.conditionText} { ${inner} }`;
+                if (w.type === 'supports') return `@supports ${w.conditionText} { ${inner} }`;
+                if (w.type === 'container') return `@container ${w.conditionText} { ${inner} }`;
+                if (w.type === 'style') return `${w.conditionText} { ${inner} }`;
+                return inner;
+            }, focusRule);
+        }
 
-            if (wrappers.length > 0) {
-                focusRule = wrappers.reduceRight((inner, w) => {
-                    if (w.type === 'media') return `@media ${w.conditionText} { ${inner} }`;
-                    if (w.type === 'supports') return `@supports ${w.conditionText} { ${inner} }`;
-                    if (w.type === 'container') return `@container ${w.conditionText} { ${inner} }`;
-                    return inner;
-                }, focusRule);
-            }
-
-            try {
-                targetStyleSheet.insertRule(focusRule, targetStyleSheet.cssRules.length);
-            } catch (e) {
-                console.warn('Failed to insert focus rule:', e);
-            }
+        try {
+            targetStyleSheet.insertRule(focusRule, targetStyleSheet.cssRules.length);
+        } catch (e) {
+            console.warn('Failed to insert focus rule:', e);
         }
     });
 }

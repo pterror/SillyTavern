@@ -486,6 +486,11 @@ test.describe('the alternatives of a message', () => {
             .filter(el => !getComputedStyle(el, '::before').fontFamily.includes('Font Awesome'))
             .map(el => el.className));
         expect(notIcons).toEqual([]);
+        const starWeight = (/** @type {number} */ i) => rows(page).nth(i).locator('.alternative-default')
+            .evaluate(el => getComputedStyle(el, '::before').fontWeight);
+        expect([await starWeight(0), await starWeight(1)]).toEqual(['900', '400']);
+        await expect.poll(() => page.evaluate(() => [...document.fonts]
+            .some(face => face.family.includes('Font Awesome 6 Free') && face.weight === '400' && face.status === 'loaded'))).toBe(true);
 
         await rows(page).nth(1).locator('.alternative-edit').click();
         await rows(page).nth(1).locator('textarea').fill(`One edited ${s}`);
