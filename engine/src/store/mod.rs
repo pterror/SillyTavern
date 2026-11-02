@@ -1,3 +1,4 @@
+pub mod book_stats;
 pub mod books;
 pub mod bulk;
 pub mod carriers;
@@ -12,6 +13,7 @@ pub mod library_read;
 pub mod library_search;
 pub mod local_import;
 pub mod prune;
+pub mod references;
 pub mod searched;
 pub mod sessions;
 pub mod state;
@@ -1911,6 +1913,8 @@ mod library_search_tests;
 mod library_search_diff_tests;
 #[cfg(test)]
 mod library_tests;
+#[cfg(test)]
+mod references_tests;
 #[cfg(test)]
 mod searched_tests;
 #[cfg(test)]

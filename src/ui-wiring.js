@@ -7,6 +7,8 @@ import { backgroundsArea } from '@st/backgrounds/server';
 import { settingsArea } from '@st/settings/server';
 import { alternativesArea } from '@st/alternatives/server';
 import { activationsArea } from '@st/activations/server';
+import { referencesArea } from '@st/references/server';
+import { References } from './world-info/references.js';
 
 import { userStore } from './user-stores.js';
 import { TYPE } from './library-engine.js';
@@ -489,7 +491,50 @@ const activationsPorts = {
     },
 };
 
-export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts), alternativesArea(alternativesPorts), activationsArea(activationsPorts)], {
+/**
+ * @param {import('@st/server-ui').User} user
+ */
+const referencesOf = async user => new References((await userStore(directoriesOf(user), user.handle)).lib);
+
+/**
+ * @template {{ entry: bigint }} T
+ * @param {T[]} list
+ */
+const withIds = list => list.map(x => ({ ...x, entry: String(x.entry) }));
+
+/** @type {import('@st/references/server').Ports} */
+const referencesPorts = {
+    async from(user, book, entry, cursor) {
+        const page = await (await referencesOf(user)).from(BigInt(book), BigInt(entry), cursor === null ? {} : { cursor });
+        return page && { ...page, references: withIds(page.references) };
+    },
+    async to(user, book, entry, cursor) {
+        const page = await (await referencesOf(user)).to(BigInt(book), BigInt(entry), cursor === null ? {} : { cursor });
+        return page && { ...page, references: withIds(page.references), unlinked: withIds(page.unlinked) };
+    },
+    async issues(user, book, cursor) {
+        const page = await (await referencesOf(user)).issues(BigInt(book), cursor === null ? {} : { after: cursor });
+        if (!page) return null;
+        return {
+            next: page.next,
+            issues: page.issues.map(i => ({
+                entry: String(i.entry),
+                issues: /** @type {import('@st/references/protocol').Issue[]} */ (i.issues.map(x => ('with' in x ? { ...x, with: /** @type {bigint[]} */ (x.with).map(String) } : x))),
+            })),
+        };
+    },
+    async sizes(user, book, entries) {
+        const s = await (await referencesOf(user)).sizes(BigInt(book), entries.map(e => BigInt(e)));
+        return {
+            bytes: s.bytes,
+            hash: String(s.hash),
+            entries: s.entries,
+            of: s.of.map((/** @type {any} */ x) => ({ entry: String(x.entry), bytes: x.bytes, hash: String(x.hash) })),
+        };
+    },
+};
+
+export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts), alternativesArea(alternativesPorts), activationsArea(activationsPorts), referencesArea(referencesPorts)], {
     userOf: request => (request.user ? uiUser(request) : null),
     async chatOf(user, owner) {
         const store = await userStore(directoriesOf(user), user.handle);

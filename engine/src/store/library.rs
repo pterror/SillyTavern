@@ -630,6 +630,9 @@ pub fn text_changed(
     f: &FieldRef,
     new: Option<&[u8]>,
 ) -> Result<(), StoreError> {
+    if let Some(v) = new {
+        super::book_stats::value_changed(view, out, e, f, false, Some(v))?;
+    }
     match f {
         FieldRef::Code(NAME) => change(view, out, e, |st| {
             st.name = new.map(fold_name).unwrap_or_default();
@@ -711,6 +714,7 @@ impl Deriver for EntityCreate {
             _ => {}
         }
         searched::created(view, out, e, kind, k, searched::marked(view, kind, e)?)?;
+        super::book_stats::created(view, out, e, kind, k)?;
         out.put(kk, uvarint(e));
         out.max(key::of(key::NEXT_ENTITY), e + 1);
         version(view, out, e, at)?;
@@ -912,6 +916,7 @@ fn delete_entity(
         tags::deleted(view, out, e, k, at)?;
     }
     searched::gone(view, out, e, kind, k)?;
+    super::book_stats::gone(view, out, e, kind, k)?;
     tags::entity_gone(view, out, e)?;
     super::local_import::entity_gone(view, out, e)?;
     books::touched(view, out, e, at)?;

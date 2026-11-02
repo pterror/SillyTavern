@@ -613,6 +613,9 @@ fn changed(
         if super::searched::wants(view, e, f)? {
             super::searched::text_written(view, out, e, f, ot.as_deref(), nt.as_deref())?;
         }
+        if nt.is_none() {
+            super::book_stats::value_changed(view, out, e, f, false, None)?;
+        }
         library::text_changed(view, out, e, f, nt.as_deref())?;
         let w = match &nt {
             Some(t) => super::tags::Written::Text(t),
@@ -1116,6 +1119,7 @@ impl Deriver for EntityDelete {
         }
         place_change(view, out, e, None, Family::Entity, m.change())?;
         super::searched::gone(view, out, e, kind, &k)?;
+        super::book_stats::gone(view, out, e, kind, &k)?;
         super::tags::entity_gone(view, out, e)?;
         super::local_import::entity_gone(view, out, e)?;
         if kind == ENTRY {
@@ -1245,6 +1249,7 @@ impl Deriver for Restore {
         }
         let lv = view.with_layer(&local);
         super::searched::created(&lv, out, e, kind, &k, false)?;
+        super::book_stats::created(&lv, out, e, kind, &k)?;
         version(&lv, out, e, at)?;
         books::container_touched(&lv, out, kind, &k, at)
     }

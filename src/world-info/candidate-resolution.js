@@ -15,7 +15,7 @@ const DEFAULT_WEIGHT = 100;
  * @param {object} characterBook
  * @returns {{entries: Record<string|number, object>}}
  */
-function convertCharacterBook(characterBook) {
+export function convertCharacterBook(characterBook) {
     /** @type {Record<string|number, object>} */
     const entries = {};
 

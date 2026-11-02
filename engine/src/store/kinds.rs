@@ -776,6 +776,7 @@ fn drop_text_with(
         Holder::Entity(entity) => {
             if search {
                 super::searched::text_written(view, out, entity, f, Some(&old), None)?;
+                super::book_stats::value_changed(view, out, entity, f, false, None)?;
             }
         }
         Holder::Message(m) => super::chat::text_changed(view, out, m, f, Some(&old), None)?,
@@ -850,6 +851,7 @@ impl Deriver for TextValue {
                         Some(bytes(rec, 2)),
                     )?;
                 }
+                super::book_stats::value_changed(view, out, entity, f, true, None)?;
                 library::drop_json(view, out, entity, f)?;
                 library::text_changed(view, out, entity, f, Some(bytes(rec, 2)))?;
                 tags::field_written(view, out, entity, at, f, Written::Text(bytes(rec, 2)))?;
@@ -977,7 +979,10 @@ impl Deriver for TextEdit {
             .ok_or_else(|| StoreError::Entry(format!("a textEdit of {h:?} with no value")))?;
         let wants_old = match h {
             Holder::Entity(entity) => {
-                super::searched::wants(view, entity, f)? || library::places(f) || tags::tag_field(f)
+                super::searched::wants(view, entity, f)?
+                    || library::places(f)
+                    || tags::tag_field(f)
+                    || super::book_stats::tracked(view, entity)?
             }
             Holder::Message(_) => super::chat::text_watched(f),
         };

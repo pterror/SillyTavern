@@ -426,6 +426,53 @@ pub fn matches_whole(
     }
 }
 
+pub fn docs_with_terms(
+    view: &View,
+    scope: Scope,
+    terms: &[(String, bool)],
+    mask: u64,
+    after: Option<u64>,
+    limit: usize,
+) -> StoreResult<(Vec<u64>, bool)> {
+    let defs = scope.fields();
+    let mut ctx = Ctx::new(view, None);
+    let mut lists: Vec<(BlockDocs, bool)> = Vec::with_capacity(terms.len());
+    let start = after.map_or(0, |a| a + 1);
+    for (term, as_prefix) in terms {
+        let mut b = BlockDocs::postings(scope, term, mask);
+        b.seek(&mut ctx, start)?;
+        lists.push((b, *as_prefix));
+    }
+    let mut out = Vec::new();
+    loop {
+        let Some(d) = lists.iter().filter_map(|(b, _)| b.doc()).min() else {
+            return Ok((out, false));
+        };
+        let mut hit = false;
+        for (b, as_prefix) in &lists {
+            if b.doc() != Some(d) {
+                continue;
+            }
+            hit = hit
+                || b.doc_pairs().any(|(f, v)| {
+                    defs.get(f as usize)
+                        .is_some_and(|def| super::unpack(def.prefix, v).tf(*as_prefix) > 0)
+                });
+        }
+        if hit {
+            if out.len() == limit {
+                return Ok((out, true));
+            }
+            out.push(d);
+        }
+        for (b, _) in &mut lists {
+            if b.doc() == Some(d) {
+                b.seek(&mut ctx, d + 1)?;
+            }
+        }
+    }
+}
+
 pub fn matches_upto(
     view: &View,
     q: &Query,
