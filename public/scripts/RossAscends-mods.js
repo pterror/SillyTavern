@@ -857,7 +857,7 @@ export function initRossMods() {
      */
     async function processHotkeys(event) {
         // Default hotkeys and shortcuts shouldn't work if any popup is currently open
-        if (Popup.util.isPopupOpen()) {
+        if (Popup.util.isPopupOpen() || document.querySelector('dialog:modal')) {
             return;
         }
 
