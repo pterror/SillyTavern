@@ -11,6 +11,7 @@ import { markUpstreamImportPending } from './upstream-import.js';
 export const STORE_DIR = 'store';
 const OLD_LIBRARY = 'character-metadata.sqlite';
 const OLD_CHATS = 'message-tree.sqlite';
+export const NAMED_THUMBNAILS = Object.freeze(['bg', 'avatar', 'persona'].map(d => path.join('thumbnails', d)));
 
 export class OldFormatError extends Error {}
 
@@ -54,10 +55,21 @@ export async function oldFormatLine(directories) {
  * @returns {string | null}
  */
 function oldFormatLineHere(directories) {
-    if (fs.existsSync(path.join(directories.root, STORE_DIR))) return null;
+    if (fs.existsSync(path.join(directories.root, STORE_DIR))) {
+        const thumbnails = NAMED_THUMBNAILS.filter(d => fs.existsSync(path.join(directories.root, d)));
+        if (!thumbnails.length) return null;
+        return `${directories.root} keeps thumbnails by file name (${thumbnails.join(', ')}): stop the server and run node src/migrations/image-entities.js --apply`;
+    }
     const old = [OLD_LIBRARY, OLD_CHATS].filter(f => fs.existsSync(path.join(directories.root, f)));
     if (!old.length) return null;
     return `${directories.root} holds data in the format before the engine (${old.join(', ')}) and no ${STORE_DIR}/: this version can't open it`;
+}
+
+/**
+ * @param {string} root
+ */
+function dropNamedThumbnails(root) {
+    for (const d of NAMED_THUMBNAILS) fs.rmSync(path.join(root, d), { recursive: true, force: true });
 }
 
 /**
@@ -94,9 +106,10 @@ export function userStore(directories, handle = path.basename(directories.root))
  * @returns {Promise<UserStore>}
  */
 async function openStore(root, handle) {
+    const dir = path.join(root, STORE_DIR);
+    if (!fs.existsSync(dir)) dropNamedThumbnails(root);
     const line = await oldFormatLine({ root });
     if (line) throw new OldFormatError(line);
-    const dir = path.join(root, STORE_DIR);
     const made = madeHere.delete(root) || !fs.existsSync(dir);
     const lib = await LibraryEngine.open(engineOf(), dir);
     try {
@@ -150,6 +163,7 @@ export function engineStoreHere(directories) {
     if (found) return found;
     const dir = path.join(key, STORE_DIR);
     if (!open.has(key)) {
+        if (!fs.existsSync(dir)) dropNamedThumbnails(key);
         const line = oldFormatLineHere({ root: key });
         if (line) throw new OldFormatError(line);
         if (!fs.existsSync(dir)) madeHere.add(key);

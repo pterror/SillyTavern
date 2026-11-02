@@ -608,7 +608,7 @@ function Thumbnail(props: {
 }) {
     const [menuOpen, setMenuOpen] = createSignal(false);
     const isVideo = () => /\.mp4$/i.test(props.background.file);
-    const still = () => props.background.animated && !props.animation && !isVideo();
+    const still = () => props.chat && props.background.animated && !props.animation && !isVideo();
     return (
         <div
             class={classes('bg_example flex-container', {

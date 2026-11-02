@@ -238,7 +238,7 @@ async function postHashQuery(body) {
 
 const BATCH_FIELDS_CHUNK_SIZE = 500;
 
-const HASH_MODE_BATCH_FIELDS = /** @type {const} */ (['name', 'fav', 'tags', 'tag_ids', 'data']);
+const HASH_MODE_BATCH_FIELDS = /** @type {const} */ (['name', 'fav', 'tags', 'tag_ids', 'data', 'thumbnail', 'avatar_ref']);
 
 /**
  * @param {string[]} ids

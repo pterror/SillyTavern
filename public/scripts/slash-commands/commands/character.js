@@ -1,6 +1,6 @@
 import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
-import { Generate, deleteCharacter, duplicateCharacter, getCurrentCharacter, getThumbnailUrl, is_send_press, reloadCurrentChat, renameCharacter, chatOpCut, selectCharacterByAvatar, select_selected_character } from '../../../script.js';
+import { Generate, deleteCharacter, duplicateCharacter, getCurrentCharacter, characterThumbnail, replaceShownImage, is_send_press, reloadCurrentChat, renameCharacter, chatOpCut, selectCharacterByAvatar, select_selected_character } from '../../../script.js';
 import { getCharacters, getOneCharacter } from '../../character-list.js';
 import { chat } from '../../chat-state.js';
 import { getRequestHeaders } from '../../request-headers.js';
@@ -43,26 +43,6 @@ async function resolveFinalAvatarBlob(base64Data, { resizePrompt = false } = {})
 
     const response = await fetch(finalImageData);
     return await response.blob();
-}
-
-/**
- * @param {string} avatarKey
- * @returns {Promise<void>}
- */
-async function refreshAvatarDisplay(avatarKey) {
-    const thumbnailUrl = getThumbnailUrl('avatar', avatarKey);
-    await fetch(thumbnailUrl, { method: 'GET', cache: 'reload' });
-    await fetch(`/characters/${avatarKey}`, { method: 'GET', cache: 'reload' });
-
-    const avatarImages = document.querySelectorAll(`img[src^="${thumbnailUrl}"]`);
-    for (const img of avatarImages) {
-        if (img instanceof HTMLImageElement) {
-            const originalSrc = img.src;
-            img.src = '';
-            img.src = originalSrc;
-        }
-    }
-    console.debug(`Refreshed ${avatarImages.length} avatar images for ${avatarKey}`);
 }
 
 /**
@@ -295,11 +275,14 @@ async function updateCharacterCallback(args) {
 
         if (avatarCancelled) {
             toastr.warning(t`Avatar update cancelled`);
-        } else if (avatarBlob) {
-            await refreshAvatarDisplay(character.avatar);
         }
 
+        const shown = characterThumbnail(character.avatar);
         await getOneCharacter(character.avatar);
+        if (avatarBlob && !avatarCancelled) {
+            await fetch(`/characters/${character.avatar}`, { method: 'GET', cache: 'reload' });
+            replaceShownImage(shown, characterThumbnail(character.avatar));
+        }
 
         const edited = charactersStore.get(character.avatar)
             ?? await (await import('../../character-repository.js')).characterRepository.full(character.avatar);

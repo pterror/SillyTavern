@@ -3,8 +3,7 @@ import {
     getCurrentCharacter,
     default_user_avatar,
     getCurrentChatId,
-    getThumbnailUrl,
-    setThumbnailVersion,
+    replaceShownImage,
     menu_type,
     name2,
     reloadCurrentChat,
@@ -160,17 +159,54 @@ export async function retriggerFirstMessageOnEmptyChat() {
     if (chat[0]) updateMessageBlock(0, chat[0]);
 }
 
-function reloadUserAvatar(force = false) {
+function reloadUserAvatar() {
     $('.mes').each(function () {
-        const avatarImg = $(this).find('.avatar img');
-        if (force) {
-            avatarImg.attr('src', avatarImg.attr('src'));
-        }
-
         if ($(this).attr('is_user') == 'true' && $(this).attr('force_avatar') == 'false') {
-            avatarImg.attr('src', getThumbnailUrl('persona', user_avatar));
+            $(this).find('.avatar img').attr('src', personaThumbnail(user_avatar));
         }
     });
+}
+
+/** @type {Map<string, string>} */
+const personaThumbnails = new Map();
+/** @type {Map<string, string>} */
+const personaRefs = new Map();
+
+/**
+ * @param {string} avatar
+ * @param {unknown} thumbnail
+ */
+function rememberPersonaThumbnail(avatar, thumbnail) {
+    if (typeof thumbnail !== 'string') return;
+    const before = personaThumbnails.get(avatar);
+    personaThumbnails.set(avatar, thumbnail);
+    if (before !== undefined) replaceShownImage(before, thumbnail);
+}
+
+/**
+ * @param {string} avatar
+ * @param {{ thumbnail?: unknown, ref?: unknown } | null | undefined} saved
+ */
+function rememberPersonaImage(avatar, saved) {
+    rememberPersonaThumbnail(avatar, saved?.thumbnail);
+    if (typeof saved?.ref === 'string') personaRefs.set(avatar, saved.ref);
+}
+
+/**
+ * @param {string | undefined | null} avatar
+ * @returns {string}
+ */
+export function personaThumbnail(avatar) {
+    return (avatar ? personaThumbnails.get(avatar) : undefined) ?? default_user_avatar;
+}
+
+/**
+ * @param {string | undefined | null} avatar
+ * @returns {{ force_avatar: string, force_avatar_url: string | undefined }}
+ */
+export function personaAvatar(avatar) {
+    const ref = avatar ? personaRefs.get(avatar) : undefined;
+    return ref ? { force_avatar: ref, force_avatar_url: personaThumbnail(avatar) } : { force_avatar: default_user_avatar, force_avatar_url: undefined };
 }
 
 /**
@@ -234,8 +270,7 @@ function getUserAvatarBlock(avatarId) {
     template.attr('data-avatar-id', avatarId);
     template.find('.avatar').attr('data-avatar-id', avatarId).attr('title', avatarId);
     template.toggleClass('default_persona', avatarId === power_user.default_persona);
-    const avatarUrl = getThumbnailUrl('persona', avatarId);
-    template.find('img').attr('src', avatarUrl);
+    template.find('img').attr('src', personaThumbnail(avatarId));
 
     // Make sure description block has at least three rows. Otherwise height looks inconsistent. I don't have a better idea for this.
     const currentText = template.find('.ch_description').text();
@@ -284,7 +319,7 @@ export async function getUserAvatars(doRender = true, openPageAt = '') {
         headers: getRequestHeaders({ omitContentType: true }),
     });
     if (response.ok) {
-        /** @type {{avatars: string[], thumbnailVersions: Record<string, string>}} */
+        /** @type {{avatars: string[], thumbnails: Record<string, string>, refs: Record<string, string>}} */
         const data = await response.json();
         const allEntities = data?.avatars;
 
@@ -292,9 +327,10 @@ export async function getUserAvatars(doRender = true, openPageAt = '') {
             return [];
         }
 
-        for (const [avatar, version] of Object.entries(data.thumbnailVersions ?? {})) {
-            setThumbnailVersion('persona', avatar, version);
+        for (const [avatar, thumbnail] of Object.entries(data.thumbnails ?? {})) {
+            rememberPersonaThumbnail(avatar, thumbnail);
         }
+        for (const [avatar, ref] of Object.entries(data.refs ?? {})) personaRefs.set(avatar, ref);
 
         if (!doRender) {
             return allEntities;
@@ -449,11 +485,10 @@ async function changeUserAvatar(e) {
         const overwriteName = formData.get('overwrite_name');
         const dataPath = data?.path;
 
-        // If the user uploaded a new avatar, we want to make sure it's not cached
         if (overwriteName && dataPath) {
             await fetch(getUserAvatar(String(dataPath)), { cache: 'reload' });
-            await fetch(getThumbnailUrl('persona', String(dataPath)), { cache: 'reload' });
-            reloadUserAvatar(true);
+            rememberPersonaImage(String(dataPath), data);
+            reloadUserAvatar();
         }
 
         if (!overwriteName && dataPath) {
@@ -600,8 +635,16 @@ export async function convertCharacterToPersona(characterId = null) {
         }
     }
 
-    const thumbnailAvatar = getThumbnailUrl('avatar', avatarUrl);
-    await uploadUserAvatar(thumbnailAvatar, overwriteName);
+    const made = await fetch('/api/avatars/from-character', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ avatar: avatarUrl, overwrite_name: overwriteName }),
+    });
+    if (!made.ok) {
+        toastr.error(t`The character's image couldn't be made into a persona's.`);
+        return false;
+    }
+    rememberPersonaImage(overwriteName, await made.json());
 
     const record = {
         name: name,
@@ -2005,7 +2048,7 @@ async function syncUserNameToPersona({ start = 0, end = chat.length - 1, quiet =
     for (let i = start; i <= end; i++) {
         const mes = chat[i];
         if (mes?.is_user && (!hasNameFilter || equalsIgnoreCaseAndAccents(mes.name, nameFilter))) {
-            updateMessage(i, { name: name1, force_avatar: getThumbnailUrl('persona', user_avatar) });
+            updateMessage(i, { name: name1, ...personaAvatar(user_avatar) });
             changed.push(i);
         }
     }
@@ -2178,10 +2221,9 @@ async function uploadPersonaAvatar(avatarId, base64Data, { resizePrompt = false 
             throw new Error(`Upload failed: ${uploadResponse.statusText}`);
         }
 
-        // Cache bust for the updated avatar
         await fetch(getUserAvatar(avatarId), { cache: 'reload' });
-        await fetch(getThumbnailUrl('persona', avatarId), { cache: 'reload' });
-        reloadUserAvatar(true);
+        rememberPersonaImage(avatarId, await uploadResponse.json());
+        reloadUserAvatar();
         return true;
     } catch (error) {
         console.error('Error uploading persona avatar:', error);

@@ -473,7 +473,7 @@ fn narrow_is_whole(
                 n.entry_index
             )
         );
-        assert!(n.hashes.is_empty());
+        assert_eq!(w.hashes, n.hashes);
         let item_listed = |f: &FieldRef| {
             matches!(f, FieldRef::Code(c) if *c >= library::ITEM_BASE
                 && only.lists.contains(&((*c - library::ITEM_BASE) % library::LISTS)))

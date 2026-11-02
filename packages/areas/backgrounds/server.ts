@@ -10,7 +10,8 @@ export type SystemFile = {
     aspect: number | null;
     added: number | null;
     folders: string[];
-    thumbnailVersion: string | null;
+    thumbnail: string | null;
+    original: string | null;
 };
 
 export type StoredOptions = {
@@ -125,6 +126,8 @@ export function backgroundsArea(ports: Ports) {
             ports.options.read(context.user),
         ]);
         const options = optionsOf(stored);
+        const shownOf = (f: SystemFile) =>
+            (options.animation && f.original !== null ? f.original : f.thumbnail) ?? systemUrl(f.file);
         const system: Background[] = sortBy(
             files,
             options.sortOrder,
@@ -135,7 +138,7 @@ export function backgroundsArea(ports: Ports) {
             file: f.file,
             title: titleOf(f.file),
             url: systemUrl(f.file),
-            thumbnail: `/thumbnail?type=bg&file=${encodeURIComponent(f.file)}${f.thumbnailVersion !== null && f.thumbnailVersion !== '' ? `&v=${encodeURIComponent(f.thumbnailVersion)}` : ''}${f.animated && options.animation ? '&animated=true' : ''}`,
+            thumbnail: shownOf(f),
             animated: f.animated,
             color: f.color,
             aspect: f.aspect,
@@ -144,12 +147,10 @@ export function backgroundsArea(ports: Ports) {
         return {
             system,
             folders: folders.map((f) => {
-                const cover = f.cover ?? files.find((x) => x.folders.includes(f.id))?.file;
-                return {
-                    id: f.id,
-                    name: f.name,
-                    cover: cover !== undefined ? `/thumbnail?type=bg&file=${encodeURIComponent(cover)}` : null,
-                };
+                const cover =
+                    (f.cover !== null ? files.find((x) => x.file === f.cover) : undefined) ??
+                    files.find((x) => x.folders.includes(f.id));
+                return { id: f.id, name: f.name, cover: cover ? (cover.thumbnail ?? systemUrl(cover.file)) : null };
             }),
             selected: { file: fileOrDefault(stored.name), chat: false },
             options,

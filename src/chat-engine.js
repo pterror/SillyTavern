@@ -4,6 +4,7 @@ import zlib from 'node:zlib';
 
 import { textEdit } from './text-edit.js';
 import { META, TOP, decodeMessage, encodeMessage, messageRecords } from './chat-codec.js';
+import { resolveAvatars, resolveAvatarsSync, withoutShownAvatar } from './avatar-refs.js';
 import { ITEMIZED_PROMPT_FLAG } from './itemization-of.js';
 import { FIELD, NAME_HISTORY, TYPE, renamesOf } from './library-codes.js';
 import { storedValues } from './entity-values.js';
@@ -701,7 +702,17 @@ export class ChatEngine {
             if (overId !== null) speakerIds.add(BigInt(overId));
         }
         const speakers = speakerIds.size ? await this.people.speakers([...speakerIds]) : new Map();
-        return stored.map(s => JSON.parse(decodeMessage(s, id => speakers.get(id) ?? null)));
+        const messages = stored.map(s => JSON.parse(decodeMessage(s, id => speakers.get(id) ?? null)));
+        return resolveAvatars(this.store, messages);
+    }
+
+    /**
+     * @param {Record<string, any>} content
+     * @param {number} time
+     * @param {Speaker | null} speaker
+     */
+    encoded(content, time, speaker) {
+        return encodeMessage(withoutShownAvatar(content), time, speaker);
     }
 
     /**
@@ -924,7 +935,7 @@ export class ChatEngine {
                 const id = this.next.message++;
                 const time = now + added;
                 const speaker = await this.speakerFor(content, treeSpeaker);
-                records.push(...messageRecords(id, encodeMessage(content, time, speaker), { parent: null, owner: tree, time, session: null, user, sendKey: null }));
+                records.push(...messageRecords(id, this.encoded(content, time, speaker), { parent: null, owner: tree, time, session: null, user, sendKey: null }));
                 this.keyNew(records, id);
                 byIdentity.set(key, id);
                 ids.push(id);
@@ -995,7 +1006,7 @@ export class ChatEngine {
                 const id = this.next.message++;
                 const time = now + i;
                 const speaker = await this.speakerFor(content, treeSpeaker);
-                records.push(...messageRecords(id, encodeMessage(content, time, speaker), { parent: cursor, owner: tree, time, session, user, sendKey: key }));
+                records.push(...messageRecords(id, this.encoded(content, time, speaker), { parent: cursor, owner: tree, time, session, user, sendKey: key }));
                 this.keyNew(records, id);
                 for (const c of produced) {
                     /** @type {Record<string, unknown>} */
@@ -1087,7 +1098,7 @@ export class ChatEngine {
         const before = new Map(stored.values.map(v => [v.field, v.json]));
         const beforeTimes = new Map(stored.times.map(t => [t.field, t.delta]));
         const beforeText = stored.texts.find(t => t.field === TOP.mes)?.text;
-        const enc = encodeMessage(content, stored.time, speaker);
+        const enc = this.encoded(content, stored.time, speaker);
         const records = [];
         if (enc.flags !== stored.flags) enc.values.set(META.flags, JSON.stringify(enc.flags));
         const appendSpeaker = stored.speaker;
@@ -1315,7 +1326,7 @@ export class ChatEngine {
                 id = this.next.message++;
                 const time = this.now();
                 const speaker = await this.speakerFor(content, treeSpeaker);
-                records.push(...messageRecords(id, encodeMessage(content, time, speaker), { parent: a, owner: tree, time, session: moves ? session : null, user, sendKey: sendKey ? Buffer.from(sendKey, 'utf8') : null }));
+                records.push(...messageRecords(id, this.encoded(content, time, speaker), { parent: a, owner: tree, time, session: moves ? session : null, user, sendKey: sendKey ? Buffer.from(sendKey, 'utf8') : null }));
                 this.keyNew(records, id);
             } else if (moves) {
                 records.push(...this.moveTo(session, user, a, id));
@@ -1810,7 +1821,7 @@ export class ChatEngine {
                     if (sid === null) {
                         sid = this.next.message++;
                         const time = now + written++;
-                        records.push(...messageRecords(sid, encodeMessage(content, time, await this.speakerFor(content, treeSpeaker)), { parent, owner: tree, time, session: null, user, sendKey: null }));
+                        records.push(...messageRecords(sid, this.encoded(content, time, await this.speakerFor(content, treeSpeaker)), { parent, owner: tree, time, session: null, user, sendKey: null }));
                         this.keyNew(records, sid);
                         level.add(sid, content);
                     }
@@ -2905,7 +2916,8 @@ export function loadSync(store, { tree, at, session = null, full = false }) {
         const history = storedValues(e).lists.get(NAME_HISTORY);
         speakers.set(speakerList[i], { id: e.id, name: name === undefined ? '' : name.text !== undefined ? name.text : JSON.parse(name.json), avatar: e.key, ...(history === undefined ? {} : { renames: renamesOf(history) }) });
     });
-    const decoded = new Map(allIds.map(id => [id, JSON.parse(decodeMessage(all.get(id), sid => speakers.get(sid) ?? null))]));
+    const decodedList = resolveAvatarsSync(store, allIds.map(id => JSON.parse(decodeMessage(all.get(id), sid => speakers.get(sid) ?? null))));
+    const decoded = new Map(allIds.map((id, i) => [id, decodedList[i]]));
     const bookmarkIds = [...new Set(ids.flatMap(id => all.get(id).branches))];
     const bookmarks = bookmarkIds.length ? read('bookmarks', { ids: bookmarkIds }) : [];
     const labels = new Map(bookmarkIds.map((/** @type {bigint} */ b, /** @type {number} */ i) => [b, bookmarks[i]?.name]).filter(([, name]) => name));

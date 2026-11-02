@@ -7,6 +7,7 @@ import { parseChatFile } from './chat-header.js';
 import { newSessionKey } from './chat-engine.js';
 import { normalizeGroupRecord, storedGroup } from './group-id.js';
 import { TYPE } from './library-engine.js';
+import { importImageFiles } from './image-entities.js';
 
 export const UPSTREAM_META = 'upstream_import_pending';
 export const MAP_FILE = 'upstream-import.json';
@@ -15,7 +16,7 @@ const PAUSE_MS = 10;
 
 /**
  * @typedef {object} UpstreamImportReport
- * @property {{ groups: number, worlds: number, chats: number, groupChats: number, messages: number }} imported
+ * @property {{ groups: number, worlds: number, chats: number, groupChats: number, messages: number, backgrounds: number, personas: number }} imported
  * @property {{ file: string, why: string }[]} present
  * @property {{ file: string, why: string }[]} notImported
  */
@@ -65,7 +66,11 @@ export function importUpstreamData(store, directories) {
  */
 async function runImport(store, directories) {
     /** @type {UpstreamImportReport} */
-    const report = { imported: { groups: 0, worlds: 0, chats: 0, groupChats: 0, messages: 0 }, present: [], notImported: [] };
+    const report = { imported: { groups: 0, worlds: 0, chats: 0, groupChats: 0, messages: 0, backgrounds: 0, personas: 0 }, present: [], notImported: [] };
+    const images = await importImageFiles(store.lib, directories);
+    report.imported.backgrounds = images.backgrounds;
+    report.imported.personas = images.personas;
+    report.notImported.push(...images.failed.map(f => ({ file: f.file, why: `not a readable image: ${f.why}` })));
     const mapPath = path.join(directories.root, MAP_FILE);
     const map = readMap(mapPath);
     const actor = { user: store.handle, session: newSessionKey() };
@@ -197,9 +202,9 @@ async function runImport(store, directories) {
     }
 
     await writeMap(mapPath, map, report);
-    const { groups, worlds, chats, groupChats: gc, messages } = report.imported;
-    if (groups + worlds + chats + gc > 0 || report.notImported.length) {
-        console.info(`[upstream-import] ${directories.root}: imported ${groups} group(s), ${worlds} book(s), ${chats} chat(s) and ${gc} group chat(s), ${messages} message(s); ${report.present.length} file(s) already in the store.`);
+    const { groups, worlds, chats, groupChats: gc, messages, backgrounds, personas } = report.imported;
+    if (groups + worlds + chats + gc + backgrounds + personas > 0 || report.notImported.length) {
+        console.info(`[upstream-import] ${directories.root}: imported ${groups} group(s), ${worlds} book(s), ${chats} chat(s) and ${gc} group chat(s), ${messages} message(s), ${backgrounds} background(s) and ${personas} persona image(s); ${report.present.length} file(s) already in the store.`);
     }
     if (report.notImported.length) {
         console.warn(`[upstream-import] ${report.notImported.length} file(s) were NOT imported:\n${report.notImported.map(n => `  ${n.file}: ${n.why}`).join('\n')}`);

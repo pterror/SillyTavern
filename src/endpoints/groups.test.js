@@ -76,7 +76,10 @@ async function writeGroupFixture(id) {
 
 async function readGroupFromDisk(id) {
     const [group] = await user.store.lib.groups([id]);
-    return group;
+    if (!group) return group;
+    const stored = { ...group };
+    delete stored.member_thumbnails;
+    return stored;
 }
 
 const app = buildTestApp();

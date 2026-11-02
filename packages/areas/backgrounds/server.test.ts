@@ -18,7 +18,8 @@ function world(
             aspect: null,
             added: null,
             folders: [],
-            thumbnailVersion: null,
+            thumbnail: null,
+            original: null,
             file: '',
             ...f,
         })),
@@ -50,7 +51,9 @@ function world(
                 void state.folders.push({ id: `f${state.folders.length}`, name, cover: null }),
             renameFolder: async () => {},
             deleteFolder: async () => {},
-            setCover: async () => {},
+            setCover: async (_u, id, file) => {
+                for (const f of state.folders) if (f.id === id) f.cover = file;
+            },
             addToFolder: async (_u, id, names) => {
                 for (const f of state.files) if (names.includes(f.file)) f.folders = [...f.folders, id];
             },
@@ -205,10 +208,25 @@ test('options from storage are made valid: unknown values fall back, columns are
 });
 
 test("an animated background's thumbnail is the animation itself only while animation is on", async () => {
-    const w = world([{ file: 'loop.gif', animated: true, thumbnailVersion: '9' }]);
-    expect((await w.view()).system[0]?.thumbnail).toBe('/thumbnail?type=bg&file=loop.gif&v=9');
+    const w = world([
+        { file: 'loop.gif', animated: true, thumbnail: '/thumbnail/still.f200.webp', original: '/thumbnail/all.anim' },
+    ]);
+    expect((await w.view()).system[0]?.thumbnail).toBe('/thumbnail/still.f200.webp');
     await w.act('backgrounds.options', { animation: true });
-    expect((await w.view()).system[0]?.thumbnail).toBe('/thumbnail?type=bg&file=loop.gif&v=9&animated=true');
+    expect((await w.view()).system[0]?.thumbnail).toBe('/thumbnail/all.anim');
+});
+
+test("a folder's cover is its cover file's thumbnail, else its first member's", async () => {
+    const w = world([
+        { file: 'a.png', folders: ['f'], thumbnail: '/thumbnail/a.f200.webp' },
+        { file: 'b.png', folders: ['f'], thumbnail: '/thumbnail/b.f200.webp' },
+    ]);
+    await w.act('backgrounds.folders.create', { name: 'F' });
+    const id = (await w.view()).folders[0]?.id ?? '';
+    await w.act('backgrounds.folders.add', { files: ['a.png', 'b.png'], folders: [id] });
+    expect((await w.view()).folders[0]?.cover).toBe('/thumbnail/a.f200.webp');
+    await w.act('backgrounds.folders.cover', { id, file: 'b.png' });
+    expect((await w.view()).folders[0]?.cover).toBe('/thumbnail/b.f200.webp');
 });
 
 test("upstream's stored CSS urls read back as what they name", () => {

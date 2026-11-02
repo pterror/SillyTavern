@@ -8,21 +8,6 @@ import { keyToEnv, setConfigFilePath, stringToBool } from './util.js';
 
 const keyMigrationMap = [
     {
-        oldKey: 'disableThumbnails',
-        newKey: 'thumbnails.enabled',
-        migrate: (value) => !value,
-    },
-    {
-        oldKey: 'thumbnailsQuality',
-        newKey: 'thumbnails.quality',
-        migrate: (value) => value,
-    },
-    {
-        oldKey: 'avatarThumbnailsPng',
-        newKey: 'thumbnails.format',
-        migrate: (value) => (value ? 'png' : 'jpg'),
-    },
-    {
         oldKey: 'disableChatBackup',
         newKey: 'backups.chat.enabled',
         migrate: (value) => !value,

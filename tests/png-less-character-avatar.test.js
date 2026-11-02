@@ -20,7 +20,6 @@ beforeAll(async () => {
     process.chdir(path.resolve(originalCwd, '..'));
 
     const { router: userFilesRouter } = await import('../src/users.js');
-    const { router: thumbnailRouter } = await import('../src/endpoints/thumbnails.js');
     const { DEFAULT_AVATAR_PATH } = await import('../src/constants.js');
     defaultAvatarBytes = fs.readFileSync(DEFAULT_AVATAR_PATH);
 
@@ -30,7 +29,6 @@ beforeAll(async () => {
         req.user = user.user;
         next();
     });
-    app.use('/thumbnail', thumbnailRouter);
     app.use(userFilesRouter);
     server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
@@ -73,15 +71,6 @@ describe('character whose PNG is missing', () => {
         expect(bytes.equals(defaultAvatarBytes)).toBe(true);
     });
 
-    test('/thumbnail?type=avatar returns the default avatar bytes, not a stale cached thumbnail', async () => {
-        await seedPngLessCharacter(avatar);
-        fs.writeFileSync(path.join(directories.thumbnailsAvatar, avatar), 'stale cached thumbnail');
-
-        const { status, bytes } = await getBytes(`/thumbnail?type=avatar&file=${encodeURIComponent(avatar)}`);
-
-        expect(status).toBe(200);
-        expect(bytes.equals(defaultAvatarBytes)).toBe(true);
-    });
 });
 
 describe('missing files that keep their 404', () => {
@@ -89,11 +78,6 @@ describe('missing files that keep their 404', () => {
 
     test('/characters/<avatar> with no row is a 404', async () => {
         const { status } = await getBytes(`/characters/${avatar}`);
-        expect(status).toBe(404);
-    });
-
-    test('/thumbnail?type=avatar with no row is a 404', async () => {
-        const { status } = await getBytes(`/thumbnail?type=avatar&file=${encodeURIComponent(avatar)}`);
         expect(status).toBe(404);
     });
 

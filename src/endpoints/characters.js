@@ -24,7 +24,8 @@ import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, unsetPrivateF
 import { calculateDataSize, toShallow, shallowCharactersIncludeCreatorNotes } from '../character-shallow.js';
 import { touchBrowserPresence, PRESENCE_PING_INTERVAL_MS } from '../browser-presence.js';
 import { claimTabSession } from '../session-presence.js';
-import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
+import { thumbnailOf } from '../thumbnail-urls.js';
+import { avatarRefString } from '../avatar-refs.js';
 import { importRisuSprites, importChubExpressions, importChubRelatedLorebooks } from './sprites.js';
 import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
@@ -490,6 +491,8 @@ export async function characterObjects(request, avatars, { shallow }) {
         const json = JSON.stringify(card);
         const character = getCharaCardV2(JSON.parse(json), request.user.directories, false);
         character.avatar = e.key;
+        character.thumbnail = thumbnailOf(e, 'avatar');
+        character.avatar_ref = avatarRefString(TYPE.character, e.key);
         character.json_data = json;
         character.date_added = e.added;
         character.create_date = character.create_date || new Date(e.added).toISOString();
@@ -959,7 +962,6 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
         } else {
             const crop = tryParse(request.query.crop);
             const newAvatarPath = path.join(request.file.destination, request.file.filename);
-            invalidateThumbnail(request.user.directories, 'avatar', avatar);
             try {
                 await writeCharacter(request, avatar, char, { image: newAvatarPath, crop, freshFieldPaths });
             } finally {
@@ -1010,7 +1012,6 @@ router.post('/edit-avatar', validateAvatarUrlMiddleware, async function (request
 
         // Reset images caches
         cacheBuster.bust(request, response);
-        invalidateThumbnail(request.user.directories, 'avatar', request.body.avatar_url);
 
         return response.sendStatus(200);
     } catch (err) {
@@ -1268,10 +1269,7 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
             const uploadPath = path.join(request.file.destination, request.file.filename);
             try {
                 result = await mergeCharacterUpdate(update.avatar, update, request, null, request.file, response);
-                if (result.ok) {
-                    invalidateThumbnail(request.user.directories, 'avatar', update.avatar);
-                    cacheBuster.bust(request, response);
-                }
+                if (result.ok) cacheBuster.bust(request, response);
             } finally {
                 if (fs.existsSync(uploadPath)) fs.unlinkSync(uploadPath);
             }
@@ -1677,7 +1675,6 @@ async function deleteOneCharacter(request, avatarUrl, deleteChats) {
         console.error('[characters/delete] Failed to delete the character:', err);
         return { ok: false, status: 500 };
     }
-    invalidateThumbnail(request.user.directories, 'avatar', avatarUrl);
     await inAvatarLane(store.lib, avatarUrl, async () => fs.rmSync(avatarFile(request.user.directories, avatarUrl), { force: true }));
     return { ok: true, chats, dropped };
 }
@@ -2550,8 +2547,7 @@ router.post('/manifest', async function (request, response) {
                 const page = await lib.query({ sortField: 'name', limit: EVERY_PAGE, cursor, wantRows: false, wantTotal: false, wantHashes: true, includeGroups: false });
                 const rows = /** @type {{ id: string, version: number }[]} */ (page.hashRows);
                 for (const row of rows) {
-                    const thumbnailVersion = getThumbnailVersion(request.user.directories, 'avatar', row.id);
-                    await writeBackpressured(response, (wroteAny ? ',' : '') + JSON.stringify({ avatar: row.id, mtime: row.version, thumbnailVersion }));
+                    await writeBackpressured(response, (wroteAny ? ',' : '') + JSON.stringify({ avatar: row.id, mtime: row.version }));
                     wroteAny = true;
                 }
                 if (typeof page.cursor !== 'string' || rows.length === 0) break;
@@ -2786,10 +2782,6 @@ router.post('/import', async function (request, response) {
             const error = importFailure(importName, 'not a recognized character card format');
             console.warn(error.message);
             return response.status(400).send({ error: error.message });
-        }
-
-        if (preservedFileName) {
-            invalidateThumbnail(request.user.directories, 'avatar', `${preservedFileName}.png`);
         }
 
         const tagImportMode = request.body.tagImportMode;

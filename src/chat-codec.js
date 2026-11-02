@@ -1,4 +1,6 @@
 import { parseTimestamp } from './timestamps.js';
+import { avatarRefString } from './avatar-refs.js';
+import { TYPE } from './library-codes.js';
 
 export const TOP = Object.freeze({
     mes: 1,
@@ -243,7 +245,7 @@ export function encodeMessage(message, time, speaker) {
     } else if (!speaker || speakerNameAt(speaker, time) !== message.name) name = message.name;
 
     if (speaker && message.original_avatar === speaker.avatar) flags |= 1 << F.originalAvatar;
-    if (speaker && message.force_avatar === `/thumbnail?type=avatar&file=${encodeURIComponent(speaker.avatar)}`) flags |= 1 << F.forceAvatar;
+    if (speaker && message.force_avatar === avatarRefString(TYPE.character, speaker.avatar)) flags |= 1 << F.forceAvatar;
 
     const extraKeys = [];
     if (!has('extra')) flags |= 1 << F.extra;
@@ -349,7 +351,7 @@ export function decodeMessage(stored, speakerOf) {
     else if (nameState === 2) top.set('name', /** @type {string} */ (values.get(TOP.name)));
 
     if (bit(F.originalAvatar) && speaker) top.set('original_avatar', JSON.stringify(speaker.avatar));
-    if (bit(F.forceAvatar) && speaker) top.set('force_avatar', JSON.stringify(`/thumbnail?type=avatar&file=${encodeURIComponent(speaker.avatar)}`));
+    if (bit(F.forceAvatar) && speaker) top.set('force_avatar', JSON.stringify(avatarRefString(TYPE.character, speaker.avatar)));
 
     const extraState = state(F.extra);
     for (const [field, j] of values) {

@@ -17,9 +17,6 @@ export const SETTINGS_FILE = 'settings.json';
 export const USER_DIRECTORY_TEMPLATE = Object.freeze({
     root: '',
     thumbnails: 'thumbnails',
-    thumbnailsBg: 'thumbnails/bg',
-    thumbnailsAvatar: 'thumbnails/avatar',
-    thumbnailsPersona: 'thumbnails/persona',
     worlds: 'worlds',
     user: 'user',
     avatars: 'User Avatars',

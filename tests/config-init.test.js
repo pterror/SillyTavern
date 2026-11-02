@@ -4,8 +4,8 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
 import { addMissingConfigValues } from '../src/config-init.js';
 
-const oldEnvKey = 'SILLYTAVERN_DISABLETHUMBNAILS';
-const newEnvKey = 'SILLYTAVERN_THUMBNAILS_ENABLED';
+const oldEnvKey = 'SILLYTAVERN_DISABLECHATBACKUP';
+const newEnvKey = 'SILLYTAVERN_BACKUPS_CHAT_ENABLED';
 
 describe('addMissingConfigValues', () => {
     let tempDirectory;

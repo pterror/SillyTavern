@@ -36,8 +36,7 @@ import { router as contentManagerRouter } from './endpoints/content-manager.js';
 import { router as settingsRouter } from './endpoints/settings.js';
 import { router as tagsRouter } from './endpoints/tags.js';
 import { router as viewsRouter } from './endpoints/views.js';
-import { router as backgroundsRouter } from './endpoints/backgrounds.js';
-import { ui, uiUser, rememberModelLists, BACKGROUND_VIEWS, SETTINGS_VIEWS } from './ui-wiring.js';
+import { ui, uiUser, rememberModelLists, SETTINGS_VIEWS } from './ui-wiring.js';
 import { router as spritesRouter } from './endpoints/sprites.js';
 import { router as stableDiffusionRouter } from './endpoints/stable-diffusion.js';
 import { router as hordeRouter } from './endpoints/horde.js';
@@ -59,7 +58,6 @@ import { router as azureRouter } from './endpoints/azure.js';
 import { router as minimaxRouter } from './endpoints/minimax.js';
 import { router as dataMaidRouter } from './endpoints/data-maid.js';
 import { router as backupsRouter } from './endpoints/backups.js';
-import { router as imageMetadataRouter } from './endpoints/image-metadata.js';
 import { router as volcengineRouter } from './endpoints/volcengine.js';
 
 /**
@@ -124,10 +122,6 @@ export function redirectDeprecatedEndpoints(app) {
     redirect('/getstats', '/api/stats/get');
     redirect('/recreatestats', '/api/stats/recreate');
     redirect('/updatestats', '/api/stats/update');
-    redirect('/getbackgrounds', '/api/backgrounds/all');
-    redirect('/delbackground', '/api/backgrounds/delete');
-    redirect('/renamebackground', '/api/backgrounds/rename');
-    redirect('/downloadbackground', '/api/backgrounds/upload'); // yes, the downloadbackground endpoint actually uploads one
     redirect('/savetheme', '/api/themes/save');
     redirect('/getuseravatars', '/api/avatars/get');
     redirect('/deleteuseravatar', '/api/avatars/delete');
@@ -176,7 +170,6 @@ export function setupPrivateEndpoints(app) {
     app.use('/api/worldinfo', worldInfoRouter);
     app.use('/api/stats', statsRouter);
     const OLD_WRITES = [
-        [/^\/api\/(backgrounds\/(delete|rename|upload)|image-metadata\/folders\/(create|set-thumbnails|update|delete|assign|set-membership|unassign))$/, BACKGROUND_VIEWS],
         [/^\/api\/settings\/(save|save-partial|level|toggle-extension)$/, SETTINGS_VIEWS],
     ];
     app.use((request, response, next) => {
@@ -188,7 +181,6 @@ export function setupPrivateEndpoints(app) {
         }
         next();
     });
-    app.use('/api/backgrounds', backgroundsRouter);
     app.use('/api/ui/action', ui.router);
     app.use('/api/sprites', spritesRouter);
     app.use('/api/content', contentManagerRouter);
@@ -217,7 +209,6 @@ export function setupPrivateEndpoints(app) {
     app.use('/api/minimax', minimaxRouter);
     app.use('/api/data-maid', dataMaidRouter);
     app.use('/api/backups', backupsRouter);
-    app.use('/api/image-metadata', imageMetadataRouter);
 }
 
 /**

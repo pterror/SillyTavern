@@ -166,7 +166,7 @@ describe('client: the caches store tag_ids sorted, and [] when absent', () => {
     const CHARACTER_STORE = `SillyTavern_CharacterCache_${USER_HANDLE}`;
     const GROUP_STORE = `SillyTavern_GroupCache_${USER_HANDLE}`;
 
-    test('saveCachedCharacters() stores a sorted copy without touching the caller\'s object, at hash version 5', async () => {
+    test('saveCachedCharacters() stores a sorted copy without touching the caller\'s object, at hash version 6', async () => {
         const unsorted = { avatar: 'Bob.png', name: 'Bob', tag_ids: ['tb', 'ta'] };
         const absent = { avatar: 'Ann.png', name: 'Ann' };
         await characterCache.saveCachedCharacters([{ avatar: 'Bob.png', character: unsorted }, { avatar: 'Ann.png', character: absent }]);
@@ -176,7 +176,7 @@ describe('client: the caches store tag_ids sorted, and [] when absent', () => {
         const entries = await characterCache.getCachedEntriesByIds(['Bob.png', 'Ann.png']);
         expect(entries.get('Bob.png').character.tag_ids).toEqual(['ta', 'tb']);
         expect(entries.get('Ann.png').character.tag_ids).toEqual([]);
-        expect(entries.get('Bob.png').hashes.v).toBe(5);
+        expect(entries.get('Bob.png').hashes.v).toBe(6);
     });
 
     test('a character record from an earlier hash version reads as a miss', async () => {
@@ -187,7 +187,7 @@ describe('client: the caches store tag_ids sorted, and [] when absent', () => {
         expect((await characterCache.getCachedEntriesByIds(['Bob.png'])).has('Bob.png')).toBe(false);
     });
 
-    test('saveCachedGroups() stores a sorted copy without touching the caller\'s object, at hash version 3', async () => {
+    test('saveCachedGroups() stores a sorted copy without touching the caller\'s object, at hash version 4', async () => {
         const unsorted = { id: 'g1', name: 'G1', members: [], tag_ids: [HIGH_BMP, ASTRAL] };
         const absent = { id: 'g2', name: 'G2', members: [] };
         await characterCache.saveCachedGroups([{ id: 'g1', group: unsorted }, { id: 'g2', group: absent }]);
@@ -197,7 +197,7 @@ describe('client: the caches store tag_ids sorted, and [] when absent', () => {
         const entries = await characterCache.getCachedGroupEntriesByIds(['g1', 'g2']);
         expect(entries.get('g1').group.tag_ids).toEqual(JS_SORTED);
         expect(entries.get('g2').group.tag_ids).toEqual([]);
-        expect(entries.get('g1').hashes.v).toBe(3);
+        expect(entries.get('g1').hashes.v).toBe(4);
     });
 
     test('a group record from an earlier hash version reads as a miss', async () => {

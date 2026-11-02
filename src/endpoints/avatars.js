@@ -6,30 +6,33 @@ import sanitize from 'sanitize-filename';
 import { Jimp } from '../jimp.js';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
-import { getImages, tryParse } from '../util.js';
+import { tryParse } from '../util.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
 import { applyAvatarCropResize } from './characters.js';
 import { requestStore } from '../user-stores.js';
 import { avatarPathOf } from '../character-avatars.js';
-import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
+import { TYPE } from '../library-codes.js';
+import { imagesOf, removeImage, writePersonaImage } from '../image-entities.js';
+import { stillUrl, thumbnailOf } from '../thumbnail-urls.js';
+import { avatarRefString } from '../avatar-refs.js';
 import cacheBuster from '../middleware/cacheBuster.js';
 
 export const router = express.Router();
 
-router.post('/get', function (request, response) {
-    const avatars = getImages(request.user.directories.avatars);
-
+router.post('/get', async function (request, response) {
+    const { lib } = await requestStore(request);
+    const images = (await imagesOf(lib, TYPE.personaImage)).sort((a, b) => Intl.Collator().compare(a.key, b.key));
     /** @type {Record<string, string>} */
-    const thumbnailVersions = {};
-    for (const avatar of avatars) {
-        const version = getThumbnailVersion(request.user.directories, 'persona', avatar);
-        if (version) thumbnailVersions[avatar] = version;
+    const thumbnails = {};
+    for (const image of images) {
+        const thumbnail = thumbnailOf(image, 'avatar');
+        if (thumbnail !== null) thumbnails[image.key] = thumbnail;
     }
-
-    response.send({ avatars, thumbnailVersions });
+    const refs = Object.fromEntries(images.map(i => [i.key, avatarRefString(TYPE.personaImage, i.key)]));
+    response.send({ avatars: images.map(i => i.key), thumbnails, refs });
 });
 
-router.post('/delete', getFileNameValidationFunction('avatar'), function (request, response) {
+router.post('/delete', getFileNameValidationFunction('avatar'), async function (request, response) {
     if (!request.body) return response.sendStatus(400);
 
     if (request.body.avatar !== sanitize(request.body.avatar)) {
@@ -37,16 +40,27 @@ router.post('/delete', getFileNameValidationFunction('avatar'), function (reques
         return response.sendStatus(403);
     }
 
-    const fileName = path.join(request.user.directories.avatars, sanitize(request.body.avatar));
-
+    const file = sanitize(request.body.avatar);
+    const fileName = path.join(request.user.directories.avatars, file);
+    const { lib } = await requestStore(request);
+    const removed = await removeImage(lib, TYPE.personaImage, file);
     if (fs.existsSync(fileName)) {
         fs.unlinkSync(fileName);
-        invalidateThumbnail(request.user.directories, 'persona', sanitize(request.body.avatar));
         return response.send({ result: 'ok' });
     }
-
-    return response.sendStatus(404);
+    return removed ? response.send({ result: 'ok' }) : response.sendStatus(404);
 });
+
+/**
+ * @param {import('express').Request} request
+ * @param {string} filename
+ * @param {Buffer} image
+ */
+async function savePersonaImage(request, filename, image) {
+    writeFileAtomicSync(path.join(request.user.directories.avatars, filename), image);
+    const facts = await writePersonaImage((await requestStore(request)).lib, filename, image);
+    return stillUrl(facts.still, 'avatar');
+}
 
 router.post('/from-character', getFileNameValidationFunction('overwrite_name'), async (request, response) => {
     const { avatar, overwrite_name: overwriteName } = request.body ?? {};
@@ -59,10 +73,9 @@ router.post('/from-character', getFileNameValidationFunction('overwrite_name'), 
     try {
         const image = await applyAvatarCropResize(await Jimp.read(cardPath), undefined);
         const filename = sanitize(overwriteName);
-        invalidateThumbnail(request.user.directories, 'persona', filename);
         cacheBuster.bust(request, response);
-        writeFileAtomicSync(path.join(request.user.directories.avatars, filename), image);
-        return response.send({ path: filename });
+        const thumbnail = await savePersonaImage(request, filename, image);
+        return response.send({ path: filename, thumbnail, ref: avatarRefString(TYPE.personaImage, filename) });
     } catch (err) {
         console.error('Error making a persona image from a character:', err);
         return response.status(400).send('Is not a valid image');
@@ -78,17 +91,12 @@ router.post('/upload', getFileNameValidationFunction('overwrite_name'), async (r
         const rawImg = await Jimp.read(pathToUpload);
         const image = await applyAvatarCropResize(rawImg, crop);
 
-        // Remove previous thumbnail and bust cache if overwriting
-        if (request.body.overwrite_name) {
-            invalidateThumbnail(request.user.directories, 'persona', sanitize(request.body.overwrite_name));
-            cacheBuster.bust(request, response);
-        }
+        if (request.body.overwrite_name) cacheBuster.bust(request, response);
 
         const filename = sanitize(request.body.overwrite_name || `${Date.now()}.png`);
-        const pathToNewFile = path.join(request.user.directories.avatars, filename);
-        writeFileAtomicSync(pathToNewFile, image);
+        const thumbnail = await savePersonaImage(request, filename, image);
         fs.unlinkSync(pathToUpload);
-        return response.send({ path: filename });
+        return response.send({ path: filename, thumbnail, ref: avatarRefString(TYPE.personaImage, filename) });
     } catch (err) {
         console.error('Error uploading user avatar:', err);
         return response.status(400).send('Is not a valid image');

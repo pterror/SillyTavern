@@ -37,18 +37,6 @@ class DataMaidDialog {
                 name: t`Group Chats`,
                 description: t`Chat files associated with deleted groups.`,
             },
-            avatarThumbnails: {
-                name: t`Avatar Thumbnails`,
-                description: t`Thumbnails for avatars of missing or deleted characters.`,
-            },
-            backgroundThumbnails: {
-                name: t`Background Thumbnails`,
-                description: t`Thumbnails for missing or deleted backgrounds.`,
-            },
-            personaThumbnails: {
-                name: t`Persona Thumbnails`,
-                description: t`Thumbnails for missing or deleted personas.`,
-            },
             chatBackups: {
                 name: t`Chat Backups`,
                 description: t`Automatically generated chat backups.`,
@@ -314,7 +302,7 @@ class DataMaidDialog {
      */
     async view(prop, hash, name) {
         const url = this.getViewUrl(hash);
-        const isImage = ['images', 'avatarThumbnails', 'backgroundThumbnails'].includes(prop);
+        const isImage = ['images'].includes(prop);
         const element = isImage
             ? await this.getViewElement(url, name)
             : await this.getTextViewElement(url);
