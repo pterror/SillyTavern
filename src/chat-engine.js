@@ -1782,12 +1782,43 @@ export class ChatEngine {
      * @param {Actor} p.actor
      * @param {boolean} [p.group]
      * @param {string | null} [p.node_id]
+     * @param {boolean} [p.keep]
+     * @returns {Promise<{ ok: true, name: string, kept: string | null } | { ok: false, reason: 'unknown node' }>}
      */
-    async startChat({ tree, actor, group = false, node_id = null }) {
-        if (node_id !== null) await this.goTo({ tree, node_id, actor });
-        else await this.newChat({ tree, actor, group });
-        await this.setCurrentChat({ tree, bookmark: null, actor });
-        return this.nameConversation({ tree, name: null, actor });
+    startChat({ tree, actor, group = false, node_id = null, keep = true }) {
+        return this.serialized(tree, async () => {
+            let target = null;
+            if (node_id !== null) {
+                const s = await this.messageOf(tree, node_id);
+                if (!s) return { ok: false, reason: 'unknown node' };
+                target = s.id;
+            }
+            const records = [];
+            const { user, session } = await this.actorIds(actor, records);
+            if (session === null) throw new Error('A chat is started through a session');
+            const [now] = await this.store.chatRead('sessions', { ids: [session] });
+            const here = now && now.tree === tree ? now : null;
+            const current = await this.store.chatRead('currentChat', { session, tree });
+            const stored = /** @type {string | null} */ (await this.store.chatRead('conversationName', { session, tree }));
+            let kept = null;
+            if (keep && current === null && stored !== null && here !== null && here.at !== null && (await this.stored([here.at])).get(here.at)?.parent != null) {
+                const b = this.next.position++;
+                records.push({ id: b, mode: MODE.following, session, user, kind: 'positionCreate', pointer: here.at });
+                records.push({ kind: 'positionName', id: b, name: stored });
+                kept = stored;
+            }
+            if (target !== null) {
+                if (here?.at !== target) records.push({ kind: 'pointerMove', session, user, target });
+            } else {
+                if (here === null || here.at !== null) records.push({ kind: 'pointerRoot', session, user, tree, time: this.now() });
+                if (!group) records.push({ kind: 'openingChoice', session, user, tree, index: 0 });
+            }
+            if (current !== null) records.push({ kind: 'currentChat', session, user, tree });
+            const name = await freeName(chatNameAt(await this.owner(tree), this.now()), n => n === kept || this.nameTaken(tree, n, { session }));
+            records.push({ kind: 'conversationName', session, user, tree, name });
+            await this.store.commit(records);
+            return { ok: true, name, kept };
+        });
     }
 
     /**

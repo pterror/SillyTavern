@@ -1125,20 +1125,25 @@ router.post('/new', validateAvatarUrlMiddleware, async function (request, respon
         const replace = typeof request.body.replace === 'string' && request.body.replace !== '' ? request.body.replace : null;
         /** @type {string[]} */
         const deleted = [];
+        let keep = true;
         if (replace !== null) {
             const found = await chats.resolveChatName({ tree: chat.tree, name: replace, own: ownOf(chat) });
             if (found !== null && 'bookmark' in found && (await chats.changeBookmark({ tree: chat.tree, bookmark: String(found.bookmark), change: { delete: true } })).ok) {
                 deleted.push(replace);
+            } else if (found !== null && !('bookmark' in found)) {
+                keep = false;
+                deleted.push(replace);
             }
         }
         if (request.body.group_id) {
-            await chats.startChat({ tree: chat.tree, actor, group: true });
+            await chats.startChat({ tree: chat.tree, actor, group: true, keep });
             chat.session.answer(response, { moved: true });
             const opened = (await openChatAnswer(request, response, { group_id: request.body.group_id, send_keys: request.body.send_keys })).answer;
             return response.send({ ok: true, chat_id: await compatChatIdOf(chat), chats: (await chatListOf(chat)).map(r => r.file_id), deleted, opened });
         }
         const opening = typeof request.body.chat === 'string' && request.body.chat !== '' ? request.body.chat : null;
-        await chats.startChat({ tree: chat.tree, actor, node_id: opening });
+        const started = await chats.startChat({ tree: chat.tree, actor, node_id: opening, keep });
+        if (!started.ok) return response.status(400).send({ error: started.reason });
         chat.session.answer(response, { moved: true });
         return response.send({ ok: true, deleted, chat: await compatChatIdOf(chat) });
     } catch (error) {
