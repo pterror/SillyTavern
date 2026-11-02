@@ -1072,3 +1072,25 @@ test('assembleTextCompletionPrompt: the textgen logit_bias and banned tokens are
     const estimate = await assembleTextCompletionPrompt({ ...baseFixture(directories, avatar), ...entries, encodeTokens: () => null, mainApi: 'textgenerationwebui', settings: { type: 'ooba', logit_bias: entries.logitBiasEntries } });
     assert.deepEqual(estimate.droppedEntries, ['giraffe', 'zebra'], 'without a tokenizer the entries are listed as dropped');
 });
+
+test('assembleTextCompletionPrompt: an empty reasoning block is sent as its prefix and suffix, no block sends nothing', async () => {
+    const { charactersDir, chatsDir, root } = makeDirectories();
+    const avatar = 'aria.png';
+    const directories = { characters: charactersDir, root, chats: chatsDir };
+    await writeSimpleCharacter(directories, avatar);
+    const chat = [
+        { name: 'Aria', mes: 'First reply.', is_user: false, extra: { reasoning: '', reasoning_type: 'parsed' } },
+        { name: 'User', mes: 'Go on.', is_user: true },
+        { name: 'Aria', mes: 'Second reply.', is_user: false, extra: { reasoning: '' } },
+        { name: 'User', mes: 'And?', is_user: true },
+    ];
+    const block = { reasoningPrefix: '<|channel>thought\n', reasoningSuffix: '<channel|>', reasoningSeparator: '' };
+
+    const on = await assembleTextCompletionPrompt({ ...baseFixture(directories, avatar), chat, ...block, reasoningAddToPrompts: true, reasoningMaxAdditions: 10 });
+    assert.ok(on.combinedPrompt.includes('<|channel>thought\n<channel|>First reply.'), on.combinedPrompt);
+    assert.ok(!on.combinedPrompt.includes('<channel|>Second reply.'));
+    assert.equal(on.combinedPrompt.split('<|channel>thought').length - 1, 1);
+
+    const off = await assembleTextCompletionPrompt({ ...baseFixture(directories, avatar), chat, ...block, reasoningAddToPrompts: false, reasoningMaxAdditions: 10 });
+    assert.ok(!off.combinedPrompt.includes('<|channel>thought'));
+});

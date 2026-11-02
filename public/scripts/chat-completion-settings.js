@@ -83,6 +83,7 @@ import { showTokenizerWarnings } from './tokenizer-notices.js';
 import { reportStored, reportStoredHeader } from './stored-report.js';
 import { GLOBAL_PROMPT_ORDER_ID } from './prompt-manager-defaults.js';
 import { SERVER_OWNED, newUi, newUiStarted } from './new-ui-page.js';
+import { reasoningOf } from './reasoning-block.js';
 import {
     default_main_prompt,
     default_nsfw_prompt,
@@ -286,7 +287,7 @@ function setOpenAIMessages(chat) {
         const isSameModel = originApi === currentApi && originModel === currentModel;
         const isOtherGroupMember = selected_group && chat[j].name !== name2;
         const signature = isSameModel && !isOtherGroupMember ? chat[j]?.extra?.reasoning_signature : null;
-        const reasoning = isSameModel && !isOtherGroupMember ? String(chat[j]?.extra?.reasoning ?? '') : '';
+        const reasoning = isSameModel && !isOtherGroupMember ? (reasoningOf(chat[j]?.extra) ?? '') : '';
 
         if (Array.isArray(invocations) && invocations.length > 0) {
             invocations.forEach((invocation, index) => {

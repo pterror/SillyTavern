@@ -541,7 +541,7 @@ input[type='checkbox']:focus-visible {
     background-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 33%, var(--SmartThemeBlurTintColor) 66%);
 }
 
-#chat:not([data-show-hidden-reasoning="true"]) .mes_reasoning_details:not([data-has-content="true"]):not(:has(.reasoning_edit_textarea)):not(.mes:has(.edit_textarea) .mes_reasoning_details) {
+#chat:not([data-show-hidden-reasoning="true"]) .mes_reasoning_details:not([data-has-content="true"]):not([data-state="done"]):not(:has(.reasoning_edit_textarea)):not(.mes:has(.edit_textarea) .mes_reasoning_details) {
     display: none;
 }
 

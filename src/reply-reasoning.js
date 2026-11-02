@@ -3,13 +3,9 @@ import { substituteParams } from './macro-substitution.js';
 import { cleanUpReply } from './reply-cleanup.js';
 import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
 import { readSettingsFor, settingsContextOf } from './settings-reads.js';
+import { ReasoningType, reasoningOf, withReasoning } from '../public/scripts/reasoning-block.js';
 
-export const ReasoningType = {
-    Model: 'model',
-    Parsed: 'parsed',
-};
-
-const REASONING_PLACEHOLDER = '​';
+export { ReasoningType };
 
 const HIDDEN_REASONING_MODELS = ['gpt-4.5', 'o1', 'o3', 'gemini-2.0-flash-thinking-exp', 'gemini-2.0-pro-exp'];
 
@@ -324,8 +320,8 @@ function parseTarget(pending, generatedText) {
 function continuedReasoningPrefix(pending) {
     const settings = pending.finish;
     const anchor = pending.anchorContent ?? {};
-    const reasoning = typeof anchor.extra?.reasoning === 'string' ? anchor.extra.reasoning : '';
-    if (!settings?.autoParse || !settings.prefix || !settings.suffix || anchor.mes || !reasoning || reasoning === REASONING_PLACEHOLDER) return '';
+    const reasoning = reasoningOf(anchor.extra);
+    if (!settings?.autoParse || !settings.prefix || !settings.suffix || anchor.mes || reasoning === null) return '';
     return settings.promptPrefix + reasoning;
 }
 
@@ -374,9 +370,10 @@ export function finishReply(pending, generatedText, answer = {}) {
     } else {
         mes = parseTarget(pending, generatedText);
     }
+    const anchorReasoning = reasoningOf(anchorExtra);
     /** @type {{reasoning: string, reasoning_duration: number|null, reasoning_signature: string|null, reasoning_type?: string, api?: string, model?: string}} */
-    const extra = {
-        reasoning: typeof anchorExtra.reasoning === 'string' ? anchorExtra.reasoning : '',
+    let extra = {
+        reasoning: anchorReasoning ?? '',
         reasoning_duration: anchorExtra.reasoning_duration ?? null,
         reasoning_signature: signature ?? anchorExtra.reasoning_signature ?? null,
     };
@@ -384,23 +381,20 @@ export function finishReply(pending, generatedText, answer = {}) {
 
     if (native) {
         const reasoning = streamed ? regexed(trimIf(native, settings.trimSpaces), settings) : trimIf(regexed(native, settings), settings.trimSpaces);
-        if (pending.isContinue && extra.reasoning && !continuedPrefix) {
-            extra.reasoning += reasoning;
+        if (pending.isContinue && anchorReasoning !== null && !continuedPrefix) {
+            extra.reasoning = anchorReasoning + reasoning;
         } else {
             extra.reasoning = reasoning;
             extra.reasoning_duration = streamed ? measured : null;
             if (streamed) extra.reasoning_type = ReasoningType.Model;
         }
         if (pending.isContinue && continuedPrefix) mes = mes.slice(continuedPrefix.length);
-    } else if (settings.autoParse && (!extra.reasoning || continuedPrefix)) {
+    } else if (settings.autoParse && (anchorReasoning === null || continuedPrefix)) {
         const block = splitReasoningBlock(mes, settings, streamed || Boolean(continuedPrefix));
         if (block) {
             mes = block.content;
-            if (block.reasoning) {
-                extra.reasoning = regexed(block.reasoning, settings);
-                extra.reasoning_type = ReasoningType.Parsed;
-                if (streamed) extra.reasoning_duration = measured;
-            }
+            extra = withReasoning(extra, regexed(block.reasoning, settings), ReasoningType.Parsed);
+            if (streamed) extra.reasoning_duration = measured;
         } else if (continuedPrefix) {
             mes = mes.slice(continuedPrefix.length);
         }
@@ -408,7 +402,7 @@ export function finishReply(pending, generatedText, answer = {}) {
         mes = mes.slice(continuedPrefix.length);
     }
 
-    if (!native && streamed && settings.hiddenReasoningModel && !pending.isContinue && !extra.reasoning) {
+    if (!native && streamed && settings.hiddenReasoningModel && !pending.isContinue && reasoningOf(extra) === null) {
         extra.reasoning_duration = measured;
         extra.reasoning_type = ReasoningType.Model;
     }

@@ -515,7 +515,7 @@ test.describe('Reasoning hidden blocks', () => {
         expect(result.detailsOpen).toBe(false);
     });
 
-    test('treats whitespace-only reasoning as hidden-like when trim spaces is disabled', async ({ page }) => {
+    test('draws whitespace-only reasoning as an empty block when trim spaces is disabled', async ({ page }) => {
         const result = await page.evaluate(async (messageHtml) => {
             const [reasoningModule, powerUserModule] = await Promise.all([
                 import('/scripts/reasoning.js'),
@@ -558,7 +558,7 @@ test.describe('Reasoning hidden blocks', () => {
         }, createEditableReasoningMessageHtml({ detailsAttributes: '' }));
 
         expect(result.hasContent).toBeNull();
-        expect(result.beforeAddDisplay).toBe('none');
+        expect(result.beforeAddDisplay).not.toBe('none');
         expect(result.afterAddDisplay).not.toBe('none');
         expect(result.detailsOpen).toBe(true);
         expect(result.textareaCount).toBe(1);

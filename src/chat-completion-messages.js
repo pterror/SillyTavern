@@ -1,4 +1,5 @@
 import { IGNORE_SYMBOL } from './prompt-line-formatting.js';
+import { reasoningOf } from '../public/scripts/reasoning-block.js';
 
 const system_message_types = {
     NARRATOR: 'narrator',
@@ -146,7 +147,7 @@ export function buildChatCompletionMessages(chat, {
         const isSameModel = originApi === currentApi && originModel === currentModel;
         const isOtherGroupMember = isGroup && chat[j].name !== name2;
         const signature = isSameModel && !isOtherGroupMember ? chat[j]?.extra?.reasoning_signature : null;
-        const reasoning = isSameModel && !isOtherGroupMember ? String(chat[j]?.extra?.reasoning ?? '') : '';
+        const reasoning = isSameModel && !isOtherGroupMember ? (reasoningOf(chat[j]?.extra) ?? '') : '';
 
         if (Array.isArray(invocations) && invocations.length > 0) {
             invocations.forEach((invocation, index) => {
