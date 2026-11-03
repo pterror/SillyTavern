@@ -7312,15 +7312,18 @@ textarea.live-editor-textarea {
     opacity: 0.55;
 }
 
-.cm-editor.live-editor .live-heading {
-    font-weight: bold;
+/* CodeMirror places lines by the border box of each line, block widget and wrapper; a margin, or one leaking out of
+ * a line, is space its height map doesn't have. */
+.cm-editor.live-editor :is(.cm-content, .live-block) > * {
+    display: flow-root;
+    margin: 0;
 }
 
-.cm-editor.live-editor .live-heading1 { font-size: 2em; }
-.cm-editor.live-editor .live-heading2 { font-size: 1.5em; }
-.cm-editor.live-editor .live-heading3 { font-size: 1.17em; }
-.cm-editor.live-editor .live-heading5 { font-size: 0.83em; }
-.cm-editor.live-editor .live-heading6 { font-size: 0.67em; }
+/* The <br> CodeMirror puts in an empty line (or after a widget ending one) gives the line its height; page rules for
+ * rendered <br>s must not reach it. */
+.cm-editor.live-editor .cm-line > br {
+    all: revert !important;
+}
 
 .cm-editor.live-editor .live-link {
     text-decoration: underline;
