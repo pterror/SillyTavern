@@ -1,330 +1,313 @@
-# worldbuilding tool (things, names, references)
+# Worldbuilding
 
-Status: designed, not built. Nothing open (the world-vs-book question is answered below). Supersedes `lorebook-editor-superseded.md` for the ui; that plan's
-facts (research, activation records 3e, import normalisation 3f, book defaults 3d) are reused here by reference.
+The tool for building, reading and using worlds. The screens are on the canvas:
+https://claude.ai/artifact/SWFyMbRtYtRZv8yPQxCwST (boards named below in **bold**).
 
-The bar, in {{user}}'s words: "think about ours less as 'lorebook editor'/'world info editor' and more as 'best in
-class worldbuilding tool'". The product is a tool for building, keeping consistent, navigating and sharing a world.
-Its content happens to feed the model; the classic lorebook's insertion machinery is one consumer of the world, kept
-compatible and out of the way.
+A world is a lorebook: one book is one world. "World" is the word the UI uses.
 
-## root cause
+## Entries
 
-A world is **things that refer to each other**: you understand a thing through what it's connected to, and you get
-around by following references. The classic (ccv2 / SillyTavern World Info) lorebook already holds exactly that, and
-the drawer never shows it: it presents each entry as a row of the prompt builder's settings. So nobody can read the
-world through it, building it is form-filling, the references already in the data are invisible, and nothing helps
-keep the world consistent.
+An entry has:
 
-An earlier draft called this "a wiki". {{user}}: "wiki isnt necessarily *the* best way though (?)", "think about
-what's the root cause why you were drawn to wiki and what the 'purest' form of that would be (?)". The purest form is
-three things:
-- **things**: a person, a place, a rule of the world; each with its content (an entry);
-- **names**: how anything refers to a thing (an entry's keys);
-- **references**: a text mentioning a thing by one of its names.
+- **text**: what it is, read by people and sent to the model.
+- **keys**: everything that brings it up. Each key is either a **name** of the entry or a **trigger**. Names are marked
+  in the entry's extension data and are always a subset of its keys; every other key is a trigger.
+- **title**: the author's memo for finding the entry (upstream's `comment`). It is never sent to the model and never
+  matched. It is shown as a name only when it equals one of the entry's names; otherwise it is shown as plain text.
+- **picture** (optional), and a **small picture** (optional) used beside the name where the look places one. The small
+  picture defaults to the entry's picture; it can be a crop of it (a stored crop rectangle, the image untouched) or a
+  different image. Images are stored by content hash.
+- **relations** to other entries (below).
+- **placement**: where and when it goes into the prompt (below).
+- **look** (optional): how its names are drawn (below).
 
-The chat is just another text in that web. A page mentioning "the tavern" is a link; a chat message mentioning it is
-a lorebook activation; recursion is following references from what got pulled in. The conversation and the world are
-one web of references, and "what the model knows right now" is the neighbourhood of what the conversation refers to.
+An entry with no name is shown by its title; with neither name nor title, by the opening of its text. Nothing is
+invented for it.
 
-So the ui is not "a wiki" but **lenses over that web, picked by task** ({{user}}: "i don't disagree with this :)"):
-- **page lens**: read or write one thing;
-- **list/table lens**: bulk work and tuning;
-- **neighbourhood lens**: how a thing relates (what it references, what references it);
-- **the chat itself**: references marked in the messages.
+Names are linked and drawn in the entry's look wherever they are written: chat messages, other entries' text, lists
+and cards. The words that brought an entry into a reply are marked in the chat (the trigger mark).
 
-The insertion machinery is a property of a thing reached for when tuning, not its face.
+### Imported books
 
-What a worldbuilder needs, and where each is answered:
-- **build**: write things fast, create a thing from a mention, organise into groups (4e, 4f);
-- **connect**: names and references that make themselves, backlinks, unlinked mentions (4d, 4e, 4g);
-- **keep consistent**: shared names, never-reachable things, orphans, missing things, contradictions (4g);
-- **navigate**: landing, sidebar, search, groups, hubs (4b, 4c, 4f);
-- **share**: a world readable by someone else, exported as a card book or ST book with nothing lost (4k);
-- **feed the model**: insertion settings, costs, and "why did this come up", from the chat (4d, 4i, 4j).
+An imported book keeps its titles and keys unchanged. Upstream has no names, so none of its keys is a name and nothing
+in it links. The world's page offers, once and undoably, to mark as names the keys that equal their entry's title, and
+says how many that is. Imported entries keep the order the book's own editor showed (`displayIndex`).
 
-## {{user}}'s words this rests on
+## Relations
 
-- "how about... think about what a good lorebook editor shows, what both readers and writers will want to know and/or
-  have access to at a glance"; "the hell i mean the reader's/writer's mental model for the fucking ui"; "are wikis
-  lists"; "wiki isnt necessarily *the* best way though (?)"; the root/purest-form question above (10-03).
-- "we could have a landing page", "(or an entry marked as default)", "authoring tools to help with this wiki model of
-  authoring", "some of the lorebook editors i've seen have a sidebar", "although i suppose none of them have been
-  super neat so think about it more... think about what information is most important, standard visual design
-  principles i guess (???) gestalt and the stuff like that (???)" (10-03).
-- landing: "up to you :) and/or configurable both user-side and lorebook-side (?)"; search: "up to you, could do local
-  on frontend if frontend has it all resident (useful in e.g. vpn/mobile data/high latency cases)" (10-03).
-- the chat as hypertext: `text-decoration-line: underline; text-decoration-style: dotted;` ("i have an awful idea");
-  which words: "whether 'words that actually triggered something for this reply' or 'every mention of any known name'
-  configurable maybe", "two styles/configurable i'm fine with"; noise handling agreed (10-03).
-- per-thing styling: "custom css for each entry would be funny (e.g. yellow + glow for blonde princess)" (10-03).
-- hierarchy: "hierarchy would be useful too sometimes", "i mean hierarchical ui, not sure if it'd make sense under ccv2
-  lorebooks for it to have actual semantic meaning (?)"; folders vs categories: "would they not be the same thing"
-  (10-03).
-- "strategy + position + depth + order + trigger% + 'move/copy to another lorebook' + duplicate + delete... are just
-  clutter usually"; "title textarea should get a tooltip with tis full text" (10-03).
-- "just put it in a collapsible drawer" (not an advanced mode, 09-12); "real saving and optional highlighting of
-  matches per message" (WorldInfoInfo, 09-16); "lorebook trigger highlight ui stuff (trigger info saved on each
-  message)" (09-28); "import lorebooks like we do with images" (09-28).
-- the classic lorebook is "in spirit" an extension on the core mechanism (10-03); compat: upstream WI data,
-  activation behaviour, `character_book` import/export, `/world` and friends, WI events all keep working.
-- CLAUDE.md: scale (books with thousands of entries; nothing O(total) in the page), memory (the page holds only what's
-  on screen), client sends actions, modals suck, plain language, maximally intuitive, multi-user locks, drafts survive
-  reload.
+A world is entries and **relations** between them. A relation has a name the author chooses ("in", "works at",
+"owes"…) and goes from one entry to another. Any shape is allowed: an entry can be related to several entries by the
+same relation, and cycles are allowed. References in text are one more relation, **mentions**, derived from the text
+and never stored by hand.
 
-## 1. information hierarchy
+A relation is stored on the entry it starts from, in its extension data: the relation's name, the target entry, and
+the entry's position in that target's group. The position is a fractional order key, so moving an entry within a group
+writes only that entry.
 
-Ranked per moment; P = shown, S = shown smaller / one glance away, D = on demand.
+Relation names are the author's words, so the app never builds sentences from them. A relation is shown as
+"relation: target" ("in: The Lantern House"), what points at an entry as "relation → entry" ("owes → Ilse Varro"),
+and a change as the relation with its old and new target ("works at · The Pale Choir → The Lantern House").
 
-| moment | reader | writer | why |
-|---|---|---|---|
-| **arriving at a book** | P: what world this is (front page / overview); the main topics (groups, most-referenced things); the basics (always-on things). S: size. D: everything else | P: same, plus what needs work (issue count) and the always-on cost. S: recently edited | first question for both is "what is this"; a writer's second is "what's unfinished" |
-| **reading a thing** | P: title, the content as prose, references in it. S: other names ("also called"), groups, "referenced by". D: when it comes up, insertion | same | the content *is* the knowledge; names and backlinks place it in the world; mechanics answer no reader question |
-| **writing a thing** | (n/a) | P: the content, its names (they decide both references and when it comes up), what it references as typed. S: groups, token cost, "comes up when / always", suggestions. D: insertion settings | names are the one field with double meaning, so they sit right under the title; cost matters while writing because always-on and long things cost every prompt |
-| **in the chat** | S: references marked in messages (hover = preview). D: open the thing | same | the reader's question mid-chat is "who/what is that"; the answer belongs at the word |
-| **debugging** | P (mid-chat): what came up on this message and why (matched name, reference chain, always). S: what got cut by budget. D: dry run, "why didn't it" | same, plus jump from the reason to the thing and its names | the question starts from a message, so the answer starts there |
+On an entry's page, its relations are its first line ("in: The Lantern House · works at: The Lantern House · owes: The
+Pale Choir"). Clicking one changes or removes it. **+ relation** offers the world's relation names first, then any
+other name, then the target entry.
 
-Consequences: the machinery (strategy, position, depth, order, %, timing, inclusion groups, recursion flags, filters)
-is D in every row ({{user}}'s "clutter usually"). Token cost is S for writers only. Activation is P only when
-debugging, and it starts from the chat.
+## Views
 
-## 2. visual design, applied
+A world is seen through **views**, shown as tabs across the world's page. A view is:
 
-- **Hierarchy (size, weight, contrast).** The thing's title is the largest text in the drawer; content prose at the
-  chat's reading size; names, groups and backlinks small and muted; machinery lowest contrast and collapsed. In the
-  sidebar, titles normal weight, group labels small caps, counts muted. One accent colour, only for references and the
-  current thing (per-thing mention styles, 4h, apply in the chat and in content, never to the drawer's own chrome).
-- **Proximity.** A thing's names sit directly under its title (they are its identity); "referenced by" sits at the end
-  of the content (where reading ends and "where next" begins); the insertion section is separated by whitespace and a
-  rule, so it never reads as part of the content.
-- **Similarity.** A reference looks the same in content, sidebar, backlinks, debug reasons and (in its configured
-  style) the chat; always-on things carry one marker everywhere; every authoring issue uses one badge style. A name
-  that is a regex looks different from plain names.
-- **Common region.** Three regions with their own background: sidebar (navigation), the lens (content), and inside the
-  page lens the insertion box. Debug info always appears in one region (the panel on the message, or the page's "came
-  up" strip), never sprinkled.
-- **Continuity.** Reading is one flow: title → names → content → referenced by. Editing keeps the same order, so
-  switching to edit moves nothing (no layout shift).
-- **Figure-ground.** The lens is the figure; the sidebar is ground (lower contrast, recedes while reading).
-- **Progressive disclosure.** read (default) → edit (pencil / click-to-edit) → tune (the collapsed "How it's added to
-  the prompt" box, summary line visible). Non-default settings surface as small badges by the title.
-- **Consistency with the app.** Preview-by-default with ✓ ✕ (the character field editor); the live editor for content;
-  the editor layer for maximize; filter pills and saved views; the drawer stack; drafts and locks as everywhere.
-- **Reading comfort.** Content measure capped (~70 characters per line) even when the drawer is wide; chat typography
-  and markdown rendering; macros rendered as in previews.
-- **Density for big books.** The sidebar is compact (one line per thing), virtualised and paged; never the whole book
-  in the page unless the book is small enough to be resident (4c).
+- a **filter** on what is included;
+- zero, one or two **axes**;
+- a **grouping relation** inside each cell;
+- an **order**;
+- drawn as **cards** or as **rows**.
 
-## 3. references (external tools), as checks only
+### Filter
 
-{{user}}: "i have seen some that are fine that use sidebars, but other than that i guess they don't have anything
-super important that we need to include that we wouldn't be able to derive from other principles (?)". The design is
-derived from the model, the hierarchy and the principles; references only checked a derived choice:
-- **Sidebar + content** (lorebook editors with sidebars, Notion): the one pattern {{user}} validated; confirms the
-  two-region layout. Their failure mode: the sidebar lists config entries; ours lists things.
-- **Backlinks with unlinked mentions** (Obsidian): confirms writers fix names from unlinked mentions ("add as a name").
-- **One parent per page fails** (LegendKeeper's tree, Notion nesting): confirms groups that allow several memberships.
-- **Fixed entity types** (Kanka), **template overload** (World Anvil): confirm schemaless things; World Anvil users
-  asking for its article sidebar off by default
-  ([suggestion](https://www.worldanvil.com/community/voting/suggestion/741b0087-4a3c-4197-9bb7-dca375685920/view))
-  confirms the sidebar must recede.
-- **Graph views** (Obsidian): confirm a whole-world graph fails past a few dozen nodes; the neighbourhood lens (one
-  thing and its direct references) is the part that holds up.
+The search box is the view's filter. Typing narrows whatever the view is showing. It is the app's one search, the card
+library's, with the same syntax and pills everywhere. Each region has a search button that adds that region to the
+filter as a chip. Typing on an entry's page goes to the world's page with that filter.
 
-## 4. the design
+### Axes
 
-### 4a. where it lives
+An axis is one of:
 
-The World Info drawer (centre, over the chat). Two regions: sidebar (~240px) and the lens. At chat width under ~720px
-the sidebar folds behind a menu button (as the help panel does). Maximize moves the drawer content into the editor
-layer (three columns, capped to Chat Width Max). Book picker in the drawer header (see open 1 for worlds spanning
-books). Lens switch in the header: Page / Table / Neighbourhood.
+- a set of **chosen filters**: each filter, or each combination of the two axes' filters, becomes a column or row. A
+  view only shows the columns and rows picked.
+- an **ordered value** laid out along the axis. Ordered values are whatever the world defines; none is built in. A
+  timeline is one axis over a value of that kind; a map is two axes over a position drawn on the author's image.
+  These values come from the state layer.
 
-### 4b. the landing
+A relation filter ("in: Saltmarrow") is either **directly** or **at any depth**; the reader chooses per filter.
+Directly means the entry has that relation to that target. At any depth also includes entries related to those
+entries by the same relation, and so on down.
 
-Opening a book shows its landing. Configurable per book (the author's default) and per user (overrides the book's),
-{{user}}: "configurable both user-side and lorebook-side": front page only, overview only, or front page above the
-overview (the default).
-- **front page**: the thing marked as the book's front page, read in the page lens; unmarked → the book's description
-  (`character_book.description`, ST book description);
-- **overview**: **Basics** (always-on things, one-line previews, total token cost for writers: "Always in the prompt:
-  7 things, 1,240 tokens"); **Groups** (top-level groups with counts); **Most referenced** (the world's hubs, by
-  backlinks); for writers: **Needs attention** count and recently edited.
+With no axes the view is the **overview**; one axis is a **board**; two is a **grid**. Drawn as rows, the same
+selection is a **table** whose columns are fields the reader picks (placement fields included). Clicking a cell edits
+it.
 
-### 4c. the sidebar and search
+### Selecting rows
 
-Top to bottom: search; front page; the group tree (4f); "All" (A–Z). Current thing highlighted; for writers a small
-cost dot and an issue dot per thing.
+- A selection is stored as a filter plus exceptions, never as a list of entries. **Select all matching** stores the
+  view's filter; unchecking rows after that adds exceptions; checking rows from nothing stores those rows as the
+  exceptions to an empty filter. The bulk bar says what is selected ("All 14 matching, except 1") and offers Set, Move
+  to, Also put in and Delete. A bulk action runs on the server over the filter minus the exceptions, as one action, at
+  any size.
+- Dragging down the checkbox column selects a range; Shift-click extends a selection.
+- Rows reorder only from a grip at their left edge, and the grip exists only when the view's order is the author's
+  own order (the world's order, or a group's order). Under any other order there is nothing to drag.
 
-**Resident or paged**, {{user}}: "could do local on frontend if frontend has it all resident (useful in e.g.
-vpn/mobile data/high latency cases)". The server answers each book's size (entries and total text bytes) with the
-book's hash. A book is **resident** when it fits the resident budget: a fixed cap on text bytes and entries held in the
-page at once (the memory rule holds only what's on screen; a small open book counts as on screen, the same way an open
-chat's messages do). Resident: the whole book is loaded once (by hash, cached in browser storage within its size
-limit), and search, filters, the tree and the reference marking run locally, with no round trips. Not resident (a
-5,000-entry book): every list is a server page with a cursor (the views mechanisms), search runs on the server, and
-the page holds only what's shown. The cap is a setting with a sane default; the drawer says which mode a book is in
-("Searching on this device" / "Searching on the server").
+### Grouping inside a cell
 
-Search covers titles, names and content; the pill builder filters by group, always-on, has issues, came up in this
-chat, cost range. Saved views per book.
+Inside the overview and inside every cell of a board or grid, entries are grouped by the view's grouping relation:
 
-### 4d. the page lens (reading)
+- An entry with members is a **region**, headed by the entry itself (picture, name in its look, opening text) and
+  holding its members' full-size cards. A member with members of its own is a region nested inside, headed the same
+  way.
+- A region shows its first members in that group's order, enough to show what the group is, then a **"+N more"** tile
+  that opens the region's entry, which lists every member.
+- An entry in several groups appears in each, as the same entry.
+- Drawing stops where it would repeat: an entry met again inside its own region is drawn as its card, without opening
+  its region again.
+- The top of a cell is its entries with no relation of the grouping kind.
+- Grouping by "nothing" draws plain cards.
 
-- **Title** (the entry's comment; if empty, its first name; full text on hover), with small badges only for what's
-  unusual: "always on", "off", non-default insertion ("depth 2", "50%", "sticky 3", "inclusion group: weather").
-- **Also called**: the other names (keys) as plain words; regex keys shown as "also comes up on a pattern". Secondary
-  keys in words: "only when also mentioned: x, y" (or "…unless: …" for NOT logic).
-- **The content**, rendered like chat, every reference to another thing marked (in that thing's style, 4h): hover =
-  preview of its first lines; click = open it, with back/forward in the drawer. A name with no thing stays plain.
-- **Groups** it's in, as chips.
-- **Referenced by** (backlinks), then **unlinked mentions** (4g), each with "add as a name".
-- **Came up in this chat** (when a chat is open): "messages 12, 40, 41 · because 'the tavern' was mentioned / via
-  Elara / always", from the stored activation records.
-- **How it's added to the prompt**: one collapsed box with a one-line summary, holding every upstream field grouped
-  as in the superseded plan 3b. Book-level defaults (3d) apply. Nothing removed from data or behaviour.
+### Moving entries between groups and cells
 
-### 4e. the page lens (writing)
+- A card's menu (on pointer or focus) has **Move to…** (replaces this membership), **Also put in…** (adds a membership
+  and keeps the old one; the entry is not copied) and **Take out of [group]**. Move to and Also put in open a search
+  for the target.
+- Dragging a card to another region or cell changes the relations that define where it is. While dragging, a label on
+  the card shows the change as the relation with its old and new target ("works at · The Pale Choir → The Lantern
+  House"), with "Alt: keep both" under it, and it changes while Alt is held. A cell defined by anything other than
+  relations does not accept a drop. Dropping between cards sets the position in that group.
+- Keyboard: Alt+arrows move a card within its group.
 
-- Edit in place (pencil / click-to-edit), ✓ ✕, drafts, locks: the character field editor pattern; same layout as
-  reading.
-- **Names** as chips under the title: type + Enter; each shows how many other things already mention it ("mentioned
-  in 12"); a name another thing already uses is flagged inline.
-- **Content** in the live editor; mentions of existing names marked as typed (same matching as the server). Selecting
-  a phrase offers "make a thing for this" (named by the phrase, referenced immediately) and "add as a name of…".
-- **Groups**: chips with autocomplete; several allowed.
-- **Mention style** (4h): an optional field under "How it looks when mentioned".
-- **Cost** live (tokens), and for always-on things their share of the always-on total.
-- New thing: sidebar "+", from a selection, or from a "missing" suggestion (4g); opens in edit mode with its name set.
+### Saved views
 
-### 4f. groups (the tree)
+- The author's views are stored on the world and travel with it.
+- A reader can change any view. The changed tab shows a dot and **Save** / **Discard**. Saving stores the change for
+  that reader, layered over the author's view, which stays as it was; **Reset to the world's** drops the reader's
+  layer. A view's settings resolve reader over world, the same way settings resolve levels.
+- A reader can add views of their own; they are stored with the reader.
 
-{{user}}: "hierarchy would be useful too sometimes", "i mean hierarchical ui, not sure if it'd make sense under ccv2
-lorebooks for it to have actual semantic meaning (?)"; folders vs categories: "would they not be the same thing". So
-one concept: **nestable groups**, shown as a tree in the sidebar, for organising only. A thing can be in several
-groups and shows under each. Groups have **no effect on activation**. Not upstream's inclusion `group` (which decides
-which entries compete to fire; reusing it would change what fires): a separate list of group paths per entry, in the
-entry's extension data (`extensions` on card-book entries; the same key on stored entries), exported with card books,
-ignored by upstream. Risu/Lumiverse folders import into it and export back out. Drag a thing onto a group to add it;
-drag a group onto another to nest. The group tree is one lens of organisation, not a meaning.
+## Working at any size
 
-### 4g. authoring tools ("Needs attention")
+Everything works at 10 billion entries with no cost per entry. The page holds only what it shows.
 
-Computed on the server per book, kept current on writes, listed in the sidebar and as badges:
-- **Never comes up**: no names and not always on.
-- **Shared names**: two things with the same name; offer merge or rename.
-- **Unlinked mentions**: text referring to a thing by a form not in its names (case, plural, possessive when matching
-  is strict; spacing variants); offer "add as a name".
-- **Missing things**: terms mentioned across several things (capitalised phrases, quoted terms) with no thing named
-  for them; offer "make a thing".
-- **Orphans**: nothing references it and it isn't always on or the front page.
-- **Heavy**: always-on things above a share of the always-on budget; long things relative to the book.
-- **Broken**: entries that can't be drawn (the Adelsvard uid mismatch class), listed with the reason, never silently
-  dropped.
-- **Possible contradictions** (opt-in, off by default, cost shown first): a model pass over things that reference each
-  other, listing statements that disagree, as suggestions only; nothing edited without acceptance.
+- **Members of a group** come from an index per (relation, target), in the group's order. A region reads its first few.
+- **The top of a cell** comes from an index per relation of the entries that have no relation of that kind. It is kept
+  as relations are written: an entry joins it when its last relation of that kind is removed and leaves it when it
+  gains one. Changing the grouping relation is one lookup, never a scan. The same index answers filters of the form
+  "has no relation of this kind".
+- **"+N more"** comes from a count per (relation, target) kept on each write, never counted on read.
+- **Cells** of a board or grid are intersections of filters. Their cards are read a page at a time from the indexes.
+  Their counts cannot be kept on write, so a cell's count is read up to a cap and shown as "1,000+" beyond it.
+- **At any depth** is answered by walking down from the target through the member index, keeping a visited set, so
+  its cost grows with the results, not with the world, and cycles end the walk.
+- **Rows** are read a page at a time in the view's order, from that order's index.
+- **Selections** are a filter plus exceptions, so selecting and acting on millions of entries costs the same as on a
+  few.
+- **Repeats** are caught along the drawing path (an entry already open above), never by walking the graph.
+- **Mentions** come from the book's search index, checked with the activation matcher, so a mention is there exactly
+  when recursion would see it (`src/world-info/references.js`, `engine/src/store/references.rs`). "Mentions it" on an
+  entry is the same index read the other way.
+- **Filters** run on the server, against the indexes, and show results as the reader scrolls, without totals.
+- An entry's size and hash, and its book's, are kept by the entry's own writes (`engine/src/store/book_stats.rs`).
 
-### 4h. the chat as hypertext, and per-thing styles
+## Looks
 
-{{user}}'s "awful idea": references in chat messages get `text-decoration-line: underline;
-text-decoration-style: dotted;`. Hover = a preview of the thing; click = open it in the drawer.
-- **Which words**, configurable per user ("whether 'words that actually triggered something for this reply' or 'every
-  mention of any known name' configurable maybe"; "two styles/configurable i'm fine with"): **triggered** (from the
-  reply's stored activation record: what actually reached the prompt) and **mentioned** (every mention of any name in
-  the active books, from the reference automaton), each with its own style, either or both on.
-- **Noise**: a toggle; or marks shown only on hover over a message; or only for the message in focus. Configurable;
-  default: triggered marks on, mentioned marks on hover.
-- **Where the spans come from**: the server, never the page's own matching for stored messages: activation records
-  carry the matched spans; for "mentioned", the server marks spans when a message is stored and when the books' names
-  change (bounded: per message, per book version), sent with the messages. The page draws what it's given.
-- **Per-thing mention style** ("custom css for each entry would be funny (e.g. yellow + glow for blonde princess)"):
-  an optional style on a thing, applied wherever it's referenced (chat and content). Scoped so it can only style its
-  own mentions: a sanitised declaration list (colour, text-shadow, font-weight/style, text-decoration, background),
-  attached to the mention's own span through a per-thing class; no selectors, no url(), no layout properties, never the
-  page. Stored in the entry's extension data, exported with it.
+A **look** is how a name is drawn. It is one mechanism for every named thing: entries, characters, personas,
+bookmarks, worlds. A thing's look applies wherever its name is drawn: mentions in text, a message's name line, lists
+and cards. One editor, the **Look** screen, opens from any named thing.
 
-### 4i. the table lens (for bulk work)
+### Storage
 
-Same data as a table, one row per thing in prompt order: title, names, state, cost, and only the columns the user adds
-(position, depth, order, %, inclusion group…), with filters, sort and saved views. Bulk select → bulk actions (state,
-groups, move/copy to another book, delete with undo, set insertion fields). Move / copy / duplicate / delete live here
-and in a ⋯ menu by the title in the page lens, not on every row. Default lens is Page; Table is one click.
+A look is stored as CSS declarations on the name's own span, limited to what cannot reach outside it: no selectors, no
+`url()`, nothing that moves or sizes the span or touches anything else (no position, margins, display, size,
+`content`), animations only by the app's own names, and none of the forms the app's marks use (no background behind
+the name, no dotted or dashed strokes). Declarations outside those limits are not stored.
 
-### 4j. the neighbourhood lens and debugging
+The visual editor covers the common effects (below). Anything else stays as CSS, visible and editable on the Look
+screen.
 
-- **Neighbourhood**: one thing in the middle, what it references and what references it around it, one hop (two on
-  request), clickable. Never the whole world (which fails past a few dozen nodes).
-- **Debugging from the chat**: each reply carries its activation record (superseded plan 3e). The triggered marks
-  (4h) are the first view of it; a small lorebook mark on the message opens the panel: things that came up, each with
-  its reason (the matched name, the reference chain "Elara → the tavern", or "always"), things cut by budget, links to
-  each. "What would come up now" (dry run) and "why didn't X come up" sit there too. A thing's "came up in this chat"
-  strip is the same data from the thing's side.
-- **Insertions shown in place** (a per-user setting: "optionally we can have lorebook injection 'highlighting' as
-  'ephemeral' messages in context or something (as a setting?)"): the activation record holds where each thing went
-  in (position, depth, role), so the chat can show it as a distinct, collapsible row at that depth, the history as the
-  model saw it. Drawn from the record only: never stored as a message, never sent, never counted as one. Insertions
-  outside the history (around the character definitions, the author's note slots) have no place between messages and
-  show in the message panel only. Settings: off, collapsed, expanded.
+### The cascade
 
-### 4k. data and compat
+A look resolves through a fixed order, most specific last:
 
-- References and backlinks are derived, never stored by hand: the server matches every thing's plain (non-regex)
-  names in every thing's content (one automaton per book, rebuilt per book version, bounded), keeping a backlinks table
-  updated on each entry write. Matching follows each target's own case-sensitive and whole-word settings, so a
-  reference is marked exactly when recursion would see a mention.
-- Groups (4f), mention style (4h), front-page mark (4b) live in entry/book extension data; exported with card books;
-  ignored by upstream. Builder check: confirm upstream's World Info save keeps unknown entry fields; if not, export
-  round-trips through card books only, said in the export.
-- Every upstream field, export format, `character_book` import/export, `/world`, `/findentry`, `/setentryfield` and the
-  WI events keep their meaning; the lenses are presentations over the same entries. In spirit an extension: the drawer
-  uses only the server's entry, reference, issue, activation and span actions.
-- Import normalisation and bulk import from a folder: superseded plan 3f, unchanged.
+1. the **theme**
+2. the thing's **world**, when it has one
+3. the **shared looks** the thing uses, in the order it lists them
+4. the **thing** itself
 
-### 4l. alternatives considered
+A **shared look** is a named look ("The Vell family look"): a record of its own, which things refer to by id. It lives
+at the level where it is defined, using the cascade's own levels:
 
-- **Keep the list, tidied** (the first superseded design): fixes clutter, keeps the wrong frame.
-- **"A wiki" as the model**: one lens (pages + links) mistaken for the thing; drops bulk work and the chat's side of
-  the web. Kept as the page lens.
-- **Graph as main navigation**: useless past a few dozen things; kept only as the one-hop neighbourhood lens.
-- **One parent per thing**: worlds aren't trees; groups allow several.
-- **Typed entities with fixed fields**: contradicts schemaless; groups and free content carry the same information.
-- **Explicit `[[link]]` markup**: the data's mentions already are the references (that's how recursion works); markup
-  would diverge from what the model sees.
-- **Page-side matching for chat marks**: duplicates the server's matching and costs every render; the server marks
-  spans once per message.
-- **Full CSS per thing**: can restyle the page; replaced by a sanitised, span-scoped declaration list.
+- made in a world, it belongs to that world and travels with the world's export;
+- made at the user's level (with the theme), it is available in every world and is not exported.
 
-## 5. build order (each standalone)
+Where it lives is chosen while making it ("New shared look in this world…" or "New shared look for every world…"), with
+no extra step. It can be moved between the two levels later. The user's own shared looks are also listed and managed in
+the theme settings. Resolution only follows the ids. Looks never pass along relations.
 
-1. Server: reference automaton, backlinks table, issues (4g, 4k), entry/book size and hash, as actions with paged
-   answers. No ui change.
-2. Activation records on replies, with matched spans, and the message panel (4j; superseded 3e step 1).
-3. Chat marks: triggered spans from the records, the per-user settings and noise options (4h), hover preview and
-   click-to-open.
-4. Page lens (read) with the sidebar, landing (configurable per book and per user) and resident/paged search (4b–4d).
-5. Page lens editing (4e) on the live editor: names as chips, selection actions.
-6. Groups data, the tree, and Risu/Lumiverse folder import/export (4f).
-7. "Mentioned" chat marks from server-stored spans, and per-thing mention styles (4h).
-8. Needs attention (4g) in the sidebar and as badges.
-9. Table lens with columns, filters, saved views, bulk actions (4i); per-row actions leave the page lens.
-10. Neighbourhood lens (4j).
-11. Book defaults (superseded 3d) and import normalisation (3f).
+### States
 
-## open
+The resting look and each state are separate layers. The states are: **message pointed at**, **word pointed at or
+focused** (keyboard focus counts as pointing), and **selected**. Each layer resolves its own cascade, theme → world →
+shared looks → thing, most specific wins. What is drawn is the resting layer with the active states on top in that
+order; each property comes from the highest active state that sets it, otherwise from rest.
 
-1. **Answered: a world is one book.** {{user}}: "wouldnt a world be a single book". So (a): each book is browsed
-   as its own web; a chat can draw on several worlds at once (the character's, globals, chat books), and references
-   that cross books are still marked (in the chat and in content) and open the other book. The rest of this item is
-   the question as it was asked.
-   A chat pulls from several books (the character's, globals, chat
-   books, persona), so references in the chat and between things cross books, and a worldbuilder may split a world
-   across books. Nothing in {{user}}'s words settles it. (a) One book is one world; cross-book references are marked
-   but each book is browsed alone. (b) A **world** is a named set of books, browsed as one web (sidebar, search,
-   backlinks and issues span its books; each thing still lives in one book, so compat and export are unchanged); a
-   chat's active books form an implicit world. (c) Drop books from the ui entirely: one web of everything the user
-   has, books only as an export/sharing unit. Lean (b): it matches how a chat already composes books, keeps books as
-   the unit that ships with a card, and costs only the scope of queries.
+### Effects in the visual editor
 
-Superseded plan's open 1 (`enabled` vs `disable` on import) stays open there; 2 and 3 (book defaults, live editor for
-content) are taken here as yes. The earlier open "keep the Entries table view" is settled by the lens model: the table
-is one lens.
+- **Color**: one color or a gradient (stops and direction).
+- **Glow**: color and size.
+- **Outline**: color and width.
+- **Shadow**: color, distance, softness.
+- **Underline**: solid, double or wavy; color; thickness.
+- **Letters**: spacing, weight, italic, small capitals.
+- **Typeface**: a font the app ships, or one uploaded into the world. Uploaded fonts are stored by content hash like
+  images; the app writes the `@font-face` itself; the look names the font and never holds a URL. A look never sets size.
+- **Blur**: amount.
+- **Motion**: shimmer, breathe, flicker, drift or float, with speed. Every motion has a still frame, shown to readers
+  whose device asks for reduced motion.
+- **Picture beside it**: the small picture before and/or after the name.
+- **Note above it**: a few words drawn above the name, taking no space in the line.
+
+### The trigger mark
+
+The words that brought an entry into the last reply are marked in the chat. The mark is a look set at the theme level,
+in the same editor, per state: **dotted** (the default), **dashed**, **large dots** or **none**, with color and opacity.
+"Only when pointing at the message" is none at rest and dotted when the message is pointed at. The mark is drawn outside
+the name's span, so no name look can cover it, and no name look can use its forms, so none can imitate it. Custom CSS
+can restyle it through its class.
+
+The marked spans come from each reply's activation record (below), drawn only where the stored text still matches.
+
+## Placement on the entry
+
+Where an entry goes in the prompt belongs to the entry, and nothing about it stands on the entry's page. A button in
+the entry's header, beside the Look button, opens **In the prompt** as a popover; the button carries a dot when anything
+differs from the defaults. The popover shows the entry's size in tokens and a sentence whose parts are edited by
+clicking them (the field names are the app's, so these sentences are fixed wording):
+
+- **Comes in** when it's brought up / always / never (upstream `constant` and `disable`).
+- how often: every time / N% of the time (`probability`, `useProbability`).
+- **Goes** before or after the character's description, before or after the example messages, at the top or bottom
+  of the author's note, or into the chat N messages up (`position`, `depth`, `role`).
+- **Order among entries in the same place** (`order`).
+- **+ More** adds the rest as sentences when set: stays for N replies (`sticky`), waits N replies before coming up again
+  (`cooldown`), only after the chat has N messages (`delay`), needs other words written too (`keysecondary`,
+  `selectiveLogic`), only one of a group comes in (`group`, `groupOverride`, `groupWeight`, `useGroupScoring`), looks
+  further back for its keys (`scanDepth`), and the rest of upstream's fields.
+
+## Screens
+
+- **In the chat** (`Main`, `PhoneChat`): names drawn in their looks and linked; trigger words marked. Pointing at a name
+  or a marked word shows a card: picture, name, how it relates to other entries, the opening of its text, and what
+  brought it up for the last reply. A word that brought up several entries shows all of them. Clicking opens the entry;
+  on a phone, a tap shows the card from the bottom and Open goes to the entry.
+- **The world's page** (`Front`, `World`, `Huge`, `PhoneWorld`): the world's picture, name and description, then the
+  view tabs and the view bar (Columns, Rows, Inside grouped by, Order, Cards or Rows; Save and Discard when the view is
+  changed), then the view.
+- **Board, grid and rows** (`Board`, `Grid`, `Table`): as above under Views.
+- **An entry** (`World`, `PhoneEntry`, `Write`): relations line; picture and title; **Brought up by** with names in the
+  entry's look and triggers plain (clicking a key switches it between name and trigger or removes it; **+ name**,
+  **+ trigger** add keys); the text, edited in place with names linked as typed; selecting words offers a new entry with
+  that name (placed right after the current one), or adding the words to an existing entry as a name or a trigger;
+  what points at it, one section per relation ("owes → Ilse Varro", as full-size cards, then "mentions → Ilse Varro"
+  with the sentences); **+ New entry** with the relation it will get shown beside it. The header holds the Look button,
+  the In the prompt button, and the ⋯ menu (Move to another world, Delete).
+- **Moving between groups** (`Arrange`, `Drag`): as above under Moving entries.
+- **Imported book** (`Imported`): as above under Imported books.
+- **Look** (`Style`, `LookChar`): one live preview of the name, which really responds to pointing, focus and
+  selection; under it, four small scenes, one per state (as it sits, its message pointed at, the word pointed at, the
+  word selected), all visible at once, with the state's name as a tooltip; clicking a scene shows that state in the
+  preview and is the state being edited. With motion, the still frame sits in the preview's corner. The picture and
+  the note are placed on the preview itself: pointing beside the name shows a faint picture to place before and/or
+  after it; pointing above it shows where to type the note; clicking a placed picture opens the small picture's
+  choices (whole picture, crop, another image, remove). **Uses** lists the shared looks the thing uses, each marked "this world"
+  or "everywhere", with **+ shared look** (existing looks, then a new one in this world or for every world). One
+  toolbar: each effect's button is a letter drawn with that effect, bright when the state uses it, its name as a
+  tooltip; clicking one opens its controls with **Applies to** (theme, world, each shared look in use, just this
+  thing, or a new shared look in this world or for every world) and **Reset**. The toolbar's last button shows the CSS of the chosen
+  state at this thing's level: the declarations the controls produce, dimmed, and the rest as editable text. An edit
+  goes to the level that supplies the value. Below, the name where it is drawn: a mention (with the trigger mark,
+  which is edited by clicking it), a message's name line, a list, a card.
+
+## Compatibility and storage
+
+- Entries are stored per book in the engine (`engine/src/store/books.rs`), keyed by upstream `uid`, ordered by the
+  entry index (`displayIndex`). Every upstream field keeps its meaning and its behavior in activation; this tool only
+  presents them.
+- This tool's data on an entry (which keys are names, relations, the look, the small picture) lives in the entry's
+  `extensions`. Card-book import keeps `extensions` (`src/world-info/candidate-resolution.js:65`) and export spreads it
+  back (`src/character-card-normalize.js:241`), so it round-trips through card books. Card-book fields map as
+  `convertCharacterBook` does: `keys`→`key`, `secondary_keys`→`keysecondary`, `comment`→`comment`,
+  `insertion_order`→`order`, `enabled`→`!disable`, position from `extensions.position` or
+  `before_char`/`after_char`, and the rest from `extensions` (`src/world-info/candidate-resolution.js:18`).
+- A world's own data (its views, its grouping default, its shared looks, its fonts) is stored on the book.
+- World files are imported through `importWorldInfoFromRaw` (`src/endpoints/worldinfo.js`).
+- Each reply stores its activation record in the same write as the reply, one per alternative: each entry that came
+  up, why (matched key and where, always, sticky, recursion through another entry), the stored messages and spans each
+  key matched, the entries that brought it in, its position, depth and role, and what was cut and why (budget, chance,
+  inclusion group) (`src/world-info/activation-record.js`). The trigger mark and the hover card's "brought up by" read
+  it.
+- `WORLD_INFO_ACTIVATED` keeps firing with what it carries (`public/scripts/world-info.js:1060`).
+
+## Architecture
+
+Little here is specific to worlds. Looks, views (filters, axes, grouping, tables, saved views), selections, relations
+and search are general mechanisms of the app, built once for every kind of thing (entries, characters, personas,
+bookmarks, chats); worldbuilding is their composition plus what is specific to lore: keys, activation, placement.
+
+- **Store** (engine): entries, names, relations and looks as above; the indexes and kept counts under Working at any
+  size; views stored on the world, a reader's changes layered over them through the settings cascade.
+- **Server**: one action per user action, answering with everything the page needs to draw its result; filters
+  compile to index reads; a selection is a filter plus exceptions, so a bulk change is one action at any size; looks
+  are resolved and sanitized into one stylesheet of per-thing classes. Activation reads keys exactly as before.
+- **Page**: built on the general component library (components, data sources, selection, focus, rendering) and
+  keybinds, both in their own repository; this app supplies adapters (its server index as a data source, its settings
+  cascade as state storage, its looks and themes as tokens). The page holds only what is on screen. One name renderer
+  draws every name in the app, so a look applies everywhere at once.
+- When this lands, the old World Info drawer (`public/scripts/world-info.js`) and everything only it uses are removed
+  in the same change.
