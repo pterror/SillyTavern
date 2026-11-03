@@ -1,8 +1,10 @@
 const HASH_QUERY_SEARCH_BACKEND_NAMES = { 1: 'tantivy', 2: 'native', 3: 'wasm', 4: 'unavailable' };
 
+/** @typedef {{id:string, isGroup:boolean, version:number|null, favHash:number, tagIdsHash:number, contentHash:number, date_added:number, create_date:number|null, date_last_chat:number, chat_size:number, data_size:number, chat:string|null}} HashRow */
+
 /**
  * @param {ArrayBuffer} buffer
- * @returns {{seq: number, token: string|null, total: number|undefined, totalApprox: boolean, hidden: number|undefined, hiddenApprox: boolean, searchBackend: string|undefined, more: boolean, cursor: string|undefined, hashRows: {id:string, isGroup:boolean, version:number|null, favHash:number, tagIdsHash:number, contentHash:number, date_added:number, create_date:number|null, date_last_chat:number, chat_size:number, data_size:number, chat:string|null}[]}}
+ * @returns {{seq: number, token: string|null, total: number|undefined, totalApprox: boolean, hidden: number|undefined, hiddenApprox: boolean, searchBackend: string|undefined, more: boolean, cursor: string|undefined, hashRows: HashRow[], favHashRows: HashRow[]|undefined}}
  */
 export function deserializeQueryHashesBinary(buffer) {
     const view = new DataView(buffer);
@@ -14,46 +16,54 @@ export function deserializeQueryHashesBinary(buffer) {
     const totalApprox = (headerFlags & 0b10) !== 0;
     const more = (headerFlags & 0b100) !== 0;
     const hasCursor = (headerFlags & 0b1000) !== 0;
+    const hasHidden = (headerFlags & 0b10000) !== 0;
+    const hasFavs = (headerFlags & 0b100000) !== 0;
     const searchBackendCode = view.getUint8(offset); offset += 1;
     const searchBackend = HASH_QUERY_SEARCH_BACKEND_NAMES[searchBackendCode];
     const seq = view.getFloat64(offset, true); offset += 8;
     const total = view.getFloat64(offset, true); offset += 8;
-    const rowCount = view.getUint16(offset, true); offset += 2;
 
-    const hashRows = [];
-    for (let i = 0; i < rowCount; i++) {
-        const flags = view.getUint8(offset); offset += 1;
-        const isGroup = (flags & 0b1) !== 0;
-        const hasCreateDate = (flags & 0b10) !== 0;
+    const readRows = () => {
+        const rowCount = view.getUint16(offset, true); offset += 2;
+        /** @type {HashRow[]} */
+        const rows = [];
+        for (let i = 0; i < rowCount; i++) {
+            const flags = view.getUint8(offset); offset += 1;
+            const isGroup = (flags & 0b1) !== 0;
+            const hasCreateDate = (flags & 0b10) !== 0;
 
-        const idLen = view.getUint16(offset, true); offset += 2;
-        const id = decoder.decode(new Uint8Array(buffer, offset, idLen)); offset += idLen;
+            const idLen = view.getUint16(offset, true); offset += 2;
+            const id = decoder.decode(new Uint8Array(buffer, offset, idLen)); offset += idLen;
 
-        let version = null, favHash = 0, tagIdsHash = 0, contentHash = 0;
-        if (isGroup) {
-            favHash = view.getUint32(offset, true); offset += 4;
-            tagIdsHash = view.getUint32(offset, true); offset += 4;
-            contentHash = view.getUint32(offset, true); offset += 4;
-        } else {
-            version = view.getFloat64(offset, true); offset += 8;
-            tagIdsHash = view.getUint32(offset, true); offset += 4;
+            let version = null, favHash = 0, tagIdsHash = 0, contentHash = 0;
+            if (isGroup) {
+                favHash = view.getUint32(offset, true); offset += 4;
+                tagIdsHash = view.getUint32(offset, true); offset += 4;
+                contentHash = view.getUint32(offset, true); offset += 4;
+            } else {
+                version = view.getFloat64(offset, true); offset += 8;
+                tagIdsHash = view.getUint32(offset, true); offset += 4;
+            }
+
+            const date_added = view.getFloat64(offset, true); offset += 8;
+            const createDateRaw = view.getFloat64(offset, true); offset += 8;
+            const date_last_chat = view.getFloat64(offset, true); offset += 8;
+            const chat_size = view.getFloat64(offset, true); offset += 8;
+            const data_size = view.getFloat64(offset, true); offset += 8;
+
+            const chatLen = view.getUint16(offset, true); offset += 2;
+            const chat = chatLen > 0 ? decoder.decode(new Uint8Array(buffer, offset, chatLen)) : null;
+            offset += chatLen;
+
+            rows.push({
+                id, isGroup, version, favHash, tagIdsHash, contentHash,
+                date_added, create_date: hasCreateDate ? createDateRaw : null, date_last_chat, chat_size, data_size, chat,
+            });
         }
+        return rows;
+    };
 
-        const date_added = view.getFloat64(offset, true); offset += 8;
-        const createDateRaw = view.getFloat64(offset, true); offset += 8;
-        const date_last_chat = view.getFloat64(offset, true); offset += 8;
-        const chat_size = view.getFloat64(offset, true); offset += 8;
-        const data_size = view.getFloat64(offset, true); offset += 8;
-
-        const chatLen = view.getUint16(offset, true); offset += 2;
-        const chat = chatLen > 0 ? decoder.decode(new Uint8Array(buffer, offset, chatLen)) : null;
-        offset += chatLen;
-
-        hashRows.push({
-            id, isGroup, version, favHash, tagIdsHash, contentHash,
-            date_added, create_date: hasCreateDate ? createDateRaw : null, date_last_chat, chat_size, data_size, chat,
-        });
-    }
+    const hashRows = readRows();
 
     const tokenLen = view.getUint16(offset, true); offset += 2;
     const token = tokenLen > 0 ? decoder.decode(new Uint8Array(buffer, offset, tokenLen)) : null;
@@ -68,10 +78,12 @@ export function deserializeQueryHashesBinary(buffer) {
 
     let hidden;
     let hiddenApprox = false;
-    if (offset + 9 <= buffer.byteLength) {
+    if (hasHidden) {
         hiddenApprox = (view.getUint8(offset) & 0b1) !== 0; offset += 1;
         hidden = view.getFloat64(offset, true); offset += 8;
     }
 
-    return { seq, token, total: hasTotal ? total : undefined, totalApprox, searchBackend, hashRows, hidden, hiddenApprox, more, cursor };
+    const favHashRows = hasFavs ? readRows() : undefined;
+
+    return { seq, token, total: hasTotal ? total : undefined, totalApprox, searchBackend, hashRows, hidden, hiddenApprox, more, cursor, favHashRows };
 }

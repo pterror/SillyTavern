@@ -10,9 +10,9 @@ import {
     lodash,
 } from './lib.js';
 
-import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown } from './scripts/RossAscends-mods.js';
+import { getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown } from './scripts/RossAscends-mods.js';
 import { exposedCharacters, charactersStore, this_avatar, this_chid, setCharacterId, holdCharacter, keepHeldCharacters, selectCharacterById, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './scripts/character-store.js';
-import { printCharacters, printCharactersDebounced, getEntitiesList, findCharacterListPage, getOneCharacter, getCharacterSource, startLibraryChangesAt, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onCharacterListShown, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
+import { printCharacters, printCharactersDebounced, getEntitiesList, findCharacterListPage, getOneCharacter, getCharacterSource, startLibraryChangesAt, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, isCharacterListShowing, onCharacterListShown, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
 import { onSavedViewsChanged } from './scripts/saved-views.js';
 export { exposedCharacters as characters, charactersStore, selectCharacterById, setCharacterId, this_chid };
 export { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, getCharacters, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT };
@@ -304,7 +304,7 @@ export {
 };
 import { isStoredNodeId, isProvisionalNodeId, provisionalNodeId } from './scripts/node-identity.js';
 export { isStoredNodeId, isProvisionalNodeId, provisionalNodeId };
-import { saveMetadata, _resetMetadataSaveSnapshot, onStateChanged, openChatMacroScope } from './scripts/metadata-store.js';
+import { saveMetadata, _resetMetadataSaveSnapshot, takePushedState, openChatMacroScope } from './scripts/metadata-store.js';
 export { openChatMacroScope };
 export { saveMetadata };
 import { switchToNode, switchToAlternativePath } from './scripts/node-navigation.js';
@@ -910,7 +910,7 @@ export function saveSettingsDebounced(loopCounter, ...keys) {
 }
 
 
-const getCharactersDebounced = debounce(() => getCharacters({ keepListPosition: true }), 2000);
+const getCharactersDebounced = debounce(() => getCharacters({ keepListPosition: true, skipPrint: !isCharacterListShowing() }), 2000);
 
 /**
  * The warning for a queued tag move the server couldn't apply.
@@ -932,11 +932,7 @@ function tagMoveFailedText({ tagId, tagName, anchorId, anchorName, refusedId, re
 const CHANGE_STREAM_NOTICE_AFTER_MS = 10000;
 
 function onCharacterChangeMessage() {
-    if (isCharacterListShowing()) {
-        getCharactersDebounced();
-    } else {
-        _charactersDirty = true;
-    }
+    getCharactersDebounced();
 }
 
 function setupCharacterChangeStream() {
@@ -971,8 +967,8 @@ function setupCharacterChangeStream() {
                 void onSavedViewsChanged();
                 return;
             }
-            if (message?.type === 'state-changed') {
-                void onStateChanged({ tree: message.tree ?? null, at: message.at ?? null });
+            if (message?.type === 'state') {
+                takePushedState({ tree: message.tree, at: message.at ?? null, state: message.state });
                 return;
             }
             if (message !== null && typeof message === 'object' && message.type === undefined) onCharacterChangeMessage();
@@ -1129,7 +1125,6 @@ export const per_page_default = 50;
  */
 export let menu_type = '';
 
-let _charactersDirty = false;
 let characterListWasShowing = false;
 let characterListShowHandledByCaller = false;
 
@@ -8075,11 +8070,7 @@ function onCharacterListMaybeShown() {
     const becameShown = showing && !characterListWasShowing;
     characterListWasShowing = showing;
     if (!becameShown || characterListShowHandledByCaller) return;
-    if (_charactersDirty) {
-        syncDirtyCharacterList(false);
-    } else {
-        onCharacterListShown();
-    }
+    onCharacterListShown();
 }
 
 /**
@@ -8498,23 +8489,7 @@ function select_rm_characters() {
     } finally {
         characterListShowHandledByCaller = false;
     }
-    if (_charactersDirty) {
-        syncDirtyCharacterList(doFullRefresh);
-    } else {
-        printCharacters(doFullRefresh);
-    }
-}
-
-/**
- * @param {boolean} doFullRefresh
- */
-function syncDirtyCharacterList(doFullRefresh) {
-    _charactersDirty = false;
-    if (hasActiveCharacterSearch()) {
-        getCharacters({ skipPrint: true }).then(() => printCharacters(doFullRefresh));
-    } else {
-        getCharacters({ keepListPosition: !doFullRefresh });
-    }
+    printCharacters(doFullRefresh);
 }
 
 /**
@@ -11592,7 +11567,6 @@ export async function doNavbarIconClick() {
         drawer.toggleClass('openDrawer closedDrawer');
 
         if (targetDrawerID === 'right-nav-panel') {
-            favsToHotswap();
             $('#rm_print_characters_block').trigger('scroll');
         }
 
@@ -12145,7 +12119,6 @@ jQuery(async function () {
             updateCharacterListRow(character.avatar);
             await getOneCharacter(character.avatar);
             printCharactersDebounced();
-            favsToHotswap();
         } catch (error) {
             console.error('Failed to update favorite status', error);
             toastr.error(t`Failed to update favorite status.`);

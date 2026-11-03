@@ -2089,11 +2089,19 @@ async function runQuery(request, body, { compat = true } = {}) {
             const group = r.isGroup ? groups.get(r.id) : undefined;
             return { ...r, chat: chatOf(i), ...(group ? groupDigests(group) : {}) };
         });
+        /** @type {object[] | undefined} */
+        let favHashRows;
+        if (body.favs && typeof body.favs === 'object' && !Array.isArray(body.favs)) {
+            const favs = await runQuery(request, { filter: body.favs.filter, sort: body.favs.sort, page: 1, pageSize: body.favs.pageSize, want: ['hashes'] }, { compat });
+            if (!('hashes' in favs)) return favs;
+            favHashRows = favs.hashes.hashRows;
+        }
         return {
             hashes: {
                 seq, token, total: wantTotal ? Number(result.total) : undefined, approxTotal: !!result.approxTotal, hashRows,
                 ...extra,
                 ...(wantHidden ? { hidden: Number(result.hidden), approxHidden: !!result.approxHidden } : {}),
+                ...(favHashRows ? { favHashRows } : {}),
             },
         };
     }
@@ -2191,67 +2199,86 @@ router.post('/changes', async function (request, response) {
 const HASH_QUERY_SEARCH_BACKEND_CODES = { tantivy: 1, native: 2, wasm: 3, unavailable: 4 };
 
 /**
- * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string, hidden?:number, approxHidden?:boolean, more?:boolean, cursor?:string}} params
+ * @param {any} row
+ */
+function hashRowSize(row) {
+    const idBytes = Buffer.byteLength(row.id, 'utf8');
+    const chatBytes = row.chat ? Buffer.byteLength(row.chat, 'utf8') : 0;
+    return 1 + 2 + idBytes + (row.isGroup ? 4 + 4 + 4 : 8 + 4) + 8 + 8 + 8 + 8 + 8 + 2 + chatBytes;
+}
+
+/**
+ * @param {Buffer} buf
+ * @param {number} offset
+ * @param {any} row
+ * @returns {number}
+ */
+function writeHashRow(buf, offset, row) {
+    const hasCreateDate = row.create_date !== null && row.create_date !== undefined;
+    const flags = (row.isGroup ? 0b01 : 0) | (hasCreateDate ? 0b10 : 0);
+    buf.writeUInt8(flags, offset); offset += 1;
+
+    const idBytes = Buffer.byteLength(row.id, 'utf8');
+    buf.writeUInt16LE(idBytes, offset); offset += 2;
+    buf.write(row.id, offset, idBytes, 'utf8'); offset += idBytes;
+
+    if (row.isGroup) {
+        buf.writeUInt32LE(row.favHash >>> 0, offset); offset += 4;
+        buf.writeUInt32LE(row.tagIdsHash >>> 0, offset); offset += 4;
+        buf.writeUInt32LE(row.contentHash >>> 0, offset); offset += 4;
+    } else {
+        buf.writeDoubleLE(row.version, offset); offset += 8;
+        buf.writeUInt32LE(row.tagIdsHash >>> 0, offset); offset += 4;
+    }
+
+    buf.writeDoubleLE(row.date_added ?? 0, offset); offset += 8;
+    buf.writeDoubleLE(hasCreateDate ? row.create_date : 0, offset); offset += 8;
+    buf.writeDoubleLE(row.date_last_chat ?? 0, offset); offset += 8;
+    buf.writeDoubleLE(row.chat_size ?? 0, offset); offset += 8;
+    buf.writeDoubleLE(row.data_size ?? 0, offset); offset += 8;
+
+    const chatBytes = row.chat ? Buffer.byteLength(row.chat, 'utf8') : 0;
+    buf.writeUInt16LE(chatBytes, offset); offset += 2;
+    if (chatBytes > 0) {
+        buf.write(row.chat, offset, chatBytes, 'utf8'); offset += chatBytes;
+    }
+    return offset;
+}
+
+/**
+ * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string, hidden?:number, approxHidden?:boolean, more?:boolean, cursor?:string, favHashRows?:object[]}} params
  * @returns {Buffer}
  */
-export function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, searchBackend, hidden, approxHidden = false, more = false, cursor }) {
+export function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, searchBackend, hidden, approxHidden = false, more = false, cursor, favHashRows }) {
     const hasTotal = typeof total === 'number';
     const hasCursor = typeof cursor === 'string' && cursor.length > 0;
     const cursorBytes = hasCursor ? Buffer.byteLength(cursor, 'utf8') : 0;
     const hasHidden = typeof hidden === 'number';
+    const hasFavs = Array.isArray(favHashRows);
     const searchBackendCode = HASH_QUERY_SEARCH_BACKEND_CODES[searchBackend] ?? 0;
 
     const tokenBytes = token ? Buffer.byteLength(token, 'utf8') : 0;
     let totalSize = 1 + 1 + 8 + 8 + 2;
-    for (const row of hashRows) {
-        const idBytes = Buffer.byteLength(row.id, 'utf8');
-        const chatBytes = row.chat ? Buffer.byteLength(row.chat, 'utf8') : 0;
-        totalSize += 1 + 2 + idBytes + (row.isGroup ? 4 + 4 + 4 : 8 + 4) + 8 + 8 + 8 + 8 + 8 + 2 + chatBytes;
-    }
+    for (const row of hashRows) totalSize += hashRowSize(row);
     totalSize += 2 + tokenBytes;
     if (hasCursor) totalSize += 2 + cursorBytes;
     if (hasHidden) totalSize += 1 + 8;
+    if (hasFavs) {
+        totalSize += 2;
+        for (const row of favHashRows) totalSize += hashRowSize(row);
+    }
 
     const buf = Buffer.allocUnsafe(totalSize);
     let offset = 0;
 
-    const headerFlags = (hasTotal ? 0b01 : 0) | (hasTotal && approxTotal ? 0b10 : 0) | (more ? 0b100 : 0) | (hasCursor ? 0b1000 : 0);
+    const headerFlags = (hasTotal ? 0b01 : 0) | (hasTotal && approxTotal ? 0b10 : 0) | (more ? 0b100 : 0) | (hasCursor ? 0b1000 : 0)
+        | (hasHidden ? 0b10000 : 0) | (hasFavs ? 0b100000 : 0);
     buf.writeUInt8(headerFlags, offset); offset += 1;
     buf.writeUInt8(searchBackendCode, offset); offset += 1;
     buf.writeDoubleLE(seq ?? 0, offset); offset += 8;
     buf.writeDoubleLE(hasTotal ? total : 0, offset); offset += 8;
     buf.writeUInt16LE(hashRows.length, offset); offset += 2;
-
-    for (const row of hashRows) {
-        const hasCreateDate = row.create_date !== null && row.create_date !== undefined;
-        const flags = (row.isGroup ? 0b01 : 0) | (hasCreateDate ? 0b10 : 0);
-        buf.writeUInt8(flags, offset); offset += 1;
-
-        const idBytes = Buffer.byteLength(row.id, 'utf8');
-        buf.writeUInt16LE(idBytes, offset); offset += 2;
-        buf.write(row.id, offset, idBytes, 'utf8'); offset += idBytes;
-
-        if (row.isGroup) {
-            buf.writeUInt32LE(row.favHash >>> 0, offset); offset += 4;
-            buf.writeUInt32LE(row.tagIdsHash >>> 0, offset); offset += 4;
-            buf.writeUInt32LE(row.contentHash >>> 0, offset); offset += 4;
-        } else {
-            buf.writeDoubleLE(row.version, offset); offset += 8;
-            buf.writeUInt32LE(row.tagIdsHash >>> 0, offset); offset += 4;
-        }
-
-        buf.writeDoubleLE(row.date_added ?? 0, offset); offset += 8;
-        buf.writeDoubleLE(hasCreateDate ? row.create_date : 0, offset); offset += 8;
-        buf.writeDoubleLE(row.date_last_chat ?? 0, offset); offset += 8;
-        buf.writeDoubleLE(row.chat_size ?? 0, offset); offset += 8;
-        buf.writeDoubleLE(row.data_size ?? 0, offset); offset += 8;
-
-        const chatBytes = row.chat ? Buffer.byteLength(row.chat, 'utf8') : 0;
-        buf.writeUInt16LE(chatBytes, offset); offset += 2;
-        if (chatBytes > 0) {
-            buf.write(row.chat, offset, chatBytes, 'utf8'); offset += chatBytes;
-        }
-    }
+    for (const row of hashRows) offset = writeHashRow(buf, offset, row);
 
     buf.writeUInt16LE(tokenBytes, offset); offset += 2;
     if (tokenBytes > 0) {
@@ -2264,6 +2291,10 @@ export function serializeQueryHashesBinary({ seq, token, total, approxTotal, has
     if (hasHidden) {
         buf.writeUInt8(approxHidden ? 0b1 : 0, offset); offset += 1;
         buf.writeDoubleLE(hidden, offset); offset += 8;
+    }
+    if (hasFavs) {
+        buf.writeUInt16LE(favHashRows.length, offset); offset += 2;
+        for (const row of favHashRows) offset = writeHashRow(buf, offset, row);
     }
 
     return buf;
@@ -2278,22 +2309,22 @@ function sendHashQueryResponse(response, params) {
     return response.send(serializeQueryHashesBinary(params));
 }
 
-const VIEW_TYPES = new Set([TYPE.viewList, TYPE.view, TYPE.condition, TYPE.range]);
+const FEED_TYPES = new Set([TYPE.character, TYPE.group]);
 
 /**
  * @param {import('../library-engine.js').LibraryEngine} lib
  * @param {number} from
  * @param {number} to
  */
-async function changedOtherThanViews(lib, from, to) {
+async function feedChanged(lib, from, to) {
     let after = BigInt(from);
     for (;;) {
         const page = await lib.store.chatRead('entityChanges', { after, limit: 256 });
         const entries = page.entries.filter((/** @type {any} */ e) => Number(e.pos) <= to);
-        if (entries.some((/** @type {any} */ e) => e.gone !== null && !VIEW_TYPES.has(e.gone.kind))) return true;
+        if (entries.some((/** @type {any} */ e) => e.gone !== null && FEED_TYPES.has(e.gone.kind))) return true;
         const live = entries.filter((/** @type {any} */ e) => e.gone === null);
         const keys = live.length ? await lib.store.libraryKeys(live.map((/** @type {any} */ e) => e.id)) : [];
-        if (keys.some((/** @type {any} */ k) => k !== null && !VIEW_TYPES.has(k.type))) return true;
+        if (keys.some((/** @type {any} */ k) => k !== null && FEED_TYPES.has(k.type))) return true;
         if (!page.more || entries.length < page.entries.length || entries.length === 0) return false;
         after = entries[entries.length - 1].pos;
     }
@@ -2307,7 +2338,7 @@ router.get('/changes/stream', async function (request, response) {
         console.error('[characters/changes/stream] The store could not be opened:', err);
         return response.sendStatus(500);
     }
-    const { lib, chats } = store;
+    const { lib } = store;
     response.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -2339,25 +2370,13 @@ router.get('/changes/stream', async function (request, response) {
             const nextEntity = await lib.changesEnd();
             const nextAssignment = (await lib.tags.entityChangesEnd()).seq;
             const nextTag = await lib.tags.changesSeq();
-            if (nextEntity !== entityEnd && await changedOtherThanViews(lib, entityEnd, nextEntity)) writeChanged();
+            if (nextEntity !== entityEnd && await feedChanged(lib, entityEnd, nextEntity)) writeChanged();
             if (nextAssignment !== assignmentEnd || records.some(r => /** @type {any} */ (r).kind === 'entityCreate' && /** @type {any} */ (r).type === TYPE.group)) writeGroupsChanged();
             if (nextTag !== tagEnd) writeTagsChanged();
             entityEnd = nextEntity;
             assignmentEnd = nextAssignment;
             tagEnd = nextTag;
             await tab?.told(records);
-            const told = new Set();
-            for (const r of /** @type {any[]} */ (records)) {
-                if (r.kind !== 'stateChange' && r.kind !== 'stateRevert') continue;
-                const where = await chats.stateChangePlace(r);
-                if (where === null) continue;
-                const [key] = where.tree === null ? [null] : await lib.store.libraryKeys([where.tree]);
-                const frame = { type: 'state-changed', tree: key?.key ?? null, at: where.at };
-                const id = JSON.stringify(frame);
-                if (told.has(id)) continue;
-                told.add(id);
-                send(frame);
-            }
             if (tab && records.some(r => CHAT_MOVES.has(/** @type {any} */ (r).kind))) {
                 ui.chatMoved(uiUser(request), tab.session).catch(error => console.error('[ui] chat views not pushed:', error));
             }
@@ -2443,9 +2462,39 @@ async function tabStreamSession(request, store, send) {
     }
     /** @type {bigint | null} */
     let sid = await chats.sessionId(session);
+    /** @type {{ place: string, hash: number } | null} */
+    let statePushed = null;
+    let stateChain = Promise.resolve();
+    const pushState = async (/** @type {any[]} */ records) => {
+        const changes = records.filter(r => r.kind === 'stateChange' || r.kind === 'stateRevert');
+        if (!changes.length) return;
+        sid ??= await chats.sessionId(session);
+        const theirs = changes.filter(r => r.session !== sid);
+        if (!theirs.length) return;
+        const here = await chats.pointer(session);
+        if (here === null) return;
+        let touched = false;
+        for (const r of theirs) {
+            const where = await chats.stateChangePlace(r);
+            if (where !== null && (where.tree === null || where.tree === here.tree)) {
+                touched = true;
+                break;
+            }
+        }
+        if (!touched) return;
+        const read = await chats.stateAt({ tree: here.tree, at: here.at, session });
+        if (read === null || !('state' in read)) return;
+        const place = `${here.tree}:${here.at ?? ''}`;
+        if (statePushed?.place === place && statePushed.hash === read.hash) return;
+        const tree = await ownerOf(here.tree);
+        if (!tree) return;
+        statePushed = { place, hash: read.hash };
+        send({ type: 'state', tree, at: here.at, state: read.state });
+    };
     return {
         session,
         async told(records) {
+            stateChain = stateChain.then(() => pushState(/** @type {any[]} */ (records))).catch(error => console.error('[characters/changes/stream] The chat state was not pushed:', error));
             const ours = /** @type {any[]} */ (records).filter(r => SESSION_KINDS.has(r.kind) && r.session !== undefined);
             if (!ours.length) return;
             sid ??= await chats.sessionId(session);

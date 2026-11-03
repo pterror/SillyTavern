@@ -127,5 +127,5 @@ export async function storeMacroVariables(response, chat, at, { chat: chatVariab
         console.warn('The chat variables the prompt\'s macros changed could not be stored:', merged.reason);
         return;
     }
-    recordStored(response, { ref: 'macro-variables', node_id: at || '', state_changed: true });
+    recordStored(response, { ref: 'macro-variables', node_id: at || '', variables: chatVariables });
 }

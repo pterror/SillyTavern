@@ -2,12 +2,11 @@ import { getCurrentCharacter } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { selected_group } from './group-chats.js';
-import { setMetadataStoredListener, setStateChangedListener } from './chat-store.js';
+import { setChatVariablesListener, setMetadataStoredListener } from './chat-store.js';
 import { delay } from './utils.js';
 import { t } from './i18n.js';
 import { isStoredNodeId } from './node-identity.js';
-import { applyChanges, baselineAfter, baselineOf, changesStateHere, metadataChanges, replaceInPlace, unsavedVariables } from './state-sync.js';
-import { jsonHash } from './hash-utils.js';
+import { applyChanges, baselineAfter, baselineOf, metadataChanges, replaceInPlace, unsavedVariables } from './state-sync.js';
 
 /** @type {Map<string, string>} */
 let _metadataBaseline = new Map();
@@ -51,13 +50,6 @@ export function metadataChangesNotSaved(state, changes) {
 }
 
 /**
- * @param {string|null} at
- */
-export function stateChangedHere(at) {
-    return changesStateHere(at, chat);
-}
-
-/**
  * @param {ChatMetadata} metadata
  */
 export function noteMetadataStored(metadata) {
@@ -72,16 +64,18 @@ export function noteMetadataSent(ref, changes) {
     _sentMetadataChanges.set(ref, changes);
 }
 
-setStateChangedListener(() => void onStateChanged({ tree: null, at: null }));
+setChatVariablesListener(variables => {
+    const changes = { set: {}, unset: [], variables };
+    applyChanges(chat_metadata, changes);
+    noteMetadataChangesStored(changes);
+});
 
-setMetadataStoredListener(({ ref, node_id: at, integrity, notSaved }) => {
+setMetadataStoredListener(({ ref, integrity, notSaved, state }) => {
     const changes = _sentMetadataChanges.get(ref);
     if (!changes) return;
     _sentMetadataChanges.delete(ref);
     if (notSaved) {
-        void readStateAt(at === '' ? null : at).then(state => {
-            if (state) metadataChangesNotSaved(state, changes);
-        });
+        if (state) metadataChangesNotSaved(state, changes);
         return;
     }
     chat_metadata.integrity = integrity ?? undefined;
@@ -119,47 +113,16 @@ export function openChatMacroScope() {
 }
 
 /**
- * @param {{ tree: string | null, at: string | null }} frame
+ * @param {{ tree: { avatar?: string, group?: string } | undefined, at: string | null, state: ChatMetadata | undefined }} pushed
  */
-export async function onStateChanged({ tree, at }) {
+export function takePushedState({ tree, at, state }) {
     const owner = openOwner();
-    if (!owner) return;
-    const open = 'group_id' in owner ? owner.group_id : owner.avatar_url;
-    if (tree !== null && (tree !== open || !stateChangedHere(at))) return;
-    const position = openPosition();
-    try {
-        const response = await fetch('/api/state/at', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ ...owner, at: position, if_hash: jsonHash(chat_metadata) }),
-        });
-        if (!response.ok) return;
-        const answer = await response.json();
-        if (!answer?.state || JSON.stringify(openOwner()) !== JSON.stringify(owner)) return;
-        const pending = changedMetadata();
-        takeServerState(answer.state);
-        if (pending) applyChanges(chat_metadata, pending);
-    } catch (error) {
-        console.error('Could not read the chat\'s state again:', error);
-    }
-}
-
-/**
- * @param {string|null} at
- * @returns {Promise<ChatMetadata|null>}
- */
-async function readStateAt(at) {
-    const owner = openOwner();
-    if (!owner) return null;
-    try {
-        const response = await fetch('/api/state/at', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify({ ...owner, at }) });
-        if (!response.ok) return null;
-        const answer = await response.json();
-        return answer?.state ?? null;
-    } catch (error) {
-        console.error('Could not read the chat\'s state back:', error);
-        return null;
-    }
+    if (!owner || !tree || !state) return;
+    const sameTree = 'group_id' in owner ? tree.group === owner.group_id : tree.avatar === owner.avatar_url;
+    if (!sameTree || at !== openPosition()) return;
+    const pending = changedMetadata();
+    takeServerState(state);
+    if (pending) applyChanges(chat_metadata, pending);
 }
 
 /** @typedef {Error & {status: number}} HttpError */

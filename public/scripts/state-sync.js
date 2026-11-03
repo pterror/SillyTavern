@@ -131,14 +131,6 @@ export function unsavedVariables(changes) {
 }
 
 /**
- * @param {string | null} at
- * @param {{ node_id?: string }[]} path
- */
-export function changesStateHere(at, path) {
-    return at === null || path.some(m => m?.node_id === at);
-}
-
-/**
  * @param {Record<string, unknown>} target
  * @param {MetadataChanges} changes
  */

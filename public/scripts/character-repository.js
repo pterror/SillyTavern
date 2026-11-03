@@ -39,6 +39,14 @@ import { deserializeQueryHashesBinary } from './query-hashes-binary.js';
  * @property {string} [searchBackend]
  * @property {number|string} [hidden]
  * @property {string} [cursor]
+ * @property {Array<{type: 'character', item: Character}|{type: 'group', item: object}>} [favs]
+ */
+
+/**
+ * @typedef {object} FavsQuery
+ * @property {CharacterQueryFilter} filter
+ * @property {CharacterQuerySort|undefined} sort
+ * @property {number} pageSize
  */
 
 const DEFAULT_QUERY_WANT = /** @type {const} */ (['rows', 'total']);
@@ -48,6 +56,7 @@ const queryResponseCache = new Map();
 const QUERY_RESPONSE_CACHE_LIMIT = 100;
 
 const resultHashRows = new WeakMap();
+const resultFavHashRows = new WeakMap();
 
 const QUERY_ALL_PAGE_SIZE = 2000;
 const FULL_BATCH_SIZE = 200;
@@ -302,9 +311,10 @@ function projectCachedCharacter(character) {
  * @param {number} page
  * @param {number} pageSize
  * @param {readonly string[]} want
- * @returns {{filter: CharacterQueryFilter, sort: CharacterQuerySort|undefined, page: number, pageSize: number, want: string[]}}
+ * @param {FavsQuery} [favs]
+ * @returns {{filter: CharacterQueryFilter, sort: CharacterQuerySort|undefined, page: number, pageSize: number, want: string[], favs?: FavsQuery}}
  */
-function normalizedQueryRequest(filter, sort, page, pageSize, want) {
+function normalizedQueryRequest(filter, sort, page, pageSize, want, favs) {
     const search = typeof filter.search === 'string' ? filter.search.trim() : '';
     const normalizedFilter = search ? { ...filter, search } : (() => {
         const rest = { ...filter };
@@ -312,7 +322,10 @@ function normalizedQueryRequest(filter, sort, page, pageSize, want) {
         return rest;
     })();
     const normalizedSort = sort?.field === 'search' && !search ? undefined : sort;
-    return { filter: normalizedFilter, sort: normalizedSort, page, pageSize, want: [...want] };
+    const shape = { filter: normalizedFilter, sort: normalizedSort, page, pageSize, want: [...want] };
+    if (!favs) return shape;
+    const { filter: favsFilter, sort: favsSort } = normalizedQueryRequest(favs.filter, favs.sort, 1, favs.pageSize, []);
+    return { ...shape, favs: { filter: favsFilter, sort: favsSort, pageSize: favs.pageSize } };
 }
 
 export class CharacterRepository {
@@ -457,10 +470,11 @@ export class CharacterRepository {
      * @param {('rows'|'total'|'hidden'|'facets'|'rank')[]} [want]
      * @param {object} [options]
      * @param {(result: CharacterQueryResult) => void} [options.onFresh]
+     * @param {FavsQuery} [options.favs] The favourites the same answer carries; rows mode only.
      * @returns {Promise<CharacterQueryResult>}
      */
-    async query(filter = {}, sort = undefined, page = 1, pageSize = 100, want = DEFAULT_QUERY_WANT, { onFresh } = {}) {
-        const requestShape = normalizedQueryRequest(filter, sort, page, pageSize, want);
+    async query(filter = {}, sort = undefined, page = 1, pageSize = 100, want = DEFAULT_QUERY_WANT, { onFresh, favs } = {}) {
+        const requestShape = normalizedQueryRequest(filter, sort, page, pageSize, want, want.includes('rows') ? favs : undefined);
         const { filter: normalizedFilter } = requestShape;
         const signature = JSON.stringify(requestShape);
 
@@ -510,11 +524,17 @@ export class CharacterRepository {
      */
     async #resultFromKept(kept, includeGroups) {
         /** @type {CharacterQueryResult} */
-        const result = { seq: kept.seq, token: kept.token, rows: await this.#resolveHashRows(kept.hashRows, includeGroups) };
+        const [rows, favs] = await this.#resolveHashRowSets([kept.hashRows, kept.favHashRows], includeGroups);
+        /** @type {CharacterQueryResult} */
+        const result = { seq: kept.seq, token: kept.token, rows };
         for (const field of /** @type {const} */ (['total', 'hidden', 'searchBackend', 'cursor'])) {
             if (kept[field] !== undefined) result[field] = kept[field];
         }
         resultHashRows.set(result, kept.hashRows);
+        if (favs) {
+            result.favs = favs;
+            resultFavHashRows.set(result, kept.favHashRows);
+        }
         return result;
     }
 
@@ -568,6 +588,8 @@ export class CharacterRepository {
                 for (const field of /** @type {const} */ (['total', 'hidden', 'searchBackend', 'cursor'])) {
                     if (result[field] !== undefined) entry[field] = result[field];
                 }
+                const favHashRows = resultFavHashRows.get(result);
+                if (favHashRows) entry.favHashRows = favHashRows;
                 void writeQueryCache(signature, entry);
                 keptPage = true;
             }
@@ -590,8 +612,10 @@ export class CharacterRepository {
         const hashRows = [...(resultHashRows.get(first) ?? [])];
         let last = first;
         const want = requestShape.want.filter(w => w !== 'hidden');
+        const continued = { ...requestShape };
+        delete continued.favs;
         while (last.more === true && typeof last.cursor === 'string' && rows.length < requestShape.pageSize) {
-            const shape = { ...requestShape, want, pageSize: requestShape.pageSize - rows.length, cursor: last.cursor };
+            const shape = { ...continued, want, pageSize: requestShape.pageSize - rows.length, cursor: last.cursor };
             last = useHashMode ? await this.#queryHashMode(shape, undefined, includeGroups) : await postJson('/api/characters/query', shape);
             rows.push(...(last.rows ?? []));
             hashRows.push(...(resultHashRows.get(last) ?? []));
@@ -599,6 +623,8 @@ export class CharacterRepository {
         /** @type {CharacterQueryResult} */
         const result = { ...first, rows, seq: last.seq, token: last.token };
         if (useHashMode) resultHashRows.set(result, hashRows);
+        const favHashRows = resultFavHashRows.get(first);
+        if (favHashRows) resultFavHashRows.set(result, favHashRows);
         delete result.more;
         if (last.total !== undefined) result.total = last.total;
         if (typeof last.cursor === 'string') result.cursor = last.cursor;
@@ -634,39 +660,43 @@ export class CharacterRepository {
         if (decoded.searchBackend !== undefined) result.searchBackend = decoded.searchBackend;
         if (decoded.more) result.more = true;
         if (decoded.cursor !== undefined) result.cursor = decoded.cursor;
-        result.rows = await this.#resolveHashRows(decoded.hashRows, includeGroups);
+        const [rows, favs] = await this.#resolveHashRowSets([decoded.hashRows, decoded.favHashRows], includeGroups);
+        result.rows = rows;
         resultHashRows.set(result, decoded.hashRows);
+        if (favs) {
+            result.favs = favs;
+            resultFavHashRows.set(result, decoded.favHashRows);
+        }
         return result;
     }
 
     /**
-     * @param {ReturnType<typeof deserializeQueryHashesBinary>['hashRows']} hashRows
+     * @param {[ReturnType<typeof deserializeQueryHashesBinary>['hashRows'], ReturnType<typeof deserializeQueryHashesBinary>['hashRows'] | undefined]} sets The page's rows, then the favourites, which always hold groups.
      * @param {boolean} includeGroups
-     * @returns {Promise<Array<Character|{type: 'character'|'group', item: Character|object}>>}
+     * @returns {Promise<[Array<Character|{type: 'character'|'group', item: Character|object}>, Array<{type: 'character'|'group', item: Character|object}> | undefined]>}
      */
-    async #resolveHashRows(hashRows, includeGroups) {
-        if (hashRows.length === 0) return [];
-
-        const charHashRows = hashRows.filter(r => !r.isGroup);
-        const groupHashRows = includeGroups ? hashRows.filter(r => r.isGroup) : [];
+    async #resolveHashRowSets([hashRows, favHashRows], includeGroups) {
+        const all = favHashRows ? [...hashRows, ...favHashRows] : hashRows;
+        const charHashRows = all.filter(r => !r.isGroup);
+        const groupHashRows = all.filter(r => r.isGroup && (includeGroups || favHashRows?.includes(r)));
 
         const [resolvedChars, resolvedGroups] = await Promise.all([
-            this.#resolveCharacterHashRows(charHashRows),
+            charHashRows.length > 0 ? this.#resolveCharacterHashRows(charHashRows) : new Map(),
             groupHashRows.length > 0 ? this.#resolveGroupHashRows(groupHashRows) : new Map(),
         ]);
 
-        const resolved = hashRows.map(hr => {
+        const resolve = (/** @type {typeof hashRows} */ rows, /** @type {boolean} */ withGroups) => rows.map(hr => {
             if (hr.isGroup) {
                 const group = resolvedGroups.get(hr.id);
                 if (!group) return undefined;
-                return includeGroups ? { type: 'group', item: group } : undefined;
+                return withGroups ? { type: 'group', item: group } : undefined;
             }
             const character = resolvedChars.get(hr.id);
             if (!character) return undefined;
-            return includeGroups ? { type: 'character', item: character } : character;
-        });
+            return withGroups ? { type: 'character', item: character } : character;
+        }).filter(Boolean);
 
-        return resolved.filter(Boolean);
+        return [resolve(hashRows, includeGroups), favHashRows ? /** @type {any} */ (resolve(favHashRows, true)) : undefined];
     }
 
     /**
