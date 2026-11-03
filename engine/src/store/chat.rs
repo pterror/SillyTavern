@@ -984,6 +984,7 @@ impl Deriver for PositionCreate {
         bookmark_entries(out, b, tree, ptr, true);
         bookmark_time_put(out, b, tree, time_of(&m));
         sessions::branch_created(out, ptr, b);
+        super::kinds::version(view, out, tree, at)?;
         sessions::activity(view, out, s, tree, at.pos)
     }
 
@@ -1018,6 +1019,7 @@ impl Deriver for PositionRoot {
         out.max(key::of(key::NEXT_POSITION), b + 1);
         root_bookmark_entries(out, b, tree, true);
         bookmark_time_put(out, b, tree, time_at(rec, 5));
+        super::kinds::version(view, out, tree, at)?;
         sessions::activity(view, out, s, tree, at.pos)
     }
 
@@ -1072,6 +1074,7 @@ impl Deriver for PositionName {
                 out.put(bookmark_named_key(tree, n, p), Vec::new());
                 out.put(chat_named_key(n, tree, 0, p), Vec::new());
             }
+            super::kinds::version(view, out, tree, at)?;
         }
         if let Some(v) = view.get(&k)? {
             dead(out, parse_loc(&v)?);
@@ -1232,7 +1235,7 @@ impl Deriver for PositionDelete {
             return sessions::session_gone(view, out, b);
         };
         dead(out, at);
-        bookmark_gone(view, out, b, parse_loc(&v)?)
+        bookmark_gone(view, out, b, parse_loc(&v)?, at)
     }
 
     fn is_live(&self, _: &Record, _: u64, _: &View) -> Result<bool, StoreError> {
@@ -1244,7 +1247,13 @@ impl Deriver for PositionDelete {
     }
 }
 
-pub(super) fn bookmark_gone(view: &View, out: &mut Out, b: u64, cl: Loc) -> Result<(), StoreError> {
+pub(super) fn bookmark_gone(
+    view: &View,
+    out: &mut Out,
+    b: u64,
+    cl: Loc,
+    at: Loc,
+) -> Result<(), StoreError> {
     let (create, _) = view.record(cl.pos)?;
     if create.kind.name == "positionCreate" {
         let made_at = id(&create, 4);
@@ -1270,6 +1279,7 @@ pub(super) fn bookmark_gone(view: &View, out: &mut Out, b: u64, cl: Loc) -> Resu
         }
         bookmark_entries(out, b, tree, m, false);
         bookmark_time_del(view, out, b, tree)?;
+        super::kinds::version(view, out, tree, at)?;
     } else if let Some(tree) = bookmark_root(view, b)? {
         if let Some(n) = super::searched::position_name(view, b)? {
             out.del(bookmark_named_key(tree, &n, b));
@@ -1277,6 +1287,7 @@ pub(super) fn bookmark_gone(view: &View, out: &mut Out, b: u64, cl: Loc) -> Resu
         }
         root_bookmark_entries(out, b, tree, false);
         bookmark_time_del(view, out, b, tree)?;
+        super::kinds::version(view, out, tree, at)?;
     }
     Ok(())
 }

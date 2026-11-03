@@ -173,6 +173,41 @@ describe('POST /api/characters/changes', () => {
         expect(body.changes).toEqual([{ id: 'Legacy.png', op: 'upsert', fields: null }]);
     });
 
+    test('a chat made, renamed or deleted for a character or a group comes back as a change of its owner; a message does not', async () => {
+        await seedCharacter('Alice.png');
+        await user.store.lib.writeGroup({ id: '100', name: 'Party', members: ['Alice.png'] });
+        const { newSessionKey } = await import('../src/chat-engine.js');
+        const actor = { user: 'u', session: newSessionKey() };
+        const owners = [{ avatar: 'Alice.png' }, { group: '100' }];
+        const trees = await Promise.all(owners.map(owner => fixture.treeOf(user.store, owner)));
+        const ownerChanges = [{ id: 'Alice.png', op: 'upsert', fields: null }, { id: '100', op: 'upsert', type: 'group' }];
+        let seq = (await (await postJson('/api/characters/changes', { sinceSeq: 0 })).json()).seq;
+        const since = async () => {
+            const body = await (await postJson('/api/characters/changes', { sinceSeq: seq })).json();
+            seq = body.seq;
+            return body.changes;
+        };
+
+        await fixture.seedMessages(user.store, owners[0], null, [{ name: 'Alice', is_user: false, mes: 'hi', send_date: 1, extra: {} }], { session: actor.session });
+        await fixture.seedMessages(user.store, owners[1], null, [{ name: 'Alice', is_user: false, mes: 'hi', send_date: 1, extra: {} }], { session: actor.session });
+        expect(await since()).toEqual([]);
+
+        const made = [];
+        for (const tree of trees) made.push(await user.store.chats.createBookmark({ tree, node_id: null, name: 'Saved', actor }));
+        expect(made.every(m => m.ok)).toBe(true);
+        expect(await since()).toEqual(ownerChanges);
+
+        for (const [i, tree] of trees.entries()) {
+            expect((await user.store.chats.changeBookmark({ tree, bookmark: String(made[i].bookmark), change: { name: 'Renamed' } })).ok).toBe(true);
+        }
+        expect(await since()).toEqual(ownerChanges);
+
+        for (const [i, tree] of trees.entries()) {
+            expect((await user.store.chats.changeBookmark({ tree, bookmark: String(made[i].bookmark), change: { delete: true } })).ok).toBe(true);
+        }
+        expect(await since()).toEqual(ownerChanges);
+    });
+
     test('a group written or deleted comes back marked as a group, apart from a character', async () => {
         await seedCharacter('Alice.png');
         await user.store.lib.writeGroup({ id: '100', name: 'Party', members: ['Alice.png'] });

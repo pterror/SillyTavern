@@ -165,7 +165,7 @@ impl Deriver for SubtreeDelete {
                 let Some(v) = view.get(&key::id(key::POSITION, b))? else {
                     continue;
                 };
-                chat::bookmark_gone(view, out, b, super::kinds::parse_loc(&v)?)?;
+                chat::bookmark_gone(view, out, b, super::kinds::parse_loc(&v)?, at)?;
             } else if let Some(p) = parent {
                 chat::bookmark_entries(out, b, tree, m, false);
                 chat::bookmark_entries(out, b, tree, p, true);
