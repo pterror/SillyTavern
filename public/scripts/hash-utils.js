@@ -183,12 +183,27 @@ export function tagNameKey(name) {
     return name.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 }
 
+export const LIST_CREATOR_NOTES_CHARS = 0;
+
+/**
+ * @param {unknown} notes
+ * @param {number} [chars]
+ * @returns {string}
+ */
+export function listCreatorNotes(notes, chars = LIST_CREATOR_NOTES_CHARS) {
+    if (typeof notes !== 'string' || chars <= 0) return '';
+    let end = 0;
+    for (let n = 0; n < chars && end < notes.length; n++) {
+        end += notes.codePointAt(end) > 0xffff ? 2 : 1;
+    }
+    return notes.slice(0, end);
+}
+
 /**
  * @param {object} character
- * @param {boolean} includeCreatorNotes
  * @returns {object}
  */
-export function shallowCharacterData(character, includeCreatorNotes) {
+export function shallowCharacterData(character) {
     const data = character?.data;
     const orDefault = (value, fallback) => (value === undefined ? fallback : value);
     return {
@@ -196,7 +211,7 @@ export function shallowCharacterData(character, includeCreatorNotes) {
         character_version: orDefault(data?.character_version, ''),
         creator: orDefault(data?.creator, ''),
         tags: orDefault(data?.tags, []),
-        ...(includeCreatorNotes && { creator_notes: orDefault(data?.creator_notes, '') }),
+        creator_notes: listCreatorNotes(data?.creator_notes),
         extensions: {
             fav: orDefault(data?.extensions?.fav, false),
             world: orDefault(data?.extensions?.world, ''),
@@ -431,81 +446,4 @@ export function digestsEqual(a, b) {
  */
 export function jsonHash(value) {
     return getStringHash(JSON.stringify(value) ?? 'undefined');
-}
-
-/** @param {unknown} value */
-const isPlainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-
-/** @param {unknown} value */
-const opens = value => isPlainObject(value) && Object.values(/** @type {object} */ (value)).some(v => v !== undefined);
-
-/**
- * @param {Record<string, any>} row
- * @returns {Map<string, unknown>}
- */
-export function characterRowFields(row) {
-    /** @type {Map<string, unknown>} */
-    const fields = new Map();
-    for (const [key, value] of Object.entries(row)) {
-        if (value === undefined) continue;
-        if (key !== 'data' || !opens(value)) {
-            fields.set(JSON.stringify([key]), value);
-            continue;
-        }
-        for (const [dataKey, dataValue] of Object.entries(value)) {
-            if (dataValue === undefined) continue;
-            if (dataKey !== 'extensions' || !opens(dataValue)) {
-                fields.set(JSON.stringify(['data', dataKey]), dataValue);
-                continue;
-            }
-            for (const [extKey, extValue] of Object.entries(dataValue)) {
-                if (extValue !== undefined) fields.set(JSON.stringify(['data', 'extensions', extKey]), extValue);
-            }
-        }
-    }
-    return fields;
-}
-
-/**
- * @param {Record<string, any>} row
- * @returns {Record<string, number>}
- */
-export function characterRowFieldHashes(row) {
-    /** @type {Record<string, number>} */
-    const hashes = {};
-    for (const [path, value] of characterRowFields(row)) hashes[path] = getStringHash(canonicalStringify(value));
-    return hashes;
-}
-
-/**
- * @param {Record<string, any>} row
- * @param {{ set?: Record<string, unknown>, unset?: string[] }} changes
- * @returns {Record<string, any>}
- */
-export function applyCharacterRowFields(row, { set = {}, unset = [] }) {
-    for (const path of unset) {
-        /** @type {string[]} */
-        const keys = JSON.parse(path);
-        /** @type {Record<string, any>[]} */
-        const chain = [row];
-        for (const key of keys.slice(0, -1)) {
-            const next = chain[chain.length - 1][key];
-            if (!isPlainObject(next)) break;
-            chain.push(next);
-        }
-        if (chain.length !== keys.length) continue;
-        delete chain[chain.length - 1][keys[keys.length - 1]];
-        for (let i = chain.length - 1; i > 0 && Object.keys(chain[i]).length === 0; i--) delete chain[i - 1][keys[i - 1]];
-    }
-    for (const [path, value] of Object.entries(set)) {
-        /** @type {string[]} */
-        const keys = JSON.parse(path);
-        let at = row;
-        for (const key of keys.slice(0, -1)) {
-            if (!isPlainObject(at[key])) at[key] = {};
-            at = at[key];
-        }
-        at[keys[keys.length - 1]] = value;
-    }
-    return row;
 }

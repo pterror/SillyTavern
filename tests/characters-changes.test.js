@@ -94,10 +94,7 @@ describe('POST /api/characters/changes', () => {
         expect(await response.json()).toEqual({ seq: 0, changes: [], truncated: false, hasMore: false });
     });
 
-    test('sinceSeq: 0 on a genuinely cold sync returns the whole library as upsert entries - the correctness ' +
-        'property fetchCharactersDelta() (script.js) relies on to replace /manifest entirely: every real write ' +
-        'path logs a changes row, so there is no separate ground-truth listing needed to know the full current ' +
-        'id set', async () => {
+    test('sinceSeq: 0 names every character as an upsert: every real write path logs a changes row', async () => {
         await seedCharacter('Alice.png');
         await seedCharacter('Bob.png');
         await seedCharacter('Carol.png');
@@ -112,8 +109,7 @@ describe('POST /api/characters/changes', () => {
         expect(body.changes.every(c => c.op === 'upsert')).toBe(true);
     });
 
-    test('a client caught up to the current seq gets an empty change list back - the cheap steady-state case ' +
-        '/manifest could never offer (its response is always O(library size), even when nothing changed)', async () => {
+    test('a client caught up to the current seq gets an empty change list back', async () => {
         await seedCharacter('Alice.png');
         const first = await (await postJson('/api/characters/changes', { sinceSeq: 0 })).json();
 

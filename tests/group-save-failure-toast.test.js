@@ -51,7 +51,6 @@ jest.unstable_mockModule('../public/scripts/random-sort.js', () => ({
     compareByRandomSeed: () => 0,
 }));
 
-const queryAllMock = jest.fn();
 
 class CharacterQueryError extends Error {
     constructor(message, { status, reason } = {}) {
@@ -66,7 +65,6 @@ jest.unstable_mockModule('../public/scripts/character-repository.js', () => ({
     characterRepository: {
         exists: existsMock,
         getMany: getManyMock,
-        queryAll: queryAllMock,
     },
     buildCharacterQuery: ({ sortField, sortOrder = 'asc', randomSeed } = {}) => {
         const filter = {};

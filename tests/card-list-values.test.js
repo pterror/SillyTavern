@@ -39,7 +39,7 @@ function randomCards(seed) {
     return () => {
         const card = {};
         for (let k = Math.floor(rand() * 6); k > 0; k--) card[pick(keys)] = value(0);
-        return { card, notes: rand() < 0.5 };
+        return card;
     };
 }
 
@@ -65,13 +65,12 @@ const cards = [
 
 /**
  * @param {unknown} card
- * @param {boolean} notes
  */
-function check(card, notes) {
+function check(card) {
     const character = getCharaCardV2(structuredClone(card), {}, false);
-    const expected = JSON.parse(JSON.stringify({ name: character.name, tags: character.tags, create_date: character.create_date, data: shallowCharacterData(character, notes) }));
-    const { world, ...data } = cardListValues(card, notes).data;
-    const got = JSON.parse(JSON.stringify({ ...cardListValues(card, notes), data: { ...data, extensions: { fav: expected.data.extensions.fav, world } } }));
+    const expected = JSON.parse(JSON.stringify({ name: character.name, tags: character.tags, create_date: character.create_date, data: shallowCharacterData(character) }));
+    const { world, ...data } = cardListValues(card).data;
+    const got = JSON.parse(JSON.stringify({ ...cardListValues(card), data: { ...data, extensions: { fav: expected.data.extensions.fav, world } } }));
     expect(got).toEqual(expected);
 }
 
@@ -79,12 +78,9 @@ describe('cardListValues', () => {
     test('matches getCharaCardV2() and toShallow() on the usual shapes and on random cards', () => {
         expect.hasAssertions();
         const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        for (const card of cards) for (const notes of [false, true]) check(card, notes);
+        for (const card of cards) check(card);
         const random = randomCards(777);
-        for (let i = 0; i < 2000; i++) {
-            const { card, notes } = random();
-            check(card, notes);
-        }
+        for (let i = 0; i < 2000; i++) check(random());
         warn.mockRestore();
     });
 });

@@ -80,8 +80,6 @@ describe('every route sending a character takes chat_size and date_last_chat fro
         /** @type {[string, any][]} */
         const sent = [];
 
-        sent.push(['/all', (await (await postJson('/api/characters/all', {})).json()).find(c => c.avatar === avatar)]);
-
         let searched;
         searched = await (await postJson('/api/characters/all', { search: 'zorkmid' })).json();
         sent.push(['/all search', searched.items.find(c => c.avatar === avatar)]);

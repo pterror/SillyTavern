@@ -52,7 +52,7 @@ jest.unstable_mockModule('../public/scripts/random-sort.js', () => ({
     compareByRandomSeed: (aKey, bKey) => (aKey < bKey ? 1 : aKey > bKey ? -1 : 0),
 }));
 
-const queryAllMock = jest.fn();
+const queryMock = jest.fn();
 
 class CharacterQueryError extends Error {
     constructor(message, { status, reason } = {}) {
@@ -68,7 +68,7 @@ jest.unstable_mockModule('../public/scripts/character-repository.js', () => ({
         exists: existsMock,
         getMany: getManyMock,
         get: getMock,
-        queryAll: queryAllMock,
+        query: queryMock,
     },
     buildCharacterQuery: ({ searchTerm = '', tagsInclude = [], tagsExclude = [], fav, sortField, sortOrder = 'asc', randomSeed } = {}) => {
         const filter = {};
@@ -308,13 +308,13 @@ let getGroupMembersResolved;
 let groupsStore;
 /** @type {typeof import('../public/scripts/group-chats.js').buildGroupCandidateQuery} */
 let buildGroupCandidateQuery;
-/** @type {typeof import('../public/scripts/group-chats.js').getGroupCharacters} */
-let getGroupCharacters;
+/** @type {typeof import('../public/scripts/group-chats.js').printGroupCandidates} */
+let printGroupCandidates;
 /** @type {typeof import('../public/scripts/power-user.js').power_user} */
 let power_user;
 
 beforeAll(async () => {
-    ({ validateGroup, getGroupMembers, getGroupMembersResolved, groupsStore, buildGroupCandidateQuery, getGroupCharacters } = await import('../public/scripts/group-chats.js'));
+    ({ validateGroup, getGroupMembers, getGroupMembersResolved, groupsStore, buildGroupCandidateQuery, printGroupCandidates } = await import('../public/scripts/group-chats.js'));
     ({ power_user } = await import('../public/scripts/power-user.js'));
 });
 
@@ -547,11 +547,13 @@ describe('buildGroupCandidateQuery()', () => {
     });
 });
 
-describe('getGroupCharacters() candidates', () => {
+describe('the add-member picker shows the candidates a page at a time from the server', () => {
     const originalDollar = global.$;
     let searchOptionSelected = false;
     /** @type {import('../public/scripts/filters.js').FilterHelper} */
     let groupCandidatesFilter;
+    /** @type {any} */
+    let pager;
 
     beforeAll(async () => {
         ({ groupCandidatesFilter } = await import('../public/scripts/group-chats.js'));
@@ -560,14 +562,18 @@ describe('getGroupCharacters() candidates', () => {
     beforeEach(() => {
         power_user.sort_field = 'name';
         power_user.sort_order = 'asc';
-        queryAllMock.mockReset();
+        queryMock.mockReset();
         unsupportedSortWarnings.length = 0;
         searchOptionSelected = false;
+        pager = undefined;
         groupCandidatesFilter.filterData = {};
         groupCandidatesFilter.applyFiltersCalls = [];
         global.$ = (selector) => {
             if (selector === '#character_sort_order option[data-field="search"]') {
                 return { is: () => searchOptionSelected };
+            }
+            if (selector === '#rm_group_add_members_pagination') {
+                return { pagination: (options) => { pager = options; } };
             }
             return originalDollar(selector);
         };
@@ -579,118 +585,122 @@ describe('getGroupCharacters() candidates', () => {
 
     const toEntity = (item) => ({ item, id: item.avatar, type: 'character' });
 
-    test('doFilter: true with a queryable sort attempts characterRepository.queryAll() and uses its rows', async () => {
-        const remote = { avatar: 'remote.png', name: 'Remote' };
-        queryAllMock.mockResolvedValue([remote]);
+    /**
+     * @param {number} pageNumber
+     * @param {number} pageSize
+     */
+    function showPage(pageNumber, pageSize) {
+        return new Promise((resolve, reject) => pager.ajaxFunction({ data: { pageNumber, pageSize }, success: resolve, error: reject }));
+    }
 
-        const result = await getGroupCharacters({ doFilter: true, onlyMembers: false });
+    test('the first page is asked for once, at the page size shown, and later pages one at a time', async () => {
+        const a = { avatar: 'a.png', name: 'A' };
+        const b = { avatar: 'b.png', name: 'B' };
+        queryMock.mockResolvedValueOnce({ rows: [a], total: 7 }).mockResolvedValueOnce({ rows: [b], total: 7 });
 
-        expect(queryAllMock).toHaveBeenCalledTimes(1);
-        expect(result).toEqual([toEntity(remote)]);
+        await printGroupCandidates();
+        expect(await showPage(1, 5)).toEqual({ rows: [toEntity(a)], total: 7 });
+        expect(await showPage(2, 5)).toEqual({ rows: [toEntity(b)], total: 7 });
+
+        expect(queryMock.mock.calls).toEqual([
+            [{ excludeIds: [] }, { field: 'name', order: 'asc' }, 1, 5, ['rows', 'total']],
+            [{ excludeIds: [] }, { field: 'name', order: 'asc' }, 2, 5, ['rows', 'total']],
+        ]);
+        expect(pager.totalNumberLocator({ total: '~7' })).toBe(7);
+        expect(groupCandidatesFilter.applyFiltersCalls).toEqual([]);
     });
 
-    test('a rejected sort is asked for again in name order, with the warning, and never reads the resident characters', async () => {
-        addResidentCharacter('resident.png', 'Resident');
+    test('a rejected sort is asked for again in name order, with the warning, and later pages keep that order', async () => {
         power_user.sort_field = 'made_up_field';
-        const remote = { avatar: 'remote.png', name: 'Remote' };
-        queryAllMock
+        queryMock
             .mockRejectedValueOnce(new CharacterQueryError('bad field', { status: 400, reason: 'invalid-sort-field' }))
-            .mockResolvedValueOnce([remote]);
+            .mockResolvedValue({ rows: [], total: 0 });
 
-        const result = await getGroupCharacters({ doFilter: true, onlyMembers: false });
+        await printGroupCandidates();
+        await showPage(1, 5);
+        await showPage(2, 5);
 
-        expect(queryAllMock.mock.calls.map(([, sort]) => sort)).toEqual([
-            { field: 'made_up_field', order: 'asc' },
-            { field: 'name', order: 'asc' },
+        expect(queryMock.mock.calls.map(([, sort, page]) => [sort, page])).toEqual([
+            [{ field: 'made_up_field', order: 'asc' }, 1],
+            [{ field: 'name', order: 'asc' }, 1],
+            [{ field: 'name', order: 'asc' }, 2],
         ]);
         expect(unsupportedSortWarnings).toEqual(['made_up_field']);
-        expect(result).toEqual([toEntity(remote)]);
     });
 
     test('a search term is sent to the server in relevance order, with the members excluded', async () => {
-        addResidentCharacter('alice.png', 'Alice');
         groupCandidatesFilter.filterData.search = 'ali';
-        const remote = { avatar: 'alicia.png', name: 'Alicia' };
-        queryAllMock.mockResolvedValue([remote]);
+        queryMock.mockResolvedValue({ rows: [], total: 0 });
 
-        const result = await getGroupCharacters({ doFilter: true, onlyMembers: false });
+        await printGroupCandidates();
 
-        expect(queryAllMock).toHaveBeenCalledTimes(1);
-        const [filter, sort] = queryAllMock.mock.calls[0];
+        const [filter, sort] = queryMock.mock.calls[0];
         expect(filter).toEqual({ search: 'ali', excludeIds: [] });
         expect(sort).toEqual({ field: 'search', order: 'asc' });
-        expect(result).toEqual([toEntity(remote)]);
-        expect(groupCandidatesFilter.applyFiltersCalls).toEqual([{
-            tempOverrides: { search: '', tag: { selected: [], excluded: [] }, fav: 'UNDEFINED' },
-        }]);
     });
 
     test('the tag and fav filters are sent to the server', async () => {
         groupCandidatesFilter.filterData.tag = { selected: ['t1'], excluded: ['t2'] };
         groupCandidatesFilter.filterData.fav = 'SELECTED';
-        queryAllMock.mockResolvedValue([]);
+        queryMock.mockResolvedValue({ rows: [], total: 0 });
 
-        await getGroupCharacters({ doFilter: true, onlyMembers: false });
+        await printGroupCandidates();
 
-        const [filter] = queryAllMock.mock.calls[0];
-        expect(filter).toEqual({ tags: { include: ['t1'], exclude: ['t2'], mode: 'and' }, fav: true, excludeIds: [] });
+        expect(queryMock.mock.calls[0][0]).toEqual({ tags: { include: ['t1'], exclude: ['t2'], mode: 'and' }, fav: true, excludeIds: [] });
     });
 
     test('an excluded fav filter is sent as fav: false', async () => {
         groupCandidatesFilter.filterData.fav = 'EXCLUDED';
-        queryAllMock.mockResolvedValue([]);
+        queryMock.mockResolvedValue({ rows: [], total: 0 });
 
-        await getGroupCharacters({ doFilter: true, onlyMembers: false });
+        await printGroupCandidates();
 
-        expect(queryAllMock.mock.calls[0][0]).toEqual({ fav: false, excludeIds: [] });
+        expect(queryMock.mock.calls[0][0]).toEqual({ fav: false, excludeIds: [] });
     });
 
     test('the main list\'s "Search" option with no candidate term uses the saved sort, with no warning', async () => {
         searchOptionSelected = true;
         power_user.sort_field = 'date_added';
         power_user.sort_order = 'desc';
-        queryAllMock.mockResolvedValue([]);
+        queryMock.mockResolvedValue({ rows: [], total: 0 });
 
-        await getGroupCharacters({ doFilter: true, onlyMembers: false });
+        await printGroupCandidates();
 
-        expect(queryAllMock.mock.calls.map(([, sort]) => sort)).toEqual([{ field: 'date_added', order: 'desc' }]);
+        expect(queryMock.mock.calls.map(([, sort]) => sort)).toEqual([{ field: 'date_added', order: 'desc' }]);
         expect(unsupportedSortWarnings).toEqual([]);
     });
 
-    test('random order sorts the rows by the seed, since queryAll pages come unsorted', async () => {
+    test('random order is the server\'s seeded order', async () => {
         power_user.sort_order = 'random';
         const a = { avatar: 'a.png', name: 'A' };
         const b = { avatar: 'b.png', name: 'B' };
-        queryAllMock.mockResolvedValue([a, b]);
+        queryMock.mockResolvedValue({ rows: [a, b], total: 2 });
 
-        const result = await getGroupCharacters({ doFilter: true, onlyMembers: false });
+        await printGroupCandidates();
 
-        expect(queryAllMock.mock.calls[0][1]).toEqual({ field: 'random', order: 'asc', seed: 42 });
-        expect(result).toEqual([toEntity(b), toEntity(a)]);
+        expect(queryMock.mock.calls[0][1]).toEqual({ field: 'random', order: 'asc', seed: 42 });
+        expect(await showPage(1, 5)).toEqual({ rows: [toEntity(a), toEntity(b)], total: 2 });
     });
 
-    test('doFilter: false asks the server for every non-member in the saved sort, with no filters', async () => {
-        addResidentCharacter('resident.png', 'Resident');
-        groupCandidatesFilter.filterData.search = 'ali';
-        const remote = { avatar: 'remote.png', name: 'Remote' };
-        queryAllMock.mockResolvedValue([remote]);
+    test.each(['group', 'folder'])('a selected %s filter shows no candidate and asks the server for none', async (type) => {
+        groupCandidatesFilter.filterData[type] = 'SELECTED';
 
-        const result = await getGroupCharacters({ doFilter: false, onlyMembers: false });
+        await printGroupCandidates();
 
-        expect(queryAllMock.mock.calls).toEqual([[{ excludeIds: [] }, { field: 'name', order: 'asc' }]]);
-        expect(groupCandidatesFilter.applyFiltersCalls).toEqual([]);
-        expect(result).toEqual([toEntity(remote)]);
+        expect(await showPage(1, 5)).toEqual({ rows: [], total: 0 });
+        expect(await showPage(2, 5)).toEqual({ rows: [], total: 0 });
+        expect(queryMock).not.toHaveBeenCalled();
     });
 
     test('a different server rejection (e.g. a 500) propagates instead of silently falling back', async () => {
-        queryAllMock.mockRejectedValue(new CharacterQueryError('server exploded', { status: 500, reason: 'internal-error' }));
+        queryMock.mockRejectedValue(new CharacterQueryError('server exploded', { status: 500, reason: 'internal-error' }));
 
-        await expect(getGroupCharacters({ doFilter: true, onlyMembers: false })).rejects.toThrow('server exploded');
+        await expect(printGroupCandidates()).rejects.toThrow('server exploded');
     });
 
     test('a network-level failure propagates instead of silently falling back', async () => {
-        queryAllMock.mockRejectedValue(new TypeError('Failed to fetch'));
+        queryMock.mockRejectedValue(new TypeError('Failed to fetch'));
 
-        await expect(getGroupCharacters({ doFilter: true, onlyMembers: false })).rejects.toThrow('Failed to fetch');
+        await expect(printGroupCandidates()).rejects.toThrow('Failed to fetch');
     });
 });

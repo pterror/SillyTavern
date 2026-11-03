@@ -2,12 +2,10 @@ import { describe, test, expect, jest, beforeEach } from '@jest/globals';
 import {
     groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, shallowCharacterData,
 } from '../public/scripts/hash-utils.js';
+import { installBrowserStorage } from './util/browser-storage.js';
 
 const getRequestHeadersMock = jest.fn(() => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }));
 const unshallowCharacterMock = jest.fn();
-
-const CHARACTER_HASH_VERSION = 5;
-const GROUP_HASH_VERSION = 1;
 
 function groupHashes(group) {
     return {
@@ -17,40 +15,29 @@ function groupHashes(group) {
     };
 }
 
-/** @type {Map<string, {character?: object, group?: object, hashes: {version?: number | null, fav?: number, tagIds?: number, content?: number, v: number}}>} */
-let cacheRecords = new Map();
+/** @type {Map<string, Map<string, any>>} */
+const localforageStores = new Map();
 
-async function getCachedEntriesByIdsFake(ids) {
-    const result = new Map();
-    for (const id of ids) {
-        const record = cacheRecords.get(id);
-        if (record?.character && record.hashes.v === CHARACTER_HASH_VERSION) result.set(id, structuredClone(record));
+function createFakeLocalforageInstance({ name }) {
+    let records = localforageStores.get(name);
+    if (!records) {
+        records = new Map();
+        localforageStores.set(name, records);
     }
-    return result;
+    return {
+        getItem: async key => (records.has(key) ? structuredClone(records.get(key)) : null),
+        setItem: async (key, value) => { records.set(key, structuredClone(value)); return value; },
+        removeItem: async key => { records.delete(key); },
+        iterate: async (fn) => {
+            for (const [key, value] of [...records]) {
+                const result = fn(structuredClone(value), key);
+                if (result !== undefined) return result;
+            }
+        },
+    };
 }
 
-async function saveCachedCharactersFake(entries) {
-    for (const { avatar, character, version, tagIds } of entries) {
-        cacheRecords.set(avatar, structuredClone({ character, hashes: { version: typeof version === 'number' ? version : null, tagIds: typeof tagIds === 'number' ? tagIds : null, v: CHARACTER_HASH_VERSION } }));
-    }
-    return [];
-}
-
-async function getCachedGroupEntriesByIdsFake(ids) {
-    const result = new Map();
-    for (const id of ids) {
-        const record = cacheRecords.get(id);
-        if (record?.group && record.hashes.v === GROUP_HASH_VERSION) result.set(id, structuredClone(record));
-    }
-    return result;
-}
-
-async function saveCachedGroupsFake(entries) {
-    for (const { id, group } of entries) {
-        cacheRecords.set(id, structuredClone({ group, hashes: { ...groupHashes(group), v: GROUP_HASH_VERSION } }));
-    }
-    return [];
-}
+installBrowserStorage({ quota: 1e9 });
 
 const SEARCH_BACKEND_CODES = { tantivy: 1, native: 2, wasm: 3, unavailable: 4 };
 
@@ -241,7 +228,8 @@ function hashModeGroup(group) {
 }
 
 async function cacheCharacters(...characters) {
-    await saveCachedCharactersFake(characters.map(character => ({ avatar: character.avatar, character, version: server.versions.get(character.avatar), tagIds: 0 })));
+    const { keepRows, characterRowKey } = await import('../public/scripts/character-cache.js');
+    await keepRows(characters.map(character => ({ key: characterRowKey({ id: character.avatar, version: server.versions.get(character.avatar), tagIdsHash: 0 }), row: character })));
 }
 
 function fetchedUrls() {
@@ -257,13 +245,8 @@ jest.unstable_mockModule('../public/scripts/request-headers.js', () => ({
 jest.unstable_mockModule('../public/scripts/character-store.js', () => ({
     charactersStore: { get: () => undefined, has: () => false, onChange: () => () => {} },
 }));
-jest.unstable_mockModule('../public/scripts/character-cache.js', () => ({
-    getCachedEntriesByIds: getCachedEntriesByIdsFake,
-    saveCachedCharacters: saveCachedCharactersFake,
-    getCachedGroupEntriesByIds: getCachedGroupEntriesByIdsFake,
-    saveCachedGroups: saveCachedGroupsFake,
-    getCacheUserHandle: () => 'tester',
-}));
+jest.unstable_mockModule('../public/lib.js', () => ({ localforage: { createInstance: createFakeLocalforageInstance } }));
+jest.unstable_mockModule('../public/scripts/user.js', () => ({ getCurrentUserHandle: () => 'tester' }));
 /** @type {Map<string, any>} */
 const stored = new Map();
 let keepPages = false;
@@ -324,7 +307,7 @@ function makeStore(initial = []) {
 beforeEach(() => {
     getRequestHeadersMock.mockClear();
     unshallowCharacterMock.mockReset();
-    cacheRecords = new Map();
+    for (const records of localforageStores.values()) records.clear();
     server = { characters: new Map(), versions: new Map(), groups: new Map(), live: new Map(), queryResponses: [] };
     liveCounter = 0;
     versionCounter = 0;
@@ -686,7 +669,8 @@ describe('query()', () => {
         expect(fetchedUrls()).toEqual(['/api/characters/query']);
     });
 
-    test('hash mode sends the last response\'s token as ifToken, never ifSeq, and reuses that response when the server answers unchanged', async () => {
+    test('hash mode sends the kept page\'s token as ifToken, never ifSeq, and rebuilds the unchanged page from kept rows without a download', async () => {
+        keepPages = true;
         const repo = new CharacterRepository(makeStore([]));
         const alice = addCharacter({ avatar: 'alice', name: 'Alice' });
         const sort = { field: 'name', order: 'asc' };
@@ -703,10 +687,13 @@ describe('query()', () => {
         const body = JSON.parse(global.fetch.mock.calls[0][1].body);
         expect(body.ifToken).toBe('tokenA');
         expect(body).not.toHaveProperty('ifSeq');
-        expect(second).toBe(first);
+        expect(second).not.toBe(first);
+        expect(second).toEqual(first);
+        expect(fetchedUrls()).toEqual(['/api/characters/query']);
     });
 
-    test('hash mode keeps a response under its new token even when seq did not move', async () => {
+    test('hash mode keeps a page under its new token even when seq did not move', async () => {
+        keepPages = true;
         const repo = new CharacterRepository(makeStore([]));
         const alice = addCharacter({ avatar: 'alice', name: 'Alice' });
         const bob = addCharacter({ avatar: 'bob', name: 'Bob' });
@@ -723,7 +710,8 @@ describe('query()', () => {
         queueQuery({ seq: 4, token: 'tokenB', unchanged: true });
         const third = await repo.query({ search: 'a' });
         expect(JSON.parse(global.fetch.mock.calls[0][1].body).ifToken).toBe('tokenB');
-        expect(third).toBe(second);
+        expect(third).toEqual(second);
+        expect(fetchedUrls()).toEqual(['/api/characters/query']);
     });
 
     test('a response with a null token is not kept, so the next identical request sends no ifToken', async () => {
@@ -800,51 +788,6 @@ describe('onChange()', () => {
         listener.mockClear();
         store._emit({ op: 'reset' });
         expect(listener).not.toHaveBeenCalled();
-    });
-});
-
-describe('queryAll()', () => {
-    test('returns everything in one call when the first page is short', async () => {
-        const store = makeStore([]);
-        const repo = new CharacterRepository(store);
-        const characters = [addCharacter({ avatar: 'a', name: 'A' }), addCharacter({ avatar: 'b', name: 'B' })];
-        await cacheCharacters(...characters);
-        queueQuery({ ids: ['a', 'b'], seq: 1 });
-
-        const result = await repo.queryAll({ fav: true }, { field: 'name' });
-
-        expect(result).toEqual(characters.map(hashModeCharacter));
-        expect(global.fetch).toHaveBeenCalledTimes(1);
-        const [, init] = global.fetch.mock.calls[0];
-        expect(JSON.parse(init.body)).toMatchObject({ filter: { fav: true }, sort: { field: 'name' }, page: 1 });
-    });
-
-    test('loops pages until a short page terminates it, never trusting an approximate total to stop early', async () => {
-        const store = makeStore([]);
-        const repo = new CharacterRepository(store);
-        const fullPage = Array.from({ length: 2000 }, (_, i) => addCharacter({ avatar: `c${i}` }));
-        const shortPage = [addCharacter({ avatar: 'last' })];
-        await cacheCharacters(...fullPage, ...shortPage);
-        queueQuery({ ids: fullPage.map(c => c.avatar), total: 2001, approxTotal: true, seq: 1 });
-        queueQuery({ ids: shortPage.map(c => c.avatar), seq: 1 });
-
-        const result = await repo.queryAll();
-
-        expect(result).toEqual([...fullPage, ...shortPage].map(hashModeCharacter));
-        expect(global.fetch).toHaveBeenCalledTimes(2);
-        const secondCallBody = JSON.parse(global.fetch.mock.calls[1][1].body);
-        expect(secondCallBody.page).toBe(2);
-    });
-
-    test('an empty result set makes exactly one call and returns an empty array', async () => {
-        const store = makeStore([]);
-        const repo = new CharacterRepository(store);
-        queueQuery({ ids: [], total: 0, seq: 1 });
-
-        const result = await repo.queryAll({ ids: [] });
-
-        expect(result).toEqual([]);
-        expect(global.fetch).toHaveBeenCalledTimes(1);
     });
 });
 
@@ -947,7 +890,7 @@ describe('normalizeQueryRow()', () => {
     });
 });
 
-describe('query()/queryAll() with includeGroups', () => {
+describe('query() with includeGroups', () => {
     test('query() forwards filter.includeGroups verbatim in a hash-mode request and returns tagged character/group rows', async () => {
         const store = makeStore([]);
         const repo = new CharacterRepository(store);
@@ -971,21 +914,6 @@ describe('query()/queryAll() with includeGroups', () => {
         });
         const groupBatchCalls = global.fetch.mock.calls.filter(([url]) => url === '/api/groups/batch');
         expect(groupBatchCalls.map(([, init]) => JSON.parse(init.body))).toEqual([{ ids: ['group-1'] }]);
-    });
-
-    test('queryAll() loops the tagged-row shape the same way it loops bare Character[] pages', async () => {
-        const store = makeStore([]);
-        const repo = new CharacterRepository(store);
-        const a = addCharacter({ avatar: 'a', name: 'A' });
-        const g1 = addGroup({ id: 'g1', name: 'G1', members: ['a'], fav: false, tag_ids: [] });
-        queueQuery({ ids: ['a', 'g1'], seq: 1 });
-
-        const result = await repo.queryAll({ includeGroups: true }, { field: 'name' });
-
-        expect(result).toEqual([
-            { type: 'character', item: hashModeCharacter(a) },
-            { type: 'group', item: hashModeGroup(g1) },
-        ]);
     });
 });
 

@@ -628,25 +628,15 @@ describe('a character whose PNG is missing', () => {
         expect(batch[0].data.description).toBe('from-db');
     });
 
-    test('/all without search still lists it, from its row', async () => {
-        await post('create', { ch_name: 'Alice', description: 'from-db', file_name: 'Alice' });
-        await post('create', { ch_name: 'Bob', description: 'b', file_name: 'Bob' });
-        fs.rmSync(/** @type {string} */ (await imageFile('Alice.png')), { force: true });
-
-        const all = await (await post('all', {})).json();
-        const byAvatar = Object.fromEntries(all.map(c => [c.avatar, c]));
-        expect(Object.keys(byAvatar).sort()).toEqual(['Alice.png', 'Bob.png']);
-        expect(byAvatar['Alice.png'].data.description).toBe('from-db');
-    });
 });
 
-describe('/all without search streams the characters rows', () => {
+describe('/batch reads the stored rows', () => {
     test('returns the db\'s content for an edited character and the file\'s for an untouched one', async () => {
         await post('create', { ch_name: 'Alice', description: 'a', file_name: 'Alice' });
         await post('create', { ch_name: 'Bob', description: 'b', file_name: 'Bob' });
         await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'a2' });
 
-        const all = await (await post('all', {})).json();
+        const all = await (await post('batch', { avatars: ['Alice.png', 'Bob.png'] })).json();
         const byAvatar = Object.fromEntries(all.map(c => [c.avatar, c]));
         expect(Object.keys(byAvatar).sort()).toEqual(['Alice.png', 'Bob.png']);
         expect(byAvatar['Alice.png'].data.description).toBe('a2');

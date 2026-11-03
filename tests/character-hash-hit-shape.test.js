@@ -2,6 +2,8 @@ import { describe, test, expect, jest, beforeAll, afterAll, beforeEach, afterEac
 import path from 'node:path';
 import process from 'node:process';
 import lodash from 'lodash';
+import { installBrowserStorage } from './util/browser-storage.js';
+import { LIST_CREATOR_NOTES_CHARS } from '../public/scripts/hash-utils.js';
 
 const originalCwd = process.cwd();
 
@@ -136,19 +138,15 @@ const V1_CARD = { name: 'Legacy', description: 'd', creatorcomment: 'legacy note
 
 const CARDS = [['full', FULL_CARD], ['sparse', SPARSE_CARD], ['bare', BARE_CARD], ['drifted', DRIFT_CARD], ['V1', V1_CARD]];
 
-const MODES = [
-    { creatorNotes: false, lazy: false },
-    { creatorNotes: true, lazy: false },
-    { creatorNotes: false, lazy: true },
-    { creatorNotes: true, lazy: true },
-];
-
-describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLoadCharacters=$lazy', ({ creatorNotes, lazy }) => {
+describe.each([false, true])('lazyLoadCharacters=%p', (lazy) => {
     /** @type {{ fixture: typeof import('./converted-user.fixture.js'), stores: typeof import('../src/user-stores.js'), characterList: typeof import('../public/scripts/character-list.js'), server: import('node:http').Server, baseUrl: string }} */
     let mode;
 
+    /** @type {() => void} */
+    let restoreStorage;
+
     beforeAll(async () => {
-        process.env.SILLYTAVERN_PERFORMANCE_SHALLOWCHARACTERSINCLUDECREATORNOTES = String(creatorNotes);
+        restoreStorage = installBrowserStorage({ quota: 1e9 });
         process.env.SILLYTAVERN_PERFORMANCE_LAZYLOADCHARACTERS = String(lazy);
         jest.resetModules();
 
@@ -180,7 +178,7 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
     afterAll(async () => {
         await new Promise(resolve => mode.server.close(resolve));
         process.chdir(originalCwd);
-        delete process.env.SILLYTAVERN_PERFORMANCE_SHALLOWCHARACTERSINCLUDECREATORNOTES;
+        restoreStorage();
         delete process.env.SILLYTAVERN_PERFORMANCE_LAZYLOADCHARACTERS;
     });
 
@@ -228,5 +226,25 @@ describe.each(MODES)('shallowCharactersIncludeCreatorNotes=$creatorNotes, lazyLo
         const hitOnMissRecord = await clientResolve('Char.png');
         expect(hitOnMissRecord.batched).toBe(false);
         expect(hitOnMissRecord.row).toStrictEqual(miss.row);
+        expect(Array.from(/** @type {any} */ (miss.row).data.creator_notes).length).toBeLessThanOrEqual(LIST_CREATOR_NOTES_CHARS);
+    }, 30000);
+
+    test('a row shown again after its character changed is downloaded again, with the change', async () => {
+        await user.store.lib.writeCard(directories, 'Char.png', JSON.stringify(FULL_CARD));
+        expect((await clientResolve('Char.png')).batched).toBe(true);
+        expect((await clientResolve('Char.png')).batched).toBe(false);
+
+        for (const fav of [true, false]) {
+            const response = await realFetch(`${mode.baseUrl}/api/characters/fav`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ avatar: 'Char.png', fav }),
+            });
+            expect(response.status).toBeLessThan(300);
+            const changed = await clientResolve('Char.png');
+            expect(changed.batched).toBe(true);
+            expect(/** @type {any} */ (changed.row).fav).toBe(fav);
+            expect((await clientResolve('Char.png')).batched).toBe(false);
+        }
     }, 30000);
 });

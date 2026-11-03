@@ -2,7 +2,7 @@ import _ from 'lodash';
 
 import { CARD_COLUMNS, assembleCard, splitCard } from './character-card-storage.js';
 import { computeContentIdentityHash } from './card-identity-hash.js';
-import { LIST_CREATOR_NOTES_PATHS, LIST_EXTRA_PATHS, cardListValues } from './card-list-values.js';
+import { LIST_EXTRA_PATHS, cardListValues } from './card-list-values.js';
 import { calculateDataSize } from './character-shallow.js';
 import { parseCreateDateToEpochMs } from './util.js';
 import { tagDerivedColumns } from './tag-order.js';
@@ -114,14 +114,12 @@ export const SORT_KEYS = Object.freeze({ name: 0, create_date: 1, date_added: 2,
 const EXTENSION_PREFIX = 'ext:';
 
 /**
- * @param {boolean} includeCreatorNotes
  * @returns {{ fields: (number | string)[], lists: number[] }}
  */
-export function listRowValues(includeCreatorNotes) {
+export function listRowValues() {
     return {
         fields: [
-            FIELD.name, FIELD.creator, FIELD.character_version, FIELD.world, FIELD.create_date, FIELD.allow_global_styles,
-            ...(includeCreatorNotes ? [FIELD.creator_notes, ...LIST_CREATOR_NOTES_PATHS] : []),
+            FIELD.name, FIELD.creator, FIELD.character_version, FIELD.world, FIELD.create_date, FIELD.allow_global_styles, FIELD.creator_notes,
             `${EXTENSION_PREFIX}world`, `${EXTENSION_PREFIX}avatar_crop`, ...LIST_EXTRA_PATHS,
         ],
         lists: [LIST.tags],
@@ -1220,14 +1218,13 @@ export class LibraryEngine {
 
     /**
      * @param {StoredEntity[]} entities
-     * @param {boolean} includeCreatorNotes
      */
-    async listRows(entities, includeCreatorNotes) {
+    async listRows(entities) {
         const tagKeys = await this.tagKeys(entities);
         const stats = await this.chatStats(entities.map(e => e.id));
         return entities.map((e, i) => {
             const card = assembleCard(cardParts(e));
-            const values = cardListValues(card, includeCreatorNotes);
+            const values = cardListValues(card);
             /** @type {Record<string, unknown>} */
             const row = { shallow: true };
             if (values.name !== undefined) row.name = values.name;
@@ -1273,14 +1270,13 @@ export class LibraryEngine {
      * @param {boolean} [params.wantHashes]
      * @param {boolean} [params.groupsOnly]
      * @param {boolean} [params.includeGroups]
-     * @param {boolean} [params.includeCreatorNotes]
      * @param {boolean} [params.wantHidden]
      * @param {{ characters: boolean, groups: boolean }} [params.hiddenKinds]
      * @param {number} [params.cap]
      * @param {string} [params.search]
      */
     async query(params) {
-        const { tags, fav, world, ranges, excludeIds, ids, sortField, sortOrder, seed, tieSortField, tieSortOrder, tieSeed, offset = 0, limit = 500, cursor, wantRows = true, wantTotal = true, wantHashes = false, wantHidden = false, groupsOnly = false, includeGroups = true, includeCreatorNotes = false, cap = 20_000, search } = params;
+        const { tags, fav, world, ranges, excludeIds, ids, sortField, sortOrder, seed, tieSortField, tieSortOrder, tieSeed, offset = 0, limit = 500, cursor, wantRows = true, wantTotal = true, wantHashes = false, wantHidden = false, groupsOnly = false, includeGroups = true, cap = 20_000, search } = params;
         const hiddenKinds = params.hiddenKinds ?? { characters: !groupsOnly, groups: groupsOnly || includeGroups };
         const clauses = typeof search === 'string' ? searchClauses(search, LIBRARY_LABELS) : [];
         const hiddenOf = async (/** @type {number} */ shown) => {
@@ -1359,7 +1355,7 @@ export class LibraryEngine {
         } else {
             page = await this.store.libraryPage(q);
         }
-        const read = wantRows && !wantHashes ? listRowValues(includeCreatorNotes) : NO_VALUES;
+        const read = wantRows && !wantHashes ? listRowValues() : NO_VALUES;
         const pageEntities = /** @type {StoredEntity[]} */ ((await this.entities(page.ids, read)).filter(e => e !== null));
         const out = {
             total: wantTotal ? page.total : undefined,
@@ -1384,7 +1380,7 @@ export class LibraryEngine {
         }
         if (!wantRows) return { ...out, rows: undefined, hashRows: undefined, ...(await hiddenOf(0)) };
         const characters = entities.filter(e => e.type === TYPE.character);
-        const listRows = new Map((await this.listRows(characters, includeCreatorNotes)).map((r, i) => [characters[i].id, r]));
+        const listRows = new Map((await this.listRows(characters)).map((r, i) => [characters[i].id, r]));
         const rows = entities.map(e => ({
             type: e.type === TYPE.group ? 'group' : 'character',
             id: e.key,
