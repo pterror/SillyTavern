@@ -485,6 +485,7 @@ router.post('/get', storeRoute('reading settings', async (request, response) => 
         settings: filled,
         settingsHash: pageSettingsHash(JSON.parse(settings)),
         keyHashes,
+        characterChangesSeq: await lib.changesEnd(),
         koboldai_settings,
         koboldai_setting_names,
         world_names,

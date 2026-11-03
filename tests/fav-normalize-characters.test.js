@@ -243,9 +243,6 @@ describe('every card-sending route sends both fav fields as the column boolean',
         /** @type {[string, any][]} */
         const sent = [];
 
-        const allResponse = await postJson('/api/characters/all', {});
-        sent.push(['/all', (await allResponse.json()).find(c => c.avatar === avatar)]);
-
         let searched;
         const deadline = Date.now() + 10000;
         do {

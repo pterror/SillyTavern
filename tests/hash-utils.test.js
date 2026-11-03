@@ -1,5 +1,5 @@
 import { describe, test, expect } from '@jest/globals';
-import { applyCharacterRowFields, characterRowFieldHashes, characterRowFields, getStringHash, bucketOf, emptyDigest, combineDigest, digestsEqual, contentHashOf, characterDigestFieldsHash, characterContentFieldsFingerprint, canonicalStringify, DEFAULT_DIGEST_BUCKET_COUNT } from '../public/scripts/hash-utils.js';
+import { listCreatorNotes, shallowCharacterData, LIST_CREATOR_NOTES_CHARS, getStringHash, bucketOf, emptyDigest, combineDigest, digestsEqual, contentHashOf, characterDigestFieldsHash, characterContentFieldsFingerprint, canonicalStringify, DEFAULT_DIGEST_BUCKET_COUNT } from '../public/scripts/hash-utils.js';
 
 describe('getStringHash', () => {
     test('is deterministic for the same string and seed', () => {
@@ -158,44 +158,24 @@ describe('canonicalStringify', () => {
     });
 });
 
-describe('character row fields', () => {
-    function answer(row, held) {
-        const hashes = held ? characterRowFieldHashes(held) : {};
-        const now = characterRowFieldHashes(row);
-        const set = Object.fromEntries([...characterRowFields(row)].filter(([path]) => hashes[path] !== now[path]));
-        return { set, unset: Object.keys(hashes).filter(path => !(path in now)) };
-    }
-
-    const ROW = { avatar: 'a.png', name: 'A', fav: false, data: { name: 'A', tags: ['x'], extensions: { fav: false, world: 'W', depth_prompt: { depth: 4 } } }, chat: 'c' };
-
-    test('every field comes back for no copy, and rebuilds the row', () => {
-        const { set, unset } = answer(ROW, null);
-        expect(unset).toEqual([]);
-        expect(applyCharacterRowFields({}, { set })).toEqual(ROW);
+describe('listCreatorNotes - the prefix of the creator notes a list row carries', () => {
+    test('a row carries the default length: no more than LIST_CREATOR_NOTES_CHARS code points', () => {
+        const notes = 'x'.repeat(LIST_CREATOR_NOTES_CHARS + 50);
+        expect(Array.from(shallowCharacterData({ data: { creator_notes: notes } }).creator_notes).length).toBe(LIST_CREATOR_NOTES_CHARS);
     });
 
-    test('a fav flip sends fav and its mirror only, and the copy becomes the row', () => {
-        const held = structuredClone(ROW);
-        const row = { ...structuredClone(ROW), fav: true, data: { ...structuredClone(ROW.data), extensions: { ...ROW.data.extensions, fav: true } } };
-        const changes = answer(row, held);
-        expect(Object.keys(changes.set).sort()).toEqual(['["data","extensions","fav"]', '["fav"]']);
-        expect(applyCharacterRowFields(held, changes)).toEqual(row);
+    test('cuts to the given number of code points and keeps shorter notes whole', () => {
+        expect(listCreatorNotes('abcdef', 3)).toBe('abc');
+        expect(listCreatorNotes('ab', 3)).toBe('ab');
     });
 
-    test('keys gone, empty objects and values that stop or start being objects', () => {
-        const shapes = [
-            ROW,
-            { ...ROW, data: {} },
-            { ...ROW, data: { name: 'A', extensions: {} } },
-            { ...ROW, data: { name: 'A', extensions: 'not an object' } },
-            { ...ROW, data: null },
-            { avatar: 'a.png' },
-        ];
-        for (const from of shapes) {
-            for (const to of shapes) {
-                const held = structuredClone(from);
-                expect(applyCharacterRowFields(held, answer(to, from))).toEqual(to);
-            }
-        }
+    test('never splits a surrogate pair', () => {
+        expect(listCreatorNotes('a\u{1F600}b', 2)).toBe('a\u{1F600}');
+        expect(listCreatorNotes('\u{1F600}\u{1F600}', 1)).toBe('\u{1F600}');
+    });
+
+    test('anything but a string, and a length of 0, carry nothing', () => {
+        for (const notes of [undefined, null, 7, {}, ['a']]) expect(listCreatorNotes(notes, 5)).toBe('');
+        expect(listCreatorNotes('abc', 0)).toBe('');
     });
 });

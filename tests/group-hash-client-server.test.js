@@ -1,6 +1,9 @@
 import { describe, test, expect, jest, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import path from 'node:path';
 import { groupContentFingerprint } from '../public/scripts/hash-utils.js';
+import { installBrowserStorage } from './util/browser-storage.js';
+
+installBrowserStorage({ quota: 1e9 });
 
 const USER_HANDLE = 'group-hash-test-user';
 
@@ -152,10 +155,15 @@ async function serverGroupHashes() {
 
 /**
  * @param {string} id
- * @returns {{group: object, hashes: {fav: number, tagIds: number, content: number, v: number}} | undefined}
+ * @returns {{group: object, hashes: {fav: number, tagIds: number, content: number}} | undefined}
  */
 function cachedGroupRecord(id) {
-    return localforageStores.get(`SillyTavern_GroupCache_${USER_HANDLE}`)?.get(id);
+    const rows = localforageStores.get(`SillyTavern_ListRows_${USER_HANDLE}`) ?? new Map();
+    const found = [...rows].filter(([key]) => key.startsWith('g:') && key.endsWith(`:${id}`));
+    if (found.length !== 1) return undefined;
+    const [key, group] = found[0];
+    const [, fav, tagIds, content] = key.split(':');
+    return { group, hashes: { fav: Number(fav), tagIds: Number(tagIds), content: Number(content) } };
 }
 
 /**

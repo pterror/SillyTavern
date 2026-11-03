@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 import { oldStoreOracle } from './util/old-store-oracle.js';
+import { LIST_CREATOR_NOTES_CHARS } from '../public/scripts/hash-utils.js';
 
 /** @type {any} */
 let metadataDb;
@@ -193,6 +194,18 @@ function library50(seed = 1) {
     }));
 }
 
+/**
+ * @param {Record<string, any>} row
+ * @param {Record<string, any>} card
+ */
+function withoutNotesPrefix(row, card) {
+    const { creator_notes: notes, ...data } = row.data;
+    const whole = String(card.spec === undefined ? card.creatorcomment ?? '' : card.data?.creator_notes ?? '');
+    expect(whole.startsWith(notes)).toBe(true);
+    expect(Array.from(notes).length).toBeLessThanOrEqual(LIST_CREATOR_NOTES_CHARS);
+    return { ...row, data };
+}
+
 const QUERIES = [
     {},
     { fav: true },
@@ -256,18 +269,16 @@ describe('the library on the engine', () => {
         const avatars = entries.map(e => e.avatar);
         const old = await metadataDb.getShallowByIds(directories, avatars);
         const ents = await library.entities(await library.ids(lib.TYPE.character, avatars));
-        const rows = await library.listRows(/** @type {any[]} */ (ents), false);
+        const rows = await library.listRows(/** @type {any[]} */ (ents));
         for (const [i, avatar] of avatars.entries()) {
             const { thumbnail, avatar_ref: ref, ...row } = rows[i];
             expect(thumbnail).toBeNull();
             expect(ref).toBe(`/thumbnail?type=avatar&file=${encodeURIComponent(avatar)}`);
-            expect(row).toEqual(old[avatar]);
+            expect(withoutNotesPrefix(row, entries[i].card)).toEqual(old[avatar]);
         }
-        for (const notes of [false, true]) {
-            const narrow = await library.entities(ents.map(e => e?.id ?? null), lib.listRowValues(notes));
-            expect(narrow.map(e => e?.hashes)).toEqual(ents.map(e => e?.hashes));
-            expect(await library.listRows(/** @type {any[]} */ (narrow), notes)).toEqual(await library.listRows(/** @type {any[]} */ (ents), notes));
-        }
+        const narrow = await library.entities(ents.map(e => e?.id ?? null), lib.listRowValues());
+        expect(narrow.map(e => e?.hashes)).toEqual(ents.map(e => e?.hashes));
+        expect(await library.listRows(/** @type {any[]} */ (narrow))).toEqual(await library.listRows(/** @type {any[]} */ (ents)));
     });
 
     test('query pages and totals are the old store\'s, through cursors', async () => {
@@ -424,12 +435,12 @@ describe('the library on the engine', () => {
         expect(await library.updateEntity(lib.TYPE.character, b.avatar, { key: renamed })).toBe(false);
         const avatars = [renamed, ...entries.slice(1).map(e => e.avatar)];
         const old = await metadataDb.getShallowByIds(directories, avatars);
-        const rows = await library.listRows(/** @type {any[]} */ (await library.entities(await library.ids(lib.TYPE.character, avatars))), false);
+        const rows = await library.listRows(/** @type {any[]} */ (await library.entities(await library.ids(lib.TYPE.character, avatars))));
         for (const [i, avatar] of avatars.entries()) {
             const { thumbnail, avatar_ref: ref, ...row } = rows[i];
             expect(thumbnail).toBeNull();
             expect(ref).toBe(`/thumbnail?type=avatar&file=${encodeURIComponent(avatar)}`);
-            expect(row).toEqual(old[avatar]);
+            expect(withoutNotesPrefix(row, entries[i].card)).toEqual(old[avatar]);
         }
         expect(await library.ids(lib.TYPE.character, [a.avatar])).toEqual([null]);
         for (const [field, order] of [['name', 'asc'], ['date_added', 'desc'], ['fav', 'desc']]) {

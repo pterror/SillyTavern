@@ -12,7 +12,7 @@ import {
 
 import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown } from './scripts/RossAscends-mods.js';
 import { exposedCharacters, charactersStore, this_avatar, this_chid, setCharacterId, holdCharacter, keepHeldCharacters, selectCharacterById, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './scripts/character-store.js';
-import { printCharacters, printCharactersDebounced, getEntitiesList, findCharacterListPage, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onCharacterListShown, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
+import { printCharacters, printCharactersDebounced, getEntitiesList, findCharacterListPage, getOneCharacter, getCharacterSource, startCharacterChangesAt, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onCharacterListShown, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
 import { onSavedViewsChanged } from './scripts/saved-views.js';
 export { exposedCharacters as characters, charactersStore, selectCharacterById, setCharacterId, this_chid };
 export { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, getCharacters, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT };
@@ -1418,7 +1418,6 @@ async function firstLoadInit() {
 
     let residencySettled = false;
     const characterResidencyPromise = (async () => {
-        await seedCharactersFromCache();
         await getCharacters();
         await reindexTagAssignments();
     })();
@@ -7044,6 +7043,7 @@ export async function getSettings(initLoaderHandle = null, onStageChange = null,
     let data;
     try {
         data = await fetchRawSettings({ force });
+        startCharacterChangesAt(Number(data?.characterChangesSeq));
     } catch (error) {
         reloadLoop();
         toastr.error(t`Settings could not be loaded after multiple attempts. Please try again later.`);

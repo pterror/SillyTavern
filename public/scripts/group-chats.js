@@ -27,7 +27,7 @@ import { bringChatForward } from './drawer-stack.js';
 import { RA_CountCharTokens, dragElement, favsToHotswap, getMessageTimeStamp } from './RossAscends-mods.js';
 import { power_user, sortEntitiesList, invalidateGroupsFuseIndex } from './power-user.js';
 import { debounce_timeout } from './constants.js';
-import { getRandomSortSeed, compareByRandomSeed } from './random-sort.js';
+import { getRandomSortSeed } from './random-sort.js';
 import { characterRepository, buildCharacterQuery } from './character-repository.js';
 import { checkCharactersExistOrNull } from './character-existence-check.js';
 
@@ -1666,7 +1666,7 @@ async function modifyGroupMember(groupId, groupMember, isDelete) {
     printTagFilters(tag_filter_type.group_candidates_list);
     printTagFilters(tag_filter_type.group_members_list);
 
-    const groupHasMembers = (await getGroupCharacters({ doFilter: false, onlyMembers: true })).length > 0;
+    const groupHasMembers = (await getGroupMemberEntities({ doFilter: false })).length > 0;
     $('#rm_group_submit').prop('disabled', !groupHasMembers);
 }
 
@@ -1784,18 +1784,11 @@ export function buildGroupCandidateQuery(excludeIds, { doFilter = false } = {}) 
 }
 
 /**
- * Gets group characters based on filters.
- *
- * The non-member (candidate) path backs the "add member" picker: it reads `/query` with the current members
- * excluded (see `buildGroupCandidateQuery()`), and a sort the server doesn't know falls back as the character
- * list's does (`queryWithSortFallback()`). The member path is bounded by the group's own member count, so it is
- * resolved through `resolveGroupMembers()`.
  * @param {object} param
  * @param {boolean} [param.doFilter=false] Whether to apply filters
- * @param {boolean} [param.onlyMembers=false] Whether to include only group members
- * @returns {Promise<Array<{item: Character, id: string, type: string}>>} Array of group character objects
+ * @returns {Promise<Array<{item: Character, id: string, type: string}>>}
  */
-export async function getGroupCharacters({ doFilter = false, onlyMembers = false } = {}) {
+export async function getGroupMemberEntities({ doFilter = false } = {}) {
     function handleMembers(results, thisGroup) {
         const membersArray = thisGroup?.members ?? newGroupMembers;
 
@@ -1828,38 +1821,53 @@ export async function getGroupCharacters({ doFilter = false, onlyMembers = false
     const thisGroup = openGroupId && groupsStore.get(openGroupId);
     const membersArray = thisGroup?.members ?? newGroupMembers;
 
-    if (!onlyMembers) {
-        const { filter, sort: wantedSort } = buildGroupCandidateQuery(membersArray, { doFilter });
-        const { sort, result: rows } = await queryWithSortFallback(filter, wantedSort,
-            trySort => characterRepository.queryAll(filter, trySort));
-        let results = rows.map((x) => ({ item: x, id: x.avatar, type: 'character' }));
-        if (sort?.field === 'random') {
-            results.sort((a, b) => compareByRandomSeed(`${a.type}.${a.id}`, `${b.type}.${b.id}`, sort.seed));
-        }
-        if (doFilter) {
-            results = groupCandidatesFilter.applyFilters(results, {
-                tempOverrides: {
-                    [FILTER_TYPES.SEARCH]: '',
-                    [FILTER_TYPES.TAG]: { selected: [], excluded: [] },
-                    [FILTER_TYPES.FAV]: FILTER_STATES.UNDEFINED.key,
-                },
-            });
-            groupCandidatesFilter.clearFuzzySearchCaches();
-        }
-        return results;
-    }
-
     const { resolved } = await resolveGroupMembers(membersArray);
     const results = resolved.map((x) => ({ item: x, id: x.avatar, type: 'character' }));
     return handleMembers(results, thisGroup);
 }
 
-async function printGroupCandidates() {
+const GROUP_CANDIDATES_WANT = /** @type {('rows'|'total')[]} */ (['rows', 'total']);
+
+export async function printGroupCandidates() {
     const storageKey = 'GroupCandidates_PerPage';
     const pageSize = Number(accountStorage.getItem(storageKey)) || 5;
     const sizeChangerOptions = [5, 10, 25, 50, 100, 200, 500, 1000];
+    const thisGroup = openGroupId && groupsStore.get(openGroupId);
+    const { filter, sort: wantedSort } = buildGroupCandidateQuery(thisGroup?.members ?? newGroupMembers, { doFilter: true });
+    const noCharacterShown = [FILTER_TYPES.GROUP, FILTER_TYPES.FOLDER]
+        .some(type => isFilterState(groupCandidatesFilter.getFilterData(type), FILTER_STATES.SELECTED));
+    const empty = { rows: [], total: 0 };
+    const { sort, result: firstPage } = noCharacterShown
+        ? { sort: wantedSort, result: empty }
+        : await queryWithSortFallback(filter, wantedSort, trySort => characterRepository.query(filter, trySort, 1, pageSize, GROUP_CANDIDATES_WANT));
+    /** @type {object | undefined} */
+    let pendingFirstPage = firstPage;
     $('#rm_group_add_members_pagination').pagination({
-        dataSource: await getGroupCharacters({ doFilter: true, onlyMembers: false }),
+        dataSource: '/api/characters/query',
+        locator: 'rows',
+        totalNumberLocator: function (/** @type {{total: number|string}} */ response) {
+            const parsed = Number(String(response.total ?? 0).replace(/^~/, ''));
+            return Number.isFinite(parsed) ? parsed : 0;
+        },
+        ajaxFunction: function (ajaxParams) {
+            const page = ajaxParams.data.pageNumber;
+            const requestedPageSize = ajaxParams.data.pageSize;
+            const resultPromise = page === 1 && requestedPageSize === pageSize && pendingFirstPage
+                ? Promise.resolve(pendingFirstPage)
+                : noCharacterShown
+                    ? Promise.resolve(empty)
+                    : characterRepository.query(filter, sort, page, requestedPageSize, GROUP_CANDIDATES_WANT);
+            pendingFirstPage = undefined;
+            resultPromise
+                .then(result => {
+                    const rows = Array.isArray(result.rows) ? result.rows : [];
+                    ajaxParams.success({ rows: rows.map(item => ({ item, id: item.avatar, type: 'character' })), total: result.total });
+                })
+                .catch(error => {
+                    console.error('[printGroupCandidates] /query failed:', error);
+                    ajaxParams.error(error);
+                });
+        },
         pageRange: 1,
         position: 'top',
         showPageNumbers: false,
@@ -1888,7 +1896,7 @@ async function printGroupMembers() {
     const storageKey = 'GroupMembers_PerPage';
     const pageSize = Number(accountStorage.getItem(storageKey)) || 5;
     const sizeChangerOptions = [5, 10, 25, 50, 100, 200, 500, 1000];
-    const dataSource = await getGroupCharacters({ doFilter: true, onlyMembers: true });
+    const dataSource = await getGroupMemberEntities({ doFilter: true });
     $('.rm_group_members_pagination').each(function () {
         let that = this;
         $(this).pagination({

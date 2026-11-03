@@ -2,6 +2,7 @@ import { describe, test, expect, jest, beforeAll, afterAll, beforeEach, afterEac
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { installBrowserStorage } from './util/browser-storage.js';
 
 const USER_HANDLE = 'tag-ids-normalize-test-user';
 
@@ -162,49 +163,31 @@ describe('server: every route sending tag_ids sends them sorted', () => {
     });
 });
 
-describe('client: the caches store tag_ids sorted, and [] when absent', () => {
-    const CHARACTER_STORE = `SillyTavern_CharacterCache_${USER_HANDLE}`;
-    const GROUP_STORE = `SillyTavern_GroupCache_${USER_HANDLE}`;
-
-    test('saveCachedCharacters() stores a sorted copy without touching the caller\'s object, at hash version 7', async () => {
-        const unsorted = { avatar: 'Bob.png', name: 'Bob', tag_ids: ['tb', 'ta'] };
-        const absent = { avatar: 'Ann.png', name: 'Ann' };
-        await characterCache.saveCachedCharacters([{ avatar: 'Bob.png', character: unsorted }, { avatar: 'Ann.png', character: absent }]);
-
-        expect(unsorted.tag_ids).toEqual(['tb', 'ta']);
-        expect('tag_ids' in absent).toBe(false);
-        const entries = await characterCache.getCachedEntriesByIds(['Bob.png', 'Ann.png']);
-        expect(entries.get('Bob.png').character.tag_ids).toEqual(['ta', 'tb']);
-        expect(entries.get('Ann.png').character.tag_ids).toEqual([]);
-        expect(entries.get('Bob.png').hashes.v).toBe(7);
+describe('client: the row cache stores tag_ids sorted, and [] when absent', () => {
+    /** @type {() => void} */
+    let restore;
+    beforeAll(() => {
+        restore = installBrowserStorage({ quota: 1e9 });
     });
+    afterAll(() => restore());
 
-    test('a character record from an earlier hash version reads as a miss', async () => {
-        await characterCache.saveCachedCharacters([{ avatar: 'Bob.png', character: { avatar: 'Bob.png', name: 'Bob', tag_ids: ['tb', 'ta'] } }]);
-        const store = localforageStores.get(CHARACTER_STORE);
-        const record = store.get('Bob.png');
-        store.set('Bob.png', { ...record, hashes: { ...record.hashes, v: 3 } });
-        expect((await characterCache.getCachedEntriesByIds(['Bob.png'])).has('Bob.png')).toBe(false);
-    });
+    test('keepRows() stores a sorted copy of a character or group row without touching the caller\'s object', async () => {
+        const bob = { avatar: 'Bob.png', name: 'Bob', tag_ids: ['tb', 'ta'] };
+        const ann = { avatar: 'Ann.png', name: 'Ann' };
+        const g1 = { id: 'g1', name: 'G1', members: [], tag_ids: [HIGH_BMP, ASTRAL] };
+        const keys = {
+            bob: characterCache.characterRowKey({ id: 'Bob.png', version: 1, tagIdsHash: 0 }),
+            ann: characterCache.characterRowKey({ id: 'Ann.png', version: 2, tagIdsHash: 0 }),
+            g1: characterCache.groupRowKey({ id: 'g1', favHash: 0, tagIdsHash: 0, contentHash: 0 }),
+        };
+        await characterCache.keepRows([{ key: keys.bob, row: bob }, { key: keys.ann, row: ann }, { key: keys.g1, row: g1 }]);
 
-    test('saveCachedGroups() stores a sorted copy without touching the caller\'s object, at hash version 5', async () => {
-        const unsorted = { id: 'g1', name: 'G1', members: [], tag_ids: [HIGH_BMP, ASTRAL] };
-        const absent = { id: 'g2', name: 'G2', members: [] };
-        await characterCache.saveCachedGroups([{ id: 'g1', group: unsorted }, { id: 'g2', group: absent }]);
-
-        expect(unsorted.tag_ids).toEqual([HIGH_BMP, ASTRAL]);
-        expect('tag_ids' in absent).toBe(false);
-        const entries = await characterCache.getCachedGroupEntriesByIds(['g1', 'g2']);
-        expect(entries.get('g1').group.tag_ids).toEqual(JS_SORTED);
-        expect(entries.get('g2').group.tag_ids).toEqual([]);
-        expect(entries.get('g1').hashes.v).toBe(5);
-    });
-
-    test('a group record from an earlier hash version reads as a miss', async () => {
-        await characterCache.saveCachedGroups([{ id: 'g1', group: { id: 'g1', name: 'G1', tag_ids: [] } }]);
-        const store = localforageStores.get(GROUP_STORE);
-        const record = store.get('g1');
-        store.set('g1', { ...record, hashes: { ...record.hashes, v: 2 } });
-        expect((await characterCache.getCachedGroupEntriesByIds(['g1'])).has('g1')).toBe(false);
+        expect(bob.tag_ids).toEqual(['tb', 'ta']);
+        expect('tag_ids' in ann).toBe(false);
+        expect(g1.tag_ids).toEqual([HIGH_BMP, ASTRAL]);
+        const kept = await characterCache.readRows(Object.values(keys));
+        expect(kept.get(keys.bob).tag_ids).toEqual(['ta', 'tb']);
+        expect(kept.get(keys.ann).tag_ids).toEqual([]);
+        expect(kept.get(keys.g1).tag_ids).toEqual(JS_SORTED);
     });
 });

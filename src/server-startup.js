@@ -95,7 +95,6 @@ export function redirectDeprecatedEndpoints(app) {
     redirect('/editcharacterattribute', '/api/characters/edit-attribute');
     redirect('/v2/editcharacterattribute', '/api/characters/merge-attributes');
     redirect('/deletecharacter', '/api/characters/delete');
-    redirect('/getcharacters', '/api/characters/all');
     redirect('/getonecharacter', '/api/characters/get');
     redirect('/getallchatsofcharacter', '/api/characters/chats');
     redirect('/importcharacter', '/api/characters/import');

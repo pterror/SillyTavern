@@ -18,7 +18,7 @@ implementation superseded or diverged from them.
 | Phase | Commit | State |
 |---|---|---|
 | 0a — keyed DOM diff in `printCharacters` | `16f460b82` | shipped, matches spec |
-| 0b — versioned immutable thumbnail caching | `afbd83b9b` | **shipped in part** — the client emits `?v=` when it knows a version (`a057fe43f`). Backgrounds and personas get versions from their list endpoints. Character avatars don't, because only `/manifest` returns them and no client calls it, so avatar thumbnails still take the uncacheable 302 first |
+| 0b — versioned immutable thumbnail caching | `afbd83b9b` | **shipped in part** — the client emits `?v=` when it knows a version (`a057fe43f`). Backgrounds and personas get versions from their list endpoints. Character avatars don't, so avatar thumbnails still take the uncacheable 302 first. `/manifest` is removed |
 | 0c — `/duplicate` server wedge | `ade258e49` | fixed — parse corrected; the suffix parse is capped at 15 digits and the loop at 10,000 attempts (`0b0ed9fd5`) |
 | 0d — `writeExtensionField` dual-accept | `cb594ba0d` | shipped — takes an avatar or a legacy chid; a number or digit string resolves positionally, with a `console.warn` |
 | 1 — SQLite metadata store | `f872377eb` | shipped; schema as specced, with deviations listed in §9. Two of the three freshness mechanisms remain: write hooks and a boot-time reconciler that only inserts rows for new files. The directory watcher was removed in `9ae4ef934` (§9) |
@@ -613,7 +613,8 @@ characters(
   world         TEXT,               -- data.extensions.world, for the reverse index in §4.3
   creator       TEXT,
   version       TEXT,
-  creator_notes TEXT,               -- only if shallowCharactersIncludeCreatorNotes
+  creator_notes TEXT,               -- SUPERSEDED: no flag. A list row carries only the prefix of the
+                                    -- notes its card can show (LIST_CREATOR_NOTES_CHARS), cut by the server
   shallow_json  BLOB NOT NULL,      -- the toShallow() projection, ready to ship
   rev           INTEGER NOT NULL    -- monotonic, from the change log. SUPERSEDED by 917e4a636:
                                     -- the code calls this column change_seq
@@ -875,7 +876,7 @@ why fixing that one function removes a large part of category (c) by constructio
 |---|---|---|
 | `character-list.js:594` `getEntitiesList` | the page of entities to render | (tag filter state, folder state, fav/group flags, search query, sort field+order, page, pageSize) → one page of shallow rows + total match count |
 | `script.js:11502` (gone: server hits are now keyed by avatar in `fetchServerCharacterSearchResults()`; no `findIndex`) | re-ranking server hits back into client indices | disappears; keep avatar-keyed end to end (§2.4 ii) |
-| `group-chats.js:1820` `getGroupCharacters` | the entire non-member library, as a pagination dataSource | not-in-member-set + search/tag/fav predicates + sort → page + count |
+| `group-chats.js:1820` `getGroupCharacters` (**superseded**: `printGroupCandidates()` asks `/query` one page at a time) | the entire non-member library, as a pagination dataSource | not-in-member-set + search/tag/fav predicates + sort → page + count |
 | `character-list.js:281` | the "N hidden" badge | currently conflates *filtered out* with *not on this page*; needs total-matching-count for the active filter, separate from library total |
 | `script.js:8246`, `:8279` | "which page is this newly-imported character on" | rank of a specific row under the current sort+filter — inherently a live query, cannot be a counter |
 
@@ -1071,9 +1072,10 @@ or a delete.
 Shipped in phase 2 to this contract, with one addition the contract should absorb: the response
 collapses to **one entry per id**, latest op winning. Also note nothing prunes the `changes` log yet,
 so `truncated` can currently only fire for a nonsense `sinceSeq` — the bounded-window behaviour
-described below is designed but not built. `/api/characters/manifest` is still live and still serving
-the UI. **Superseded:** `/api/characters/manifest` is still a server route, but no client code calls
-it; the client uses `/changes`.
+described below is designed but not built. **Superseded:** `/api/characters/manifest` is removed.
+The page no longer keeps a copy of the library, so it reads `/changes` only for the characters it
+holds, starting from the `characterChangesSeq` the settings answer carries; a fresh page downloads
+nothing per card.
 
 `truncated: true` means `sinceSeq` predates the oldest retained `changes` row (the log is pruned to
 a bounded window), and the client must treat its cache as unknown-stale. It does not have to throw
@@ -1284,12 +1286,13 @@ Two tiers instead:
   shallow tier needs eviction at the top of the range, and on mobile well before that.
 - **Full cards**, fetched on selection, cached with a much smaller budget and evicted first.
 
-`creator_notes` is the field that decides the shallow tier's cost. It is behind a config flag
-(`performance.shallowCharactersIncludeCreatorNotes`, default off), and turning it on more than
-doubles the mean and adds a tail worse than the card distribution's own: one sampled card carried
-302 KB of `creator_notes`, larger than most entire cards. Everything in this document sized against
-601 bytes assumes the flag off. With it on, 300k costs roughly 410 MB rather than 199 MB, which is
-the difference between fitting a mobile budget and not.
+`creator_notes` is the field that decides the shallow tier's cost: whole, it more than doubles the
+mean and adds a tail worse than the card distribution's own (one sampled card carried 302 KB of
+`creator_notes`, larger than most entire cards). **Superseded:** there is no flag. The page holds only
+the rows it shows, and a row carries only the prefix of the notes its card can ever show
+(`LIST_CREATOR_NOTES_CHARS` in `hash-utils.js`, cut by the server), never the whole notes, so the
+tail cannot reach a row. The length is not derived yet: the card's width has no upper bound in the
+CSS, so it is 0 (no notes) until it is.
 
 Also replace localforage with raw IndexedDB for this store. localforage's per-item `setItem` is one
 transaction per row and its `keys()` materializes every key. At 300k rows, both are the wrong
@@ -1385,6 +1388,10 @@ The approach, given all that:
    it beyond logging: it is not load-bearing anywhere, and on iOS it can only ever return false.
 
 ### 7.3 Eviction policy
+
+**Superseded:** the shown-row cache (`character-cache.js`) is a least-recently-used cache bounded by
+`ROW_CACHE_QUOTA_SHARE` of the quota `navigator.storage.estimate()` reports, keyed by each row's content
+identity, and filled only with rows the page showed. Where no quota is reported, nothing is kept.
 
 Frecency, evaluated against a byte budget rather than a row count:
 
@@ -1929,17 +1936,16 @@ Details:
   through it whenever the current sort is one the server accepts. Relevance sort counts only with a
   search term. If the server rejects the sort, the list falls back to local pagination. Requests
   include groups and send `ifSeq` from the client's page cache.
-- `/changes`: `getCharacters()` syncs the local cache through `fetchCharactersDelta()` instead of a
-  full-library fetch.
+- `/changes`: `getCharacters()` brings the held characters up to date from it (**superseded**: it
+  once filled a whole-library cache through `fetchCharactersDelta()`; that cache and sync are gone).
 - `/exists`: `characterRepository.exists()`, which destructive-existence call sites use
   (`character-existence-check.js`).
 - `/metadata/batch-import/begin` and `/end`: `script.js` wraps client imports in them.
 - `/metadata/rescan`: no client caller.
 
 `GET /changes/stream` also shipped, an SSE endpoint the spec didn't have. `script.js` opens one per
-tab and refetches characters on each event. No client code calls `/all` or `/manifest`. Both routes
-still exist, and `/all`'s no-parameter path is still `readdirSync` plus `processCharacter` over the
-whole library.
+tab and refetches characters on each event. **Superseded:** `/manifest` is removed and `/all` answers
+only a search (400 without one), capped at `/query`'s page size.
 
 **Tantivy** (`characters-search-index.js`, `tantivy-search.js`, `search-index-coordinator.js`):
 
@@ -2598,8 +2604,8 @@ override it. Neither gates anything before phase 5.
 | 17 | Bulk import may optionally supply `date_added` per record, falling back to discovery time. Still write-once; caller-supplied values get validated. | §3.1, §3.3 item 7 |
 | 18 | Local search engine is **MiniSearch**, behind a thin swappable wrapper. | §8.2 |
 | 19 | The character cache uses **raw IndexedDB**, not localforage (per-item transactions and full-key materialization are the wrong shape at 300k). localforage stays for the app's small stores. | §7.1 |
-| 20 | Cache eviction is **frecency** against a byte budget, not LRU: an LRU inverts this access pattern. | §7.3 |
-| 21 | Storage budget is a **learned ceiling**: never trust `quota`, detect exhaustion by `error.name` alone, evict and retry. | §7.2 |
+| 20 | Cache eviction is **frecency** against a byte budget, not LRU: an LRU inverts this access pattern. **Superseded by the owner:** LRU over shown rows only. | §7.3 |
+| 21 | Storage budget is a **learned ceiling**: never trust `quota`, detect exhaustion by `error.name` alone, evict and retry. **Superseded by the owner:** a share of the reported quota. | §7.2 |
 | 22 | No breaking options for extensions, full stop. None of the four candidate options clears that bar, so the extension API splits in two: declared-compatible extensions get bounded residency and the uuid; legacy ones get a fully materialized array and cost memory. Past the size where that is payable the app refuses to enable a legacy extension and says why, rather than degrading silently. | §9.4 |
 | 23 | Random sort and search compose unconditionally. Search narrows the set, the seeded hash orders it. Sort stops being forced by the presence of a query. | §5.3 |
 | — | (Inputs from the outset: correctness over cost; disk-quota-based cache cap; a real client-side search index; phase 0 ships first.) | §0 |
@@ -2614,11 +2620,9 @@ which blocks any phase.
    than degrading. Unsettled is where that line sits and whether a user may override it and accept
    the memory cost. A product call, not a design one. Does not gate phases 0–4.
 
-2. §8.3, whether the extension-facing shallow view includes `creator_notes`. The field is already a
-   config flag (`performance.shallowCharactersIncludeCreatorNotes`, default off) and it changes the
-   resident cost by more than 2× (601 B → 1,377 B per row, measured). At 300k that is 199 MB versus
-   ~410 MB, which is the difference between fitting a mobile budget and not. Whichever way it goes,
-   the flag must not silently change residency behaviour underneath the guarantee in decision 22.
+2. §8.3, whether the extension-facing shallow view includes `creator_notes`. **Closed:** there is no
+   flag; a row carries only the prefix of the notes its card can show (§7.1). Open instead: that
+   prefix's length, since the card's width has no upper bound in the CSS.
 
 3. Not open, but not finished: the term-dictionary saturation caveat in §8.2 means the 50k/100k
    MiniSearch figures understate a library of distinct cards. Re-measure against the real corpus

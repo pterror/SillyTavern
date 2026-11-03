@@ -1,9 +1,8 @@
-import { lodash } from '../lib.js';
 import { favsToHotswap } from './RossAscends-mods.js';
 import { characters, charactersStore, this_avatar, resolveCharacterRef } from './character-store.js';
 import { getGroups, getGroupBlock } from './group-chats.js';
 import { power_user, sortEntitiesList } from './power-user.js';
-import { applyCharacterRowFields, characterRowFieldHashes, normalizeFav } from './hash-utils.js';
+import { normalizeFav } from './hash-utils.js';
 import { debounce, delay, PAGINATION_TEMPLATE, localizePagination, renderPaginationDropdown, paginationDropdownChangeHandler } from './utils.js';
 import { debounce_timeout } from './constants.js';
 import { filterByTagState, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, heldTagsForIds, searchTagsByName, readTagsForIds, registerFolderCaseHandlers, takeInExtensionTagWrites } from './tags.js';
@@ -17,14 +16,12 @@ import { initFolderSwitcher, refreshFolderSwitcher } from './folder-switcher.js'
 import { getRandomSortSeed } from './random-sort.js';
 import { t } from './i18n.js';
 import { updatePersonaConnectionsAvatarList } from './personas.js';
-import { getCachedCursor, setCachedCursor, readCachedCharactersByIds, saveCachedCharacters, removeCachedCharacters, clearCharacterCache, getWriteFailures, setWriteFailures } from './character-cache.js';
 import { Popup } from './popup.js';
 import { renderTemplateAsync } from './templates.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { getPermanentAssistantAvatar } from './welcome-screen.js';
 import { event_types, eventSource } from './events.js';
 import { getRequestHeaders } from './request-headers.js';
-import { checkCharactersExistOrNull } from './character-existence-check.js';
 import { characterThumbnail, getCurrentCharacter, per_page_default, selectCharacterByAvatar } from '../script.js';
 
 let saveCharactersPage = 0;
@@ -920,29 +917,19 @@ export function getCharacterSource(chId = getCurrentCharacter()) {
     return '';
 }
 
-/**
- * @param {object} [options]
- * @param {boolean} [options.silent=false]
- * @param {boolean} [options.silentGroups=false]
- */
-const CHARACTER_BATCH_CHUNK_SIZE = 500;
+/** @type {number | null} */
+let changesSeq = null;
 
-function finalizeFetchedCharacter(character) {
-    character.chat = character.chat ? String(character.chat) : '';
+/**
+ * @param {number} seq
+ */
+export function startCharacterChangesAt(seq) {
+    if (changesSeq === null && Number.isFinite(seq)) changesSeq = seq;
 }
 
 /**
- * @typedef {object} DeltaProgress
- * @property {Map<string, object|null>} updates
- * @property {boolean} changed
- * @property {boolean} full
- */
-
-let memorySeq = 0;
-
-/**
  * @param {number} sinceSeq
- * @returns {Promise<{seq: number, changes: {id: string, op: 'upsert'|'delete', fields?: string[]|null}[], truncated: boolean, hasMore: boolean}>}
+ * @returns {Promise<{seq: number, changes: {id: string, op: 'upsert'|'delete'}[], hasMore: boolean}>}
  */
 async function fetchChangesPage(sinceSeq) {
     const changesResponse = await fetch('/api/characters/changes', {
@@ -958,217 +945,51 @@ async function fetchChangesPage(sinceSeq) {
 }
 
 /**
- * @param {DeltaProgress} progress
- * @param {number} cursor
+ * @returns {Promise<boolean>} Whether a held character changed.
  */
-async function catchUpFromCache(progress, cursor) {
-    let sinceSeq = memorySeq;
-    while (sinceSeq < cursor) {
-        const { seq, changes, truncated, hasMore } = await fetchChangesPage(sinceSeq);
-        if (truncated) {
-            await readHeldFromCache(progress);
-            progress.changed = true;
-            memorySeq = cursor;
-            return;
-        }
-        const ids = [...new Set(changes.map(change => change.id))].filter(id => charactersStore.has(id));
-        if (changes.length > 0) {
-            progress.changed = true;
-        }
-        const stored = await readCachedCharactersByIds(ids);
-        for (const id of ids) {
-            progress.updates.set(id, stored.get(id) ?? null);
-        }
-        memorySeq = seq;
-        if (!hasMore) {
-            break;
-        }
-        sinceSeq = seq;
-    }
-}
-
-/** @param {DeltaProgress} progress */
-async function fetchCharactersDelta(progress) {
-    let sinceSeq = await getCachedCursor();
-    if (memorySeq < sinceSeq) {
-        await catchUpFromCache(progress, sinceSeq);
-    }
+async function syncHeldCharacters() {
+    if (changesSeq === null) return false;
+    let seq = changesSeq;
+    /** @type {Set<string>} */
+    const upserted = new Set();
+    /** @type {Set<string>} */
+    const deleted = new Set();
     for (;;) {
-        const { seq, changes, truncated, hasMore } = await fetchChangesPage(sinceSeq);
-
-        if (truncated) {
-            await clearCharacterCache();
-            progress.updates.clear();
-            progress.full = true;
-            memorySeq = 0;
-            return fetchCharactersDelta(progress);
-        }
-
-        const deleteIds = [];
-        const wholeRecordIds = [];
-        /** @type {Map<string, { fields: string[], ids: string[] }>} */
-        const fieldGroupMap = new Map();
-
-        for (const { id, op, fields } of changes) {
+        const page = await fetchChangesPage(seq);
+        for (const { id, op } of page.changes) {
+            if (!charactersStore.has(id)) continue;
             if (op === 'delete') {
-                deleteIds.push(id);
-            } else if (!fields) {
-                wholeRecordIds.push(id);
+                upserted.delete(id);
+                deleted.add(id);
             } else {
-                const key = JSON.stringify([...fields].sort());
-                if (!fieldGroupMap.has(key)) {
-                    fieldGroupMap.set(key, { fields, ids: [] });
-                }
-                fieldGroupMap.get(key).ids.push(id);
+                deleted.delete(id);
+                upserted.add(id);
             }
         }
-
-        const previousFailures = await getWriteFailures();
-        if (previousFailures.length > 0) {
-            const deleteSet = new Set(deleteIds);
-            for (const id of previousFailures) {
-                if (!deleteSet.has(id) && !wholeRecordIds.includes(id)) {
-                    wholeRecordIds.push(id);
-                }
-            }
-            console.log(`[sync] Re-fetching ${previousFailures.length} record(s) from previous write failure(s)`);
-        }
-
-        if (deleteIds.length > 0) {
-            await removeCachedCharacters(deleteIds);
-        }
-
-        /** @type {Map<string, object>} */
-        const fresh = new Map();
-
-        for (let i = 0; i < wholeRecordIds.length; i += CHARACTER_BATCH_CHUNK_SIZE) {
-            const chunk = wholeRecordIds.slice(i, i + CHARACTER_BATCH_CHUNK_SIZE);
-            const held = await readCachedCharactersByIds(chunk);
-            /** @type {Record<string, Record<string, number>>} */
-            const hashes = {};
-            for (const [avatar, character] of held) hashes[avatar] = characterRowFieldHashes(character);
-            const batchResponse = await fetch('/api/characters/batch', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ avatars: chunk, hashes }),
-            });
-
-            if (!batchResponse.ok) {
-                throw new Error(`Failed to fetch character batch: ${batchResponse.statusText}`);
-            }
-            const batchData = await batchResponse.json();
-            for (const changes of batchData) {
-                const character = applyCharacterRowFields(held.get(changes.avatar) ?? {}, changes);
-                finalizeFetchedCharacter(character);
-                fresh.set(changes.avatar, character);
-            }
-        }
-
-        if (fieldGroupMap.size > 0) {
-            const cachedBefore = await readCachedCharactersByIds([...fieldGroupMap.values()].flatMap(group => group.ids));
-
-            for (const { fields, ids } of fieldGroupMap.values()) {
-                for (let i = 0; i < ids.length; i += CHARACTER_BATCH_CHUNK_SIZE) {
-                    const chunk = ids.slice(i, i + CHARACTER_BATCH_CHUNK_SIZE);
-                    const batchResponse = await fetch('/api/characters/batch', {
-                        method: 'POST',
-                        headers: getRequestHeaders(),
-                        body: JSON.stringify({ avatars: chunk, fields }),
-                    });
-
-                    if (!batchResponse.ok) {
-                        throw new Error(`Failed to fetch character batch (fields): ${batchResponse.statusText}`);
-                    }
-                    const batchData = await batchResponse.json();
-                    const batchMerged = [];
-                    for (const partial of batchData) {
-                        const avatar = partial.avatar;
-                        const existing = fresh.get(avatar) || cachedBefore.get(avatar);
-                        if (existing) {
-                            for (const field of fields) {
-                                if (field in partial) {
-                                    existing[field] = partial[field];
-                                }
-                            }
-                            if (fields.includes('fav') && 'fav' in partial) {
-                                existing.data = existing.data ?? {};
-                                existing.data.extensions = existing.data.extensions ?? {};
-                                existing.data.extensions.fav = partial.fav;
-                            }
-                            fresh.set(avatar, existing);
-                            batchMerged.push({ avatar, character: existing });
-                        }
-                    }
-                    if (batchMerged.length > 0) {
-                        await saveCachedCharacters(batchMerged);
-                    }
-                }
-            }
-        }
-
-        let writeFailures = [];
-        if (fresh.size > 0) {
-            writeFailures = await saveCachedCharacters(Array.from(fresh, ([avatar, character]) => ({ avatar, character })));
-        }
-        await setWriteFailures(writeFailures);
-        await setCachedCursor(seq);
-
-        const touched = [...new Set([...deleteIds, ...wholeRecordIds, ...[...fieldGroupMap.values()].flatMap(group => group.ids)])]
-            .filter(id => charactersStore.has(id));
-        const stored = await readCachedCharactersByIds(touched);
-        for (const id of touched) {
-            progress.updates.set(id, stored.get(id) ?? null);
-        }
-        memorySeq = Math.max(memorySeq, seq);
-
-        if (changes.length > 0 || previousFailures.length > 0) {
-            progress.changed = true;
-        }
-        if (!hasMore) {
-            break;
-        }
-        sinceSeq = seq;
+        seq = Math.max(seq, page.seq);
+        if (!page.hasMore) break;
     }
-}
-
-function mergeShallowCharacterCustomizer(_objValue, srcValue) {
-    if (Array.isArray(srcValue)) {
-        return srcValue;
+    if (upserted.size > 0) {
+        const full = await characterRepository.readFull([...upserted]);
+        for (const avatar of upserted) {
+            const character = full.get(avatar);
+            if (!character) deleted.add(avatar);
+            else if (charactersStore.has(avatar)) charactersStore.update(avatar, character);
+        }
     }
-    return undefined;
-}
-
-export async function seedCharactersFromCache() {
-    memorySeq = await getCachedCursor();
-}
-
-/**
- * @param {DeltaProgress} progress
- */
-async function readHeldFromCache(progress) {
-    const held = charactersStore.getAll().map(character => character.avatar);
-    const stored = await readCachedCharactersByIds(held);
-    for (const [avatar, character] of stored) {
-        progress.updates.set(avatar, character);
+    if (deleted.size > 0) {
+        let kept = 0;
+        for (const character of characters) {
+            if (!deleted.has(character.avatar)) characters[kept++] = character;
+        }
+        characters.length = kept;
     }
-    await markHeldGoneIfDeleted(progress, held.filter(avatar => !stored.has(avatar)));
+    changesSeq = Math.max(changesSeq, seq);
+    return upserted.size > 0 || deleted.size > 0;
 }
 
-/**
- * @param {DeltaProgress} progress
- * @param {string[]} avatars
- */
-async function markHeldGoneIfDeleted(progress, avatars) {
-    if (avatars.length === 0) return;
-    const exists = await checkCharactersExistOrNull(avatars);
-    if (!exists) return;
-    for (const avatar of avatars) {
-        if (exists[avatar] === false) progress.updates.set(avatar, null);
-    }
-}
-
-const DELTA_FETCH_MAX_RETRIES = 3;
-const DELTA_FETCH_RETRY_DELAYS_MS = [1000, 3000, 8000];
+const SYNC_MAX_RETRIES = 3;
+const SYNC_RETRY_DELAYS_MS = [1000, 3000, 8000];
 
 export const SYNC_REQUEST_TIMEOUT_MS = 60000;
 
@@ -1196,93 +1017,26 @@ export async function getCharacters(options = {}) {
     }
 }
 
-/**
- * @param {DeltaProgress} progress
- * @param {number} fetchStamp
- * @returns {string[]}
- */
-function applyCharacterUpdates({ updates }, fetchStamp) {
-    const removed = new Set();
-    /** @type {string[]} */
-    const readAgain = [];
-    for (const [avatar, incoming] of updates) {
-        const existing = charactersStore.get(avatar);
-        if (!existing) {
-            continue;
-        }
-        if (!incoming) {
-            removed.add(existing);
-            continue;
-        }
-        if (!isFetchedTagIdsCurrent(avatar, fetchStamp)) {
-            delete incoming.tag_ids;
-        }
-        lodash.mergeWith(existing, incoming, mergeShallowCharacterCustomizer);
-        if (incoming.shallow === true) {
-            existing.shallow = false;
-            readAgain.push(avatar);
-        }
-    }
-    if (removed.size > 0) {
-        let kept = 0;
-        for (const character of characters) {
-            if (!removed.has(character)) characters[kept++] = character;
-        }
-        characters.length = kept;
-    }
-    return readAgain;
-}
-
-/**
- * @param {string[]} avatars
- */
-async function readHeldAgainInFull(avatars) {
-    if (avatars.length === 0) return;
-    const fetchStamp = tagFetchStamp();
-    const full = await characterRepository.readFull(avatars);
-    for (const [avatar, character] of full) {
-        if (!charactersStore.has(avatar)) continue;
-        if (!isFetchedTagIdsCurrent(avatar, fetchStamp)) delete character.tag_ids;
-        charactersStore.update(avatar, character);
-    }
-}
-
 async function syncCharacters({ silent = false, silentGroups = false, skipPrint = false, keepListPosition = false } = {}) {
     let lastError;
+    let changed = false;
     takeInExtensionTagWrites();
-    const fetchStamp = tagFetchStamp();
-    /** @type {DeltaProgress} */
-    const progress = { updates: new Map(), changed: false, full: false };
-    for (let attempt = 0; attempt <= DELTA_FETCH_MAX_RETRIES; attempt++) {
+    for (let attempt = 0; attempt <= SYNC_MAX_RETRIES; attempt++) {
         try {
-            await fetchCharactersDelta(progress);
+            changed = await syncHeldCharacters();
             lastError = undefined;
             break;
         } catch (error) {
             lastError = error;
-            if (attempt < DELTA_FETCH_MAX_RETRIES) {
-                const retryDelay = DELTA_FETCH_RETRY_DELAYS_MS[attempt];
-                console.warn(`Character delta fetch failed (attempt ${attempt + 1}/${DELTA_FETCH_MAX_RETRIES + 1}), retrying in ${retryDelay}ms:`, error);
+            if (attempt < SYNC_MAX_RETRIES) {
+                const retryDelay = SYNC_RETRY_DELAYS_MS[attempt];
+                console.warn(`Character sync failed (attempt ${attempt + 1}/${SYNC_MAX_RETRIES + 1}), retrying in ${retryDelay}ms:`, error);
                 await delay(retryDelay);
             }
         }
     }
 
-    if (progress.full) {
-        try {
-            await markHeldGoneIfDeleted(progress, charactersStore.getAll().map(character => character.avatar).filter(avatar => !progress.updates.has(avatar)));
-        } catch (error) {
-            console.error('Could not check the held characters a rebuilt cache did not name:', error);
-        }
-    }
-
-    if (progress.changed) {
-        const readAgain = applyCharacterUpdates(progress, fetchStamp);
-        try {
-            await readHeldAgainInFull(readAgain);
-        } catch (error) {
-            console.error('Could not read changed characters again in full:', error);
-        }
+    if (changed) {
         if (silent) {
             charactersStore.reindex();
         } else {
@@ -1291,19 +1045,17 @@ async function syncCharacters({ silent = false, silentGroups = false, skipPrint 
     }
 
     if (lastError) {
-        console.error(`Character delta fetch failed after ${DELTA_FETCH_MAX_RETRIES + 1} attempts, giving up (no full-library fallback - see getCharacters()' doc comment):`, lastError);
+        console.error(`Character sync failed after ${SYNC_MAX_RETRIES + 1} attempts, giving up:`, lastError);
         showCharacterSyncFailedToast();
         return;
     }
 
-    if (progress.changed) {
-        if (this_avatar) {
-            if (charactersStore.get(this_avatar)) {
-                await selectCharacterByAvatar(this_avatar, { switchMenu: false });
-            } else {
-                await Popup.show.text(t`ERROR: The active character is no longer available.`, t`The page will be refreshed to prevent data loss. Press "OK" to continue.`);
-                return location.reload();
-            }
+    if (changed && this_avatar) {
+        if (charactersStore.get(this_avatar)) {
+            await selectCharacterByAvatar(this_avatar, { switchMenu: false });
+        } else {
+            await Popup.show.text(t`ERROR: The active character is no longer available.`, t`The page will be refreshed to prevent data loss. Press "OK" to continue.`);
+            return location.reload();
         }
     }
 

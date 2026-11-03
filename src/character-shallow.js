@@ -1,12 +1,4 @@
-import { getConfigValue } from './util.js';
 import { shallowCharacterData } from '../public/scripts/hash-utils.js';
-
-/**
- * @returns {boolean}
- */
-export function shallowCharactersIncludeCreatorNotes() {
-    return !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
-}
 
 /**
  * @param {object} data
@@ -36,6 +28,6 @@ export function toShallow(character) {
         data_size: character.data_size,
         tags: character.tags,
         tag_ids: character.tag_ids,
-        data: shallowCharacterData(character, shallowCharactersIncludeCreatorNotes()),
+        data: shallowCharacterData(character),
     };
 }

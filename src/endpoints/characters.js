@@ -22,7 +22,7 @@ import { importFailure, NO_CARD_DATA } from '../character-import-error.js';
 import { computeAnimatedHashFromChunks, computeAvatarIdentityHashFromChunks, parse, write } from '../character-card-parser.js';
 import { decodeFrames, encodeApng } from '../image-frames.js';
 import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, unsetPrivateFields, omitInstallLocalFields, omitFavField, omitChatField, V1_V2_FIELD_MAPPINGS } from '../character-card-normalize.js';
-import { calculateDataSize, toShallow, shallowCharactersIncludeCreatorNotes } from '../character-shallow.js';
+import { calculateDataSize, toShallow } from '../character-shallow.js';
 import { touchBrowserPresence, PRESENCE_PING_INTERVAL_MS } from '../browser-presence.js';
 import { claimTabSession } from '../session-presence.js';
 import { assignThumbnails, cropOf, normalizeCrop, thumbnailsOf } from '../thumbnail-urls.js';
@@ -32,7 +32,7 @@ import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
 import { savedViewsEvents } from '../saved-views.js';
-import { characterDigestFieldsHash, characterDigestCardBodyHash, characterRowFieldHashes, characterRowFields, getStringHash, normalizeFav } from '../../public/scripts/hash-utils.js';
+import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
 import { withSearchTiming } from '../search-timing.js';
@@ -1674,35 +1674,12 @@ router.post('/all', async function (request, response) {
     try {
         const { offset, limit, search, includeGroups, fav } = request.body ?? {};
 
-        if (!search) {
-            response.set('Content-Type', 'application/json');
-            response.status(200);
-            let wroteAny = false;
-            try {
-                await writeBackpressured(response, '[');
-                let batch = [];
-                const flush = async () => {
-                    for (const character of await characterObjects(request, batch, { shallow: useShallowCharacters })) {
-                        if (!character) continue;
-                        await writeBackpressured(response, (wroteAny ? ',' : '') + JSON.stringify(character));
-                        wroteAny = true;
-                    }
-                    batch = [];
-                };
-                for await (const avatar of everyCharacter(request)) {
-                    batch.push(avatar);
-                    if (batch.length >= EVERY_PAGE) await flush();
-                }
-                await flush();
-                await writeBackpressured(response, ']');
-            } catch (streamErr) {
-                console.error('[characters/all] Streaming response failed mid-flight; ending the connection:', streamErr);
-            }
-            return response.end();
+        if (typeof search !== 'string' || search.trim() === '') {
+            return response.status(400).send({ error: true, reason: 'search-required', message: 'The character list is read a page at a time through /api/characters/query; /all only searches.' });
         }
 
         const numericOffset = Number.isFinite(Number(offset)) ? Number(offset) : 0;
-        const numericLimit = Number.isFinite(Number(limit)) ? Number(limit) : DEFAULT_PAGE_LIMIT;
+        const numericLimit = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Math.min(Math.trunc(Number(limit)), MAX_QUERY_PAGE_SIZE) : DEFAULT_PAGE_LIMIT;
         const store = await requestStore(request);
         const page = await store.lib.query({
             search: String(search), sortField: 'search', offset: numericOffset, limit: numericLimit,
@@ -2088,7 +2065,6 @@ async function runQuery(request, body, { compat = true } = {}) {
         groupsOnly: includeGroups && group === true,
         includeGroups: includeGroups && group !== false,
         hiddenKinds: { characters: true, groups: includeGroups },
-        includeCreatorNotes: shallowCharactersIncludeCreatorNotes(),
         ...(searchTerm ? { search: searchTerm } : {}),
     });
     if (result === 'invalid-cursor') {
@@ -2490,37 +2466,6 @@ async function tabStreamSession(request, store, send) {
     };
 }
 
-router.post('/manifest', async function (request, response) {
-    try {
-        const { lib } = await requestStore(request);
-        response.set('Content-Type', 'application/json');
-        response.status(200);
-        let wroteAny = false;
-        try {
-            await writeBackpressured(response, '[');
-            /** @type {string | undefined} */
-            let cursor;
-            for (;;) {
-                const page = await lib.query({ sortField: 'name', limit: EVERY_PAGE, cursor, wantRows: false, wantTotal: false, wantHashes: true, includeGroups: false });
-                const rows = /** @type {{ id: string, version: number }[]} */ (page.hashRows);
-                for (const row of rows) {
-                    await writeBackpressured(response, (wroteAny ? ',' : '') + JSON.stringify({ avatar: row.id, mtime: row.version }));
-                    wroteAny = true;
-                }
-                if (typeof page.cursor !== 'string' || rows.length === 0) break;
-                cursor = page.cursor;
-            }
-            await writeBackpressured(response, ']');
-        } catch (streamErr) {
-            console.error('[characters/manifest] Streaming response failed mid-flight; ending the connection:', streamErr);
-        }
-        return response.end();
-    } catch (err) {
-        console.error(err);
-        response.status(500).send({ error: true });
-    }
-});
-
 router.post('/batch', async function (request, response) {
     try {
         const avatars = Array.isArray(request.body?.avatars) ? request.body.avatars : [];
@@ -2530,23 +2475,6 @@ router.post('/batch', async function (request, response) {
             if (typeof avatar !== 'string' || forbiddenRegExp.test(avatar)) {
                 return response.sendStatus(400);
             }
-        }
-
-        const hashes = request.body?.hashes;
-        if (hashes !== undefined) {
-            if (!hashes || typeof hashes !== 'object' || Array.isArray(hashes)) return response.sendStatus(400);
-            const rows = /** @type {Record<string, any>[]} */ ((await characterObjects(request, avatars, { shallow: useShallowCharacters })).filter(Boolean));
-            return response.send(rows.map(row => {
-                const held = hashes[row.avatar] && typeof hashes[row.avatar] === 'object' ? hashes[row.avatar] : {};
-                const now = characterRowFieldHashes(row);
-                /** @type {Record<string, unknown>} */
-                const set = {};
-                for (const [path, value] of characterRowFields(row)) {
-                    if (held[path] !== now[path]) set[path] = value;
-                }
-                const unset = Object.keys(held).filter(path => !(path in now));
-                return { avatar: row.avatar, set, unset };
-            }));
         }
 
         if (fields) {

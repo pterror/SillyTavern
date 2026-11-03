@@ -7,7 +7,7 @@ import lodash from 'lodash';
 
 const originalCwd = process.cwd();
 
-const USER_HANDLE = 'delta-sync-apply-test-user';
+const USER_HANDLE = 'held-sync-test-user';
 
 /** @type {Map<string, Map<string, any>>} */
 const localforageStores = new Map();
@@ -95,7 +95,9 @@ jest.unstable_mockModule('../public/scripts/filters.js', () => ({
     FilterHelper: class {},
     isFilterState: noop,
 }));
-const readFull = jest.fn(async () => new Map());
+/** @type {(ids: string[]) => Promise<Map<string, any>>} */
+let readFullFromServer = async () => new Map();
+const readFull = jest.fn(ids => readFullFromServer(ids));
 jest.unstable_mockModule('../public/scripts/character-repository.js', () => ({
     characterRepository: { readFull },
     buildCharacterQuery: noop,
@@ -125,13 +127,15 @@ globalThis.toastr = { error: toastrError, warning: noop, info: noop, success: no
 
 const realFetch = globalThis.fetch;
 
-describe('delta sync applies only what changed', () => {
+describe('the page syncs only the characters it holds', () => {
     let fixture;
     let user;
     let characterList;
     let server;
     let baseUrl;
     let uploadsDir;
+    /** @type {string[]} */
+    let requested;
 
     beforeAll(async () => {
         jest.resetModules();
@@ -140,14 +144,14 @@ describe('delta sync applies only what changed', () => {
 
         fixture = await import('./converted-user.fixture.js');
         const { router } = await import('../src/endpoints/characters.js');
-        characterList = await import('../public/scripts/character-list.js');
+        const settings = await import('../src/endpoints/settings.js');
 
         process.chdir(path.resolve(originalCwd, '..'));
 
         const express = (await import('express')).default;
         const multer = (await import('multer')).default;
         const app = express();
-        uploadsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-delta-sync-apply-uploads-'));
+        uploadsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-held-sync-uploads-'));
         app.use(multer({ dest: uploadsDir }).single('avatar'));
         app.use(express.json());
         app.use((req, res, next) => {
@@ -155,6 +159,7 @@ describe('delta sync applies only what changed', () => {
             next();
         });
         app.use('/api/characters', router);
+        app.use('/api/settings', settings.router);
         server = app.listen(0, '127.0.0.1');
         await new Promise(resolve => server.once('listening', resolve));
         baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -167,14 +172,22 @@ describe('delta sync applies only what changed', () => {
     });
 
     beforeEach(async () => {
-        user = await fixture.emptyUser('st-delta-sync-apply-test-');
+        user = await fixture.emptyUser('st-held-sync-test-');
         globalThis.DATA_ROOT = user.dataRoot;
         for (const records of localforageStores.values()) records.clear();
         residentCharacters.length = 0;
-        store.reindex();
         toastrError.mockClear();
-        globalThis.fetch = (url, init) => realFetch(String(url).startsWith('/') ? `${baseUrl}${url}` : url, init);
-        await characterList.seedCharactersFromCache();
+        readFull.mockClear();
+        requested = [];
+        globalThis.fetch = (url, init) => {
+            requested.push(String(url));
+            return realFetch(String(url).startsWith('/') ? `${baseUrl}${url}` : url, init);
+        };
+        readFullFromServer = async (ids) => {
+            const records = await (await postJson('/api/characters/batch', { avatars: ids, full: true })).json();
+            return new Map(records.map(record => [record.avatar, { ...record, chat: record.chat ? String(record.chat) : '', shallow: false }]));
+        };
+        characterList = await import('../public/scripts/character-list.js?' + Math.random());
     });
 
     afterEach(async () => {
@@ -197,7 +210,14 @@ describe('delta sync applies only what changed', () => {
         return `${name}.png`;
     }
 
+    async function startFromSettings() {
+        const settings = await (await postJson('/api/settings/get', {})).json();
+        expect(typeof settings.characterChangesSeq).toBe('number');
+        characterList.startCharacterChangesAt(settings.characterChangesSeq);
+    }
+
     async function sync() {
+        requested = [];
         await characterList.getCharacters({ silent: true, silentGroups: true, skipPrint: true });
         expect(toastrError).not.toHaveBeenCalled();
     }
@@ -205,139 +225,93 @@ describe('delta sync applies only what changed', () => {
     const avatars = () => residentCharacters.map(c => c.avatar).sort();
 
     async function hold(...avatarKeys) {
-        const records = await (await postJson('/api/characters/batch', { avatars: avatarKeys })).json();
-        for (const record of records) {
-            record.chat = record.chat ? String(record.chat) : '';
-            store.create(record);
-        }
+        for (const [, record] of await readFullFromServer(avatarKeys)) store.create(record);
     }
 
-    test('a sync takes in no character the page does not hold', async () => {
-        const a = await createCharacter('A');
-        await createCharacter('B');
-        await sync();
-        expect(avatars()).toEqual([]);
-
-        await hold(a);
-        await createCharacter('C');
-        await sync();
-        expect(avatars()).toEqual([a]);
-    });
-
-    test('boot reads none of the cache into memory', async () => {
+    test('a page that has not read its settings asks for nothing', async () => {
         await createCharacter('A');
         await createCharacter('B');
         await sync();
-
-        wholeStoreReads.count = 0;
-        await characterList.seedCharactersFromCache();
-
-        expect(wholeStoreReads.count).toBe(0);
+        expect(requested).toEqual([]);
         expect(avatars()).toEqual([]);
     });
 
-    test('a later sync reads no whole cache and applies the changes to the held characters', async () => {
+    test('a first sync on a library with characters downloads none of them', async () => {
+        for (const name of ['A', 'B', 'C']) await createCharacter(name);
+        await startFromSettings();
+        await sync();
+        expect(requested.filter(url => url !== '/api/characters/changes')).toEqual([]);
+        expect(readFull).not.toHaveBeenCalled();
+        expect(avatars()).toEqual([]);
+    });
+
+    test('changes to characters the page does not hold download nothing', async () => {
+        const a = await createCharacter('A');
+        await startFromSettings();
+        await hold(a);
+        await createCharacter('B');
+        await postJson('/api/characters/fav', { avatar: 'B.png', fav: true });
+        await sync();
+        expect(requested.filter(url => url !== '/api/characters/changes')).toEqual([]);
+        expect(readFull).not.toHaveBeenCalled();
+        expect(avatars()).toEqual([a]);
+    });
+
+    test('a held character changed or deleted after the settings were read is brought up to date', async () => {
         const a = await createCharacter('A');
         const b = await createCharacter('B');
         const c = await createCharacter('C');
-        await sync();
+        await startFromSettings();
         await hold(a, b, c);
         const heldA = store.get(a);
         const heldB = store.get(b);
 
         await postJson('/api/characters/fav', { avatar: a, fav: true });
         await postJson('/api/characters/delete', { avatar_urls: [c], delete_chats: false });
-        const d = await createCharacter('D');
-
-        wholeStoreReads.count = 0;
+        await createCharacter('D');
         await sync();
 
-        expect(wholeStoreReads.count).toBe(0);
+        expect(readFull).toHaveBeenCalledTimes(1);
+        expect(readFull).toHaveBeenCalledWith([a]);
         expect(avatars()).toEqual([a, b]);
         expect(store.get(a)).toBe(heldA);
         expect(heldA.fav).toBe(true);
         expect(store.get(b)).toBe(heldB);
-        expect(store.has(c)).toBe(false);
-        expect(store.has(d)).toBe(false);
     });
 
-    test('a sync with nothing new leaves the held characters alone', async () => {
+    test('a change made between reading the settings and holding the character still reaches it', async () => {
         const a = await createCharacter('A');
-        await sync();
+        await startFromSettings();
+        await postJson('/api/characters/fav', { avatar: a, fav: true });
         await hold(a);
+        await postJson('/api/characters/fav', { avatar: a, fav: false });
+        await sync();
+        expect(store.get(a).fav).toBe(false);
+    });
+
+    test('a sync with nothing new leaves the held characters alone and reads nothing again', async () => {
+        const a = await createCharacter('A');
+        await startFromSettings();
+        await hold(a);
+        await sync();
+        readFull.mockClear();
         const heldA = store.get(a);
 
-        wholeStoreReads.count = 0;
         await sync();
 
-        expect(wholeStoreReads.count).toBe(0);
+        expect(readFull).not.toHaveBeenCalled();
         expect(avatars()).toEqual([a]);
         expect(store.get(a)).toBe(heldA);
     });
 
-    test('a held character the cache does not have survives a sync that does not name it', async () => {
+    test('settings read again later do not move the start forward past unsynced changes', async () => {
         const a = await createCharacter('A');
-        await sync();
+        await startFromSettings();
         await hold(a);
-        store.create({ avatar: 'OnDemand.png', name: 'On demand', shallow: false });
-
         await postJson('/api/characters/fav', { avatar: a, fav: true });
+        await startFromSettings();
         await sync();
-
-        expect(avatars()).toEqual([a, 'OnDemand.png']);
-    });
-
-    test('a change another tab already took into the shared cache still reaches this tab', async () => {
-        const cache = await import('../public/scripts/character-cache.js');
-        const a = await createCharacter('A');
-        const b = await createCharacter('B');
-        await sync();
-        await hold(a, b);
-        const heldA = store.get(a);
-
-        await postJson('/api/characters/fav', { avatar: a, fav: true });
-        const changes = await (await postJson('/api/characters/changes', { sinceSeq: await cache.getCachedCursor() })).json();
-        const batchResponse = await postJson('/api/characters/batch', { avatars: [a] });
-        const [record] = await batchResponse.json();
-        record.chat = record.chat ? String(record.chat) : '';
-        await cache.saveCachedCharacters([{ avatar: a, character: record }], { includeCreatorNotes: batchResponse.headers.get('X-Shallow-Characters-Include-Creator-Notes') === 'true' });
-        await cache.setCachedCursor(changes.seq);
-
-        wholeStoreReads.count = 0;
-        await sync();
-
-        expect(wholeStoreReads.count).toBe(0);
-        expect(avatars()).toEqual([a, b]);
-        expect(store.get(a)).toBe(heldA);
-        expect(heldA.fav).toBe(true);
-    });
-
-    test('a held character a sync reaches only as a shallow row is read again in full', async () => {
-        const cache = await import('../public/scripts/character-cache.js');
-        const a = await createCharacter('A');
-        await sync();
-        await hold(a);
-        const heldA = store.get(a);
-
-        await postJson('/api/characters/fav', { avatar: a, fav: true });
-        const changes = await (await postJson('/api/characters/changes', { sinceSeq: await cache.getCachedCursor() })).json();
-        const batchResponse = await postJson('/api/characters/batch', { avatars: [a] });
-        const [record] = await batchResponse.json();
-        record.chat = record.chat ? String(record.chat) : '';
-        record.shallow = true;
-        delete record.description;
-        await cache.saveCachedCharacters([{ avatar: a, character: record }], { includeCreatorNotes: batchResponse.headers.get('X-Shallow-Characters-Include-Creator-Notes') === 'true' });
-        await cache.setCachedCursor(changes.seq);
-        readFull.mockClear();
-        readFull.mockImplementationOnce(async ids => new Map(ids.map(id => [id, { avatar: id, name: 'A', description: 'read again', fav: true, shallow: false }])));
-
-        await sync();
-
-        expect(readFull).toHaveBeenCalledWith([a]);
-        expect(store.get(a)).toBe(heldA);
-        expect(heldA.shallow).toBe(false);
-        expect(heldA.fav).toBe(true);
-        expect(heldA.description).toBe('read again');
+        expect(store.get(a).fav).toBe(true);
     });
 
     test('/batch with full answers whole cards with their edit hashes, a bounded number at a time', async () => {

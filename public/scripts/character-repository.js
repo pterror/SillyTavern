@@ -2,7 +2,7 @@ import { unshallowCharacter } from '../script.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
-import { getCachedEntriesByIds, saveCachedCharacters, getCachedGroupEntriesByIds, saveCachedGroups, getCacheUserHandle } from './character-cache.js';
+import { readRows, keepRows, characterRowKey, groupRowKey, getCacheUserHandle } from './character-cache.js';
 import { readQueryCache, readQueryCursor, writeQueryCache, writeQueryCursor, setQueryCacheUser, pinQueryCache } from './query-result-cache.js';
 import { deserializeQueryHashesBinary } from './query-hashes-binary.js';
 
@@ -467,7 +467,7 @@ export class CharacterRepository {
         const useHashMode = want.includes('rows');
         const includeGroups = normalizedFilter.includeGroups === true;
 
-        const cached = queryResponseCache.get(signature);
+        const cached = useHashMode ? undefined : queryResponseCache.get(signature);
         setQueryCacheUser(getCacheUserHandle());
         const kept = !cached && useHashMode ? await readQueryCache(signature) : null;
         if (kept && onFresh) {
@@ -548,10 +548,6 @@ export class CharacterRepository {
 
         if (result?.unchanged === true && cached) {
             const answer = 'rows' in cached || !kept ? /** @type {CharacterQueryResult} */ (cached) : await this.#resultFromKept(kept, includeGroups);
-            if (answer !== cached) {
-                if (queryResponseCache.size >= QUERY_RESPONSE_CACHE_LIMIT) queryResponseCache.clear();
-                queryResponseCache.set(signature, answer);
-            }
             stampRowsTagFetch(answer, fetchStamp);
             return answer;
         }
@@ -561,8 +557,10 @@ export class CharacterRepository {
         }
         let keptPage = false;
         if (result && typeof result.token === 'string' && result.token.length > 0) {
-            if (queryResponseCache.size >= QUERY_RESPONSE_CACHE_LIMIT) queryResponseCache.clear();
-            queryResponseCache.set(signature, result);
+            if (!useHashMode) {
+                if (queryResponseCache.size >= QUERY_RESPONSE_CACHE_LIMIT) queryResponseCache.clear();
+                queryResponseCache.set(signature, result);
+            }
             const hashRows = resultHashRows.get(result);
             if (hashRows) {
                 /** @type {import('./query-result-cache.js').QueryCacheEntry} */
@@ -679,33 +677,33 @@ export class CharacterRepository {
         const result = new Map();
         if (hashRows.length === 0) return result;
 
-        const cachedEntries = await getCachedEntriesByIds(hashRows.map(r => r.id));
+        const keys = hashRows.map(characterRowKey);
+        const kept = await readRows(/** @type {string[]} */ (keys.filter(key => key !== null)));
         const staleRows = [];
 
-        for (const hr of hashRows) {
-            const entry = cachedEntries.get(hr.id);
-            if (entry && hr.version !== null && entry.hashes.version === hr.version && entry.hashes.tagIds === hr.tagIdsHash) {
-                result.set(hr.id, { avatar: hr.id, ...projectCachedCharacter(entry.character), ...liveFieldsFromHashRow(hr), shallow: true });
+        hashRows.forEach((hr, i) => {
+            const row = keys[i] === null ? undefined : kept.get(/** @type {string} */ (keys[i]));
+            if (row) {
+                result.set(hr.id, { avatar: hr.id, ...projectCachedCharacter(row), ...liveFieldsFromHashRow(hr), shallow: true });
             } else {
                 staleRows.push(hr);
             }
-        }
+        });
 
         if (staleRows.length > 0) {
             const fetched = await fetchBatchFields(staleRows.map(hr => hr.id), HASH_MODE_BATCH_FIELDS);
             const fetchedByAvatar = new Map(fetched.map(c => [c.avatar, c]));
-            /** @type {{avatar: string, character: Character, version: number}[]} */
-            const toCache = [];
+            /** @type {{ key: string, row: Record<string, any> }[]} */
+            const toKeep = [];
             for (const hr of staleRows) {
                 const partial = fetchedByAvatar.get(hr.id);
                 if (!partial) continue;
                 const merged = { ...partial, ...liveFieldsFromHashRow(hr), avatar: hr.id, shallow: true };
                 result.set(hr.id, merged);
-                if (hr.version !== null) toCache.push({ avatar: hr.id, character: merged, version: hr.version, tagIds: hr.tagIdsHash });
+                const key = characterRowKey(hr);
+                if (key !== null) toKeep.push({ key, row: projectCachedCharacter(merged) });
             }
-            if (toCache.length > 0) {
-                await saveCachedCharacters(toCache);
-            }
+            await keepRows(toKeep);
         }
 
         return result;
@@ -719,56 +717,34 @@ export class CharacterRepository {
         const result = new Map();
         if (hashRows.length === 0) return result;
 
-        const cachedEntries = await getCachedGroupEntriesByIds(hashRows.map(r => r.id));
+        const keys = hashRows.map(groupRowKey);
+        const kept = await readRows(keys);
         const staleRows = [];
 
-        for (const hr of hashRows) {
-            const entry = cachedEntries.get(hr.id);
-            const hit = entry && entry.hashes.fav === hr.favHash && entry.hashes.tagIds === hr.tagIdsHash && entry.hashes.content === hr.contentHash;
-            if (hit) {
-                result.set(hr.id, { ...entry.group, ...liveFieldsFromHashRow(hr), id: hr.id });
+        hashRows.forEach((hr, i) => {
+            const row = kept.get(keys[i]);
+            if (row) {
+                result.set(hr.id, { ...row, ...liveFieldsFromHashRow(hr), id: hr.id });
             } else {
                 staleRows.push(hr);
             }
-        }
+        });
 
         if (staleRows.length > 0) {
             const fetched = await fetchGroupBatchFields(staleRows.map(hr => hr.id));
             const fetchedById = new Map(fetched.map(g => [g.id, g]));
-            /** @type {{id: string, group: object}[]} */
-            const toCache = [];
+            /** @type {{ key: string, row: Record<string, any> }[]} */
+            const toKeep = [];
             for (const hr of staleRows) {
                 const partial = fetchedById.get(hr.id);
                 if (!partial) continue;
                 result.set(hr.id, { ...partial, ...liveFieldsFromHashRow(hr), id: hr.id });
-                toCache.push({ id: hr.id, group: partial });
+                toKeep.push({ key: groupRowKey(hr), row: partial });
             }
-            if (toCache.length > 0) {
-                await saveCachedGroups(toCache);
-            }
+            await keepRows(toKeep);
         }
 
         return result;
-    }
-
-    /**
-     * @param {CharacterQueryFilter} [filter]
-     * @param {CharacterQuerySort} [sort]
-     * @returns {Promise<Array<Character|{type: 'character'|'group', item: Character|object}>>}
-     */
-    async queryAll(filter = {}, sort = undefined) {
-        /** @type {Array<Character|{type: 'character'|'group', item: Character|object}>} */
-        const rows = [];
-        let page = 1;
-        const pageSort = sort?.field === 'random' ? undefined : sort;
-        for (;;) {
-            const result = await this.query(filter, pageSort, page, QUERY_ALL_PAGE_SIZE, ['rows']);
-            const pageRows = result.rows ?? [];
-            rows.push(...pageRows);
-            if (pageRows.length < QUERY_ALL_PAGE_SIZE) break;
-            page++;
-        }
-        return rows;
     }
 
     /**

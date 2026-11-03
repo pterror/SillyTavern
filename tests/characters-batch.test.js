@@ -31,7 +31,7 @@ beforeAll(async () => {
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
 beforeEach(async () => {
-    user = await fixture.emptyUser('st-characters-manifest-test-');
+    user = await fixture.emptyUser('st-characters-batch-test-');
     globalThis.DATA_ROOT = user.dataRoot;
 });
 
@@ -54,40 +54,20 @@ async function seedCharacter(avatar, description = 'd') {
     await user.store.lib.writeCard(user.directories, avatar, JSON.stringify({ name, data: { name, description, extensions: {} } }));
 }
 
-describe('POST /api/characters/manifest', () => {
-    test('returns an empty array when the library is empty', async () => {
-        const response = await postJson('/api/characters/manifest', {});
-        expect(response.status).toBe(200);
-        expect(await response.json()).toEqual([]);
+describe('no route hands out the whole library', () => {
+    test('/manifest is gone', async () => {
+        await seedCharacter('Alice.png');
+        expect((await postJson('/api/characters/manifest', {})).status).toBe(404);
     });
 
-    test('returns one { avatar, mtime } entry per stored character, whatever files characters/ holds', async () => {
+    test('/all answers only a search, never every character', async () => {
         await seedCharacter('Alice.png');
-        await seedCharacter('Bob.png');
-        fs.writeFileSync(path.join(user.directories.characters, 'Stray.png'), 'a file the store has no character for');
-        fs.writeFileSync(path.join(user.directories.characters, 'notes.txt'), 'should be ignored');
-
-        const response = await postJson('/api/characters/manifest', {});
-        expect(response.status).toBe(200);
-        /** @type {{avatar: string, mtime: number}[]} */
-        const manifest = await response.json();
-        expect(manifest.map(e => e.avatar).sort()).toEqual(['Alice.png', 'Bob.png']);
-        for (const entry of manifest) {
-            expect(typeof entry.mtime).toBe('number');
-            expect(entry.mtime).toBeGreaterThan(0);
+        for (const body of [{}, { search: '' }, { search: '   ' }]) {
+            const response = await postJson('/api/characters/all', body);
+            expect(response.status).toBe(400);
+            expect((await response.json()).reason).toBe('search-required');
         }
     });
-
-    test('mtime changes when the character is written again, so a client can detect the edit', async () => {
-        await seedCharacter('Alice.png', 'version 1');
-        const before = (await (await postJson('/api/characters/manifest', {})).json())[0];
-
-        await seedCharacter('Alice.png', 'version 2');
-
-        const after = (await (await postJson('/api/characters/manifest', {})).json())[0];
-        expect(after.mtime).not.toBe(before.mtime);
-    });
-
 });
 
 describe('POST /api/characters/batch', () => {
