@@ -64,11 +64,27 @@ afterEach(() => {
 });
 
 describe('the shown-row cache', () => {
-    test('keeps nothing where the browser reports no storage quota', async () => {
+    test('where the browser reports no storage quota, rows are kept in memory only, within a fixed budget, least recently used out first', async () => {
         await freshSession(undefined);
-        await cache.keepRows([entry(1)]);
+        const mib = 1024 * 1024;
+        const rowsInBudget = Math.floor(cache.MEMORY_ROW_CACHE_BYTES / mib);
+        await cache.keepRows([entry(0, mib)]);
+        await cache.keepRows([entry(1, mib)]);
+        const shown = (await cache.readRows([entry(0).key])).get(entry(0).key);
+        expect(shown?.name).toBe('c0');
+        shown.name = 'changed by the caller';
+        expect((await cache.readRows([entry(0).key])).get(entry(0).key)?.name).toBe('c0');
+
+        for (let i = 2; i < rowsInBudget + 4; i++) await cache.keepRows([entry(i, mib)]);
+
         expect(rowsStore().size).toBe(0);
-        expect((await cache.readRows([entry(1).key])).size).toBe(0);
+        expect(metaStore().size).toBe(0);
+        const kept = await cache.readRows(Array.from({ length: rowsInBudget + 4 }, (_, i) => entry(i).key));
+        expect(kept.has(entry(1).key)).toBe(false);
+        expect(kept.has(entry(rowsInBudget + 3).key)).toBe(true);
+        const bytes = [...kept.values()].reduce((sum, row) => sum + JSON.stringify(row).length, 0);
+        expect(bytes).toBeLessThanOrEqual(cache.MEMORY_ROW_CACHE_BYTES);
+        expect(kept.size).toBeLessThan(rowsInBudget + 4);
     });
 
     test('a kept row comes back by its content key, and a changed character is another key', async () => {
