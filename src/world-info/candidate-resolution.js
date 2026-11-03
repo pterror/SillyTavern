@@ -4,7 +4,7 @@ import { parseDecorators } from './decorators.js';
 import { getStringHash } from '../../public/scripts/hash-utils.js';
 import { world_info_position } from './result-bucketing.js';
 import { world_info_logic } from './key-matching.js';
-import { extension_prompt_roles } from '../extension-prompt-table.js';
+import { extension_prompt_roles } from '../prompt/injections.js';
 
 export const EMBEDDED_WORLD_NAME = '__embedded__';
 

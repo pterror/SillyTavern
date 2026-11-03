@@ -12,7 +12,7 @@ setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 const { resolveTextCompletionGenerationInput, promptTokenBudget } = await import('./text-completion-generation-input.js');
 const { importWorldInfoFromRaw } = await import('./endpoints/worldinfo.js');
 const { writeAllSettings } = await import('./settings-store.js');
-const { assembleTextCompletionPrompt } = await import('./text-completion-prompt-orchestrator.js');
+const { buildTextCompletionPrompt } = await import('./prompt/text-prompt.js');
 const { newSessionKey } = await import('./chat-engine.js');
 const { convertedUser, writeLibraryCard, seedMessages, chatContextOf, treeOf } = await import('../tests/converted-user.fixture.js');
 const { tokenizers } = await import('./tokenizer-ids.js');
@@ -293,7 +293,7 @@ async function run() {
     });
     const appendedWithExtra = withUserMessageExtra.chat[withUserMessageExtra.chat.length - 1];
     assert.deepEqual(appendedWithExtra.extra, { files: [{ url: '/user/files/notes.txt', size: 42, name: 'notes.txt', created: 1700000000000 }] });
-    const resultWithFile = await assembleTextCompletionPrompt(withUserMessageExtra);
+    const resultWithFile = await buildTextCompletionPrompt(withUserMessageExtra);
     assert.ok(
         resultWithFile.combinedPrompt.includes('The tower key is hidden under the loose stone.'),
         'a real file-attachment reference forwarded via userMessageExtra is actually inlined into the assembled prompt, via the already-generic file-attachment-inline.js machinery',
@@ -332,14 +332,14 @@ async function run() {
         /encodeTokens is required/,
     );
 
-    const result = await assembleTextCompletionPrompt(input);
+    const result = await buildTextCompletionPrompt(input);
     assert.equal(typeof result.combinedPrompt, 'string');
     assert.ok(result.combinedPrompt.length > 0, 'combinedPrompt is non-empty end to end');
     assert.ok(result.combinedPrompt.includes('Hello there, traveler.'), 'the real chat history made it into the final prompt');
     assert.ok(result.generate_data && typeof result.generate_data === 'object', 'generate_data wire payload is produced');
     assert.equal(result.generate_data.model, 'test-model-7b');
 
-    const resultWithUserMessage = await assembleTextCompletionPrompt(withUserMessage);
+    const resultWithUserMessage = await buildTextCompletionPrompt(withUserMessage);
     assert.ok(typeof resultWithUserMessage.combinedPrompt === 'string' && resultWithUserMessage.combinedPrompt.length > 0);
     assert.ok(
         resultWithUserMessage.combinedPrompt.includes('What happens next, Rex?'),
@@ -358,7 +358,7 @@ async function run() {
     assert.equal(koboldInput.settings.rep_pen, 1.05);
     assert.equal(koboldInput.model, undefined, 'Kobold has no per-request model field - model stays undefined');
     assert.equal(koboldInput.apiServer, 'http://localhost:5001', 'apiServer resolves from kai_settings.api_server');
-    const koboldResult = await assembleTextCompletionPrompt(koboldInput);
+    const koboldResult = await buildTextCompletionPrompt(koboldInput);
     assert.equal(koboldResult.generate_data.prompt, koboldResult.combinedPrompt, 'kobold dispatch produces createKoboldGenerationData()\'s own shape');
     assert.equal(koboldResult.generate_data.temperature, 0.65);
     assert.equal(koboldResult.generate_data.api_server, 'http://localhost:5001');
@@ -371,7 +371,7 @@ async function run() {
     assert.equal(novelInput.mainApi, 'novel');
     assert.equal(novelInput.settings.model_novel, 'clio-v1', 'settings resolves from the real top-level nai_settings, not textgenerationwebui_settings');
     assert.equal(novelInput.model, undefined, 'model is a textgenerationwebui-only field - novel carries its own model via settings.model_novel');
-    const novelResult = await assembleTextCompletionPrompt(novelInput);
+    const novelResult = await buildTextCompletionPrompt(novelInput);
     assert.equal(novelResult.generate_data.input, novelResult.combinedPrompt, 'novel dispatch produces createNovelGenerationData()\'s own shape');
     assert.equal(novelResult.generate_data.model, 'clio-v1');
     assert.equal(novelResult.generate_data.max_new_tokens, undefined, 'textgen-only field must not leak into the novel payload');

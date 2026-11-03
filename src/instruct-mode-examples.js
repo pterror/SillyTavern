@@ -29,9 +29,9 @@ import { parseExampleIntoIndividual } from './chat-completion-messages.js';
  * @param {boolean} [options.isGroup]
  * @param {string[]} [options.groupBotNames]
  * @param {import('./macro-substitution.js').SubstituteParamsContext} [options.macroContext]
- * @returns {string[]}
+ * @returns {string[][]} One list of formatted strings per example block kept.
  */
-export function formatInstructModeExamples(mesExamplesArray, name1, name2, {
+export function formatInstructModeExampleBlocks(mesExamplesArray, name1, name2, {
     instructPreset = {},
     contextSettings = {},
     isGroup = false,
@@ -42,8 +42,10 @@ export function formatInstructModeExamples(mesExamplesArray, name1, name2, {
 
     const blockHeading = contextSettings.example_separator ? `${substitute(contextSettings.example_separator)}\n` : '';
 
+    const raw = () => mesExamplesArray.map(x => [x.replace(/<START>\n/i, blockHeading)]);
+
     if (instructPreset.skip_examples) {
-        return mesExamplesArray.map(x => x.replace(/<START>\n/i, blockHeading));
+        return raw();
     }
 
     const includeNames = instructPreset.names_behavior === names_behavior_types.ALWAYS;
@@ -75,7 +77,7 @@ export function formatInstructModeExamples(mesExamplesArray, name1, name2, {
     }
 
     const separator = instructPreset.wrap ? '\n' : '';
-    const formattedExamples = [];
+    const formattedBlocks = [];
 
     for (const item of mesExamplesArray) {
         const cleanedItem = item.replace(/<START>/i, '{Example Dialogue:}').replace(/\r/gm, '');
@@ -87,6 +89,7 @@ export function formatInstructModeExamples(mesExamplesArray, name1, name2, {
             continue;
         }
 
+        const formattedExamples = [];
         if (blockHeading) {
             formattedExamples.push(blockHeading);
         }
@@ -101,10 +104,11 @@ export function formatInstructModeExamples(mesExamplesArray, name1, name2, {
             const formattedMessage = [prefix, messageContent + suffix].filter(x => x).join(separator);
             formattedExamples.push(formattedMessage);
         }
+        formattedBlocks.push(formattedExamples);
     }
 
-    if (formattedExamples.length === 0) {
-        return mesExamplesArray.map(x => x.replace(/<START>\n/i, blockHeading));
+    if (formattedBlocks.length === 0) {
+        return raw();
     }
-    return formattedExamples;
+    return formattedBlocks;
 }

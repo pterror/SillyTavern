@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { formatInstructModeExamples } from './instruct-mode-examples.js';
+import { formatInstructModeExampleBlocks } from './instruct-mode-examples.js';
+
+const formatInstructModeExamples = (...args) => formatInstructModeExampleBlocks(...args).flat();
 
 const basePreset = {
     input_sequence: '<|im_start|>user\n',
@@ -131,6 +133,17 @@ function resolveMacros(block, name1, name2) {
         '<|im_start|>user\nsecond<|im_end|>\n',
         '<|im_start|>assistant\nreply two<|im_end|>\n',
     ]);
+    assert.deepEqual(formatInstructModeExampleBlocks([blockA, blockB], 'Alice', 'Bob', {
+        instructPreset: { ...basePreset, names_behavior: 'none' },
+        contextSettings: { example_separator: '***' },
+    }).map(block => block.length), [3, 3], 'each block stays whole: its heading and its messages');
+}
+
+{
+    const parsed = resolveMacros('<START>\n{{user}}: hi\n{{char}}: hello\n', 'Alice', 'Bob');
+    const unparsed = '<START>\nnothing recognizable here\n';
+    const blocks = formatInstructModeExampleBlocks([unparsed, parsed], 'Alice', 'Bob', { instructPreset: basePreset });
+    assert.equal(blocks.length, 1, 'a block that parses to no messages is left out when another one parses');
 }
 
 {

@@ -1,4 +1,3 @@
-import { TOOL_REASONING_MODES } from './chat-completion-history.js';
 import { CHAT_COMPLETION_SOURCES } from './constants.js';
 
 /**
@@ -13,6 +12,13 @@ import { CHAT_COMPLETION_SOURCES } from './constants.js';
  */
 
 export const chat_completion_sources = CHAT_COMPLETION_SOURCES;
+
+/** @enum {string} */
+export const TOOL_REASONING_MODES = {
+    DISABLED: 'disabled',
+    SINCE_LAST_USER: 'since_last_user',
+    ACTIVE_CHAIN: 'active_chain',
+};
 
 export const custom_prompt_post_processing_types = {
     NONE: '',

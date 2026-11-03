@@ -14,6 +14,7 @@ const identity = { resolveContent: (entry) => entry.content };
     const result = bucketActivatedEntries(entries, identity);
     assert.equal(result.worldInfoBefore, 'low-order-before\nmid-order-before\nhigh-order-before');
     assert.equal(result.worldInfoAfter, 'low-order-after\nhigh-order-after');
+    assert.deepEqual(result.worldInfoBeforeEntries, ['low-order-before', 'mid-order-before', 'high-order-before'], 'each entry on its own, in the same order');
 }
 
 {
@@ -142,6 +143,8 @@ const identity = { resolveContent: (entry) => entry.content };
     assert.deepEqual(result, {
         worldInfoBefore: '',
         worldInfoAfter: '',
+        worldInfoBeforeEntries: [],
+        worldInfoAfterEntries: [],
         worldInfoExamples: [],
         worldInfoDepth: [],
         anBefore: [],

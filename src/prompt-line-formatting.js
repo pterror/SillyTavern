@@ -142,11 +142,12 @@ export function formatMessageHistoryItem(chatItem, isInstruct, forceOutputSequen
  */
 
 /**
- * @param {string} lastMesString
+ * The reply's start, as the parts that join the prompt's last chat item; `breakBefore` parts get a newline first
+ * unless the item already ends with one.
  * @param {ModifyLastPromptLineParams} params
- * @returns {string}
+ * @returns {{ text: string, breakBefore?: boolean }[]}
  */
-export function modifyLastPromptLine(lastMesString, {
+export function lastPromptLineParts({
     quiet_prompt,
     name1,
     name2,
@@ -163,44 +164,29 @@ export function modifyLastPromptLine(lastMesString, {
     instructPreset,
     macroContext = {},
 }) {
+    /** @type {{ text: string, breakBefore?: boolean }[]} */
+    const parts = [];
     if (quiet_prompt && quiet_prompt.length) {
-        const name = name1;
-        const quietAppend = isInstruct ? formatInstructModeChat(name, quiet_prompt, false, true, isGroup, '', name1, name2, false, instructPreset, macroContext) : `\n${quiet_prompt}`;
-
-        if (isInstruct) {
-            lastMesString += quietAppend;
-        } else {
-            lastMesString += quietAppend;
-        }
-
+        parts.push({ text: isInstruct ? formatInstructModeChat(name1, quiet_prompt, false, true, isGroup, '', name1, name2, false, instructPreset, macroContext) : `\n${quiet_prompt}` });
         if (!isInstruct && !quietToLoud) {
-            return lastMesString;
+            return parts;
         }
     }
 
     if (isInstruct && !isContinue) {
         const name = (quiet_prompt && !quietToLoud && !isImpersonate) ? (quietName ?? 'System') : (isImpersonate ? name1 : name2);
         const isQuiet = Boolean(quiet_prompt) && type == 'quiet';
-        lastMesString += formatInstructModePrompt(name, isImpersonate, promptBias, name1, name2, isQuiet, quietToLoud, isGroup, instructPreset, macroContext);
+        parts.push({ text: formatInstructModePrompt(name, isImpersonate, promptBias, name1, name2, isQuiet, quietToLoud, isGroup, instructPreset, macroContext) });
     }
 
     if (!isInstruct && isImpersonate && !isContinue) {
-        const name = name1;
-        if (!lastMesString.endsWith('\n')) {
-            lastMesString += '\n';
-        }
-        lastMesString += name + ':';
+        parts.push({ text: name1 + ':', breakBefore: true });
     }
 
     const isContinuingOnFirstMessage = chat.length === 1 && isContinue;
     if (!isInstruct && force_name2 && !isContinuingOnFirstMessage) {
-        if (!lastMesString.endsWith('\n')) {
-            lastMesString += '\n';
-        }
-        if (!isContinue || !(chat[chat.length - 1]?.is_user)) {
-            lastMesString += `${name2}:`;
-        }
+        parts.push({ text: (!isContinue || !(chat[chat.length - 1]?.is_user)) ? `${name2}:` : '', breakBefore: true });
     }
 
-    return lastMesString;
+    return parts;
 }

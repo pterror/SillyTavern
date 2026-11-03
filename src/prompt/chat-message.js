@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { imageSize } from 'image-size';
 import mime from 'mime-types';
-import { Jimp, JimpMime } from './jimp.js';
+import { Jimp, JimpMime } from '../jimp.js';
 import { ResizeStrategy } from '@jimp/plugin-resize';
 
 /**
@@ -27,27 +27,6 @@ export class TokenHandler {
      */
     countAsync(messages, full) {
         return this.countTokenAsyncFn(messages, full);
-    }
-}
-
-export class IdentifierNotFoundError extends Error {
-    constructor(identifier) {
-        super(`Identifier ${identifier} not found.`);
-        this.name = 'IdentifierNotFoundError';
-    }
-}
-
-export class TokenBudgetExceededError extends Error {
-    constructor(identifier = '') {
-        super(`Token budged exceeded. Message: ${identifier}`);
-        this.name = 'TokenBudgetExceeded';
-    }
-}
-
-export class InvalidCharacterNameError extends Error {
-    constructor(identifier = '') {
-        super(`Invalid character name. Message: ${identifier}`);
-        this.name = 'InvalidCharacterName';
     }
 }
 
@@ -146,8 +125,6 @@ export class Message {
     signature = null;
     /** @type {string?} */
     reasoning = null;
-    /** @type {boolean} */
-    injected = false;
 
     /**
      * @constructor
@@ -237,18 +214,25 @@ export class Message {
     }
 
     /**
-     * @param {{role: string, content: string, identifier: string}} prompt
-     * @param {TokenHandler} tokenHandler
-     * @returns {Promise<Message>}
-     */
-    static fromPromptAsync(prompt, tokenHandler) {
-        return Message.createAsync(prompt.role, prompt.content, prompt.identifier, tokenHandler);
-    }
-
-    /**
      * @returns {number}
      */
     getTokens() { return this.tokens; }
+
+    /**
+     * The message as the request carries it.
+     * @returns {Record<string, any>}
+     */
+    toWire() {
+        return {
+            role: this.role,
+            content: this.content,
+            ...(this.name ? { name: this.name } : {}),
+            ...(this.tool_calls ? { tool_calls: this.tool_calls } : {}),
+            ...(this.role === 'tool' ? { tool_call_id: this.identifier } : {}),
+            ...(this.signature ? { signature: this.signature } : {}),
+            ...(this.reasoning ? { reasoning: this.reasoning } : {}),
+        };
+    }
 
     /**
      * @param {string} image
@@ -394,396 +378,4 @@ async function createThumbnail(dataUrl, maxWidth, maxHeight) {
     image.resize({ w: thumbnailWidth, h: thumbnailHeight, mode: ResizeStrategy.BILINEAR });
     const outputBuffer = await image.getBuffer(JimpMime.jpeg, { quality: 92, jpegColorSpace: 'ycbcr' });
     return `data:image/jpeg;base64,${outputBuffer.toString('base64')}`;
-}
-
-/**
- * @class
- */
-export class MessageCollection {
-    collection = [];
-    identifier;
-
-    /**
-     * @constructor
-     * @param {string} identifier
-     * @param {...(Message|MessageCollection)} items
-     */
-    constructor(identifier, ...items) {
-        for (let item of items) {
-            if (!(item instanceof Message || item instanceof MessageCollection)) {
-                throw new Error('Only Message and MessageCollection instances can be added to MessageCollection');
-            }
-        }
-
-        this.collection.push(...items);
-        this.identifier = identifier;
-    }
-
-    /**
-     * @returns {Array}
-     */
-    getChat() {
-        return this.collection.reduce((acc, message) => {
-            if (message.content || message.tool_calls) {
-                acc.push({
-                    role: message.role,
-                    content: message.content,
-                    ...(message.name && { name: message.name }),
-                    ...(message.tool_calls && { tool_calls: message.tool_calls }),
-                    ...(message.role === 'tool' && { tool_call_id: message.identifier }),
-                    ...(message.signature && { signature: message.signature }),
-                    ...(message.reasoning && { reasoning: message.reasoning }),
-                });
-            }
-            return acc;
-        }, []);
-    }
-
-    /**
-     * @returns {Array}
-     */
-    getCollection() {
-        return this.collection;
-    }
-
-    /**
-     * @param {Object} item
-     */
-    add(item) {
-        this.collection.push(item);
-    }
-
-    /**
-     * @param {string} identifier
-     * @returns {Object}
-     */
-    getItemByIdentifier(identifier) {
-        return this.collection.find(item => item?.identifier === identifier);
-    }
-
-    /**
-     * @param {string} identifier
-     * @returns {boolean}
-     */
-    hasItemWithIdentifier(identifier) {
-        return this.collection.some(message => message.identifier === identifier);
-    }
-
-    /**
-     * @returns {number}
-     */
-    getTokens() {
-        return this.collection.reduce((tokens, message) => tokens + message.getTokens(), 0);
-    }
-
-    /**
-     * @returns {Message[]}
-     */
-    flatten() {
-        return this.collection.reduce((acc, message) => {
-            if (message instanceof MessageCollection) {
-                acc.push(...message.flatten());
-            } else {
-                acc.push(message);
-            }
-            return acc;
-        }, []);
-    }
-}
-
-export class ChatCompletion {
-    /**
-     * @param {TokenHandler} tokenHandler
-     */
-    constructor(tokenHandler) {
-        this.tokenHandler = tokenHandler;
-        this.tokenBudget = 0;
-        this.messages = new MessageCollection('root');
-        this.loggingEnabled = false;
-        this.overriddenPrompts = [];
-    }
-
-    /**
-     * @returns {Promise<void>}
-     */
-    async squashSystemMessages() {
-        const excludeList = ['newMainChat', 'newChat', 'groupNudge'];
-        this.messages.collection = this.messages.flatten();
-
-        let lastMessage = null;
-        let squashedMessages = [];
-
-        for (let message of this.messages.collection) {
-            if (message.role === 'system' && !message.content) {
-                continue;
-            }
-
-            const shouldSquash = (message) => {
-                return !excludeList.includes(message.identifier) && message.role === 'system' && !message.name;
-            };
-
-            if (shouldSquash(message)) {
-                if (lastMessage && shouldSquash(lastMessage)) {
-                    lastMessage.content += '\n' + message.content;
-                    lastMessage.tokens = await this.tokenHandler.countAsync({ role: lastMessage.role, content: lastMessage.content });
-                } else {
-                    squashedMessages.push(message);
-                    lastMessage = message;
-                }
-            } else {
-                squashedMessages.push(message);
-                lastMessage = message;
-            }
-        }
-
-        this.messages.collection = squashedMessages;
-    }
-
-    /**
-     * @returns {MessageCollection}
-     */
-    getMessages() {
-        return this.messages;
-    }
-
-    /**
-     * @param {number} context
-     * @param {number} response
-     */
-    setTokenBudget(context, response) {
-        this.log(`Prompt tokens: ${context}`);
-        this.log(`Completion tokens: ${response}`);
-
-        this.tokenBudget = context - response;
-
-        this.log(`Token budget: ${this.tokenBudget}`);
-    }
-
-    /**
-     * @param {Message|MessageCollection} collection
-     * @param {number|null} [position]
-     * @returns {ChatCompletion}
-     */
-    add(collection, position = null) {
-        this.validateMessageCollection(collection);
-        this.checkTokenBudget(collection, collection.identifier);
-
-        if (null !== position && -1 !== position) {
-            this.messages.collection[position] = collection;
-        } else {
-            this.messages.collection.push(collection);
-        }
-
-        this.decreaseTokenBudgetBy(collection.getTokens());
-
-        this.log(`Added ${collection.identifier}. Remaining tokens: ${this.tokenBudget}`);
-
-        return this;
-    }
-
-    /**
-     * @param {Message} message
-     * @param {string} identifier
-     */
-    insertAtStart(message, identifier) {
-        this.insert(message, identifier, 'start');
-    }
-
-    /**
-     * @param {Message} message
-     * @param {string} identifier
-     */
-    insertAtEnd(message, identifier) {
-        this.insert(message, identifier, 'end');
-    }
-
-    /**
-     * @param {Message} message
-     * @param {string} identifier
-     * @param {string|number} [position]
-     */
-    insert(message, identifier, position = 'end') {
-        this.validateMessage(message);
-        this.checkTokenBudget(message, message.identifier);
-
-        const index = this.findMessageIndex(identifier);
-        if (message.content || message.tool_calls) {
-            if ('start' === position) this.messages.collection[index].collection.unshift(message);
-            else if ('end' === position) this.messages.collection[index].collection.push(message);
-            else if (typeof position === 'number') this.messages.collection[index].collection.splice(position, 0, message);
-
-            this.decreaseTokenBudgetBy(message.getTokens());
-
-            this.log(`Inserted ${message.identifier} into ${identifier}. Remaining tokens: ${this.tokenBudget}`);
-        }
-    }
-
-    /**
-     * @param identifier
-     */
-    removeLastFrom(identifier) {
-        const index = this.findMessageIndex(identifier);
-        const message = this.messages.collection[index].collection.pop();
-
-        if (!message) {
-            this.log(`No message to remove from ${identifier}`);
-            return;
-        }
-
-        this.increaseTokenBudgetBy(message.getTokens());
-
-        this.log(`Removed ${message.identifier} from ${identifier}. Remaining tokens: ${this.tokenBudget}`);
-    }
-
-    /**
-     * @param {Message|MessageCollection} message
-     * @returns {boolean}
-     */
-    canAfford(message) {
-        return 0 <= this.tokenBudget - message.getTokens();
-    }
-
-    /**
-     * @param {Message[]} messages
-     * @returns {boolean}
-     */
-    canAffordAll(messages) {
-        return 0 <= this.tokenBudget - messages.reduce((total, message) => total + message.getTokens(), 0);
-    }
-
-    /**
-     * @param {string} identifier
-     * @returns {boolean}
-     */
-    has(identifier) {
-        return this.messages.hasItemWithIdentifier(identifier);
-    }
-
-    /**
-     * @returns {number}
-     */
-    getTotalTokenCount() {
-        return this.messages.getTokens();
-    }
-
-    /**
-     * @returns {Array}
-     */
-    getChat() {
-        const chat = [];
-        for (let item of this.messages.collection) {
-            if (item instanceof MessageCollection) {
-                chat.push(...item.getChat());
-            } else if (item instanceof Message && (item.content || item.tool_calls)) {
-                const message = {
-                    role: item.role,
-                    content: item.content,
-                    ...(item.name ? { name: item.name } : {}),
-                    ...(item.tool_calls ? { tool_calls: item.tool_calls } : {}),
-                    ...(item.role === 'tool' ? { tool_call_id: item.identifier } : {}),
-                    ...(item.signature ? { signature: item.signature } : {}),
-                    ...(item.reasoning ? { reasoning: item.reasoning } : {}),
-                };
-                chat.push(message);
-            } else {
-                this.log(`Skipping invalid or empty message in collection: ${JSON.stringify(item)}`);
-            }
-        }
-        return chat;
-    }
-
-    /**
-     * @param {string} output
-     */
-    log(output) {
-        if (this.loggingEnabled) console.log('[ChatCompletion] ' + output);
-    }
-
-    enableLogging() {
-        this.loggingEnabled = true;
-    }
-
-    disableLogging() {
-        this.loggingEnabled = false;
-    }
-
-    /**
-     * @param {MessageCollection|Message} collection
-     */
-    validateMessageCollection(collection) {
-        if (!(collection instanceof MessageCollection)) {
-            console.log(collection);
-            throw new Error('Argument must be an instance of MessageCollection');
-        }
-    }
-
-    /**
-     * @param {Message} message
-     */
-    validateMessage(message) {
-        if (!(message instanceof Message)) {
-            console.log(message);
-            throw new Error('Argument must be an instance of Message');
-        }
-    }
-
-    /**
-     * @param {Message|MessageCollection} message
-     * @param {string} identifier
-     */
-    checkTokenBudget(message, identifier) {
-        if (!this.canAfford(message)) {
-            throw new TokenBudgetExceededError(identifier);
-        }
-    }
-
-    /**
-     * @param {Message|MessageCollection|number} message
-     */
-    reserveBudget(message) {
-        const tokens = typeof message === 'number' ? message : message.getTokens();
-        this.decreaseTokenBudgetBy(tokens);
-    }
-
-    /**
-     * @param {Message|MessageCollection} message
-     */
-    freeBudget(message) { this.increaseTokenBudgetBy(message.getTokens()); }
-
-    /**
-     * @param {number} tokens
-     */
-    increaseTokenBudgetBy(tokens) {
-        this.tokenBudget += tokens;
-    }
-
-    /**
-     * @param {number} tokens
-     */
-    decreaseTokenBudgetBy(tokens) {
-        this.tokenBudget -= tokens;
-    }
-
-    /**
-     * @param {string} identifier
-     * @returns {number}
-     */
-    findMessageIndex(identifier) {
-        const index = this.messages.collection.findIndex(item => item?.identifier === identifier);
-        if (index < 0) {
-            throw new IdentifierNotFoundError(identifier);
-        }
-        return index;
-    }
-
-    /**
-     * @param {string[]} list
-     */
-    setOverriddenPrompts(list) {
-        this.overriddenPrompts = list;
-    }
-
-    getOverriddenPrompts() {
-        return this.overriddenPrompts ?? [];
-    }
 }

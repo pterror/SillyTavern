@@ -15,7 +15,7 @@ const SERVER_READERS = [
     'src/world-info/key-matching.js',
     'src/chat-completion-generation-input.js',
     'src/text-completion-generation-input.js',
-    'src/text-completion-prompt-orchestrator.js',
+    'src/prompt/text-prompt.js',
 ].map(read).join('\n');
 const PAGE_READERS = read('public/scripts/generation.js');
 

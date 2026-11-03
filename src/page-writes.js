@@ -112,7 +112,7 @@ export function responseLengthOf(body) {
  * @param {import('express').Response} response
  * @param {import('./chat-request.js').ChatContext} chat
  * @param {any} body
- * @returns {Promise<{ nodeId: string|null|undefined, userMessageText: string|undefined, userMessageExtra: object, userMessage: Record<string, any>|null, quiet: QuietPrompt, responseLength: number|undefined, pageFacts: import('./macro-facts.js').PageMacroFacts, pageInjections: import('./extension-prompt-table.js').ExtensionPromptTable }|null>}
+ * @returns {Promise<{ nodeId: string|null|undefined, userMessageText: string|undefined, userMessageExtra: object, userMessage: Record<string, any>|null, quiet: QuietPrompt, responseLength: number|undefined, pageFacts: import('./macro-facts.js').PageMacroFacts, pageInjections: import('./prompt/injections.js').PageInjections }|null>}
  */
 export async function generateTurnOf(response, chat, body) {
     const written = await applyPageWrites(response, chat, body);

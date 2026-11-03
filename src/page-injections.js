@@ -1,4 +1,4 @@
-import { extension_prompt_roles, extension_prompt_types } from './extension-prompt-table.js';
+import { extension_prompt_roles, extension_prompt_types } from './prompt/injections.js';
 
 const MAX_INJECTIONS = 500;
 const MAX_INJECTION_LENGTH = 1_000_000;
@@ -8,10 +8,10 @@ const ROLES = new Set(Object.values(extension_prompt_roles));
 
 /**
  * @param {unknown} body
- * @returns {import('./extension-prompt-table.js').ExtensionPromptTable}
+ * @returns {import('./prompt/injections.js').PageInjections}
  */
 export function readPageInjections(body) {
-    /** @type {import('./extension-prompt-table.js').ExtensionPromptTable} */
+    /** @type {import('./prompt/injections.js').PageInjections} */
     const out = {};
     if (!body || typeof body !== 'object' || Array.isArray(body)) return out;
     for (const [key, entry] of Object.entries(body).slice(0, MAX_INJECTIONS)) {

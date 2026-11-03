@@ -3,7 +3,7 @@ import { resolveTextGenBackend } from './textgen-backend-resolve.js';
 import { loadChatHistory } from './chat-request.js';
 import { readExtraBooks } from './endpoints/characters.js';
 import { resolveSpeakers } from './macro-scope.js';
-import { extension_prompt_types, extension_prompt_roles } from './extension-prompt-table.js';
+import { extension_prompt_types, extension_prompt_roles } from './prompt/injections.js';
 import { resolveWorldInfoCandidates } from './world-info/candidate-resolution.js';
 import { worldInfoGlobalsOf } from '../public/scripts/world-info-globals.js';
 import { apiTokenLimits, generationMacroFacts, variablesBefore } from './macro-facts.js';
@@ -166,8 +166,8 @@ async function resolveChatHistory(chat, { branchName, nodeId }) {
  * @param {number} [params.amountGen]
  * @param {object} [params.macroExtras]
  * @param {import('./macro-facts.js').PageMacroFacts} [params.pageFacts]
- * @param {import('./extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections]
- * @returns {Promise<import('./text-completion-prompt-orchestrator.js').AssembleTextCompletionPromptInput>}
+ * @param {import('./prompt/injections.js').PageInjections} [params.pageInjections]
+ * @returns {Promise<import('./prompt/text-prompt.js').TextCompletionPromptInput>}
  */
 export async function resolveTextCompletionGenerationInput(directories, {
     avatar, groupId, mainApi = 'textgenerationwebui', chatContext, branchName, nodeId,
