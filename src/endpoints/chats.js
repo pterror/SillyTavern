@@ -23,6 +23,8 @@ import { storedMessagesOf } from '../stored-messages.js';
 import { engineStoreHere, requestStore } from '../user-stores.js';
 import { chatContext, chatNamePosition, compatChatIdOf, isOwnChat, openChatNamed, ownOf } from '../chat-request.js';
 import { groupObjects } from './groups.js';
+import { wholeCharacter } from './characters.js';
+import { chatOpenParts } from '../chat-open-parts.js';
 import { SESSION_GONE_HEADER, sessionHeaderOf } from '../request-session.js';
 import { ui, uiUser } from '../ui-wiring.js';
 import { pageSettingsHash } from '../settings-hash.js';
@@ -918,7 +920,7 @@ async function openingsForPage(chat, avatar) {
 /**
  * @param {import('express').Request} request
  * @param {import('express').Response} response
- * @param {{ avatar_url?: unknown, group_id?: unknown, chat?: unknown, make_current?: unknown, fresh?: unknown, send_keys?: unknown }} body
+ * @param {{ avatar_url?: unknown, group_id?: unknown, chat?: unknown, make_current?: unknown, fresh?: unknown, send_keys?: unknown, with_group?: unknown, with_character?: unknown, parts?: unknown }} body
  * @returns {Promise<{ status: number, answer?: object }>}
  */
 async function openChatAnswer(request, response, body) {
@@ -938,12 +940,23 @@ async function openChatAnswer(request, response, body) {
     const metadata = loaded?.metadata ?? await chats.metadata(chat.tree, null, chat.session.reader().session);
     const tab = chat.session.reader().session ?? sessionHeaderOf(request);
     const ui_views = typeof tab === 'string' && tab !== '' ? await ui.showChat(uiUser(request), tab, { tree: String(chat.tree) }) : [];
+    const chatId = await compatChatIdOf(chat);
+    const messages = loaded?.messages ?? [];
+    const avatar = body.group_id ? null : String(body.avatar_url);
+    /** @type {Promise<Record<string, any> | null> | null} */
+    let card = null;
+    const wholeCard = () => (card ??= avatar === null ? Promise.resolve(null) : wholeCharacter(request, avatar));
+    /** @type {Promise<any> | null} */
+    let group = null;
+    const wholeGroup = () => (group ??= body.group_id ? groupObjects(request, [String(body.group_id)]).then(([found]) => found ?? null) : Promise.resolve(null));
+    const speakers = async () => (avatar !== null ? [avatar] : ((await wholeGroup())?.members ?? []).filter(member => typeof member === 'string'));
     const common = {
         ui_views,
-        chat: await compatChatIdOf(chat),
+        chat: chatId,
         chat_metadata: { ...metadata },
-        messages: loaded?.messages ?? [],
+        messages,
         stored_sends: await chats.storedSendKeys(chat.tree, body.send_keys),
+        parts: await chatOpenParts(request, { avatar, at: messages.at(-1)?.node_id ?? null, chatId, card: wholeCard, speakers }, body.parts),
     };
     if (body.group_id) {
         const groupId = String(body.group_id);
@@ -956,17 +969,18 @@ async function openChatAnswer(request, response, body) {
                 card_openings: null,
                 chats: (await chatListOf(chat)).map(r => r.file_id),
                 date_last_chat: stats.get(chat.tree)?.date_last_chat ?? 0,
-                ...(body.with_group === true ? { group: (await groupObjects(request, [groupId]))[0] } : {}),
+                ...(body.with_group === true ? { group: await wholeGroup() } : {}),
                 ...await recordLastOpened(request, { character: null, group: groupId }),
             },
         };
     }
-    const avatar = String(body.avatar_url);
+    const character = body.with_character === true ? await wholeCard() : null;
     return {
         status: 200,
         answer: {
             ...common,
-            ...await openingsForPage(chat, avatar),
+            ...(character ? { character } : {}),
+            ...await openingsForPage(chat, String(avatar)),
             ...await recordLastOpened(request, { character: avatar, group: null }),
         },
     };
@@ -1001,7 +1015,7 @@ router.post('/bookmark', validateAvatarUrlMiddleware, async function (request, r
         if (!made.ok) return response.status(409).send({ ok: false, reason: made.reason });
         const chats = request.body.group_id ? (await chatListOf(chat)).map(r => r.file_id) : undefined;
         const opened = request.body.open === true
-            ? (await openChatAnswer(request, response, { avatar_url: request.body.avatar_url, group_id: request.body.group_id, chat: await chat.store.chats.bookmarkChatId(chat.tree, made.bookmark), make_current: true, send_keys: request.body.send_keys })).answer
+            ? (await openChatAnswer(request, response, { avatar_url: request.body.avatar_url, group_id: request.body.group_id, chat: await chat.store.chats.bookmarkChatId(chat.tree, made.bookmark), make_current: true, send_keys: request.body.send_keys, parts: request.body.parts })).answer
             : undefined;
         chat.session.answer(response, { moved: !!nodeId });
         return response.send({ ok: true, node_id: nodeId, id: await chat.store.chats.bookmarkChatId(chat.tree, made.bookmark), label: made.name, chats, opened, stored: storedMessagesOf(response) ?? undefined });
@@ -1109,7 +1123,7 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
             return response.sendStatus(400);
         }
         const opened = request.body.open === true
-            ? (await openChatAnswer(request, response, { avatar_url: request.body.avatar_url, send_keys: request.body.send_keys })).answer
+            ? (await openChatAnswer(request, response, { avatar_url: request.body.avatar_url, send_keys: request.body.send_keys, parts: request.body.parts })).answer
             : undefined;
         return response.send({ ok: true, opened });
     } catch (error) {
@@ -1140,7 +1154,7 @@ router.post('/new', validateAvatarUrlMiddleware, async function (request, respon
         if (request.body.group_id) {
             await chats.startChat({ tree: chat.tree, actor, group: true, keep });
             chat.session.answer(response, { moved: true });
-            const opened = (await openChatAnswer(request, response, { group_id: request.body.group_id, send_keys: request.body.send_keys })).answer;
+            const opened = (await openChatAnswer(request, response, { group_id: request.body.group_id, send_keys: request.body.send_keys, parts: request.body.parts })).answer;
             return response.send({ ok: true, chat_id: await compatChatIdOf(chat), chats: (await chatListOf(chat)).map(r => r.file_id), deleted, opened });
         }
         const opening = typeof request.body.chat === 'string' && request.body.chat !== '' ? request.body.chat : null;

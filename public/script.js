@@ -171,6 +171,8 @@ import {
     uuidv4,
 } from './scripts/utils.js';
 import { getAtPath, seedKeyHashes, settingsWithoutCharLore, characterDigestFieldsHash, characterDigestCardBodyHash, normalizeFav } from './scripts/hash-utils.js';
+import { countedCardFieldValue, isCountedCardField } from './scripts/card-token-texts.js';
+import { chatOpenAsks, takeChatOpenParts } from './scripts/chat-open-parts.js';
 import { debounce_timeout, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
 
 import { cancelDebouncedMetadataSave, doDailyExtensionUpdatesCheck, extension_settings, initExtensions, loadExtensionSettings, UNSET_VALUE } from './scripts/extensions.js';
@@ -513,21 +515,14 @@ const FORM_TO_CARD = {
  * @returns {string}
  */
 function characterFormValue(character, formId) {
+    if (isCountedCardField(formId)) return countedCardFieldValue(character, formId);
     const data = character.data;
     switch (formId) {
-        case '#character_name_pole': return String(character.name ?? '');
-        case '#description_textarea': return String(character.description ?? '');
-        case '#personality_textarea': return String(character.personality ?? '');
-        case '#scenario_pole': return String(character.scenario ?? '');
-        case '#mes_example_textarea': return String(character.mes_example ?? '');
         case '#creator_notes_textarea': return String(data?.creator_notes || character.creatorcomment || '');
-        case '#system_prompt_textarea': return String(data?.system_prompt || '');
-        case '#post_history_instructions_textarea': return String(data?.post_history_instructions || '');
         case '#tags_textarea': return Array.isArray(data?.tags) ? data.tags.join(', ') : '';
         case '#creator_textarea': return String(data?.creator ?? '');
         case '#character_version_textarea': return String(data?.character_version || '');
         case '#talkativeness_slider': return String(character.talkativeness || talkativeness_default);
-        case '#depth_prompt_prompt': return String(data?.extensions?.depth_prompt?.prompt ?? '');
         case '#depth_prompt_depth': return String(data?.extensions?.depth_prompt?.depth ?? depth_prompt_depth_default);
         case '#depth_prompt_role': return String(data?.extensions?.depth_prompt?.role ?? depth_prompt_role_default);
         case '#character_world': return String(data?.extensions?.world || '');
@@ -1561,65 +1556,69 @@ export function resultCheckStatus() {
     stopStatusLoading();
 }
 
-export async function selectCharacterByAvatar(avatar, { switchMenu = true } = {}) {
-    let entity = charactersStore.get(avatar);
-    if (!entity) {
-        try {
-            const response = await fetch('/api/characters/get', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ avatar_url: avatar }),
-            });
-            if (response.ok) {
-                const data = await response.json();
-                data.chat = data.chat ? String(data.chat) : '';
-                data.shallow = false;
-                entity = charactersStore.get(avatar) ?? charactersStore.create(data)?.entity;
-            }
-        } catch (error) {
-            console.error('Failed to resolve character for open:', avatar, error);
-        }
-        if (!entity) {
-            toastr.error(t`Character ${avatar} not found`, t`Error`, { timeOut: 5000, preventDuplicates: true });
-            return;
-        }
-    }
-
+/**
+ * @param {string} avatar
+ * @param {{ switchMenu?: boolean, toastMissing?: boolean }} [options]
+ * @returns {Promise<boolean>} false when there is no such character
+ */
+export async function selectCharacterByAvatar(avatar, { switchMenu = true, toastMissing = true } = {}) {
     if (isChatSaving) {
         toastr.info(t`Please wait until the chat is saved before switching characters.`, t`Your chat is still saving...`);
-        return;
+        return true;
     }
 
     if (selected_group && is_group_generating) {
-        return;
+        return true;
     }
 
     if (selected_group || String(this_avatar) !== String(avatar)) {
         //if clicked on a different character from what was currently selected
         if (blockWhileFieldEditing()) {
-            return;
+            return true;
         }
-        if (!is_send_press) {
-            setCharacterId(undefined);
-            setCharacterName('');
-            resetSelectedGroup();
-            await clearChat({ clearData: true });
-            cancelTtsPlay();
-            this_edit_mes_id = undefined;
-            selected_button = 'character_edit';
-            setCharacterId(entity);
-            setChatMetadata({});
-            _resetMetadataSaveSnapshot();
-            await openCharacterConversation();
-        } else {
+        if (is_send_press) {
             toastr.info(t`Please wait until the current generation finishes before switching characters.`, t`Generation in progress...`);
+            return true;
         }
+        /** @type {ChatOpenAnswer|null} */
+        let opened = null;
+        let entity = charactersStore.get(avatar);
+        if (!entity) {
+            try {
+                opened = await requestChatOpen({ avatar_url: avatar, chat: null, make_current: false, fresh: false, with_character: true });
+                if (opened.character) {
+                    entity = charactersStore.get(avatar) ?? charactersStore.create({ ...opened.character, chat: opened.character.chat ? String(opened.character.chat) : '', shallow: false })?.entity;
+                }
+            } catch (error) {
+                if (error?.status !== 404) {
+                    console.error('Could not open the character:', avatar, error);
+                    toastr.error(t`The chat could not be opened. Check the server connection and try again.`, t`Chat not opened`);
+                    return true;
+                }
+            }
+            if (!entity) {
+                if (toastMissing) toastr.error(t`Character ${avatar} not found`, t`Error`, { timeOut: 5000, preventDuplicates: true });
+                return false;
+            }
+        }
+        setCharacterId(undefined);
+        setCharacterName('');
+        resetSelectedGroup();
+        await clearChat({ clearData: true });
+        cancelTtsPlay();
+        this_edit_mes_id = undefined;
+        selected_button = 'character_edit';
+        setCharacterId(entity);
+        setChatMetadata({});
+        _resetMetadataSaveSnapshot();
+        await openCharacterConversation({ opened });
     } else {
         //if clicked on character that was already selected
         switchMenu && (selected_button = 'character_edit');
         await unshallowCharacter(avatar);
         select_selected_character(avatar, { switchMenu });
     }
+    return true;
 }
 
 
@@ -1633,7 +1632,7 @@ async function delChat(chatfile) {
         body: JSON.stringify({
             chatfile: chatfile,
             avatar_url: avatar,
-            ...(isCurrent ? { open: true, send_keys: chatOpenSendKeys({ avatar_url: avatar }) } : {}),
+            ...(isCurrent ? { open: true, ...chatOpenAsk({ avatar_url: avatar }) } : {}),
         }),
     });
     if (response.ok === true) {
@@ -6516,6 +6515,8 @@ export async function unshallowCharacter(characterId) {
  * @property {string[]} [chats]
  * @property {number} [date_last_chat]
  * @property {Group} [group] The whole group, when the open asked `with_group`.
+ * @property {Character} [character] The whole card, when the open asked `with_character`.
+ * @property {Record<string, unknown>} [parts]
  * @property {string|null} active_character
  * @property {string|null} active_group
  * @property {number} [settings_hash]
@@ -6524,16 +6525,15 @@ export async function unshallowCharacter(characterId) {
  */
 
 /**
- * @param {{ avatar_url?: string, group_id?: string, chat?: string|null, make_current?: boolean, fresh?: boolean, with_group?: boolean }} body
+ * @param {{ avatar_url?: string, group_id?: string, chat?: string|null, make_current?: boolean, fresh?: boolean, with_group?: boolean, with_character?: boolean }} body
  * @returns {Promise<ChatOpenAnswer>}
  */
 export async function requestChatOpen(body) {
-    const owner = chatOpenOwner(body);
     const response = await fetch('/api/chats/open', {
         method: 'POST',
         headers: getRequestHeaders(),
         cache: 'no-cache',
-        body: JSON.stringify({ ...body, send_keys: keptSendKeys(owner) }),
+        body: JSON.stringify({ ...body, ...chatOpenAsk(body) }),
     });
     if (!response.ok) throw Object.assign(new Error(`/api/chats/open responded ${response.status}`), { status: response.status });
     return takeChatOpenAnswer(body, await response.json());
@@ -6549,10 +6549,11 @@ function chatOpenOwner(body) {
 
 /**
  * @param {{ avatar_url?: string, group_id?: string }} body
- * @returns {string[]}
+ * @returns {{ send_keys: string[], parts: Record<string, unknown> }}
  */
-export function chatOpenSendKeys(body) {
-    return keptSendKeys(chatOpenOwner(body));
+export function chatOpenAsk(body) {
+    const owner = chatOpenOwner(body);
+    return { send_keys: keptSendKeys(owner), parts: chatOpenAsks(owner) };
 }
 
 /**
@@ -6562,6 +6563,7 @@ export function chatOpenSendKeys(body) {
  */
 export function takeChatOpenAnswer(body, answer) {
     if (answer.group) holdGroup(answer.group);
+    takeChatOpenParts(answer.chat, answer.parts);
     takeViews(answer.ui_views);
     forgetStoredSends(chatOpenOwner(body), Array.isArray(answer.stored_sends) ? answer.stored_sends : []);
     setActiveCharacter(answer.active_character);
@@ -8326,7 +8328,7 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
         throw new TypeError(`select_selected_character: no character found for ${JSON.stringify(chid)}`);
     }
     const avatar = character?.avatar;
-    select_rm_create({ switchMenu });
+    select_rm_create({ switchMenu, show: false });
     switchMenu && setMenuType('character_edit');
     $('#delete_button').css('display', 'flex');
     $('#export_button').css('display', 'flex');
@@ -8408,6 +8410,8 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
     $('#char-management-dropdown option').not('[value="default"]').prop('disabled', false);
     $('#character_source').attr('disabled', !getCharacterSource(character) ? '' : null);
 
+    switchMenu && selectRightMenuWithAnimation('rm_ch_create_block');
+
     const editorOpenedChid = exposedCharacters[chid] !== undefined ? chid : (avatar === this_avatar ? this_chid : undefined);
     eventSource.emit(event_types.CHARACTER_EDITOR_OPENED, editorOpenedChid);
 }
@@ -8416,8 +8420,9 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
  * Selects the right menu for creating a new character.
  * @param {object} [options] Options for the switch
  * @param {boolean} [options.switchMenu=true] Whether to switch the menu
+ * @param {boolean} [options.show=true] false: the caller fills the editor and shows it after
  */
-function select_rm_create({ switchMenu = true } = {}) {
+function select_rm_create({ switchMenu = true, show = true } = {}) {
     void flushCharacterFieldSaves();
     switchMenu && setMenuType('create');
 
@@ -8428,7 +8433,7 @@ function select_rm_create({ switchMenu = true } = {}) {
         read_avatar_load(addAvatarInput);
     }
 
-    switchMenu && selectRightMenuWithAnimation('rm_ch_create_block');
+    switchMenu && show && selectRightMenuWithAnimation('rm_ch_create_block');
 
     $('#set_chat_character_settings').hide();
     $('#delete_button_div').css('display', 'none');

@@ -19,6 +19,7 @@ import { characterToEntity, groupToEntity } from './character-list.js';
 import { name1 } from './app-selection-state.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
+import { askOnChatOpen, takeChatOpenPart } from './chat-open-parts.js';
 import { charactersStore, resolveCharacterRef } from './character-store.js';
 import { characterRepository } from './character-repository.js';
 import { eventSource, event_types } from './events.js';
@@ -322,20 +323,27 @@ function registerPersonaListRedraw() {
     });
 }
 
+askOnChatOpen('personas', () => ({}));
+
+/**
+ * @typedef {{avatars: string[], thumbnails: Record<string, string>, thumbnails_still?: Record<string, string>, refs: Record<string, string>, crops?: Record<string, { x: number, y: number, width: number, height: number }>}} UserAvatarsAnswer
+ */
+
 /**
  * Gets a list of user avatars.
  * @param {boolean} doRender Whether to render the list
  * @param {string} openPageAt Item to be opened at
+ * @param {UserAvatarsAnswer|null} [given]
  * @returns {Promise<string[]>} List of avatar file names
  */
-export async function getUserAvatars(doRender = true, openPageAt = '') {
-    const response = await fetch('/api/avatars/get', {
+export async function getUserAvatars(doRender = true, openPageAt = '', given = null) {
+    const response = given ? null : await fetch('/api/avatars/get', {
         method: 'POST',
         headers: getRequestHeaders({ omitContentType: true }),
     });
-    if (response.ok) {
-        /** @type {{avatars: string[], thumbnails: Record<string, string>, thumbnails_still?: Record<string, string>, refs: Record<string, string>, crops?: Record<string, { x: number, y: number, width: number, height: number }>}} */
-        const data = await response.json();
+    if (given || response?.ok) {
+        /** @type {UserAvatarsAnswer} */
+        const data = given ?? await response.json();
         const allEntities = data?.avatars;
 
         if (!Array.isArray(allEntities)) {
@@ -1745,7 +1753,7 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
     personaLastLoadedChatId = currentChatId;
 
     // Cache persona list to check if they exist
-    const userAvatars = await getUserAvatars(doRender);
+    const userAvatars = await getUserAvatars(doRender, '', takeChatOpenPart('personas', currentChatId));
 
     // Check if the user avatar is set and exists in the list of user avatars
     if (userAvatars.length && !userAvatars.includes(user_avatar)) {

@@ -30,12 +30,46 @@ function markDepths(requests) {
 }
 
 /**
+ * Waits until the page has no request in flight and has started none for QUIET_MS, so what an earlier action still
+ * asks for isn't counted as the next one's.
+ * @param {import('@playwright/test').Page} page
+ */
+async function settle(page) {
+    let inFlight = 0;
+    let lastEvent = Date.now();
+    const onStart = (/** @type {import('@playwright/test').Request} */ request) => {
+        if (IGNORED.some(re => re.test(request.url()))) return;
+        inFlight++;
+        lastEvent = Date.now();
+    };
+    const onEnd = (/** @type {import('@playwright/test').Request} */ request) => {
+        if (IGNORED.some(re => re.test(request.url()))) return;
+        inFlight = Math.max(0, inFlight - 1);
+        lastEvent = Date.now();
+    };
+    page.on('request', onStart);
+    page.on('requestfinished', onEnd);
+    page.on('requestfailed', onEnd);
+    try {
+        const settleBy = Date.now() + SETTLE_CAP_MS;
+        while (Date.now() < settleBy && (inFlight > 0 || Date.now() - lastEvent < QUIET_MS)) {
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+    } finally {
+        page.off('request', onStart);
+        page.off('requestfinished', onEnd);
+        page.off('requestfailed', onEnd);
+    }
+}
+
+/**
  * `act` must be a real pointer or key input: the action's start is that input's event time.
  * @param {import('@playwright/test').Page} page
  * @param {{ action: string, profile: string, act: () => Promise<void>, visible: { selector: string, text?: string } }} options
  * @returns {Promise<ActionTrace>}
  */
 export async function traceAction(page, { action, profile, act, visible }) {
+    await settle(page);
     /** @type {Map<import('@playwright/test').Request, TracedRequest>} */
     const seen = new Map();
     let lastEvent = Date.now();

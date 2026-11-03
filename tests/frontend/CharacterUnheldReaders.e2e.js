@@ -159,12 +159,18 @@ test.describe('readers of characters the page does not hold', () => {
 
     test('a group draws a member the page does not hold in its avatar', async ({ page }) => {
         const avatar = await createUnheldCharacter(page, `GroupMember ${Date.now()}`);
-        const sources = await page.evaluate(async (avatar) => {
+        const { sources, thumbnail } = await page.evaluate(async (avatar) => {
+            const { getRequestHeaders } = await import('./script.js');
+            const response = await fetch('/api/groups/create', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify({ name: `Collage ${Date.now()}`, members: [avatar] }) });
+            if (!response.ok) throw new Error(`group create failed: ${response.status}`);
+            const group = await response.json();
             const { getGroupAvatar } = await import('./scripts/group-chats.js');
-            const element = getGroupAvatar({ name: 'Collage', members: [avatar], avatar_url: '' });
-            return element.find('img').toArray().map(img => img.getAttribute('src'));
+            const element = getGroupAvatar(group);
+            return { sources: element.find('img').toArray().map(img => img.getAttribute('src')), thumbnail: group.member_thumbnails?.[avatar] ?? null };
         }, avatar);
-        expect(sources.some(src => src.includes(encodeURIComponent(avatar)))).toBe(true);
+        expect(await isHeld(page, avatar)).toBe(false);
+        expect(thumbnail).toMatch(/^\/thumbnail\//);
+        expect(sources).toEqual([thumbnail]);
     });
 
     test('/go holds the whole card of the character it opens', async ({ page }) => {

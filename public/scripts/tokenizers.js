@@ -484,6 +484,15 @@ function rememberTokenizer(stateKey, tokenizer) {
 }
 
 /**
+ * @param {object|null} state
+ * @param {{ tokenizer?: CurrentTokenizer, warnings?: unknown[] }} data
+ */
+export function takeCountAnswer(state, data) {
+    if (data?.tokenizer) rememberTokenizer(JSON.stringify(state), data.tokenizer);
+    showResponseWarnings(data);
+}
+
+/**
  * @returns {CurrentTokenizer|null}
  */
 function getRememberedTokenizer() {

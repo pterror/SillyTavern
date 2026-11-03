@@ -1,6 +1,6 @@
 import { DOMPurify, Fuse } from '../../../lib.js';
 
-import { generateQuietPrompt, generateRaw, getCurrentCharacter, online_status, saveSettingsDebounced, substituteParams, substituteParamsExtended, system_message_types } from '../../../script.js';
+import { generateQuietPrompt, generateRaw, getCurrentCharacter, getCurrentChatId, online_status, saveSettingsDebounced, substituteParams, substituteParamsExtended, system_message_types } from '../../../script.js';
 import { getRequestHeaders } from '../../request-headers.js';
 import { charactersStore } from '../../character-store.js';
 import { eventSource, event_types } from '../../events.js';
@@ -22,6 +22,8 @@ import { Popup, POPUP_RESULT, POPUP_TYPE } from '../../popup.js';
 import { t } from '../../i18n.js';
 import { removeReasoningFromString } from '../../reasoning.js';
 import { macros } from '../../macros/macro-system.js';
+import { askOnChatOpen, chatOpenPart } from '../../chat-open-parts.js';
+import { avatarFolderName, spriteFolderOf } from '../../sprite-folders.js';
 export { MODULE_NAME };
 
 /**
@@ -632,14 +634,22 @@ function getSpriteFolderName(characterMessage = null, characterName = null) {
     const context = getContext();
     const message = characterMessage ?? getLastCharacterMessage();
     const avatarFileName = getFolderNameByMessage(message);
-    let spriteFolderName = avatarFileName || characterName || context.name2;
-    const expressionOverride = extension_settings.expressionOverrides.find(e => e.name == avatarFileName);
+    if (!avatarFileName) return characterName || context.name2;
+    return spriteFolderOf(avatarFileName, extension_settings.expressionOverrides);
+}
 
-    if (expressionOverride && expressionOverride.path) {
-        spriteFolderName = expressionOverride.path;
-    }
+askOnChatOpen('sprites', () => ({}));
 
-    return spriteFolderName;
+/**
+ * @param {string} name
+ * @returns {{ label: string, path: string }[] | undefined}
+ */
+function takeOpenedSprites(name) {
+    const folders = chatOpenPart('sprites', getCurrentChatId())?.folders;
+    if (!folders || !Object.hasOwn(folders, name)) return undefined;
+    const sprites = folders[name];
+    delete folders[name];
+    return sprites;
 }
 
 function getFolderNameByMessage(message) {
@@ -656,8 +666,7 @@ function getFolderNameByMessage(message) {
         return '';
     }
 
-    const folderName = avatarPath.replace(/\.[^/.]+$/, '');
-    return folderName;
+    return avatarFolderName(avatarPath);
 }
 
 /**
@@ -1350,9 +1359,10 @@ async function getListItem(expression, { images, isCustom = false } = {}) {
 
 async function getSpritesList(name) {
     try {
-        const result = await fetch(`/api/sprites/get?name=${encodeURIComponent(name)}`);
+        const opened = takeOpenedSprites(name);
+        const result = opened ? null : await fetch(`/api/sprites/get?name=${encodeURIComponent(name)}`);
         /** @type {{ label: string, path: string }[]} */
-        let sprites = result.ok ? (await result.json()) : [];
+        let sprites = opened ?? (result?.ok ? (await result.json()) : []);
 
         /** @type {Expression[]} */
         const grouped = sprites.reduce((acc, sprite) => {

@@ -27,7 +27,9 @@ the unsearched `/api/characters/all` stream and `/api/groups/all` are removed.
 ## What the page holds
 
 - **Characters:** only the ones it holds for use (the open character, group members, recently used
-  characters), in `charactersStore`/`characters`. The list itself holds only the rendered page
+  characters), in `charactersStore`/`characters`. `selectCharacterByAvatar()` holds a character it
+  doesn't hold from the `/api/chats/open` answer (`with_character`), so opening one is one request.
+  The list itself holds only the rendered page
   (`renderedPageEntities`); `getEntitiesList()` reads that page, not a library array.
 - **Shown rows:** an LRU cache of list rows the page has shown (`character-cache.js`), keyed by each
   row's content identity: a character's avatar, version (the log position of its last write) and tag
