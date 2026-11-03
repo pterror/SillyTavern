@@ -56,7 +56,6 @@ jest.unstable_mockModule('../public/scripts/utils.js', () => ({
     paginationDropdownChangeHandler: noop,
     includesIgnoreCaseAndAccents: (text, term) => String(text ?? '').toLowerCase().includes(String(term).toLowerCase()),
 }));
-jest.unstable_mockModule('../public/scripts/constants.js', () => ({ debounce_timeout: { quick: 100 } }));
 jest.unstable_mockModule('../public/scripts/tags.js', () => ({
     registerFolderCaseHandlers: noop,
     takeInExtensionTagWrites: noop,
