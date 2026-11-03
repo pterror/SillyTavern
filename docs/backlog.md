@@ -17,6 +17,8 @@
 - A session on another device on an earlier message mustn't break; fix the desync.
 - Page blur (switching app on a phone) closes character info.
 - An empty thinking block is not the same as no thinking block (gemma inference breaks otherwise).
+- The itemization isn't built from what the server sent: the page builds it from locals only its skipped prompt assembly fills (`public/scripts/generation.js:1660-1693`, gate `:938`); chat completion stores none and drops its counts (`src/endpoints/backends/chat-completions.js:2587`, `:3378`), whose per-prompt totals are 0 anyway (`src/chat-completion-budget.js:223, 248, 262, 568`); text completion's breakdown has no post-history field (`src/text-completion-prompt-orchestrator.js:501-514`). The server produces the whole itemization while building the prompt, for both APIs; the page part goes.
+- Live editor blank lines render 0px tall yet push the next line 2px down; CodeMirror's height map misses those 2px per blank line, so clicks and Shift+Home land a line off below enough blank lines (the owner's measurements, 10-30). Why a blank line collapses is unknown; next is the computed style of one. Underneath: the editor is mounted inside `.mes_text`, so rendered-chat CSS applies to it.
 - Live editor: the cursor sometimes goes onto the wrong line; Shift+Home sometimes selects to the start of the next line; the editor for messages sometimes scrolls; find and replace and its presets are bad.
 - Install as fast as possible without losing functionality; updating too.
 - Zero friction for everyone, including browsing cards.
