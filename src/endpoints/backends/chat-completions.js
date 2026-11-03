@@ -70,7 +70,7 @@ import { resolveChatCompletionGenerationInput } from '../../chat-completion-gene
 import { resolveTokenizer, sendTokenizerWarnings, createTokenizerOutcome } from '../../tokenizer-resolve.js';
 import { readConnectionStateHeader } from '../../connection-state-header.js';
 import { fetchOpenRouterModels, rememberOpenRouterModels } from '../../openrouter-models.js';
-import { prepareOpenAIMessages } from '../../chat-completion-prepare-messages.js';
+import { buildChatCompletionPrompt } from '../../prompt/chat-prompt.js';
 import { generateTurnOf } from '../../page-writes.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
@@ -2510,7 +2510,7 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
  * @param {boolean} [params.isSwipe]
  * @param {string} [params.userMessageText]
  * @param {import('../../macro-facts.js').PageMacroFacts} [params.pageFacts]
- * @param {import('../../extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections]
+ * @param {import('../../prompt/injections.js').PageInjections} [params.pageInjections]
  * @param {object} [params.userMessageExtra]
  * @param {any[]} [params.clientToolSchemas]
  * @param {object} [params.jsonSchema]
@@ -2584,7 +2584,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
         throw new Error('Cannot continue/swipe an empty chat.');
     }
 
-    const { chat: messages, itemize: itemizeParts } = await prepareOpenAIMessages(orchestratorInput, false);
+    const { chat: messages, itemize: itemizeParts } = await buildChatCompletionPrompt(orchestratorInput);
 
     const biasPresetEntries = settings.bias_preset_selected ? settings.bias_presets?.[settings.bias_preset_selected] : undefined;
     const useLogprobs = Boolean(powerUser.request_token_probabilities);

@@ -5,15 +5,15 @@ import { readExtraBooks } from './endpoints/characters.js';
 import { resolveSpeakers } from './macro-scope.js';
 import { getCharacterCardFields, getGroupCharacterDepthPrompts } from './character-card-fields.js';
 import { buildChatCompletionMessages, buildChatCompletionMessageExamples, character_names_behavior } from './chat-completion-messages.js';
-import { TokenHandler } from './chat-completion-budget.js';
+import { TokenHandler } from './prompt/chat-message.js';
 import { chat_completion_sources } from './chat-completion-tool-capabilities.js';
 import { resolveWorldInfoCandidates } from './world-info/candidate-resolution.js';
 import { activateWorldInfoEntries } from './world-info/activation.js';
 import { buildActivationRecord } from './world-info/activation-record.js';
 import { userStore } from './user-stores.js';
 import { bucketActivatedEntries, world_info_position } from './world-info/result-bucketing.js';
-import { createExtensionPromptTable } from './extension-prompt-table.js';
-import { addDepthInjections, addNoteAndPersona, addPageInjections } from './prompt-injections.js';
+import { positionedEntries } from './prompt/injections.js';
+import { outletMarkers, withoutOutletMarkers } from './prompt/model.js';
 import { resolveAuthorsNote } from './authors-note.js';
 import { persona_description_defaults, persona_description_positions } from '../public/scripts/constants.js';
 import { GLOBAL_PROMPT_ORDER_ID, promptOrdersWithDefault, promptsWithDefaults } from '../public/scripts/prompt-manager-defaults.js';
@@ -36,7 +36,6 @@ import { worldInfoGlobalsOf } from '../public/scripts/world-info-globals.js';
  * @typedef {import('./world-info/result-bucketing.js').WIActivatedEntry} WIActivatedEntry
  * @typedef {import('./world-info/result-bucketing.js').WIDepthEntry} WIDepthEntry
  * @typedef {import('./macro-substitution.js').SubstituteParamsContext} SubstituteParamsContext
- * @typedef {import('./extension-prompt-table.js').ExtensionPromptTable} ExtensionPromptTable
  */
 
 /**
@@ -80,8 +79,8 @@ import { worldInfoGlobalsOf } from '../public/scripts/world-info-globals.js';
  * @property {string} [personality_format]
  * @property {string} [group_nudge_prompt]
  * @property {string} [impersonation_prompt]
- * @property {import('./chat-completion-prompt-collection.js').RawPrompt[]} [prompts]
- * @property {import('./chat-completion-prompt-collection.js').PromptOrderList[]} [prompt_order]
+ * @property {Record<string, any>[]} [prompts]
+ * @property {{ character_id: string|number, order: { identifier: string, enabled: boolean }[] }[]} [prompt_order]
  * @property {boolean} [continue_prefill]
  * @property {string} [assistant_prefill]
  * @property {string} [new_chat_prompt]
@@ -175,10 +174,10 @@ export function getChatCompletionModel(settings) {
  * @param {import('./tokenizer-resolve.js').TokenizerOutcome} [outcome]
  * @param {import('./users.js').UserDirectoryList} [directories]
  * @param {import('./token-count-store.js').StoredCounter} [storedCounter]
- * @returns {import('./chat-completion-budget.js').CountTokenAsyncFn}
+ * @returns {import('./prompt/chat-message.js').CountTokenAsyncFn}
  */
 export function createOpenAITokenCounter(resolved, outcome = undefined, directories = undefined, storedCounter = undefined) {
-    /** @type {import('./chat-completion-budget.js').CountTokenAsyncFn} */
+    /** @type {import('./prompt/chat-message.js').CountTokenAsyncFn} */
     const countTokenAsyncFn = async function countTokenAsyncFn(messages) {
         const input = Array.isArray(messages) ? messages : [messages];
         const list = input
@@ -235,17 +234,17 @@ async function resolveChatHistory(chat, { branchName, nodeId }) {
  * @param {string} [params.model]
  * @param {import('./chat-completion-tool-capabilities.js').ChatCompletionToolCapabilityModel[]} [params.modelList]
  * @param {string|number} [params.characterId]
- * @param {import('./chat-completion-budget.js').CountTokenAsyncFn} [params.countTokenAsyncFn]
- * @param {import('./chat-completion-budget.js').TokenHandler} [params.tokenHandler]
+ * @param {import('./prompt/chat-message.js').CountTokenAsyncFn} [params.countTokenAsyncFn]
+ * @param {import('./prompt/chat-message.js').TokenHandler} [params.tokenHandler]
  * @param {string} [params.quietPrompt]
  * @param {string} [params.quietImage]
  * @param {number} [params.responseLength]
  * @param {object} [params.macroExtras]
  * @param {import('./macro-facts.js').PageMacroFacts} [params.pageFacts]
- * @param {import('./extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections]
+ * @param {import('./prompt/injections.js').PageInjections} [params.pageInjections]
  * @param {import('./llamacpp-props.js').LlamaCppPropsCheck} [params.llamaCppProps]
  * @param {import('./token-count-store.js').PendingTokenRows} [params.tokenCountRows]
- * @returns {Promise<import('./chat-completion-prepare-messages.js').PrepareOpenAIMessagesInput & { worldInfoCandidates: WIEntry[], activations: import('./world-info/activation-record.js').ActivationRecord | null, tokenizerOutcome: import('./tokenizer-resolve.js').TokenizerOutcome, countedWith: () => object|null, tokenCountRows: import('./token-count-store.js').PendingTokenRows }>}
+ * @returns {Promise<import('./prompt/chat-prompt.js').ChatCompletionPromptInput & { worldInfoCandidates: WIEntry[], activations: import('./world-info/activation-record.js').ActivationRecord | null, tokenizerOutcome: import('./tokenizer-resolve.js').TokenizerOutcome, countedWith: () => object|null, tokenCountRows: import('./token-count-store.js').PendingTokenRows }>}
  */
 export async function resolveChatCompletionGenerationInput(directories, {
     avatar, groupId, chatContext, branchName, nodeId,
@@ -284,7 +283,6 @@ export async function resolveChatCompletionGenerationInput(directories, {
     const stateBefore = variablesBefore(chatMetadata, extensionSettings.variables?.global ?? {});
 
     const { name2, character, groupMembers: groupMemberNames, groupDisabledMembers } = await resolveSpeakers(directories, { avatar, groupId });
-    const hasCharacter = character !== null;
     const name1 = (username != null && username !== '') ? username : 'User';
 
     /** @type {TreeChatMessage | null} */
@@ -313,7 +311,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
         preferCharacterJailbreak: Boolean(powerUser.prefer_character_jailbreak),
         personaDescription: activePersona.description,
         chatMetadata,
-        macroContext: { ...macroFacts, name1, isGroup, groupMembers: groupMemberNames, groupDisabledMembers, chat: promptChat, chatMetadata },
+        macroContext: { ...macroFacts, name1, isGroup, groupMembers: groupMemberNames, groupDisabledMembers, chat: promptChat, chatMetadata, outlets: outletMarkers },
     });
 
     const WORLD_INFO_METADATA_KEY = 'world_info';
@@ -342,6 +340,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
         name1, name2, isGroup, groupMembers: groupMemberNames, groupDisabledMembers, model: model ?? undefined,
         characterCard: fields,
         chat: /** @type {import('./macro-substitution.js').ChatMessage[]} */ (promptChat), chatMetadata,
+        outlets: outletMarkers,
     };
 
     const promptChatForMessages = promptChat.length
@@ -386,12 +385,12 @@ export async function resolveChatCompletionGenerationInput(directories, {
     const chatForWI = promptChat.map(x => worldInfoGlobals.world_info_include_names ? `${x.name}: ${x.mes}` : (x.mes ?? '')).reverse();
     const generationTrigger = type !== undefined && GENERATION_TYPE_TRIGGERS.includes(type) ? type : 'normal';
     const globalScanData = {
-        personaDescription: fields.persona,
-        characterDescription: fields.description,
-        characterPersonality: fields.personality,
-        characterDepthPrompt: fields.charDepthPrompt,
-        scenario: fields.scenario,
-        creatorNotes: fields.creatorNotes,
+        personaDescription: withoutOutletMarkers(fields.persona),
+        characterDescription: withoutOutletMarkers(fields.description),
+        characterPersonality: withoutOutletMarkers(fields.personality),
+        characterDepthPrompt: withoutOutletMarkers(fields.charDepthPrompt),
+        scenario: withoutOutletMarkers(fields.scenario),
+        creatorNotes: withoutOutletMarkers(fields.creatorNotes),
         trigger: generationTrigger,
     };
     /** @type {(text: string) => Promise<number>} */
@@ -415,7 +414,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
         injects: scanInjects.map(([label]) => label),
         books: (await userStore(directories)).lib.books,
     });
-    const { worldInfoBefore, worldInfoAfter, worldInfoExamples, worldInfoDepth: worldInfoDepthEntries, anBefore, anAfter } = bucketActivatedEntries(/** @type {WIActivatedEntry[]} */ (/** @type {unknown} */ (activatedEntries)), {
+    const { worldInfoBefore, worldInfoAfter, worldInfoBeforeEntries, worldInfoAfterEntries, worldInfoExamples, worldInfoDepth: worldInfoDepthEntries, anBefore, anAfter, outletEntries } = bucketActivatedEntries(/** @type {WIActivatedEntry[]} */ (/** @type {unknown} */ (activatedEntries)), {
         resolveContent: (entry) => {
             const regexDepth = entry.position === world_info_position.atDepth ? (entry.depth ?? WI_DEFAULT_DEPTH) : null;
             return getRegexedString(entry.content, regex_placement.WORLD_INFO, regexScripts, {
@@ -435,20 +434,16 @@ export async function resolveChatCompletionGenerationInput(directories, {
         { isGroup, name1, name2, appendNamesForGroup: true },
     );
 
-    const injectionTable = createExtensionPromptTable();
-    addPageInjections(injectionTable, pageInjections);
-    addNoteAndPersona(injectionTable, {
-        authorsNote, anBefore, anAfter,
+    const entries = positionedEntries({
+        pageInjections, authorsNote, anBefore, anAfter,
         personaDescription: typeof activePersona.description === 'string' ? activePersona.description : '',
         personaDescriptionPosition: activePersona.position ?? persona_description_positions.IN_PROMPT,
         personaDescriptionDepth: activePersona.depth ?? persona_description_defaults.depth,
         personaDescriptionRole: activePersona.role ?? persona_description_defaults.role,
-    });
-    addDepthInjections(injectionTable, {
-        worldInfoDepthEntries,
+        worldInfoDepth: worldInfoDepthEntries,
         groupDepthPrompts: isGroup && avatar != null ? await getGroupCharacterDepthPrompts(directories, groupId, avatar, macroContext) : [],
         characterDepthPrompt: { text: fields.charDepthPrompt ?? '', depth: fields.charDepthPromptDepth, role: fields.charDepthPromptRole },
-        depthPromptScan: Boolean(noteSettings.allowWIScan),
+        substitute: text => substituteParams(text, macroContext),
     });
 
     const resolved = {
@@ -456,7 +451,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
         chatResolutionAmbiguous: Boolean(chatResolutionAmbiguous),
         variablesBefore: stateBefore,
 
-        name2, hasActiveCharacter: hasCharacter,
+        name2,
         charDescription: fields.description,
         charPersonality: fields.personality,
         scenario: fields.scenario,
@@ -467,6 +462,9 @@ export async function resolveChatCompletionGenerationInput(directories, {
 
         worldInfoBefore,
         worldInfoAfter,
+        worldInfoBeforeEntries,
+        worldInfoAfterEntries,
+        outletEntries,
         worldInfoCandidates,
         activations,
         wiFormat: oaiSettings.wi_format ?? '{0}',
@@ -476,7 +474,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
         rawChatLength: chat.length,
 
         type, quietPrompt, quietImage,
-        extensionPrompts: injectionTable, cyclePrompt: continued,
+        entries, cyclePrompt: continued,
 
         messages, messageExamples,
         groupMemberNames,
@@ -488,7 +486,6 @@ export async function resolveChatCompletionGenerationInput(directories, {
         maxContext: oaiSettings.openai_max_context ?? 4095,
         maxTokens: oaiSettings.openai_max_tokens ?? 300,
 
-        enableLogging: Boolean(powerUser.console_log_prompts ?? false),
         squashSystemMessages: Boolean(oaiSettings.squash_system_messages ?? false),
 
         scenarioFormat: oaiSettings.scenario_format ?? DEFAULT_SCENARIO_FORMAT,
@@ -518,23 +515,16 @@ export async function resolveChatCompletionGenerationInput(directories, {
         namesInCompletion: namesBehavior === character_names_behavior.COMPLETION,
         assistantPrefill: oaiSettings.assistant_prefill ?? '',
         pinExamples: Boolean(powerUser.pin_examples ?? false),
-        injectionTable,
 
         historyOptions: {
-            type, cyclePrompt: continued, isGroup,
+            isGroup,
             newChatPrompt: oaiSettings.new_chat_prompt ?? '',
             newGroupChatPrompt: oaiSettings.new_group_chat_prompt ?? '',
-            continuePrefill: Boolean(oaiSettings.continue_prefill ?? false),
             continueNudgePrompt: oaiSettings.continue_nudge_prompt ?? '',
             sendIfEmpty: oaiSettings.send_if_empty ?? '',
             namesBehavior,
-            imageQuality, directories,
-            macroContext,
         },
-        dialogueExamplesOptions: {
-            newExampleChatPrompt: oaiSettings.new_example_chat_prompt ?? '',
-            macroContext,
-        },
+        newExampleChatPrompt: oaiSettings.new_example_chat_prompt ?? '',
     };
 
     return { ...resolved, ...macroExtras };

@@ -180,7 +180,7 @@ async function run() {
     assert.equal(built.anchorNodeId, mainLeafId, 'anchorNodeId is exactly the given node_id, unchanged from before');
 
     assert.ok(built.params && typeof built.params === 'object', 'params (generate_data) is a real object');
-    assert.equal(built.params.model, 'test-model-7b', 'params.model is the resolved backend model, matching assembleTextCompletionPrompt()\'s own generate_data.model');
+    assert.equal(built.params.model, 'test-model-7b', 'params.model is the resolved backend model, matching buildTextCompletionPrompt()\'s own generate_data.model');
     assert.equal(typeof built.params.prompt, 'string');
     assert.ok(built.params.prompt.includes('Hello there, traveler.'), 'the real loaded chat history made it into the assembled prompt');
     assert.ok(built.params.prompt.includes('What happens next, Rex?'), 'the raw user_message made it into the assembled prompt');
@@ -1833,7 +1833,7 @@ async function run() {
         assert.deepEqual(decoded.warnings[1].entries, ['hello']);
     });
 
-    await tokenizerCase('raw-action on llama.cpp: the counts that begin the prompt send add_special: true, message counts upstream\'s request', async () => {
+    await tokenizerCase('raw-action on llama.cpp: the count of what\'s always sent begins the prompt and sends add_special: true, a message counts upstream\'s request', async () => {
         const bosAvatar = await writeCharacter('BosCount.png', { name: 'BosCount', data: { name: 'BosCount', description: 'BosCount tells stories.', first_mes: 'Hi.' } });
         await saveBranch(user.store, { avatar: bosAvatar }, 'bos-chat', [
             { chat_metadata: {} },
@@ -1872,7 +1872,7 @@ async function run() {
         const promptStart = tokenizeBodies.filter(body => body.add_special === true);
         const fields = tokenizeBodies.filter(body => !('add_special' in body));
         assert.equal(promptStart.length + fields.length, tokenizeBodies.length, 'add_special is only ever true');
-        assert.deepEqual(promptStart.map(body => body.content), ['', 'Tester: Tell me one.', 'BosCount: Hi.\n\nTester: Tell me one.']);
+        assert.deepEqual(promptStart.map(body => body.content), ['Tester: Tell me one.'], 'what\'s always sent (here the message being continued) is counted once, as the prompt\'s start');
         assert.deepEqual(fields, [{ model: 'gemma-2-9b-it', content: 'BosCount: Hi.\n' }], 'a message is counted with upstream\'s { model, content }');
         assert.ok(built.params.prompt.endsWith('Tell me one.'));
         assert.deepEqual(built.warnings ?? [], []);

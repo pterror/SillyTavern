@@ -10,7 +10,7 @@ import { resolveTokenizer, createTokenizerOutcome, sendTokenizerWarnings, tokeni
 import { createStoredCounter, writeBack } from '../token-count-store.js';
 import { tokenizers } from '../tokenizer-ids.js';
 import { resolveTextCompletionGenerationInput } from '../text-completion-generation-input.js';
-import { assembleTextCompletionPrompt } from '../text-completion-prompt-orchestrator.js';
+import { buildTextCompletionPrompt } from '../prompt/text-prompt.js';
 import { startItemizing } from '../prompt-itemization.js';
 import { generateTurnOf, textCompletionQuietInput } from '../page-writes.js';
 import { storeUserMessage, withStoredMessages } from '../stored-messages.js';
@@ -194,7 +194,7 @@ router.post('/status', async function (req, res) {
  * @param {boolean} [params.isSwipe]
  * @param {string} [params.userMessageText]
  * @param {import('../macro-facts.js').PageMacroFacts} [params.pageFacts]
- * @param {import('../extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections]
+ * @param {import('../prompt/injections.js').PageInjections} [params.pageInjections]
  * @param {object} [params.userMessageExtra]
  * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, activations: import('../world-info/activation-record.js').ActivationRecord|null, tokenCountRows: import('../token-count-store.js').PendingTokenRows, name1: string, name2: string, warnings: object[], itemize: () => Promise<import('../prompt-itemization.js').PromptItemization> }>}
  */
@@ -264,7 +264,7 @@ export async function buildRawActionNovelRequest(directories, {
         throw new Error('Cannot continue/swipe an empty chat.');
     }
 
-    const assembled = await assembleTextCompletionPrompt(orchestratorInput);
+    const assembled = await buildTextCompletionPrompt(orchestratorInput);
     const anchorContent = orchestratorInput.chat.length > 0 ? orchestratorInput.chat[orchestratorInput.chat.length - 1] : null;
 
     return {

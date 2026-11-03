@@ -18,6 +18,8 @@
  * @typedef {object} WIBucketingResult
  * @property {string} worldInfoBefore
  * @property {string} worldInfoAfter
+ * @property {string[]} worldInfoBeforeEntries
+ * @property {string[]} worldInfoAfterEntries
  * @property {WIExampleEntry[]} worldInfoExamples
  * @property {WIDepthEntry[]} worldInfoDepth
  * @property {string[]} anBefore
@@ -129,6 +131,8 @@ export function bucketActivatedEntries(activatedEntries, { resolveContent = (ent
     return {
         worldInfoBefore,
         worldInfoAfter,
+        worldInfoBeforeEntries: WIBeforeEntries,
+        worldInfoAfterEntries: WIAfterEntries,
         worldInfoExamples: EMEntries,
         worldInfoDepth: WIDepthEntries,
         anBefore: ANTopEntries,

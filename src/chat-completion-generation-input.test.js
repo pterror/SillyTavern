@@ -15,9 +15,9 @@ setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 const { resolveChatCompletionGenerationInput } = await import('./chat-completion-generation-input.js');
 const { importWorldInfoFromRaw } = await import('./endpoints/worldinfo.js');
 const { writeAllSettings } = await import('./settings-store.js');
-const { prepareOpenAIMessages } = await import('./chat-completion-prepare-messages.js');
+const { buildChatCompletionPrompt } = await import('./prompt/chat-prompt.js');
 const { world_info_position } = await import('./world-info/result-bucketing.js');
-const { extension_prompt_types, extension_prompt_roles } = await import('./extension-prompt-table.js');
+const { extension_prompt_types, extension_prompt_roles } = await import('./prompt/injections.js');
 const { encodeTextByLocalTokenizerType, getTiktokenTokenizer } = await import('./endpoints/tokenizers.js');
 const { rememberOpenRouterModels } = await import('./openrouter-models.js');
 rememberOpenRouterModels([]);
@@ -223,7 +223,7 @@ async function storedCountsSkipTextOnlyMessages() {
                 avatar, chatContext: await ctxOf({ avatar }, 'stow-chat'), branchName: 'stow-chat', type: 'normal',
                 llamaCppProps: createLlamaCppPropsCheck({ reuse: false }),
             });
-            const prepared = await prepareOpenAIMessages({ ...input, canUseToolsOverride: true });
+            const prepared = await buildChatCompletionPrompt({ ...input, canUseToolsOverride: true });
             return { input, prepared, bodies: stub.tokenizeBodies.map(body => String(body.content)) };
         };
         const isToolCallCount = (content) => content.startsWith('assistant\n\n[{"id":"call_1"');
@@ -330,12 +330,12 @@ async function run() {
     );
 
     const wiDepthKey = `customDepthWI_${WI_DEPTH_TEST_DEPTH}_${WI_DEPTH_TEST_ROLE}`;
-    assert.ok(input.injectionTable[wiDepthKey], `injectionTable has a real entry at the expected ${wiDepthKey} key`);
-    assert.equal(input.injectionTable[wiDepthKey].value, WI_DEPTH_TEST_CONTENT, 'the injectionTable entry carries the real, genuinely-activated @Depth entry content');
-    assert.equal(input.injectionTable[wiDepthKey].position, extension_prompt_types.IN_CHAT);
-    assert.equal(input.injectionTable[wiDepthKey].depth, WI_DEPTH_TEST_DEPTH);
-    assert.equal(input.injectionTable[wiDepthKey].scan, false);
-    assert.equal(input.injectionTable[wiDepthKey].role, WI_DEPTH_TEST_ROLE);
+    const wiDepthEntry = input.entries.find(entry => entry.key === wiDepthKey);
+    assert.ok(wiDepthEntry, `the entries hold the @Depth lore at the expected ${wiDepthKey} key`);
+    assert.deepEqual(wiDepthEntry.children.map(child => child.text), [WI_DEPTH_TEST_CONTENT], 'it holds the real, genuinely-activated @Depth entry content');
+    assert.equal(wiDepthEntry.position, extension_prompt_types.IN_CHAT);
+    assert.equal(wiDepthEntry.depth, WI_DEPTH_TEST_DEPTH);
+    assert.equal(wiDepthEntry.role, WI_DEPTH_TEST_ROLE);
     assert.ok(!input.worldInfoBefore.includes(WI_DEPTH_TEST_CONTENT), 'the @Depth entry content is NOT duplicated into worldInfoBefore');
     assert.ok(!input.worldInfoAfter.includes(WI_DEPTH_TEST_CONTENT), 'the @Depth entry content is NOT duplicated into worldInfoAfter');
 
@@ -375,7 +375,7 @@ async function run() {
     });
     const appendedWithExtra = withUserMessageExtra.messages[0];
     assert.deepEqual(appendedWithExtra.media, [{ url: dataUrl, type: 'image', source: 'upload' }]);
-    const resultWithMedia = await prepareOpenAIMessages(withUserMessageExtra);
+    const resultWithMedia = await buildChatCompletionPrompt(withUserMessageExtra);
     const turnWithMedia = resultWithMedia.chat.find(m => Array.isArray(m.content));
     assert.ok(turnWithMedia, `expected a message with array (multi-part) content once media is inlined, got: ${JSON.stringify(resultWithMedia.chat)}`);
     const imagePart = turnWithMedia.content.find(p => p.type === 'image_url');
@@ -408,7 +408,7 @@ async function run() {
         'the inlined file text is prepended onto the turn\'s own message text, not a replacement of it',
     );
 
-    assert.equal(input.settings.chat_completion_source, 'openai', 'settings forwards the real oai_settings object for prepareOpenAIMessages() to resolve tool-capability values from internally');
+    assert.equal(input.settings.chat_completion_source, 'openai', 'settings forwards the real oai_settings object for buildChatCompletionPrompt() to resolve tool-capability values from internally');
     assert.equal(input.canUseToolsOverride, undefined);
     assert.ok(input.tokenHandler && typeof input.tokenHandler.countAsync === 'function', 'a real TokenHandler is constructed');
 
@@ -424,8 +424,8 @@ async function run() {
     assert.equal(overridden.quietPrompt, 'Summarize the scene.', 'macroExtras is shallow-merged over the resolved object');
     assert.equal(overridden.bias, '+happy');
 
-    const result = await prepareOpenAIMessages(input);
-    assert.ok(Array.isArray(result.chat), 'prepareOpenAIMessages() returns a real chat array, not null/undefined');
+    const result = await buildChatCompletionPrompt(input);
+    assert.ok(Array.isArray(result.chat), 'buildChatCompletionPrompt() returns a real chat array, not null/undefined');
     assert.ok(result.chat.length > 0, 'the assembled chat-completion payload is non-empty end to end');
     const flattened = JSON.stringify(result.chat);
     assert.ok(flattened.includes('Hello there, traveler.'), 'the real chat history made it into the final chat-completion payload');
@@ -433,14 +433,14 @@ async function run() {
         flattened.includes('The ancient tower looms over the village.'),
         'the genuinely-activated world-info content (worldInfoBefore) made it all the way into the final assembled chat-completion payload, end to end',
     );
-    assert.equal(typeof result.canUseTools, 'boolean', 'canUseTools is resolved internally by prepareOpenAIMessages(), not by this resolver');
+    assert.equal(typeof result.canUseTools, 'boolean', 'canUseTools is resolved internally by buildChatCompletionPrompt(), not by this resolver');
     assert.equal(result.canUseTools, false, 'function_calling is not set in the fixture, so tool calling resolves to false internally');
 
     const depthOccurrences = result.chat.filter(msg => JSON.stringify(msg).includes(WI_DEPTH_TEST_CONTENT)).length;
     assert.ok(depthOccurrences > 0, 'the @Depth entry content made it into the final assembled chat-completion payload, end to end');
     assert.equal(depthOccurrences, 1, 'the @Depth entry content appears exactly once - not duplicated into worldInfoBefore/worldInfoAfter as well');
 
-    const resultWithUserMessage = await prepareOpenAIMessages(withUserMessage);
+    const resultWithUserMessage = await buildChatCompletionPrompt(withUserMessage);
     const flattenedWithUserMessage = JSON.stringify(resultWithUserMessage.chat);
     assert.ok(
         flattenedWithUserMessage.includes('What happens next, Rex?'),
@@ -511,7 +511,7 @@ async function run() {
         });
 
         assert.equal(groupInput.macroContext.isGroup, true, 'isGroup is real (Boolean(groupId)) in macroContext');
-        assert.equal(groupInput.historyOptions.isGroup, true, 'isGroup is real in historyOptions, forwarded to chat-completion-history.js');
+        assert.equal(groupInput.historyOptions.isGroup, true, 'isGroup is real in historyOptions');
 
         assert.equal(groupInput.name2, 'Nova', 'name2 resolves to the specific responding member, not the group\'s own name, even though groupId is also set');
 
@@ -520,8 +520,8 @@ async function run() {
         assert.ok(groupInput.charDescription.includes('Nova is a stoic starship engineer.'), 'combined charDescription includes Nova\'s own description');
         assert.ok(groupInput.charDescription.includes('Zephyr is a chaotic weather spirit.'), 'combined charDescription ALSO includes Zephyr\'s description - proving real combining, not just the responding member\'s own uncombined card');
 
-        const groupResult = await prepareOpenAIMessages(groupInput);
-        assert.ok(Array.isArray(groupResult.chat), 'prepareOpenAIMessages() returns a real chat array for a group turn');
+        const groupResult = await buildChatCompletionPrompt(groupInput);
+        assert.ok(Array.isArray(groupResult.chat), 'buildChatCompletionPrompt() returns a real chat array for a group turn');
         const groupFlattened = JSON.stringify(groupResult.chat);
         assert.ok(groupFlattened.includes('Zephyr: Winds are shifting!'), 'the non-responding member\'s message is name-prefixed ("Zephyr: ...") in the assembled chat-completion payload - real group-appropriate name-prefixing, not the single-character (unprefixed) behavior');
         assert.ok(groupFlattened.includes('Nova is a stoic starship engineer.'), 'the combined group-card description made it all the way into the final assembled chat-completion payload');

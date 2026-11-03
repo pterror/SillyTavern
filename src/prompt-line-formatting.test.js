@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { getBiasStrings, formatMessageHistoryItem, modifyLastPromptLine, IGNORE_SYMBOL } from './prompt-line-formatting.js';
+import { getBiasStrings, formatMessageHistoryItem, lastPromptLineParts, IGNORE_SYMBOL } from './prompt-line-formatting.js';
+
+const modifyLastPromptLine = (last, params) => lastPromptLineParts(params)
+    .reduce((text, part) => text + (part.breakBefore && !text.endsWith('\n') ? '\n' : '') + part.text, last);
 
 const instructPreset = {
     enabled: true,

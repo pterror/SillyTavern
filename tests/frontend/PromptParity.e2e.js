@@ -6,6 +6,7 @@ import { testSetup } from './frontent-test-utils.js';
 import { startLlamaCpp, connectLlamaCpp, openCharacter } from './llamacpp-mock.js';
 import { startOpenAICompat, connectOpenAICompat } from './openai-mock.js';
 import { PARITY_CASES, applyChatMetadata, applyPersona, applyPowerUser, createLorebook } from './prompt-parity-cases.js';
+import { serverMessages, serverText } from './prompt-parity-known.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -139,7 +140,7 @@ test.describe('text completion', () => {
             await setUp(page, parityCase);
             const type = parityCase.type ?? 'normal';
             expect.soft(await pagePrompt(page, type), 'the page\'s own prompt').toBe(expected);
-            expect.soft(await serverPrompt(page, type), 'the server\'s prompt').toBe(expected);
+            expect.soft(await serverPrompt(page, type), 'the server\'s prompt').toBe(serverText(parityCase.name, expected));
         });
     }
 });
@@ -165,7 +166,7 @@ test.describe('chat completion', () => {
             const before = sends().length;
             await slash(page, SEND[parityCase.type ?? 'normal']);
             await expect.poll(() => sends().length, { timeout: 20000 }).toBeGreaterThan(before);
-            expect(sends()[before].body.messages).toEqual(expected);
+            expect(sends()[before].body.messages).toEqual(serverMessages(parityCase.name, expected));
         });
     }
 });

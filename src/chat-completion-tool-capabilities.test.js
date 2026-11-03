@@ -1,8 +1,8 @@
 import assert from 'node:assert';
 import { test } from 'node:test';
 
-import { TOOL_REASONING_MODES } from './chat-completion-history.js';
 import {
+    TOOL_REASONING_MODES,
     chat_completion_sources,
     custom_prompt_post_processing_types,
     getToolReasoningMode,
