@@ -20,7 +20,7 @@ import { name1 } from './app-selection-state.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { askOnChatOpen, takeChatOpenPart } from './chat-open-parts.js';
-import { charactersStore, resolveCharacterRef } from './character-store.js';
+import { charactersStore } from './character-store.js';
 import { characterRepository } from './character-repository.js';
 import { eventSource, event_types } from './events.js';
 import { power_user, personaStore, defaultPersonaRecord } from './power-user.js';
@@ -60,7 +60,7 @@ import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
 import { t } from './i18n.js';
 import { openWorldInfoEditor, world_names } from './world-info.js';
 import { renderTemplateAsync } from './templates.js';
-import { saveMetadataDebounced } from './extensions.js';
+import { saveMetadataDebounced } from './metadata-store.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { SlashCommandNamedArgument, ARGUMENT_TYPE, SlashCommandArgument } from './slash-commands/SlashCommandArgument.js';
@@ -99,7 +99,7 @@ export const DEFAULT_ROLE = persona_description_defaults.role;
 export let user_avatar = '';
 
 /** @type {FilterHelper} Filter helper for the persona list */
-export const personasFilter = new FilterHelper(debounce(getUserAvatars, debounce_timeout.quick));
+const personasFilter = new FilterHelper(debounce(getUserAvatars, debounce_timeout.quick));
 
 /** @type {string} The last loaded chat id to remember for persona loading */
 let personaLastLoadedChatId = null;
@@ -151,14 +151,9 @@ export async function setUserAvatar(imgfile, { toastPersonaNameChange = true, na
     reloadUserAvatar();
     updatePersonaUIStates({ navigateToCurrent: navigateToCurrent });
     selectCurrentPersona({ toastPersonaNameChange: toastPersonaNameChange });
-    await retriggerFirstMessageOnEmptyChat();
+    if (chat[0]) updateMessageBlock(0, chat[0]);
     saveSettingsDebounced('user_avatar');
     $('.zoomed_avatar[forchar]').remove();
-    await eventSource.emit(event_types.PERSONA_CHANGED, user_avatar);
-}
-
-export async function retriggerFirstMessageOnEmptyChat() {
-    if (chat[0]) updateMessageBlock(0, chat[0]);
 }
 
 function reloadUserAvatar() {
@@ -306,7 +301,7 @@ function getUserAvatarBlock(avatarId) {
 async function addMissingPersonas(avatarsList) {
     for (const persona of avatarsList) {
         if (!personaStore.has(persona)) {
-            await initPersona(persona, '[Unnamed Persona]', '', '', { silent: true });
+            await initPersona(persona, '[Unnamed Persona]', '', '');
         }
     }
 }
@@ -529,7 +524,7 @@ async function changeUserAvatar(e) {
  * @param {string} avatarId User avatar id
  * @returns {Promise} Promise that resolves when the persona is set
  */
-export async function createPersona(avatarId) {
+async function createPersona(avatarId) {
     const personaName = await Popup.show.input(t`Enter a name for this persona:`, t`Cancel if you're just uploading an avatar.`, '');
 
     if (!personaName) {
@@ -573,15 +568,13 @@ async function createDummyPersona() {
  * @param {string} personaDescription Optional description for the persona
  * @param {string} personaTitle Optional title for the persona
  * @param {object} [options={}] Optional settings
- * @param {boolean} [options.silent=false] If true, no PERSONA_CREATED event is emitted (used for background migrations)
  * @param {number} [options.position=persona_description_positions.IN_PROMPT] Description position (defaults to IN_PROMPT)
  * @param {number} [options.depth=DEFAULT_DEPTH] Description depth (defaults to DEFAULT_DEPTH)
  * @param {number} [options.role=DEFAULT_ROLE] Description role (defaults to DEFAULT_ROLE)
  * @param {string} [options.lorebook=''] Attached lorebook name
  * @returns {Promise<void>}
  */
-export async function initPersona(avatarId, personaName, personaDescription, personaTitle, {
-    silent = false,
+async function initPersona(avatarId, personaName, personaDescription, personaTitle, {
     position = persona_description_positions.IN_PROMPT,
     depth = DEFAULT_DEPTH,
     role = DEFAULT_ROLE,
@@ -605,10 +598,6 @@ export async function initPersona(avatarId, personaName, personaDescription, per
     }
 
     saveSettingsDebounced('power_user.persona_data');
-
-    if (!silent) {
-        await eventSource.emit(event_types.PERSONA_CREATED, { avatarId, name: personaName, description: personaDescription || '', title: personaTitle || '' });
-    }
 }
 
 /**
@@ -620,13 +609,10 @@ export async function initPersona(avatarId, personaName, personaDescription, per
  * The function creates a new persona with the same name as the character, and sets the persona description to the character description with the macros swapped.
  * The function also saves the settings and refreshes the persona selector.
  *
- * @param {string|number} [characterId] - An index into `getContext().characters` (upstream's form), or a character's
- * avatar key, which may be one the page doesn't hold. Defaults to the current character.
+ * @param {string} [avatar] - The character's avatar, which may be one the page doesn't hold. Defaults to the current character.
  * @returns {Promise<boolean>} A promise that resolves to true if the character was converted, false otherwise.
  */
-export async function convertCharacterToPersona(characterId = null) {
-    const ref = characterId === null ? getCurrentCharacter() : resolveCharacterRef(characterId);
-    const avatar = ref?.avatar ?? (typeof characterId === 'string' ? characterId : undefined);
+export async function convertCharacterToPersona(avatar = getCurrentCharacter()?.avatar) {
     const character = avatar ? await characterRepository.full(avatar) : undefined;
 
     const avatarUrl = character?.avatar;
@@ -683,7 +669,6 @@ export async function convertCharacterToPersona(characterId = null) {
     }
 
     saveSettingsDebounced('power_user.persona_data');
-    await eventSource.emit(event_types.PERSONA_CREATED, { avatarId: overwriteName, name, description, title: '' });
 
     console.log('Persona for character created');
     toastr.success(t`You can now pick ${name} as a persona in the Persona Management menu.`, t`Persona Created`);
@@ -826,7 +811,6 @@ export async function convertCharactersToPersonas(avatarBatches, onProgress) {
             }
             converted++;
             lastCreated = overwriteName;
-            await eventSource.emit(event_types.PERSONA_CREATED, { avatarId: overwriteName, name, description, title: '' });
         }
         onProgress?.(seen);
     }
@@ -931,7 +915,7 @@ function getPersonasOfCurrentChat() {
  * @param {boolean} [options.interactable=false] - Whether the avatars should be interactable
  * @param {boolean} [options.highlightFavs=true] - Whether to highlight favorite avatars
  */
-export function buildPersonaAvatarList(block, personas, { empty = true, interactable = false, highlightFavs = true } = {}) {
+function buildPersonaAvatarList(block, personas, { empty = true, interactable = false, highlightFavs = true } = {}) {
     const personaEntities = personas.map(avatar => ({
         type: 'persona',
         id: avatar,
@@ -951,13 +935,8 @@ let connectionsListDrawId = 0;
 /**
  * Displays avatar connections for the current persona.
  * Converts connections to entities and populates the avatar list. Shows a message if no connections are found.
- * Synchronous, as upstream's; the list is drawn once the connected characters the page doesn't hold are read.
  */
-export function updatePersonaConnectionsAvatarList() {
-    void drawPersonaConnectionsAvatarList();
-}
-
-async function drawPersonaConnectionsAvatarList() {
+export async function updatePersonaConnectionsAvatarList() {
     const drawId = ++connectionsListDrawId;
     /** @type {PersonaConnection[]} */
     const connections = personaStore.get(user_avatar)?.connections ?? [];
@@ -1006,7 +985,7 @@ async function drawPersonaConnectionsAvatarList() {
  * @param {PersonaConnection} [options.targetedChar] - The targeted character or gorup for this persona selection
  * @returns {Promise<string?>} - A promise that resolves to the selected persona id or null if no selection was made
  */
-export async function askForPersonaSelection(title, text, personas, { okButton = 'None', shiftClickHandler = undefined, highlightPersonas = false, targetedChar = undefined } = {}) {
+async function askForPersonaSelection(title, text, personas, { okButton = 'None', shiftClickHandler = undefined, highlightPersonas = false, targetedChar = undefined } = {}) {
     const content = document.createElement('div');
     const titleElement = document.createElement('h3');
     titleElement.textContent = title;
@@ -1087,7 +1066,7 @@ export async function askForPersonaSelection(title, text, personas, { okButton =
  * @param {string} [options.personaKey=null] - Optionally a persona avatar key to target (if multiple persona have the same name); must match the name
  * @returns {Promise<boolean>} True if a matching persona was found and selected, false otherwise
  */
-export async function autoSelectPersona(name, { personaKey = null } = {}) {
+async function autoSelectPersona(name, { personaKey = null } = {}) {
     const persona = findPersona({ name: personaKey ?? name, allowAvatar: !!personaKey });
     if (persona) {
         console.log(`Auto-selecting persona ${persona.avatar} for name ${name}`);
@@ -1119,7 +1098,6 @@ async function editPersonaTitle(popup, avatarId, currentTitle) {
         console.log(`Removed persona title for ${avatarId}`);
         personaStore.update(avatarId, { title: '' });
         saveSettingsDebounced('power_user.persona_data');
-        await eventSource.emit(event_types.PERSONA_UPDATED, avatarId);
         return;
     }
 
@@ -1127,7 +1105,6 @@ async function editPersonaTitle(popup, avatarId, currentTitle) {
         personaStore.update(avatarId, { title: newTitle });
         console.log(`Updated persona title for ${avatarId} to ${newTitle}`);
         saveSettingsDebounced('power_user.persona_data');
-        await eventSource.emit(event_types.PERSONA_UPDATED, avatarId);
         return;
     }
 }
@@ -1163,7 +1140,6 @@ async function renamePersona(avatarId) {
     }
 
     saveSettingsDebounced('power_user.persona_data');
-    await eventSource.emit(event_types.PERSONA_RENAMED, { avatarId, oldName: currentName, newName });
     updatePersonaUIStates();
     setPersonaDescription();
     return true;
@@ -1218,7 +1194,7 @@ async function selectCurrentPersona({ toastPersonaNameChange = true } = {}) {
  * @param {PersonaConnection} connection - Connection to check
  * @returns {boolean} Whether the connection is locked
  */
-export function isPersonaConnectionLocked(connection) {
+function isPersonaConnectionLocked(connection) {
     return (!selected_group && connection.type === 'character' && connection.id === getCurrentCharacter()?.avatar)
         || (selected_group && connection.type === 'group' && connection.id === selected_group);
 }
@@ -1228,7 +1204,7 @@ export function isPersonaConnectionLocked(connection) {
  * @param {PersonaLockType} type - Lock type
  * @returns {boolean} Whether the persona is locked
  */
-export function isPersonaLocked(type = 'chat') {
+function isPersonaLocked(type = 'chat') {
     switch (type) {
         case 'default':
             return power_user.default_persona === user_avatar;
@@ -1247,7 +1223,7 @@ export function isPersonaLocked(type = 'chat') {
  * @param {PersonaLockType} type - Lock type
  * @returns {Promise<void>}
  */
-export async function setPersonaLockState(state, type = 'chat') {
+async function setPersonaLockState(state, type = 'chat') {
     return state ? await lockPersona(type) : await unlockPersona(type);
 }
 
@@ -1256,7 +1232,7 @@ export async function setPersonaLockState(state, type = 'chat') {
  * @param {PersonaLockType} type - Lock type
  * @returns {Promise<boolean>} - Whether the persona was locked
  */
-export async function togglePersonaLock(type = 'chat') {
+async function togglePersonaLock(type = 'chat') {
     if (isPersonaLocked(type)) {
         await unlockPersona(type);
         return false;
@@ -1331,7 +1307,6 @@ async function lockPersona(type = 'chat', { quiet = false } = {}) {
             connections: [],
             title: '',
         });
-        await eventSource.emit(event_types.PERSONA_CREATED, { avatarId: user_avatar, name: name1, description: '', title: '' });
     }
 
     switch (type) {
@@ -1447,7 +1422,6 @@ async function deletePersona(avatarId, { silent = false } = {}) {
         }
 
         saveSettingsDebounced('power_user.persona_data', 'power_user.default_persona');
-        await eventSource.emit(event_types.PERSONA_DELETED, { avatarId, name });
 
         // Use the existing mechanism to re-render the persona list and choose the next persona here
         personaLastLoadedChatId = uuidv4(); // Force reload by making a dummy chat id
@@ -1469,8 +1443,6 @@ async function onPersonaDescriptionInput() {
         .text(description || $('#user_avatar_block').attr('no_desc_text'))
         .toggleClass('text_muted', !description);
     saveSettingsDebounced('power_user.persona_data');
-
-    await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
 }
 
 async function onPersonaDescriptionDepthValueInput() {
@@ -1479,7 +1451,6 @@ async function onPersonaDescriptionDepthValueInput() {
     getOrCreatePersonaDescriptor();
     personaStore.update(user_avatar, { depth });
     saveSettingsDebounced('power_user.persona_data');
-    await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
 }
 
 async function onPersonaDescriptionDepthRoleInput() {
@@ -1488,7 +1459,6 @@ async function onPersonaDescriptionDepthRoleInput() {
     getOrCreatePersonaDescriptor();
     personaStore.update(user_avatar, { role });
     saveSettingsDebounced('power_user.persona_data');
-    await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
 }
 
 /**
@@ -1530,8 +1500,6 @@ async function onPersonaLoreButtonClick({ shiftKey, altKey }) {
 
         $('#persona_lore_button').toggleClass('world_set', !!lorebook);
         saveSettingsDebounced('power_user.persona_data');
-
-        await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
     });
 
     await callGenericPopup(template, POPUP_TYPE.TEXT);
@@ -1545,7 +1513,6 @@ async function onPersonaDescriptionPositionInput() {
     getOrCreatePersonaDescriptor();
     personaStore.update(user_avatar, { position });
     saveSettingsDebounced('power_user.persona_data');
-    await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
     $('#persona_depth_position_settings').toggle(position === persona_description_positions.AT_DEPTH);
 }
 
@@ -1876,7 +1843,7 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
  * @param {string} [characterKey] - The character key to query
  * @returns {string[]} - An array of persona keys that are connected to the given character key
  */
-export function getConnectedPersonas(characterKey = undefined) {
+function getConnectedPersonas(characterKey = undefined) {
     characterKey ??= selected_group || getCurrentCharacter()?.avatar;
     const connectedPersonas = Object.entries(personaStore.getAll())
         .filter(([_, { connections }]) => connections?.some(conn => conn.id === characterKey))
@@ -1890,7 +1857,7 @@ export function getConnectedPersonas(characterKey = undefined) {
  * In the popup, the user can select a persona to load for the current character or group, or shift-click to remove the connection.
  * @return {Promise<void>}
  */
-export async function showCharConnections() {
+async function showCharConnections() {
     let isRemoving = false;
 
     const connections = getConnectedPersonas();
@@ -1939,7 +1906,7 @@ export async function showCharConnections() {
  *
  * @returns {PersonaConnection} An object representing the current connection
  */
-export function getCurrentConnectionObj() {
+function getCurrentConnectionObj() {
     if (selected_group)
         return { type: 'group', id: selected_group };
     if (getCurrentCharacter()?.avatar)
@@ -2119,15 +2086,6 @@ async function duplicatePersona(avatarId, { silent = false, select = false } = {
         connections: [],
     });
 
-    const eventData = {
-        avatarId: newAvatarId,
-        name: personaName,
-        description: descriptor?.description ?? '',
-        title: descriptor?.title ?? '',
-        duplicatedFromAvatarId: avatarId,
-    };
-    await eventSource.emit(event_types.PERSONA_CREATED, eventData);
-
     await getUserAvatars(true, newAvatarId);
     saveSettingsDebounced('power_user.persona_data');
 
@@ -2146,7 +2104,7 @@ async function migrateNonPersonaUser() {
         return;
     }
 
-    await initPersona(user_avatar, name1, '', '', { silent: true });
+    await initPersona(user_avatar, name1, '', '');
     setPersonaDescription();
     await getUserAvatars(true, user_avatar);
 }
@@ -2351,12 +2309,10 @@ async function updatePersonaCallback(args) {
     if (args.name !== undefined) {
         const newName = String(args.name).trim();
         if (newName) {
-            const oldName = personaStore.get(avatarId).name;
             personaStore.update(avatarId, { name: newName });
             if (avatarId === user_avatar) {
                 setUserName(newName);
             }
-            await eventSource.emit(event_types.PERSONA_RENAMED, { avatarId, oldName, newName });
             hasUpdates = true;
         }
     }
@@ -2422,7 +2378,6 @@ async function updatePersonaCallback(args) {
     }
 
     saveSettingsDebounced('power_user.persona_data');
-    await eventSource.emit(event_types.PERSONA_UPDATED, avatarId);
 
     // Refresh UI if the updated persona is the active one
     if (avatarId === user_avatar) {

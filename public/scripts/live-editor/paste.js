@@ -142,7 +142,7 @@ const visibleText = (html) => {
  * @param {(text: string) => string} render
  * @returns {string}
  */
-export function pastedHtmlToText(html, render) {
+function pastedHtmlToText(html, render) {
     const clean = DOMPurify.sanitize(html, { WHOLE_DOCUMENT: false });
     const doc = new DOMParser().parseFromString(`<body>${clean}</body>`, 'text/html');
     /** @type {string[]} */

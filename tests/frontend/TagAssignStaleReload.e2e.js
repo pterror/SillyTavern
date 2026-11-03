@@ -10,10 +10,10 @@ async function openNewCharacter(page) {
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button_label').click();
-    await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
+    await page.waitForFunction(n => window['stTest'].context().name2 === n, name);
     await page.locator('#tagInput').waitFor({ state: 'visible', timeout: 10000 });
-    await expect.poll(() => page.evaluate(() => SillyTavern.getContext().characterId), { timeout: 10000 }).not.toBeUndefined();
-    return await page.evaluate(() => SillyTavern.getContext().characters[SillyTavern.getContext().characterId].avatar);
+    await expect.poll(() => page.evaluate(() => stTest.context().characterId), { timeout: 10000 }).not.toBeUndefined();
+    return await page.evaluate(() => stTest.context().characters[stTest.context().characterId].avatar);
 }
 
 /**
@@ -62,10 +62,10 @@ async function startStaleReload(page, avatar) {
  * @param {string} avatar
  */
 async function residentTagNames(page, avatar) {
-    return await page.evaluate((avatar) => {
-        const context = SillyTavern.getContext();
-        const character = context.characters.find(c => c.avatar === avatar);
-        return (character.tag_ids ?? []).map(id => context.tags.find(t => t.id === id)?.name);
+    return await page.evaluate(async (avatar) => {
+        const { tagsStore } = await import('/scripts/tags.js');
+        const character = stTest.context().characters.find(c => c.avatar === avatar);
+        return (character.tag_ids ?? []).map(id => tagsStore.get(id)?.name);
     }, avatar);
 }
 

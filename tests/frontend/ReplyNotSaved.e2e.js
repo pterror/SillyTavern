@@ -55,7 +55,7 @@ function startLlamaCpp() {
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', 'Hello.');
@@ -73,7 +73,7 @@ async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
@@ -95,7 +95,7 @@ async function connectLlamaCpp(page, url) {
     await page.locator('#llamacpp_api_url_text').fill(url);
     await page.locator('#api_button_textgenerationwebui').click();
     // @ts-ignore
-    await expect.poll(() => page.evaluate(() => SillyTavern.getContext().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
+    await expect.poll(() => page.evaluate(() => stTest.context().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
     await page.locator('#API-status-top').click();
 }
 
@@ -134,7 +134,7 @@ for (const streaming of [true, false]) {
             await connectLlamaCpp(page, mock.url);
             await page.evaluate((streaming) => {
                 // @ts-ignore
-                SillyTavern.getContext().textCompletionSettings.streaming = streaming;
+                stTest.context().textCompletionSettings.streaming = streaming;
             }, streaming);
             await page.waitForTimeout(2500);
 
@@ -174,17 +174,13 @@ for (const streaming of [true, false]) {
             await expect(notice).toContainText('disk is full');
             const marked = await page.evaluate(() => {
                 // @ts-ignore
-                const chat = SillyTavern.getContext().chat;
+                const chat = stTest.context().chat;
                 const last = chat[chat.length - 1];
                 return { flag: last.extra?.reply_not_saved ?? null, nodeId: last.node_id ?? null };
             });
             expect(marked.flag).toBe(generationId);
             expect(typeof marked.nodeId === 'string' && !marked.nodeId.startsWith('card:')).toBe(false);
 
-            await page.evaluate(async () => {
-                // @ts-ignore
-                await SillyTavern.getContext().saveChat();
-            });
             await chatBox(page).fill('And then?');
             await page.locator('#send_but').click();
             await expect(page.locator('.toast-error', { hasText: 'isn\'t saved yet' })).toBeVisible();
@@ -202,7 +198,7 @@ for (const streaming of [true, false]) {
             expect(retries).toEqual([`/api/generation/store/${generationId}`]);
             const after = await page.evaluate(() => {
                 // @ts-ignore
-                const chat = SillyTavern.getContext().chat;
+                const chat = stTest.context().chat;
                 const last = chat[chat.length - 1];
                 return { flag: last.extra?.reply_not_saved ?? null, nodeId: last.node_id ?? null };
             });

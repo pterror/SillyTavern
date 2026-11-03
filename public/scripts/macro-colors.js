@@ -102,7 +102,7 @@ export function macroHues(colors, macros = listMacros()) {
  * @param {ListedMacro[]} [macros]
  * @returns {string}
  */
-export function macroColorsCss(colors, macros = listMacros()) {
+function macroColorsCss(colors, macros = listMacros()) {
     const rules = [`:root { --macro-chroma: ${colors.chroma}; }`];
     for (const [name, hue] of macroHues(colors, macros)) {
         rules.push(`[data-macro-name="${CSS.escape(name)}" i] { --macro-hue: ${hue}; }`);

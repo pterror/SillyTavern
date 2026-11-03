@@ -12,7 +12,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', 'Hello there.');
@@ -30,7 +30,7 @@ async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
@@ -46,7 +46,7 @@ test('the drawn messages\' counts come in one request and are not stored', async
 
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         context.powerUserSettings.message_token_count_enabled = true;
         const { ensureOpeningRow } = await import('/scripts/chat-store.js');
         const opening = await ensureOpeningRow(0);
@@ -79,7 +79,7 @@ test('the drawn messages\' counts come in one request and are not stored', async
 
     await expect.poll(() => page.evaluate(() => {
         // @ts-ignore
-        return SillyTavern.getContext().chat.map(m => typeof m.extra?.token_count === 'number' && m.extra.token_count > 0);
+        return stTest.context().chat.map(m => typeof m.extra?.token_count === 'number' && m.extra.token_count > 0);
     })).toEqual([true, true, true]);
     const counts = countRequests.filter(body => Array.isArray(body.texts) || Array.isArray(body.messages_each));
     expect(counts).toHaveLength(1);
@@ -88,7 +88,7 @@ test('the drawn messages\' counts come in one request and are not stored', async
 
     const stored = await page.evaluate(async (avatar) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const response = await fetch('/api/chats/open', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar }) });
         return (await response.json()).messages.map(m => m.extra?.token_count ?? null);
     }, avatar);

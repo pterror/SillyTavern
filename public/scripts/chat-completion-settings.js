@@ -106,12 +106,8 @@ import {
 } from './chat-completion-defaults.js';
 
 export {
-    settingsToUpdate,
     chat_completion_sources,
     custom_prompt_post_processing_types,
-    reasoning_effort_types,
-    verbosity_levels,
-    tool_reasoning_modes,
     ZAI_ENDPOINT,
     POLLINATIONS_ENDPOINT,
     SILICONFLOW_ENDPOINT,
@@ -124,7 +120,6 @@ export {
     setupChatCompletionPromptManager,
     sendOpenAIRequest,
     TokenHandler,
-    IdentifierNotFoundError,
     Message,
     MessageCollection,
 };
@@ -426,7 +421,7 @@ export function parseExampleIntoIndividual(messageExampleString, appendNamesForG
     return result;
 }
 
-export function formatWorldInfo(value, { wiFormat = null } = {}) {
+function formatWorldInfo(value, { wiFormat = null } = {}) {
     if (!value) {
         return '';
     }
@@ -755,7 +750,7 @@ async function populateDialogueExamples(prompts, chatCompletion, messageExamples
  * @param {number} position
  * @returns {string|false}
  */
-export function getPromptPosition(position) {
+function getPromptPosition(position) {
     if (position == extension_prompt_types.BEFORE_PROMPT) {
         return 'start';
     }
@@ -771,7 +766,7 @@ export function getPromptPosition(position) {
  * @param {number} role
  * @returns {string}
  */
-export function getPromptRole(role) {
+function getPromptRole(role) {
     switch (role) {
         case extension_prompt_roles.SYSTEM:
             return 'system';
@@ -1210,7 +1205,7 @@ function getChatCompletionErrorMessage(data, response) {
  * @param {object} [options]
  * @param {boolean?} [options.quiet=false]
  */
-export function tryParseStreamingError(response, decoded, { quiet = false } = {}) {
+function tryParseStreamingError(response, decoded, { quiet = false } = {}) {
     try {
         const data = JSON.parse(decoded);
 
@@ -2789,90 +2784,6 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
 }
 
 /**
- * @param {object} data
- * @param {object} state
- * @param {object} [options]
- * @param {string?} [options.chatCompletionSource]
- * @param {boolean?} [options.overrideShowThoughts]
- * @returns {string}
- */
-export function getStreamingReply(data, state, { chatCompletionSource = null, overrideShowThoughts = null } = {}) {
-    const chat_completion_source = chatCompletionSource ?? oai_settings.chat_completion_source;
-    const show_thoughts = overrideShowThoughts ?? oai_settings.show_thoughts;
-
-    if (chat_completion_source === chat_completion_sources.CLAUDE) {
-        if (show_thoughts) {
-            state.reasoning += data?.delta?.thinking || '';
-        }
-        return data?.delta?.text || '';
-    } else if ([chat_completion_sources.MAKERSUITE, chat_completion_sources.VERTEXAI].includes(chat_completion_source)) {
-        if (show_thoughts) {
-            state.reasoning += (data?.candidates?.[0]?.content?.parts?.filter(x => x.thought)?.map(x => x.text)?.[0] || '');
-        }
-        const parts = data?.candidates?.[0]?.content?.parts || [];
-        parts.forEach((part) => {
-            if (part.thoughtSignature && typeof part.text === 'string') {
-                state.signature = part.thoughtSignature;
-            }
-        });
-        return data?.candidates?.[0]?.content?.parts?.filter(x => !x.thought)?.map(x => x.text)?.[0] || '';
-    } else if (chat_completion_source === chat_completion_sources.COHERE) {
-        return data?.delta?.message?.content?.text || data?.delta?.message?.tool_plan || '';
-    } else if (chat_completion_source === chat_completion_sources.DEEPSEEK) {
-        if (show_thoughts) {
-            state.reasoning += (data.choices?.filter(x => x?.delta?.reasoning_content)?.[0]?.delta?.reasoning_content || '');
-        }
-        return data.choices?.[0]?.delta?.content || '';
-    } else if (chat_completion_source === chat_completion_sources.XAI) {
-        if (show_thoughts) {
-            state.reasoning += (data.choices?.filter(x => x?.delta?.reasoning_content)?.[0]?.delta?.reasoning_content || '');
-        }
-        return data.choices?.[0]?.delta?.content || '';
-    } else if (chat_completion_source === chat_completion_sources.OPENROUTER) {
-        if (show_thoughts) {
-            state.reasoning +=
-                data.choices?.filter(x => x?.delta?.reasoning)?.[0]?.delta?.reasoning ??
-                data.choices?.filter(x => x?.delta?.reasoning_content)?.[0]?.delta?.reasoning_content ??
-                data.choices?.filter(x => x?.message?.reasoning)?.[0]?.message?.reasoning ??
-                data.choices?.filter(x => x?.message?.reasoning_content)?.[0]?.message?.reasoning_content ??
-                '';
-        }
-        const reasoningDetails = [
-            ...(data?.choices?.[0]?.delta?.reasoning_details || []),
-            ...(data?.choices?.[0]?.message?.reasoning_details || []),
-        ];
-        reasoningDetails.forEach((detail) => {
-            if (detail.type === 'reasoning.encrypted' && detail.data) {
-                const isToolLikeId = typeof detail.id === 'string' && /^(tool_|call_)/.test(detail.id);
-                if (typeof detail.id === 'string' && detail.id.length > 0) {
-                    state.toolSignatures[detail.id] = detail.data;
-                }
-                if (!isToolLikeId) {
-                    state.signature = detail.data;
-                }
-            }
-        });
-        return data.choices?.[0]?.delta?.content ?? data.choices?.[0]?.message?.content ?? data.choices?.[0]?.text ?? '';
-    } else if ([chat_completion_sources.CUSTOM, chat_completion_sources.POLLINATIONS, chat_completion_sources.AIMLAPI, chat_completion_sources.MOONSHOT, chat_completion_sources.COMETAPI, chat_completion_sources.ELECTRONHUB, chat_completion_sources.NANOGPT, chat_completion_sources.ZAI, chat_completion_sources.SILICONFLOW, chat_completion_sources.CHUTES, chat_completion_sources.WORKERS_AI, chat_completion_sources.FIREWORKS].includes(chat_completion_source)) {
-        if (show_thoughts) {
-            state.reasoning +=
-                data.choices?.filter(x => x?.delta?.reasoning_content)?.[0]?.delta?.reasoning_content ??
-                data.choices?.filter(x => x?.delta?.reasoning)?.[0]?.delta?.reasoning ??
-                '';
-        }
-        return data.choices?.[0]?.delta?.content ?? data.choices?.[0]?.message?.content ?? data.choices?.[0]?.text ?? '';
-    } else if (chat_completion_source === chat_completion_sources.MISTRALAI) {
-        if (show_thoughts) {
-            state.reasoning += (data.choices?.filter(x => x?.delta?.content?.[0]?.thinking)?.[0]?.delta?.content?.[0]?.thinking?.[0]?.text || '');
-        }
-        const content = data.choices?.[0]?.delta?.content ?? data.choices?.[0]?.message?.content ?? data.choices?.[0]?.text ?? '';
-        return Array.isArray(content) ? content.map(x => x.text).filter(x => x).join('') : content;
-    } else {
-        return data.choices?.[0]?.delta?.content ?? data.choices?.[0]?.message?.content ?? data.choices?.[0]?.text ?? '';
-    }
-}
-
-/**
  * @param {Object} data
  * @returns {import('./logprobs.js').TokenLogprobs[] | null}
  */
@@ -3421,7 +3332,7 @@ class MessageCollection {
     }
 }
 
-export class ChatCompletion {
+class ChatCompletion {
     /**
      * @returns {Promise<void>}
      */
@@ -4155,8 +4066,6 @@ async function onPresetImportFileChange(e) {
         }
     }
 
-    await eventSource.emit(event_types.OAI_PRESET_IMPORT_READY, { data: presetBody, presetName: name });
-
     const savePresetSettings = await fetch('/api/presets/save', {
         method: 'POST',
         headers: getRequestHeaders(),
@@ -4228,7 +4137,6 @@ async function onExportPresetClick() {
         }
     }
 
-    await eventSource.emit(event_types.OAI_PRESET_EXPORT_READY, preset);
     const presetJsonString = JSON.stringify(preset, null, 4);
     const presetFileName = `${oai_settings.preset_settings_openai}.json`;
     download(presetJsonString, presetFileName, 'application/json');
@@ -4316,7 +4224,6 @@ async function onDeletePresetClick() {
         toastr.warning(t`Preset was not deleted from server`);
     } else {
         toastr.success(t`Preset deleted`);
-        await eventSource.emit(event_types.PRESET_DELETED, { apiId: 'openai', name: nameToDelete });
     }
 
     saveSettingsDebounced('oai_settings');
@@ -4412,7 +4319,6 @@ function onSettingsPresetChange() {
         await saveSettings('oai_settings');
         if (newUiStarted()) await newUi().settings.reread();
         await eventSource.emit(event_types.OAI_PRESET_CHANGED_AFTER);
-        await eventSource.emit(event_types.PRESET_CHANGED, { apiId: 'openai', name: presetName });
     });
 }
 
@@ -4853,7 +4759,7 @@ async function onCustomizeParametersClick() {
 /**
  * @returns {boolean}
  */
-export function isImageInliningSupported() {
+function isImageInliningSupported() {
     if (main_api !== 'openai') {
         return false;
     }
@@ -4982,7 +4888,7 @@ export function isImageInliningSupported() {
 /**
  * @returns {boolean}
  */
-export function isVideoInliningSupported() {
+function isVideoInliningSupported() {
     if (main_api !== 'openai') {
         return false;
     }
@@ -5019,7 +4925,7 @@ export function isVideoInliningSupported() {
 /**
  * @returns {boolean}
  */
-export function isAudioInliningSupported() {
+function isAudioInliningSupported() {
     if (main_api !== 'openai') {
         return false;
     }
@@ -5085,7 +4991,7 @@ function getEffectiveToolReasoningMode(settings = oai_settings) {
  * @param {ChatCompletionSettings} settings
  * @returns {boolean}
  */
-export function isReasoningSignatureSupported(settings = oai_settings) {
+function isReasoningSignatureSupported(settings = oai_settings) {
     const isGoogle = [chat_completion_sources.VERTEXAI, chat_completion_sources.MAKERSUITE].includes(settings.chat_completion_source);
     const isOpenRouterGemini = settings.chat_completion_source === chat_completion_sources.OPENROUTER && /google\/gemini/i.test(settings.openrouter_model);
     return isGoogle || isOpenRouterGemini;

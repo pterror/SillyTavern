@@ -26,15 +26,11 @@ const interactableSelectors = [
     '.select_chat_block .renameChatButton',
 ];
 
-if (CSS.supports('selector(:has(*))')) {
-    interactableSelectors.push('#extensionsMenu div:has(.extensionsMenuExtensionButton)');
-}
-
 export const INTERACTABLE_CONTROL_CLASS = 'interactable';
-export const CUSTOM_INTERACTABLE_CONTROL_CLASS = 'custom_interactable';
+const CUSTOM_INTERACTABLE_CONTROL_CLASS = 'custom_interactable';
 
-export const NOT_FOCUSABLE_CONTROL_CLASS = 'not_focusable';
-export const DISABLED_CONTROL_CLASS = 'disabled';
+const NOT_FOCUSABLE_CONTROL_CLASS = 'not_focusable';
+const DISABLED_CONTROL_CLASS = 'disabled';
 
 /** @type {MutationObserver} */
 const observer = new MutationObserver(mutations => {
@@ -65,33 +61,11 @@ function handleNodeChange(node) {
     }
 }
 
-/**
- * Registers an interactable class (for example for an extension) and makes it keyboard interactable.
- * @param {string} interactableSelector - Supports class combinations chained via dots (e.g. `tag.actionable`) and sub selectors.
- * @param {object} [options={}] - Optional settings for the interactable
- * @param {boolean} [options.disabledByDefault=false] - Whether interactables of this class should be disabled by default
- * @param {boolean} [options.notFocusableByDefault=false] - Whether interactables of this class should not be focusable by default
- */
-export function registerInteractableType(interactableSelector, { disabledByDefault = false, notFocusableByDefault = false } = {}) {
-    interactableSelectors.push(interactableSelector);
-
-    const interactables = document.querySelectorAll(interactableSelector);
-
-    if (disabledByDefault || notFocusableByDefault) {
-        interactables.forEach(interactable => {
-            if (disabledByDefault) interactable.classList.add(DISABLED_CONTROL_CLASS);
-            if (notFocusableByDefault) interactable.classList.add(NOT_FOCUSABLE_CONTROL_CLASS);
-        });
-    }
-
-    makeKeyboardInteractable(...interactables);
-}
-
-export function isKeyboardInteractable(control) {
+function isKeyboardInteractable(control) {
     return interactableSelectors.some(selector => control.matches(selector));
 }
 
-export function makeKeyboardInteractable(...interactables) {
+function makeKeyboardInteractable(...interactables) {
     interactables.forEach(interactable => {
         if (!isKeyboardInteractable(interactable)) {
             interactable.classList.add(CUSTOM_INTERACTABLE_CONTROL_CLASS);

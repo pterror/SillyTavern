@@ -23,13 +23,13 @@ test('a created character opens at once, without searching the list for it', asy
         await expect(page.locator('#form_create')).toHaveAttribute('actiontype', 'editcharacter');
         await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar);
         // @ts-ignore
-        await expect.poll(() => page.evaluate(() => SillyTavern.getContext().name2)).toBe(name);
+        await expect.poll(() => page.evaluate(() => stTest.context().name2)).toBe(name);
         await expect(page.locator('#toast-container .toast', { hasText: 'Character Created' })).toHaveCount(0);
         expect(listReads.filter(body => /"(?:pageSize|limit|perPage)"\s*:\s*1000\b/.test(body))).toEqual([]);
     } finally {
         await page.evaluate(async (avatarUrl) => {
             // @ts-ignore
-            const headers = SillyTavern.getContext().getRequestHeaders();
+            const headers = stTest.context().getRequestHeaders();
             await fetch('/api/characters/delete', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatarUrl, delete_chats: true }) });
         }, avatar);
     }

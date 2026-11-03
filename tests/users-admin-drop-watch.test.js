@@ -24,7 +24,6 @@ beforeAll(async () => {
     stores.setStoreEngine(() => engine);
     dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'users-admin-drop-'));
     globalThis.DATA_ROOT = dataRoot;
-    globalThis.GLOBAL_EXTENSIONS_PATH = path.join(dataRoot, '_extensions');
     await storage.init({ dir: path.join(dataRoot, '_storage'), ttl: false, expiredInterval: 0 });
     const { router } = await import('../src/endpoints/users-admin.js');
     const app = express();

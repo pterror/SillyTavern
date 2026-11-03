@@ -10,10 +10,9 @@ import {
     startStatusLoading,
     substituteParams,
 } from '../script.js';
-import { main_api, max_context } from './generation-params.js';
+import { max_context } from './generation-params.js';
 import { getRequestHeaders } from './request-headers.js';
 import { beginServerGeneration } from './generation-stop.js';
-import { eventSource, event_types } from './events.js';
 import { deriveTemplatesFromChatTemplate } from './chat-templates.js';
 import { t } from './i18n.js';
 import { autoSelectInstructPreset, selectContextPreset, selectInstructPreset } from './instruct-mode.js';
@@ -86,7 +85,7 @@ const OOBA_DEFAULT_ORDER = [
     'encoder_repetition_penalty',
     'no_repeat_ngram',
 ];
-export const APHRODITE_DEFAULT_ORDER = [
+const APHRODITE_DEFAULT_ORDER = [
     'dry',
     'penalties',
     'no_repeat_ngram',
@@ -108,12 +107,12 @@ const BIAS_KEY = '#textgenerationwebui_api-settings';
 // (7 days later) The future has come.
 const MANCER_SERVER_KEY = 'mancer_server';
 const MANCER_SERVER_DEFAULT = 'https://neuro.mancer.tech';
-export let MANCER_SERVER = localStorage.getItem(MANCER_SERVER_KEY) ?? MANCER_SERVER_DEFAULT;
-export let TOGETHERAI_SERVER = 'https://api.together.xyz';
-export let INFERMATICAI_SERVER = 'https://api.totalgpt.ai';
-export let DREAMGEN_SERVER = 'https://dreamgen.com';
-export let OPENROUTER_SERVER = 'https://openrouter.ai/api';
-export let FEATHERLESS_SERVER = 'https://api.featherless.ai/v1';
+let MANCER_SERVER = localStorage.getItem(MANCER_SERVER_KEY) ?? MANCER_SERVER_DEFAULT;
+let TOGETHERAI_SERVER = 'https://api.together.xyz';
+let INFERMATICAI_SERVER = 'https://api.totalgpt.ai';
+let DREAMGEN_SERVER = 'https://dreamgen.com';
+let OPENROUTER_SERVER = 'https://openrouter.ai/api';
+let FEATHERLESS_SERVER = 'https://api.featherless.ai/v1';
 
 export const SERVER_INPUTS = {
     [textgen_types.OOBA]: '#textgenerationwebui_api_url_text',
@@ -206,20 +205,17 @@ export const textgenerationwebui_settings = {
     adaptive_decay: 0.9,
 };
 
-export {
-    showSamplerControls as showTGSamplerControls,
-};
 
 export let textgenerationwebui_banned_in_macros = [];
 
 export let textgenerationwebui_presets = [];
 export let textgenerationwebui_preset_names = [];
 
-export { setting_names, textgen_types };
+export { textgen_types };
 
 const DYNATEMP_BLOCK = document.getElementById('dynatemp_block_ooba');
 
-export function validateTextGenUrl() {
+function validateTextGenUrl() {
     const selector = SERVER_INPUTS[textgenerationwebui_settings.type];
 
     if (!selector) {
@@ -281,7 +277,7 @@ async function selectPreset(name) {
     if (newUiStarted()) await newUi().settings.reread();
 }
 
-export function formatTextGenURL(value) {
+function formatTextGenURL(value) {
     try {
         const noFormatTypes = [MANCER, TOGETHERAI, INFERMATICAI, DREAMGEN, OPENROUTER];
         if (noFormatTypes.includes(textgenerationwebui_settings.type)) {
@@ -801,7 +797,6 @@ export function initTextGenSettings() {
     $('#settings_preset_textgenerationwebui').on('change', async function () {
         const presetName = $(this).val();
         await selectPreset(presetName);
-        await eventSource.emit(event_types.PRESET_CHANGED, { apiId: 'textgenerationwebui', name: presetName });
     });
 
     for (const i of setting_names) {
@@ -1323,10 +1318,6 @@ export function getTextGenModel(settings = null) {
     return undefined;
 }
 
-export function isJsonSchemaSupported() {
-    return [TABBY, LLAMACPP].includes(textgenerationwebui_settings.type) && main_api === 'textgenerationwebui';
-}
-
 /**
  * Returns whether dynamic temperature is supported by the given text completion settings
  * @param {TextCompletionSettings} settings Text completion settings to use
@@ -1342,7 +1333,7 @@ function isDynamicTemperatureSupported(settings = null) {
  * @param {string} type If it's set, ignores active type
  * @returns {number} Number of logprobs to request
  */
-export function getLogprobsNumber(type = null) {
+function getLogprobsNumber(type = null) {
     const selectedType = type ?? textgenerationwebui_settings.type;
     if (selectedType === VLLM || selectedType === INFERMATICAI) {
         return 5;
@@ -1356,7 +1347,7 @@ export function getLogprobsNumber(type = null) {
  * @param {string} str Input string
  * @returns {string} Output string
  */
-export function replaceMacrosInList(str) {
+function replaceMacrosInList(str) {
     if (!str || typeof str !== 'string') {
         return str;
     }
@@ -1658,6 +1649,5 @@ export function createTextGenGenerationData(settings, model, finalPrompt = null,
 export async function getTextGenGenerationData(finalPrompt, maxTokens, isImpersonate, isContinue, cfgValues, type) {
     const model = getTextGenModel(textgenerationwebui_settings);
     const params = createTextGenGenerationData(textgenerationwebui_settings, model, finalPrompt, maxTokens, isImpersonate, isContinue, cfgValues, type);
-    await eventSource.emit(event_types.TEXT_COMPLETION_SETTINGS_READY, params);
     return params;
 }

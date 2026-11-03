@@ -188,7 +188,7 @@ test.describe('the paste picker in the app', () => {
     test('in the chat box: switching works, and Escape puts the picker away without anything else', async ({ page }) => {
         await page.evaluate(async () => {
             // @ts-ignore
-            await SillyTavern.getContext().executeSlashCommandsWithOptions('/go Seraphina');
+            await stTest.context().executeSlashCommandsWithOptions('/go Seraphina');
         });
         const editor = page.locator('#send_form .cm-editor');
         await expect(editor).toHaveCount(1, { timeout: 10000 });
@@ -213,13 +213,13 @@ test.describe('the paste picker in the app', () => {
             const { power_user } = await import('/scripts/power-user.js');
             power_user.auto_save_msg_edits = false;
             // @ts-ignore
-            const ctx = SillyTavern.getContext();
+            const ctx = stTest.context();
             await ctx.executeSlashCommandsWithOptions('/go Seraphina');
         });
         await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1, { timeout: 10000 });
         const id = await page.evaluate(async () => {
             // @ts-ignore
-            const ctx = SillyTavern.getContext();
+            const ctx = stTest.context();
             await ctx.SlashCommandParser.commands['send'].callback({}, 'Edit me.');
             return ctx.chat.length - 1;
         });

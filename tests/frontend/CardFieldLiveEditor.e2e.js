@@ -9,7 +9,7 @@ import { testSetup, openInfoTab } from './frontent-test-utils.js';
 async function createAndOpen(page, values) {
     const avatar = await page.evaluate(async (values) => {
         // @ts-ignore
-        const ctx = SillyTavern.getContext();
+        const ctx = stTest.context();
         const form = new FormData();
         form.append('ch_name', `LiveCard-${Date.now()}-${Math.floor(Math.random() * 1e6)}`);
         form.append('first_mes', 'Greeting');
@@ -21,7 +21,7 @@ async function createAndOpen(page, values) {
     }, values);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().selectCharacterById(avatar);
+        await stTest.context().selectCharacterById(avatar);
     }, avatar);
     await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar);
     return avatar;
@@ -34,7 +34,7 @@ async function createAndOpen(page, values) {
 async function stored(page, avatar) {
     return page.evaluate(async (avatar) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/characters/get', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar }) });
         return (await response.json()).data;
     }, avatar);

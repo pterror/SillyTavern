@@ -178,7 +178,7 @@ function reportBulkProblems(title, result, nameOf = avatar => avatar) {
 }
 
 async function forgetDeletedCharactersInBrowser() {
-    const prefixes = ['AlertRegex_', 'mediaWarningShown:'];
+    const prefixes = ['mediaWarningShown:'];
     /** @type {Map<string, string[]>} */
     const keysByAvatar = new Map();
     for (const key of Object.keys(accountStorage.getState())) {
@@ -232,9 +232,6 @@ class CharacterContextMenu {
         if (!result.ok) {
             throw new Error('Character not duplicated');
         }
-
-        const data = await result.json();
-        await eventSource.emit(event_types.CHARACTER_DUPLICATED, { oldAvatar: body.avatar_url, newAvatar: data.path });
     };
 
     /**
@@ -256,11 +253,7 @@ class CharacterContextMenu {
 
         const data = await result.json();
         for (const entry of data.results ?? []) {
-            if (entry.ok) {
-                await eventSource.emit(event_types.CHARACTER_DUPLICATED, { oldAvatar: entry.avatar_url, newAvatar: entry.path });
-            } else {
-                toastr.error(t`Failed to duplicate character ${entry.avatar_url}.`);
-            }
+            if (!entry.ok) toastr.error(t`Failed to duplicate character ${entry.avatar_url}.`);
         }
     };
 
@@ -557,7 +550,6 @@ class BulkTagPopupHandler {
         const result = await runPrepared(this.#prepared, action, options, t`Bulk tag edit`, line => void shown.push(line.avatar));
         if (shown.length) await rereadResidentEntityTagIds(shown);
         reportBulkProblems(t`Bulk tag edit`, result);
-        await eventSource.emit(event_types.CHARACTERS_BULK_EDITED, { action, done: result.done, failed: result.failed.length });
         await this.refresh();
     }
 
@@ -711,11 +703,8 @@ class BulkEditOverlay {
     set state(newState) {
         if (this.#state === newState) return;
 
-        eventSource.emit(event_types.CHARACTER_GROUP_OVERLAY_STATE_CHANGE_BEFORE, newState)
-            .then(() => {
-                this.#state = newState;
-                eventSource.emit(event_types.CHARACTER_GROUP_OVERLAY_STATE_CHANGE_AFTER, this.state);
-            });
+        this.#state = newState;
+        eventSource.emit(event_types.CHARACTER_GROUP_OVERLAY_STATE_CHANGE_AFTER, this.state);
     }
 
     get isLongPress() {
@@ -1125,7 +1114,6 @@ class BulkEditOverlay {
         await this.#withPrepared(async (prepared) => {
             const result = await runPrepared(prepared, 'fav', {}, t`Favorite`, line => CharacterContextMenu.applyFav(line.avatar, line.fav));
             reportBulkProblems(t`Favorite`, result);
-            await eventSource.emit(event_types.CHARACTERS_BULK_EDITED, { action: 'fav', done: result.done, failed: result.failed.length });
         });
         await getCharacters({ keepListPosition: true });
         this.browseState();
@@ -1138,12 +1126,8 @@ class BulkEditOverlay {
      */
     handleContextMenuDuplicate = async () => {
         await this.#withPrepared(async (prepared) => {
-            const held = new Set(charactersStore.getAll().map(character => character.avatar));
-            const result = await runPrepared(prepared, 'duplicate', {}, t`Duplicate`, async (line) => {
-                if (held.has(line.avatar)) await eventSource.emit(event_types.CHARACTER_DUPLICATED, { oldAvatar: line.avatar, newAvatar: line.path });
-            });
+            const result = await runPrepared(prepared, 'duplicate', {}, t`Duplicate`);
             reportBulkProblems(t`Duplicate`, result);
-            await eventSource.emit(event_types.CHARACTERS_BULK_EDITED, { action: 'duplicate', done: result.done, failed: result.failed.length });
         });
         await getCharacters({ keepListPosition: true });
         this.browseState();
@@ -1250,13 +1234,12 @@ class BulkEditOverlay {
                 removedRows.push(line.avatar);
                 const character = held.get(line.avatar);
                 if (!character) return;
-                accountStorage.removeItem(`AlertRegex_${character.avatar}`);
                 accountStorage.removeItem(`mediaWarningShown:${character.avatar}`);
                 removeEntityTags(character.avatar);
                 for (const chat of pastChats.get(character.avatar) ?? []) {
                     await eventSource.emit(event_types.CHAT_DELETED, chat.file_name.replace('.jsonl', ''));
                 }
-                await eventSource.emit(event_types.CHARACTER_DELETED, { id: undefined, character });
+                await eventSource.emit(event_types.CHARACTER_DELETED, { character });
                 removedHeld.push({ avatar: character.avatar, entity: character });
             });
 
@@ -1270,7 +1253,6 @@ class BulkEditOverlay {
 
             reportBulkProblems(t`Bulk Delete`, result);
             if (result.done > 0) toastr.success(t`${result.done} character(s) deleted.`, t`Bulk Delete`);
-            await eventSource.emit(event_types.CHARACTERS_BULK_EDITED, { action: 'delete', done: result.done, failed: result.failed.length });
             forgetDeletedCharactersInBrowser().catch(error => console.warn('Could not forget deleted characters in the browser:', error));
         });
 

@@ -3,18 +3,18 @@ import { chatCompletionDefaultPrompts, promptManagerDefaultPromptOrders } from '
 export const default_main_prompt = 'Write {{char}}\'s next reply in a fictional chat between {{charIfNotGroup}} and {{user}}.';
 export const default_nsfw_prompt = '';
 export const default_jailbreak_prompt = '';
-export const default_impersonation_prompt = '[Write your next reply from the point of view of {{user}}, using the chat history so far as a guideline for the writing style of {{user}}. Don\'t write as {{char}} or system. Don\'t describe actions of {{char}}.]';
+const default_impersonation_prompt = '[Write your next reply from the point of view of {{user}}, using the chat history so far as a guideline for the writing style of {{user}}. Don\'t write as {{char}} or system. Don\'t describe actions of {{char}}.]';
 export const default_enhance_definitions_prompt = 'If you have more knowledge of {{char}}, add to the character\'s lore and personality to enhance them but keep the Character Sheet\'s definitions absolute.';
-export const default_wi_format = '{0}';
-export const default_new_chat_prompt = '[Start a new Chat]';
-export const default_new_group_chat_prompt = '[Start a new group chat. Group members: {{group}}]';
-export const default_new_example_chat_prompt = '[Example Chat]';
-export const default_continue_nudge_prompt = '[Continue your last message without repeating its original content.]';
-export const default_bias = 'Default (none)';
-export const default_personality_format = '{{personality}}';
-export const default_scenario_format = '{{scenario}}';
-export const default_group_nudge_prompt = '[Write the next reply only as {{char}}.]';
-export const default_bias_presets = {
+const default_wi_format = '{0}';
+const default_new_chat_prompt = '[Start a new Chat]';
+const default_new_group_chat_prompt = '[Start a new group chat. Group members: {{group}}]';
+const default_new_example_chat_prompt = '[Example Chat]';
+const default_continue_nudge_prompt = '[Continue your last message without repeating its original content.]';
+const default_bias = 'Default (none)';
+const default_personality_format = '{{personality}}';
+const default_scenario_format = '{{scenario}}';
+const default_group_nudge_prompt = '[Write the next reply only as {{char}}.]';
+const default_bias_presets = {
     [default_bias]: [],
     'Anti-bond': [
         { id: '22154f79-dd98-41bc-8e34-87015d6a0eaf', text: ' bond', value: -50 },
@@ -23,7 +23,7 @@ export const default_bias_presets = {
         { id: 'e63037c7-c9d1-4724-ab2d-7756008b433b', text: ' connection', value: -25 },
     ],
 };
-export const max_4k = 4095;
+const max_4k = 4095;
 export const openrouter_website_model = 'OR_Website';
 export const chat_completion_sources = {
     OPENAI: 'openai',
@@ -59,7 +59,7 @@ export const character_names_behavior = {
     COMPLETION: 1,
     CONTENT: 2,
 };
-export const continue_postfix_types = {
+const continue_postfix_types = {
     NONE: '',
     SPACE: ' ',
     NEWLINE: '\n',
@@ -77,7 +77,7 @@ export const custom_prompt_post_processing_types = {
     STRICT_TOOLS: 'strict_tools',
     SINGLE: 'single',
 };
-export const openrouter_middleout_types = {
+const openrouter_middleout_types = {
     AUTO: 'auto',
     ON: 'on',
     OFF: 'off',

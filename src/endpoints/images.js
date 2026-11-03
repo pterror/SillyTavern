@@ -5,8 +5,8 @@ import { Buffer } from 'node:buffer';
 import express from 'express';
 import sanitize from 'sanitize-filename';
 
-import { clientRelativePath, removeFileExtension, getImages, isPathUnderParent } from '../util.js';
-import { MEDIA_EXTENSIONS, MEDIA_REQUEST_TYPE } from '../constants.js';
+import { clientRelativePath, removeFileExtension, isPathUnderParent } from '../util.js';
+import { MEDIA_EXTENSIONS } from '../constants.js';
 import { requestStore } from '../user-stores.js';
 import { TYPE } from '../library-codes.js';
 import { removeImage, userImageKey, writeUserImage } from '../image-entities.js';
@@ -86,59 +86,6 @@ router.post('/upload', async (request, response) => {
     } catch (error) {
         console.error(error);
         response.status(500).send({ error: 'Failed to save the image' });
-    }
-});
-
-router.post('/list/:folder?', (request, response) => {
-    try {
-        if (request.params.folder) {
-            if (request.body.folder) {
-                return response.status(400).send({ error: 'Folder specified in both URL and body' });
-            }
-
-            console.warn('Deprecated: Use POST /api/images/list with folder in request body');
-            request.body.folder = request.params.folder;
-        }
-
-        if (!request.body.folder) {
-            return response.status(400).send({ error: 'No folder specified' });
-        }
-
-        const directoryPath = path.join(request.user.directories.userImages, sanitize(request.body.folder));
-        const type = Number(request.body.type ?? MEDIA_REQUEST_TYPE.IMAGE);
-        const sort = request.body.sortField || 'date';
-        const order = request.body.sortOrder || 'asc';
-
-        if (!fs.existsSync(directoryPath)) {
-            fs.mkdirSync(directoryPath, { recursive: true });
-        }
-
-        const images = getImages(directoryPath, sort, type);
-        if (order === 'desc') {
-            images.reverse();
-        }
-        return response.send(images);
-    } catch (error) {
-        console.error(error);
-        return response.status(500).send({ error: 'Unable to retrieve files' });
-    }
-});
-
-router.post('/folders', (request, response) => {
-    try {
-        const directoryPath = request.user.directories.userImages;
-        if (!fs.existsSync(directoryPath)) {
-            fs.mkdirSync(directoryPath, { recursive: true });
-        }
-
-        const folders = fs.readdirSync(directoryPath, { withFileTypes: true })
-            .filter(dirent => dirent.isDirectory())
-            .map(dirent => dirent.name);
-
-        return response.send(folders);
-    } catch (error) {
-        console.error(error);
-        return response.status(500).send({ error: 'Unable to retrieve folders' });
     }
 });
 

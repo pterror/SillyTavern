@@ -12,7 +12,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', 'Hello.');
@@ -31,7 +31,7 @@ async function speak(page, avatar, text) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
@@ -39,7 +39,7 @@ async function speak(page, avatar, text) {
     await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1);
     await page.evaluate(async ({ avatar, text }) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const { ensureOpeningRow } = await import('/scripts/chat-store.js');
         const opening = await ensureOpeningRow(0);
         const response = await fetch('/api/chats/message/append', {
@@ -55,7 +55,7 @@ async function speak(page, avatar, text) {
 function recentChats(page) {
     return page.evaluate(async () => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/chats/recent', { method: 'POST', headers, body: JSON.stringify({ max: 50, pinned: [] }) });
         if (!response.ok) throw new Error(`recent failed: ${response.status}`);
         return response.json();
@@ -89,7 +89,7 @@ test('recent chats are the conversations by last activity, one row each', async 
     expect(name).toMatch(/ - Branch #1$/);
     await page.evaluate(async ({ avatar }) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const { ensureOpeningRow } = await import('/scripts/chat-store.js');
         const response = await fetch('/api/chats/message/append', {
             method: 'POST',

@@ -55,7 +55,7 @@ async function saveSettings(page) {
 async function openCard(page, card) {
     const avatar = await page.evaluate(async (card) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const form = new FormData();
         for (const [key, value] of Object.entries(card)) form.set(key, value);
         const response = await fetch('/api/characters/create', { method: 'POST', headers: context.getRequestHeaders({ omitContentType: true }), body: form });
@@ -71,7 +71,7 @@ async function openCard(page, card) {
 async function slash(page, commands) {
     await page.evaluate(async (commands) => {
         // @ts-ignore
-        await SillyTavern.getContext().executeSlashCommandsWithOptions(commands);
+        await stTest.context().executeSlashCommandsWithOptions(commands);
     }, commands);
 }
 
@@ -83,7 +83,7 @@ async function slash(page, commands) {
 async function pagePrompt(page, type) {
     return page.evaluate(async (type) => {
         // @ts-ignore
-        const { eventSource, eventTypes } = SillyTavern.getContext();
+        const { eventSource, eventTypes } = stTest.context();
         const { Generate } = await import('/script.js');
         let prompt = '';
         const take = (/** @type {{ prompt: string, dryRun: boolean }} */ data) => { if (data.dryRun) prompt = data.prompt; };

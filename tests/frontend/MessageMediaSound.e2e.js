@@ -11,7 +11,7 @@ async function sendAudio(page, settings) {
         power_user.media_volume = settings.volume;
         power_user.media_autoplay = settings.autoplay;
         // @ts-ignore
-        const ctx = SillyTavern.getContext();
+        const ctx = stTest.context();
         await ctx.SlashCommandParser.commands['send'].callback({}, `<audio controls autoplay src="/sounds/message.mp3"></audio> ${Date.now()}`);
         return ctx.chat.length - 1;
     }, settings);
@@ -21,7 +21,7 @@ test('audio in a message starts at the user\'s volume and waits to be played; al
     await testSetup.awaitST({ page });
     await page.evaluate(async () => {
         // @ts-ignore
-        await SillyTavern.getContext().executeSlashCommandsWithOptions('/go Seraphina');
+        await stTest.context().executeSlashCommandsWithOptions('/go Seraphina');
     });
     await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1, { timeout: 10000 });
 

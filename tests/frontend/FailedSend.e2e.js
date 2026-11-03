@@ -46,7 +46,7 @@ function startLlamaCpp() {
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', 'Hello.');
@@ -64,7 +64,7 @@ async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
@@ -86,11 +86,11 @@ async function connectLlamaCpp(page, url) {
     await page.locator('#llamacpp_api_url_text').fill(url);
     await page.locator('#api_button_textgenerationwebui').click();
     // @ts-ignore
-    await expect.poll(() => page.evaluate(() => SillyTavern.getContext().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
+    await expect.poll(() => page.evaluate(() => stTest.context().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
     await page.locator('#API-status-top').click();
     await page.evaluate(() => {
         // @ts-ignore
-        SillyTavern.getContext().textCompletionSettings.streaming = false;
+        stTest.context().textCompletionSettings.streaming = false;
     });
     await page.waitForTimeout(2500);
 }
@@ -99,7 +99,7 @@ async function connectLlamaCpp(page, url) {
 function chatState(page) {
     return page.evaluate(() => {
         // @ts-ignore
-        return SillyTavern.getContext().chat.map(m => ({ mes: m.mes, node_id: m.node_id ?? null }));
+        return stTest.context().chat.map(m => ({ mes: m.mes, node_id: m.node_id ?? null }));
     });
 }
 
@@ -220,7 +220,7 @@ test.describe('a send the server did not store', () => {
         await page.locator('#send_but').click();
         await expect.poll(() => page.evaluate(async ({ avatar, stored }) => {
             // @ts-ignore
-            const context = SillyTavern.getContext();
+            const context = stTest.context();
             const response = await fetch('/api/chats/open', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar }) });
             return (await response.json()).messages.some(m => m.mes === stored);
         }, { avatar, stored }), { timeout: 15000 }).toBe(true);
@@ -250,7 +250,7 @@ test.describe('a send the server did not store', () => {
 
         const greetingNode = await page.evaluate(async (avatar) => {
             // @ts-ignore
-            const context = SillyTavern.getContext();
+            const context = stTest.context();
             const { ensureOpeningRow } = await import('/scripts/chat-store.js');
             const nodeId = await ensureOpeningRow(0);
             const response = await fetch('/api/chats/message/append', {

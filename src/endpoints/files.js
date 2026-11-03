@@ -5,8 +5,46 @@ import express from 'express';
 import sanitize from 'sanitize-filename';
 import { sync as writeFileSyncAtomic } from 'write-file-atomic';
 
-import { validateAssetFileName } from './assets.js';
 import { clientRelativePath } from '../util.js';
+import { UNSAFE_EXTENSIONS } from '../constants.js';
+
+/**
+ * Validates the name of a file to store.
+ * @param {string} inputFilename Input filename
+ * @returns {{error: boolean, message?: string}} Whether validation failed, and why if so
+ */
+function validateFileName(inputFilename) {
+    if (!/^[a-zA-Z0-9_\-.]+$/.test(inputFilename)) {
+        return {
+            error: true,
+            message: 'Illegal character in filename; only alphanumeric, \'_\', \'-\' are accepted.',
+        };
+    }
+
+    const inputExtension = path.extname(inputFilename).toLowerCase();
+    if (UNSAFE_EXTENSIONS.some(ext => ext === inputExtension)) {
+        return {
+            error: true,
+            message: 'Forbidden file extension.',
+        };
+    }
+
+    if (inputFilename.startsWith('.')) {
+        return {
+            error: true,
+            message: 'Filename cannot start with \'.\'',
+        };
+    }
+
+    if (sanitize(inputFilename) !== inputFilename) {
+        return {
+            error: true,
+            message: 'Reserved or long filename.',
+        };
+    }
+
+    return { error: false };
+}
 
 export const router = express.Router();
 
@@ -36,7 +74,7 @@ router.post('/upload', async (request, response) => {
         }
 
         // Validate filename
-        const validation = validateAssetFileName(request.body.name);
+        const validation = validateFileName(request.body.name);
         if (validation.error)
             return response.status(400).send(validation.message);
 
@@ -93,31 +131,6 @@ router.post('/delete', async (request, response) => {
         }
 
         return response.sendStatus(200);
-    } catch (error) {
-        console.error(error);
-        return response.sendStatus(500);
-    }
-});
-
-router.post('/verify', async (request, response) => {
-    try {
-        if (!Array.isArray(request.body.urls)) {
-            return response.status(400).send('No URLs specified');
-        }
-
-        const verified = {};
-
-        for (const url of request.body.urls) {
-            const pathToVerify = path.join(request.user.directories.root, url);
-            if (!pathToVerify.startsWith(request.user.directories.files)) {
-                console.warn(`File verification: Invalid path: ${pathToVerify}`);
-                continue;
-            }
-            const fileExists = fs.existsSync(pathToVerify);
-            verified[url] = fileExists;
-        }
-
-        return response.send(verified);
     } catch (error) {
         console.error(error);
         return response.sendStatus(500);

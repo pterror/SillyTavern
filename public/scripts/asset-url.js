@@ -66,7 +66,7 @@ let reloadNoticeShown = false;
 /**
  * @returns {Promise<void>}
  */
-export async function reportAssetLoadFailure() {
+async function reportAssetLoadFailure() {
     if (reloadNoticeShown || Date.now() - lastBuildCheck < BUILD_CHECK_INTERVAL_MS) {
         return;
     }

@@ -1,5 +1,5 @@
 import { DiffMatchPatch, DOMPurify, localforage } from '../lib.js';
-import { getCurrentChatId, getSelectionState, reloadCurrentChat } from '../script.js';
+import { getCurrentChatId, reloadCurrentChat } from '../script.js';
 import { chat } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { event_types, eventSource } from './events.js';
@@ -29,14 +29,6 @@ function post(route, body) {
     return fetch(`/api/itemized-prompts/${route}`, { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(body) });
 }
 
-/** @returns {{ group_id: string } | { avatar_url: string } | null} */
-function currentOwner() {
-    const selection = getSelectionState();
-    if (selection.type === 'group') return { group_id: selection.groupId };
-    if (selection.type === 'character') return { avatar_url: selection.avatar };
-    return null;
-}
-
 /**
  * @param {string} nodeId
  * @returns {Promise<{ entry: Record<string, any>, previous_node_id: string|null } | null>}
@@ -48,121 +40,11 @@ async function fetchItemization(nodeId) {
     return response.json();
 }
 
-/**
- * @param {string} chatId
- * @returns {Promise<{ index: number, node_id: string, entry: Record<string, any> }[]>}
- */
-async function fetchChatItemizations(chatId) {
-    const owner = currentOwner();
-    if (!owner) return [];
-    const response = await post('chat', { ...owner, chat: chatId });
-    if (response.status === 404) return [];
-    if (!response.ok) throw new Error(`the server answered ${response.status}`);
-    return (await response.json()).entries ?? [];
-}
-
-/**
- * @param {string} chatId
- */
-export async function loadItemizedPrompts(chatId) {
-    if (!chatId) {
-        itemizedPrompts = [];
-        return;
-    }
-    try {
-        const entries = await fetchChatItemizations(chatId);
-        itemizedPrompts = entries.map(({ index, entry }) => ({ ...entry, mesId: index }));
-        await eventSource.emit(event_types.ITEMIZED_PROMPTS_LOADED, { chatId: chatId });
-    } catch (error) {
-        console.error('Error loading itemized prompts for chat', chatId, error);
-        itemizedPrompts = [];
-    }
-}
-
-/**
- * Upstream's export: stores the entries of `itemizedPrompts` for the messages of a chat of the open character or
- * group, each at the message its `mesId` is the position of. A message with no entry here keeps the one it has.
- * @param {string} chatId
- */
-export async function saveItemizedPrompts(chatId) {
-    if (!chatId || !Array.isArray(itemizedPrompts) || itemizedPrompts.length === 0) return;
-    try {
-        /** @type {(string|undefined)[]} */
-        let nodeIds;
-        if (chatId === getCurrentChatId()) {
-            nodeIds = chat.map(message => (isStoredNodeId(message?.node_id) ? message.node_id : undefined));
-        } else {
-            const owner = currentOwner();
-            const response = owner ? await post('chat', { ...owner, chat: chatId, ids_only: true }) : null;
-            if (!response?.ok) throw new Error(`no chat ${chatId}`);
-            nodeIds = (await response.json()).node_ids ?? [];
-        }
-        const items = [];
-        const unplaced = [];
-        for (const entry of itemizedPrompts) {
-            const nodeId = nodeIds[Number(entry?.mesId)];
-            if (nodeId) items.push({ node_id: nodeId, entry });
-            else unplaced.push(entry?.mesId);
-        }
-        if (unplaced.length) {
-            toastr.warning(t`Not saved: the prompt breakdowns for messages ${unplaced.join(', ')}, which aren't saved messages of that chat.`);
-        }
-        if (items.length === 0) return;
-        const response = await post('set', { items });
-        if (!response.ok) throw new Error(`the server answered ${response.status}`);
-        await eventSource.emit(event_types.ITEMIZED_PROMPTS_SAVED, { chatId: chatId });
-    } catch (error) {
-        console.error('Error saving itemized prompts for chat', chatId, error);
-        toastr.error(t`The prompt breakdowns couldn't be saved.`);
-    }
-}
-
-/**
- * Upstream's export: replaces the prompt text of a message's itemization.
- * @param {number} mesId
- * @param {string} promptText
- */
-export async function replaceItemizedPromptText(mesId, promptText) {
-    if (!Array.isArray(itemizedPrompts)) {
-        itemizedPrompts = [];
-    }
-    const held = itemizedPrompts.find(x => x.mesId === mesId);
-    if (held) held.rawPrompt = promptText;
-
-    const nodeId = chat[mesId]?.node_id;
-    if (!isStoredNodeId(nodeId)) return;
-    try {
-        const response = await post('set', { items: [{ node_id: nodeId, fields: { rawPrompt: promptText } }] });
-        if (!response.ok) throw new Error(`the server answered ${response.status}`);
-    } catch (error) {
-        console.error('Error replacing the itemized prompt text of message', mesId, error);
-        toastr.error(t`The prompt text couldn't be saved.`);
-    }
-}
-
-/**
- * Upstream's export: removes the itemizations of a chat of the open character or group.
- * @param {string} chatId
- */
-export async function deleteItemizedPrompts(chatId) {
-    if (!chatId) return;
-    const owner = currentOwner();
-    try {
-        const response = owner ? await post('delete', { ...owner, chat: chatId }) : null;
-        if (response && !response.ok && response.status !== 404) throw new Error(`the server answered ${response.status}`);
-        await eventSource.emit(event_types.ITEMIZED_PROMPTS_DELETED, { chatId: chatId, all: false });
-    } catch (error) {
-        console.error('Error deleting itemized prompts for chat', chatId, error);
-        toastr.error(t`The prompt breakdowns couldn't be deleted.`);
-    }
-}
-
-export async function clearItemizedPrompts() {
+async function clearItemizedPrompts() {
     try {
         const response = await post('clear', {});
         if (!response.ok) throw new Error(`the server answered ${response.status}`);
         itemizedPrompts = [];
-        await eventSource.emit(event_types.ITEMIZED_PROMPTS_DELETED, { all: true });
     } catch (error) {
         console.error('Error clearing itemized prompts', error);
         toastr.error(t`The prompt breakdowns couldn't be deleted.`);
@@ -265,7 +147,7 @@ export async function itemizedParams(itemizedPrompts, thisPromptSet, incomingMes
     };
 }
 
-export function findItemizedPromptSet(itemizedPrompts, incomingMesId) {
+function findItemizedPromptSet(itemizedPrompts, incomingMesId) {
     let thisPromptSet = undefined;
     priorPromptArrayItemForRawPromptDisplay = -1;
 
@@ -379,49 +261,6 @@ export async function promptItemize(itemizedPrompts, requestedMesId, { loadPrevi
     await popup.show();
 }
 
-
-/**
- * Upstream's export: swaps the held itemized prompts (`itemizedPrompts`) between two messages. Useful when moving
- * messages around in the chat. The server keeps each itemization with its reply, so a moved message keeps its own;
- * this only renumbers the page's held copy, as upstream's does.
- * @param {number} sourceMessageId Source message ID
- * @param {number} targetMessageId Target message ID
- */
-export function swapItemizedPrompts(sourceMessageId, targetMessageId) {
-    if (!Array.isArray(itemizedPrompts)) {
-        return;
-    }
-
-    const sourcePrompts = itemizedPrompts.filter(x => x.mesId === sourceMessageId);
-    const targetPrompts = itemizedPrompts.filter(x => x.mesId === targetMessageId);
-
-    sourcePrompts.forEach(prompt => {
-        prompt.mesId = targetMessageId;
-    });
-
-    targetPrompts.forEach(prompt => {
-        prompt.mesId = sourceMessageId;
-    });
-
-    itemizedPrompts.sort((a, b) => a.mesId - b.mesId);
-}
-
-/**
- * Upstream's export: drops the held itemized prompt (`itemizedPrompts`) of a message and shifts down the later ones,
- * as upstream's does. The server keeps each itemization with its reply, so a deleted message's goes with it.
- * @param {number} messageId Message ID to delete itemized prompt for
- */
-export function deleteItemizedPromptForMessage(messageId) {
-    if (!Array.isArray(itemizedPrompts)) {
-        return;
-    }
-
-    itemizedPrompts = itemizedPrompts.filter(x => x.mesId !== messageId);
-
-    for (const prompt of itemizedPrompts.filter(x => x.mesId > messageId)) {
-        prompt.mesId -= 1;
-    }
-}
 
 const UPSTREAM_STORE = 'SillyTavern_Prompts';
 const UPSTREAM_BATCH_CHATS = 200;

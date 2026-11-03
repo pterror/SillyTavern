@@ -24,10 +24,9 @@ import { getCharacters, printCharactersDebounced } from './character-list.js';
 import { chat } from './chat-state.js';
 import { setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
-import { charactersStore, resolveCharacterRef } from './character-store.js';
+import { charactersStore } from './character-store.js';
 import { characterRepository } from './character-repository.js';
 import { event_types, eventSource } from './events.js';
-import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { deleteGroupChatByName, getGroupAvatar, is_group_generating, openGroupById, openGroupChat } from './group-chats.js';
 import { getGroupRows, groupsStore, holdGroups } from './group-store.js';
 import { t } from './i18n.js';
@@ -228,7 +227,7 @@ async function loadPermanentAssistant() {
  * @param {boolean} [param.expand] If true, expands the recent chats section.
  * @returns {Promise<void>}
  */
-export async function openWelcomeScreen({ force = false, expand = false } = {}) {
+async function openWelcomeScreen({ force = false, expand = false } = {}) {
     const currentChatId = getCurrentChatId();
     if (currentChatId !== undefined || (chat.length > 0 && !force)) {
         return;
@@ -271,7 +270,7 @@ function getAssistantGreeting(character) {
         return defaultGreeting;
     }
 
-    return getRegexedString(character.first_mes || '', regex_placement.AI_OUTPUT, { depth: 0 }) || defaultGreeting;
+    return character.first_mes || defaultGreeting;
 }
 
 /** @param {Character|undefined} character */
@@ -952,14 +951,14 @@ export async function openPermanentAssistantCard() {
 
 /**
  * Assigns a character as the assistant.
- * @param {string|number?} characterId Character ID (an index into `getContext().characters`, as upstream's), or an avatar key
+ * @param {string|undefined} avatar The character's avatar
  */
-export function assignCharacterAsAssistant(characterId) {
-    if (characterId === undefined) {
+function assignCharacterAsAssistant(avatar) {
+    if (avatar === undefined) {
         return;
     }
     /** @type {Character} */
-    const character = resolveCharacterRef(characterId);
+    const character = charactersStore.get(avatar);
     if (!character) {
         return;
     }

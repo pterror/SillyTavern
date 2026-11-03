@@ -5,12 +5,11 @@ import {
     getSelectionState,
     saveSettingsDebounced,
     menu_type,
-    buildAvatarList,
 } from '../script.js';
 import { entitiesFilter, printCharactersDebounced, DEFAULT_PRINT_TIMEOUT, printCharacters, setFilterDataFromUser, getUnheldRowTagIds, setUnheldRowTagIds, redrawUnheldRows } from './character-list.js';
 import { getRequestHeaders } from './request-headers.js';
 import { eventSource, event_types } from './events.js';
-import { characters, charactersStore, exposedCharacters, exposedGroups, onExposedEntitiesChange } from './character-store.js';
+import { characters, charactersStore } from './character-store.js';
 import { FILTER_TYPES, FILTER_STATES, DEFAULT_FILTER_STATE, isFilterState, FilterHelper } from './filters.js';
 
 import { groupCandidatesFilter, groupMembersFilter, selected_group } from './group-chats.js';
@@ -34,31 +33,21 @@ import { refreshUnderlayClips, registerUnderlayClip, scrollContainerOf, underlay
 import { dropOldTagsCache } from './tags-cache.js';
 import { mergedTagTarget, shownTagIds, tagReadDrops, takeInMergedTags } from './tag-merges.js';
 import { beginLocalTagChange, isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
-import { characterRepository, parseQueryTotal } from './character-repository.js';
+import { characterRepository } from './character-repository.js';
 
 export {
-    TAG_FOLDER_TYPES,
-    TAG_FOLDER_DEFAULT_TYPE,
-    exportedTags as tags,
     filterByTagState,
-    isBogusFolder,
     isBogusFolderOpen,
     chooseBogusFolder,
-    getTagBlock,
-    loadTagsSettings,
-    renameTagKey,
+    loadTagsFromServer,
     reindexTagAssignments,
     printTagFilters,
     getTagsList,
     printTagList,
-    appendTagToList,
     createTagMapFromList,
     importTags,
-    sortTags,
     compareTagsForSort,
-    removeTagFromMap,
     getHeldAssignedTagIds,
-    tag_map,
     tagsStore,
     isTagAssignedToKey,
     mergeServerTagDefinitions,
@@ -69,7 +58,6 @@ const CHARACTER_FILTER_SELECTOR = '#rm_characters_block .rm_tag_filter';
 const GROUP_FILTER_SELECTOR = '#rm_group_add_members_header ~ .rm_tag_controls .rm_tag_filter';
 const GROUP_MEMBERS_FILTER_SELECTOR = '#rm_group_members_header ~ .rm_tag_controls .rm_tag_filter';
 const TAG_TEMPLATE = $('#tag_template .tag');
-const FOLDER_TEMPLATE = $('#bogus_folder_template .bogus_folder_select');
 const VIEW_TAG_TEMPLATE = $('#tag_view_template .tag_view_item');
 
 /**
@@ -242,32 +230,6 @@ function showSavedTagFilterState(tag) {
 
 /**
  * @param {Tag} tag
- */
-function takeInTagFilterState(tag) {
-    const shown = tagFilterStatesShown.get(tag);
-    if (shown === undefined) {
-        showSavedTagFilterState(tag);
-        return;
-    }
-    const state = tag.filter_state ?? DEFAULT_FILTER_STATE;
-    if (state === shown) return;
-    tagFilterStatesShown.set(tag, state);
-    if (!Object.hasOwn(FILTER_STATES, state)) return;
-
-    accountStorage.setItem(`${getFilterStorageKey(entitiesFilter)}_tag_${tag.id}`, state);
-    saveTagFilterName(getFilterStorageKey(entitiesFilter), tag.id, state, tag.name);
-    $(CHARACTER_FILTER_SELECTOR).find('.tag:not(.actionable)').filter((_, element) => element.id === tag.id)
-        .each((_, element) => { toggleTagThreeState($(element), { stateOverride: state }); });
-    const { selected, excluded } = entitiesFilter.getFilterData(FILTER_TYPES.TAG);
-    const others = (/** @type {string[]} */ ids) => (Array.isArray(ids) ? ids : []).filter(id => id !== tag.id);
-    setFilterDataFromUser(entitiesFilter, FILTER_TYPES.TAG, {
-        excluded: state === 'EXCLUDED' ? [...others(excluded), tag.id] : others(excluded),
-        selected: state === 'SELECTED' ? [...others(selected), tag.id] : others(selected),
-    });
-}
-
-/**
- * @param {Tag} tag
  * @returns {Tag}
  */
 function tagDefinitionToStore(tag) {
@@ -407,12 +369,6 @@ const TAG_FOLDER_DEFAULT_TYPE = 'NONE';
 /** @type {Tag[]} */
 const tags = [];
 
-/** @type {Tag[]} */
-const exportedTags = [];
-
-/** @type {Map<string, Tag>} */
-const exportedIndex = new Map();
-
 /**
  * @extends {EntityStore<Tag>}
  */
@@ -428,9 +384,7 @@ class TagStore extends EntityStore {
      */
     get(id) {
         const indexed = super.get(id);
-        if (indexed) return indexed;
-        const exported = exportedTags.find(tag => isTagObject(tag) && tag.id === id);
-        if (exported || this.array.length === this.byId.size) return exported;
+        if (indexed || this.array.length === this.byId.size) return indexed;
         return this.array.find(tag => isTagObject(tag) && tag.id === id);
     }
 
@@ -605,7 +559,6 @@ function assignTagLocally(key, tagId) {
     const ids = resolveTagIdsArray(key);
     if (!ids || ids.includes(tagId)) return false;
     ids.push(tagId);
-    noteOwnTagIdsChange(ids, stored => stored.includes(tagId) ? stored : [...stored, tagId]);
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
     return true;
@@ -622,7 +575,6 @@ function unassignTagLocally(key, tagId) {
     const idx = ids.indexOf(tagId);
     if (idx === -1) return false;
     ids.splice(idx, 1);
-    noteOwnTagIdsChange(ids, stored => stored.filter(id => id !== tagId));
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
     return true;
@@ -659,12 +611,7 @@ function queueAssignSave(key, tagId) {
         } else {
             tagSavesNotStored.push({ key, tagId, assign: true });
         }
-        if (!resolveTagIdsArray(key)) {
-            if (answer) return false;
-            const sent = unheldTagMapSent.get(key);
-            if (sent?.includes(tagId)) sent.splice(sent.indexOf(tagId), 1);
-            return false;
-        }
+        if (!resolveTagIdsArray(key)) return false;
         if (unassignTagLocally(key, tagId)) redrawTagsOfKey(key, tagId);
         return false;
     });
@@ -696,67 +643,6 @@ async function readEntityTagIds(key) {
     if (!answer) return null;
     const ids = answer[key];
     return Array.isArray(ids) ? ids.filter(id => typeof id === 'string') : [];
-}
-
-/**
- * @param {string[]} keys
- * @returns {Promise<Map<string, string[]> | null>}
- */
-export async function readEntitiesTagIds(keys) {
-    /** @type {Map<string, string[]>} */
-    const found = new Map();
-    const unheld = [];
-    for (const key of new Set(keys)) {
-        const held = resolveTagIdsArray(key);
-        if (held) found.set(key, [...held]);
-        else unheld.push(key);
-    }
-    for (let i = 0; i < unheld.length; i += TAG_READ_MAX_IDS) {
-        const answer = await postTagsRead('/api/tags/for', { ids: unheld.slice(i, i + TAG_READ_MAX_IDS) });
-        if (!answer) return null;
-        for (const [key, ids] of Object.entries(answer)) {
-            if (Array.isArray(ids)) found.set(key, ids.filter(id => typeof id === 'string'));
-        }
-    }
-    return found;
-}
-
-/**
- * @param {string[]} keys
- * @param {string[]} tagIds
- * @param {boolean} assign
- * @returns {Promise<void>}
- */
-export async function saveTagsOnKeys(keys, tagIds, assign) {
-    /** @type {Set<string>} */
-    const heldKeys = new Set();
-    /** @type {(() => Promise<boolean>)[]} */
-    const heldSaves = [];
-    const unheldKeys = [];
-    for (const key of new Set(keys)) {
-        if (!resolveTagIdsArray(key)) {
-            unheldKeys.push(key);
-            continue;
-        }
-        for (const tagId of tagIds) {
-            const changed = assign ? assignTagLocally(key, tagId) : unassignTagLocally(key, tagId);
-            if (!changed) continue;
-            heldKeys.add(key);
-            heldSaves.push(assign ? queueAssignSave(key, tagId) : queueUnassignSave(key, tagId));
-        }
-    }
-    if (heldKeys.size) {
-        redrawAfterTagChange(tagIds, heldKeys);
-        const openKey = getTagKey();
-        if (openKey !== null && heldKeys.has(String(openKey))) {
-            if (selected_group) applyTagsOnGroupSelect(); else applyTagsOnCharacterSelect();
-        }
-        applyCharacterTagsToMessageDivs();
-    }
-    await Promise.all([
-        runWithConcurrency(heldSaves, save => save()),
-        runWithConcurrency(unheldKeys, key => saveTagsOnUnheldKey(key, tagIds, assign)),
-    ]);
 }
 
 /**
@@ -812,7 +698,6 @@ function setKeyTagIds(key, tagIds) {
     const removedIds = ids.filter(id => !newSet.has(id));
     ids.length = 0;
     ids.push(...tagIds);
-    noteOwnTagIdsChange(ids, () => [...tagIds]);
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
     const tasks = [
@@ -827,256 +712,15 @@ function removeKeyTagIds(key) {
     if (!ids) return;
     const removedIds = [...ids];
     ids.length = 0;
-    noteOwnTagIdsChange(ids, () => []);
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
     runWithConcurrency(removedIds.map(tagId => queueUnassignSave(key, tagId)), task => task());
 }
 
-/** @type {{[key: string]: string[]}} */
-const tag_map = {};
-
-/** @type {Map<string, () => string[]|undefined>} */
-const tagMapEntryGetters = new Map();
-
-/** @type {Map<string[], {key: string, stored: string[]}>} */
-const tagMapHandedOut = new Map();
-
-/** @type {Map<string, string[]>} */
-const unheldTagMapSent = new Map();
-
-let tagExportTakeInQueued = false;
-let tagMapKeysToCheck = false;
-
-/**
- * @param {string[]} ids
- * @param {(stored: string[]) => string[]} change
- */
-function noteOwnTagIdsChange(ids, change) {
-    const handed = tagMapHandedOut.get(ids);
-    if (handed) handed.stored = change(handed.stored);
-    queueTagExportTakeIn(false);
-}
-
-/** @param {boolean} checkKeys */
-function queueTagExportTakeIn(checkKeys) {
-    tagMapKeysToCheck ||= checkKeys;
-    if (tagExportTakeInQueued) return;
-    tagExportTakeInQueued = true;
-    queueMicrotask(takeInTagExportWrites);
-}
-
-export function noteTagExportsMayHaveChanged() {
-    queueTagExportTakeIn(true);
-}
-
 onAnyEntityStoreChange(store => {
     if (store === tagsStore) return;
-    queueTagExportTakeIn(true);
     scheduleTagSweep();
 });
-onExposedEntitiesChange(() => {
-    queueTagExportTakeIn(true);
-    scheduleTagSweep();
-});
-
-/**
- * @returns {string[]}
- */
-function exposedTagKeys() {
-    return [
-        ...exposedCharacters.map(character => character.avatar).filter(Boolean),
-        ...exposedGroups.map(group => String(group.id)).filter(Boolean),
-    ];
-}
-
-export function takeInExtensionTagWrites() {
-    takeInTagExportWrites();
-}
-
-function takeInTagExportWrites() {
-    tagExportTakeInQueued = false;
-    takeInTagsExportWrites();
-    takeInTagMapWrites();
-    refillExportedTags();
-}
-
-/**
- * @param {Set<string>} ids
- */
-function dropFromExportedTags(ids) {
-    takeInTagsExportWrites();
-    let write = 0;
-    for (const tag of exportedTags) {
-        if (!isTagObject(tag) || !ids.has(tag.id)) exportedTags[write++] = tag;
-    }
-    exportedTags.length = write;
-    for (const id of ids) {
-        exportedIndex.delete(id);
-        tagIdsPutInByExtension.delete(id);
-    }
-}
-
-function refillExportedTags() {
-    takeInTagsExportWrites();
-    /** @type {Set<string>} */
-    const wanted = new Set(tagIdsPutInByExtension);
-    for (const key of exposedTagKeys()) {
-        for (const id of resolveTagIdsArray(key) ?? []) wanted.add(id);
-    }
-    const next = tags.filter(tag => isTagObject(tag) && wanted.has(tag.id));
-    if (next.length === exportedTags.length && next.every((tag, i) => exportedTags[i] === tag)) return;
-    exportedTags.length = 0;
-    exportedIndex.clear();
-    for (const tag of next) {
-        exportedTags.push(tag);
-        exportedIndex.set(tag.id, tag);
-    }
-}
-
-function takeInTagMapWrites() {
-    if (tagCreatesInFlight.size) {
-        Promise.allSettled([...tagCreatesInFlight]).then(takeInTagMapWrites);
-        return;
-    }
-    if (tagMapKeysToCheck) {
-        tagMapKeysToCheck = false;
-        takeInTagMapKeys();
-    }
-    sendTagMapChanges();
-}
-
-/**
- * @param {string} key
- * @param {string[]} ids
- */
-function noteTagIdsHandedOut(key, ids) {
-    if (!tagMapHandedOut.has(ids)) tagMapHandedOut.set(ids, { key, stored: [...ids] });
-}
-
-/**
- * @param {string} key
- */
-function defineTagMapEntry(key) {
-    const get = () => {
-        const ids = resolveTagIdsArray(key);
-        if (ids) {
-            noteTagIdsHandedOut(key, ids);
-            queueTagExportTakeIn(false);
-        }
-        return ids;
-    };
-    Object.defineProperty(tag_map, key, {
-        get,
-        set(value) {
-            const ids = resolveTagIdsArray(key);
-            if (!ids) {
-                tagMapEntryGetters.delete(key);
-                Object.defineProperty(tag_map, key, { value, writable: true, enumerable: true, configurable: true });
-                queueTagExportTakeIn(true);
-                return;
-            }
-            const next = Array.isArray(value) ? [...value] : [];
-            noteTagIdsHandedOut(key, ids);
-            ids.length = 0;
-            ids.push(...next);
-            queueTagExportTakeIn(false);
-        },
-        enumerable: true,
-        configurable: true,
-    });
-    tagMapEntryGetters.set(key, get);
-}
-
-function takeInTagMapKeys() {
-    /** @type {(() => Promise<void>)[]} */
-    const unheldSaves = [];
-
-    for (const key of Object.getOwnPropertyNames(tag_map)) {
-        const ownGetter = tagMapEntryGetters.get(key);
-        if (ownGetter && Object.getOwnPropertyDescriptor(tag_map, key)?.get === ownGetter) continue;
-
-        const written = tag_map[key];
-        const wanted = (Array.isArray(written) ? written : []).filter(id => typeof id === 'string').filter(onlyUnique);
-        const held = resolveTagIdsArray(key);
-        if (!held) {
-            tagMapEntryGetters.delete(key);
-            let sent = unheldTagMapSent.get(key);
-            if (!sent) {
-                sent = [];
-                unheldTagMapSent.set(key, sent);
-            }
-            for (const id of wanted) {
-                if (sent.includes(id)) continue;
-                sent.push(id);
-                unheldSaves.push(queueAssignSave(key, id));
-            }
-            continue;
-        }
-
-        unheldTagMapSent.delete(key);
-        if (ownGetter) {
-            noteTagIdsHandedOut(key, held);
-            held.length = 0;
-            held.push(...wanted);
-        } else {
-            for (const id of wanted) assignTagToKey(key, id);
-        }
-        defineTagMapEntry(key);
-    }
-
-    for (const key of [...tagMapEntryGetters.keys()]) {
-        if (Object.hasOwn(tag_map, key)) continue;
-        tagMapEntryGetters.delete(key);
-        const held = resolveTagIdsArray(key);
-        if (held) {
-            noteTagIdsHandedOut(key, held);
-            held.length = 0;
-        }
-    }
-    for (const key of [...unheldTagMapSent.keys()]) {
-        if (!Object.hasOwn(tag_map, key)) unheldTagMapSent.delete(key);
-    }
-
-    const exposedKeys = new Set();
-    for (const key of exposedTagKeys()) {
-        exposedKeys.add(key);
-        if (!tagMapEntryGetters.has(key)) defineTagMapEntry(key);
-    }
-    for (const key of [...tagMapEntryGetters.keys()]) {
-        if (exposedKeys.has(key)) continue;
-        delete tag_map[key];
-        tagMapEntryGetters.delete(key);
-    }
-
-    if (unheldSaves.length) runWithConcurrency(unheldSaves, save => save());
-}
-
-function sendTagMapChanges() {
-    /** @type {(() => Promise<void>)[]} */
-    const unheldSaves = [];
-    for (const [ids, { key, stored }] of [...tagMapHandedOut]) {
-        const held = resolveTagIdsArray(key);
-        if (held !== ids) tagMapHandedOut.delete(ids);
-
-        const after = ids.filter(id => typeof id === 'string').filter(onlyUnique);
-        const added = after.filter(id => !stored.includes(id));
-        const removed = stored.filter(id => !after.includes(id));
-        if (!added.length && !removed.length) continue;
-
-        if (held === ids) {
-            ids.length = 0;
-            ids.push(...stored);
-        }
-        if (held) {
-            for (const id of added) assignTagToKey(key, id);
-            for (const id of removed) unassignTagFromKey(key, id);
-        } else {
-            for (const id of added) unheldSaves.push(queueAssignSave(key, id));
-        }
-    }
-    if (unheldSaves.length) runWithConcurrency(unheldSaves, save => save());
-}
 
 /** @type {Map<string, Record<string, any>>} */
 const storedTagFields = new Map();
@@ -1135,11 +779,7 @@ function addStoredTag(tag) {
     noteStoredTag(tag);
     showSavedTagFilterState(tag);
     scheduleTagSweep();
-    queueTagExportTakeIn(false);
 }
-
-/** @type {Set<string>} */
-const tagIdsPutInByExtension = new Set();
 
 const TAG_SWEEP_DELAY_MS = 2000;
 /** @type {ReturnType<typeof setTimeout> | null} */
@@ -1170,14 +810,11 @@ function tagIdsInUse() {
         const data = helper.getFilterData(FILTER_TYPES.TAG);
         for (const id of [...(data?.selected ?? []), ...(data?.excluded ?? [])]) ids.add(id);
     }
-    for (const id of tagIdsPutInByExtension) ids.add(id);
     for (const id of tagIdsBeingCreated) ids.add(id);
-    for (const id of tagsAddedThroughExport.keys()) ids.add(id);
     return ids;
 }
 
 function sweepHeldTags() {
-    takeInTagsExportWrites();
     const inUse = tagIdsInUse();
     /** @type {string[]} */
     const letGo = [];
@@ -1194,7 +831,6 @@ function sweepHeldTags() {
     invalidateTagsFuseIndex();
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
-    refillExportedTags();
 }
 
 /**
@@ -1225,226 +861,8 @@ function tagFieldsChangedOnObject(tag) {
     return { patch, lacksStoredField };
 }
 
-/** @type {Map<string, Tag>} */
-const tagsAddedThroughExport = new Map();
-
-/** @type {Set<Promise<void>>} */
-const tagCreatesInFlight = new Set();
 /** @type {Set<string>} */
 const tagIdsBeingCreated = new Set();
-
-function takeInTagsExportWrites() {
-    let differs = exportedTags.length !== exportedIndex.size;
-    for (let i = 0; !differs && i < exportedTags.length; i++) {
-        differs = exportedIndex.get(exportedTags[i]?.id) !== exportedTags[i];
-    }
-    if (!differs) return;
-
-    const afterIds = new Set();
-    let heldChanged = false;
-    for (const tag of exportedTags) {
-        if (!isTagObject(tag)) continue;
-        afterIds.add(tag.id);
-        if (exportedIndex.get(tag.id) === tag) continue;
-        tagIdsPutInByExtension.add(tag.id);
-        const held = tagsStore.byId.get(tag.id);
-        if (held !== tag) {
-            if (held) {
-                const at = tags.indexOf(held);
-                if (at !== -1) tags[at] = tag; else tags.push(tag);
-            } else {
-                tags.push(tag);
-            }
-            heldChanged = true;
-        }
-        if (!storedTagFields.has(tag.id)) tagsAddedThroughExport.set(tag.id, tag);
-    }
-    /** @type {Tag[]} */
-    const putBack = [];
-    for (const [id, tag] of exportedIndex) {
-        if (afterIds.has(id)) continue;
-        tagsAddedThroughExport.delete(id);
-        if (storedTagFields.has(id) || tagIdsBeingCreated.has(id)) putBack.push(tag);
-    }
-    for (const tag of putBack) exportedTags.push(tag);
-    if (putBack.length) {
-        toastr.warning(
-            `${putBack.map(tag => `'${escapeHtml(String(tag.name ?? tag.id))}'`).join(', ')}<br />${t`Delete a tag in Manage Tags.`}`,
-            t`An extension removed these tags from the tag list. They were not deleted.`,
-            { escapeHtml: false, timeOut: 0, extendedTimeOut: 0 },
-        );
-    }
-
-    exportedIndex.clear();
-    for (const tag of exportedTags) {
-        if (isTagObject(tag)) exportedIndex.set(tag.id, tag);
-    }
-    if (heldChanged) {
-        tagsStore.reindex();
-        invalidateTagsFuseIndex();
-        invalidateCharactersFuseIndex();
-        invalidateGroupsFuseIndex();
-    }
-    sendTagsAddedThroughExport();
-}
-
-/**
- * @param {string} path
- * @param {object} body
- * @returns {Promise<{ id: string, reason: string }[] | null>}
- */
-async function postTagWrite(path, body) {
-    try {
-        const response = await fetch(path, {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify(body),
-            cache: 'no-cache',
-        });
-        if (!response.ok) throw new Error(response.statusText);
-        const { refused } = await response.json();
-        return refused ?? [];
-    } catch (error) {
-        console.error(`${path} failed:`, error);
-        return null;
-    }
-}
-
-/**
- * @param {string} title
- * @param {{ name: string, reason: string }[]} refused
- */
-function warnRefusedExportTagChanges(title, refused) {
-    if (!refused.length) return;
-    const lines = refused.map(r => `${escapeHtml(r.name)}: ${TAG_REFUSAL_REASONS[r.reason] ?? escapeHtml(r.reason)}`);
-    toastr.warning(lines.join('<br />'), title, { escapeHtml: false, timeOut: 0, extendedTimeOut: 0 });
-}
-
-function sendTagsAddedThroughExport() {
-    /** @type {Tag[]} */
-    const toCreate = [];
-    for (const [id, tag] of tagsAddedThroughExport) {
-        if (tagsStore.get(id) !== tag) tagsAddedThroughExport.delete(id);
-        else if (!tagIdsBeingCreated.has(id)) toCreate.push(tag);
-    }
-    if (!toCreate.length) return;
-    for (const tag of toCreate) tagIdsBeingCreated.add(tag.id);
-
-    const run = (async () => {
-        /** @type {string[]} */
-        const storedIds = [];
-        /** @type {{ id: string, name: string, reason: string }[]} */
-        const refused = [];
-        await runWithConcurrency(toCreate, async (tag) => {
-            const answer = await postTagWrite('/api/tags/create', { tag: tagDefinitionToStore(tag) });
-            tagIdsBeingCreated.delete(tag.id);
-            if (!answer) return;
-            if (tagsAddedThroughExport.get(tag.id) === tag) tagsAddedThroughExport.delete(tag.id);
-            if (answer.length) {
-                refused.push({ id: tag.id, name: String(tag.name ?? tag.id), reason: answer[0].reason });
-            } else {
-                noteStoredTag(tag);
-                showSavedTagFilterState(tag);
-                storedIds.push(tag.id);
-            }
-        });
-
-        warnRefusedExportTagChanges(t`Tags an extension added were not saved`, refused);
-        for (const { id } of refused) await resyncRefusedTag(id);
-        if (!storedIds.length) return;
-        await takeStoredFieldsTagsLack(storedIds);
-        await eventSource.emit(event_types.SETTINGS_UPDATED);
-    })().catch(error => console.error('Error storing tags added through the tags export:', error));
-
-    tagCreatesInFlight.add(run);
-    run.finally(() => tagCreatesInFlight.delete(run));
-}
-
-/**
- * @param {string[]} ids
- */
-async function takeStoredFieldsTagsLack(ids) {
-    for (let i = 0; i < ids.length; i += TAG_READ_MAX_IDS) {
-        const answer = await postTagsRead('/api/tags/by-ids', { ids: ids.slice(i, i + TAG_READ_MAX_IDS) });
-        if (!answer || !Array.isArray(answer.tags)) return;
-        for (const serverTag of answer.tags) {
-            const local = isTagObject(serverTag) ? tagsStore.get(serverTag.id) : undefined;
-            if (!local) continue;
-            for (const [key, value] of Object.entries(serverTag)) {
-                if (key !== 'filter_state' && !Object.hasOwn(local, key)) local[key] = value;
-            }
-            noteStoredTag(serverTag);
-        }
-    }
-}
-
-let storingTagExportChanges = false;
-let tagExportChangesArrivedWhileStoring = false;
-
-export async function storeTagChangesMadeThroughExport() {
-    if (storingTagExportChanges) {
-        tagExportChangesArrivedWhileStoring = true;
-        return;
-    }
-    storingTagExportChanges = true;
-    try {
-        do {
-            tagExportChangesArrivedWhileStoring = false;
-            await storeTagExportChangesOnce();
-        } while (tagExportChangesArrivedWhileStoring);
-    } catch (error) {
-        console.error('Error storing tag changes made through the tags export:', error);
-    } finally {
-        storingTagExportChanges = false;
-    }
-}
-
-async function storeTagExportChangesOnce() {
-    tagMapKeysToCheck = true;
-    takeInTagExportWrites();
-    sendTagsAddedThroughExport();
-    if (tagCreatesInFlight.size) await Promise.allSettled([...tagCreatesInFlight]);
-
-    /** @type {{ tag: Tag, patch: Record<string, any> }[]} */
-    const edits = [];
-    /** @type {string[]} */
-    const toReread = [];
-    for (const tag of tags) {
-        if (!isTagObject(tag) || !storedTagFields.has(tag.id)) continue;
-        takeInTagFilterState(tag);
-        const { patch, lacksStoredField } = tagFieldsChangedOnObject(tag);
-        if (patch) edits.push({ tag, patch });
-        if (lacksStoredField) toReread.push(tag.id);
-    }
-
-    let storedAny = false;
-    let failedAny = false;
-    /** @type {{ id: string, name: string, reason: string }[]} */
-    const refused = [];
-    await runWithConcurrency(edits, async ({ tag, patch }) => {
-        const answer = await postTagWrite('/api/tags/edit', { id: tag.id, patch });
-        if (!answer) {
-            failedAny = true;
-        } else if (answer.length) {
-            refused.push({ id: tag.id, name: String(tag.name ?? tag.id), reason: answer[0].reason });
-        } else {
-            noteStoredTagFields(tag.id, patch);
-            storedAny = true;
-        }
-    });
-    warnRefusedExportTagChanges(t`Tag changes an extension made were not saved`, refused);
-    for (const { id } of refused) await resyncRefusedTag(id);
-
-    if (failedAny) {
-        toastr.error(t`They are sent again with the next settings save.`, t`Some tag changes an extension made could not be saved`);
-    }
-
-    await takeStoredFieldsTagsLack(toReread);
-
-    if (storedAny) {
-        await eventSource.emit(event_types.SETTINGS_UPDATED);
-    }
-}
 
 /**
  * @param {string} tagId
@@ -1459,7 +877,6 @@ function removeTagIdLocally(tagId, { replaceWithId } = {}) {
         ids.splice(idx, 1);
         affectedKeys.push(key);
         if (replaceWithId && !ids.includes(replaceWithId)) ids.push(replaceWithId);
-        noteOwnTagIdsChange(ids, () => [...ids]);
     }
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
@@ -1654,19 +1071,6 @@ async function postTagQuery(body) {
         console.error('Error reading a page of tags:', error);
         return null;
     }
-}
-
-/**
- * @param {object} query
- * @returns {Promise<{ rows: Tag[], cursor: string | null, more: boolean, counts?: Record<string, number>, approximate?: string[] }>}
- * @throws {Error}
- */
-export async function queryTags(query) {
-    const answer = await postTagQuery({ ...query, ifHash: undefined });
-    if (answer === null || answer === 'invalid-cursor' || !Array.isArray(answer.rows)) {
-        throw new Error(answer === 'invalid-cursor' ? 'The tag list changed; start again without a cursor.' : 'Could not read the tag list.');
-    }
-    return /** @type {any} */ (answer);
 }
 
 /**
@@ -1883,7 +1287,6 @@ async function dropTagsLocally(drops) {
         for (const key of removeTagIdLocally(id, { replaceWithId })) carriers.add(key);
         filters.set(id, moveTagFilters(id, replaceWithId));
         storedTagFields.delete(id);
-        tagsAddedThroughExport.delete(id);
         if (tagsStore.has(id)) heldDefinition = true;
     }
 
@@ -1893,7 +1296,6 @@ async function dropTagsLocally(drops) {
             if (!dropped.has(tag.id)) tags[write++] = tag;
         }
         tags.length = write;
-        dropFromExportedTags(dropped);
         tagsStore.reindex();
         invalidateTagsFuseIndex();
         invalidateCharactersFuseIndex();
@@ -1949,8 +1351,6 @@ function rereadEntitiesLeftWaiting() {
  * @returns {Promise<boolean>}
  */
 async function rereadResidentEntityTagIds(onlyKeys) {
-    tagMapKeysToCheck = true;
-    takeInTagExportWrites();
     const unheldRows = getUnheldRowTagIds();
     const keys = onlyKeys
         ? onlyKeys.filter(key => resolveTagIdsArray(key) || unheldRows.has(key))
@@ -1998,7 +1398,6 @@ async function rereadResidentEntityTagIds(onlyKeys) {
                 const added = serverIds.filter(tagId => !localSet.has(tagId));
                 const removed = ids.filter(tagId => !serverSet.has(tagId));
                 ids.splice(0, ids.length, ...serverIds);
-                noteOwnTagIdsChange(ids, () => [...serverIds]);
                 if (!added.length && !removed.length) continue;
                 changedKeys.add(key);
                 for (const tagId of [...added, ...removed]) changedTagIds.add(tagId);
@@ -2403,46 +1802,6 @@ function chooseTagFilterFolder(source, tagId, remove) {
 }
 
 /**
- * Builds the tag block for the specified item.
- *
- * @param {Tag} tag The tag item
- * @param {any[]} entities The list ob sub items for this tag
- * @param {number} hidden A count of how many sub items are hidden
- * @param {boolean} isUseless Whether the tag is useless (should be displayed greyed out)
- * @param {number|string} [total] How many sub items there are when `entities` holds only the first of them; the
- *   rest show as a "+N" marker. `hidden` and this are `~`-prefixed strings when approximate.
- * @returns The html for the tag block
- */
-function getTagBlock(tag, entities, hidden = 0, isUseless = false, total = undefined) {
-    const count = parseQueryTotal(total ?? entities.length);
-    const hiddenCount = parseQueryTotal(hidden);
-    const approx = count.approx ? '~' : '';
-
-    const tagFolder = TAG_FOLDER_TYPES[tag.folder_type];
-
-    const template = FOLDER_TEMPLATE.clone();
-    template.addClass(tagFolder.class);
-    template.attr({ 'tagid': tag.id, 'id': `BogusFolder${tag.id}` });
-    template.find('.avatar').css({ 'background-color': tag.color, 'color': tag.color2 }).attr('title', `[Folder] ${tag.name}`);
-    template.find('.ch_name').text(tag.name).attr('title', `[Folder] ${tag.name}`);
-    template.find('.bogus_folder_hidden_counter').text(hiddenCount.value > 0 ? `${hiddenCount.approx ? '~' : ''}${hiddenCount.value} hidden` : '');
-    template.find('.bogus_folder_counter').text(`${approx}${count.value} ` + (count.value != 1 ? t`characters` : t`character`));
-    template.find('.bogus_folder_icon').addClass(tagFolder.fa_icon);
-    if (isUseless) template.addClass('useless');
-
-    // Fill inline character images
-    const avatarsBlock = template.find('.bogus_folder_avatars_block');
-    buildAvatarList(avatarsBlock, entities);
-    const more = count.value - entities.length;
-    if (more > 0) {
-        const marker = `+${approx}${more}`;
-        avatarsBlock.append($('<small class="bogus_folder_more"></small>').text(marker).attr('title', t`${marker} more`));
-    }
-
-    return template;
-}
-
-/**
  * Common logic for applying actionable tag filters (Favorites, Groups, Folders).
  * Persists state to storage for all filter contexts.
  * @param {FilterHelper} filterHelper - Instance of FilterHelper class
@@ -2525,35 +1884,6 @@ function filterByFolder(filterHelper) {
     }
 
     applyActionableTagFilter.call(this, filterHelper, ACTIONABLE_TAGS.FOLDER, FILTER_TYPES.FOLDER, ACTIONABLE_FILTER_STORAGE_KEYS.FOLDER);
-}
-
-/**
- * @param {{ tags?: Tag[], tag_map?: Record<string, string[]> }} [settings]
- * @returns {Promise<void>}
- */
-function loadTagsSettings(settings) {
-    const givenTags = Array.isArray(settings?.tags) ? [...settings.tags] : null;
-    const givenMap = settings?.tag_map !== null && typeof settings?.tag_map === 'object' ? settings.tag_map : null;
-    if (!givenTags && !givenMap) return loadTagsFromServer();
-
-    if (givenTags) {
-        exportedTags.length = 0;
-        for (const tag of givenTags) exportedTags.push(tag);
-    }
-    if (givenMap) {
-        for (const [key, ids] of Object.entries(givenMap)) {
-            if (!Array.isArray(ids)) continue;
-            const entry = tag_map[key];
-            if (!Array.isArray(entry)) {
-                tag_map[key] = [...ids];
-                continue;
-            }
-            for (const id of ids) {
-                if (!entry.includes(id)) entry.push(id);
-            }
-        }
-    }
-    return storeTagChangesMadeThroughExport();
 }
 
 async function loadTagsFromServer() {
@@ -2703,7 +2033,6 @@ export function getTagKeyForEntity(entityOrKey) {
     // Next lets check if its a valid character or character id, so we can swith it to its tag
     let character;
     if (!character && characters.indexOf(x) >= 0) character = x; // Check for char object
-    if (!character && !isNaN(parseInt(entityOrKey))) character = exposedCharacters[x];
     if (!character) character = charactersStore.get(x);
 
     if (character) {
@@ -2725,7 +2054,7 @@ export function getTagKeyForEntity(entityOrKey) {
  * @param {JQuery<HTMLElement>|string} element - The element to search the entity id on
  * @returns {string|undefined} The tag key that can be found.
  */
-export function getTagKeyForEntityElement(element) {
+function getTagKeyForEntityElement(element) {
     if (typeof element === 'string') {
         element = $(element);
     }
@@ -2833,7 +2162,7 @@ function tagChangeAffectsCurrentView(tagIds) {
  * @param {string[]} tagIds
  * @param {Set<string>} affectedKeys
  */
-export function redrawAfterTagChange(tagIds, affectedKeys) {
+function redrawAfterTagChange(tagIds, affectedKeys) {
     if (tagChangeAffectsCurrentView(tagIds)) {
         printCharactersDebounced();
         return;
@@ -2904,7 +2233,7 @@ function getAllRenderedEntityKeys() {
  * @param {JQuery<HTMLElement>?} [options.tagElement=null] - Optionally a direct html element of the tag to be removed, so it can be removed from the UI
  * @returns {boolean} Whether at least one tag was removed
  */
-export function removeTagFromEntity(tag, entityId, { tagListSelector = null, tagElement = null } = {}) {
+function removeTagFromEntity(tag, entityId, { tagListSelector = null, tagElement = null } = {}) {
     let result = false;
     const entityIds = Array.isArray(entityId) ? entityId : [entityId];
 
@@ -2930,22 +2259,6 @@ export function removeTagFromEntity(tag, entityId, { tagListSelector = null, tag
     $(`${getInlineListSelector()} .tag[id="${tag.id}"]`).remove();
 
     return result;
-}
-
-/**
- * Removes a tag from a given character. If no character is provided, removes it from the currently active one.
- * @param {string} tagId - The id of the tag
- * @param {string} characterId - The id/key of the character or group
- * @returns {boolean} Whether the tag was removed or not
- */
-function removeTagFromMap(tagId, characterId = null) {
-    const key = characterId !== null && characterId !== undefined ? getTagKeyForEntity(characterId) : getTagKey();
-
-    if (!key) {
-        return false;
-    }
-
-    return !!unassignTagFromKey(key, tagId);
 }
 
 const FIND_TAG_RESULT_LIMIT = 50;
@@ -4713,17 +4026,6 @@ function makeTagListDraggable(tagContainer) {
 }
 
 /**
- * Sorts the given tags, returning a shallow copy of it
- *
- * @param {Tag[]} tags - The tags
- * @param {Map<string, number>} [counts=null] - Optional map of tag ID to usage count
- * @returns {Tag[]} The sorted tags
- */
-function sortTags(tags, counts = null) {
-    return tags.slice().sort((a, b) => compareTagsForSort(a, b, counts));
-}
-
-/**
  * Compares two given tags and returns the compare result
  *
  * @param {Tag} a - First tag
@@ -4945,7 +4247,6 @@ async function onTagsPruneClick() {
             if (!prunedIds.has(tag.id)) tags[write++] = tag;
         }
         tags.length = write;
-        dropFromExportedTags(prunedIds);
         for (const id of prunedIds) {
             storedTagFields.delete(id);
             writeTagNameDraft(id, null);
@@ -5377,63 +4678,6 @@ function onClearAllFiltersClick(filterHelper) {
 
     // Reset search input for this context
     $(context.searchInput).val('').trigger('input');
-}
-
-/**
- * Moves the tags of `oldKey` to `newKey`. Upstream's puts what the page holds for `oldKey` in place of what
- * `newKey` had; here the server adds what it has for `oldKey` to what `newKey` has, so nothing `newKey` has is
- * removed, and takes them off `oldKey`.
- * @param {string} oldKey - entity key (character avatar or group id)
- * @param {string} newKey - entity key (character avatar or group id)
- */
-function renameTagKey(oldKey, newKey) {
-    moveTagsToKey(String(oldKey), String(newKey))
-        .catch(error => console.error(`Error moving tags from ${oldKey} to ${newKey}:`, error));
-}
-
-/**
- * @param {string} oldKey
- * @param {string} newKey
- */
-async function moveTagsToKey(oldKey, newKey) {
-    tagMapKeysToCheck = true;
-    takeInTagExportWrites();
-    if (tagCreatesInFlight.size) await Promise.allSettled([...tagCreatesInFlight]);
-    await Promise.all([tagSaveChains.get(oldKey), tagSaveChains.get(newKey)]);
-
-    let moved;
-    try {
-        const response = await fetch('/api/tags/rename-key', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ from: oldKey, to: newKey }),
-            cache: 'no-cache',
-        });
-        if (!response.ok) {
-            throw new Error(`Failed to move tags: ${response.status}`);
-        }
-        ({ moved } = await response.json());
-    } catch (error) {
-        console.error(`Error moving tags from ${oldKey} to ${newKey}:`, error);
-        const nameOfKey = (/** @type {string} */ key) => escapeHtml(String(charactersStore.get(key)?.name ?? groupsStore.get(key)?.name ?? key));
-        toastr.error(t`The tags of ${nameOfKey(oldKey)} could not be moved to ${nameOfKey(newKey)}.`, t`Tags could not be saved`, { escapeHtml: false });
-        await rereadResidentEntityTagIds([oldKey, newKey]);
-        return;
-    }
-
-    if (!resolveTagIdsArray(oldKey) && Object.hasOwn(tag_map, oldKey)) {
-        delete tag_map[oldKey];
-        unheldTagMapSent.delete(oldKey);
-    }
-    await rereadResidentEntityTagIds([oldKey, newKey]);
-    if (Array.isArray(moved) && moved.length) await eventSource.emit(event_types.SETTINGS_UPDATED);
-}
-
-/**
- * @param {string} key
- */
-export function clearEntityTags(key) {
-    setKeyTagIds(key, []);
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, test, expect } from '@jest/globals';
-import { listCreatorNotes, shallowCharacterData, LIST_CREATOR_NOTES_CHARS, getStringHash, bucketOf, emptyDigest, combineDigest, digestsEqual, contentHashOf, characterDigestFieldsHash, characterContentFieldsFingerprint, canonicalStringify, DEFAULT_DIGEST_BUCKET_COUNT } from '../public/scripts/hash-utils.js';
+import { listCreatorNotes, shallowCharacterData, LIST_CREATOR_NOTES_CHARS, getStringHash, bucketOf, emptyDigest, combineDigest, digestsEqual, contentHashOf, canonicalStringify, DEFAULT_DIGEST_BUCKET_COUNT } from '../public/scripts/hash-utils.js';
 
 describe('getStringHash', () => {
     test('is deterministic for the same string and seed', () => {
@@ -105,42 +105,6 @@ describe('contentHashOf - the content-derived hash', () => {
 
     test('contentHashOf changes when actual content changes', () => {
         expect(contentHashOf({ a: 1 })).not.toBe(contentHashOf({ a: 2 }));
-    });
-});
-
-describe('characterDigestFieldsHash - the edit route\'s conflict hash of the list fields', () => {
-    const fixtures = [
-        { name: 'Alice', fav: false, tags: ['a', 'b'], data: { name: 'Alice', character_version: '1.0', creator: 'bob', tags: ['a', 'b'], creator_notes: 'hi', extensions: { fav: false, world: 'Wonderland' } } },
-        { name: 'Bo\'b "the builder"', fav: true, tags: ['NSFW'], data: { name: 'Bo\'b', character_version: '', creator: '', tags: [], creator_notes: '"quoted"', extensions: { fav: true, world: '' } } },
-        { name: 'NoData', fav: false, tags: [] },
-        { name: 'PartialData', fav: false, tags: ['x'], data: { name: 'PartialData' } },
-        { name: 'NoExtensions', fav: true, tags: null, data: { name: 'NoExtensions', character_version: '2.0', creator: 'carol', tags: ['y'], creator_notes: '' } },
-        {},
-        { name: 'WithVolatile', fav: false, tags: [], chat: 'just now', chat_size: 1, date_added: 1, create_date: 'x', date_last_chat: 2, data: { name: 'WithVolatile', character_version: '', creator: '', tags: [], creator_notes: '', extensions: { fav: false, world: '' } } },
-    ];
-
-    test('fast path matches generic pipeline for fieldsHash', () => {
-        for (const fixture of fixtures) {
-            expect(characterDigestFieldsHash(fixture)).toBe(contentHashOf(characterContentFieldsFingerprint(fixture)));
-        }
-    });
-
-    test('null/undefined tolerance', () => {
-        for (const val of [null, undefined]) {
-            expect(characterDigestFieldsHash(val)).toBe(contentHashOf(characterContentFieldsFingerprint(val)));
-        }
-    });
-
-    test('a fav change leaves fieldsHash alone', () => {
-        const base = fixtures[0];
-        const favToggled = { ...base, fav: !base.fav, data: { ...base.data, extensions: { ...base.data.extensions, fav: !base.data.extensions.fav } } };
-        expect(characterDigestFieldsHash(base)).toBe(characterDigestFieldsHash(favToggled));
-    });
-
-    test('a content change changes fieldsHash', () => {
-        const base = fixtures[0];
-        const renamed = { ...base, name: 'Alicia', data: { ...base.data, name: 'Alicia' } };
-        expect(characterDigestFieldsHash(base)).not.toBe(characterDigestFieldsHash(renamed));
     });
 });
 

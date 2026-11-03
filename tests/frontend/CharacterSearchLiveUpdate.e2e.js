@@ -9,7 +9,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 async function loadList(page) {
     await testSetup.awaitST({ page });
     await page.evaluate(() => new Promise(resolve => {
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, resolve);
     }));
     await openCharacterManagementDrawer(page);

@@ -10,7 +10,6 @@ const chat = translate('Chat Hotkeys', 'help_hotkeys_0');
 const markdown = translate('Markdown Hotkeys', 'help_hotkeys_20');
 const autocomplete = t`Suggestions while typing`;
 const editing = t`Editing fields`;
-const quickReplies = t`Quick Reply editor`;
 const popups = t`Popups`;
 const other = t`Other`;
 
@@ -44,11 +43,6 @@ registerHotkey({ category: editing, keys: ['Ctrl+F'], label: t`In the slash comm
 registerHotkey({ category: editing, keys: ['Ctrl+F'], label: t`In a field's editor: find and replace` });
 registerHotkey({ category: editing, keys: ['Ctrl+Alt+V'], label: t`Right after pasting into a field's editor: switch how the paste went in (keep formatting, keep as HTML, text only)` });
 registerHotkey({ category: editing, keys: ['Escape'], label: t`Right after pasting into a field's editor: put the paste options away` });
-
-registerHotkey({ category: quickReplies, keys: ['Ctrl+Enter'], label: t`Run the Quick Reply (when that option is ticked in the editor)` });
-registerHotkey({ category: quickReplies, keys: ['F9'], mouse: ['Ctrl+Alt+click'], label: t`Add or remove a breakpoint` });
-registerHotkey({ category: quickReplies, keys: ['Ctrl+\\'], label: t`Comment out the selected commands, or uncomment them` });
-registerHotkey({ category: quickReplies, mouse: ['Ctrl+click on a Quick Reply button'], label: t`Open that Quick Reply in the editor instead of running it` });
 
 registerHotkey({ category: popups, keys: ['Enter'], label: t`Confirm` });
 registerHotkey({ category: popups, keys: ['Escape'], label: t`Close` });

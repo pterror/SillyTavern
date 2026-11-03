@@ -1,12 +1,12 @@
 import { showHotswapFavs } from './RossAscends-mods.js';
-import { characters, charactersStore, this_avatar, resolveCharacterRef } from './character-store.js';
+import { characters, charactersStore, this_avatar } from './character-store.js';
 import { getGroupBlock, takeInHeldGroupChanges } from './group-chats.js';
 import { groupsStore } from './group-store.js';
 import { power_user, sortEntitiesList } from './power-user.js';
 import { normalizeFav } from './hash-utils.js';
 import { debounce, delay, PAGINATION_TEMPLATE, localizePagination, renderPaginationDropdown, paginationDropdownChangeHandler } from './utils.js';
 import { debounce_timeout } from './constants.js';
-import { filterByTagState, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, heldTagsForIds, searchTagsByName, readTagsForIds, registerFolderCaseHandlers, takeInExtensionTagWrites } from './tags.js';
+import { filterByTagState, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, heldTagsForIds, searchTagsByName, readTagsForIds, registerFolderCaseHandlers } from './tags.js';
 import { tagFetchStamp, isFetchedTagIdsCurrent } from './tag-fetch-stamps.js';
 import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './filters.js';
 import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, normalizeQueryRow } from './character-repository.js';
@@ -23,7 +23,7 @@ import { accountStorage } from './util/AccountStorage.js';
 import { getPermanentAssistantAvatar } from './welcome-screen.js';
 import { event_types, eventSource } from './events.js';
 import { getRequestHeaders } from './request-headers.js';
-import { characterThumbnail, getCurrentCharacter, per_page_default, selectCharacterByAvatar } from '../script.js';
+import { characterThumbnail, per_page_default, selectCharacterByAvatar } from '../script.js';
 
 let saveCharactersPage = 0;
 
@@ -922,11 +922,10 @@ export async function getOneCharacter(avatarUrl) {
 }
 
 /**
- * @param {string|number|Character} [chId]
+ * @param {Character|undefined} character
  * @returns {string}
  */
-export function getCharacterSource(chId = getCurrentCharacter()) {
-    const character = resolveCharacterRef(chId);
+export function getCharacterSource(character) {
     if (!character) {
         return '';
     }
@@ -1074,7 +1073,6 @@ export async function getCharacters(options = {}) {
 async function syncCharacters({ silent = false, skipPrint = false, keepListPosition = false } = {}) {
     let lastError;
     let changed = false;
-    takeInExtensionTagWrites();
     for (let attempt = 0; attempt <= SYNC_MAX_RETRIES; attempt++) {
         try {
             changed = await syncHeld();

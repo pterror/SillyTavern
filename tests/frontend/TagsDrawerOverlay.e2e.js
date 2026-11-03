@@ -14,8 +14,8 @@ async function openCharacterWithTags(page) {
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button_label').click();
-    await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
-    await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
+    await page.waitForFunction(n => window['stTest'].context().name2 === n, name);
+    await page.waitForFunction(n => window['stTest'].context().name2 === n, name);
     await expect(page.locator('#char-info-panel')).toHaveClass(/openDrawer/);
     await page.locator('#tagInput').waitFor({ state: 'visible', timeout: 10000 });
 

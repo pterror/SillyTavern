@@ -2,7 +2,7 @@ import { listBackgroundFiles } from '../backgrounds.js';
 import { substituteParams, extension_prompt_roles, extension_prompt_types, name2, neutralCharacterName } from '../../script.js';
 import { chat_metadata, chat } from '../chat-state.js';
 import { characters } from '../character-store.js';
-import { extension_settings } from '../extensions.js';
+import { extension_settings } from '../extension-settings.js';
 import { getGroupMembersResident } from '../group-chats.js';
 import { groups } from '../group-store.js';
 import { personaStore } from '../power-user.js';
@@ -383,11 +383,6 @@ export const commonEnumProviders = {
     ],
 
     backgrounds: () => listBackgroundFiles().map(it => new SlashCommandEnumValue(it.file)),
-
-    connectionProfiles: ({ includeNone = false } = {}) => () => [
-        ...includeNone ? [new SlashCommandEnumValue('<None>')] : [],
-        ...extension_settings.connectionManager.profiles.map(p => new SlashCommandEnumValue(p.name, null, enumTypes.name, enumIcons.server)),
-    ],
 };
 
 

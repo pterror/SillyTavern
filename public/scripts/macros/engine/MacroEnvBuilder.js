@@ -10,7 +10,7 @@ import { main_api } from '../../generation-params.js';
 import { power_user } from '../../power-user.js';
 import { formatInstructModeExamples } from '../../instruct-mode.js';
 import { isMobile } from '../../RossAscends-mods.js';
-import { extensionNames, extension_settings } from '../../extensions.js';
+import { extension_settings } from '../../extension-settings.js';
 import { localVariables, globalVariables } from '../../variables.js';
 import { createVariableScope } from '../../variable-store.js';
 import { inject_ids } from '../../constants.js';
@@ -77,8 +77,8 @@ function formatMesExamples(raw, user, char) {
  * @returns {import('../../../../src/macro-facts.js').PageMacroFacts}
  */
 export function pageMacroFacts() {
-    const { chatId, input, firstDisplayedMessageId, isMobile, utcOffset, extensions, lastGenerationType } = pageState();
-    return { chatId, input, firstDisplayedMessageId, isMobile, utcOffset, extensions, lastGenerationType };
+    const { chatId, input, firstDisplayedMessageId, isMobile, utcOffset, lastGenerationType } = pageState();
+    return { chatId, input, firstDisplayedMessageId, isMobile, utcOffset, lastGenerationType };
 }
 
 /**
@@ -104,7 +104,6 @@ function pageState() {
         get isMobile() { return isMobile(); },
         get utcOffset() { return -new Date().getTimezoneOffset(); },
         get lastGenerationType() { return lastGenerationType; },
-        get extensions() { return { names: extensionNames, disabled: extension_settings.disabledExtensions }; },
         get instruct() { return power_user.instruct; },
         get sysprompt() { return power_user.sysprompt; },
         get context() { return power_user.context; },

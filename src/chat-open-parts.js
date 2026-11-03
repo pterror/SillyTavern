@@ -4,10 +4,7 @@ import { tokenizerAnswer, tokenizerResponseWarnings } from './tokenizer-resolve.
 import { openTokenizer } from './endpoints/tokenizers-current.js';
 import { withSafeMacrosFilled } from './endpoints/macros.js';
 import { personaImagesAnswer } from './endpoints/avatars.js';
-import { spritesOf } from './endpoints/sprites.js';
-import { readUserSettings } from './settings-reads.js';
 import { cardTokenTexts } from '../public/scripts/card-token-texts.js';
-import { avatarFolderName, spriteFolderOf } from '../public/scripts/sprite-folders.js';
 
 /**
  * @typedef {object} OpenedChat
@@ -15,7 +12,6 @@ import { avatarFolderName, spriteFolderOf } from '../public/scripts/sprite-folde
  * @property {string | null} at
  * @property {string} chatId
  * @property {() => Promise<Record<string, any> | null>} card
- * @property {() => Promise<string[]>} speakers avatars of the characters who speak in the chat
  */
 
 /**
@@ -53,12 +49,6 @@ async function cardTokenCounts(request, opened, asked) {
 const PARTS = {
     card_token_counts: cardTokenCounts,
     personas: request => personaImagesAnswer(request),
-    sprites: async (request, opened) => {
-        const { directories } = request.user;
-        const overrides = /** @type {any} */ (readUserSettings(directories, ['extension_settings'])).extension_settings?.expressionOverrides;
-        const folders = [...new Set((await opened.speakers()).map(avatar => spriteFolderOf(avatarFolderName(avatar), overrides)))];
-        return { folders: Object.fromEntries(folders.map(folder => [folder, spritesOf(directories, folder)])) };
-    },
 };
 
 /**

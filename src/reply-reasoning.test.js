@@ -17,7 +17,7 @@ function settings(overrides = {}) {
     return {
         mainApi: 'textgenerationwebui', source: 'llamacpp', showThoughts: true, hiddenReasoningModel: false,
         autoParse: true, prefix: '<think>', suffix: '</think>', promptPrefix: '<think>', trimSpaces: true, replyBias: '',
-        regexScripts: [], regexEnabled: true, macroContext: { name1: 'User', name2: 'Bot' },
+        macroContext: { name1: 'User', name2: 'Bot' },
         api: 'llamacpp', model: null,
         name1: 'User', name2: 'Bot',
         stoppingStringsParams: {
@@ -160,13 +160,6 @@ describe('finishReply', () => {
         assert.equal(finished.mes, '<think>x</think>y');
     });
 
-    test('REASONING regex scripts apply to the reasoning', () => {
-        const regexScripts = [{ scriptName: 'shout', findRegex: '/plan/g', replaceString: 'PLAN', placement: [6], disabled: false, trimStrings: [] }];
-        const finished = finishReply(pending({ finish: settings({ regexScripts }) }), '<think>a plan</think>Hi');
-        assert.equal(finished.extra.reasoning, 'a PLAN');
-        assert.equal(finished.mes, 'Hi');
-    });
-
     test('a continue lengthens the message, keeping its reasoning', () => {
         const anchorContent = { mes: 'Hello', extra: { reasoning: 'old', reasoning_type: 'parsed', reasoning_duration: 1200 } };
         const finished = finishReply(pending({ isContinue: true, anchorContent }), ' world');
@@ -209,15 +202,6 @@ describe('cleaning the reply up (cleanUpMessage(), before the reasoning split)',
         assert.equal(cleanUpReply('Hello.\nUs', settings(), { isContinue: false }), 'Hello.');
     });
 
-    test('AI_OUTPUT regex scripts run on the reply; prompt-only and markdown-only ones don\'t', () => {
-        const regexScripts = [
-            { scriptName: 'swap', findRegex: '/colour/g', replaceString: 'color', placement: [2], disabled: false, trimStrings: [] },
-            { scriptName: 'prompt', findRegex: '/fine/g', replaceString: 'X', placement: [2], promptOnly: true, disabled: false, trimStrings: [] },
-            { scriptName: 'md', findRegex: '/fine/g', replaceString: 'Y', placement: [2], markdownOnly: true, disabled: false, trimStrings: [] },
-        ];
-        assert.equal(cleanUpReply('A fine colour.', settings({ regexScripts }), { isContinue: false }), 'A fine color.');
-    });
-
     test('trim incomplete sentences', () => {
         assert.equal(cleanUpReply('One sentence. And a half', settings({ trimSentences: true }), { isContinue: false }), 'One sentence.');
         assert.equal(trimToEndSentence('No end at all '), 'No end at all');
@@ -238,15 +222,6 @@ describe('cleaning the reply up (cleanUpMessage(), before the reasoning split)',
 
     test('collapse newlines and trailing spaces on each line', () => {
         assert.equal(cleanUpReply('a  \n\n\nb', settings({ collapseNewlines: true }), { isContinue: false }), 'a\nb');
-    });
-
-    test('the stored reply is cleaned before its reasoning is split off', () => {
-        const regexScripts = [{ scriptName: 'tag', findRegex: '/<thinking>/g', replaceString: '<think>', placement: [2], disabled: false, trimStrings: [] }];
-        const s = settings({ regexScripts, trimSentences: true });
-        const finished = finishReply(pending({ finish: s }), '<thinking>plan</think>\nAnswer. Half a');
-        assert.equal(finished.mes, 'Answer.');
-        assert.equal(finished.extra.reasoning, 'plan');
-        assert.equal(finished.extra.api, undefined, 'api/model are added when stored');
     });
 
     test('a continue cleans the whole message, without "Start Reply With"', () => {

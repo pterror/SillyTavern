@@ -10,7 +10,7 @@ async function loadApp(page) {
     await testSetup.awaitST({ page });
     await page.evaluate(() => {
         window['__appReady'] = false;
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, () => { window['__appReady'] = true; });
     });
     await page.waitForFunction(() => window['__appReady'], null, { timeout: 60000 });
@@ -95,7 +95,7 @@ async function currentAvatar(page) {
  * @param {string} command
  */
 async function run(page, command) {
-    return page.evaluate(async (command) => (await window['SillyTavern'].getContext().executeSlashCommandsWithOptions(command)).pipe, command);
+    return page.evaluate(async (command) => (await window['stTest'].context().executeSlashCommandsWithOptions(command)).pipe, command);
 }
 
 test.describe('readers of characters the page does not hold', () => {
@@ -191,13 +191,13 @@ test.describe('readers of characters the page does not hold', () => {
         await page.unroute('**/api/characters/changes');
         await shallowRowReads(page);
         await page.evaluate(async (members) => {
-            const ctx = window['SillyTavern'].getContext();
+            const ctx = window['stTest'].context();
             const response = await fetch('/api/groups/create', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ name: `Whole ${Date.now()}`, members }) });
             if (!response.ok) throw new Error(`group create failed: ${response.status}`);
             const id = String((await response.json()).id);
-            const { openGroupById, unshallowGroupMembers } = await import('./scripts/group-chats.js');
+            const { openGroupById, holdOpenGroupMembers } = await import('./scripts/group-chats.js');
             await openGroupById(id);
-            await unshallowGroupMembers(id);
+            await holdOpenGroupMembers();
         }, [first, second]);
 
         expect(await heldCopy(page, first)).toEqual({ shallow: false, description: `Description of WholeMemberA ${stamp}.` });

@@ -12,7 +12,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 function fetchStoredCharacter(page, avatar) {
     return page.evaluate(async (avatarUrl) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/characters/get', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatarUrl }) });
         return response.json();
     }, avatar);
@@ -25,7 +25,7 @@ function fetchStoredCharacter(page, avatar) {
 async function deleteCharacter(page, avatar) {
     await page.evaluate(async (avatarUrl) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         await fetch('/api/characters/delete', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatarUrl, delete_chats: true }) });
     }, avatar);
 }

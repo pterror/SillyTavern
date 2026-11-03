@@ -14,7 +14,7 @@ test.describe('the character panel while creating a character', () => {
     test('actions on a saved character are off, and back on for a saved one', async ({ page }) => {
         await page.evaluate(async () => {
             // @ts-ignore
-            await SillyTavern.getContext().executeSlashCommandsWithOptions('/go Seraphina');
+            await stTest.context().executeSlashCommandsWithOptions('/go Seraphina');
         });
         await openCharacterManagementDrawer(page);
         await page.locator('#rm_button_create').click();
@@ -33,12 +33,12 @@ test.describe('the character panel while creating a character', () => {
         const book = `CreateBook-${s}`;
         await page.evaluate(async (book) => {
             // @ts-ignore
-            await SillyTavern.getContext().executeSlashCommandsWithOptions('/closechat');
+            await stTest.context().executeSlashCommandsWithOptions('/closechat');
             const { createNewWorldInfo } = await import('./scripts/world-info.js');
             if (!await createNewWorldInfo(book, { interactive: false })) throw new Error('no book');
         }, book);
         // @ts-ignore
-        expect(await page.evaluate(() => SillyTavern.getContext().characterId)).toBeUndefined();
+        expect(await page.evaluate(() => stTest.context().characterId)).toBeUndefined();
 
         await openCharacterManagementDrawer(page);
         await page.locator('#rm_button_create').click();
@@ -66,7 +66,7 @@ test.describe('the character panel while creating a character', () => {
         } finally {
             await page.evaluate(async ({ avatar, book }) => {
                 // @ts-ignore
-                const headers = SillyTavern.getContext().getRequestHeaders();
+                const headers = stTest.context().getRequestHeaders();
                 await fetch('/api/characters/delete', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, delete_chats: true }) });
                 const { deleteWorldInfo } = await import('./scripts/world-info.js');
                 await deleteWorldInfo(book);

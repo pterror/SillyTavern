@@ -152,20 +152,6 @@ body.chat-completion-selected .text-completion-only {
     display: none !important;
 }
 
-body.tts .mes[is_system="true"] .mes_narrate {
-    display: none;
-}
-
-body.sd .sd_message_gen,
-body.translate .mes_translate,
-body.tts .mes_narrate {
-    display: inline-block;
-}
-
-body:not(.tts) #ttsExtensionNarrateAll {
-    display: none;
-}
-
 body.no-hotswap .hotswap,
 body.no-hotswap .hotswap~hr,
 body.no-timer .mes_timer,
@@ -755,23 +741,6 @@ body.waifuMode #chat {
     border-radius: 20px 20px 0 0;
 }
 
-body.waifuMode #expression-wrapper {
-    justify-content: center;
-}
-
-body.waifuMode .expression-holder {
-    max-height: 90vh;
-    max-width: 90vw;
-    height: 90vh;
-    width: fit-content;
-    bottom: var(--drawerBarBottom);
-    filter: drop-shadow(2px 2px 2px #51515199);
-    z-index: 2;
-    margin: 0 auto;
-    left: var(--drawerBarLeft);
-    right: var(--drawerBarRight);
-}
-
 body.waifuMode .zoomed_avatar {
     min-width: 100px;
     min-height: 100px;
@@ -800,19 +769,10 @@ body.movingUI .drag-grabber {
 
 body.movingUI #sheld,
 body.movingUI .drawer-content,
-body.movingUI #expression-holder,
 body.movingUI .zoomed_avatar,
 body.movingUI .draggable,
 body.movingUI #floatingPrompt {
     resize: both;
-}
-
-#expression-image.default,
-#expression-holder:has(.default) {
-    height: 120px;
-    margin-top: 0;
-    top: 50px;
-    justify-content: center;
 }
 
 /*No Text Shadows Mode*/

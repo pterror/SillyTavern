@@ -16,13 +16,13 @@ import { AutoComplete, AUTOCOMPLETE_STATE } from './AutoComplete.js';
 import { findMacroAtCursor, findUnclosedScopes, getMacroAutoCompleteAt } from './MacroAutoCompleteHelper.js';
 
 /** Custom attribute name used to mark elements that support macro autocomplete */
-export const MACRO_AUTOCOMPLETE_ATTRIBUTE = 'data-macros';
+const MACRO_AUTOCOMPLETE_ATTRIBUTE = 'data-macros';
 
 /** Attribute to control autocomplete visibility: 'always' (force show) or 'hide' (never show) */
-export const MACRO_AUTOCOMPLETE_MODE_ATTRIBUTE = 'data-macros-autocomplete';
+const MACRO_AUTOCOMPLETE_MODE_ATTRIBUTE = 'data-macros-autocomplete';
 
 /** Generic attribute to control autocomplete popup style/size (used by AutoComplete) */
-export const MACRO_AUTOCOMPLETE_STYLE_ATTRIBUTE = 'data-macros-autocomplete-style';
+const MACRO_AUTOCOMPLETE_STYLE_ATTRIBUTE = 'data-macros-autocomplete-style';
 
 /**
  * @readonly
@@ -41,7 +41,7 @@ export const MACRO_AUTOCOMPLETE_MODE = Object.freeze({
  * @readonly
  * @enum {string}
  */
-export const MACRO_AUTOCOMPLETE_STYLE = Object.freeze({
+const MACRO_AUTOCOMPLETE_STYLE = Object.freeze({
     /** Small popup (33vw, max 700px) for inline fields */
     SMALL: 'small',
     /** Expanded popup (default chat width) for expanded editors */
@@ -116,7 +116,7 @@ export function shouldActivateMacroAutocomplete(text, cursorPos, { isForced = fa
  * @param {MACRO_AUTOCOMPLETE_STYLE} [options.autocompleteStyle=MACRO_AUTOCOMPLETE_STYLE.SMALL] - The autocomplete style.
  * @returns {AutoComplete} The autocomplete instance.
  */
-export function setMacroAutoComplete(textarea, { autocompleteMode = MACRO_AUTOCOMPLETE_MODE.DEFAULT, autocompleteStyle = MACRO_AUTOCOMPLETE_STYLE.SMALL } = {}) {
+function setMacroAutoComplete(textarea, { autocompleteMode = MACRO_AUTOCOMPLETE_MODE.DEFAULT, autocompleteStyle = MACRO_AUTOCOMPLETE_STYLE.SMALL } = {}) {
     const ac = new AutoComplete(
         textarea,
         () => shouldActivateMacroAutocomplete(ac.text, textarea.selectionStart, { isForced: ac.isShowForced, autocompleteMode }),
@@ -287,23 +287,3 @@ export function initMacroAutoComplete() {
     return instances;
 }
 
-/**
- * Enables macro autocomplete on a specific element by ID.
- * Adds the attribute and initializes autocomplete.
- *
- * @param {string} elementId - The element ID (without #).
- * @returns {AutoComplete|null} The autocomplete instance, or null if element not found.
- */
-export function enableMacroAutoCompleteById(elementId) {
-    const element = /** @type {HTMLTextAreaElement|HTMLInputElement|null} */ (
-        document.getElementById(elementId)
-    );
-
-    if (!element || !(element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement)) {
-        console.warn(`[MacroAutoComplete] Element not found or invalid: ${elementId}`);
-        return null;
-    }
-
-    element.setAttribute(MACRO_AUTOCOMPLETE_ATTRIBUTE, 'true');
-    return initializeElement(element);
-}

@@ -7,7 +7,7 @@ const NESTED_HTML = 'a <strong>b</strong> a';
 /** @param {import('@playwright/test').Page} page */
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise(resolve => {
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, resolve);
     }));
 }
@@ -18,7 +18,7 @@ async function awaitAppReady(page) {
  */
 async function storedAutoFix(page) {
     return page.evaluate(async () => {
-        const headers = window['SillyTavern'].getContext().getRequestHeaders();
+        const headers = window['stTest'].context().getRequestHeaders();
         const response = await fetch('/api/settings/get', { method: 'POST', headers, body: '{}', cache: 'no-cache' });
         const powerUser = JSON.parse((await response.json()).settings).power_user ?? {};
         return { has: Object.hasOwn(powerUser, 'auto_fix_generated_markdown'), value: powerUser.auto_fix_generated_markdown };
@@ -31,7 +31,7 @@ test.describe('Auto-fix Markdown, with an old settings file that has it on', () 
     test.beforeEach(async ({ page }) => {
         await awaitAppReady(page);
         await page.evaluate(async () => {
-            const headers = window['SillyTavern'].getContext().getRequestHeaders();
+            const headers = window['stTest'].context().getRequestHeaders();
             const response = await fetch('/api/settings/save-partial', {
                 method: 'POST',
                 headers,
@@ -49,7 +49,7 @@ test.describe('Auto-fix Markdown, with an old settings file that has it on', () 
     test('the setting reads as off, takes writes without effect, and has no checkbox', async ({ page }) => {
         const seen = await page.evaluate(async () => {
             const { power_user, fixMarkdown } = await import('/scripts/power-user.js');
-            const context = window['SillyTavern'].getContext();
+            const context = window['stTest'].context();
             const afterLoad = power_user.auto_fix_generated_markdown;
             power_user.auto_fix_generated_markdown = true;
             Object.assign(power_user, { auto_fix_generated_markdown: true });
@@ -97,7 +97,7 @@ test.describe('Auto-fix Markdown, with an old settings file that has it on', () 
         const cleaned = await page.evaluate(async (text) => {
             const { newAssistantChat, cleanUpMessage } = await import('/script.js');
             await newAssistantChat({ temporary: true });
-            const context = window['SillyTavern'].getContext();
+            const context = window['stTest'].context();
             for (const isUser of [false, true]) {
                 const message = { name: isUser ? 'User' : 'Bot', is_user: isUser, is_system: false, send_date: new Date().toISOString(), mes: text, extra: {} };
                 context.chat.push(message);
@@ -117,7 +117,7 @@ test.describe('Auto-fix Markdown, with an old settings file that has it on', () 
 
     test('the greeting preview keeps the spaces around nested emphasis', async ({ page }) => {
         const avatar = await page.evaluate(async (text) => {
-            const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
+            const headers = window['stTest'].context().getRequestHeaders({ omitContentType: true });
             const form = new FormData();
             form.set('ch_name', `AutoFixGone-${Date.now()}-${Math.floor(Math.random() * 1e6)}`);
             form.set('first_mes', text);
@@ -128,7 +128,7 @@ test.describe('Auto-fix Markdown, with an old settings file that has it on', () 
         try {
             await openCharacterManagementDrawer(page);
             await page.evaluate(async (avatar) => {
-                await window['SillyTavern'].getContext().getCharacters();
+                await window['stTest'].context().getCharacters();
                 const { selectCharacterByAvatar } = await import('/script.js');
                 await selectCharacterByAvatar(avatar);
             }, avatar);
@@ -140,7 +140,7 @@ test.describe('Auto-fix Markdown, with an old settings file that has it on', () 
             expect(await em.innerHTML()).toBe(NESTED_HTML);
         } finally {
             await page.evaluate(async (avatar) => {
-                const headers = window['SillyTavern'].getContext().getRequestHeaders();
+                const headers = window['stTest'].context().getRequestHeaders();
                 await fetch('/api/characters/delete', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, delete_chats: true }) });
             }, avatar);
         }

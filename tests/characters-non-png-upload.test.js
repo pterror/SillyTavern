@@ -97,16 +97,14 @@ async function editWithUpload(bytes, type, name) {
     const formData = new FormData();
     formData.append('avatar', new Blob([bytes], { type }), name);
     formData.append('avatar_url', 'Alice.png');
-    formData.append('ch_name', 'Alice');
-    formData.append('description', 'after upload');
-    return await fetch(`${baseUrl}/api/characters/edit`, { method: 'POST', body: formData });
+    return await fetch(`${baseUrl}/api/characters/edit-avatar`, { method: 'POST', body: formData });
 }
 
 function fastPathFailureLogged(warnSpy) {
     return warnSpy.mock.calls.some(args => String(args[0]).includes('writeCardToFile failed'));
 }
 
-describe('avatar uploads through /edit', () => {
+describe('avatar uploads through /edit-avatar', () => {
     beforeEach(async () => {
         const res = await post('create', { ch_name: 'Alice', description: 'before', file_name: 'Alice' });
         if (res.status !== 200) throw new Error(`create failed: ${res.status}`);
@@ -123,7 +121,7 @@ describe('avatar uploads through /edit', () => {
 
             const { image: written, card } = await storedAlice();
             expect(written.subarray(0, 8).equals(PNG_SIGNATURE)).toBe(true);
-            expect(card.data.description).toBe('after upload');
+            expect(card.data.description).toBe('before');
             expect(fastPathFailureLogged(warnSpy)).toBe(false);
         });
     }
@@ -137,7 +135,7 @@ describe('avatar uploads through /edit', () => {
 
         const { image: written, card } = await storedAlice();
         expect(cardParser.computeAvatarIdentityHashFromImageBuffer(written)).toBe(cardParser.computeAvatarIdentityHashFromImageBuffer(bytes));
-        expect(card.data.description).toBe('after upload');
+        expect(card.data.description).toBe('before');
         expect(fastPathFailureLogged(warnSpy)).toBe(false);
     });
 });

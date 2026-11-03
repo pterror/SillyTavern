@@ -60,19 +60,14 @@ test.describe('a link to a name with no World file, on a card with an embedded l
             await testSetup.awaitST({ page });
             const lore = await page.evaluate(async (avatar) => {
                 const { getSortedEntries, getCharacterWorldLink, EMBEDDED_WORLD_NAME } = await import('./scripts/world-info.js');
-                const { selectCharacterByAvatar, getCurrentCharacter, eventSource, event_types } = await import('./script.js');
+                const { selectCharacterByAvatar, getCurrentCharacter } = await import('./script.js');
 
                 await selectCharacterByAvatar(avatar);
-
-                const captured = new Promise((resolve) => {
-                    eventSource.once(event_types.WORLDINFO_ENTRIES_LOADED, (data) => resolve(data));
-                });
-                await getSortedEntries();
-                const { characterLore } = await captured;
+                const entries = await getSortedEntries();
 
                 return {
                     link: getCharacterWorldLink(getCurrentCharacter()),
-                    embeddedContents: characterLore.filter(e => e.world === EMBEDDED_WORLD_NAME).map(e => e.content),
+                    embeddedContents: entries.filter(e => e.world === EMBEDDED_WORLD_NAME).map(e => e.content),
                 };
             }, avatar);
 

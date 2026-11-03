@@ -949,14 +949,13 @@ async function openChatAnswer(request, response, body) {
     /** @type {Promise<any> | null} */
     let group = null;
     const wholeGroup = () => (group ??= body.group_id ? groupObjects(request, [String(body.group_id)]).then(([found]) => found ?? null) : Promise.resolve(null));
-    const speakers = async () => (avatar !== null ? [avatar] : ((await wholeGroup())?.members ?? []).filter(member => typeof member === 'string'));
     const common = {
         ui_views,
         chat: chatId,
         chat_metadata: { ...metadata },
         messages,
         stored_sends: await chats.storedSendKeys(chat.tree, body.send_keys),
-        parts: await chatOpenParts(request, { avatar, at: messages.at(-1)?.node_id ?? null, chatId, card: wholeCard, speakers }, body.parts),
+        parts: await chatOpenParts(request, { avatar, at: messages.at(-1)?.node_id ?? null, chatId, card: wholeCard }, body.parts),
     };
     if (body.group_id) {
         const groupId = String(body.group_id);

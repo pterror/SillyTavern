@@ -1,7 +1,7 @@
 import { setHoles, uncoveredPieces, unionArea } from './util/underlay-clip.js';
 import { accountStorage } from './util/AccountStorage.js';
 
-export const STACK_DRAWER_SELECTOR = '#top-settings-holder > .drawer > .drawer-content';
+const STACK_DRAWER_SELECTOR = '#top-settings-holder > .drawer > .drawer-content';
 const DRAWER_SELECTOR = '.drawer-content';
 const FLOATING_SELECTOR = '#movingDivs > *, body > .draggable';
 const CHAT_ID = 'sheld';
@@ -347,7 +347,7 @@ function keepEditedLayersInFront(ordered) {
     }
 }
 
-export function updateDrawerStack() {
+function updateDrawerStack() {
     const ordered = orderedLayers();
     raiseAppearedLayers(ordered);
     keepEditedLayersInFront(ordered);
@@ -475,7 +475,7 @@ export function drawerStackChanged() {
     scheduleUpdate();
 }
 
-export function drawerLayersChanged() {
+function drawerLayersChanged() {
     found = null;
     observeLayers();
     drawerStackChanged();

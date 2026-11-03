@@ -212,15 +212,6 @@ describe('the stored card never gains fav', () => {
         expect(await cardJsonFavKeys(avatar)).toEqual({ topLevel: false, extensions: false });
     });
 
-    test.each(FAV_CASES)('POST /edit: %s', async (_label, value) => {
-        const avatar = await createCharacter(true);
-        const response = await postJson('/api/characters/edit', withFav({ avatar_url: avatar, ch_name: 'Zorkmid', description: 'edited' }, value));
-        expect(response.status).toBe(200);
-        const { card } = await readCharacterRow(avatar);
-        expect(card.description ?? card.data.description).toBe('edited');
-        expect(await cardJsonFavKeys(avatar)).toEqual({ topLevel: false, extensions: false });
-    });
-
     test.each(PRESENT_FAV_CASES)('POST /merge-attributes: %s', async (_label, value) => {
         const avatar = await createCharacter(false);
         const response = await postJson('/api/characters/merge-attributes', { avatar, fav: value, data: { extensions: { fav: value } } });

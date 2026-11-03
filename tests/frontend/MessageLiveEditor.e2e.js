@@ -8,12 +8,12 @@ import { testSetup } from './frontent-test-utils.js';
 async function chatWithUserMessage(page, text) {
     await page.evaluate(async () => {
         // @ts-ignore
-        await SillyTavern.getContext().executeSlashCommandsWithOptions('/go Seraphina');
+        await stTest.context().executeSlashCommandsWithOptions('/go Seraphina');
     });
     await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1, { timeout: 10000 });
     return page.evaluate(async (text) => {
         // @ts-ignore
-        const ctx = SillyTavern.getContext();
+        const ctx = stTest.context();
         await ctx.SlashCommandParser.commands['send'].callback({}, text);
         return ctx.chat.length - 1;
     }, text);
@@ -27,7 +27,7 @@ async function storedMessage(page, id) {
     await page.waitForTimeout(300);
     return page.evaluate((id) => {
         // @ts-ignore
-        return SillyTavern.getContext().chat[id];
+        return stTest.context().chat[id];
     }, id);
 }
 
@@ -171,7 +171,7 @@ test.describe('an edit sends only what changed', () => {
 
     const serverCopy = (/** @type {import('@playwright/test').Page} */ page, /** @type {string} */ nodeId) => page.evaluate(async (nodeId) => {
         // @ts-ignore
-        const ctx = SillyTavern.getContext();
+        const ctx = stTest.context();
         const response = await fetch('/api/chats/alternatives', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ node_id: nodeId }) });
         return (await response.json()).alternatives.find((/** @type {any} */ a) => a.node_id === nodeId || a.id === nodeId) ?? (await response.json()).alternatives[0];
     }, nodeId);
@@ -180,10 +180,10 @@ test.describe('an edit sends only what changed', () => {
         await setAutoSave(page, false);
         const id = await chatWithUserMessage(page, 'Before.');
         // @ts-ignore
-        const nodeId = await page.evaluate((id) => SillyTavern.getContext().chat[id].node_id, id);
+        const nodeId = await page.evaluate((id) => stTest.context().chat[id].node_id, id);
         await page.evaluate(async (nodeId) => {
             // @ts-ignore
-            const ctx = SillyTavern.getContext();
+            const ctx = stTest.context();
             const avatar_url = ctx.characters[ctx.characterId].avatar;
             const response = await fetch('/api/chats/message/edit', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ avatar_url, node_id: nodeId, patch: { extra: { note: 'set elsewhere' } } }) });
             if (!response.ok) throw new Error(`edit -> ${response.status} ${await response.text()}`);

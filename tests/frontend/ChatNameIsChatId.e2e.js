@@ -8,7 +8,7 @@ import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', 'Hello.');
@@ -26,7 +26,7 @@ async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
@@ -35,7 +35,7 @@ async function openCharacter(page, avatar) {
 }
 
 // @ts-ignore
-const chatId = (/** @type {import('@playwright/test').Page} */ page) => page.evaluate(() => SillyTavern.getContext().getCurrentChatId());
+const chatId = (/** @type {import('@playwright/test').Page} */ page) => page.evaluate(() => stTest.context().getCurrentChatId());
 
 test('a fresh tab\'s conversation is named after the character and the session, before and after its first message and a reload', async ({ page }) => {
     await testSetup.awaitST({ page });
@@ -48,11 +48,11 @@ test('a fresh tab\'s conversation is named after the character and the session, 
     expect(before).toMatch(new RegExp(`^${escaped} - \\d{4}-\\d{2}-\\d{2}@\\d{2}h\\d{2}m\\d{2}s\\d{3}ms$`));
     await page.evaluate(async () => {
         // @ts-ignore
-        await SillyTavern.getContext().executeSlashCommandsWithOptions('/send hello');
+        await stTest.context().executeSlashCommandsWithOptions('/send hello');
     });
     await expect.poll(() => page.evaluate(() => {
         // @ts-ignore
-        return SillyTavern.getContext().chat.map(m => m.mes);
+        return stTest.context().chat.map(m => m.mes);
     })).toEqual(['Hello.', 'hello']);
     expect(await chatId(page)).toBe(before);
 

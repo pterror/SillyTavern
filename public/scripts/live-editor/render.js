@@ -341,4 +341,3 @@ export function liveRendering(options) {
     return [renderOptions.of(options), textStyle, htmlBlocks, blockElements];
 }
 
-export { renderOptions };

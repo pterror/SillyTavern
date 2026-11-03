@@ -1,6 +1,6 @@
 export const ITEMIZED_PROMPT_FLAG = 'has_itemized_prompt';
 
-export const PRESET_SETTINGS = {
+const PRESET_SETTINGS = {
     openai: { key: 'oai_settings', name: 'preset_settings_openai' },
     textgenerationwebui: { key: 'textgenerationwebui_settings', name: 'preset' },
     kobold: { key: 'kai_settings', name: 'preset_settings' },

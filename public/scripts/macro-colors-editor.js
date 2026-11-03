@@ -33,7 +33,7 @@ function el(tag, attributes = {}, children = []) {
     return node;
 }
 
-export async function openMacroColorsEditor() {
+async function openMacroColorsEditor() {
     if (!deps) return;
     const { t, getColors, setColors } = deps;
     /** @type {Record<string, string>} */

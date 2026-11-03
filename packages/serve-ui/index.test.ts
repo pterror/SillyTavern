@@ -59,7 +59,7 @@ test('a build of this source is served: its entry, cached for good, and nothing 
     expect((await fetch(`${origin}/elsewhere.js`)).status).toBe(404);
     const lib = await (await fetch(`${origin}/lib.js`)).text();
     expect(lib).not.toMatch(/from ['"]lodash['"]/);
-    expect(lib).toMatch(/initLibraryShims/);
+    expect(lib).toMatch(/export\s*\{[^}]*\blodash\b/);
 });
 
 test('a build of other source is replaced by the release for this one', async () => {
@@ -102,9 +102,9 @@ test("dev: a module is compiled when asked for, JSX by Solid's compiler", async 
     expect(await (await fetch(`${origin}/ui/entry.js`)).text()).toBe(`export * from '/ui/src/main.tsx';\n`);
 });
 
-test("the libraries are built beside the page, each alone, with upstream's exports", async () => {
+test('the libraries are built beside the page, each alone', async () => {
     const lib = fs.readFileSync(path.join(built, 'lib/lib.js'), 'utf8');
-    expect(lib).toMatch(/export\s*\{[^}]*\binitLibraryShims\b/);
+    expect(lib).toMatch(/export\s*\{[^}]*\blodash\b/);
     const editor = fs.readFileSync(path.join(built, 'lib/live-editor-lib.js'), 'utf8');
     expect(editor).toMatch(/export\s*\{[^}]*\bstate\b/);
     expect(fs.readdirSync(path.join(built, 'lib')).sort()).toEqual(['lib.js', 'live-editor-lib.js']);

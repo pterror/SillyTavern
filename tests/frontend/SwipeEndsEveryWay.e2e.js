@@ -5,7 +5,7 @@ test('a refused generation on swipe leaves the message as it was and swiping wor
     await testSetup.awaitST({ page });
     await page.evaluate(async () => {
         // @ts-ignore
-        const { executeSlashCommandsWithOptions: run } = SillyTavern.getContext();
+        const { executeSlashCommandsWithOptions: run } = stTest.context();
         await run('/go Seraphina');
         await run('/send hello');
         await run('/sendas name=Seraphina first reply');
@@ -15,10 +15,10 @@ test('a refused generation on swipe leaves the message as it was and swiping wor
     });
     await page.selectOption('#main_api', 'koboldhorde', { force: true });
     // @ts-ignore
-    await expect.poll(() => page.evaluate(() => SillyTavern.getContext().mainApi)).toBe('koboldhorde');
+    await expect.poll(() => page.evaluate(() => stTest.context().mainApi)).toBe('koboldhorde');
     const last = () => page.evaluate(() => {
         // @ts-ignore
-        const message = SillyTavern.getContext().chat.at(-1);
+        const message = stTest.context().chat.at(-1);
         return { id: message.swipe_id, count: message.swipes.length, text: message.mes };
     });
     await expect.poll(last).toEqual({ id: 1, count: 2, text: 'second reply' });

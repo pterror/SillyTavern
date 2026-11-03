@@ -15,7 +15,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', 'Hello there.');
@@ -29,7 +29,7 @@ test.describe('the upstream itemized-prompts import', () => {
     test('entries land on their messages; what can\'t be placed stays in the browser and is warned about', async ({ page, stServer }) => {
         await testSetup.awaitST({ page });
         await page.evaluate(() => new Promise(resolve => {
-            const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+            const { eventSource, eventTypes } = window['stTest'].context();
             eventSource.once(eventTypes.APP_READY, resolve);
         }));
         const name = `Itemizer${Date.now()}`;
@@ -45,7 +45,7 @@ test.describe('the upstream itemized-prompts import', () => {
         ].map(l => JSON.stringify(l)).join('\n'));
         const imported = await page.evaluate(async () => {
             // @ts-ignore
-            const response = await fetch('/api/upstream-import', { method: 'POST', headers: SillyTavern.getContext().getRequestHeaders(), body: '{}' });
+            const response = await fetch('/api/upstream-import', { method: 'POST', headers: stTest.context().getRequestHeaders(), body: '{}' });
             return response.json();
         });
         expect(imported.imported.chats).toBe(1);
@@ -72,7 +72,7 @@ test.describe('the upstream itemized-prompts import', () => {
 
         const stored = await page.evaluate(async ({ avatar, chatId }) => {
             // @ts-ignore
-            const response = await fetch('/api/itemized-prompts/chat', { method: 'POST', headers: SillyTavern.getContext().getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar, chat: chatId }) });
+            const response = await fetch('/api/itemized-prompts/chat', { method: 'POST', headers: stTest.context().getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar, chat: chatId }) });
             const { entries } = await response.json();
             return entries.map((/** @type {any} */ e) => [e.index, e.entry.rawPrompt]);
         }, { avatar, chatId });

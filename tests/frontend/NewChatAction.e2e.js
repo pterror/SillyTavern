@@ -12,7 +12,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', 'Hello.');
@@ -30,7 +30,7 @@ async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
@@ -46,7 +46,7 @@ test('a new chat replacing the open one is one write', async ({ page }) => {
 
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const { ensureOpeningRow } = await import('/scripts/chat-store.js');
         const opening = await ensureOpeningRow(0);
         const headers = context.getRequestHeaders();
@@ -77,7 +77,7 @@ test('a new chat replacing the open one is one write', async ({ page }) => {
 
     const chats = await page.evaluate(async (avatar) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const response = await fetch('/api/characters/chats', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar, simple: true }) });
         return (await response.json()).map(chat => chat.file_name);
     }, avatar);

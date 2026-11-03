@@ -4,7 +4,7 @@ import { extension_prompt_roles, extension_prompt_types, setExtensionPrompt } fr
 import { chat_metadata } from '../../chat-state.js';
 import { eventSource, event_types } from '../../events.js';
 import { promptManager } from '../../chat-completion-settings.js';
-import { saveMetadataDebounced } from '../../extensions.js';
+import { saveMetadataDebounced } from '../../metadata-store.js';
 import { t } from '../../i18n.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '../SlashCommandArgument.js';
 import { SlashCommandClosure } from '../SlashCommandClosure.js';

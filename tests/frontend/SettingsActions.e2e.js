@@ -10,7 +10,7 @@ import { startOpenAICompat } from './openai-mock-server.js';
 async function act(page, type, payload) {
     return page.evaluate(async ({ type, payload }) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/ui/action', { method: 'POST', headers, body: JSON.stringify({ type, payload }) });
         return response.json();
     }, { type, payload });
@@ -31,7 +31,7 @@ test.describe('settings actions', () => {
         expect(settingsOf(answer).values['oai_settings.temp_openai']).toBe(temp);
         const stored = await page.evaluate(async () => {
             // @ts-ignore
-            const headers = SillyTavern.getContext().getRequestHeaders();
+            const headers = stTest.context().getRequestHeaders();
             const { settings } = await (await fetch('/api/settings/get', { method: 'POST', headers, body: '{}' })).json();
             return JSON.parse(settings).oai_settings.temp_openai;
         });
@@ -58,7 +58,7 @@ test.describe('settings actions', () => {
         try {
             await page.evaluate(async () => {
                 // @ts-ignore
-                const headers = SillyTavern.getContext().getRequestHeaders();
+                const headers = stTest.context().getRequestHeaders();
                 const keys = { main_api: 'openai', 'oai_settings.chat_completion_source': 'mistralai', 'oai_settings.mistralai_model': 'mock-m' };
                 const response = await fetch('/api/settings/save-partial', { method: 'POST', headers, body: JSON.stringify({ keys }) });
                 if (!response.ok) throw new Error(`seeding the source failed: ${response.status}`);
@@ -66,7 +66,7 @@ test.describe('settings actions', () => {
             expect(settingsOf(await act(page, 'view.open', { key: 'settings' })).ranges.openai_max_context.max).toBe(32767);
             await page.evaluate(async (url) => {
                 // @ts-ignore
-                const headers = SillyTavern.getContext().getRequestHeaders();
+                const headers = stTest.context().getRequestHeaders();
                 const body = JSON.stringify({ chat_completion_source: 'mistralai', reverse_proxy: url });
                 const response = await fetch('/api/backends/chat-completions/status', { method: 'POST', headers, body });
                 if (!response.ok) throw new Error(`status failed: ${response.status}`);

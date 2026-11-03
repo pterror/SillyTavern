@@ -161,7 +161,7 @@ test.describe('Message text styles', () => {
         const name = `MessageTextStyles-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
         const avatar = await page.evaluate(async ({ name, greeting }) => {
             // @ts-ignore
-            const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+            const headers = stTest.context().getRequestHeaders({ omitContentType: true });
             const form = new FormData();
             form.set('ch_name', name);
             form.set('first_mes', greeting);
@@ -173,7 +173,7 @@ test.describe('Message text styles', () => {
             await openCharacterManagementDrawer(page);
             await page.evaluate(async (avatar) => {
                 // @ts-ignore
-                await SillyTavern.getContext().getCharacters();
+                await stTest.context().getCharacters();
                 const { selectCharacterByAvatar } = await import('/script.js');
                 await selectCharacterByAvatar(avatar);
             }, avatar);
@@ -196,7 +196,7 @@ test.describe('Message text styles', () => {
         } finally {
             await page.evaluate(async (avatar) => {
                 // @ts-ignore
-                const headers = SillyTavern.getContext().getRequestHeaders();
+                const headers = stTest.context().getRequestHeaders();
                 const response = await fetch('/api/characters/delete', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, delete_chats: true }) });
                 if (!response.ok) throw new Error(`delete failed: ${response.status}`);
             }, avatar);

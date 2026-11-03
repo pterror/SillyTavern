@@ -710,9 +710,6 @@ async function run() {
         settings.oai_settings.custom_model = 'some-unheard-of-model';
         settings.oai_settings.bias_preset_selected = 'Drop';
         settings.oai_settings.bias_presets = { Drop: [{ id: 'a', text: 'hello', value: -5 }, { id: 'b', text: '[11, 12]', value: 2 }] };
-        settings.extension_settings = {
-            connectionManager: { profiles: [{ id: 'p-unmapped', api: 'custom', 'api-url': fakeBackend.url, model: 'another-unheard-of-model' }] },
-        };
         writeAllSettings(directories, settings);
 
         const branchBefore = await loadBranch(user.store, { avatar: ownerId }, branchName);
@@ -721,22 +718,17 @@ async function run() {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Bias, Rex?' }, stream: false,
         });
-        const profile = await postGenerate(app, {
-            connection_profile_id: 'p-unmapped', messages: [{ role: 'user', content: 'Hi.' }], stream: false,
-        });
         fakeBackend.server.close();
         writeAllSettings(directories, buildSettingsFixture());
 
-        for (const [name, { status, data }, model] of [['raw-action', rawAction, 'some-unheard-of-model'], ['profile', profile, 'another-unheard-of-model']]) {
-            assert.equal(status, 200, name);
-            assert.deepEqual(data.warnings, [{
-                kind: 'dropped',
-                key: `openai|custom|${fakeBackend.url}|${model}|none`,
-                message: 'Left out 1 entry that need token ids, because no tokenizer is known for this model: hello',
-                entries: ['hello'],
-            }], `${name}: the dropped entry is listed`);
-        }
-        assert.deepEqual(backendBodies.map(body => body.logit_bias), [{ 11: 2, 12: 2 }, { 11: 2, 12: 2 }], 'raw-id entries still go through');
+        assert.equal(rawAction.status, 200);
+        assert.deepEqual(rawAction.data.warnings, [{
+            kind: 'dropped',
+            key: `openai|custom|${fakeBackend.url}|some-unheard-of-model|none`,
+            message: 'Left out 1 entry that need token ids, because no tokenizer is known for this model: hello',
+            entries: ['hello'],
+        }], 'the dropped entry is listed');
+        assert.deepEqual(backendBodies.map(body => body.logit_bias), [{ 11: 2, 12: 2 }], 'raw-id entries still go through');
     }
 
     if (canMockAi21Backend) {
@@ -751,9 +743,6 @@ async function run() {
         settings.oai_settings.custom_model = 'Mistral-Nemo-Instruct-2407';
         settings.oai_settings.bias_preset_selected = 'Drop';
         settings.oai_settings.bias_presets = { Drop: [{ id: 'a', text: 'hello', value: -5 }, { id: 'b', text: '[11, 12]', value: 2 }] };
-        settings.extension_settings = {
-            connectionManager: { profiles: [{ id: 'p-nemo', api: 'custom', 'api-url': fakeBackend.url, model: 'mistral-nemo' }] },
-        };
         writeAllSettings(directories, settings);
 
         tokenizerDownloadRequests.length = 0;
@@ -762,9 +751,6 @@ async function run() {
         const rawAction = await postGenerate(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Bias with Nemo, Rex?' }, stream: false,
-        });
-        const profile = await postGenerate(app, {
-            connection_profile_id: 'p-nemo', messages: [{ role: 'user', content: 'Hi.' }], stream: false,
         });
         fakeBackend.server.close();
         writeAllSettings(directories, buildSettingsFixture());
@@ -781,10 +767,8 @@ async function run() {
             key: `openai|custom|${fakeBackend.url}|Mistral-Nemo-Instruct-2407|nemo`,
             message: 'The Mistral Nemo tokenizer failed, so the prompt was fitted to the context by an estimated token count.',
         }, dropped('Mistral-Nemo-Instruct-2407')], 'raw-action: the estimate trim and the dropped entry are reported');
-        assert.equal(profile.status, 200, 'profile');
-        assert.deepEqual(profile.data.warnings, [dropped('mistral-nemo')], 'profile: the dropped entry is listed');
-        assert.deepEqual(backendBodies.map(body => body.logit_bias), [{ 11: 2, 12: 2 }, { 11: 2, 12: 2 }], 'raw-id entries still go through');
-        assert.equal(tokenizerDownloadRequests.filter(url => url.endsWith('/nemo.json.gz')).length, 1, 'one download request for both sends');
+        assert.deepEqual(backendBodies.map(body => body.logit_bias), [{ 11: 2, 12: 2 }], 'raw-id entries still go through');
+        assert.equal(tokenizerDownloadRequests.filter(url => url.endsWith('/nemo.json.gz')).length, 1, 'one download request');
     } else {
         console.log('chat-completions.test.js: skipping the downloadable-tokenizer failure case - run with `node --experimental-test-module-mocks`, which it needs to stub the download');
     }

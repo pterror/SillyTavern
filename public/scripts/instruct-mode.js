@@ -471,17 +471,6 @@ export function formatInstructModeChat(name, mes, isUser, isNarrator, forceAvata
 }
 
 /**
- * Formats instruct mode system prompt.
- * @param {string} systemPrompt System prompt string.
- * @param {InstructSettings} _customInstruct Custom instruct mode settings.
- * @returns {string} Formatted instruct mode system prompt.
- * @deprecated Currently doesn't do anything useful.
- */
-export function formatInstructModeSystemPrompt(systemPrompt, _customInstruct = null) {
-    return systemPrompt || '';
-}
-
-/**
  * Formats instruct mode story string.
  * @param {string} storyString Story string and anchors
  * @param {object} [params]
@@ -676,15 +665,6 @@ function selectMatchingContextTemplate(name) {
             break;
         }
     }
-}
-
-/**
- * @deprecated The macro engine registers the instruct macros itself (macros/definitions/instruct-macros.js).
- * @param {Object<string, *>} _env
- * @returns {{ regex: RegExp, replace: (substring: string, ...args: any[]) => string }[]} None.
- */
-export function getInstructMacros(_env) {
-    return [];
 }
 
 jQuery(() => {

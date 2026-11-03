@@ -78,7 +78,7 @@ function startMockLlamaCpp({ completion = n => ({ content: `Mock reply ${n}.` })
 async function createCharacter(page, name, greeting) {
     return page.evaluate(async ({ name, greeting }) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', greeting);
@@ -96,7 +96,7 @@ async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
@@ -118,7 +118,7 @@ async function connectLlamaCpp(page, url) {
     await page.locator('#llamacpp_api_url_text').fill(url);
     await page.locator('#api_button_textgenerationwebui').click();
     // @ts-ignore
-    await expect.poll(() => page.evaluate(() => SillyTavern.getContext().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
+    await expect.poll(() => page.evaluate(() => stTest.context().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
     await page.locator('#API-status-top').click();
 }
 
@@ -219,7 +219,7 @@ test.describe('raw-action send request log', () => {
             await openCharacter(page, avatar);
             await connectLlamaCpp(page, unreadable.url);
             // @ts-ignore
-            await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = false; });
+            await page.evaluate(() => { stTest.context().textCompletionSettings.streaming = false; });
             await page.waitForTimeout(SETTLE_MS);
 
             await chatBox(page).fill(`Unreadable question ${stamp}?`);
@@ -238,7 +238,7 @@ test.describe('raw-action send request log', () => {
             await openCharacter(page, avatar);
             await connectLlamaCpp(page, mock.url);
             // @ts-ignore
-            await page.evaluate((on) => { SillyTavern.getContext().textCompletionSettings.streaming = on; }, streaming);
+            await page.evaluate((on) => { stTest.context().textCompletionSettings.streaming = on; }, streaming);
             await page.waitForTimeout(SETTLE_MS);
 
             const browser = recordApiRequests(page);
@@ -252,7 +252,7 @@ test.describe('raw-action send request log', () => {
 
             const stored = await page.evaluate(async (first) => {
                 // @ts-ignore
-                const context = SillyTavern.getContext();
+                const context = stTest.context();
                 const post = async (url, body) => (await fetch(url, { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify(body) })).json();
                 const pageIds = context.chat.map(m => m.node_id ?? null);
                 const leaf = pageIds[pageIds.length - 1];
@@ -279,7 +279,7 @@ test.describe('raw-action send request log', () => {
                 await openCharacter(page, avatar);
                 await connectLlamaCpp(page, failing.url);
                 // @ts-ignore
-                await page.evaluate((on) => { SillyTavern.getContext().textCompletionSettings.streaming = on; }, streaming);
+                await page.evaluate((on) => { stTest.context().textCompletionSettings.streaming = on; }, streaming);
                 await page.waitForTimeout(SETTLE_MS);
 
                 const first = `First question ${stamp}?`;
@@ -293,7 +293,7 @@ test.describe('raw-action send request log', () => {
 
                 const stored = await page.evaluate(async (first) => {
                     // @ts-ignore
-                    const context = SillyTavern.getContext();
+                    const context = stTest.context();
                     const post = async (url, body) => (await fetch(url, { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify(body) })).json();
                     const pageIds = context.chat.map(m => m.node_id ?? null);
                     const leaf = pageIds[pageIds.length - 1];
@@ -435,7 +435,7 @@ test.describe('raw-action send request log', () => {
                     // The error answer is thrown on, as before.
                 }
                 // @ts-ignore
-                const chat = SillyTavern.getContext().chat;
+                const chat = stTest.context().chat;
                 return chat[chat.length - 1].node_id ?? null;
             }, sender.call.toString());
             expect(nodeId).toBe(stored[0].node_id);
@@ -454,7 +454,7 @@ test.describe('raw-action send request log', () => {
             await openCharacter(page, avatar);
             await connectLlamaCpp(page, slow.url);
             // @ts-ignore
-            await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = true; });
+            await page.evaluate(() => { stTest.context().textCompletionSettings.streaming = true; });
             await page.waitForTimeout(SETTLE_MS);
 
             await chatBox(page).fill(`First question ${stamp}?`);
@@ -516,7 +516,7 @@ test.describe('raw-action send request log', () => {
             await openCharacter(page, avatar);
             await connectLlamaCpp(page, mock.url);
             // @ts-ignore
-            await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = true; });
+            await page.evaluate(() => { stTest.context().textCompletionSettings.streaming = true; });
             await page.waitForTimeout(SETTLE_MS);
             await sendAndHoldGap(page, `First question ${stamp}?`);
 
@@ -553,7 +553,7 @@ test.describe('raw-action send request log', () => {
         await openCharacter(page, avatar);
         await connectLlamaCpp(page, mock.url);
         // @ts-ignore
-        await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = true; });
+        await page.evaluate(() => { stTest.context().textCompletionSettings.streaming = true; });
         await page.waitForTimeout(SETTLE_MS);
         await sendAndHoldGap(page, `First question ${stamp}?`);
 
@@ -584,7 +584,7 @@ test.describe('raw-action send request log', () => {
             await openCharacter(page, avatar);
             await connectLlamaCpp(page, slow.url);
             // @ts-ignore
-            await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = true; });
+            await page.evaluate(() => { stTest.context().textCompletionSettings.streaming = true; });
             await page.waitForTimeout(SETTLE_MS);
 
             await chatBox(page).fill(`First question ${stamp}?`);

@@ -2,7 +2,7 @@
  * @param {string} text
  * @returns {string}
  */
-export function editorText(text) {
+function editorText(text) {
     return text.replace(/\r\n?/g, '\n');
 }
 

@@ -9,7 +9,6 @@ import {
     startStatusLoading,
 } from '../script.js';
 import { getRequestHeaders } from './request-headers.js';
-import { eventSource, event_types } from './events.js';
 import { t } from './i18n.js';
 import { autoSelectInstructPreset } from './instruct-mode.js';
 import { CompactStreamDecoder } from './llamacpp-compact-stream.js';
@@ -74,7 +73,7 @@ const MIN_GRAMMAR_KCPPVERSION = '1.44';
 const MIN_MIN_P_KCPPVERSION = '1.48';
 const KOBOLDCPP_ORDER = [6, 0, 1, 3, 4, 2, 5];
 
-export function formatKoboldUrl(value) {
+function formatKoboldUrl(value) {
     try {
         const url = new URL(value);
         if (!power_user.relaxed_api_urls) {
@@ -368,7 +367,7 @@ const sliders = [
     },
 ];
 
-export function setKoboldFlags(koboldUnitedVersion, koboldCppVersion) {
+function setKoboldFlags(koboldUnitedVersion, koboldCppVersion) {
     kai_flags.can_use_stop_sequence = versionCompare(koboldUnitedVersion, MIN_STOP_SEQUENCE_VERSION);
     kai_flags.can_use_streaming = versionCompare(koboldCppVersion, MIN_STREAMING_KCPPVERSION);
     kai_flags.can_use_tokenization = versionCompare(koboldCppVersion, MIN_TOKENIZATION_KCPPVERSION);
@@ -391,7 +390,7 @@ function sortItemsByOrder(orderArray) {
     }
 }
 
-export async function getStatusKobold() {
+async function getStatusKobold() {
     let endpoint = kai_settings.api_server;
 
     if (!endpoint) {
@@ -515,6 +514,5 @@ export function initKoboldSettings() {
         if (kai_settings.preset_settings !== previousPreset) {
             saveSettingsDebounced('kai_settings');
         }
-        await eventSource.emit(event_types.PRESET_CHANGED, { apiId: 'kobold', name: kai_settings.preset_settings });
     });
 }

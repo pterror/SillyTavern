@@ -10,7 +10,7 @@ async function createAndOpen(page, values) {
     const name = `SaveFailure-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
     const avatar = await page.evaluate(async ({ name, values }) => {
         // @ts-ignore
-        const ctx = SillyTavern.getContext();
+        const ctx = stTest.context();
         const form = new FormData();
         form.append('ch_name', name);
         form.append('first_mes', 'Greeting');
@@ -31,7 +31,7 @@ async function createAndOpen(page, values) {
 async function openCharacter(page, avatar) {
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().selectCharacterById(avatar);
+        await stTest.context().selectCharacterById(avatar);
     }, avatar);
     await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar);
 }
@@ -43,7 +43,7 @@ async function openCharacter(page, avatar) {
 async function stored(page, avatar) {
     return page.evaluate(async (avatar) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/characters/get', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar }) });
         return (await response.json()).data;
     }, avatar);

@@ -63,7 +63,6 @@ import { parseTimestamp } from './timestamps.js';
  * @property {boolean} [isMobile]
  * @property {number} [utcOffset]
  * @property {string} [lastGenerationType]
- * @property {{ names: string[], disabled: string[] }} [extensions]
  * @property {Record<string, any>} [instruct]
  * @property {{ enabled?: boolean, content?: string }} [sysprompt]
  * @property {Record<string, any>} [contextTemplate]
@@ -169,7 +168,6 @@ function buildEnv(content, context) {
             isMobile: context.isMobile,
             utcOffset: context.utcOffset,
             lastGenerationType: context.lastGenerationType,
-            extensions: context.extensions,
             instruct: context.instruct,
             sysprompt: context.sysprompt,
             context: context.contextTemplate,

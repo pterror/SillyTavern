@@ -6,7 +6,7 @@ async function loadApp(page) {
     await testSetup.awaitST({ page });
     await page.evaluate(() => {
         window['__appReady'] = false;
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, () => { window['__appReady'] = true; });
     });
     await page.waitForFunction(() => window['__appReady'], null, { timeout: 60000 });
@@ -19,7 +19,7 @@ async function loadApp(page) {
  */
 async function api(page, path, body = {}) {
     return page.evaluate(async ({ path, body }) => {
-        const headers = window['SillyTavern'].getContext().getRequestHeaders();
+        const headers = window['stTest'].context().getRequestHeaders();
         const response = await fetch(path, { method: 'POST', headers, body: JSON.stringify(body) });
         if (!response.ok) throw new Error(`${path} -> ${response.status}`);
         return response.json();
@@ -101,14 +101,14 @@ async function openNewCharacter(page, name) {
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button_label').click();
-    await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
+    await page.waitForFunction(n => window['stTest'].context().name2 === n, name);
     await page.waitForFunction(name => {
-        const context = window['SillyTavern'].getContext();
+        const context = window['stTest'].context();
         return context.characters[context.characterId]?.name === name;
     }, name, { timeout: 10000 });
     await page.locator('#tagInput').waitFor({ state: 'visible', timeout: 10000 });
     return await page.evaluate(() => {
-        const context = window['SillyTavern'].getContext();
+        const context = window['stTest'].context();
         return context.characters[context.characterId].avatar;
     });
 }
@@ -132,7 +132,7 @@ async function pickInTagInput(page, tagName) {
  */
 function pageCharacterTagIds(page, avatar) {
     return page.evaluate(avatar => {
-        const character = window['SillyTavern'].getContext().characters.find(c => c.avatar === avatar);
+        const character = window['stTest'].context().characters.find(c => c.avatar === avatar);
         return [...(character.tag_ids ?? [])];
     }, avatar);
 }
@@ -264,7 +264,7 @@ test.describe('Tag edits show what the server stored', () => {
         const id = `edit-folder-${Date.now()}`;
         await createTags(browser, [{ id }]);
         await loadApp(page);
-        await page.evaluate(() => { window['SillyTavern'].getContext().powerUserSettings.bogus_folders = true; });
+        await page.evaluate(() => { window['stTest'].context().powerUserSettings.bogus_folders = true; });
         await openTagManagement(page);
 
         const button = page.locator(`#tag_view_list .tag_view_item[id="${id}"] .tag_as_folder`);

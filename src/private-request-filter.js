@@ -196,26 +196,6 @@ class PrivateRequestAgent extends Agent {
     }
 }
 
-let untrustedFilteringDelegated = false;
-
-/** @type {PrivateRequestAgent|null} */
-let strictAgent = null;
-
-/**
- * Agent for outbound requests to untrusted, user-supplied URLs (e.g. /api/search/visit).
- * Undefined when the global agent chain already covers these requests.
- * @returns {PrivateRequestAgent|undefined}
- */
-export function getUntrustedRequestAgent() {
-    if (untrustedFilteringDelegated) {
-        return undefined;
-    }
-    if (!strictAgent) {
-        strictAgent = new PrivateRequestAgent({ privateAddressWhitelist: [], logBlocked: true, logAllowed: false, allowUnresolvedHosts: false, enableKeepAlive: false });
-    }
-    return strictAgent;
-}
-
 /**
  * Initialize the private request filter by replacing the global HTTP and HTTPS agents with an instance of PrivateRequestAgent.
  * @param {object} options Options for initializing the private request filter.
@@ -226,11 +206,8 @@ export function getUntrustedRequestAgent() {
  * @param {boolean} options.logAllowed Whether to log allowed requests to the console.
  * @param {boolean} options.allowUnresolvedHosts Whether to allow requests to hosts that cannot be resolved.
  * @param {boolean} options.enableKeepAlive Whether to enable HTTP/HTTPS keep-alive.
- * @param {boolean} [options.requestProxyEnabled] Whether a request proxy owns outbound routing.
  */
-export default function initPrivateRequestFilter({ listen, enabled, privateAddressWhitelist, logBlocked, logAllowed, allowUnresolvedHosts, enableKeepAlive, requestProxyEnabled }) {
-    untrustedFilteringDelegated = !!enabled || !!requestProxyEnabled;
-
+export default function initPrivateRequestFilter({ listen, enabled, privateAddressWhitelist, logBlocked, logAllowed, allowUnresolvedHosts, enableKeepAlive }) {
     if (!enabled) {
         if (listen) {
             console.warn();

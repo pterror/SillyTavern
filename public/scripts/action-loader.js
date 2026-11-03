@@ -48,7 +48,7 @@ function hasBlockingLoaders() {
     return false;
 }
 
-export class ActionLoaderHandle {
+class ActionLoaderHandle {
     static get EMPTY() {
         return new ActionLoaderHandle({ predisposed: true });
     }
@@ -242,11 +242,11 @@ export const loader = {
     createOverlay: createDefaultLoaderOverlay,
 };
 
-export function showActionLoader(options = {}) {
+function showActionLoader(options = {}) {
     return new ActionLoaderHandle(options);
 }
 
-export async function hideActionLoader(handle = null) {
+async function hideActionLoader(handle = null) {
     if (handle instanceof ActionLoaderHandle) {
         if (handle.isActive) {
             await handle.hide();
@@ -285,7 +285,7 @@ let loaderPopup = null;
 /** Whether the initial HTML preloader has been removed */
 let preloaderYoinked = false;
 
-export function createDefaultLoaderOverlay() {
+function createDefaultLoaderOverlay() {
     const loaderElement = document.createElement('div');
     loaderElement.id = 'loader';
 

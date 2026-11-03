@@ -48,7 +48,7 @@ function resolveModel(settings) {
     }
 }
 
-export function resolveServerUrl(settings) {
+function resolveServerUrl(settings) {
     if (settings.type in FIXED_SERVERS) {
         return FIXED_SERVERS[settings.type];
     }

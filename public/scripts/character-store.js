@@ -1,6 +1,5 @@
-import { EntityStore, onAnyEntityStoreChange } from './entity-store.js';
+import { EntityStore } from './entity-store.js';
 import { groupsStore } from './group-store.js';
-import { selectCharacterByAvatar } from '../script.js';
 
 /** @type {Character[]} */
 export let characters = [];
@@ -8,116 +7,25 @@ export const charactersStore = new EntityStore(characters, c => c.avatar);
 
 export let this_avatar;
 
-/** @type {Character[]} */
-export const exposedCharacters = [];
-
-/** @type {Group[]} */
-export const exposedGroups = [];
-
 /** @type {string|null} */
 let openGroupId = null;
 
-/** @type {Set<() => void>} */
-const exposedListeners = new Set();
-
-// `exposedCharacters`, as a string, or undefined) - see .eslintrc.cjs's no-restricted-syntax rule forbidding
-export let this_chid;
-
-let recentLimit = 0;
-/** @type {string[]} */
-let recentAvatars = [];
-
 /**
  * @returns {string[]}
  */
-function exposedAvatars() {
+function openAvatars() {
     const group = openGroupId !== null ? groupsStore.get(openGroupId) : undefined;
-    const avatars = Array.isArray(group?.members) ? [...new Set(group.members)] : [];
-    const seen = new Set(avatars);
-    const rest = [];
-    for (const avatar of [this_avatar, ...recentAvatars]) {
-        if (avatar === undefined || seen.has(avatar)) continue;
-        seen.add(avatar);
-        rest.push(avatar);
-    }
-    rest.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-    return [...avatars, ...rest];
-}
-
-/**
- * @param {number} limit
- * @param {string[]} avatars
- */
-export function setRecentCharacters(limit, avatars) {
-    recentLimit = Math.max(0, Math.trunc(Number(limit)) || 0);
-    const ordered = this_avatar !== undefined ? [this_avatar, ...avatars] : avatars;
-    recentAvatars = recentLimit > 0 ? [...new Set(ordered)].slice(0, recentLimit) : [];
-    refreshExposed();
-}
-
-/**
- * @returns {string[]}
- */
-export function getRecentCharacters() {
-    return [...recentAvatars];
-}
-
-/**
- * @param {string|undefined} avatar
- */
-function noteRecentlyUsed(avatar) {
-    if (recentLimit === 0 || avatar === undefined || recentAvatars[0] === avatar) return;
-    recentAvatars = [avatar, ...recentAvatars.filter(a => a !== avatar)].slice(0, recentLimit);
-}
-
-/**
- * @param {any[]} array
- * @param {any[]} items
- * @returns {boolean}
- */
-function replaceInPlace(array, items) {
-    if (array.length === items.length && array.every((item, i) => item === items[i])) return false;
-    array.length = 0;
-    array.push(...items);
-    return true;
-}
-
-function refreshExposed() {
-    const nextCharacters = exposedAvatars().map(avatar => charactersStore.get(avatar)).filter(Boolean);
-    const group = openGroupId !== null ? groupsStore.get(openGroupId) : undefined;
-    const charactersChanged = replaceInPlace(exposedCharacters, nextCharacters);
-    const groupsChanged = replaceInPlace(exposedGroups, group ? [group] : []);
-    const index = this_avatar !== undefined ? exposedCharacters.findIndex(c => c.avatar === this_avatar) : -1;
-    this_chid = index !== -1 ? String(index) : undefined;
-    if (charactersChanged || groupsChanged) {
-        for (const listener of exposedListeners) listener();
-    }
-}
-
-/**
- * @param {string|undefined} avatar
- * @returns {number|undefined}
- */
-export function exposedIndexOf(avatar) {
-    const index = avatar === undefined ? -1 : exposedCharacters.findIndex(c => c.avatar === avatar);
-    return index === -1 ? undefined : index;
-}
-
-/**
- * @param {() => void} listener
- * @returns {() => void}
- */
-export function onExposedEntitiesChange(listener) {
-    exposedListeners.add(listener);
-    return () => exposedListeners.delete(listener);
+    const avatars = Array.isArray(group?.members) ? [...group.members] : [];
+    if (this_avatar !== undefined) avatars.push(this_avatar);
+    return avatars;
 }
 
 /**
  * @param {string|null|undefined} groupId
  */
-export function setExposedGroupId(groupId) {
+export function setOpenGroupId(groupId) {
     openGroupId = groupId === null || groupId === undefined ? null : String(groupId);
-    refreshExposed();
+    scheduleRelease();
 }
 
 /** @type {Set<() => Iterable<string>>} */
@@ -141,7 +49,7 @@ function scheduleRelease() {
 }
 
 function releaseUnneededCharacters() {
-    const keep = new Set(exposedAvatars());
+    const keep = new Set(openAvatars());
     try {
         for (const keeper of heldCharacterKeepers) {
             for (const avatar of keeper()) keep.add(avatar);
@@ -155,14 +63,9 @@ function releaseUnneededCharacters() {
     for (const avatar of unneeded) charactersStore.remove(avatar);
 }
 
-groupsStore.onChange(refreshExposed);
+groupsStore.onChange(scheduleRelease);
 charactersStore.onChange((change) => {
-    refreshExposed();
     if (change.op === 'created' || change.op === 'reset') scheduleRelease();
-});
-onExposedEntitiesChange(scheduleRelease);
-onAnyEntityStoreChange(store => {
-    if (store !== charactersStore) queueMicrotask(refreshExposed);
 });
 
 /**
@@ -200,53 +103,5 @@ export function setCharacterId(value) {
             console.error('Invalid character ID type:', value);
             break;
     }
-    noteRecentlyUsed(this_avatar);
-    refreshExposed();
-}
-
-/**
- * @param {any} ref
- * @returns {Character|undefined}
- */
-export function resolveCharacterRef(ref) {
-    const upstreamHit = exposedCharacters[ref];
-    if (upstreamHit !== undefined) {
-        return upstreamHit;
-    }
-    if (typeof ref === 'string') {
-        return charactersStore.get(ref);
-    }
-    if (typeof ref === 'object' && ref !== null && typeof ref.avatar === 'string') {
-        return charactersStore.get(ref.avatar);
-    }
-    return undefined;
-}
-
-export const CHARACTER_REF_MISMATCH = Symbol('CHARACTER_REF_MISMATCH');
-
-/**
- * @param {any} ref
- * @param {any} avatar
- * @returns {Character|typeof CHARACTER_REF_MISMATCH}
- */
-export function resolveCharacterRefPair(ref, avatar) {
-    const character = resolveCharacterRef(ref);
-    if (typeof character?.avatar === 'string' && character.avatar === avatar) {
-        return character;
-    }
-    console.warn('Character references do not resolve to the same character; treating as not found:', ref, avatar);
-    return CHARACTER_REF_MISMATCH;
-}
-
-/**
- * @param {any} id
- * @param {{switchMenu?: boolean}} [options]
- */
-export async function selectCharacterById(id, { switchMenu = true } = {}) {
-    const isAvatarKey = typeof id === 'string' && id !== '' && exposedCharacters[id] === undefined && !/^\d+$/.test(id);
-    const avatar = isAvatarKey ? id : resolveCharacterRef(id)?.avatar;
-    if (avatar === undefined) {
-        return;
-    }
-    await selectCharacterByAvatar(avatar, { switchMenu });
+    scheduleRelease();
 }

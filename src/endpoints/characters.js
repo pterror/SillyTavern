@@ -27,12 +27,12 @@ import { touchBrowserPresence, PRESENCE_PING_INTERVAL_MS } from '../browser-pres
 import { claimTabSession } from '../session-presence.js';
 import { assignThumbnails, cropOf, normalizeCrop, thumbnailsOf } from '../thumbnail-urls.js';
 import { avatarRefString } from '../avatar-refs.js';
-import { importRisuSprites, importChubExpressions, importChubRelatedLorebooks } from './sprites.js';
+import { importRisuSprites, importChubRelatedLorebooks } from '../card-import-extras.js';
 import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
 import { savedViewsEvents } from '../saved-views.js';
-import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav } from '../../public/scripts/hash-utils.js';
+import { getStringHash, normalizeFav } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
 import { withSearchTiming } from '../search-timing.js';
@@ -647,7 +647,6 @@ export function buildJsonImportData(rawText, directories, avatarFileName = null)
 
     if (jsonData.spec !== undefined) {
         importRisuSprites(directories, jsonData, avatarFileName);
-        importChubExpressions(directories, jsonData, avatarFileName);
         importChubRelatedLorebooks(directories, jsonData);
         const rawName = jsonData.data?.name || jsonData.name;
         if (jsonData.data?.name) {
@@ -748,7 +747,6 @@ export function buildPngImportData(rawText, directories, avatarFileName = null) 
 
     if (jsonData.spec !== undefined) {
         importRisuSprites(directories, jsonData, avatarFileName);
-        importChubExpressions(directories, jsonData, avatarFileName);
         importChubRelatedLorebooks(directories, jsonData);
         jsonData = readFromV2(jsonData);
         jsonData.create_date = new Date().toISOString();
@@ -791,10 +789,6 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
 
         const initialFav = normalizeFav(request.body.fav);
         const charaData = charaFormatData(request.body, request.user.directories);
-        const embeddedBook = _.get(tryParse(request.body.json_data), 'data.character_book');
-        if (embeddedBook !== undefined) {
-            _.set(charaData, 'data.character_book', embeddedBook);
-        }
         charaData.create_date = new Date().toISOString();
         omitFavField(charaData);
         const char = JSON.stringify(charaData);
@@ -860,83 +854,6 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
     } catch (err) {
         console.error(err);
         return response.sendStatus(500);
-    }
-});
-
-router.post('/edit', validateAvatarUrlMiddleware, async function (request, response) {
-    if (!request.body) {
-        console.warn('Error: no response body detected');
-        response.status(400).send('Error: no response body detected');
-        return;
-    }
-
-    if (request.body.ch_name === '' || request.body.ch_name === undefined || request.body.ch_name === '.') {
-        console.warn('Error: invalid name.');
-        response.status(400).send('Error: invalid name.');
-        return;
-    }
-
-    const contentHashesHeader = request.headers['x-content-hashes'];
-    let freshFieldPaths = null;
-    if (contentHashesHeader) {
-        try {
-            const clientHashes = JSON.parse(contentHashesHeader);
-            const currentCardJson = await readCardContent(request.user.directories, request.body.avatar_url);
-            if (currentCardJson) {
-                const currentCard = getCharaCardV2(JSON.parse(currentCardJson), request.user.directories, false);
-                const conflicts = [];
-                if (clientHashes.fields !== undefined &&
-                    clientHashes.fields !== characterDigestFieldsHash(currentCard)) {
-                    conflicts.push('fields');
-                }
-                if (clientHashes.body !== undefined &&
-                    clientHashes.body !== characterDigestCardBodyHash(currentCard)) {
-                    conflicts.push('body');
-                }
-                if (conflicts.length > 0) {
-                    return response.status(409).json({ error: 'conflict', conflicts });
-                }
-                if (clientHashes.body !== undefined) {
-                    freshFieldPaths = new Set(['data.alternate_greetings']);
-                }
-            }
-        } catch (err) {
-            console.warn('[characters/edit] Failed to parse content hashes header, skipping conflict check:', err);
-        }
-    }
-
-    let char = charaFormatData(request.body, request.user.directories);
-    const requestedChat = request.body.chat;
-    char.create_date = request.body.create_date;
-    omitFavField(char);
-    omitChatField(char);
-    char = JSON.stringify(char);
-    const avatar = request.body.avatar_url;
-
-    try {
-        if (!request.file) {
-            await writeCharacter(request, avatar, char, { freshFieldPaths });
-        } else {
-            const crop = tryParse(request.query.crop);
-            const newAvatarPath = path.join(request.file.destination, request.file.filename);
-            try {
-                await writeCharacter(request, avatar, char, { image: newAvatarPath, crop, freshFieldPaths });
-            } finally {
-                fs.unlinkSync(newAvatarPath);
-            }
-
-            // Bust cache to reload the new avatar
-            cacheBuster.bust(request, response);
-        }
-
-        if (typeof requestedChat === 'string' && requestedChat !== '') {
-            await moveToChatNamed(request, response, { avatar }, requestedChat);
-        }
-
-        return response.sendStatus(200);
-    } catch (err) {
-        console.error('An error occurred, character edit invalidated.', err);
-        return sendWriteFailure(response, err);
     }
 });
 
@@ -2543,12 +2460,6 @@ router.post('/batch', async function (request, response) {
             return response.status(400).send({ error: `at most ${FULL_BATCH_MAX} avatars with full` });
         }
         const data = /** @type {Record<string, any>[]} */ ((await characterObjects(request, avatars, { shallow: full ? false : useShallowCharacters })).filter(Boolean));
-        if (full) {
-            for (const character of data) {
-                character._fieldsHash = characterDigestFieldsHash(character);
-                character._bodyHash = characterDigestCardBodyHash(character);
-            }
-        }
         return response.send(data);
     } catch (err) {
         console.error(err);
@@ -2564,8 +2475,6 @@ router.post('/batch', async function (request, response) {
 export async function wholeCharacter(request, avatar) {
     const [data] = await characterObjects(request, [avatar], { shallow: false });
     if (!data) return null;
-    data._fieldsHash = characterDigestFieldsHash(data);
-    data._bodyHash = characterDigestCardBodyHash(data);
     return data;
 }
 

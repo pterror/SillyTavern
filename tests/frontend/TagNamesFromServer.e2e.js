@@ -6,7 +6,7 @@ async function loadApp(page) {
     await testSetup.awaitST({ page });
     await page.evaluate(() => {
         window['__appReady'] = false;
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, () => { window['__appReady'] = true; });
     });
     await page.waitForFunction(() => window['__appReady'], null, { timeout: 60000 });
@@ -19,7 +19,7 @@ async function loadApp(page) {
  */
 async function api(page, path, body = {}) {
     return page.evaluate(async ({ path, body }) => {
-        const headers = window['SillyTavern'].getContext().getRequestHeaders();
+        const headers = window['stTest'].context().getRequestHeaders();
         const response = await fetch(path, { method: 'POST', headers, body: JSON.stringify(body) });
         if (!response.ok) throw new Error(`${path} -> ${response.status}`);
         return response.json();
@@ -59,7 +59,7 @@ async function openNewCharacter(page, name) {
     const created = page.waitForResponse(response => response.url().endsWith('/api/characters/create'));
     await page.locator('#create_button_label').click();
     const avatar = await (await created).text();
-    await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
+    await page.waitForFunction(n => window['stTest'].context().name2 === n, name);
     await page.locator('#tagInput').waitFor({ state: 'visible', timeout: 10000 });
     return avatar;
 }
@@ -152,7 +152,7 @@ test.describe('tag names are looked up on the server', () => {
         const creates = countCreates(page);
 
         const results = await page.evaluate(async ({ name, stamp }) => {
-            const context = window['SillyTavern'].getContext();
+            const context = window['stTest'].context();
             const added = await context.executeSlashCommandsWithOptions(`/tag-add name="${name}" slash tag ${stamp}`);
             const exists = await context.executeSlashCommandsWithOptions(`/tag-exists name="${name}" SLASH TAG ${stamp}`);
             return [added.pipe, exists.pipe];
@@ -171,7 +171,7 @@ test.describe('tag names are looked up on the server', () => {
             { id: `random-unused-${stamp}`, name: `Randomunused ${stamp}` },
         ]);
         const avatar = await page.evaluate(async (name) => {
-            const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
+            const headers = window['stTest'].context().getRequestHeaders({ omitContentType: true });
             const form = new FormData();
             form.set('ch_name', name);
             const response = await fetch('/api/characters/create', { method: 'POST', headers, body: form });
@@ -285,7 +285,7 @@ test.describe('tag names are looked up on the server', () => {
             await page.waitForTimeout(500);
             const stored = await page.evaluate(async (worldName) => {
                 // @ts-ignore
-                const response = await fetch('/api/worldinfo/get', { method: 'POST', headers: SillyTavern.getContext().getRequestHeaders(), body: JSON.stringify({ name: worldName }) });
+                const response = await fetch('/api/worldinfo/get', { method: 'POST', headers: stTest.context().getRequestHeaders(), body: JSON.stringify({ name: worldName }) });
                 return Object.values((await response.json()).entries).map((/** @type {any} */ e) => e.characterFilter?.tags ?? []);
             }, worldName);
             expect(stored).toEqual([[`lore-${stamp}`]]);

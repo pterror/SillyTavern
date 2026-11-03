@@ -2,34 +2,18 @@ import { eventSource, event_types } from './events.js';
 import { registerVariableCommands } from './variables.js';
 import { registerActionLoaderSlashCommands } from './action-loader-slashcommands.js';
 import {
-    CONNECT_API_MAP,
     COMMENT_NAME_DEFAULT,
-    UNIQUE_APIS,
-    activateScriptButtons,
-    commandsFromChatInputAbortController,
-    deactivateScriptButtons,
-    executeSlashCommands,
     executeSlashCommandsOnChatInput,
     executeSlashCommandsWithOptions,
-    generateSystemMessage,
-    getNameAndAvatarForMessage,
     getSlashCommandsHelp,
     initSlashCommandAutoComplete,
     isExecutingCommandsFromChatInput,
     pauseScriptExecution,
     processChatSlashCommands,
-    promptQuietForLoudResponse,
-    registerSlashCommand,
-    sendMessageAs,
-    sendNarratorMessage,
-    setSlashCommandAutoComplete,
     setupConnectAPIMap,
     stopScriptExecution,
-    validateArrayArg,
-    validateArrayArgString,
     getParser,
 } from './slash-commands/core.js';
-export { parser } from './slash-commands/core.js';
 import { registerConnectionCommands } from './slash-commands/commands/connection.js';
 import { registerCharacterCommands } from './slash-commands/commands/character.js';
 import { registerChatCommands } from './slash-commands/commands/chat.js';
@@ -42,29 +26,16 @@ import { registerUiCommands } from './slash-commands/commands/ui.js';
 import { registerTextUtilsCommands } from './slash-commands/commands/text-utils.js';
 
 export {
-    executeSlashCommands, executeSlashCommandsWithOptions, getSlashCommandsHelp, registerSlashCommand,
+    executeSlashCommandsWithOptions,
+    getSlashCommandsHelp,
 };
 export {
-    CONNECT_API_MAP,
     COMMENT_NAME_DEFAULT,
-    UNIQUE_APIS,
-    activateScriptButtons,
-    commandsFromChatInputAbortController,
-    deactivateScriptButtons,
     executeSlashCommandsOnChatInput,
-    generateSystemMessage,
-    getNameAndAvatarForMessage,
     initSlashCommandAutoComplete,
     isExecutingCommandsFromChatInput,
     pauseScriptExecution,
-    processChatSlashCommands,
-    promptQuietForLoudResponse,
-    sendMessageAs,
-    sendNarratorMessage,
-    setSlashCommandAutoComplete,
     stopScriptExecution,
-    validateArrayArg,
-    validateArrayArgString,
 };
 
 /** @typedef {import('./slash-commands/core.js').ConnectAPIMap} ConnectAPIMap */

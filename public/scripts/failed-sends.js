@@ -421,7 +421,7 @@ let placing = Promise.resolve();
  * @param {{ fromOtherTab?: boolean }} [options]
  * @returns {Promise<void>}
  */
-export function placeFailedSends(options = {}) {
+function placeFailedSends(options = {}) {
     const run = () => placeNow(options);
     placing = placing.then(run, run);
     return placing;

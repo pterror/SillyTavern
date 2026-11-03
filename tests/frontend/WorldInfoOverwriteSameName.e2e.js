@@ -23,7 +23,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 async function createCharacter(page, name, world) {
     return page.evaluate(async ({ name, world }) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', 'Hello');
@@ -41,7 +41,7 @@ async function createCharacter(page, name, world) {
 async function deleteCharacter(page, avatar) {
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         await fetch('/api/characters/delete', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, delete_chats: true }) });
     }, avatar);
 }
@@ -56,7 +56,7 @@ async function storedWorld(page, avatar) {
         const { flushCharacterFieldSaves } = await import('/script.js');
         await flushCharacterFieldSaves();
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/characters/get', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar }) });
         const card = await response.json();
         return String(card?.data?.extensions?.world ?? '');
@@ -70,7 +70,7 @@ async function storedWorld(page, avatar) {
 async function createWorldWithEntry(page, worldName) {
     await page.evaluate(async (worldName) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const data = { entries: { 0: { uid: 0, key: ['old'], content: 'old book' } } };
         const response = await fetch('/api/worldinfo/edit', { method: 'POST', headers, body: JSON.stringify({ name: worldName, data }) });
         if (!response.ok) throw new Error(`world create failed: ${response.status}`);
@@ -88,7 +88,7 @@ async function createWorldWithEntry(page, worldName) {
 async function deleteWorld(page, worldName) {
     await page.evaluate(async (worldName) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         await fetch('/api/worldinfo/delete', { method: 'POST', headers, body: JSON.stringify({ name: worldName }) });
     }, worldName);
 }
@@ -101,7 +101,7 @@ async function deleteWorld(page, worldName) {
 async function serverEntries(page, worldName) {
     return page.evaluate(async (worldName) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const list = await (await fetch('/api/settings/get', { method: 'POST', headers, body: '{}' })).json();
         if (!list.world_names?.includes(worldName)) return null;
         const response = await fetch('/api/worldinfo/get', { method: 'POST', headers, body: JSON.stringify({ name: worldName }) });
@@ -156,7 +156,7 @@ async function linkOpenCharacterAndGlobal(page, avatar, worldName) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);

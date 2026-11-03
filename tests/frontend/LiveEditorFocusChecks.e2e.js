@@ -62,13 +62,13 @@ test.describe('focus checks with a live editor mounted', () => {
     test('a message being edited in an editor keeps the chat where it was as it grows', async ({ page }) => {
         await page.evaluate(async () => {
             // @ts-ignore
-            const ctx = SillyTavern.getContext();
+            const ctx = stTest.context();
             await ctx.executeSlashCommandsWithOptions('/go Seraphina');
         });
         await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1, { timeout: 10000 });
         await page.evaluate(async () => {
             // @ts-ignore
-            const ctx = SillyTavern.getContext();
+            const ctx = stTest.context();
             for (let i = 0; i < 6; i++) await ctx.SlashCommandParser.commands['send'].callback({}, `filler ${i}\n\n`.repeat(8));
         });
         const chat = page.locator('#chat');

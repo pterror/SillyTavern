@@ -3,7 +3,6 @@
 /** @typedef {import('chevrotain').ILexingError} ILexingError */
 /** @typedef {import('chevrotain').IRecognitionException} IRecognitionException */
 
-import { SimpleMutex } from '../../util/SimpleMutex.js';
 
 /**
  * @typedef {Object} MacroErrorContext
@@ -16,11 +15,6 @@ import { SimpleMutex } from '../../util/SimpleMutex.js';
 
 /** @typedef {MacroErrorContext & { message: string, error?: any }} MacroLogOptions */
 
-
-export const onboardingExperimentalMacroEngineMutex = new SimpleMutex(async () => {});
-
-/** @deprecated */
-export const onboardingExperimentalMacroEngine = onboardingExperimentalMacroEngineMutex.update.bind(onboardingExperimentalMacroEngineMutex);
 
 /**
  * Caught by MacroEngine and logged as a runtime warning, leaving the macro raw in the evaluated text.

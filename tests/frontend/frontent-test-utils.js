@@ -39,6 +39,7 @@ export const testSetup = {
         }
         await page.waitForFunction('document.getElementById("preloader") === null', { timeout: 0 });
         await awaitLoaderGone(page);
+        await page.waitForFunction(() => window['stTest']?.ready(), null, { timeout: 0 });
     },
 
     /**
@@ -83,7 +84,7 @@ export async function openInfoTab(page, tab) {
 export async function awaitPowerUserSettingStored(page, key) {
     await expect.poll(() => page.evaluate(async (key) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const response = await fetch('/api/settings/get', { method: 'POST', headers: context.getRequestHeaders(), body: '{}' });
         const { settings } = await response.json();
         const stored = (typeof settings === 'string' ? JSON.parse(settings) : settings)?.power_user?.[key];

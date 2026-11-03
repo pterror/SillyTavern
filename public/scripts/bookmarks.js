@@ -283,7 +283,7 @@ async function makeBranch(mesId, { swipeId = null, open = false, alsoLabelShown 
  * @param {string?} [options.forceName] - forced name instead of prompting.
  * @returns {Promise<string?>}
  */
-export async function createNewBookmark(mesId, { forceName = null } = {}) {
+async function createNewBookmark(mesId, { forceName = null } = {}) {
     if (getSelectionState().type === 'none') {
         toastr.info('No character selected.', 'Bookmark');
         return null;
@@ -387,7 +387,6 @@ export async function convertSoloToGroupChat() {
         activation_strategy: group_activation_strategy.NATURAL,
         disabled_members: [],
         fav: favChecked,
-        hideMutedSprites: false,
         generation_mode: group_generation_mode.SWAP,
         auto_mode_delay: DEFAULT_AUTO_MODE_DELAY,
     };
@@ -464,7 +463,7 @@ export async function convertSoloToGroupChat() {
  * @param {{swipeId?: number|null}} [options={}] Branch options
  * @returns {Promise<string?>} Branch file name
  */
-export async function branchChat(mesId, { swipeId = null } = {}) {
+async function branchChat(mesId, { swipeId = null } = {}) {
     if (getSelectionState().type === 'none') {
         toastr.info('No character selected.', 'Create Branch');
         return null;
@@ -501,16 +500,6 @@ export async function forkChat(mesId, { swipeId = null } = {}) {
     }
 
     return openBranch(await makeBranch(mesId, { swipeId, open: true, alsoLabelShown: !selected_group }));
-}
-
-/**
- * @param {JQuery<HTMLElement>} mes
- * @param {string?} [newBookmarkLink=null]
- */
-export function updateBookmarkDisplay(mes, newBookmarkLink = null) {
-    newBookmarkLink && mes.attr('bookmark_link', newBookmarkLink);
-    const bookmarkFlag = mes.find('.mes_bookmark');
-    bookmarkFlag.attr('title', `Checkpoint\n${mes.attr('bookmark_link')}\n\n${bookmarkFlag.data('tooltip')}`);
 }
 
 function registerBookmarksSlashCommands() {

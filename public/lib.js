@@ -12,7 +12,6 @@ import css from '@adobe/css-tools';
 import Bowser from 'bowser';
 import DiffMatchPatch from 'diff-match-patch';
 import { isProbablyReaderable, Readability } from '@mozilla/readability';
-import SVGInject from '@iconfu/svg-inject';
 import showdown from 'showdown';
 import { Marked } from 'marked';
 import moment from 'moment';
@@ -20,96 +19,9 @@ import seedrandom from 'seedrandom';
 import * as Popper from '@popperjs/core';
 import droll from 'droll';
 import morphdom from 'morphdom';
-import { toggle as slideToggle } from 'slidetoggle';
-import chalk from 'chalk';
-import yaml from 'yaml';
 import * as chevrotain from 'chevrotain';
-import { gzipSync, gzip } from 'fflate';
+import { gzip } from 'fflate';
 import { sha256 } from 'js-sha256';
-
-/**
- * Expose the libraries to the 'window' object.
- * Needed for compatibility with old extensions.
- * Note: New extensions are encouraged to import the libraries directly from lib.js.
- */
-export function initLibraryShims() {
-    if (!window) {
-        return;
-    }
-    if (!('Fuse' in window)) {
-        // @ts-ignore
-        window.Fuse = Fuse;
-    }
-    if (!('DOMPurify' in window)) {
-        // @ts-ignore
-        window.DOMPurify = DOMPurify;
-    }
-    if (!('hljs' in window)) {
-        // @ts-ignore
-        window.hljs = hljs;
-    }
-    if (!('localforage' in window)) {
-        // @ts-ignore
-        window.localforage = localforage;
-    }
-    if (!('Handlebars' in window)) {
-        // @ts-ignore
-        window.Handlebars = Handlebars;
-    }
-    if (!('diff_match_patch' in window)) {
-        // @ts-ignore
-        window.diff_match_patch = DiffMatchPatch;
-    }
-    if (!('SVGInject' in window)) {
-        // @ts-ignore
-        window.SVGInject = SVGInject;
-    }
-    if (!('showdown' in window)) {
-        // @ts-ignore
-        window.showdown = showdown;
-    }
-    if (!('moment' in window)) {
-        // @ts-ignore
-        window.moment = moment;
-    }
-    if (!('Popper' in window)) {
-        // @ts-ignore
-        window.Popper = Popper;
-    }
-    if (!('droll' in window)) {
-        // @ts-ignore
-        window.droll = droll;
-    }
-}
-
-export default {
-    lodash,
-    Fuse,
-    DOMPurify,
-    hljs,
-    localforage,
-    Handlebars,
-    css,
-    Bowser,
-    DiffMatchPatch,
-    Readability,
-    isProbablyReaderable,
-    SVGInject,
-    showdown,
-    Marked,
-    moment,
-    seedrandom,
-    Popper,
-    droll,
-    morphdom,
-    slideToggle,
-    chalk,
-    yaml,
-    chevrotain,
-    gzipSync,
-    gzip,
-    sha256,
-};
 
 export {
     lodash,
@@ -123,7 +35,6 @@ export {
     DiffMatchPatch,
     Readability,
     isProbablyReaderable,
-    SVGInject,
     showdown,
     Marked,
     moment,
@@ -131,11 +42,7 @@ export {
     Popper,
     droll,
     morphdom,
-    slideToggle,
-    chalk,
-    yaml,
     chevrotain,
-    gzipSync,
     gzip,
     sha256,
 };

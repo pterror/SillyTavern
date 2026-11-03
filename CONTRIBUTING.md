@@ -66,7 +66,7 @@ Write at least somewhat meaningful PR descriptions and commit messages. There's 
 
 Do not use a completed pull request as the first product discussion for a new named external provider or service.
 
-- Model routers, resellers, rerouters, gateways, and aggregators should use **Custom (OpenAI-compatible)** and publish provider-owned setup instructions. Provider-specific convenience may be implemented as a third-party UI extension or server plugin.
+- Model routers, resellers, rerouters, gateways, and aggregators should use **Custom (OpenAI-compatible)** and publish provider-owned setup instructions. Provider-specific convenience may be implemented as a server plugin.
 - New first-party model, TTS, speech, web search, image, vectorization, embedding, reranking, and similar integrations are exceptional and should begin with a public issue and maintainer discussion before implementation.
 - Existing-provider maintenance and provider-neutral improvements to generic compatibility remain welcome.
 
@@ -92,5 +92,4 @@ We do not prohibit nor encourage the use of AI tools for coding assistance to he
 ## Further reading
 
 1. [How to integrate an external provider](https://docs.sillytavern.app/for-contributors/provider-integrations/)
-2. [How to write UI extensions](https://docs.sillytavern.app/for-contributors/writing-extensions/)
-3. [How to write server plugins](https://docs.sillytavern.app/for-contributors/server-plugins)
+2. [How to write server plugins](https://docs.sillytavern.app/for-contributors/server-plugins)

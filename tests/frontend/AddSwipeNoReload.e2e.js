@@ -5,10 +5,10 @@ test.describe('/addswipe without chat reload', () => {
     test.beforeEach(testSetup.awaitST);
 
     test('adds swipes in place without reloading the chat', async ({ page }) => {
-        await page.waitForFunction(() => SillyTavern.getContext().chat.some(message => message?.extra?.type === 'welcome_prompt'));
+        await page.waitForFunction(() => stTest.context().chat.some(message => message?.extra?.type === 'welcome_prompt'));
         const result = await page.evaluate(async () => {
             const { newAssistantChat } = await import('./script.js');
-            const ctx = window.SillyTavern.getContext();
+            const ctx = window.stTest.context();
             const commands = ctx.SlashCommandParser.commands;
             const args = { quiet: 'true' };
             const delay = ms => new Promise(resolve => setTimeout(resolve, ms));

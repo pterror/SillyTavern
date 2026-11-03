@@ -12,7 +12,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', 'Hello.');
@@ -30,7 +30,7 @@ async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
@@ -57,7 +57,7 @@ test('a fork is one request and opens the branch with the chat\'s metadata', asy
 
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const { ensureOpeningRow } = await import('/scripts/chat-store.js');
         const opening = await ensureOpeningRow(0);
         const set = await fetch('/api/chats/metadata', {
@@ -91,7 +91,7 @@ test('a fork is one request and opens the branch with the chat\'s metadata', asy
 
     const state = await page.evaluate(async () => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const { tabSession } = await import('/scripts/tab-session.js');
         return { chatId: context.getCurrentChatId(), session: tabSession(), messages: context.chat.map(m => m.mes), note: context.chatMetadata.note_prompt ?? null };
     });

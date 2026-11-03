@@ -6,7 +6,7 @@ test('quick swipes at the end of the chat keep it at its end', async ({ page }) 
     await testSetup.awaitST({ page });
     await page.evaluate(async () => {
         // @ts-ignore
-        const { executeSlashCommandsWithOptions: run } = SillyTavern.getContext();
+        const { executeSlashCommandsWithOptions: run } = stTest.context();
         await run('/go Seraphina');
         for (let i = 0; i < 4; i++) {
             await run(`/send ${'user line '.repeat(30)} ${i}`);

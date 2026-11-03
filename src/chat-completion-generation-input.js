@@ -11,14 +11,13 @@ import { resolveWorldInfoCandidates } from './world-info/candidate-resolution.js
 import { activateWorldInfoEntries } from './world-info/activation.js';
 import { buildActivationRecord } from './world-info/activation-record.js';
 import { userStore } from './user-stores.js';
-import { bucketActivatedEntries, world_info_position } from './world-info/result-bucketing.js';
+import { bucketActivatedEntries } from './world-info/result-bucketing.js';
 import { positionedEntries } from './prompt/injections.js';
 import { outletMarkers, withoutOutletMarkers } from './prompt/model.js';
 import { resolveAuthorsNote } from './authors-note.js';
 import { persona_description_defaults, persona_description_positions } from '../public/scripts/constants.js';
 import { GLOBAL_PROMPT_ORDER_ID, promptOrdersWithDefault, promptsWithDefaults } from '../public/scripts/prompt-manager-defaults.js';
 import { chatCompletionSettingsWithDefaults } from '../public/scripts/chat-completion-defaults.js';
-import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
 import { countChatCompletionMessages } from './endpoints/tokenizers.js';
 import { resolveTokenizer, createTokenizerOutcome, tokenizerAnswer, tokenizerIdentity } from './tokenizer-resolve.js';
 import { createStoredCounter } from './token-count-store.js';
@@ -131,8 +130,6 @@ const DEFAULT_INLINE_IMAGE_QUALITY = 'auto';
 
 const GENERATION_TYPE_TRIGGERS = ['normal', 'continue', 'impersonate', 'swipe', 'regenerate'];
 
-const WI_DEFAULT_DEPTH = 4;
-
 /**
  * @param {OaiSettingsShape} settings
  * @returns {string | null | undefined}
@@ -229,8 +226,6 @@ async function resolveChatHistory(chat, { branchName, nodeId }) {
  * @param {string} [params.userMessageText]
  * @param {SanitizedUserMessageExtra} [params.userMessageExtra]
  * @param {WIEntry[]} [params.worldInfoCandidates]
- * @param {import('./regex-scripts-engine.js').RegexScript[]} [params.regexScripts]
- * @param {boolean} [params.regexExtensionEnabled]
  * @param {string} [params.model]
  * @param {import('./chat-completion-tool-capabilities.js').ChatCompletionToolCapabilityModel[]} [params.modelList]
  * @param {string|number} [params.characterId]
@@ -251,7 +246,6 @@ export async function resolveChatCompletionGenerationInput(directories, {
     type, isImpersonate = false, isContinue = false, isSwipe = false, dryRun,
     cyclePrompt = '', textareaText = '', chatMetadata: chatMetadataOverride, userMessageText, userMessageExtra,
     worldInfoCandidates: worldInfoCandidatesOverride,
-    regexScripts = [], regexExtensionEnabled = true,
     model: modelOverride, modelList, characterId = PROMPT_ORDER_DUMMY_ID,
     countTokenAsyncFn: countTokenAsyncFnOverride, tokenHandler: tokenHandlerOverride,
     quietPrompt, quietImage, responseLength,
@@ -414,14 +408,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
         injects: scanInjects.map(([label]) => label),
         books: (await userStore(directories)).lib.books,
     });
-    const { worldInfoBefore, worldInfoAfter, worldInfoBeforeEntries, worldInfoAfterEntries, worldInfoExamples, worldInfoDepth: worldInfoDepthEntries, anBefore, anAfter, outletEntries } = bucketActivatedEntries(/** @type {WIActivatedEntry[]} */ (/** @type {unknown} */ (activatedEntries)), {
-        resolveContent: (entry) => {
-            const regexDepth = entry.position === world_info_position.atDepth ? (entry.depth ?? WI_DEFAULT_DEPTH) : null;
-            return getRegexedString(entry.content, regex_placement.WORLD_INFO, regexScripts, {
-                depth: regexDepth ?? undefined, isMarkdown: false, isPrompt: true, macroContext, regexExtensionEnabled,
-            });
-        },
-    });
+    const { worldInfoBefore, worldInfoAfter, worldInfoBeforeEntries, worldInfoAfterEntries, worldInfoExamples, worldInfoDepth: worldInfoDepthEntries, anBefore, anAfter, outletEntries } = bucketActivatedEntries(/** @type {WIActivatedEntry[]} */ (/** @type {unknown} */ (activatedEntries)));
 
     let continued = cyclePrompt;
     if (type === 'continue' && !continued && chat.length > 0) {

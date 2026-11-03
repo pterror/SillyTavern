@@ -3,7 +3,6 @@ import { newUi, newUiStarted, setNewUi } from './new-ui-page.js';
 import { getRequestHeaders } from './request-headers.js';
 import { attachNewPage } from './tab-session.js';
 import { translate } from './i18n.js';
-import { eventSource, event_types } from './events.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 
@@ -43,7 +42,6 @@ export function startNewUi({ quietPrompt, currentChat, alternatives, activations
     const page = started;
     attachNewPage({ views: views => page.receive({ type: 'views', views }), connected: () => void page.reconnected() });
     const backgrounds = started.backgrounds;
-    eventSource.on(event_types.FORCE_SET_BACKGROUND, (/** @type {{ path: string }} */ background) => void backgrounds.forceSetBackground(background));
     const say = (/** @type {Promise<string | null>} */ refused) => refused.then(reason => {
         if (reason) toastr.warning(reason);
         return '';

@@ -11,7 +11,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 async function markAppReady(page) {
     await page.evaluate(() => {
         // @ts-ignore
-        const ctx = SillyTavern.getContext();
+        const ctx = stTest.context();
         ctx.eventSource.once(ctx.eventTypes.APP_READY, () => { window['__appReady'] = true; });
     });
 }

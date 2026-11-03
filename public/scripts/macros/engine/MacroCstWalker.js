@@ -616,7 +616,7 @@ class MacroCstWalker {
         const lazyValue = hasValueExpr ? this.#createLazyValue(operatorChildren, context) : () => '';
 
         // Execute the operation using direct variable API calls
-        return this.#executeVariableOperation(varName, isGlobal, operation, lazyValue);
+        return this.#executeVariableOperation(context.env, varName, isGlobal, operation, lazyValue);
     }
 
     /**
@@ -641,17 +641,17 @@ class MacroCstWalker {
     }
 
     /**
-     * Executes a variable operation using the SillyTavern context API.
+     * Executes a variable operation on the environment's variable scopes.
      *
+     * @param {MacroEnv} env - The macro environment.
      * @param {string} varName - The variable name.
      * @param {boolean} isGlobal - Whether this is a global ($) or local (.) variable.
      * @param {string} operation - The operation to perform.
      * @param {() => string} lazyValue - A lazy function that returns the value when called. Only evaluated when needed.
      * @returns {string} The result of the operation.
      */
-    #executeVariableOperation(varName, isGlobal, operation, lazyValue) {
-        const ctx = SillyTavern.getContext();
-        const vars = isGlobal ? ctx.variables.global : ctx.variables.local;
+    #executeVariableOperation(env, varName, isGlobal, operation, lazyValue) {
+        const vars = isGlobal ? env.state.variables.global : env.state.variables.local;
 
         /**
         * Normalizes macro results into a string.

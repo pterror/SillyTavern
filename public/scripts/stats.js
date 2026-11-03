@@ -90,20 +90,7 @@ async function userStatsHandler() {
 }
 
 /**
- * Handles the character stats by getting them from the server and generating the HTML report.
- *
- * @param {Object} characters - Object containing character data (as `getContext().characters`).
- * @param {string} this_chid - The character id: its index in `characters`.
- */
-async function characterStatsHandler(characters, this_chid) {
-    const character = characters?.[this_chid];
-    if (!character) {
-        return;
-    }
-    await showCharacterStats(character);
-}
-
-/**
+ * Gets the character's stats from the server and shows them.
  * @param {Character} character
  */
 async function showCharacterStats(character) {
@@ -162,17 +149,6 @@ async function recreateStats() {
 }
 
 
-/**
- * Kept for upstream callers. The stats are counted by the server from the stored messages, so a message the page
- * processes changes nothing here.
- * @param {Object} _line - Object containing message data.
- * @param {string} _type - The type of the message processing (e.g., 'append', 'continue', 'appendFinal', 'swipe').
- * @param {Object} _characters - Object containing character data.
- * @param {string} _this_chid - The character id.
- * @param {string} _oldMessage - The old message that's being processed.
- */
-async function statMesProcess(_line, _type, _characters, _this_chid, _oldMessage) { }
-
 export function initStats() {
     $('.rm_stats_button').on('click', function () {
         const character = getCurrentCharacter();
@@ -181,4 +157,4 @@ export function initStats() {
     registerDebugFunction('refreshStats', 'Refresh Stat File', 'Recreates the stats file based on existing chat files', recreateStats);
 }
 
-export { userStatsHandler, characterStatsHandler, getStats, statMesProcess, charStats };
+export { userStatsHandler };

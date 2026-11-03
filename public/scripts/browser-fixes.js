@@ -91,4 +91,4 @@ function applyBrowserFixes() {
     addSafariPatch();
 }
 
-export { isFirefox, applyBrowserFixes };
+export { applyBrowserFixes };

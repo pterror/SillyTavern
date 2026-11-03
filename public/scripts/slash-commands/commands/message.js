@@ -8,7 +8,6 @@ import { eventSource, event_types } from '../../events.js';
 import { getMessageTimeStamp } from '../../RossAscends-mods.js';
 import { hideChatMessageRange } from '../../chats.js';
 import { SWIPE_DIRECTION, SWIPE_SOURCE } from '../../constants.js';
-import { getRegexedString, regex_placement } from '../../extensions/regex/engine.js';
 import { findGroupByName, groupsStore } from '../../group-store.js';
 import { findGroupMemberId, is_group_generating, openGroupById, regenerateGroup, resetSelectedGroup, selected_group } from '../../group-chats.js';
 import { t } from '../../i18n.js';
@@ -143,7 +142,7 @@ async function askCharacter(args, text) {
     }
 
     if (text) {
-        const mesText = getRegexedString(text.trim(), regex_placement.SLASH_COMMAND);
+        const mesText = text.trim();
         await sendMessageAsUser(mesText, '');
     }
 
@@ -567,15 +566,11 @@ async function sendCommentMessage(args, text) {
     if (!isNaN(insertAt) && insertAt >= 0 && insertAt <= chat.length) {
         chat.splice(insertAt, 0, message);
         await storeSentMessage(insertAt, { graft: true });
-        await eventSource.emit(event_types.MESSAGE_SENT, insertAt);
         await reloadCurrentChat();
-        await eventSource.emit(event_types.USER_MESSAGE_RENDERED, insertAt);
     } else {
         const newIndex = chat.length;
         chat.push(message);
-        await eventSource.emit(event_types.MESSAGE_SENT, (chat.length - 1));
         addOneMessage(message);
-        await eventSource.emit(event_types.USER_MESSAGE_RENDERED, (chat.length - 1));
         await storeSentMessage(newIndex);
     }
 

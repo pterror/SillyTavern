@@ -33,7 +33,7 @@ module.exports = {
         'node_modules/**/*',
     ],
     globals: {
-        SillyTavern: 'readonly',
+        stTest: 'readonly',
         globalThis: 'readonly',
     },
     rules: {

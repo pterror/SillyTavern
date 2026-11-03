@@ -296,31 +296,6 @@ export function formatMacroSignature(macro) {
 
 /**
  * @param {MacroDefinition} macro
- * @returns {HTMLElement}
- */
-export function createSourceIndicator(macro) {
-    const src = document.createElement('span');
-    src.classList.add('macro-source', 'fa-solid');
-
-    if (macro.source.isExtension) {
-        src.classList.add('isExtension', 'fa-cubes');
-        src.classList.add(macro.source.isThirdParty ? 'isThirdParty' : 'isCore');
-    } else {
-        src.classList.add('isCore', 'fa-star-of-life');
-    }
-
-    const titleParts = [
-        macro.source.isExtension ? 'Extension' : 'Core',
-        macro.source.isThirdParty ? 'Third Party' : (macro.source.isExtension ? 'Built-in' : null),
-        macro.source.name,
-    ].filter(Boolean);
-    src.title = titleParts.join('\n');
-
-    return src;
-}
-
-/**
- * @param {MacroDefinition} macro
  * @returns {HTMLElement|null}
  */
 export function createAliasIndicator(macro) {
@@ -336,7 +311,7 @@ export function createAliasIndicator(macro) {
  * @param {MacroValueType|MacroValueType[]} type
  * @returns {HTMLElement}
  */
-export function createTypeBadge(type) {
+function createTypeBadge(type) {
     const badge = document.createElement('span');
     badge.classList.add('macro-arg-type');
 
@@ -374,8 +349,6 @@ function renderMacroItem(macro) {
     const aliasIcon = createAliasIndicator(macro);
     if (aliasIcon) item.appendChild(aliasIcon);
 
-    item.appendChild(createSourceIndicator(macro));
-
     return item;
 }
 
@@ -399,7 +372,6 @@ export function renderMacroDetails(macro, options = {}) {
     nameEl.textContent = formatMacroSignature(macro);
     header.appendChild(nameEl);
 
-    header.appendChild(createSourceIndicator(macro));
     details.appendChild(header);
 
     if (showCategory) {

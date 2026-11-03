@@ -7,11 +7,11 @@ test('a message sent with no model to reply is stored, once', async ({ page }) =
     await page.selectOption('#main_api', 'koboldhorde', { force: true });
     await page.locator('#API-status-top').click();
     // @ts-ignore
-    await expect.poll(() => page.evaluate(() => SillyTavern.getContext().mainApi)).toBe('koboldhorde');
+    await expect.poll(() => page.evaluate(() => stTest.context().mainApi)).toBe('koboldhorde');
     await expect(page.locator('#main_api')).toBeHidden();
     await page.evaluate(async () => {
         // @ts-ignore
-        await SillyTavern.getContext().executeSlashCommandsWithOptions('/go Seraphina');
+        await stTest.context().executeSlashCommandsWithOptions('/go Seraphina');
     });
     await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1, { timeout: 10000 });
     const text = `sent with no reply ${Date.now()}`;
@@ -27,9 +27,9 @@ test('a message sent with no model to reply is stored, once', async ({ page }) =
     await testSetup.awaitST({ page });
     await page.evaluate(async () => {
         // @ts-ignore
-        await SillyTavern.getContext().executeSlashCommandsWithOptions('/go Seraphina');
+        await stTest.context().executeSlashCommandsWithOptions('/go Seraphina');
     });
     await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1, { timeout: 10000 });
     // @ts-ignore
-    await expect.poll(() => page.evaluate(t => SillyTavern.getContext().chat.filter(m => m.mes === t && m.node_id).length, text)).toBe(1);
+    await expect.poll(() => page.evaluate(t => stTest.context().chat.filter(m => m.mes === t && m.node_id).length, text)).toBe(1);
 });

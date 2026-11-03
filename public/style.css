@@ -17,7 +17,6 @@
 @import url(css/settings-panel.css);
 @import url(css/radio-tabs.css);
 @import url(css/chat-backups.css);
-@import url(css/streaming-display.css);
 @import url(css/alternatives.css);
 @import url(css/activations.css);
 
@@ -660,10 +659,7 @@ input[type='checkbox']:focus-visible {
     text-align: center;
 }
 
-.mes_translate,
-.sd_message_gen,
-.mes_ghost,
-.mes_narrate {
+.mes_ghost {
     display: none;
 }
 
@@ -1132,7 +1128,6 @@ body .panelControlBar {
 }
 
 #options,
-#extensionsMenu,
 .popup .popper-modal {
     display: flex;
     z-index: 29999;
@@ -1145,7 +1140,6 @@ body .panelControlBar {
     padding: 2px;
 }
 
-#extensionsMenu,
 .options-content {
     padding: 2px;
 }
@@ -1160,15 +1154,13 @@ body .panelControlBar {
     font-size: calc(var(--mainFontSize) * 1.1);
 }
 
-#extensionsMenu,
 #options .options-content {
     max-height: calc(100vh - calc(2 * var(--bottomFormBlockSize) + 10px));
     max-height: calc(100dvh - calc(2 * var(--bottomFormBlockSize) + 10px));
     overflow-y: auto;
 }
 
-.options-content i,
-.extensionsMenuExtensionButton {
+.options-content i {
     height: 20px;
     width: 20px;
     font-size: calc(var(--mainFontSize) * 1.1);
@@ -1185,17 +1177,9 @@ body .panelControlBar {
     background: none;
 }
 
-#extensionsMenuButton {
-    order: 4;
-    padding: 1px;
-}
-
 .options-content a,
-#extensionsMenu>.extension_container>div,
-#extensionsMenu>div:not(.extension_container),
 .list-group>div,
-.list-group .list-group-item,
-#sd_dropdown .list-group span {
+.list-group .list-group-item {
     color: var(--SmartThemeBodyColor);
     padding: 5px 5px;
     padding-bottom: 5px;
@@ -1206,15 +1190,11 @@ body .panelControlBar {
     align-items: baseline;
 }
 
-#extensionsMenu>.extension_container>div,
-#extensionsMenu>div:not(.extension_container),
 .options-content a,
 .list-group-item {
     opacity: 0.5;
 }
 
-#extensionsMenu>.extension_container>div:hover,
-#extensionsMenu>div:not(.extension_container):hover,
 .options-content a:hover,
 .list-group-item:hover {
     opacity: 1;
@@ -2723,40 +2703,6 @@ body[data-stscript-style] .hljs.language-stscript {
             }
         }
 
-        >.head>.source {
-            padding: 0 0.5em;
-            cursor: help;
-            display: flex;
-            align-items: center;
-            gap: 0.5em;
-
-            &.isThirdParty.isExtension {
-                color: #F89406;
-            }
-
-            &.isCore {
-                color: transparent;
-
-                &.isExtension {
-                    color: #51A351;
-                }
-
-                &:after {
-                    content: '';
-                    order: -1;
-                    height: 14px;
-                    aspect-ratio: 1 / 1;
-                    background-image: url('/favicon.ico');
-                    background-size: contain;
-                    background-repeat: no-repeat;
-                }
-            }
-
-            &:hover {
-                text-decoration: 1px dotted underline;
-            }
-        }
-
         >.body {
             flex-direction: column;
             gap: 0.5em;
@@ -3394,10 +3340,6 @@ input[type="file"] {
     display: none;
     overflow-y: auto;
     height: 100%;
-}
-
-#rm_extensions_block {
-    overflow-y: auto;
 }
 
 #rm_button_bar {
@@ -6016,10 +5958,6 @@ a:hover {
     display: flex;
 }
 
-body:not(.caption) .mes_img_caption {
-    display: none;
-}
-
 .mes_img_container:not(.img_swipes) .mes_img_swipes {
     display: none;
 }
@@ -6153,8 +6091,6 @@ body:not(.caption) .mes_img_caption {
     display: inline-flex;
 }
 
-#extensions_settings .inline-drawer-toggle.inline-drawer-header,
-#extensions_settings2 .inline-drawer-toggle.inline-drawer-header,
 #user-settings-block h4,
 .standoutHeader {
     background-image: linear-gradient(348deg, var(--white30a)2%, var(--grey30a)10%, var(--black70a)95%, var(--SmartThemeQuoteColor)100%);
@@ -6193,8 +6129,6 @@ body:not(.caption) .mes_img_caption {
     width: 8em;
 }
 
-#extensions_settings .inline-drawer-toggle.inline-drawer-header:hover,
-#extensions_settings2 .inline-drawer-toggle.inline-drawer-header:hover,
 .standoutHeader.inline-drawer-header:hover {
     filter: brightness(150%);
 }

@@ -7,16 +7,13 @@
         "**/.git/**",
         ".claude/**",
         "public/lib/**",
-        "public/scripts/extensions/third-party/**",
         "backups/**",
         "data/**",
         "cache/**",
         "src/tokenizers/**",
         "docker/**",
         "plugins/**",
-        "**/*.min.js",
-        "public/scripts/extensions/quick-reply/lib/**",
-        "public/scripts/extensions/tts/lib/**"
+        "**/*.min.js"
     ],
     "rules": {
         "import/no-cycle": "error"

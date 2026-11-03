@@ -16,14 +16,9 @@ import { forwardFetchResponse, trimV1, getConfigValue } from '../../util.js';
 import { setAdditionalHeaders } from '../../additional-headers.js';
 import { createHash } from 'node:crypto';
 import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta, createBackpressureWriter, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, encodeContent, encodeStoredReplyFrame, encodeIndexFrame, encodeReasoningFrame, encodeProbabilitiesFrame, encodeControlFrame, writeStoredMessagesFrame } from './llamacpp-compact-stream.js';
-import { resolveTextGenBackend, resolveServerUrl } from '../../textgen-backend-resolve.js';
-import { resolveConnectionProfile } from '../../connection-profile-resolve.js';
-import { mergeTextGenPreset } from '../../textgen-preset-merge.js';
-import { createTextGenGenerationData } from '../../textgen-generation-data.js';
-import { constructPrompt, getInstructStoppingSequences } from '../../instruct-template-format.js';
+import { resolveTextGenBackend } from '../../textgen-backend-resolve.js';
 import { readSettingsFor, settingsContextOf } from '../../settings-reads.js';
-import { readBundle } from '../../bundle-store.js';
-import { resolveTokenizer, encodeWithTokenizer, resolveProfileTokenizerSetting, createTokenizerOutcome, sendTokenizerWarnings, tokenizerAnswer, tokenizerIdentity } from '../../tokenizer-resolve.js';
+import { resolveTokenizer, createTokenizerOutcome, sendTokenizerWarnings, tokenizerAnswer, tokenizerIdentity } from '../../tokenizer-resolve.js';
 import { createLlamaCppPropsCheck, llamaCppPropsModelName } from '../../llamacpp-props.js';
 import { createStoredCounter, writeBack } from '../../token-count-store.js';
 import { fetchTextgenStatus, lookupBackendModel, rememberRemoteTokenization } from '../../backend-status.js';
@@ -540,64 +535,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
     };
 
     try {
-        if (request.body.connection_profile_id) {
-            const { profile, selectedApiMap } = resolveConnectionProfile(request.user.directories, request.body.connection_profile_id);
-            if (selectedApiMap.selected !== 'textgenerationwebui') {
-                return response.status(400).send({ error: true, message: `Profile does not target a text completion backend (targets: ${selectedApiMap.selected})` });
-            }
-
-            const { name1 = '', name2 = '', isGroup = false, messages, max_tokens: maxTokens, isImpersonate = false, isContinue = false, type = 'quiet' } = request.body;
-            if (!Array.isArray(messages)) {
-                return response.status(400).send({ error: true, message: 'messages must be an array' });
-            }
-
-            const instructPreset = profile.instruct ? await readBundle(request.user.directories, 'template.instruct', profile.instruct) : null;
-            const contextPreset = profile.context ? await readBundle(request.user.directories, 'template.context', profile.context) : null;
-            const finalPrompt = instructPreset
-                ? constructPrompt(messages, instructPreset, { name1, name2, isGroup })
-                : messages.map(m => m.content).join('\n\n');
-            const stoppingStrings = instructPreset
-                ? getInstructStoppingSequences(instructPreset, contextPreset ?? {}, { name1, name2 })
-                : [];
-
-            const { 'textgenerationwebui_settings': baseSettings, power_user: powerUser = {} } = readSettingsFor(request.user.directories, settingsContextOf({}), ['textgenerationwebui_settings', 'power_user']);
-            const preset = profile.preset ? await readBundle(request.user.directories, 'preset.textgenerationwebui', profile.preset) : null;
-            const settings = mergeTextGenPreset({ ...baseSettings, type: selectedApiMap.type }, preset);
-
-            const apiServerUrl = profile['api-url'] || resolveServerUrl(settings);
-
-            const tokenizerState = {
-                api: 'textgenerationwebui', type: selectedApiMap.type, url: apiServerUrl, model: profile.model ?? '',
-                tokenizerSetting: resolveProfileTokenizerSetting(profile.tokenizer, powerUser.tokenizer),
-            };
-            const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories: request.user.directories });
-            const tokenizerOutcome = createTokenizerOutcome();
-            const encodeOptions = {
-                request, textgenBaseUrl: apiServerUrl, textgenModel: profile.model, textgenApiType: selectedApiMap.type,
-                outcome: tokenizerOutcome,
-            };
-            /** @type {string[]} */
-            const droppedBiasEntries = [];
-
-            const params = await createTextGenGenerationData(
-                settings, profile.model, finalPrompt, maxTokens, isImpersonate, isContinue, null, type,
-                {
-                    stoppingStrings, macroContext: { name1, name2 },
-                    logitBiasContext: {
-                        encode: (text) => encodeWithTokenizer(resolvedTokenizer, text, encodeOptions),
-                        dropped: droppedBiasEntries,
-                    },
-                },
-            );
-            warnings.push(...sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, droppedBiasEntries));
-
-            if (request.body.overrides && typeof request.body.overrides === 'object' && !Array.isArray(request.body.overrides)) {
-                Object.assign(params, _.omit(request.body.overrides, ['api_type', 'api_server', 'model', 'prompt', 'stop', 'stopping_strings']));
-            }
-
-            const stream = !!request.body.stream;
-            request.body = { ...params, stream, api_type: selectedApiMap.type, api_server: apiServerUrl };
-        } else if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
+        if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
             const {
                 character_avatar: characterAvatar, group_id: groupId, type = 'normal',
             } = request.body;

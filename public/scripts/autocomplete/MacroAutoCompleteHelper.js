@@ -26,7 +26,7 @@ import { macros as macroSystem } from '../macros/macro-system.js';
 import { MacroFlagDefinitions, MacroFlagType } from '../macros/engine/MacroFlags.js';
 import { MacroParser } from '../macros/engine/MacroParser.js';
 import { MacroCstWalker } from '../macros/engine/MacroCstWalker.js';
-import { extension_settings } from '../extensions.js';
+import { extension_settings } from '../extension-settings.js';
 
 /** @typedef {import('./EnhancedMacroAutoCompleteOption.js').MacroAutoCompleteContext} MacroAutoCompleteContext */
 /** @typedef {import('./EnhancedMacroAutoCompleteOption.js').EnhancedMacroAutoCompleteOptions} EnhancedMacroAutoCompleteOptions */
@@ -89,7 +89,7 @@ export function findUnclosedScopes(textUpToCursor) {
  * @param {string} text - The text to analyze.
  * @returns {Array<{ name: string, startOffset: number, endOffset: number, paddingBefore: string, paddingAfter: string }>}
  */
-export function findUnclosedScopesRegex(text) {
+function findUnclosedScopesRegex(text) {
     // Regex to find macro openings and closings, capturing whitespace padding
     // Group 1: padding after {{, Group 2: optional /, Group 3: macro name
     const macroPattern = /\{\{(\s*)(\/?)([\w-]+)/g;
@@ -208,7 +208,7 @@ function filterOptionalScopes(unclosedScopes, textUpToCursor, isForced) {
  * @param {string} [opts.paddingAfter=''] - Whitespace to add before closing }}.
  * @returns {AnyMacroAutoCompleteOption[]}
  */
-export function buildVariableShorthandOptions(context, opts = {}) {
+function buildVariableShorthandOptions(context, opts = {}) {
     const { forIfCondition = false, paddingAfter = '' } = opts;
     /** @type {AnyMacroAutoCompleteOption[]} */
     const options = [];
@@ -457,7 +457,7 @@ export function buildVariableShorthandOptions(context, opts = {}) {
  * @param {boolean} [opts.isForced=false] - Whether autocomplete was force-triggered (Ctrl+Space).
  * @returns {AnyMacroAutoCompleteOption[]}
  */
-export function buildEnhancedMacroOptions(context, textUpToCursor, { isForced = false } = {}) {
+function buildEnhancedMacroOptions(context, textUpToCursor, { isForced = false } = {}) {
     /** @type {AnyMacroAutoCompleteOption[]} */
     const options = [];
 
@@ -675,7 +675,7 @@ export function buildEnhancedMacroOptions(context, textUpToCursor, { isForced = 
  * @param {string} macroInnerText - The text inside the macro braces (e.g., "  if  pers" from "{{  if  pers").
  * @returns {AutoCompleteOption[]}
  */
-export function buildIfConditionOptions(context, allMacros, macroInnerText) {
+function buildIfConditionOptions(context, allMacros, macroInnerText) {
     /** @type {AutoCompleteOption[]} */
     const options = [];
 
@@ -877,7 +877,7 @@ export function findMacroAtCursor(text, cursorPos) {
  * @param {'local'|'global'} scope - The variable scope.
  * @returns {string[]} Array of variable names.
  */
-export function getVariableNames(scope) {
+function getVariableNames(scope) {
     try {
         // Import chat_metadata and extension_settings dynamically to avoid circular deps
         // These are the same sources used by commonEnumProviders.variables

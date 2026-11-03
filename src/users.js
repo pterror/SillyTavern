@@ -23,7 +23,6 @@ import { allowKeysExposure, readSecret, writeSecret, SECRETS_FILE } from './endp
 import { getContentOfType } from './endpoints/content-manager.js';
 import { serverDirectory } from './server-directory.js';
 import { filterValidIpPatterns, getIpFromRequest } from './express-common.js';
-import { extensionsEnabledFeatureGuard } from './endpoints/extensions.js';
 
 export const KEY_PREFIX = 'user:';
 const AVATAR_PREFIX = 'avatar:';
@@ -90,7 +89,6 @@ const STORAGE_KEYS = {
  * @property {string} openAI_Settings - The directory where the OpenAI settings are stored
  * @property {string} textGen_Settings - The directory where the TextGen settings are stored
  * @property {string} themes - The directory where the themes are stored
- * @property {string} extensions - The directory where the extensions are stored
  * @property {string} instruct - The directory where the instruct templates is stored
  * @property {string} context - The directory where the context templates is stored
  * @property {string} quickreplies - The directory where the quick replies are stored
@@ -108,7 +106,7 @@ const STORAGE_KEYS = {
  * @returns {Promise<import('./users.js').UserDirectoryList[]>} - The list of user directories
  */
 export async function ensurePublicDirectoriesExist() {
-    for (const dir of [...Object.values(PUBLIC_DIRECTORIES), globalThis.GLOBAL_EXTENSIONS_PATH]) {
+    for (const dir of Object.values(PUBLIC_DIRECTORIES)) {
         if (!fs.existsSync(dir)) {
             fs.mkdirSync(dir, { recursive: true });
         }
@@ -338,11 +336,6 @@ export async function migrateUserData() {
             new: userDirectories.worlds,
             file: false,
             importWorlds: true,
-        },
-        {
-            old: path.join(publicDirectory, 'scripts/extensions/third-party'),
-            new: userDirectories.extensions,
-            file: false,
         },
         {
             old: path.join(process.cwd(), 'thumbnails'),
@@ -1126,41 +1119,6 @@ function characterFilesHandler() {
 }
 
 /**
- * Creates a route handler for serving extensions.
- * @param {(req: import('express').Request) => string} directoryFn A function that returns the directory path to serve files from
- * @returns {import('express').RequestHandler}
- */
-function createExtensionsRouteHandler(directoryFn) {
-    return async (req, res) => {
-        try {
-            const directory = directoryFn(req);
-            const filePath = decodeURIComponent(req.params[0]);
-            const localPath = path.join(directory, filePath);
-            if (!isPathUnderParent(directory, path.resolve(localPath))) {
-                return res.sendStatus(403);
-            }
-            const existsLocal = fs.existsSync(localPath);
-            if (existsLocal) {
-                return res.sendFile(filePath, { root: directory });
-            }
-
-            const globalPath = path.join(globalThis.GLOBAL_EXTENSIONS_PATH, filePath);
-            if (!isPathUnderParent(globalThis.GLOBAL_EXTENSIONS_PATH, path.resolve(globalPath))) {
-                return res.sendStatus(403);
-            }
-            const existsGlobal = fs.existsSync(globalPath);
-            if (existsGlobal) {
-                return res.sendFile(filePath, { root: globalThis.GLOBAL_EXTENSIONS_PATH });
-            }
-
-            return res.sendStatus(404);
-        } catch (error) {
-            return res.sendStatus(500);
-        }
-    };
-}
-
-/**
  * Verifies that the current user is an admin.
  * @param {import('express').Request} request Request object
  * @param {import('express').Response} response Response object
@@ -1256,4 +1214,3 @@ router.use('/User%20Avatars/*', createRouteHandler(req => req.user.directories.a
 router.use('/assets/*', createRouteHandler(req => req.user.directories.assets));
 router.use('/user/images/*', createRouteHandler(req => req.user.directories.userImages));
 router.use('/user/files/*', createRouteHandler(req => req.user.directories.files));
-router.use('/scripts/extensions/third-party/*', extensionsEnabledFeatureGuard, createExtensionsRouteHandler(req => req.user.directories.extensions));

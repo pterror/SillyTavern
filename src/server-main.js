@@ -71,7 +71,7 @@ import { router as usersPublicRouter } from './endpoints/users-public.js';
 import { init as statsInit, onExit as statsOnExit } from './endpoints/stats.js';
 import { checkForNewContent } from './endpoints/content-manager.js';
 import { init as settingsInit } from './endpoints/settings.js';
-import { redirectDeprecatedEndpoints, ServerStartup, setupPrivateEndpoints } from './server-startup.js';
+import { ServerStartup, setupPrivateEndpoints } from './server-startup.js';
 import { diskCache, dropStoppedRuns, startDroppedWatch, stopDroppedWatches } from './endpoints/characters.js';
 import { OldFormatError, assertConverted, closeUserStores, resumeStoreWork, setStoreEngine } from './user-stores.js';
 import { openSettingsDocument } from './settings-document.js';
@@ -221,9 +221,7 @@ const frontendAssets = new FrontendAssets({
     publicDirectory: path.join(serverDirectory, 'public'),
     libraryDirectory: () => servedUi?.libraries.directory,
     libraryFiles: () => servedUi?.libraries.files ?? [],
-    globalExtensionsDirectory: () => globalThis.GLOBAL_EXTENSIONS_PATH,
     userCssPath: () => path.join(globalThis.DATA_ROOT, '_css', 'user.css'),
-    extensionsEnabled: () => !!getConfigValue('extensions.enabled', true, 'boolean'),
     moduleAliases: () => (servedUi ? { [UI_ENTRY]: servedUi.entry() } : {}),
 });
 
@@ -236,7 +234,7 @@ app.get('/', cacheBuster.middleware, async (request, response, next) => {
     }
 
     try {
-        const { body, buildId } = await frontendAssets.renderIndex(path.join(serverDirectory, 'public', 'index.html'), request.user?.directories);
+        const { body, buildId } = await frontendAssets.renderIndex(path.join(serverDirectory, 'public', 'index.html'));
         response.setHeader('Cache-Control', 'no-cache');
         response.setHeader('ETag', `"${buildId}"`);
         response.type('html');
@@ -254,7 +252,7 @@ app.get('/api/frontend/build', async (request, response, next) => {
         return response.sendStatus(403);
     }
     try {
-        const { buildId } = await frontendAssets.renderIndex(path.join(serverDirectory, 'public', 'index.html'), request.user?.directories);
+        const { buildId } = await frontendAssets.renderIndex(path.join(serverDirectory, 'public', 'index.html'));
         response.setHeader('Cache-Control', 'no-store');
         return response.json({ buildId });
     } catch (error) {
@@ -316,7 +314,6 @@ app.get('/version', async function (_, response) {
     response.send(data);
 });
 
-redirectDeprecatedEndpoints(app);
 setupPrivateEndpoints(app);
 
 /**
@@ -413,7 +410,6 @@ async function preSetupTasks() {
         logAllowed: !!getConfigValue('privateAddressWhitelist.log.allowedRequests', false, 'boolean'),
         allowUnresolvedHosts: !!getConfigValue('privateAddressWhitelist.allowUnresolvedHosts', false, 'boolean'),
         enableKeepAlive: cliArgs.enableKeepAlive,
-        requestProxyEnabled: !!cliArgs.requestProxyEnabled,
     };
     initPrivateRequestFilter(requestFilterOptions);
 

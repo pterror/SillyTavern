@@ -12,7 +12,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', 'Hello there.');
@@ -30,7 +30,7 @@ async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
@@ -49,7 +49,7 @@ async function reopenChat(page) {
 async function replyState(page, avatar) {
     return page.evaluate(async (avatar) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const at = context.chat.findIndex(m => !m.is_user && m.mes?.includes('Two days'));
         const m = context.chat[at];
         const block = document.querySelector(`#chat .mes[mesid="${at}"]`);
@@ -85,7 +85,7 @@ for (const autoParse of [false, true]) {
 
         await page.evaluate(async ({ avatar, autoParse }) => {
             // @ts-ignore
-            const context = SillyTavern.getContext();
+            const context = stTest.context();
             context.powerUserSettings.reasoning.auto_parse = autoParse;
             const { ensureOpeningRow } = await import('/scripts/chat-store.js');
             const opening = await ensureOpeningRow(0);
@@ -105,7 +105,7 @@ for (const autoParse of [false, true]) {
 
         await page.evaluate(async () => {
             // @ts-ignore
-            const context = SillyTavern.getContext();
+            const context = stTest.context();
             const at = context.chat.findIndex(m => !m.is_user && m.mes?.includes('Two days'));
             const { updateMessageBlock } = await import('/script.js');
             updateMessageBlock(at, context.chat[at]);
@@ -121,7 +121,7 @@ for (const autoParse of [false, true]) {
         await expect(page.locator('#chat .mes')).toHaveCount(2, { timeout: 10000 });
         await expect.poll(() => page.evaluate(() => {
             // @ts-ignore
-            const m = SillyTavern.getContext().chat[1];
+            const m = stTest.context().chat[1];
             return m.mes === 'How far is the city?' && m.node_id === m.swipe_info?.[m.swipe_id]?.node_id;
         }), { timeout: 10000 }).toBe(true);
         expect(await page.evaluate(async () => {

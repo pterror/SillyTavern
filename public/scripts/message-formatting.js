@@ -1,9 +1,6 @@
-import { systemUserName, substituteParams, setMesForShowdownParse } from '../script.js';
-import { chat } from './chat-state.js';
+import { systemUserName, substituteParams } from '../script.js';
 import { COMMENT_NAME_DEFAULT } from './slash-commands.js';
-import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { decodeStyleTags, encodeStyleTags } from './chats.js';
-import { MessageFormatter } from './message-formatter.js';
 import { power_user } from './power-user.js';
 import { escapeRegex, escapeHtml, canUseNegativeLookbehind } from './utils.js';
 import { DOMPurify } from '../lib.js';
@@ -34,8 +31,6 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, san
         mes = substituteParams(mes, undefined, ch_name);
     }
 
-    setMesForShowdownParse(mes);
-
     if (ch_name === COMMENT_NAME_DEFAULT && isSystem && !isUser) {
         isSystem = false;
     }
@@ -47,44 +42,6 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, san
     const replacedPromptBias = power_user.user_prompt_bias && substituteParams(power_user.user_prompt_bias);
     if (!power_user.show_user_prompt_bias && ch_name && !isUser && !isSystem && replacedPromptBias && mes.startsWith(replacedPromptBias)) {
         mes = mes.slice(replacedPromptBias.length);
-    }
-
-    if (!isSystem) {
-        function getRegexPlacement() {
-            try {
-                if (isReasoning) {
-                    return regex_placement.REASONING;
-                }
-                if (isUser) {
-                    return regex_placement.USER_INPUT;
-                } else if (chat[messageId]?.extra?.type === 'narrator') {
-                    return regex_placement.SLASH_COMMAND;
-                } else {
-                    return regex_placement.AI_OUTPUT;
-                }
-            } catch {
-                return regex_placement.AI_OUTPUT;
-            }
-        }
-
-        const regexPlacement = getRegexPlacement();
-        const usableMessages = chat.map((x, index) => ({ message: x, index: index })).filter(x => !x.message.is_system);
-        const indexOf = usableMessages.findIndex(x => x.index === Number(messageId));
-        const depth = messageId >= 0 && indexOf !== -1 ? (usableMessages.length - indexOf - 1) : undefined;
-
-        mes = MessageFormatter.runStage(MessageFormatter.stage.BEFORE_REGEX, mes,
-            { ch_name, isSystem, isUser, messageId, isReasoning },
-        );
-
-        mes = getRegexedString(mes, regexPlacement, {
-            characterOverride: ch_name,
-            isMarkdown: true,
-            depth: depth,
-        });
-
-        mes = MessageFormatter.runStage(MessageFormatter.stage.AFTER_REGEX, mes,
-            { ch_name, isSystem, isUser, messageId, isReasoning },
-        );
     }
 
     if (!isSystem && power_user.encode_tags) {
@@ -147,10 +104,6 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, san
         mes = mes.replace(/<code(.*)>[\s\S]*?<\/code>/g, function (match) {
             return match.replace(/&amp;/g, '&');
         });
-
-        mes = MessageFormatter.runStage(MessageFormatter.stage.AFTER_MARKDOWN, mes,
-            { ch_name, isSystem, isUser, messageId, isReasoning },
-        );
     }
 
     if (!power_user.allow_name2_display && ch_name && !isUser && !isSystem) {

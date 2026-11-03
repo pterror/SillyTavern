@@ -892,7 +892,7 @@ export class Popup {
     };
 }
 
-export class PopupUtils {
+class PopupUtils {
     /**
      * Builds popup content with header and text below
      *
@@ -933,7 +933,7 @@ export function callGenericPopup(content, type, inputValue = '', popupOptions = 
  *
  * @return {HTMLElement} The topmost modal layer element
  */
-export function getTopmostModalLayer() {
+function getTopmostModalLayer() {
     const dlg = Array.from(document.querySelectorAll('dialog[open]:not([closing])')).pop();
     if (dlg instanceof HTMLElement) return dlg;
     return document.body;

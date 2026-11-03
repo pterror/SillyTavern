@@ -19,14 +19,12 @@ import {
     extension_prompt_roles,
     deleteMessage,
     getMessageDeletionStartId,
-    storePageChatChanges,
 } from '../script.js';
 import { printCharactersDebounced, printCharacters, entitiesFilter, resetCharacterListPositionOnNextPrint } from './character-list.js';
 import { chat } from './chat-state.js';
 import { setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
-import { characters, charactersStore, setCharacterId, setRecentCharacters, getRecentCharacters, holdCharacter } from './character-store.js';
-import { eventSource, event_types } from './events.js';
+import { characters, charactersStore, setCharacterId } from './character-store.js';
 import { isMobile, renderHotswap, countCharTokensWhenShown, onCharacterEditorMaybeShown, onStackedDrawersChanged } from './RossAscends-mods.js';
 import { drawerStackChanged } from './drawer-stack.js';
 import {
@@ -156,8 +154,6 @@ export const power_user = {
     chat_width: 50,
     chat_width_max: 120,
     show_card_avatar_urls: false,
-    hold_recent_characters: false,
-    hold_recent_characters_count: 100,
     play_message_sound: false,
     play_sound_unfocused: true,
     auto_save_msg_edits: false,
@@ -444,8 +440,6 @@ function makePersonasCompatProxy() {
                 personaStore.update(prop, { name });
             } else {
                 personaStore.create(prop, { ...defaultPersonaRecord(), name });
-                eventSource.emit(event_types.PERSONA_CREATED, { avatarId: prop, name, description: '', title: '' })
-                    .catch(err => console.error('PERSONA_CREATED listener failed', err));
             }
             saveSettingsDebounced('power_user.personas');
             return true;
@@ -456,8 +450,6 @@ function makePersonasCompatProxy() {
             if (entity) {
                 personaStore.remove(prop);
                 saveSettingsDebounced('power_user.personas');
-                eventSource.emit(event_types.PERSONA_DELETED, { avatarId: prop, name: entity.name })
-                    .catch(err => console.error('PERSONA_DELETED listener failed', err));
             }
             return true;
         },
@@ -492,9 +484,6 @@ function makePersonaDescriptionsCompatProxy() {
                 personaStore.update(prop, patch);
             } else {
                 personaStore.create(prop, { ...defaultPersonaRecord(), ...value, name: '' });
-                eventSource.emit(event_types.PERSONA_CREATED, {
-                    avatarId: prop, name: '', description: value?.description ?? '', title: value?.title ?? '',
-                }).catch(err => console.error('PERSONA_CREATED listener failed', err));
             }
             saveSettingsDebounced('power_user.persona_descriptions');
             return true;
@@ -505,8 +494,6 @@ function makePersonaDescriptionsCompatProxy() {
             if (entity) {
                 personaStore.remove(prop);
                 saveSettingsDebounced('power_user.persona_descriptions');
-                eventSource.emit(event_types.PERSONA_DELETED, { avatarId: prop, name: entity.name })
-                    .catch(err => console.error('PERSONA_DELETED listener failed', err));
             }
             return true;
         },
@@ -1726,58 +1713,6 @@ function getExampleMessagesBehavior() {
 }
 
 //MARK: loadPowerUser
-const MAX_RECENT_CHARACTERS = 5000;
-const RECENT_CHARACTERS_PAGE_SIZE = 500;
-
-/**
- * @param {any} value
- * @returns {number}
- */
-function clampRecentCharacterCount(value) {
-    const count = Math.trunc(Number(value));
-    if (!Number.isFinite(count) || count < 1) return 1;
-    return Math.min(count, MAX_RECENT_CHARACTERS);
-}
-
-let holdRecentCharactersRun = 0;
-
-async function applyHoldRecentCharacters() {
-    const run = ++holdRecentCharactersRun;
-    const limit = power_user.hold_recent_characters ? clampRecentCharacterCount(power_user.hold_recent_characters_count) : 0;
-    setRecentCharacters(limit, getRecentCharacters());
-    if (limit === 0) return;
-
-    try {
-        /** @type {string[]} */
-        const avatars = [];
-        const pageSize = Math.min(RECENT_CHARACTERS_PAGE_SIZE, limit);
-        for (let page = 1; avatars.length < limit; page++) {
-            const result = await characterRepository.query({}, { field: 'date_last_chat', order: 'desc' }, page, pageSize, ['rows']);
-            if (run !== holdRecentCharactersRun) return;
-            const rows = Array.isArray(result.rows) ? result.rows : [];
-            for (const row of rows) {
-                const avatar = /** @type {any} */ (row)?.avatar;
-                if (typeof avatar === 'string' && avatar !== '') avatars.push(avatar);
-            }
-            if (rows.length < pageSize) break;
-        }
-        setRecentCharacters(limit, [...getRecentCharacters(), ...avatars]);
-
-        const missing = getRecentCharacters().filter(avatar => !charactersStore.has(avatar));
-        const full = await characterRepository.readFull(missing);
-        if (run !== holdRecentCharactersRun) return;
-        const wanted = new Set(getRecentCharacters());
-        for (const character of full.values()) {
-            if (wanted.has(character.avatar)) holdCharacter(character);
-        }
-    } catch (error) {
-        console.error('Could not load the recently used characters:', error);
-        if (run === holdRecentCharactersRun) {
-            toastr.error(t`Could not load the recently used characters. Extensions only see the current character for now.`);
-        }
-    }
-}
-
 export async function loadPowerUserSettings(settings, data) {
     const defaultStscript = JSON.parse(JSON.stringify(power_user.stscript));
     // Load from settings.json
@@ -1937,9 +1872,6 @@ export async function loadPowerUserSettings(settings, data) {
     $('#play_message_sound').prop('checked', power_user.play_message_sound);
     $('#play_sound_unfocused').prop('checked', power_user.play_sound_unfocused);
     $('#show_card_avatar_urls').prop('checked', power_user.show_card_avatar_urls);
-    $('#hold_recent_characters').prop('checked', !!power_user.hold_recent_characters);
-    $('#hold_recent_characters_count').val(clampRecentCharacterCount(power_user.hold_recent_characters_count));
-    applyHoldRecentCharacters();
     $('#auto_save_msg_edits').prop('checked', power_user.auto_save_msg_edits);
     $('#media_volume').val(power_user.media_volume);
     $('#media_volume_counter').val(power_user.media_volume);
@@ -3518,21 +3450,6 @@ jQuery(() => {
         saveSettingsDebounced('power_user.show_card_avatar_urls');
     });
 
-    $('#hold_recent_characters').on('input', function () {
-        power_user.hold_recent_characters = !!$(this).prop('checked');
-        saveSettingsDebounced('power_user.hold_recent_characters');
-        applyHoldRecentCharacters();
-    });
-
-    $('#hold_recent_characters_count').on('change', function () {
-        const count = clampRecentCharacterCount($(this).val());
-        $(this).val(count);
-        if (count === power_user.hold_recent_characters_count) return;
-        power_user.hold_recent_characters_count = count;
-        saveSettingsDebounced('power_user.hold_recent_characters_count');
-        applyHoldRecentCharacters();
-    });
-
     $('#play_message_sound').on('input', function () {
         power_user.play_message_sound = !!$(this).prop('checked');
         saveSettingsDebounced('power_user.play_message_sound');
@@ -3655,7 +3572,6 @@ jQuery(() => {
     $('#reload_chat').on('click', async function () {
         const currentChatId = getCurrentChatId();
         if (currentChatId !== undefined && currentChatId !== null) {
-            await storePageChatChanges();
             await reloadCurrentChat();
         }
     });

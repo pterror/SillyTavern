@@ -5,7 +5,7 @@ import { testSetup } from './frontent-test-utils.js';
 
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise(resolve => {
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, resolve);
     }));
 }
@@ -74,79 +74,5 @@ test.describe('frontend cache', () => {
         } finally {
             fs.rmSync(userCss, { force: true });
         }
-    });
-});
-
-test.describe('frontend cache and extensions', () => {
-    /**
-     * @param {string} dataRoot
-     * @param {string} name
-     * @returns {string}
-     */
-    function writeProbeExtension(dataRoot, name) {
-        const directory = path.join(dataRoot, 'default-user', 'extensions', name);
-        fs.mkdirSync(directory, { recursive: true });
-        fs.writeFileSync(path.join(directory, 'index.js'), [
-            'import { eventSource } from \'../../../../script.js\';',
-            'export const sameInstance = eventSource === window.SillyTavern.getContext().eventSource;',
-            `export const written = ${Date.now()};`,
-        ].join('\n'));
-        return directory;
-    }
-
-    /**
-     * @param {import('@playwright/test').Page} page
-     * @param {string} name
-     */
-    function importProbe(page, name) {
-        return page.evaluate(async url => {
-            try {
-                const module = await import(url);
-                return { sameInstance: module.sameInstance, error: null };
-            } catch (error) {
-                return { sameInstance: null, error: String(error) };
-            }
-        }, `/scripts/extensions/third-party/${name}/index.js`);
-    }
-
-    const created = [];
-    test.afterEach(() => {
-        for (const directory of created.splice(0)) {
-            fs.rmSync(directory, { recursive: true, force: true });
-        }
-    });
-
-    test('an extension importing our modules by relative path gets the page\'s own copy, versioned or not', async ({ page, stServer }) => {
-        created.push(writeProbeExtension(stServer.dataRoot, 'CacheProbeBefore'));
-        await testSetup.awaitST({ page });
-        await awaitAppReady(page);
-        expect(await page.evaluate(() => JSON.parse(document.querySelector('script[type="importmap"]').textContent).imports['/scripts/extensions/third-party/CacheProbeBefore/index.js'])).toMatch(/\?stv=/);
-        expect(await importProbe(page, 'CacheProbeBefore')).toEqual({ sameInstance: true, error: null });
-
-        created.push(writeProbeExtension(stServer.dataRoot, 'CacheProbeAfter'));
-        expect(await importProbe(page, 'CacheProbeAfter')).toEqual({ sameInstance: true, error: null });
-    });
-
-    test('a file changed under an open page fails to load instead of mixing versions, and the page asks for a reload', async ({ page, stServer }) => {
-        const directory = writeProbeExtension(stServer.dataRoot, 'CacheProbeStale');
-        created.push(directory);
-        await testSetup.awaitST({ page });
-        await awaitAppReady(page);
-        await expect(page.locator('body')).not.toHaveAttribute('data-frontend-outdated', 'true');
-
-        writeProbeExtension(stServer.dataRoot, 'CacheProbeStale');
-        const later = new Date(Date.now() + 5000);
-        fs.utimesSync(path.join(directory, 'index.js'), later, later);
-
-        const result = await importProbe(page, 'CacheProbeStale');
-        expect(result.sameInstance).toBeNull();
-        await expect(page.locator('body')).toHaveAttribute('data-frontend-outdated', 'true');
-        await expect(page.locator('#toast-container')).toContainText('SillyTavern was updated');
-        expect(await page.locator('dialog[open]').count()).toBe(0);
-
-        await page.locator('#toast-container .stReloadPage').click();
-        await page.waitForLoadState('load');
-        await awaitAppReady(page);
-        expect(await importProbe(page, 'CacheProbeStale')).toEqual({ sameInstance: true, error: null });
     });
 });

@@ -63,7 +63,7 @@ async function createCharacterAndCloseEditor(page) {
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button').evaluate(el => el.click());
-    await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
+    await page.waitForFunction(n => window['stTest'].context().name2 === n, name);
     await openInfoTab(page, 'description');
     await page.locator('.field_edit_toggle[data-for="description_textarea"]').click();
     await page.locator('#description_textarea').fill(`A test character. ${marker}`);
@@ -133,7 +133,7 @@ test.describe('character editor counts while showing', () => {
 
         await page.reload();
         await page.waitForFunction('document.getElementById("preloader") === null', { timeout: 0 });
-        await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
+        await page.waitForFunction(n => window['stTest'].context().name2 === n, name);
         await page.waitForTimeout(QUIET_MS);
 
         expect((await countsOf(page, marker)).filter(c => !c.showing)).toEqual([]);

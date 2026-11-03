@@ -38,7 +38,6 @@ jest.unstable_mockModule('../public/scripts/tokenizers.js', () => ({
     showDroppedEntries: jest.fn(),
     tokenizers: { NONE: 0 },
 }));
-jest.unstable_mockModule('../public/scripts/sse-stream.js', () => ({ getEventSourceStream: jest.fn() }));
 jest.unstable_mockModule('../public/scripts/utils.js', () => ({
     getSortableDelay: jest.fn(),
     onlyUnique: jest.fn(),

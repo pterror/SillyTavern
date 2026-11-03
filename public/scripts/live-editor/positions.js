@@ -3,7 +3,7 @@
  * @param {MouseEvent} event
  * @returns {{ text: string, offset: number }}
  */
-export function renderedOffset(dom, event) {
+function renderedOffset(dom, event) {
     const whole = document.createRange();
     whole.selectNodeContents(dom);
     const text = whole.toString();

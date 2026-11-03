@@ -174,7 +174,7 @@ export async function applyPowerUser(values) {
  */
 export async function applyChatMetadata(values) {
     // @ts-ignore
-    const context = SillyTavern.getContext();
+    const context = stTest.context();
     Object.assign(context.chatMetadata, values);
     await context.saveMetadata();
     if (typeof values.note_prompt === 'string') $('#extension_floating_prompt').val(values.note_prompt);
@@ -185,7 +185,7 @@ export async function applyChatMetadata(values) {
  */
 export async function createLorebook(book) {
     // @ts-ignore
-    const context = SillyTavern.getContext();
+    const context = stTest.context();
     /** @type {Record<string, unknown>} */
     const entries = {};
     book.entries.forEach((entry, uid) => {

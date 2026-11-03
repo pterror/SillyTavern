@@ -7,7 +7,7 @@ test.describe('deleting assistant messages with tool calls', () => {
     test('deletes preceding tool calls unless explicitly disabled', async ({ page }) => {
         const result = await page.evaluate(async () => {
             const { addOneMessage, chat, deleteMessage, newAssistantChat } = await import('./script.js');
-            const commands = window.SillyTavern.getContext().SlashCommandParser.commands;
+            const commands = window.stTest.context().SlashCommandParser.commands;
             const testMessages = new Set(['Run a tool', 'Tool result', 'Done']);
             const snapshot = () => chat
                 .filter(message => testMessages.has(message.mes))
@@ -61,7 +61,7 @@ test.describe('deleting assistant messages with tool calls', () => {
                 await new Promise(resolve => setTimeout(resolve, 10));
             }
             lastMessage.trigger('click');
-            const { eventSource, eventTypes } = window.SillyTavern.getContext();
+            const { eventSource, eventTypes } = window.stTest.context();
             const deleted = new Promise(resolve => eventSource.once(eventTypes.MESSAGE_DELETED, resolve));
             document.querySelector('#dialogue_del_mes_ok').click();
             await deleted;

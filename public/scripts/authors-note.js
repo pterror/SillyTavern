@@ -6,10 +6,13 @@ import {
     saveSettingsDebounced,
     getCurrentCharacter,
     getSelectionState,
+    setExtensionPrompt,
 } from '../script.js';
-import { chat_metadata } from './chat-state.js';
+import { chat, chat_metadata } from './chat-state.js';
 import { eventSource, event_types } from './events.js';
-import { extension_settings, getContext, saveMetadataDebounced } from './extensions.js';
+import { extension_settings } from './extension-settings.js';
+import { saveMetadataDebounced } from './metadata-store.js';
+import { selected_group } from './group-chats.js';
 import { getCharaFilename, debounce, delay } from './utils.js';
 import { getRememberedTokenizerAnswer, getTokenCountWithAnswer } from './tokenizers.js';
 import { renderCountBasis } from './tokenizer-notices.js';
@@ -311,7 +314,7 @@ function loadSettings() {
     $('#extension_floating_role').val(chat_metadata[metadata_keys.role]);
     $(`input[name="extension_floating_position"][value="${chat_metadata[metadata_keys.position]}"]`).prop('checked', true);
 
-    if (extension_settings.note.chara && getContext().characterId !== undefined) {
+    if (extension_settings.note.chara && getCurrentCharacter() !== undefined) {
         const charaNote = extension_settings.note.chara.find((e) => e.name === getCharaFilename());
 
         $('#extension_floating_chara').val(charaNote ? charaNote.prompt : '');
@@ -331,14 +334,13 @@ function loadSettings() {
 }
 
 export function setFloatingPrompt() {
-    const context = getContext();
-    if (!context.groupId && context.characterId === undefined) {
+    if (!selected_group && getCurrentCharacter() === undefined) {
         shouldWIAddPrompt = false;
         return;
     }
 
     // take the count of messages
-    let lastMessageNumber = Array.isArray(context.chat) && context.chat.length ? context.chat.filter(m => m.is_user).length : 0;
+    let lastMessageNumber = chat.length ? chat.filter(m => m.is_user).length : 0;
 
     // interval 1 should be inserted no matter what
     if (chat_metadata[metadata_keys.interval] === 1) {
@@ -346,7 +348,7 @@ export function setFloatingPrompt() {
     }
 
     if (lastMessageNumber <= 0 || chat_metadata[metadata_keys.interval] <= 0) {
-        context.setExtensionPrompt(MODULE_NAME, '', extension_prompt_types.NONE, MAX_INJECTION_DEPTH);
+        setExtensionPrompt(MODULE_NAME, '', extension_prompt_types.NONE, MAX_INJECTION_DEPTH);
         $('#extension_floating_counter').text('(disabled)');
         shouldWIAddPrompt = false;
         return;
@@ -359,7 +361,7 @@ export function setFloatingPrompt() {
     shouldWIAddPrompt = shouldAddPrompt;
 
     let prompt = shouldAddPrompt ? $('#extension_floating_prompt').val() : '';
-    if (shouldAddPrompt && extension_settings.note.chara && getContext().characterId !== undefined) {
+    if (shouldAddPrompt && extension_settings.note.chara && getCurrentCharacter() !== undefined) {
         const charaNote = extension_settings.note.chara.find((e) => e.name === getCharaFilename());
 
         // Only replace with the chara note if the user checked the box
@@ -377,7 +379,7 @@ export function setFloatingPrompt() {
             }
         }
     }
-    context.setExtensionPrompt(
+    setExtensionPrompt(
         MODULE_NAME,
         String(prompt),
         chat_metadata[metadata_keys.position],
@@ -433,10 +435,9 @@ function onANMenuItemClick() {
 async function onChatChanged() {
     loadSettings();
     setFloatingPrompt();
-    const context = getContext();
 
     // Disable the chara note if in a group
-    $('#extension_floating_chara').prop('disabled', !!context.groupId);
+    $('#extension_floating_chara').prop('disabled', !!selected_group);
 
     // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
     const { count: tokenCounter1, answer: answer1 } = chat_metadata[metadata_keys.prompt] ? await getTokenCountWithAnswer(chat_metadata[metadata_keys.prompt]) : { count: 0, answer: getRememberedTokenizerAnswer() };
@@ -446,7 +447,7 @@ async function onChatChanged() {
     let tokenCounter2;
     let answer2 = null;
     let counted2 = false;
-    if (extension_settings.note.chara && context.characterId !== undefined) {
+    if (extension_settings.note.chara && getCurrentCharacter() !== undefined) {
         const charaNote = extension_settings.note.chara.find((e) => e.name === getCharaFilename());
 
         if (charaNote) {

@@ -16,7 +16,7 @@ test('a click on Send during a swipe is queued, and sent once the swipe is done'
         await openCharacter(page, avatar);
         await connectLlamaCpp(page, mock.url);
         // @ts-ignore
-        await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = false; });
+        await page.evaluate(() => { stTest.context().textCompletionSettings.streaming = false; });
 
         await chatBox(page).fill(`First question ${stamp}`);
         await page.locator('#send_but').click();

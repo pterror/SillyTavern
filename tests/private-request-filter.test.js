@@ -31,8 +31,6 @@ jest.unstable_mockModule('../src/express-common.js', () => ({
 
 /** @type {import('../src/private-request-filter.js').default} */
 let initPrivateRequestFilter;
-/** @type {import('../src/private-request-filter.js').getUntrustedRequestAgent} */
-let getUntrustedRequestAgent;
 /** @type {import('node:http').default} */
 let http;
 /** @type {import('node:https').default} */
@@ -41,7 +39,7 @@ let originalHttpGlobalAgent;
 let originalHttpsGlobalAgent;
 
 beforeAll(async () => {
-    ({ default: initPrivateRequestFilter, getUntrustedRequestAgent } = await import('../src/private-request-filter.js'));
+    ({ default: initPrivateRequestFilter } = await import('../src/private-request-filter.js'));
     ({ default: http } = await import('node:http'));
     ({ default: https } = await import('node:https'));
     originalHttpGlobalAgent = http.globalAgent;
@@ -61,7 +59,7 @@ afterAll(() => {
     https.globalAgent = originalHttpsGlobalAgent;
 });
 
-function initAgent({ privateAddressWhitelist = [], allowUnresolvedHosts = false, enabled = true, requestProxyEnabled = false } = {}) {
+function initAgent({ privateAddressWhitelist = [], allowUnresolvedHosts = false, enabled = true } = {}) {
     initPrivateRequestFilter({
         listen: false,
         enabled,
@@ -69,7 +67,6 @@ function initAgent({ privateAddressWhitelist = [], allowUnresolvedHosts = false,
         logBlocked: false,
         logAllowed: false,
         allowUnresolvedHosts,
-        requestProxyEnabled,
     });
 
     return http.globalAgent;
@@ -129,71 +126,5 @@ describe('private request filter', () => {
         expect(mockLookup).toHaveBeenCalledWith('example.com');
         expect(mockTlsConnect).toHaveBeenCalledWith(expect.objectContaining({ host: '93.184.216.34' }));
         expect(mockNetConnect).not.toHaveBeenCalled();
-    });
-});
-
-describe('untrusted request agent', () => {
-    test('returns undefined when the private request filter is enabled', () => {
-        initAgent({ enabled: true });
-        expect(getUntrustedRequestAgent()).toBeUndefined();
-    });
-
-    test('returns undefined when a request proxy owns outbound routing', () => {
-        initAgent({ enabled: false, requestProxyEnabled: true });
-        expect(getUntrustedRequestAgent()).toBeUndefined();
-    });
-
-    test('returns the same strict agent instance when the filter is disabled', () => {
-        initAgent({ enabled: false });
-        const agent = getUntrustedRequestAgent();
-        expect(agent).toBeDefined();
-        expect(getUntrustedRequestAgent()).toBe(agent);
-    });
-
-    test('blocks private addresses even when the configured whitelist allows them', async () => {
-        initAgent({ enabled: false, privateAddressWhitelist: ['127.0.0.0/8', '::1/128'] });
-        const agent = getUntrustedRequestAgent();
-
-        await expect(agent.connect({}, { host: '127.0.0.1', secureEndpoint: false }))
-            .rejects
-            .toThrow('Blocked request to private IP address: 127.0.0.1');
-        await expect(agent.connect({}, { host: '::1', secureEndpoint: false }))
-            .rejects
-            .toThrow('Blocked request to private IP address: ::1');
-        expect(mockNetConnect).not.toHaveBeenCalled();
-    });
-
-    test('blocks hostnames that resolve to private addresses', async () => {
-        initAgent({ enabled: false });
-        mockLookup.mockResolvedValue({ address: '192.168.1.8' });
-        const agent = getUntrustedRequestAgent();
-
-        await expect(agent.connect({}, { host: 'internal.example.com', secureEndpoint: false }))
-            .rejects
-            .toThrow('Blocked request to private IP address: 192.168.1.8');
-        expect(mockNetConnect).not.toHaveBeenCalled();
-    });
-
-    test('blocks unresolvable hostnames', async () => {
-        initAgent({ enabled: false });
-        mockLookup.mockRejectedValue(new Error('lookup failed'));
-        const agent = getUntrustedRequestAgent();
-
-        await expect(agent.connect({}, { host: 'missing-host.local', secureEndpoint: false }))
-            .rejects
-            .toThrow('Unable to resolve host: missing-host.local');
-        expect(mockNetConnect).not.toHaveBeenCalled();
-    });
-
-    test('connects public hostnames to their resolved IP for both http and https', async () => {
-        initAgent({ enabled: false });
-        mockLookup.mockResolvedValue({ address: '93.184.216.34' });
-        const agent = getUntrustedRequestAgent();
-
-        await agent.connect({}, { host: 'example.com', secureEndpoint: false });
-        expect(mockNetConnect).toHaveBeenCalledWith(expect.objectContaining({ host: '93.184.216.34' }));
-
-        await agent.connect({}, { host: 'example.com', secureEndpoint: true });
-        expect(mockTlsConnect).toHaveBeenCalledWith(expect.objectContaining({ host: '93.184.216.34' }));
     });
 });

@@ -30,8 +30,8 @@ RUN \
 # that must be present for Non-Root Mode and volumeless docker runs.
 RUN \
   rm -f "config.yaml" || true && \
-  mkdir -p config data plugins public/scripts/extensions/third-party backups && \
-  chown -R node:node config data plugins public/scripts/extensions/third-party backups && \
+  mkdir -p config data plugins backups && \
+  chown -R node:node config data plugins backups && \
   ln -s "./config/config.yaml" "config.yaml"
 
 # The new page's and the libraries' build for this source, so the container never fetches it at start: its
@@ -52,7 +52,7 @@ RUN \
   dos2unix "./docker-entrypoint.sh" && \
   rm -rf "./docker"
 
-# Fix extension repos permissions
+# Fix plugin repos permissions
 RUN git config --global --add safe.directory "*"
 
 EXPOSE 8000

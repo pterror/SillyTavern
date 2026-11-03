@@ -9,7 +9,7 @@ import { MacroBrowser, getMacrosHelp } from './macros/engine/MacroBrowser.js';
 import { renderTemplateAsync } from './templates.js';
 
 /** @type {Record<string, ChatMessage>} */
-export const system_messages = {};
+const system_messages = {};
 /** @type {ChatMessage[]} */
 export const SAFETY_CHAT = [];
 

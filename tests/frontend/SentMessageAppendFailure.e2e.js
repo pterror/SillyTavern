@@ -21,7 +21,7 @@ for (const command of ['/send', '/sendas name=Bob', '/sys', '/comment']) {
         const text = `Sent ${stamp}`;
         await page.evaluate(async (script) => {
             // @ts-ignore
-            await SillyTavern.getContext().executeSlashCommandsWithOptions(script);
+            await stTest.context().executeSlashCommandsWithOptions(script);
         }, `${command} ${text}`);
 
         const sent = page.locator('#chat .mes[mesid="1"]');

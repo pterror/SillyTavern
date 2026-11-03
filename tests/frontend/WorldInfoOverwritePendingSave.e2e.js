@@ -23,7 +23,7 @@ const AFTER_DEBOUNCE_MS = 2000;
 async function createWorldWithEntry(page, worldName) {
     await page.evaluate(async (worldName) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const data = { entries: { 0: { uid: 0, key: ['old'], content: 'old book' } } };
         const response = await fetch('/api/worldinfo/edit', { method: 'POST', headers, body: JSON.stringify({ name: worldName, data }) });
         if (!response.ok) throw new Error(`world create failed: ${response.status}`);
@@ -51,7 +51,7 @@ async function saveOldBookDebounced(page, worldName) {
 async function deleteWorld(page, worldName) {
     await page.evaluate(async (worldName) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         await fetch('/api/worldinfo/delete', { method: 'POST', headers, body: JSON.stringify({ name: worldName }) });
     }, worldName);
 }
@@ -64,7 +64,7 @@ async function deleteWorld(page, worldName) {
 async function serverWorld(page, worldName) {
     return page.evaluate(async (worldName) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const list = await (await fetch('/api/settings/get', { method: 'POST', headers, body: '{}' })).json();
         if (!list.world_names?.includes(worldName)) return null;
         const response = await fetch('/api/worldinfo/get', { method: 'POST', headers, body: JSON.stringify({ name: worldName }) });

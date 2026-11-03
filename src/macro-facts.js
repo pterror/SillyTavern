@@ -9,14 +9,7 @@ import { recordStored } from './stored-messages.js';
  * @property {boolean} [isMobile]
  * @property {number} [utcOffset]
  * @property {string} [lastGenerationType]
- * @property {{ names: string[], disabled: string[] }} [extensions]
  */
-
-/**
- * @param {unknown} value
- * @returns {value is string[]}
- */
-const isNameList = value => Array.isArray(value) && value.every(name => typeof name === 'string');
 
 /**
  * @param {unknown} body
@@ -32,7 +25,6 @@ export function readPageMacroFacts(body) {
         ...(typeof facts.isMobile === 'boolean' ? { isMobile: facts.isMobile } : {}),
         ...(typeof facts.lastGenerationType === 'string' ? { lastGenerationType: facts.lastGenerationType } : {}),
         ...(Number.isFinite(facts.utcOffset) && Math.abs(facts.utcOffset) <= 16 * 60 ? { utcOffset: facts.utcOffset } : {}),
-        ...(isNameList(facts.extensions?.names) && isNameList(facts.extensions?.disabled) ? { extensions: { names: facts.extensions.names, disabled: facts.extensions.disabled } } : {}),
     };
 }
 
@@ -67,7 +59,6 @@ export function generationMacroFacts({ powerUser, extensionSettings, mainApi, ty
         firstDisplayedMessageId: pageFacts.firstDisplayedMessageId,
         isMobile: pageFacts.isMobile,
         utcOffset: pageFacts.utcOffset,
-        extensions: pageFacts.extensions,
     };
 }
 

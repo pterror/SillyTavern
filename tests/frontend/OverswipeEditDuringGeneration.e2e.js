@@ -64,7 +64,7 @@ function startLlamaCpp(stamp) {
 function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', 'Hello.');
@@ -82,7 +82,7 @@ async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
@@ -105,7 +105,7 @@ async function connectLlamaCpp(page, url) {
     await page.evaluate(() => { const field = $('#llamacpp_api_url_text'); if (field.autocomplete('instance')) field.autocomplete('close'); });
     await page.locator('#api_button_textgenerationwebui').click();
     // @ts-ignore
-    await expect.poll(() => page.evaluate(() => SillyTavern.getContext().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
+    await expect.poll(() => page.evaluate(() => stTest.context().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
     await page.locator('#API-status-top').click();
 }
 
@@ -116,7 +116,7 @@ async function settled(page) {
     await expect(page.locator('#send_but')).toBeVisible({ timeout: 30000 });
     await expect.poll(() => page.evaluate(() => {
         // @ts-ignore
-        const chat = SillyTavern.getContext().chat;
+        const chat = stTest.context().chat;
         return chat.every((/** @type {any} */ m) => typeof m.node_id === 'string' && !m.node_id.startsWith('card:'));
     }), { timeout: 10000 }).toBe(true);
     await page.waitForTimeout(500);
@@ -129,7 +129,7 @@ async function settled(page) {
 function storedAlternatives(page, mesId) {
     return page.evaluate(async (mesId) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const nodeId = context.chat[mesId]?.swipe_info?.[0]?.node_id ?? context.chat[mesId]?.node_id;
         const response = await fetch('/api/chats/alternatives', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ node_id: nodeId }) });
         return (await response.json()).alternatives.map((/** @type {any} */ a) => a.mes);
@@ -150,7 +150,7 @@ async function chatWithOneReply(page, mock, stamp, streaming, beforeSend) {
     await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1);
     await connectLlamaCpp(page, mock.url);
     // @ts-ignore
-    await page.evaluate((streaming) => { SillyTavern.getContext().textCompletionSettings.streaming = streaming; }, streaming);
+    await page.evaluate((streaming) => { stTest.context().textCompletionSettings.streaming = streaming; }, streaming);
     await page.waitForTimeout(2500);
     if (beforeSend) await beforeSend(page);
     await chatBox(page).fill(`Question ${stamp}`);
@@ -167,7 +167,7 @@ test('an edit opened on an overswipe\'s message while its reply streams in is re
     try {
         await chatWithOneReply(page, mock, stamp, true);
         // @ts-ignore
-        await page.evaluate(() => { SillyTavern.getContext().powerUserSettings.click_to_edit = true; });
+        await page.evaluate(() => { stTest.context().powerUserSettings.click_to_edit = true; });
         expect(await storedAlternatives(page, 2)).toEqual([`Reply number 1 ${stamp}.`]);
 
         await page.locator('#chat .mes[mesid="2"] .swipe_right').click();
@@ -195,7 +195,7 @@ for (const streaming of [true, false]) {
             await chatWithOneReply(page, mock, stamp, streaming);
             await page.evaluate(() => {
                 // @ts-ignore
-                const ctx = SillyTavern.getContext();
+                const ctx = stTest.context();
                 ctx.eventSource.on(ctx.eventTypes.MESSAGE_RECEIVED, async (/** @type {number} */ id) => {
                     const message = ctx.chat[id];
                     if (!String(message?.mes ?? '').startsWith('Reply number 2')) return;
@@ -205,7 +205,7 @@ for (const streaming of [true, false]) {
             });
             await page.locator('#chat .mes[mesid="2"] .swipe_right').click();
             // @ts-ignore
-            await expect.poll(() => page.evaluate(() => SillyTavern.getContext().chat[2]?.swipes?.length), { timeout: 30000 }).toBe(2);
+            await expect.poll(() => page.evaluate(() => stTest.context().chat[2]?.swipes?.length), { timeout: 30000 }).toBe(2);
             await settled(page);
             await expect.poll(() => storedAlternatives(page, 2), { timeout: 10000 })
                 .toEqual([`Reply number 1 ${stamp}.`, `Reply number 2 ${stamp}. (edited)`]);

@@ -17,7 +17,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 async function createCharacter(page, name, greetings) {
     return page.evaluate(async ({ name, greetings }) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', greetings[0]);
@@ -36,14 +36,14 @@ async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
     await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar, { timeout: 10000 });
     await expect.poll(() => page.evaluate(() => {
         // @ts-ignore
-        return typeof SillyTavern.getContext().chat[0]?.node_id;
+        return typeof stTest.context().chat[0]?.node_id;
     }), { timeout: 10000 }).toBe('string');
     await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1);
 }
@@ -55,7 +55,7 @@ async function openCharacter(page, avatar) {
 async function storedModel(page, avatar) {
     const card = await page.evaluate(async (avatar) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/characters/get', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar }) });
         if (!response.ok) throw new Error(`get failed: ${response.status}`);
         return response.json();
@@ -70,7 +70,7 @@ async function storedModel(page, avatar) {
 async function pageModel(page, avatar) {
     const card = await page.evaluate((avatar) => {
         // @ts-ignore
-        return JSON.parse(JSON.stringify(SillyTavern.getContext().getCharacterByAvatar(avatar)));
+        return JSON.parse(JSON.stringify(stTest.context().getCharacterByAvatar(avatar)));
     }, avatar);
     return cardToGreetingsModel(card);
 }
@@ -83,7 +83,7 @@ async function pageModel(page, avatar) {
 async function otherSessionOp(page, op, body) {
     const status = await page.evaluate(async ({ op, body }) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch(`/api/characters/greetings/${op}`, { method: 'POST', headers, body: JSON.stringify(body) });
         return response.status;
     }, { op, body });
@@ -171,22 +171,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expect(greetingsList(page).locator('li.alternative')).toHaveCount(2, { timeout: 10000 });
     });
 
-    test('#character_json_data save: another session\'s delete shows up', async ({ page }) => {
-        const { s, g, avatar } = await afterRemoteDelete(page, 'ServerListForm', false);
-        await page.evaluate(async (text) => {
-            // @ts-ignore
-            const card = JSON.parse($('#character_json_data').val());
-            card.first_mes = text;
-            card.data.first_mes = text;
-            // @ts-ignore
-            $('#character_json_data').val(JSON.stringify(card));
-            const { createOrEditCharacter } = await import('/script.js');
-            await createOrEditCharacter(new CustomEvent('newChat'));
-        }, `Zero edited ${s}`);
-        expect(await storedModel(page, avatar)).toEqual({ greetings: [`Zero edited ${s}`, g[1], g[2]], defaultIndex: 0 });
-        await expectPageHoldsServerList(page, avatar);
-    });
-
     test('sidebar pager edit of the greeting the chat shows: the chat follows it to its new text though another session\'s delete arrived with it', async ({ page }) => {
         const { s, g, avatar } = await afterRemoteDelete(page, 'ServerListFollow', false);
         await page.evaluate(async () => {
@@ -210,76 +194,10 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(edited, { timeout: 10000 });
         const opening = await page.evaluate(() => {
             // @ts-ignore
-            const m = SillyTavern.getContext().chat[0];
+            const m = stTest.context().chat[0];
             return { mes: m.mes, swipe_id: m.swipe_id };
         });
         expect(opening).toEqual({ mes: edited, swipe_id: 1 });
-    });
-
-    test('#character_json_data save: a greeting another session changed since load is not overwritten, the rest lands, and a warning lists the change not saved', async ({ page }) => {
-        const s = stamp();
-        const [g0, g1, g2] = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
-        const avatar = await createCharacter(page, `FormConflict-${s}`, [g0, g1, g2]);
-        await openCharacter(page, avatar);
-        const elsewhere = `Two changed elsewhere ${s}`;
-        await otherSessionOp(page, 'edit', { avatar_url: avatar, position: 2, expected_hash: hashGreetingText(g2), text: elsewhere });
-
-        const [e1, e2, added] = [`One edited ${s}`, `Two edited ${s}`, `Three added ${s}`];
-        await page.evaluate(async (greetings) => {
-            // @ts-ignore
-            const card = JSON.parse($('#character_json_data').val());
-            card.data.alternate_greetings = greetings;
-            // @ts-ignore
-            $('#character_json_data').val(JSON.stringify(card));
-            const { createOrEditCharacter } = await import('/script.js');
-            await createOrEditCharacter(new CustomEvent('newChat'));
-        }, [e1, e2, added]);
-
-        expect((await storedModel(page, avatar)).greetings).toEqual([g0, e1, elsewhere, added]);
-        await expectPageHoldsServerList(page, avatar);
-        const warning = page.locator('.toast-warning', { hasText: e2 });
-        await expect(warning).toBeVisible({ timeout: 10000 });
-        await expect(warning).not.toContainText(e1);
-        await expect(warning).not.toContainText(added);
-    });
-
-    test('#character_json_data save: an add lands at the end even when another session changes the list length just before it', async ({ page }) => {
-        const s = stamp();
-        const [g0, g1] = [`Zero ${s}`, `One ${s}`];
-        const avatar = await createCharacter(page, `FormAppend-${s}`, [g0, g1]);
-        await openCharacter(page, avatar);
-
-        const elsewhere = `Added elsewhere ${s}`;
-        /** @type {number|null} */
-        let otherStatus = null;
-        await page.route('**/api/characters/greetings/add', async (route) => {
-            if (otherStatus === null) {
-                otherStatus = 0;
-                otherStatus = await page.evaluate(async ({ avatar, text }) => {
-                    // @ts-ignore
-                    const headers = SillyTavern.getContext().getRequestHeaders();
-                    const response = await fetch('/api/characters/greetings/add', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, position: 2, expected_length: 2, text }) });
-                    return response.status;
-                }, { avatar, text: elsewhere });
-            }
-            await route.continue();
-        });
-
-        const added = `Two added ${s}`;
-        await page.evaluate(async (greetings) => {
-            // @ts-ignore
-            const card = JSON.parse($('#character_json_data').val());
-            card.data.alternate_greetings = greetings;
-            // @ts-ignore
-            $('#character_json_data').val(JSON.stringify(card));
-            const { createOrEditCharacter } = await import('/script.js');
-            await createOrEditCharacter(new CustomEvent('newChat'));
-        }, [g1, added]);
-
-        expect(otherStatus).toBe(200);
-        expect((await storedModel(page, avatar)).greetings).toEqual([g0, g1, elsewhere, added]);
-        await expectPageHoldsServerList(page, avatar);
-        await expect(page.locator('.toast-warning')).toHaveCount(0);
     });
 
     /**
@@ -295,25 +213,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         return { s, g, avatar };
     }
 
-    /**
-     * @param {import('@playwright/test').Page} page
-     * @param {string[]} greetings
-     */
-    async function formSaveWithNoDefault(page, greetings) {
-        await page.evaluate(async (greetings) => {
-            // @ts-ignore
-            const card = JSON.parse($('#character_json_data').val());
-            card.first_mes = '';
-            card.data.first_mes = '';
-            card.data.alternate_greetings = greetings;
-            delete card.data.extensions?.greeting_default_position;
-            // @ts-ignore
-            $('#character_json_data').val(JSON.stringify(card));
-            const { createOrEditCharacter } = await import('/script.js');
-            await createOrEditCharacter(new CustomEvent('newChat'));
-        }, greetings);
-    }
-
     test('list demote: another session deleting an earlier greeting doesn\'t stop the default being cleared', async ({ page }) => {
         const { g, avatar } = await withDefaultAtOne(page, 'DemoteShifted');
         await openGreetingsList(page, 3);
@@ -322,30 +221,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await listToggleDefault(page, g[1]);
         expect(await storedModel(page, avatar)).toEqual({ greetings: [g[1], g[2]], defaultIndex: null });
         await expectPageHoldsServerList(page, avatar);
-    });
-
-    test('#character_json_data save: another session deleting an earlier greeting doesn\'t stop the default being cleared', async ({ page }) => {
-        const { g, avatar } = await withDefaultAtOne(page, 'FormUnsetShifted');
-        await otherSessionOp(page, 'delete', { avatar_url: avatar, position: 0, expected_hash: hashGreetingText(g[0]) });
-
-        await formSaveWithNoDefault(page, g);
-
-        expect(await storedModel(page, avatar)).toEqual({ greetings: [g[1], g[2]], defaultIndex: null });
-        await expectPageHoldsServerList(page, avatar);
-        await expect(page.locator('.toast-warning')).toHaveCount(0);
-    });
-
-    test('#character_json_data save: clearing a default another session changed is refused and listed in the warning', async ({ page }) => {
-        const s = stamp();
-        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
-        const avatar = await createCharacter(page, `FormUnsetChanged-${s}`, g);
-        await openCharacter(page, avatar);
-        await otherSessionOp(page, 'default/set', { avatar_url: avatar, position: 2, expected_hash: hashGreetingText(g[2]) });
-
-        await formSaveWithNoDefault(page, g);
-
-        expect(await storedModel(page, avatar)).toEqual({ greetings: g, defaultIndex: 2 });
-        await expect(page.locator('.toast-warning', { hasText: 'Default greeting cleared' })).toBeVisible({ timeout: 10000 });
     });
 
     test('list demote after another session already cleared the default: the list shows none is, and setting it again works', async ({ page }) => {
@@ -358,17 +233,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         expect(await storedModel(page, avatar)).toEqual({ greetings: g, defaultIndex: null });
         await expectPageHoldsServerList(page, avatar);
         await expect(page.locator('.toast-error')).toHaveCount(0);
-    });
-
-    test('#character_json_data save: clearing a default another session already cleared is done, with no warning', async ({ page }) => {
-        const { g, avatar } = await withDefaultAtOne(page, 'FormAlreadyCleared');
-        await otherSessionOp(page, 'default/unset', { avatar_url: avatar, expected_default_position: 1 });
-
-        await formSaveWithNoDefault(page, g);
-
-        expect(await storedModel(page, avatar)).toEqual({ greetings: g, defaultIndex: null });
-        await expectPageHoldsServerList(page, avatar);
-        await expect(page.locator('.toast-warning')).toHaveCount(0);
     });
 
     test('sidebar pager edit that another session already made succeeds', async ({ page }) => {
@@ -389,49 +253,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expect(page.locator('.toast-error')).toHaveCount(0);
     });
 
-    test('#character_json_data save: a failure partway lists the refused change, the failed one, and every change never sent', async ({ page }) => {
-        const s = stamp();
-        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
-        const avatar = await createCharacter(page, `FormFailure-${s}`, g);
-        await openCharacter(page, avatar);
-        const elsewhere = `One changed elsewhere ${s}`;
-        await otherSessionOp(page, 'edit', { avatar_url: avatar, position: 1, expected_hash: hashGreetingText(g[1]), text: elsewhere });
-
-        const [e0, e1, e2, added] = [`Zero edited ${s}`, `One edited ${s}`, `Two edited ${s}`, `Three added ${s}`];
-        /** @type {string[]} */
-        const sent = [];
-        await page.route('**/api/characters/greetings/**', async (route) => {
-            const body = route.request().postDataJSON();
-            sent.push(body.text);
-            if (body.text === e2) {
-                await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ ok: false, reason: 'internal error' }) });
-                return;
-            }
-            await route.continue();
-        });
-
-        await page.evaluate(async (greetings) => {
-            // @ts-ignore
-            const card = JSON.parse($('#character_json_data').val());
-            card.first_mes = greetings[0];
-            card.data.first_mes = greetings[0];
-            card.data.alternate_greetings = greetings.slice(1);
-            // @ts-ignore
-            $('#character_json_data').val(JSON.stringify(card));
-            const { createOrEditCharacter } = await import('/script.js');
-            await createOrEditCharacter(new CustomEvent('newChat'));
-        }, [e0, e1, e2, added]);
-
-        expect(sent).toEqual([e0, e1, e2]);
-        expect((await storedModel(page, avatar)).greetings).toEqual([e0, elsewhere, g[2]]);
-        const warning = page.locator('.toast-warning');
-        await expect(warning).toHaveCount(1, { timeout: 10000 });
-        await expect(warning).toContainText(e1);
-        await expect(warning).toContainText(e2);
-        await expect(warning).toContainText(added);
-        await expect(warning).not.toContainText(e0);
-    });
-
     test('list set default: another session\'s edit of the shown greeting isn\'t announced as this page\'s edit, and the chat stays on its slot with the new text', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
@@ -448,12 +269,12 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await otherSessionOp(page, 'edit', { avatar_url: avatar, position: 1, expected_hash: hashGreetingText(g[1]), text: elsewhere });
         await page.evaluate(() => {
             // @ts-ignore
-            const { eventSource, eventTypes } = SillyTavern.getContext();
+            const { eventSource, eventTypes } = stTest.context();
             // @ts-ignore
             window.__greetingEvents = [];
             eventSource.on(eventTypes.CHARACTER_EDITED, (/** @type {any} */ event) => {
                 // @ts-ignore
-                window.__greetingEvents.push({ greetingEdit: event.detail.greetingEdit ?? null, greetingEdits: event.detail.greetingEdits ?? [] });
+                window.__greetingEvents.push({ greetingEdit: event.detail.greetingEdit ?? null });
             });
         });
 
@@ -462,11 +283,11 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expectPageHoldsServerList(page, avatar);
 
         // @ts-ignore
-        await expect.poll(() => page.evaluate(() => window.__greetingEvents)).toEqual([{ greetingEdit: null, greetingEdits: [] }]);
+        await expect.poll(() => page.evaluate(() => window.__greetingEvents)).toEqual([{ greetingEdit: null }]);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(elsewhere, { timeout: 10000 });
         const opening = await page.evaluate(() => {
             // @ts-ignore
-            const m = SillyTavern.getContext().chat[0];
+            const m = stTest.context().chat[0];
             return { mes: m.mes, swipe_id: m.swipe_id, swipes: [...m.swipes] };
         });
         expect(opening).toEqual({ mes: elsewhere, swipe_id: 1, swipes: [g[0], elsewhere, g[2]] });
@@ -494,7 +315,7 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(g[3], { timeout: 10000 });
         const opening = await page.evaluate(() => {
             // @ts-ignore
-            const m = SillyTavern.getContext().chat[0];
+            const m = stTest.context().chat[0];
             return { mes: m.mes, swipe_id: m.swipe_id, swipes: [...m.swipes] };
         });
         expect(opening).toEqual({ mes: g[3], swipe_id: 2, swipes: [g[0], elsewhere, g[3]] });
@@ -527,7 +348,7 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(expected, { timeout: 10000 });
         return page.evaluate(() => {
             // @ts-ignore
-            const m = SillyTavern.getContext().chat[0];
+            const m = stTest.context().chat[0];
             return { mes: m.mes, swipe_id: m.swipe_id, swipes: [...m.swipes] };
         });
     }
@@ -541,7 +362,7 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         });
         await expect.poll(() => page.evaluate(() => {
             // @ts-ignore
-            const m = SillyTavern.getContext().chat[0];
+            const m = stTest.context().chat[0];
             return { mes: m.mes, swipe_id: m.swipe_id, swipes: [...m.swipes] };
         }), { timeout: 10000 }).toEqual({ mes: g[2], swipe_id: 1, swipes: [g[1], g[2]] });
     });
@@ -598,7 +419,7 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         const avatar = await createCharacter(page, name, g);
         const stored = await page.evaluate(async ({ avatar, name, texts }) => {
             // @ts-ignore
-            const headers = SillyTavern.getContext().getRequestHeaders();
+            const headers = stTest.context().getRequestHeaders();
             const contents = texts.map(mes => ({ name, is_user: false, is_system: false, send_date: Date.now(), mes, extra: {} }));
             const selected = await fetch('/api/chats/message/select', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, opening: { refs: ['opening'], messages: [contents[0]] } }) });
             if (!selected.ok) return false;
@@ -610,7 +431,7 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await openCharacter(page, avatar);
         const loaded = await page.evaluate(() => {
             // @ts-ignore
-            return [...SillyTavern.getContext().chat[0].swipes];
+            return [...stTest.context().chat[0].swipes];
         });
         expect(loaded).toHaveLength(14);
         expect(loaded[12]).toBeNull();
@@ -628,7 +449,7 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(g[12], { timeout: 10000 });
         const opening = await page.evaluate(() => {
             // @ts-ignore
-            const m = SillyTavern.getContext().chat[0];
+            const m = stTest.context().chat[0];
             return { mes: m.mes, swipe_id: m.swipe_id };
         });
         expect(opening).toEqual({ mes: g[12], swipe_id: 12 });
@@ -654,7 +475,7 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         const refetched = page.waitForResponse(response => new URL(response.url()).pathname === '/api/characters/get', { timeout: 15000 });
         await page.evaluate(async (personality) => {
             // @ts-ignore
-            const { executeSlashCommandsWithOptions } = SillyTavern.getContext();
+            const { executeSlashCommandsWithOptions } = stTest.context();
             await executeSlashCommandsWithOptions(`/char-update personality="${personality}"`);
         }, personality);
         expect((await refetched).ok()).toBe(true);
@@ -729,7 +550,7 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
     async function openingSwipes(page) {
         return page.evaluate(() => {
             // @ts-ignore
-            const m = SillyTavern.getContext().chat[0];
+            const m = stTest.context().chat[0];
             return { swipes: [...m.swipes], nodeIds: m.swipe_info.map(i => i?.node_id ?? null), swipe_id: m.swipe_id };
         });
     }

@@ -8,8 +8,6 @@ import { isPathUnderParent } from './util.js';
 
 export const ASSET_VERSION_PARAM = 'stv';
 
-const THIRD_PARTY_PREFIX = '/scripts/extensions/third-party/';
-
 const SKIP_DIRECTORIES = new Set(['.git', 'node_modules']);
 
 const HASHED_EXTENSIONS = new Set([
@@ -64,9 +62,7 @@ export class FrontendAssets {
      * @param {string} options.publicDirectory
      * @param {() => string|undefined} options.libraryDirectory
      * @param {() => string[]} options.libraryFiles
-     * @param {() => string|undefined} options.globalExtensionsDirectory
      * @param {() => string|undefined} options.userCssPath
-     * @param {() => boolean} options.extensionsEnabled
      * @param {() => Record<string, string>} [options.moduleAliases]
      */
     constructor(options) {
@@ -83,10 +79,9 @@ export class FrontendAssets {
 
     /**
      * @param {string} urlPath
-     * @param {import('./users.js').UserDirectoryList|undefined} directories
      * @returns {string|null}
      */
-    resolve(urlPath, directories) {
+    resolve(urlPath) {
         if (!urlPath.startsWith('/') || urlPath.includes('\0')) {
             return null;
         }
@@ -111,17 +106,6 @@ export class FrontendAssets {
             return publicPath;
         }
 
-        if (urlPath.startsWith(THIRD_PARTY_PREFIX) && directories && this.options.extensionsEnabled()) {
-            const rest = urlPath.slice(THIRD_PARTY_PREFIX.length);
-            for (const root of [directories.extensions, this.options.globalExtensionsDirectory()]) {
-                if (!root) continue;
-                const filePath = path.join(root, rest);
-                if (isPathUnderParent(root, path.resolve(filePath)) && isFile(filePath)) {
-                    return filePath;
-                }
-            }
-        }
-
         return null;
     }
 
@@ -143,11 +127,10 @@ export class FrontendAssets {
     /**
      * @param {string} urlPath
      * @param {string} filePath
-     * @param {import('./users.js').UserDirectoryList|undefined} directories
      * @param {Set<string>} [visiting]
      * @returns {Promise<{body: string, hash: string}>}
      */
-    async rewritten(urlPath, filePath, directories, visiting = new Set()) {
+    async rewritten(urlPath, filePath, visiting = new Set()) {
         const stat = await fs.promises.stat(filePath);
         const text = await this.#textSource(filePath, stat);
         const extension = path.extname(filePath).toLowerCase();
@@ -170,13 +153,13 @@ export class FrontendAssets {
                 } catch {
                     continue;
                 }
-                const childFile = this.resolve(decodeURIComponentSafe(childPath), directories);
+                const childFile = this.resolve(decodeURIComponentSafe(childPath));
                 const childExtension = childFile ? path.extname(childFile).toLowerCase() : '';
                 if (!childFile || !HASHED_EXTENSIONS.has(childExtension) || childExtension === '.html') continue;
                 let childHash;
                 if (REWRITE_PATTERNS[childExtension]) {
                     if (visiting.has(childFile)) continue;
-                    childHash = (await this.rewritten(childPath, childFile, directories, visiting)).hash;
+                    childHash = (await this.rewritten(childPath, childFile, visiting)).hash;
                 } else {
                     childHash = await this.fileHash(childFile);
                 }
@@ -209,25 +192,23 @@ export class FrontendAssets {
 
     /**
      * @param {string} urlPath
-     * @param {import('./users.js').UserDirectoryList|undefined} directories
      * @returns {Promise<string|null>}
      */
-    async version(urlPath, directories) {
-        const filePath = this.resolve(urlPath, directories);
+    async version(urlPath) {
+        const filePath = this.resolve(urlPath);
         if (!filePath || !HASHED_EXTENSIONS.has(path.extname(filePath).toLowerCase())) {
             return null;
         }
         if (REWRITE_PATTERNS[path.extname(filePath).toLowerCase()]) {
-            return (await this.rewritten(urlPath, filePath, directories)).hash;
+            return (await this.rewritten(urlPath, filePath)).hash;
         }
         return await this.fileHash(filePath);
     }
 
     /**
-     * @param {import('./users.js').UserDirectoryList|undefined} directories
      * @returns {Promise<Map<string, string>>}
      */
-    async manifest(directories) {
+    async manifest() {
         /** @type {Set<string>} */
         const urlPaths = new Set();
         for (const relative of await walk(this.options.publicDirectory)) {
@@ -237,20 +218,12 @@ export class FrontendAssets {
             urlPaths.add(`/${file}`);
         }
         urlPaths.add('/css/user.css');
-        if (directories && this.options.extensionsEnabled()) {
-            for (const root of [directories.extensions, this.options.globalExtensionsDirectory()]) {
-                if (!root) continue;
-                for (const relative of await walk(root)) {
-                    urlPaths.add(`${THIRD_PARTY_PREFIX}${relative}`);
-                }
-            }
-        }
 
         /** @type {Map<string, string>} */
         const versions = new Map();
         for (const urlPath of Array.from(urlPaths).sort()) {
             if (!HASHED_EXTENSIONS.has(path.posix.extname(urlPath).toLowerCase())) continue;
-            const hash = await this.version(urlPath, directories);
+            const hash = await this.version(urlPath);
             if (hash) {
                 versions.set(urlPath, hash);
             }
@@ -260,11 +233,10 @@ export class FrontendAssets {
 
     /**
      * @param {string} indexPath
-     * @param {import('./users.js').UserDirectoryList|undefined} directories
      * @returns {Promise<{body: string, buildId: string}>}
      */
-    async renderIndex(indexPath, directories) {
-        const versions = await this.manifest(directories);
+    async renderIndex(indexPath) {
+        const versions = await this.manifest();
         const stat = await fs.promises.stat(indexPath);
         if (!this.indexSource || this.indexSource.mtimeMs !== stat.mtimeMs || this.indexSource.size !== stat.size) {
             this.indexSource = { mtimeMs: stat.mtimeMs, size: stat.size, text: await fs.promises.readFile(indexPath, 'utf8') };
@@ -344,13 +316,13 @@ export function frontendAssetMiddleware(assets) {
             if (!requested && !rewrites) {
                 return next();
             }
-            const filePath = assets.resolve(urlPath, req.user?.directories);
+            const filePath = assets.resolve(urlPath);
             if (!filePath) {
                 return next();
             }
 
-            const rewritten = rewrites ? await assets.rewritten(urlPath, filePath, req.user?.directories) : null;
-            const current = rewritten ? rewritten.hash : await assets.version(urlPath, req.user?.directories);
+            const rewritten = rewrites ? await assets.rewritten(urlPath, filePath) : null;
+            const current = rewritten ? rewritten.hash : await assets.version(urlPath);
             if (!current) {
                 return next();
             }

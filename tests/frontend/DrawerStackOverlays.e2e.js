@@ -10,7 +10,7 @@ async function loadApp(page) {
     await testSetup.awaitST({ page });
     await page.evaluate(() => {
         window['__appReady'] = false;
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, () => { window['__appReady'] = true; });
     });
     await page.waitForFunction(() => window['__appReady'], null, { timeout: 60000 });
@@ -40,7 +40,7 @@ test.describe('stacked drawers', () => {
     });
 
     test('a popup over the chat cuts it', async ({ page }) => {
-        await page.evaluate(() => { void window['SillyTavern'].getContext().callGenericPopup('A popup over the chat.', 1); });
+        await page.evaluate(() => { void window['stTest'].context().callGenericPopup('A popup over the chat.', 1); });
         await expect(page.locator('dialog.popup[open]')).toBeVisible();
         await expectOccludes(page, 'dialog[open]', '#sheld');
     });

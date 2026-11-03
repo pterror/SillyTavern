@@ -38,9 +38,3 @@ export function buildConnectApiMap(textgenTypes, chatCompletionSources) {
     return result;
 }
 
-/**
- * @returns {string[]}
- */
-export function getConnectApiMapAllowedSelected() {
-    return ['openai', 'textgenerationwebui'];
-}

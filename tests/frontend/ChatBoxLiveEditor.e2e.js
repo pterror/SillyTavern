@@ -5,9 +5,11 @@ import { testSetup } from './frontent-test-utils.js';
 async function openChat(page) {
     await page.evaluate(async () => {
         // @ts-ignore
-        await SillyTavern.getContext().executeSlashCommandsWithOptions('/go Seraphina');
+        await stTest.context().executeSlashCommandsWithOptions('/go Seraphina');
     });
     await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1, { timeout: 10000 });
+    // @ts-ignore
+    await expect.poll(() => page.evaluate(() => stTest.context().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
 }
 
 /** @param {import('@playwright/test').Page} page */
@@ -123,43 +125,14 @@ test.describe('the chat box with the live editor', () => {
         await page.keyboard.press('Enter');
         await expect.poll(() => page.evaluate(() => {
             // @ts-ignore
-            return SillyTavern.getContext().chat.some(m => m.is_user && m.mes === 'sent from the editor');
+            return stTest.context().chat.some(m => m.is_user && m.mes === 'sent from the editor');
         })).toBe(true);
         await expect.poll(() => chatBoxValue(page)).toBe('');
         await expect(chatBoxEditor(page).locator('.cm-placeholder')).toBeVisible();
         await page.evaluate(() => {
             // @ts-ignore
-            SillyTavern.getContext().stopGeneration?.();
+            stTest.context().stopGeneration?.();
         });
-    });
-
-    test('the toolbar is a row of the send form, under the bars extensions put above the chat box, covering nothing', async ({ page }) => {
-        await testSetup.awaitST({ page });
-        await openChat(page);
-        await expect(chatBoxEditor(page)).toHaveCount(1, { timeout: 10000 });
-        await page.evaluate(() => {
-            const bar = document.createElement('div');
-            bar.id = 'testExtensionBar';
-            bar.style.cssText = 'width: 100%; height: 40px';
-            document.getElementById('send_form').prepend(bar);
-        });
-        await chatBoxEditor(page).locator('.cm-content').click();
-        await expect(chatBoxEditor(page).locator('.cm-panels-top')).toBeVisible();
-        const place = () => page.evaluate(() => {
-            const box = (/** @type {string} */ selector) => document.querySelector(selector).getBoundingClientRect();
-            const toolbar = box('#send_form .cm-panels-top');
-            return {
-                underBar: toolbar.top >= box('#testExtensionBar').bottom - 0.5,
-                aboveText: toolbar.bottom <= box('#send_form .cm-content').top + 0.5,
-                inForm: toolbar.top >= box('#send_form').top - 0.5,
-                chatClear: box('#chat').bottom <= box('#send_form').top + 0.5,
-            };
-        });
-        const clear = { underBar: true, aboveText: true, inForm: true, chatClear: true };
-        await expect.poll(place).toEqual(clear);
-        await page.evaluate(() => { document.getElementById('testExtensionBar').style.height = '90px'; });
-        await expect.poll(place).toEqual(clear);
-        await page.evaluate(() => document.getElementById('testExtensionBar').remove());
     });
 
     test('Shift+Enter adds a line instead of sending', async ({ page }) => {
@@ -212,7 +185,7 @@ test.describe('the chat box with the live editor', () => {
         await openChat(page);
         const user = await page.evaluate(() => {
             // @ts-ignore
-            return SillyTavern.getContext().name1;
+            return stTest.context().name1;
         });
         await expect(chatBoxEditor(page)).toHaveCount(1, { timeout: 10000 });
         await chatBoxEditor(page).locator('.cm-content').click();
@@ -229,7 +202,7 @@ test.describe('the chat box with the live editor', () => {
         await openChat(page);
         const user = await page.evaluate(() => {
             // @ts-ignore
-            return SillyTavern.getContext().name1;
+            return stTest.context().name1;
         });
         const errors = [];
         page.on('pageerror', error => errors.push(error));
@@ -249,46 +222,6 @@ test.describe('the chat box with the live editor', () => {
         await expect.poll(() => chatBoxValue(page)).toBe('Hi {{user}}\n*said* 你好!');
         await expect(chatBoxEditor(page).locator('.macro-pill')).toHaveText(user);
         expect(errors).toEqual([]);
-        await clearChatBox(page);
-    });
-
-    test('extension patterns on the chat box keep working with the editor on it', async ({ page }) => {
-        await testSetup.awaitST({ page });
-        await openChat(page);
-        await expect(chatBoxEditor(page)).toHaveCount(1, { timeout: 10000 });
-        await page.evaluate(async () => {
-            const { power_user } = await import('/scripts/power-user.js');
-            power_user.send_on_enter = 1;
-        });
-        const read = await page.evaluate(() => {
-            const box = /** @type {HTMLTextAreaElement} */ (document.getElementById('send_textarea'));
-            box.value = 'written plainly';
-            box.dispatchEvent(new Event('input', { bubbles: true }));
-            return box.value;
-        });
-        expect(read).toBe('written plainly');
-        await expect(chatBoxEditor(page).locator('.cm-content')).toHaveText('written plainly');
-        await page.evaluate(() => {
-            window['__heard'] = 0;
-            document.getElementById('send_textarea').addEventListener('input', () => { window['__heard']++; });
-        });
-        await chatBoxEditor(page).locator('.cm-content').click();
-        await page.keyboard.press('End');
-        await page.keyboard.type('!');
-        expect(await page.evaluate(() => window['__heard'])).toBeGreaterThan(0);
-        await page.evaluate(() => {
-            const box = /** @type {HTMLTextAreaElement} */ (document.getElementById('send_textarea'));
-            box.value = 'sent by a synthetic Enter';
-            box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
-        });
-        await expect.poll(() => page.evaluate(() => {
-            // @ts-ignore
-            return SillyTavern.getContext().chat.some(m => m.is_user && m.mes === 'sent by a synthetic Enter');
-        })).toBe(true);
-        await page.evaluate(() => {
-            // @ts-ignore
-            SillyTavern.getContext().stopGeneration?.();
-        });
         await clearChatBox(page);
     });
 });

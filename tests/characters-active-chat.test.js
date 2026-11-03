@@ -2,8 +2,6 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } fr
 import path from 'node:path';
 import { getStringHash } from '../public/scripts/hash-utils.js';
 
-/** @type {typeof import('../src/character-card-parser.js')} */
-let cardParser;
 /** @type {import('express').Router} */
 let router;
 /** @type {typeof import('../src/endpoints/characters.js').readCardContent} */
@@ -27,7 +25,6 @@ beforeAll(async () => {
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
     ({ router, readCardContent } = await import('../src/endpoints/characters.js'));
-    cardParser = await import('../src/character-card-parser.js');
     fixture = await import('./converted-user.fixture.js');
     ({ SESSION_HEADER } = await import('../src/request-session.js'));
 
@@ -88,18 +85,6 @@ async function create(body) {
 }
 
 /**
- * @param {string} avatarUrl
- * @param {object} body
- */
-async function edit(avatarUrl, body, tab) {
-    return fetch(`${baseUrl}/api/characters/edit`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(tab ? { [SESSION_HEADER]: tab } : {}) },
-        body: JSON.stringify({ avatar_url: avatarUrl, ...body }),
-    });
-}
-
-/**
  * @param {object} body
  */
 async function setChat(body, tab) {
@@ -149,58 +134,6 @@ describe('POST /api/characters/chat (dedicated active-chat write path)', () => {
 
         const response = await setChat({ avatar: 'Alice.png' });
         expect(response.status).toBe(400);
-    });
-});
-
-describe('/edit no longer writes chat into the card file, but still updates the db row', () => {
-    test('the card content never carries a chat field after /edit', async () => {
-        const createResponse = await create({ ch_name: 'Alice', description: 'desc', file_name: 'Alice' });
-        expect(createResponse.status).toBe(200);
-
-        const editResponse = await edit('Alice.png', { ch_name: 'Alice', description: 'desc', avatar_url: 'Alice.png', chat: 'Alice - Edited Chat' });
-        expect(editResponse.status).toBe(200);
-
-        const card = JSON.parse(await readCardContent(directories, 'Alice.png'));
-        expect(card.chat).toBeUndefined();
-    });
-
-    test('an exported card never carries a chat field either - the property a user can actually observe', async () => {
-        expect((await create({ ch_name: 'Alice', description: 'desc', file_name: 'Alice' })).status).toBe(200);
-        expect((await edit('Alice.png', { ch_name: 'Alice', description: 'desc', avatar_url: 'Alice.png', chat: 'Alice - Edited Chat' })).status).toBe(200);
-
-        const response = await fetch(`${baseUrl}/api/characters/export`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ avatar_url: 'Alice.png', format: 'png' }),
-        });
-        expect(response.status).toBe(200);
-
-        const exported = JSON.parse(cardParser.read(Buffer.from(await response.arrayBuffer())));
-        expect(exported.chat).toBeUndefined();
-    });
-
-    test('the tab\'s session moves to the chat via the write path', async () => {
-        const createResponse = await create({ ch_name: 'Alice', description: 'desc', file_name: 'Alice' });
-        expect(createResponse.status).toBe(200);
-
-        const { tab } = await twoChats('Alice - Edited Chat');
-
-        const editResponse = await edit('Alice.png', { ch_name: 'Alice', description: 'desc', avatar_url: 'Alice.png', chat: 'Alice - Edited Chat' }, tab);
-        expect(editResponse.status).toBe(200);
-
-        expect(await shownBy(tab)).toEqual(['in Alice - Edited Chat']);
-    });
-
-    test('an /edit with no chat in the request body leaves the existing db active_chat untouched', async () => {
-        const createResponse = await create({ ch_name: 'Alice', description: 'desc', file_name: 'Alice' });
-        expect(createResponse.status).toBe(200);
-        const { tab } = await twoChats('Alice - Original Chat');
-        await setChat({ avatar: 'Alice.png', chat: 'Alice - Original Chat' }, tab);
-
-        const editResponse = await edit('Alice.png', { ch_name: 'Alice', description: 'now edited', avatar_url: 'Alice.png' }, tab);
-        expect(editResponse.status).toBe(200);
-
-        expect(await shownBy(tab)).toEqual(['in Alice - Original Chat']);
     });
 });
 

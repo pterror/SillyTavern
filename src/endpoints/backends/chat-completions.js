@@ -4,7 +4,6 @@ import process from 'node:process';
 import express from 'express';
 import fetch from 'node-fetch';
 import urlJoin from 'url-join';
-import _ from 'lodash';
 
 import {
     AIMLAPI_HEADERS,
@@ -57,15 +56,12 @@ import {
 } from '../../prompt-converters.js';
 
 import { readSecret, SECRET_KEYS } from '../secrets.js';
-import { resolveConnectionProfile } from '../../connection-profile-resolve.js';
-import { mergeChatCompletionPreset } from '../../chat-completion-preset-merge.js';
 import { createGenerationParameters } from '../../chat-completion-generation-data.js';
 import { substituteParams } from '../../macro-substitution.js';
 import { refreshLlamaCppDetection } from '../../custom-llamacpp.js';
 import { createLlamaCppPropsCheck } from '../../llamacpp-props.js';
 import { writeBack } from '../../token-count-store.js';
 import { readSettingsFor, settingsContextOf } from '../../settings-reads.js';
-import { readBundle } from '../../bundle-store.js';
 import { resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
 import { resolveTokenizer, sendTokenizerWarnings, createTokenizerOutcome } from '../../tokenizer-resolve.js';
 import { readConnectionStateHeader } from '../../connection-state-header.js';
@@ -87,7 +83,7 @@ import {
     computeLogitBias,
     computeUpstreamLogitBias,
 } from '../tokenizers.js';
-import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../google.js';
+import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../../vertex-ai-auth.js';
 import { getCookieSecret } from '../../users.js';
 import { fetchGoogleModels, GoogleModelsHttpError } from './google-models.js';
 import { encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeStoredReplyFrame, encodeToolCallDeltaFrame, encodeControlFrame, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, writeStoredMessagesFrame } from './llamacpp-compact-stream.js';
@@ -1058,9 +1054,7 @@ async function sendMistralAIRequest(request, response, persist, warnings = null,
  * genuinely NOT an OpenAI-Chat-Completions clone - verified against this function's own request body
  * (`messages`, not a `prompt`/legacy `chat_history` shape) and against the real Cohere v2 response
  * shape this codebase's own client already parses (`extractMessageFromData()` in public/script.js
- * reads `data.message.content[0].text`/`data.message.tool_plan`; `parseStreamData()` in
- * public/scripts/sse-stream.js reads `delta.message.content.text` off `content-delta`/`tool-plan-delta`
- * SSE events). Non-streaming extraction here matches that shape exactly: every real `type: 'text'`
+ * reads `data.message.content[0].text`/`data.message.tool_plan`). Non-streaming extraction here matches that shape exactly: every real `type: 'text'`
  * block in `message.content` (never any other block type, mirroring sendClaudeRequest's own
  * `content`-array filter), falling back to `message.tool_plan` only when there is no real text content
  * (a tool-call-only reply, where `tool_plan` is the only human-readable text in the response at all -
@@ -3259,52 +3253,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
     try {
         if (!request.body) return response.status(400).send({ error: true });
 
-        if (request.body.connection_profile_id) {
-            const { profile, selectedApiMap } = resolveConnectionProfile(request.user.directories, request.body.connection_profile_id);
-            if (selectedApiMap.selected !== 'openai') {
-                return response.status(400).send({ error: true, message: `Profile does not target a chat completion backend (targets: ${selectedApiMap.selected})` });
-            }
-
-            const { messages, max_tokens: maxTokens, type = 'quiet', name1 = '', name2 = '', stream: requestedStream } = request.body;
-            if (!Array.isArray(messages)) {
-                return response.status(400).send({ error: true, message: 'messages must be an array' });
-            }
-
-            const { 'oai_settings': baseSettings, proxies } = readSettingsFor(request.user.directories, settingsContextOf({}), ['oai_settings', 'proxies']);
-            const preset = profile.preset ? await readBundle(request.user.directories, 'preset.openai', profile.preset) : null;
-            const settings = mergeChatCompletionPreset({ ...baseSettings, chat_completion_source: selectedApiMap.source }, preset);
-
-            if (profile['api-url']) {
-                for (const field of ['custom_url', 'vertexai_region', 'zai_endpoint', 'siliconflow_endpoint', 'minimax_endpoint', 'pollinations_endpoint']) {
-                    settings[field] = profile['api-url'];
-                }
-            }
-            const proxyPreset = Array.isArray(proxies) ? proxies.find(p => p.name === profile.proxy) : undefined;
-            if (proxyPreset) {
-                settings.reverse_proxy = proxyPreset.url;
-                settings.proxy_password = proxyPreset.password;
-            }
-
-            const biasPresetEntries = settings.bias_preset_selected ? settings.bias_presets?.[settings.bias_preset_selected] : undefined;
-            /** @type {string[]} */
-            const droppedBiasEntries = [];
-            const { generate_data } = await createGenerationParameters(settings, profile.model, type, messages, { directories: request.user.directories, macroContext: { name1, name2 }, biasPresetEntries, droppedBiasEntries });
-            warnings.push(...await chatCompletionSendWarnings(settings.chat_completion_source, profile.model, droppedBiasEntries, undefined,
-                chatCompletionConnection(settings, request.user.directories, { name1, name2 })));
-
-            if (request.body.overrides && typeof request.body.overrides === 'object' && !Array.isArray(request.body.overrides)) {
-                Object.assign(generate_data, _.omit(request.body.overrides, ['chat_completion_source', 'model', 'messages', 'custom_url', 'reverse_proxy', 'proxy_password', 'secret_id']));
-            }
-
-            request.body = {
-                ...generate_data,
-                max_tokens: maxTokens ?? generate_data.max_tokens,
-                stream: !!requestedStream,
-                chat_completion_source: selectedApiMap.source,
-                secret_id: profile['secret-id'],
-                custom_prompt_post_processing: profile['prompt-post-processing'],
-            };
-        } else if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
+        if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
             const {
                 character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
                 type = 'normal',

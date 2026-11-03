@@ -5,18 +5,15 @@ import {
     hljs,
     Handlebars,
     Popper,
-    initLibraryShims,
-    default as libs,
     lodash,
 } from './lib.js';
 
 import { getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown } from './scripts/RossAscends-mods.js';
-import { exposedCharacters, charactersStore, this_avatar, this_chid, setCharacterId, holdCharacter, keepHeldCharacters, selectCharacterById, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './scripts/character-store.js';
-import { printCharacters, printCharactersDebounced, getEntitiesList, findCharacterListPage, getOneCharacter, getCharacterSource, startLibraryChangesAt, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, isCharacterListShowing, onCharacterListShown, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
+import { characters, charactersStore, this_avatar, setCharacterId, holdCharacter, keepHeldCharacters } from './scripts/character-store.js';
+import { printCharacters, printCharactersDebounced, findCharacterListPage, getOneCharacter, getCharacterSource, startLibraryChangesAt, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, isCharacterListShowing, onCharacterListShown, entitiesFilter } from './scripts/character-list.js';
 import { onSavedViewsChanged } from './scripts/saved-views.js';
-export { exposedCharacters as characters, charactersStore, selectCharacterById, setCharacterId, this_chid };
-export { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, getCharacters, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT };
-import { userStatsHandler, statMesProcess, initStats } from './scripts/stats.js';
+export { entitiesFilter };
+import { userStatsHandler, initStats } from './scripts/stats.js';
 import {
     generateKoboldWithStreaming,
     kai_settings,
@@ -170,17 +167,17 @@ import {
     cancelDebounce,
     uuidv4,
 } from './scripts/utils.js';
-import { getAtPath, seedKeyHashes, settingsWithoutCharLore, characterDigestFieldsHash, characterDigestCardBodyHash, normalizeFav } from './scripts/hash-utils.js';
+import { getAtPath, seedKeyHashes, settingsWithoutCharLore, normalizeFav } from './scripts/hash-utils.js';
 import { countedCardFieldValue, isCountedCardField } from './scripts/card-token-texts.js';
 import { chatOpenAsks, takeChatOpenParts } from './scripts/chat-open-parts.js';
-import { debounce_timeout, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
+import { debounce_timeout, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE, UNSET_VALUE } from './scripts/constants.js';
 
-import { cancelDebouncedMetadataSave, doDailyExtensionUpdatesCheck, extension_settings, initExtensions, loadExtensionSettings, UNSET_VALUE } from './scripts/extensions.js';
-import { CONNECT_API_MAP, executeSlashCommandsOnChatInput, initDefaultSlashCommands, initSlashCommandAutoComplete, isExecutingCommandsFromChatInput, pauseScriptExecution, stopScriptExecution, UNIQUE_APIS } from './scripts/slash-commands.js';
+import { extension_settings } from './scripts/extension-settings.js';
+import { executeSlashCommandsOnChatInput, initDefaultSlashCommands, initSlashCommandAutoComplete, isExecutingCommandsFromChatInput, pauseScriptExecution, stopScriptExecution } from './scripts/slash-commands.js';
 import { initMacroAutoComplete } from './scripts/autocomplete/MacroAutoComplete.js';
 import {
     chooseBogusFolder,
-    loadTagsSettings,
+    loadTagsFromServer,
     reindexTagAssignments,
     tagsStore,
     importTags,
@@ -191,8 +188,6 @@ import {
     removeEntityTags,
     onTagsChanged,
     onEntityTagsChanged,
-    storeTagChangesMadeThroughExport,
-    noteTagExportsMayHaveChanged,
 } from './scripts/tags.js';
 import { checkOpenRouterAuth, initSecrets, readSecretState } from './scripts/secrets.js';
 import { markdownExclusionExt } from './scripts/showdown-exclusion.js';
@@ -200,7 +195,6 @@ import { reloadMarkedProcessor } from './scripts/marked-processor.js';
 import { markdownUnderscoreExt } from './scripts/showdown-underscore.js';
 import { NOTE_MODULE_NAME, initAuthorsNote, metadata_keys, shouldWIAddPrompt } from './scripts/authors-note.js';
 import { registerPromptManagerMigration } from './scripts/PromptManager.js';
-import { getRegexedString, regex_placement } from './scripts/extensions/regex/engine.js';
 import { initLogprobs, saveLogprobsForActiveMessage } from './scripts/logprobs.js';
 import { openRightMenu, closeRightMenu } from './scripts/right-menu-state.js';
 import { initCfg } from './scripts/cfg-scale.js';
@@ -216,7 +210,6 @@ import {
     user_avatar,
     getUserAvatars,
     getUserAvatar,
-    setUserAvatar,
     initPersonas,
     setPersonaDescription,
     initUserAvatar,
@@ -239,18 +232,16 @@ import { initTextGenModels } from './scripts/textgen-models.js';
 import { hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks, initMessageMediaVolume, showMediaLightbox } from './scripts/chats.js';
 import { getFocusedField, getMountedTextarea } from './scripts/live-editor/registry.js';
 import { initChatBoxEditor, initChatLiveEditor, mountChatEditor, unmountChatEditor } from './scripts/chat-live-editor.js';
-import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, initCharacterFieldEditor, isFieldBeingEdited, isFieldInEdit, setFieldValue } from './scripts/character-field-editor.js';
+import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, initCharacterFieldEditor, isFieldBeingEdited, setFieldValue } from './scripts/character-field-editor.js';
 import { initCharInfoTabDimming, refreshCharInfoTabDimming } from './scripts/char-info-tab-dimming.js';
-import { getFormBaseline, setFormBaseline } from './scripts/character-form-baseline.js';
 import { initPresetManager } from './scripts/preset-manager.js';
 import { getLastMessageId, initMacros } from './scripts/macros.js';
 import { currentUser, setUserControls } from './scripts/user.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup, fixToastrForDialogs } from './scripts/popup.js';
 import { initMacroColorsEditor } from './scripts/macro-colors-editor.js';
 import { applyMacroColors, macroColorsOf } from './scripts/macro-colors.js';
-import { renderTemplate, renderTemplateAsync } from './scripts/templates.js';
+import { renderTemplateAsync } from './scripts/templates.js';
 import { assetUrl } from './scripts/asset-url.js';
-import { initScrapers } from './scripts/scrapers.js';
 import { DragAndDropHandler } from './scripts/dragdrop.js';
 import { INTERACTABLE_CONTROL_CLASS, initKeyboard } from './scripts/keyboard.js';
 import { initDynamicStyles } from './scripts/dynamic-styles.js';
@@ -259,22 +250,20 @@ import { autosizeTextareas, initAutosizeTextareas } from './scripts/autosize-tex
 import { AbortReason } from './scripts/util/AbortReason.js';
 import { initDrawerStack, isDrawerCovered, frontmostOf, raiseDrawer, drawerStackChanged, bringChatForward, restoreLayerOrder } from './scripts/drawer-stack.js';
 import { initSystemPrompts } from './scripts/sysprompt.js';
-import { registerExtensionSlashCommands as initExtensionSlashCommands } from './scripts/extensions-slashcommands.js';
 import { ToolManager } from './scripts/tool-calling.js';
 import { addShowdownPatch } from './scripts/util/showdown-patch.js';
 import { applyBrowserFixes } from './scripts/browser-fixes.js';
 import { initServerHistory } from './scripts/server-history.js';
 import { initSettingsSearch } from './scripts/setting-search.js';
 import { initBulkEdit } from './scripts/bulk-edit.js';
-import { getContext } from './scripts/st-context.js';
 import { initReasoning, parseReasoningInSwipes, PromptReasoning, ReasoningHandler, removeReasoningFromString, updateReasoningUI } from './scripts/reasoning.js';
 import { accountStorage } from './scripts/util/AccountStorage.js';
 import { initWelcomeScreen, openPermanentAssistantChat, openPermanentAssistantCard } from './scripts/welcome-screen.js';
 import { initDataMaid } from './scripts/data-maid.js';
 import { saveDraft, loadDraft, isDraftHeld } from './scripts/chat-draft.js';
 import { initFailedSends, keepFailedSend, recordSend, keptSendKeys, forgetStoredSends } from './scripts/failed-sends.js';
-import { clearItemizedPrompts, deleteItemizedPrompts, findItemizedPromptSet, initItemizedPrompts, ITEMIZED_PROMPT_FLAG, itemizedParams, itemizedPrompts, loadItemizedPrompts, promptItemize, replaceItemizedPromptText, saveItemizedPrompts } from './scripts/itemized-prompts.js';
-import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types, system_messages } from './scripts/system-messages.js';
+import { initItemizedPrompts, ITEMIZED_PROMPT_FLAG, itemizedPrompts } from './scripts/itemized-prompts.js';
+import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types } from './scripts/system-messages.js';
 import { event_types, eventSource } from './scripts/events.js';
 import { token, setToken, getRequestHeaders } from './scripts/request-headers.js';
 import { observeSessionAnswers, onChangeStream, prepareTabSession } from './scripts/tab-session.js';
@@ -282,7 +271,7 @@ import { beginServerGeneration, endServerGeneration, takeStopResult } from './sc
 import { chat, chat_metadata, setChatMetadata } from './scripts/chat-state.js';
 import { active_character, active_group, name1, default_user_name, setActiveCharacter, setActiveGroup, setActiveCharacterAndGroupFromSettings, setName1Raw } from './scripts/app-selection-state.js';
 import { amount_gen, max_context, main_api, setAmountGen, setMaxContext, setMainApi } from './scripts/generation-params.js';
-export { event_types, eventSource, getRequestHeaders, token, chat, chat_metadata, active_character, active_group, name1, amount_gen, max_context, main_api, setActiveCharacter, setActiveGroup };
+export { getRequestHeaders, chat, chat_metadata, name1 };
 import { initAccessibility } from './scripts/a11y.js';
 import { applyStreamFadeIn } from './scripts/util/stream-fadein.js';
 import { initDomHandlers } from './scripts/dom-handlers.js';
@@ -293,18 +282,43 @@ import { messageFormatting } from './scripts/message-formatting.js';
 import { reportStoredHeader } from './scripts/stored-report.js';
 export { messageFormatting };
 import {
-    updateMessage, updateIn,
-    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpCut, chatOpSelect, chatOpGraft, chatOpReadyAlternativeDelete, chatOpDeleteAlternativeNode,
-    _mergeCardGreetingsIntoOpening, isComposedSlot, chatOpStoreComposed, _setCurrentTarget, setStoreRef, storeRefOf, adoptStored, chatOpAppendAfter, setSendStoredListener,
-    openingForRequest, setUnstoredExtra,
+    updateMessage,
+    updateIn,
+    ensureOpeningRow,
+    chatOpEdit,
+    chatOpEditMany,
+    chatOpAppend,
+    chatOpAddAlternative,
+    chatOpCut,
+    chatOpGraft,
+    chatOpReadyAlternativeDelete,
+    chatOpDeleteAlternativeNode,
+    _mergeCardGreetingsIntoOpening,
+    isComposedSlot,
+    chatOpStoreComposed,
+    _setCurrentTarget,
+    setStoreRef,
+    storeRefOf,
+    adoptStored,
+    chatOpAppendAfter,
+    setSendStoredListener,
+    openingForRequest,
+    setUnstoredExtra,
 } from './scripts/chat-store.js';
 export {
-    updateMessage, updateIn, adoptStored, openingForRequest,
-    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpCut, chatOpSelect, chatOpGraft, chatOpReadyAlternativeDelete, chatOpDeleteAlternativeNode,
+    updateMessage,
+    updateIn,
+    adoptStored,
+    openingForRequest,
+    chatOpEdit,
+    chatOpEditMany,
+    chatOpAppend,
+    chatOpAddAlternative,
+    chatOpCut,
 };
 import { isStoredNodeId, isProvisionalNodeId, provisionalNodeId } from './scripts/node-identity.js';
 export { isStoredNodeId, isProvisionalNodeId, provisionalNodeId };
-import { saveMetadata, _resetMetadataSaveSnapshot, takePushedState, openChatMacroScope } from './scripts/metadata-store.js';
+import { saveMetadata, _resetMetadataSaveSnapshot, takePushedState, openChatMacroScope, cancelDebouncedMetadataSave } from './scripts/metadata-store.js';
 export { openChatMacroScope };
 export { saveMetadata };
 import { switchToNode, switchToAlternativePath } from './scripts/node-navigation.js';
@@ -317,60 +331,31 @@ import {
 } from './scripts/generation.js';
 import { takeStoredReply } from './scripts/llamacpp-compact-stream.js';
 export {
-    Generate, stopGeneration,
-    streamingProcessor,
-    _messageSnapshots, _snapshotMessages, markStoredAs, isAsStored, forgetStored, isReplyGenerating,
+    Generate,
+    stopGeneration,
+    _messageSnapshots,
+    _snapshotMessages,
+    markStoredAs,
+    isAsStored,
+    forgetStored,
+    isReplyGenerating,
 };
-import {
-    saveChat, saveChatConditional, saveChatDebounced, cancelDebouncedChatSave, isChatSaveScheduled, storePageChatChanges, isChatSaving,
-} from './scripts/chat-compat-save.js';
-export { saveChat, saveChatConditional, saveChatDebounced, cancelDebouncedChatSave, isChatSaveScheduled, storePageChatChanges, isChatSaving };
 import { MacroEngine } from './scripts/macros/engine/MacroEngine.js';
 import { addChatBackupsBrowser } from './scripts/chat-backups.js';
 import { compressRequest, setRequestCompressionConfig } from './scripts/request-compression.js';
 import { alternativesOldPage, canJumpToSwipeForMessage, canOpenSwipePickerForMessage, initSwipePicker } from './scripts/alternatives.js';
 import { activationsOldPage, chatMessageHtml, initLoreMarks, updateLoreMark } from './scripts/activations.js';
 
-// API OBJECT FOR EXTERNAL WIRING
-globalThis.SillyTavern = {
-    libs,
-    getContext,
-};
-
 export {
     user_avatar,
-    setUserAvatar,
-    getUserAvatars,
-    getUserAvatar,
     nai_settings,
-    isOdd,
-    countOccurrences,
-    renderTemplate,
-    promptItemize,
-    itemizedPrompts,
-    saveItemizedPrompts,
-    loadItemizedPrompts,
-    itemizedParams,
-    clearItemizedPrompts,
-    replaceItemizedPromptText,
-    deleteItemizedPrompts,
-    findItemizedPromptSet,
     koboldai_settings,
     koboldai_setting_names,
     novelai_settings,
     novelai_setting_names,
-    UNIQUE_APIS,
-    CONNECT_API_MAP,
-    system_messages,
     system_message_types,
     sendSystemMessage,
     getSystemMessageByType,
-    /** @deprecated Use setCharacterSettingsOverrides instead. */
-    setCharacterSettingsOverrides as setScenarioOverride,
-    /** @deprecated Use appendMediaToMessage instead. */
-    appendMediaToMessage as appendImageToMessage,
-    /** @deprecated Use getMaxPromptTokens instead. */
-    getMaxPromptTokens as getMaxContextSize,
 };
 
 await new Promise((resolve) => {
@@ -428,13 +413,8 @@ toastr.subscribe(function (args) {
 
 export const characterGroupOverlay = new BulkEditOverlay();
 
-// Markdown converter
-export let mesForShowdownParse; //intended to be used as a context to compare showdown strings against
-export function setMesForShowdownParse(value) {
-    mesForShowdownParse = value;
-}
 /** @type {import('showdown').Converter} */
-export let converter;
+let converter;
 
 // array for prompt token calculations
 
@@ -448,7 +428,7 @@ export let name2 = systemUserName;
 export let swipeState = SWIPE_STATE.NONE;
 let importFlashTimeout;
 let firstRun = false;
-export let settingsReady = false;
+let settingsReady = false;
 let currentVersion = '0.0.0';
 export let displayVersion = 'SillyTavern';
 
@@ -471,7 +451,6 @@ export const default_avatar = 'img/ai4.png';
 export const system_avatar = 'img/five.png';
 export const comment_avatar = 'img/quill.png';
 export const default_user_avatar = 'img/user-default.png';
-export let CLIENT_VERSION = 'SillyTavern:UNKNOWN:Cohee#1207'; // For Horde header
 let optionsPopper = Popper.createPopper(document.getElementById('options_button'), document.getElementById('options'), {
     placement: 'top-start',
 });
@@ -622,14 +601,6 @@ keepHeldCharacters(() => {
 });
 
 /**
- * @param {string|undefined} avatar
- * @returns {string|undefined}
- */
-function characterEditedId(avatar) {
-    return avatar !== undefined && avatar === this_avatar ? this_chid : undefined;
-}
-
-/**
  * @param {string} avatar
  * @param {string} formId
  * @param {string} value
@@ -735,7 +706,7 @@ export function saveCharacterField(avatar, formId, value, baseline = undefined) 
                 baseline.hash = chain.hash;
             }
 
-            await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: characterEditedId(avatar), character } });
+            await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character } });
             updateCharacterListRow(avatar);
             return true;
         } catch (error) {
@@ -815,7 +786,7 @@ async function saveTextField(formId, createSaveKey, value) {
  * @param {string} value
  * @returns {Promise<boolean>}
  */
-export function saveCreatorNotesField(value) {
+function saveCreatorNotesField(value) {
     return saveTextField('#creator_notes_textarea', 'creator_notes', value);
 }
 
@@ -823,7 +794,7 @@ export function saveCreatorNotesField(value) {
  * @param {string} value
  * @returns {Promise<boolean>}
  */
-export function saveDescriptionField(value) {
+function saveDescriptionField(value) {
     return saveTextField('#description_textarea', 'description', value);
 }
 
@@ -839,7 +810,7 @@ export function saveSystemPromptField(value) {
  * @param {string} value
  * @returns {Promise<boolean>}
  */
-export function savePostHistoryInstructionsField(value) {
+function savePostHistoryInstructionsField(value) {
     return saveTextField('#post_history_instructions_textarea', 'post_history_instructions', value);
 }
 
@@ -879,9 +850,6 @@ let is_delete_mode = false;
 let fav_ch_checked = false;
 let scrollLock = false;
 export let abortStatusCheck = new AbortController();
-export let charDragDropHandler = null;
-export let chatDragDropHandler = null;
-
 /** @type {debounce_timeout} The debounce timeout used for chat/settings save. debounce_timeout.long: 1.000 ms */
 export const DEFAULT_SAVE_EDIT_TIMEOUT = debounce_timeout.relaxed;
 
@@ -905,10 +873,8 @@ function scheduleSettingsSave({ full }) {
  * @param {...string} keys
  */
 export function saveSettingsDebounced(loopCounter, ...keys) {
-    noteTagExportsMayHaveChanged();
     scheduleSettingsSave(readSettingsSaveArgs(loopCounter, keys));
 }
-
 
 const getCharactersDebounced = debounce(() => getCharacters({ keepListPosition: true, skipPrint: !isCharacterListShowing() }), 2000);
 
@@ -1018,7 +984,6 @@ async function getClientVersion() {
     try {
         const response = await fetch('/version');
         const data = await response.json();
-        CLIENT_VERSION = data.agent;
         displayVersion = `SillyTavern ${data.pkgVersion}`;
         currentVersion = data.pkgVersion;
 
@@ -1083,7 +1048,7 @@ export function getCurrentDraftContext() {
 /**
  * @returns {import('./scripts/chat-draft.js').DraftContext|null}
  */
-export function getCurrentChatContext() {
+function getCurrentChatContext() {
     const selection = getSelectionState();
     const chatId = getCurrentChatId() ?? '';
     if (selection.type === 'group') {
@@ -1095,7 +1060,7 @@ export function getCurrentChatContext() {
     return null;
 }
 
-export function flushDraftSave() {
+function flushDraftSave() {
     const context = getCurrentDraftContext();
     if (!context) {
         return;
@@ -1128,7 +1093,7 @@ export let menu_type = '';
 let characterListWasShowing = false;
 let characterListShowHandledByCaller = false;
 
-export let selected_button = ''; //which button pressed
+let selected_button = ''; //which button pressed
 
 //create pole save
 export let create_save = {
@@ -1159,13 +1124,13 @@ export let create_save = {
 //animation right menu
 export const ANIMATION_DURATION_DEFAULT = 125;
 export let animation_duration = ANIMATION_DURATION_DEFAULT;
-export let animation_easing = 'ease-in-out';
+let animation_easing = 'ease-in-out';
 let popup_type = '';
 let chat_file_for_del = '';
 export let online_status = 'no_connection';
 
 export let is_send_press = false; //Send generation
-export const isGenerating = () => (is_send_press || is_group_generating);
+const isGenerating = () => (is_send_press || is_group_generating);
 
 let this_del_mes = -1;
 let deleteToolCallsInDeleteMode = true;
@@ -1176,7 +1141,7 @@ let this_edit_mes_chname = '';
 let this_edit_mes_id = undefined;
 
 //settings
-export let settings;
+let settings;
 /** @type {number|null} */
 let lastSavedSettingsHash = null;
 /** @type {number|null} */
@@ -1213,23 +1178,16 @@ let _saveQueue = Promise.resolve();
 /** User preference for swipeable messages */
 let swipes = true;
 /** Forcefully hide swipes. */
-export let swipesHidden = false;
+let swipesHidden = false;
 /** @type {{ now: number, direction: string }} */
-export let lastSwipeInfo = { now: performance.now(), direction: SWIPE_DIRECTION.RIGHT };
-export let recentSwipes = 0;
+let lastSwipeInfo = { now: performance.now(), direction: SWIPE_DIRECTION.RIGHT };
+let recentSwipes = 0;
 
 export let extension_prompts = {};
 
 //css
 var css_send_form_display = $('<div id=send_form></div>').css('display');
 
-
-export function getSlideToggleOptions() {
-    return {
-        miliseconds: animation_duration * 1.5,
-        transitionFunction: animation_duration > 0 ? 'ease-in-out' : 'step-start',
-    };
-}
 
 $.ajaxPrefilter((options, originalOptions, xhr) => {
     xhr.setRequestHeader('X-CSRF-Token', token);
@@ -1318,7 +1276,6 @@ async function firstLoadInit() {
     registerPromptManagerMigration();
     initDomHandlers();
     initStandaloneMode();
-    initLibraryShims();
     addShowdownPatch(showdown);
     addDOMPurifyHooks();
     initMessageMediaVolume();
@@ -1386,10 +1343,6 @@ async function firstLoadInit() {
     initKoboldSettings();
     initNovelAISettings();
     initSystemPrompts();
-
-    setStage('Loading extensions');
-    await initExtensions();
-    initExtensionSlashCommands();
     ToolManager.initToolSlashCommands();
 
     setStage('Loading presets');
@@ -1452,7 +1405,6 @@ async function firstLoadInit() {
     initWelcomeScreen();
 
     setStage('Starting up');
-    await initScrapers();
     initDataMaid();
     initFailedSends({
         addOneMessage, deleteMessage, getCurrentChatContext, redisplayChat, reloadCurrentChat, updateViewMessageIds,
@@ -1469,8 +1421,6 @@ async function firstLoadInit() {
         save: key => saveSettingsDebounced(key),
     });
     addDebugFunctions();
-    doDailyExtensionUpdatesCheck();
-    await eventSource.emit(event_types.APP_INITIALIZED);
 
     stageTimings.push({ stage: currentStageLabel, ms: performance.now() - stageStart });
     clearInterval(elapsedInterval);
@@ -1516,7 +1466,7 @@ export function cancelStatusCheck(reason = 'Manually cancelled status check') {
     setOnlineStatus('no_connection');
 }
 
-export function displayOnlineStatus() {
+function displayOnlineStatus() {
     if (online_status == 'no_connection') {
         $('.online_status_indicator').removeClass('success');
         $('.online_status_text').text($('#API-status-top').attr('no_connection_text'));
@@ -1541,7 +1491,7 @@ export function startStatusLoading() {
     $('.api_button').addClass('disabled');
 }
 
-export function stopStatusLoading() {
+function stopStatusLoading() {
     $('.api_loading').hide();
     $('.api_button').removeClass('disabled');
 }
@@ -1557,11 +1507,6 @@ export function resultCheckStatus() {
  * @returns {Promise<boolean>} false when there is no such character
  */
 export async function selectCharacterByAvatar(avatar, { switchMenu = true, toastMissing = true } = {}) {
-    if (isChatSaving) {
-        toastr.info(t`Please wait until the chat is saved before switching characters.`, t`Your chat is still saving...`);
-        return true;
-    }
-
     if (selected_group && is_group_generating) {
         return true;
     }
@@ -1610,7 +1555,6 @@ export async function selectCharacterByAvatar(avatar, { switchMenu = true, toast
     } else {
         //if clicked on character that was already selected
         switchMenu && (selected_button = 'character_edit');
-        await unshallowCharacter(avatar);
         select_selected_character(avatar, { switchMenu });
     }
     return true;
@@ -1645,17 +1589,14 @@ async function delChat(chatfile) {
 
 /**
  * Deletes a character chat by its name.
- * @param {string|number} characterId An index into `getContext().characters`, or an avatar key
+ * @param {string} avatar The character's avatar
  * @param {string} fileName Name of the chat file to delete (without .jsonl extension)
  * @returns {Promise<void>} A promise that resolves when the chat is deleted.
  */
-export async function deleteCharacterChatByName(characterId, fileName) {
-    // Make sure all the data is loaded.
-    await unshallowCharacter(characterId);
-
-    const character = resolveCharacterRef(characterId);
+export async function deleteCharacterChatByName(avatar, fileName) {
+    const character = charactersStore.get(avatar);
     if (!character) {
-        console.warn(`Character ${characterId} not found.`);
+        console.warn(`Character ${avatar} not found.`);
         return;
     }
 
@@ -1683,8 +1624,6 @@ export async function deleteCharacterChatByName(characterId, fileName) {
 
 async function pointToFreshChat(replace = null) {
     _setCurrentTarget('', null);
-    $('#selected_chat_pole').val('');
-    setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
     await openCharacterConversation({ fresh: true });
     const openingNodeId = chat[0]?.node_id;
     const opening = isStoredNodeId(openingNodeId) ? openingNodeId : '';
@@ -1704,13 +1643,6 @@ async function pointToFreshChat(replace = null) {
         toastr.error(t`Failed to save active chat.`);
     }
     _setCurrentTarget(current, chat_metadata.integrity ?? null);
-    $('#selected_chat_pole').val(current);
-    setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
-}
-
-export async function replaceCurrentChat() {
-    await clearChat({ clearData: true });
-    await openCharacterConversation();
 }
 
 export async function showMoreMessages(messagesToLoad = null) {
@@ -1753,7 +1685,6 @@ export async function showMoreMessages(messagesToLoad = null) {
     }
 
     applyStylePins();
-    await eventSource.emit(event_types.MORE_MESSAGES_LOADED);
 }
 
 export async function printMessages() {
@@ -1810,7 +1741,7 @@ export async function redisplayChat({ targetChat = chat, startIndex = 0, fade = 
     updateEditArrowClasses();
 }
 
-export function scrollOnMediaLoad() {
+function scrollOnMediaLoad() {
     const started = Date.now();
     const media = chatElement.find('.mes_block img, .mes_block video, .mes_block audio').toArray();
     let mediaLoaded = 0;
@@ -1852,7 +1783,6 @@ export function scrollOnMediaLoad() {
  * @param {boolean} [options.clearData=false] Optionally clear the chat array's contents.
  */
 export async function clearChat({ clearData = false } = {}) {
-    cancelDebouncedChatSave();
     cancelDebouncedMetadataSave();
     closeMessageEditor();
     extension_prompts = {};
@@ -1876,7 +1806,7 @@ export async function dropLastMessage() {
     await deleteLastMessage();
 }
 
-export async function deleteLastMessage() {
+async function deleteLastMessage() {
     if (this_edit_mes_id !== undefined && Number(this_edit_mes_id) === chat.length - 1) {
         closeMessageEditor();
     }
@@ -1988,7 +1918,7 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
     await eventSource.emit(event_types.MESSAGE_DELETED, chat.length);
 }
 
-export const reloadChatMutex = new SimpleMutex(reloadCurrentChatUnsafe);
+const reloadChatMutex = new SimpleMutex(reloadCurrentChatUnsafe);
 export const reloadCurrentChat = reloadChatMutex.update.bind(reloadChatMutex);
 
 export const userInputGenerateMutex = new SimpleMutex(sendTextareaMessage);
@@ -2044,7 +1974,7 @@ function cancelQueuedSend(reason) {
  * Use `reloadCurrentChat` instead to ensure thread safety.
  * @returns {Promise<void>} A promise that resolves when the chat is reloaded.
  */
-export async function reloadCurrentChatUnsafe() {
+async function reloadCurrentChatUnsafe() {
     preserveNeutralChat();
     await clearChat({ clearData: true });
 
@@ -2064,7 +1994,7 @@ export async function reloadCurrentChatUnsafe() {
     refreshSwipeButtons();
 }
 
-export async function sendTextareaMessage() {
+async function sendTextareaMessage() {
     if (swipeState == SWIPE_STATE.EDITING) {
         toastr.warning(t`Confirm the edit to start a generation.`, t`You cannot send a message during a swipe-edit.`);
         return;
@@ -2104,23 +2034,6 @@ export async function sendTextareaMessage() {
     let generation = await Generate(generateType);
     showSwipeButtons();
     return generation;
-}
-
-/**
- * Creates an Image element for the given API/model icon.
- * The image references the matching SVG file from `/img/` and includes a tooltip with API and model info.
- * The caller is responsible for appending the image to the DOM and optionally calling `SVGInject` on it.
- *
- * @param {string} apiName - API identifier matching an SVG file in /img/ (e.g. 'openai', 'openrouter', 'claude')
- * @param {string} [modelName=''] - Model name shown in the tooltip
- * @returns {HTMLImageElement} The image element (not yet in the DOM)
- */
-export function createModelIcon(apiName, modelName = '') {
-    const image = new Image();
-    image.classList.add('icon-svg');
-    image.src = `/img/${apiName}.svg`;
-    image.title = modelName ? `${apiName} - ${modelName}` : apiName;
-    return image;
 }
 
 /**
@@ -2902,26 +2815,6 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
 }
 
 /**
- * Returns the URL of the avatar for the given character.
- * @param {string|number} characterId An index into `getContext().characters`, or an avatar key
- * @returns {string} Avatar URL
- */
-export function getCharacterAvatar(characterId) {
-    const character = resolveCharacterRef(characterId);
-    const avatarImg = character?.avatar;
-
-    if (!avatarImg || avatarImg === 'none') {
-        return default_avatar;
-    }
-
-    return formatCharacterAvatar(avatarImg);
-}
-
-export function formatCharacterAvatar(characterAvatar) {
-    return `characters/${characterAvatar}`;
-}
-
-/**
  * Formats the title for the generation timer.
  * @param {MessageTimestamp} gen_started Date when generation was started
  * @param {MessageTimestamp} gen_finished Date when generation was finished
@@ -3026,7 +2919,7 @@ export function substituteParamsExtended(content, additionalMacro = {}, postProc
  * @param {(x: string) => string} [postProcessFn] - Post-processing function for each substituted macro.
  * @returns {string} The string with substituted parameters.
  */
-export function substituteParamsLegacy(content, _name1, _name2, _original, _group, _replaceCharacterCard = true, additionalMacro = {}, postProcessFn = (x) => x) {
+function substituteParamsLegacy(content, _name1, _name2, _original, _group, _replaceCharacterCard = true, additionalMacro = {}, postProcessFn = (x) => x) {
     return substituteParams(content, {
         name1Override: _name1,
         name2Override: _name2,
@@ -3145,20 +3038,14 @@ export function getStoppingStrings(isImpersonate, isContinue, api = main_api) {
  * @prop {string} [quietImage] Image to use for the quiet prompt
  * @prop {string} [quietName] Name to use for the quiet prompt (defaults to "System:")
  * @prop {number} [responseLength] Maximum response length. If unset, the global default value is used.
- * @prop {number} [forceChId] Character ID to use for this generation run. Works in groups only.
- * @prop {string} [forceAvatar] Avatar key of the character to use for this generation run, instead of `forceChId`. Works in groups only.
+ * @prop {string} [forceAvatar] Avatar key of the character to use for this generation run. Works in groups only.
  * @prop {object} [jsonSchema] JSON schema to use for the structured generation. Usually requires a special instruction.
  * @prop {boolean} [removeReasoning] Parses and removes the reasoning block according to reasoning format preferences
  * @prop {boolean} [trimToSentence] Whether to trim the response to the last complete sentence
  * @param {GenerateQuietPromptParams} params Parameters for the quiet prompt generation
  * @returns {Promise<string>} Generated text. If using structured output, will contain a serialized JSON object.
  */
-export async function generateQuietPrompt({ quietPrompt = '', quietToLoud = false, skipWIAN = false, quietImage = null, quietName = null, responseLength = null, forceChId = null, forceAvatar = null, jsonSchema = null, removeReasoning = true, trimToSentence = false } = {}) {
-    if (arguments.length > 0 && typeof arguments[0] !== 'object') {
-        console.trace('generateQuietPrompt called with positional arguments. Please use an object instead.');
-        [quietPrompt, quietToLoud, skipWIAN, quietImage, quietName, responseLength, forceChId, jsonSchema] = arguments;
-    }
-
+export async function generateQuietPrompt({ quietPrompt = '', quietToLoud = false, skipWIAN = false, quietImage = null, quietName = null, responseLength = null, forceAvatar = null, jsonSchema = null, removeReasoning = true, trimToSentence = false } = {}) {
     const responseLengthCustomized = typeof responseLength === 'number' && responseLength > 0;
     let eventHook = () => { };
     try {
@@ -3170,7 +3057,7 @@ export async function generateQuietPrompt({ quietPrompt = '', quietToLoud = fals
             force_name2: true,
             quietImage: quietImage ?? null,
             quietName: quietName ?? null,
-            force_avatar: forceAvatar ?? ((forceChId !== null && forceChId !== undefined) ? exposedCharacters[forceChId]?.avatar ?? null : null),
+            force_avatar: forceAvatar,
             jsonSchema: jsonSchema ?? null,
         };
         if (responseLengthCustomized) {
@@ -3297,31 +3184,6 @@ export function addPersonaDescriptionExtensionPrompt() {
     if (personaDescriptionPosition === persona_description_positions.AT_DEPTH) {
         setExtensionPrompt(INJECT_TAG, personaDescription, extension_prompt_types.IN_CHAT, getPersonaDescriptionDepth(), true, getPersonaDescriptionRole());
     }
-}
-
-/**
- * Returns all extension prompts combined.
- * @returns {Promise<string>} Combined extension prompts
- */
-export async function getAllExtensionPrompts() {
-    const values = [];
-
-    for (const prompt of Object.values(extension_prompts)) {
-        const value = prompt?.value?.trim();
-
-        if (!value) {
-            continue;
-        }
-
-        const hasFilter = typeof prompt.filter === 'function';
-        if (hasFilter && !await prompt.filter()) {
-            continue;
-        }
-
-        values.push(value);
-    }
-
-    return substituteParams(values.join('\n'));
 }
 
 /**
@@ -3471,20 +3333,11 @@ export function createLazyFields(resolvers) {
  * Returns the character card fields for the current character as lazy getters.
  * Each field is only processed (baseChatReplace) when first accessed.
  * @param {Object} [options={}]
- * @param {number|string} [options.chid] Optional character: an index into `getContext().characters`, or an avatar key. Falls back to the current character when null or undefined.
- * @param {string} [options.avatar] Optional character avatar, used when `chid` is null or undefined. With both naming different characters, the fields are those of no character.
+ * @param {string} [options.avatar] Optional character avatar. Falls back to the current character when undefined.
  * @returns {CharacterCardFields} Character card fields with lazy evaluation
  */
-export function getCharacterCardFieldsLazy({ chid = undefined, avatar = undefined } = {}) {
-    let character;
-    if (chid == null) {
-        character = avatar !== undefined ? charactersStore.get(avatar) : getCurrentCharacter();
-    } else if (avatar !== undefined) {
-        const resolved = resolveCharacterRefPair(chid, avatar);
-        character = resolved === CHARACTER_REF_MISMATCH ? undefined : resolved;
-    } else {
-        character = resolveCharacterRef(chid);
-    }
+export function getCharacterCardFieldsLazy({ avatar = undefined } = {}) {
+    const character = avatar !== undefined ? charactersStore.get(avatar) : getCurrentCharacter();
 
     // For group chats, we need to check if group cards should be used
     const useGroupCards = selected_group && character;
@@ -3553,12 +3406,11 @@ export function getCharacterCardFieldsLazy({ chid = undefined, avatar = undefine
 /**
  * Returns the character card fields for the current character.
  * @param {Object} [options={}]
- * @param {number|string} [options.chid] Optional character, as for {@link getCharacterCardFieldsLazy}
  * @param {string} [options.avatar] Optional character avatar, as for {@link getCharacterCardFieldsLazy}
  * @returns {CharacterCardFields} Character card fields
  */
-export function getCharacterCardFields({ chid = undefined, avatar = undefined } = {}) {
-    const lazy = getCharacterCardFieldsLazy({ chid, avatar });
+export function getCharacterCardFields({ avatar = undefined } = {}) {
+    const lazy = getCharacterCardFieldsLazy({ avatar });
 
     // Resolve all lazy fields into a plain object
     return {
@@ -4020,7 +3872,6 @@ export class StreamingProcessor {
                 // Get the updated reasoning string into the handler
                 this.reasoningHandler.updateReasoning(this.messageId, state?.reasoning);
                 this.reasoningSignature = state?.signature ?? null;
-                await eventSource.emit(event_types.STREAM_TOKEN_RECEIVED, text);
                 await requestDraw();
             }
             if (trailingDraw) {
@@ -4058,7 +3909,7 @@ export class StreamingProcessor {
  * @param {string} [prefill] Prefill for the prompt.
  * @returns {string | object[]} Prompt ready for use in generation. If using TC, this will be a string. If using CC, this will be an array of chat-style messages.
  */
-export function createRawPrompt(prompt, api, instructOverride, quietToLoud, systemPrompt, prefill) {
+function createRawPrompt(prompt, api, instructOverride, quietToLoud, systemPrompt, prefill) {
     const isInstruct = power_user.instruct.enabled && api !== 'openai' && api !== 'novel' && !instructOverride;
 
     // If the prompt was given as a string, convert to a message-style object assuming user role
@@ -4134,7 +3985,7 @@ export function createRawPrompt(prompt, api, instructOverride, quietToLoud, syst
  * @param {GenerateRawParams} params Parameters for generating a message
  * @returns {Promise<object | string>} Raw API response data, or a JSON string extracted from the response when `jsonSchema` is provided.
  */
-export async function generateRawData({ prompt = '', api = null, instructOverride = false, quietToLoud = false, systemPrompt = '', responseLength = null, prefill = '', jsonSchema = null } = {}) {
+async function generateRawData({ prompt = '', api = null, instructOverride = false, quietToLoud = false, systemPrompt = '', responseLength = null, prefill = '', jsonSchema = null } = {}) {
     if (!api) {
         api = main_api;
     }
@@ -4401,7 +4252,7 @@ export function removeLastMessage() {
  * Assembles the full prompt that would be sent for the next generation, without sending it - a dry run of
  * Generate() that captures whichever combine-prompt event fires for the active backend, then displays it.
  */
-export async function previewFullPrompt() {
+async function previewFullPrompt() {
     if (is_send_press) {
         toastr.warning(t`Cannot preview the prompt while a generation is in progress.`);
         return;
@@ -4517,10 +4368,6 @@ export function unblockGeneration(type) {
     setGenerationProgress(0);
     flushEphemeralStoppingStrings();
     flushWIInjections();
-}
-
-export function getNextMessageId(type) {
-    return type == 'swipe' ? chat.length - 1 : chat.length;
 }
 
 /**
@@ -4682,8 +4529,6 @@ export function removeMacros(str) {
  * @returns {Promise<any>} A promise that resolves to the message when it is inserted.
  */
 export async function sendMessageAsUser(messageText, messageBias, insertAt = null, compact = false, name = name1, avatar = user_avatar, skipTreePersistence = false) {
-    messageText = getRegexedString(messageText, regex_placement.USER_INPUT);
-
     const message = {
         name: name,
         is_user: true,
@@ -4707,7 +4552,6 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
     }
 
     await populateFileAttachment(message);
-    statMesProcess(message, 'user', exposedCharacters, this_chid, '');
     setStoreRef(message, uuidv4());
 
     chat_metadata.tainted = true;
@@ -4719,17 +4563,13 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
             const nodeId = await chatOpGraft(insertAt, { silent: true }).catch(() => null);
             if (!isStoredNodeId(nodeId)) keepFailedSend({ key: storeRefOf(message), kind: 'graft' });
         }
-        await eventSource.emit(event_types.MESSAGE_SENT, insertAt);
         await reloadCurrentChat();
-        await eventSource.emit(event_types.USER_MESSAGE_RENDERED, insertAt);
     } else {
         chat.push(message);
         const chat_id = (chat.length - 1);
         recordSend({ key: storeRefOf(message), kind: 'append' });
 
         addOneMessage(message);
-        await eventSource.emit(event_types.MESSAGE_SENT, chat_id);
-        await eventSource.emit(event_types.USER_MESSAGE_RENDERED, chat_id);
 
         if (!skipTreePersistence) {
             const nodeIds = await chatOpAppend(chat_id, undefined, { silent: true }).catch(() => []);
@@ -4894,7 +4734,6 @@ export async function duplicateCharacter({ avatar = null, silent = false } = {})
 
     toastr.success(t`Character Duplicated`);
     const data = await response.json();
-    await eventSource.emit(event_types.CHARACTER_DUPLICATED, { oldAvatar: targetAvatar, newAvatar: data.path });
     await getCharacters({ silent: true, skipPrint: true });
     charactersStore.reportCreated(data.path);
     if (!refreshCharacterListCurrentPage()) {
@@ -5095,7 +4934,7 @@ export async function sendStreamingRequest(type, data, options = {}) {
  * @returns {string} Generation URL
  * @throws {Error} If the API is unknown
  */
-export function getGenerateUrl(api) {
+function getGenerateUrl(api) {
     switch (api) {
         case 'kobold':
             return '/api/backends/kobold/generate';
@@ -5370,9 +5209,6 @@ export function cleanUpMessage({ getMessage, isImpersonate, isContinue, displayI
         }
     }
 
-    // Regex uses vars, so add before formatting
-    getMessage = getRegexedString(getMessage, isImpersonate ? regex_placement.USER_INPUT : regex_placement.AI_OUTPUT);
-
     if (power_user.collapse_newlines) {
         getMessage = collapseNewlines(getMessage);
     }
@@ -5521,10 +5357,8 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         reasoning = '';
     }
 
-    let oldMessage = '';
     const generationFinished = new Date();
     if (type === 'swipe') {
-        oldMessage = lastMessage.mes;
         const newSwipes = [...(lastMessage.swipes || []), ''];
         const newSwipeInfo = [...(lastMessage.swipe_info || []), {
             send_date: getMessageTimeStamp(),
@@ -5558,7 +5392,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
             lastMessage = chat[lastMesId];
         }
     } else if (type === 'append' || type === 'continue') {
-        oldMessage = lastMessage.mes;
         const newExtra = {
             ...lastMessage.extra,
             api: getGeneratingApi(), model: getGeneratingModel(),
@@ -5578,7 +5411,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         addOneMessage(chat[chat_id], { type: 'swipe' });
         !fromStreaming && await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, chat_id, type);
     } else if (type === 'appendFinal') {
-        oldMessage = lastMessage.mes;
         const newExtra = {
             ...lastMessage.extra,
             api: getGeneratingApi(), model: getGeneratingModel(),
@@ -5690,7 +5522,6 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         item = chat[itemId];
     }
 
-    statMesProcess(item, type, exposedCharacters, this_chid, oldMessage);
     return { type, getMessage };
 }
 
@@ -5959,7 +5790,7 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
  * @param {ChatMessage?} [targetMessage=null] - The message object to sync instead of resolving one from `chat`.
  * @returns {boolean} Whether the swipe data was successfully synced to the message
  */
-export function syncSwipeToMes(messageId = null, swipeId = null, targetMessage = null) {
+function syncSwipeToMes(messageId = null, swipeId = null, targetMessage = null) {
     if (!targetMessage && !chat.length) {
         return false;
     }
@@ -6242,8 +6073,8 @@ export async function renameCharacter(name = null, { silent = false, renameChats
             const data = await response.json();
             const newAvatar = data.avatar;
 
-            const oldName = getCharaFilename(null, { manualAvatarKey: oldAvatar });
-            const newName = getCharaFilename(null, { manualAvatarKey: newAvatar });
+            const oldName = getCharaFilename(oldAvatar);
+            const newName = getCharaFilename(newAvatar);
 
 
             // Additional lore books
@@ -6265,8 +6096,6 @@ export async function renameCharacter(name = null, { silent = false, renameChats
                 setActiveCharacter(newAvatar);
                 saveSettingsDebounced('active_character');
             }
-
-            await eventSource.emit(event_types.CHARACTER_RENAMED, oldAvatar, newAvatar);
 
             // Unload current character
             setCharacterId(undefined);
@@ -6401,7 +6230,7 @@ export function characterAvatar(character) {
  * @param {{ force_avatar?: string, force_avatar_url?: string, force_avatar_url_still?: string }} mes
  * @returns {string | undefined}
  */
-export function shownAvatar(mes) {
+function shownAvatar(mes) {
     return typeof mes?.force_avatar_url === 'string' ? shownThumbnail(mes.force_avatar_url, mes.force_avatar_url_still) ?? undefined : mes?.force_avatar;
 }
 
@@ -6417,7 +6246,7 @@ export function macroPerson(macroName, { avatar, name } = {}) {
     }
     if (which !== 'char' && which !== 'charifnotgroup') return null;
     const found = (avatar ? charactersStore.get(avatar) : undefined)
-        ?? (name ? exposedCharacters.find(c => c?.name === name) : undefined)
+        ?? (name ? characters.find(c => c?.name === name) : undefined)
         ?? getCurrentCharacter();
     if (!found) return null;
     return { name: name || found.name, avatarUrl: characterThumbnail(found), about: String(found.data?.creator_notes ?? found.creatorcomment ?? '') };
@@ -6471,33 +6300,6 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
 
         block.append(avatarTemplate);
     }
-}
-
-/**
- * Loads all the data of a shallow character. Kept for upstream callers: every character the page holds is already
- * a full card, so for those this does nothing.
- * @param {string|number|undefined} characterId An index into `getContext().characters`, or an avatar key
- * @returns {Promise<void>} Promise that resolves when the character is unshallowed
- */
-export async function unshallowCharacter(characterId) {
-    const character = resolveCharacterRef(characterId);
-
-    if (characterId === undefined) {
-        console.debug('Undefined character cannot be unshallowed');
-        return;
-    }
-
-    if (!character) {
-        console.debug('Character not found:', characterId);
-        return;
-    }
-
-    // Character is not shallow
-    if (!character.shallow) {
-        return;
-    }
-
-    await getOneCharacter(character.avatar);
 }
 
 /**
@@ -6596,8 +6398,6 @@ async function openCharacterConversation({ chat: requested = null, makeCurrent =
     setChatMetadata(answer.chat_metadata ?? {});
     _setCurrentTarget(answer.chat, chat_metadata.integrity ?? null);
     _resetMetadataSaveSnapshot();
-    $('#selected_chat_pole').val(answer.chat);
-    setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
     chat.splice(0, chat.length, ...answer.messages);
     chat.forEach(ensureMessageMediaIsArray);
     _snapshotMessages();
@@ -6607,7 +6407,7 @@ async function openCharacterConversation({ chat: requested = null, makeCurrent =
 
     _snapshotMessages();
 
-    eventSource.emit(event_types.CHAT_LOADED, { detail: { id: this_chid, character: getCurrentCharacter() } });
+    eventSource.emit(event_types.CHAT_LOADED, { detail: { character: getCurrentCharacter() } });
 
     delay(debounce_timeout.short).then(() => {
         if (getMountedTextarea(document.activeElement) || $(document.activeElement).is('input:visible, textarea:visible')) {
@@ -6615,15 +6415,6 @@ async function openCharacterConversation({ chat: requested = null, makeCurrent =
         }
         $('#send_textarea').trigger('click').trigger('focus');
     });
-}
-
-/**
- * @param {object} [options]
- * @param {boolean} [options.isNewChat]
- */
-export async function getChat({ isNewChat = false } = {}) {
-    await unshallowCharacter(getCurrentCharacter()?.avatar);
-    await openCharacterConversation({ chat: getCurrentCharacter().chat || null, fresh: isNewChat });
 }
 
 /**
@@ -6654,13 +6445,11 @@ async function pushFirstMessageIntoEmptyChat({ openings = null } = {}) {
  */
 async function getChatResult({ openings = undefined } = {}) {
     name2 = getCurrentCharacter().name;
-    const freshChat = await pushFirstMessageIntoEmptyChat({ openings: openings?.openings ?? null });
-    await eventSource.emit(event_types.ITEMIZED_PROMPTS_LOADED, { chatId: getCurrentChatId() });
+    await pushFirstMessageIntoEmptyChat({ openings: openings?.openings ?? null });
     await printMessages();
     select_selected_character(getCurrentCharacter()?.avatar);
 
     await eventSource.emit(event_types.CHAT_CHANGED, (getCurrentChatId()));
-    if (freshChat) await eventSource.emit(event_types.CHAT_CREATED);
 
     if (chat.length === 1) {
         const chat_id = (chat.length - 1);
@@ -6780,7 +6569,7 @@ async function _openingFromTree(cardGreetings, preferredIndex, prefetched = null
  * @param {string} chat
  * @returns {Promise<{ chat: string } | false>}
  */
-export async function saveActiveChat(avatar, chat) {
+async function saveActiveChat(avatar, chat) {
     try {
         const response = await fetch('/api/characters/chat', {
             method: 'POST',
@@ -6803,7 +6592,6 @@ export async function saveActiveChat(avatar, chat) {
  * @param {{ opened?: ChatOpenAnswer|null }} [options]
  */
 export async function openCharacterChat(file_name, { opened = null } = {}) {
-    await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
     await clearChat({ clearData: true });
     setChatMetadata({});
     _resetMetadataSaveSnapshot();
@@ -6812,7 +6600,7 @@ export async function openCharacterChat(file_name, { opened = null } = {}) {
 
 ////////// OPTIMZED MAIN API CHANGE FUNCTION ////////////
 
-export function changeMainAPI(api = null) {
+function changeMainAPI(api = null) {
     const selectedVal = api ?? $('#main_api').val();
     //console.log(selectedVal);
     const apiElements = {
@@ -6976,7 +6764,7 @@ let rawSettingsFetchPromise = null;
  * @param {boolean} [options.force=false]
  * @returns {Promise<any>}
  */
-export function fetchRawSettings({ force = false } = {}) {
+function fetchRawSettings({ force = false } = {}) {
     if (force) {
         rawSettingsCache = null;
     }
@@ -7015,7 +6803,7 @@ export function fetchRawSettings({ force = false } = {}) {
 
 //MARK: getSettings()
 ///////////////////////////////////////////
-export async function getSettings(initLoaderHandle = null, onStageChange = null, { force = false } = {}) {
+async function getSettings(initLoaderHandle = null, onStageChange = null, { force = false } = {}) {
     let data;
     try {
         data = await fetchRawSettings({ force });
@@ -7078,13 +6866,12 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
         applyPowerUserSettings();
 
         // Load character tags
-        await loadTagsSettings();
+        await loadTagsFromServer();
 
         // Load proxy presets
         loadProxyPresets(settings);
 
         // Allow subscribers to mutate settings
-        await eventSource.emit(event_types.SETTINGS_LOADED_AFTER, settings);
 
         //Load which API we are using
         if (settings.main_api == undefined) {
@@ -7113,23 +6900,7 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
 
         initMacros();
 
-        onStageChange?.('Activating extensions');
-
-        if (data.enable_extensions) {
-            const enableAutoUpdate = Boolean(data.enable_extensions_auto_update);
-            const isVersionChanged = settings.currentVersion !== currentVersion;
-            await loadExtensionSettings(settings, isVersionChanged, enableAutoUpdate);
-            await eventSource.emit(event_types.EXTENSION_SETTINGS_LOADED);
-        } else {
-            Object.assign(extension_settings, (settings.extension_settings ?? {}));
-            $('#third_party_extension_button').addClass('disabled');
-            $('#extensions_details').addClass('disabled');
-            $('#extensions_connect').addClass('disabled');
-            $('#extensions_notify_updates').attr('disabled', 'disabled');
-            $('#extensions_autoconnect').attr('disabled', 'disabled');
-            $('#extensions_url').attr('disabled', 'disabled');
-            $('#extensions_api_key').attr('disabled', 'disabled');
-        }
+        Object.assign(extension_settings, settings.extension_settings ?? {});
 
         firstRun = !!settings.firstRun;
 
@@ -7178,7 +6949,6 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
  * @param {...string} keys
  */
 export async function saveSettings(loopCounter, ...keys) {
-    noteTagExportsMayHaveChanged();
     const save = readSettingsSaveArgs(loopCounter, keys);
     if (!save.full && !_settingsSaveWindow.full) {
         cancelDebounce(_debouncedSaveImpl);
@@ -7209,8 +6979,6 @@ async function runSettingsSave({ full }) {
         scheduleSettingsSave({ full });
         return;
     }
-
-    storeTagChangesMadeThroughExport();
 
     const run = () => performSave({ full });
     const queued = _saveQueue.then(run, run);
@@ -7358,49 +7126,6 @@ async function performSave({ full }) {
 }
 
 /**
- * @param {Record<string, unknown>} partialSettings
- * @returns {Promise<boolean>}
- */
-export async function savePartialSettings(partialSettings) {
-    const keys = Object.keys(partialSettings).filter(key => partialSettings[key] !== undefined);
-    if (!keys.length) return true;
-    const expectedHashes = {};
-    for (const key of keys) {
-        if (key in serverKeyHashes) {
-            expectedHashes[key] = serverKeyHashes[key];
-        }
-    }
-
-    const result = await fetch('/api/settings/save-partial', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ keys: partialSettings, expectedHashes }),
-        cache: 'no-cache',
-    });
-
-    if (result.status === 409) {
-        const data = await result.json().catch(() => ({}));
-        console.warn('Partial settings save rejected, conflicting keys:', data.conflictingKeys);
-        toastr.warning(t`Settings were changed in another tab or device. Refreshing - please reapply your change.`, t`Settings save rejected`);
-        await getSettings(null, null, { force: true });
-        return false;
-    }
-
-    if (!result.ok) {
-        throw new Error(`Failed to save partial settings: ${result.statusText}`);
-    }
-
-    const answer = await result.json().catch(() => ({}));
-    if (!takeServerKeyHashes(answer.keyHashes, Object.keys(partialSettings).map(key => key.split('.')[0]))) {
-        for (const key of Object.keys(partialSettings)) {
-            seedSettingsHashes(partialSettings[key], key);
-        }
-    }
-    if (answer.settingsHash != null) knownServerSettingsHash = answer.settingsHash;
-    return true;
-}
-
-/**
  * Sets the response length and context size from a preset or a model's limits (upstream's; extensions call it).
  * They're the server's: the context is fitted to the size (unlocked past the locked limit) and the length set;
  * resolves once the server has them.
@@ -7444,26 +7169,6 @@ function applyMessageEdit(div) {
     if (cardGreeting !== null) {
         return finishMessageEdit(mesBlock, mesId, mes, cardGreeting, '');
     }
-
-    let regexPlacement;
-    if (mes?.is_user) {
-        regexPlacement = regex_placement.USER_INPUT;
-    } else if (mes.extra?.type === 'narrator') {
-        regexPlacement = regex_placement.SLASH_COMMAND;
-    } else {
-        regexPlacement = regex_placement.AI_OUTPUT;
-    }
-
-    // Ignore character override if sent as system
-    text = getRegexedString(
-        text,
-        regexPlacement,
-        {
-            characterOverride: mes.extra?.type === 'narrator' ? undefined : mes.name,
-            isEdit: true,
-        },
-    );
-
 
     if (power_user.trim_spaces) {
         text = text.trim();
@@ -7800,76 +7505,18 @@ async function messageEditDone(div) {
 }
 
 /**
- * Fetches the chat content for each chat file from the server and compiles them into a dictionary.
- * The function iterates over a provided list of chat metadata and requests the actual chat content
- * for each chat, either as an individual chat or a group chat based on the context.
- *
- * @param {Array} data - An array containing metadata about each chat such as file_name.
- * @param {boolean} isGroupChat - A flag indicating if the chat is a group chat.
- * @returns {Promise<Object>} chat_dict - A dictionary where each key is a file_name and the value is the
- * corresponding chat content fetched from the server.
- */
-export async function getChatsFromFiles(data, isGroupChat) {
-    let chat_dict = {};
-    let chat_list = Object.values(data).sort((a, b) => a.file_name.localeCompare(b.file_name)).reverse();
-
-    let chat_promise = chat_list.map(({ file_name }) => {
-        return new Promise(async (res, rej) => {
-            try {
-                const endpoint = isGroupChat ? '/api/chats/group/get' : '/api/chats/get';
-                const requestBody = isGroupChat
-                    ? JSON.stringify({ id: file_name, ...(selected_group ? { group_id: selected_group } : {}) })
-                    : JSON.stringify({
-                        ch_name: getCurrentCharacter().name,
-                        file_name: file_name.replace('.jsonl', ''),
-                        avatar_url: getCurrentCharacter().avatar,
-                    });
-
-                const chatResponse = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: getRequestHeaders(),
-                    body: requestBody,
-                    cache: 'no-cache',
-                });
-
-                if (!chatResponse.ok) {
-                    return res();
-                    // continue;
-                }
-
-                const currentChat = await chatResponse.json();
-                if (!isGroupChat) {
-                    // remove the first message, which is metadata, only for individual chats
-                    currentChat.shift();
-                }
-                chat_dict[file_name] = currentChat;
-            } catch (error) {
-                console.error(error);
-            }
-
-            return res();
-        });
-    });
-
-    await Promise.all(chat_promise);
-
-    return chat_dict;
-}
-
-/**
  * Fetches the metadata of all past chats related to a specific character based on its avatar URL.
  * The function sends a POST request to the server to retrieve all chats for the character. It then
  * processes the received data, sorts it by the file name, and returns the sorted data.
  *
- * @param {null|string|number} [characterId=null] - An index into `getContext().characters`, or an avatar key.
- * When null or undefined, the current character.
+ * @param {string|null} [avatar=null] - The character's avatar. When null or undefined, the current character.
  *
  * @returns {Promise<Array>} - An array containing metadata of all past chats of the character, sorted
  * in descending order by file name. Returns an empty array if the fetch request is unsuccessful or the
  * response is an object with an `error` property set to `true`.
  */
-export async function getPastCharacterChats(characterId = null) {
-    const character = resolveCharacterRef(characterId ?? this_avatar);
+export async function getPastCharacterChats(avatar = null) {
+    const character = charactersStore.get(avatar ?? this_avatar);
     if (!character) return [];
 
     const response = await fetch('/api/characters/chats', {
@@ -8308,17 +7955,15 @@ export function select_rm_info(type, charId, previousCharId = null, displayName 
 
 /**
  * Selects the right menu for displaying the character editor.
- * @param {string|number} chid An index into `getContext().characters`, or an avatar key
+ * @param {string} avatar The character's avatar
  * @param {object} [param1] Options for the switch
  * @param {boolean} [param1.switchMenu=true] Whether to switch the menu
  */
-export function select_selected_character(chid, { switchMenu = true } = {}) {
-    //character select
-    const character = resolveCharacterRef(chid);
+export function select_selected_character(avatar, { switchMenu = true } = {}) {
+    const character = charactersStore.get(avatar);
     if (character == null) {
-        throw new TypeError(`select_selected_character: no character found for ${JSON.stringify(chid)}`);
+        throw new TypeError(`select_selected_character: no character found for ${JSON.stringify(avatar)}`);
     }
-    const avatar = character?.avatar;
     select_rm_create({ switchMenu, show: false });
     switchMenu && setMenuType('character_edit');
     $('#delete_button').css('display', 'flex');
@@ -8363,15 +8008,9 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
     $('#talkativeness_slider').val(characterFormValue(character, '#talkativeness_slider'));
     setFieldValue('mes_example_textarea', characterFormValue(character, '#mes_example_textarea'));
     refreshCharInfoTabDimming();
-    $('#selected_chat_pole').val(character.chat);
-    setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
-    $('#create_date_pole').val(timestampToMoment(character.create_date).toISOString());
-    setFormBaseline('#create_date_pole', String($('#create_date_pole').val()));
     $('#avatar_url_pole').val(character.avatar);
     $('#chat_import_avatar_url').val(character.avatar);
     $('#chat_import_character_name').val(character.name);
-    $('#character_json_data').val(character.json_data);
-    setFormBaseline('#character_json_data', String($('#character_json_data').val()));
     $('#character_book_json').val(characterFormValue(character, '#character_book_json'));
 
     updateFavButtonState(normalizeFav(character.fav));
@@ -8403,8 +8042,7 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
 
     switchMenu && selectRightMenuWithAnimation('rm_ch_create_block');
 
-    const editorOpenedChid = exposedCharacters[chid] !== undefined ? chid : (avatar === this_avatar ? this_chid : undefined);
-    eventSource.emit(event_types.CHARACTER_EDITOR_OPENED, editorOpenedChid);
+    eventSource.emit(event_types.CHARACTER_EDITOR_OPENED);
 }
 
 /**
@@ -8458,8 +8096,6 @@ function select_rm_create({ switchMenu = true, show = true } = {}) {
     setFieldValue('mes_example_textarea', create_save.mes_example);
     refreshCharInfoTabDimming();
     autosizeTextareas(document.getElementById('form_create'));
-    $('#character_json_data').val('');
-    setFormBaseline('#character_json_data', String($('#character_json_data').val()));
     $('#character_book_json').val('');
     $('#avatar_div').css('display', 'flex');
     $('#avatar_load_preview').attr('src', default_avatar);
@@ -8639,70 +8275,6 @@ export async function setCharacterSettingsOverrides() {
 }
 
 /**
- * Displays a blocking popup with a given text and type.
- * @param {JQuery<HTMLElement>|string|Element} text - Text to display in the popup.
- * @param {string} type
- * @param {string} inputValue - Value to set the input to.
- * @param {PopupOptions} options - Options for the popup.
- * @typedef {{okButton?: string, rows?: number, wide?: boolean, wider?: boolean, large?: boolean, allowHorizontalScrolling?: boolean, allowVerticalScrolling?: boolean, cropAspect?: number }} PopupOptions - Options for the popup.
- * @returns {Promise<any>} A promise that resolves when the popup is closed.
- * @deprecated Use `callGenericPopup` instead.
- */
-export function callPopup(text, type, inputValue = '', { okButton, rows, wide, wider, large, allowHorizontalScrolling, allowVerticalScrolling, cropAspect } = {}) {
-    function getOkButtonText() {
-        if (['text', 'char_not_selected'].includes(popup_type)) {
-            $dialoguePopupCancel.css('display', 'none');
-            return okButton ?? t`Ok`;
-        } else if (['delete_extension'].includes(popup_type)) {
-            return okButton ?? t`Ok`;
-        } else if (['new_chat', 'confirm'].includes(popup_type)) {
-            return okButton ?? t`Yes`;
-        } else if (['input'].includes(popup_type)) {
-            return okButton ?? t`Save`;
-        }
-        return okButton ?? t`Delete`;
-    }
-
-    dialogueCloseStop = true;
-    if (type) {
-        popup_type = type;
-    }
-
-    const $dialoguePopup = $('#dialogue_popup');
-    const $dialoguePopupCancel = $('#dialogue_popup_cancel');
-    const $dialoguePopupOk = $('#dialogue_popup_ok');
-    const $dialoguePopupInput = $('#dialogue_popup_input');
-    const $dialoguePopupText = $('#dialogue_popup_text');
-    const $shadowPopup = $('#shadow_popup');
-
-    $dialoguePopup.toggleClass('wide_dialogue_popup', !!wide)
-        .toggleClass('wider_dialogue_popup', !!wider)
-        .toggleClass('large_dialogue_popup', !!large)
-        .toggleClass('horizontal_scrolling_dialogue_popup', !!allowHorizontalScrolling)
-        .toggleClass('vertical_scrolling_dialogue_popup', !!allowVerticalScrolling);
-
-    $dialoguePopupCancel.css('display', 'inline-block');
-    $dialoguePopupOk.text(getOkButtonText());
-    $dialoguePopupInput.toggle(popup_type === 'input').val(inputValue).attr('rows', rows ?? 1);
-    $dialoguePopupText.empty().append(text);
-    $shadowPopup.css('display', 'block');
-
-    if (popup_type == 'input') {
-        $dialoguePopupInput.trigger('focus');
-    }
-
-    $shadowPopup.transition({
-        opacity: 1,
-        duration: animation_duration,
-        easing: animation_easing,
-    });
-
-    return new Promise((resolve) => {
-        dialogueResolve = resolve;
-    });
-}
-
-/**
  * Update the swipe counter for mesId.
  * By default, the swipe counter's opacity will appear greyed out. The opacity is changed with CSS.
  * @param {Number} mesId
@@ -8803,7 +8375,7 @@ export function isMessageSwipeable(messageId, message = undefined) {
  * @param {ChatMessage} [message=undefined] If defined, this will be used instead of chat[messageId].
  * @returns {OVERSWIPE_BEHAVIOR}
  */
-export function getOverswipeBehavior(messageId, message = undefined) {
+function getOverswipeBehavior(messageId, message = undefined) {
     message ??= chat[messageId];
 
     const isGreeting = messageId === 0;
@@ -8986,7 +8558,6 @@ export async function deleteSwipe(swipeId = null, messageId = chat.length - 1, {
     chat_metadata.tainted = true;
 
     updateMessage(messageId, { swipe_id: newSwipeId, swipes: newSwipes, swipe_info: newSwipeInfo });
-    await eventSource.emit(event_types.MESSAGE_SWIPE_DELETED, { messageId, swipeId, newSwipeId });
 
     if (isShownSwipe) {
         const direction = (swipeId <= newSwipeId) ? SWIPE_DIRECTION.RIGHT : SWIPE_DIRECTION.LEFT;
@@ -9056,7 +8627,7 @@ export function getFirstDisplayedMessageId() {
     return minId;
 }
 
-export function updateEditArrowClasses() {
+function updateEditArrowClasses() {
     if (!(this_edit_mes_id >= 0)) {
         return;
     }
@@ -9300,8 +8871,6 @@ function applyGreetingsModelToCharacter(character, model) {
     } else {
         character.data.extensions[GREETING_DEFAULT_POSITION_KEY] = fields.greetingDefaultPosition;
     }
-    character._fieldsHash = characterDigestFieldsHash(character);
-    character._bodyHash = characterDigestCardBodyHash(character);
 }
 
 /**
@@ -9321,7 +8890,7 @@ function applyGreetingOpSuccess(character, result, edit) {
     if (!edit) return;
     const from = before.find(text => hashGreetingText(text) === edit.expectedHash);
     if (from !== undefined && from !== edit.text && Number.isInteger(result.position)) {
-        run.edits.push({ from, to: edit.text, index: result.position });
+        run.edit = { from, to: edit.text, index: result.position };
     }
 }
 
@@ -9331,14 +8900,13 @@ function applyGreetingOpSuccess(character, result, edit) {
  */
 function emitGreetingSaveEdited(run) {
     if (!run.character) return Promise.resolve();
-    const greetingEdit = run.edits.length === 1 ? run.edits[0] : null;
-    return eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: characterEditedId(run.character.avatar), character: run.character, greetingEdit, greetingEdits: run.edits } });
+    return eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: run.character, greetingEdit: run.edit } });
 }
 
 /**
  * @typedef {object} GreetingSaveRun
  * @property {object|null} character
- * @property {{from: string, to: string, index: number}[]} edits
+ * @property {{from: string, to: string, index: number}|null} edit
  */
 
 /** @type {Map<string, Promise<void>>} */
@@ -9373,7 +8941,7 @@ function holdUntilSettled(map, key, promise) {
 function queueGreetingSave(avatar, save) {
     const previous = greetingSaveQueues.get(avatar) ?? Promise.resolve();
     /** @type {GreetingSaveRun} */
-    const record = { character: null, edits: [] };
+    const record = { character: null, edit: null };
     const run = previous.then(async () => {
         greetingSaveRuns.set(avatar, record);
         try {
@@ -9475,7 +9043,6 @@ function setGreetingPagerGreetings(greetings, defaultIndex, hashes) {
     greetingPagerState.committed = greetings.length > 0 ? greetingPagerState.greetings.map(() => true) : [false];
     greetingPagerState.index = Math.max(0, Math.min(greetingPagerState.index, greetingPagerState.greetings.length - 1));
     renderGreetingPager();
-    $('#firstmessage_textarea').val(greetings.length > 0 && defaultIndex !== null ? greetings[defaultIndex] ?? '' : '');
 }
 
 function renderGreetingPager() {
@@ -9647,88 +9214,6 @@ export async function saveGreetingField(value, { confirmed = false } = {}) {
     return await commitGreetingFieldValue(value, { confirmed });
 }
 
-/** @type {{value: string}|null} */
-let queuedFirstMessageWrite = null;
-
-function onFirstMessageFieldInput() {
-    const value = String($('#firstmessage_textarea').val());
-    if (queuedFirstMessageWrite) {
-        queuedFirstMessageWrite.value = value;
-        return;
-    }
-    if (menu_type === 'create') {
-        setCreateModeFirstMessage(value);
-        return;
-    }
-    const avatar = $('.open_alternate_greetings').data('avatar');
-    const character = avatar ? charactersStore.get(avatar) : null;
-    if (!character) return;
-    const write = { value };
-    queuedFirstMessageWrite = write;
-    void queueGreetingSave(avatar, async () => {
-        if (queuedFirstMessageWrite === write) queuedFirstMessageWrite = null;
-        const result = await saveFirstMessage(avatar, character, write.value);
-        if (result.ok) return;
-        console.error('First message save failed', { avatar, status: result.status, reason: result.reason });
-        toastr.error(result.status === 409
-            ? t`The greetings were changed in another session, so the first message written by an extension was not saved.`
-            : t`Failed to save the first message written by an extension.`, t`First message not saved`);
-        const stored = cardToGreetingsModel(character);
-        $('#firstmessage_textarea').val(stored.defaultIndex === null ? '' : stored.greetings[stored.defaultIndex]);
-    });
-}
-
-/**
- * @param {string} avatar
- * @param {object} character
- * @param {string} value
- * @returns {Promise<{ok: boolean, status?: number, reason?: string}>}
- */
-async function saveFirstMessage(avatar, character, value) {
-    const { greetings, defaultIndex } = cardToGreetingsModel(character);
-    const current = defaultIndex === null ? '' : greetings[defaultIndex];
-    if (value === current) return { ok: true };
-    if (defaultIndex !== null) {
-        const expectedHash = hashGreetingText(current);
-        if (value === '') {
-            const result = await postGreetingOp('default/unset', { avatar_url: avatar, expected_default_hash: expectedHash });
-            if (result.ok) applyGreetingOpSuccess(character, result);
-            return result;
-        }
-        const result = await postGreetingOp('edit', { avatar_url: avatar, position: defaultIndex, expected_hash: expectedHash, text: value });
-        if (result.ok) applyGreetingOpSuccess(character, result, { expectedHash, text: value });
-        return result;
-    }
-    const added = await postGreetingOp('add', { avatar_url: avatar, append: true, text: value });
-    if (!added.ok) return added;
-    applyGreetingOpSuccess(character, added);
-    const result = await postGreetingOp('default/set', { avatar_url: avatar, position: added.position, expected_hash: added.hashes[added.position] });
-    if (result.ok) applyGreetingOpSuccess(character, result);
-    return result;
-}
-
-/**
- * @param {string} value
- */
-function setCreateModeFirstMessage(value) {
-    const greetings = greetingPagerState.greetings.slice();
-    let defaultIndex = greetingPagerState.defaultIndex;
-    if (value === '') {
-        defaultIndex = null;
-    } else if (defaultIndex === null || defaultIndex >= greetings.length) {
-        greetings.push(value);
-        defaultIndex = greetings.length - 1;
-    } else {
-        greetings[defaultIndex] = value;
-    }
-    const fields = greetingsModelToCardFields({ greetings, defaultIndex });
-    create_save.first_message = fields.firstMes;
-    create_save.alternate_greetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'first message field (create mode)');
-    if (!create_save.extensions) create_save.extensions = {};
-    create_save.extensions[GREETING_DEFAULT_POSITION_KEY] = fields.greetingDefaultPosition;
-    setGreetingPagerGreetings(greetings, defaultIndex, greetings.map(hashGreetingText));
-}
-
 /**
  * @param {string[]} alternateGreetings
  * @param {string} context
@@ -9846,7 +9331,7 @@ function warnUnassignedCreateTags(header) {
  * @param {object} [options]
  * @param {string} [options.jsonData]
  */
-export async function createCharacterFromCreateSave({ jsonData } = {}) {
+async function createCharacterFromCreateSave({ jsonData } = {}) {
     if (blockWhileFieldEditing()) {
         return;
     }
@@ -9904,7 +9389,6 @@ export async function createCharacterFromCreateSave({ jsonData } = {}) {
             { id: '#depth_prompt_depth', callback: value => create_save.depth_prompt_depth = value, defaultValue: depth_prompt_depth_default },
             { id: '#depth_prompt_role', callback: value => create_save.depth_prompt_role = value, defaultValue: depth_prompt_role_default },
             { id: '#mes_example_textarea', callback: value => create_save.mes_example = value },
-            { id: '#character_json_data', callback: () => setFormBaseline('#character_json_data', String($('#character_json_data').val())) },
             { id: '#character_world', callback: value => create_save.world = value },
             { id: '#_character_extensions_fake', callback: value => create_save.extensions = {} },
         ];
@@ -9918,7 +9402,7 @@ export async function createCharacterFromCreateSave({ jsonData } = {}) {
         setGreetingPagerGreetings([''], 0, []);
 
         if (Array.isArray(create_save.extra_books) && create_save.extra_books.length > 0) {
-            await sendAuxBooksOp(getCharaFilename(null, { manualAvatarKey: avatarId }), 'set', create_save.extra_books);
+            await sendAuxBooksOp(getCharaFilename(avatarId), 'set', create_save.extra_books);
         }
         create_save.extra_books = [];
 
@@ -9937,437 +9421,6 @@ export async function createCharacterFromCreateSave({ jsonData } = {}) {
         console.error('Error creating character', error);
         toastr.error(t`Failed to create character`);
     }
-}
-
-// (.eslintrc.cjs forbids importing these two). Edit mode writes only what differs, each through the fork's own
-
-const CREATE_SAVE_INPUTS = {
-    '#character_name_pole': 'name',
-    '#description_textarea': 'description',
-    '#character_world': 'world',
-    '#creator_notes_textarea': 'creator_notes',
-    '#post_history_instructions_textarea': 'post_history_instructions',
-    '#system_prompt_textarea': 'system_prompt',
-    '#tags_textarea': 'tags',
-    '#creator_textarea': 'creator',
-    '#character_version_textarea': 'character_version',
-    '#personality_textarea': 'personality',
-    '#talkativeness_slider': 'talkativeness',
-    '#scenario_pole': 'scenario',
-    '#depth_prompt_prompt': 'depth_prompt_prompt',
-    '#depth_prompt_depth': 'depth_prompt_depth',
-    '#depth_prompt_role': 'depth_prompt_role',
-    '#mes_example_textarea': 'mes_example',
-};
-const NUMERIC_CREATE_SAVE_KEYS = new Set(['talkativeness', 'depth_prompt_depth']);
-
-const GREETING_CARD_PATHS = [['first_mes'], ['data', 'first_mes'], ['alternate_greetings'], ['data', 'alternate_greetings'], ['data', 'extensions', GREETING_DEFAULT_POSITION_KEY]];
-const MERGE_REQUEST_PATHS = [['avatar'], ['_loadedFieldHashes']];
-
-let createOrEditCharacterTail = Promise.resolve();
-
-/**
- * @param {Event} [e]
- * @returns {Promise<void>}
- */
-export async function createOrEditCharacter(e) {
-    const run = createOrEditCharacterTail.then(() => runCreateOrEditCharacter(e));
-    createOrEditCharacterTail = run;
-    await run;
-}
-
-export const saveCharacterDebounced = debounce(() => { void createOrEditCharacter(); }, DEFAULT_SAVE_EDIT_TIMEOUT);
-
-/** @param {Event} [e] */
-async function runCreateOrEditCharacter(e) {
-    try {
-        if ($('#form_create').attr('actiontype') === 'createcharacter') {
-            await createFromForm();
-        } else {
-            await saveEditedCharacterFromForm(e instanceof CustomEvent && e.type === 'newChat');
-        }
-    } catch (error) {
-        console.error('createOrEditCharacter failed', error);
-        toastr.error(t`Something went wrong while saving the character.`);
-    }
-}
-
-async function createFromForm() {
-    for (const [formId, key] of Object.entries(CREATE_SAVE_INPUTS)) {
-        if (isFieldInEdit(formId.slice(1))) continue;
-        const value = String($(formId).val() ?? '');
-        if (value !== String(create_save[key] ?? '')) {
-            create_save[key] = NUMERIC_CREATE_SAVE_KEYS.has(key) ? Number(value) : value;
-        }
-    }
-    const greeting = String($('#greeting_field').val() ?? '');
-    if (!isFieldInEdit('greeting_field') && greeting !== (greetingPagerState.greetings[greetingPagerState.index] ?? '')) {
-        await commitGreetingFieldValue(greeting);
-    }
-    await createCharacterFromCreateSave({ jsonData: createModeJsonData() });
-}
-
-/**
- * The card JSON a form-driven create starts from: `#character_json_data`, with `#character_book_json` as its
- * embedded lorebook, kept as-is like an imported card's.
- * @returns {string|undefined}
- */
-function createModeJsonData() {
-    let card;
-    const raw = String($('#character_json_data').val() ?? '');
-    if (raw !== '') {
-        card = parseJsonObject(raw);
-        if (!card) {
-            console.warn('createOrEditCharacter: #character_json_data is not a JSON object, creating without it');
-        }
-    }
-    const bookRaw = String($('#character_book_json').val() ?? '');
-    if (bookRaw !== '') {
-        try {
-            const book = JSON.parse(bookRaw);
-            card = card ?? {};
-            lodash.set(card, ['data', 'character_book'], book);
-        } catch (error) {
-            console.warn('createOrEditCharacter: #character_book_json is not JSON, creating without it', error);
-        }
-    }
-    if (!card) {
-        return undefined;
-    }
-    lodash.unset(card, ['data', 'extensions', GREETING_DEFAULT_POSITION_KEY]);
-    return JSON.stringify(card);
-}
-
-/** @param {boolean} isNewChat */
-async function saveEditedCharacterFromForm(isNewChat) {
-    const avatar = getEditorCharacterAvatar();
-    if (!avatar || !charactersStore.get(avatar)) {
-        return;
-    }
-    await flushCharacterFieldSaves();
-
-    /** @type {string[][]} */
-    const formPaths = [];
-
-    const changedFields = [];
-    for (const [formId, mapping] of Object.entries(FORM_TO_CARD)) {
-        if (isFieldInEdit(formId.slice(1))) continue;
-        const value = String($(formId).val() ?? '');
-        if (formValuesMatch(formId, mapping, value, characterFormValue(charactersStore.get(avatar), formId))) continue;
-        changedFields.push({ formId, value });
-        formPaths.push(lodash.toPath(mapping.v2));
-        if (mapping.v1) formPaths.push(lodash.toPath(mapping.v1));
-    }
-
-    const createDate = String($('#create_date_pole').val() ?? '');
-    const createDateBaseline = getFormBaseline('#create_date_pole');
-    const createDateChanged = createDateBaseline !== undefined && createDate !== createDateBaseline;
-    if (createDateChanged) formPaths.push(['create_date']);
-
-    const chatPointer = String($('#selected_chat_pole').val() ?? '');
-    const chatBaseline = getFormBaseline('#selected_chat_pole');
-    const chatChanged = chatBaseline !== undefined && chatPointer !== chatBaseline;
-    if (chatChanged) formPaths.push(['chat']);
-
-    for (const { formId, value } of changedFields) {
-        await saveCharacterField(avatar, formId, value);
-    }
-
-    await saveJsonDataFromForm(avatar, formPaths);
-
-    if (createDateChanged && await mergeCharacterPaths(avatar, [{ path: ['create_date'], value: createDate }])) {
-        setFormBaseline('#create_date_pole', createDate);
-    }
-
-    if (chatChanged && await saveActiveChat(avatar, chatPointer)) {
-        setFormBaseline('#selected_chat_pole', chatPointer);
-    }
-
-    if (!isNewChat) {
-        await redrawFirstMessage(avatar);
-    }
-}
-
-/**
- * Whether a form input's value means the same card value as the stored card's.
- * @param {string} formId
- * @param {{transform?: string}} mapping
- * @param {string} value The input's value.
- * @param {string} storedValue {@link characterFormValue} of the stored card.
- */
-function formValuesMatch(formId, mapping, value, storedValue) {
-    if (value === storedValue) return true;
-    const converted = characterFieldValueToCardValue(formId, mapping, value);
-    const stored = characterFieldValueToCardValue(formId, mapping, storedValue);
-    return converted.ok && stored.ok && lodash.isEqual(converted.value, stored.value);
-}
-
-/**
- * @param {string} avatar
- * @param {string[][]} formPaths
- */
-async function saveJsonDataFromForm(avatar, formPaths) {
-    const raw = String($('#character_json_data').val() ?? '');
-    const baselineRaw = getFormBaseline('#character_json_data');
-    if (baselineRaw === undefined || raw === baselineRaw) {
-        return;
-    }
-    const card = parseJsonObject(raw);
-    const baselineCard = parseJsonObject(baselineRaw);
-    if (!card || !baselineCard) {
-        console.warn('createOrEditCharacter: #character_json_data (or what the editor last loaded into it) is not a JSON object, so it was not saved');
-        return;
-    }
-
-    const changes = diffJsonPaths(baselineCard, card).filter(({ path }) =>
-        !pathsOverlap(path, GREETING_CARD_PATHS) && !pathsOverlap(path, MERGE_REQUEST_PATHS) && !pathsOverlap(path, formPaths));
-    if (changes.length > 0) {
-        if (!await mergeCharacterPaths(avatar, changes)) return;
-        refreshEditorFieldsAfterMerge(avatar, changes);
-    }
-    if (!await saveGreetingsFromForm(avatar, baselineCard, card)) return;
-    setFormBaseline('#character_json_data', raw);
-}
-
-/**
- * @param {string} raw
- * @returns {Record<string, any>|null}
- */
-function parseJsonObject(raw) {
-    try {
-        const value = JSON.parse(raw);
-        return lodash.isPlainObject(value) ? value : null;
-    } catch {
-        return null;
-    }
-}
-
-/**
- * @param {Record<string, any>} before
- * @param {Record<string, any>} after
- * @param {string[]} [prefix]
- * @param {{path: string[], value?: any, removed?: boolean}[]} [out]
- */
-function diffJsonPaths(before, after, prefix = [], out = []) {
-    for (const key of Object.keys(before)) {
-        if (!Object.hasOwn(after, key)) out.push({ path: [...prefix, key], removed: true });
-    }
-    for (const key of Object.keys(after)) {
-        const path = [...prefix, key];
-        if (!Object.hasOwn(before, key)) {
-            out.push({ path, value: after[key] });
-        } else if (lodash.isPlainObject(before[key]) && lodash.isPlainObject(after[key])) {
-            diffJsonPaths(before[key], after[key], path, out);
-        } else if (!lodash.isEqual(before[key], after[key])) {
-            out.push({ path, value: after[key] });
-        }
-    }
-    return out;
-}
-
-/**
- * @param {string[]} path
- * @param {string[][]} paths
- */
-function pathsOverlap(path, paths) {
-    return paths.some(other => {
-        const length = Math.min(path.length, other.length);
-        for (let i = 0; i < length; i++) {
-            if (path[i] !== other[i]) return false;
-        }
-        return true;
-    });
-}
-
-/**
- * @param {string} avatar
- * @param {{path: string[], value?: any, removed?: boolean}[]} changes
- * @returns {Promise<boolean>}
- */
-async function mergeCharacterPaths(avatar, changes) {
-    const mergeData = { avatar };
-    for (const { path, value, removed } of changes) {
-        lodash.set(mergeData, path, removed ? UNSET_VALUE : value);
-    }
-    try {
-        const response = await fetch('/api/characters/merge-attributes', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify(mergeData),
-        });
-        if (!response.ok) {
-            throw new Error(`merge-attributes answered ${response.status}`);
-        }
-        await getOneCharacter(avatar);
-        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: characterEditedId(avatar), character: charactersStore.get(avatar) } });
-        updateCharacterListRow(avatar);
-        return true;
-    } catch (error) {
-        console.error(`Failed to save ${avatar}`, error);
-        toastr.error(t`Something went wrong while saving the character.`);
-        return false;
-    }
-}
-
-/**
- * @param {string} avatar
- * @param {{path: string[]}[]} changes
- */
-function refreshEditorFieldsAfterMerge(avatar, changes) {
-    if (_loadedCharacterFieldHashesAvatar !== avatar) return;
-    const character = charactersStore.get(avatar);
-    const changedPaths = changes.map(change => change.path);
-    for (const [formId, mapping] of Object.entries(FORM_TO_CARD)) {
-        const fieldPaths = [mapping.v2, mapping.v1].filter(Boolean).map(p => lodash.toPath(p));
-        if (!fieldPaths.some(p => pathsOverlap(p, changedPaths))) continue;
-        const id = formId.slice(1);
-        if (isFieldInEdit(id) || pendingCharacterFieldSaves.has(characterFieldSaveKey(avatar, formId)) || characterFieldSaveChains.has(characterFieldSaveKey(avatar, formId))) continue;
-        setFieldValue(id, characterFormValue(character, formId));
-        _loadedCharacterFieldHashes.set(mapping.v2, hashCharacterFieldValue(character, mapping.v2));
-    }
-}
-
-/**
- * @param {GreetingsModel} model
- * @returns {GreetingsModel}
- */
-function withoutEmptyGreetings(model) {
-    const greetings = [];
-    let defaultIndex = null;
-    model.greetings.forEach((greeting, index) => {
-        if (index === model.defaultIndex) {
-            defaultIndex = greetings.length;
-            greetings.push(greeting);
-        } else if (greeting !== '') {
-            greetings.push(greeting);
-        }
-    });
-    return { greetings, defaultIndex };
-}
-
-/**
- * @param {string} avatar
- * @param {object} baselineCard
- * @param {object} card
- * @returns {Promise<boolean>}
- */
-async function saveGreetingsFromForm(avatar, baselineCard, card) {
-    const start = cardToGreetingsModel(baselineCard);
-    const target = withoutEmptyGreetings(cardToGreetingsModel(card));
-    if (lodash.isEqual(start, target)) {
-        return true;
-    }
-
-    return await queueGreetingSave(avatar, async () => {
-        const planned = start.greetings.slice();
-        let plannedDefault = start.defaultIndex;
-        /** @type {string[]} */
-        const refused = [];
-        /** @type {string[]} */
-        const notSent = [];
-        let stopped = false;
-
-        const warnNotSaved = () => {
-            if (refused.length === 0 && notSent.length === 0) return;
-            const section = (intro, items) => (items.length === 0 ? '' : `${escapeHtml(intro)}<ul>${items.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`);
-            toastr.warning(
-                section(t`These greetings were changed in another session, so these changes to them were not saved. Redo them if you still want them:`, refused)
-                + section(t`Saving failed, so these changes were not saved. Redo them if you still want them:`, notSent),
-                t`Some greeting changes not saved`,
-                { escapeHtml: false, timeOut: 0, extendedTimeOut: 0 },
-            );
-        };
-
-        /**
-         * @param {string} opName
-         * @param {object} body
-         * @param {string} description
-         * @returns {Promise<'saved'|'not saved'>}
-         */
-        const runOp = async (opName, body, description) => {
-            if (stopped) {
-                notSent.push(description);
-                return 'not saved';
-            }
-            const result = await postGreetingOp(opName, { avatar_url: avatar, ...body });
-            if (!result.ok) {
-                console.error('Greeting save failed', { avatar, opName, status: result.status, reason: result.reason });
-                if (result.status === 409) {
-                    refused.push(description);
-                    return 'not saved';
-                }
-                toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
-                stopped = true;
-                notSent.push(description);
-                return 'not saved';
-            }
-            const character = charactersStore.get(avatar);
-            if (character) {
-                applyGreetingOpSuccess(character, result, opName === 'edit' ? { expectedHash: body.expected_hash, text: body.text } : undefined);
-            }
-            return 'saved';
-        };
-
-        const run = async () => {
-            const shared = Math.min(planned.length, target.greetings.length);
-            for (let position = 0; position < shared; position++) {
-                const text = target.greetings[position];
-                if (planned[position] === text) continue;
-                const outcome = await runOp('edit', { position, expected_hash: hashGreetingText(planned[position]), text }, t`Greeting ${position + 1} changed to: ${text}`);
-                if (outcome === 'saved') planned[position] = text;
-            }
-            for (let index = planned.length; index < target.greetings.length; index++) {
-                const text = target.greetings[index];
-                const outcome = await runOp('add', { append: true, text }, t`New greeting: ${text}`);
-                if (outcome === 'saved') planned.push(text);
-            }
-            for (let position = planned.length - 1; position >= target.greetings.length; position--) {
-                const text = planned[position];
-                const outcome = await runOp('delete', { position, expected_hash: hashGreetingText(text) }, t`Greeting ${position + 1} deleted: ${text}`);
-                if (outcome === 'saved') {
-                    planned.splice(position, 1);
-                    plannedDefault = reindexDefaultAfterRemoval(plannedDefault, position);
-                }
-            }
-            if (plannedDefault !== target.defaultIndex) {
-                if (target.defaultIndex === null) {
-                    await runOp('default/unset', { expected_default_hash: hashGreetingText(planned[plannedDefault]) }, t`Default greeting cleared`);
-                } else {
-                    const text = target.greetings[target.defaultIndex];
-                    const description = t`Default greeting set to: ${text}`;
-                    if (planned[target.defaultIndex] !== text) {
-                        (stopped ? notSent : refused).push(description);
-                    } else {
-                        await runOp('default/set', { position: target.defaultIndex, expected_hash: hashGreetingText(text) }, description);
-                    }
-                }
-            }
-            return !stopped;
-        };
-
-        const ok = await run();
-        warnNotSaved();
-        return ok;
-    });
-}
-
-/**
- * @param {string} avatar
- */
-async function redrawFirstMessage(avatar) {
-    if (selected_group || chat_metadata.tainted || getCurrentCharacter()?.avatar !== avatar) {
-        return;
-    }
-    if (chat.length === 0) {
-        if (!await pushFirstMessageIntoEmptyChat()) return;
-        await printMessages();
-    } else if (chat.length === 1 && !chat[0].is_user && !chat[0].is_system) {
-        updateMessageBlock(0, chat[0]);
-    } else {
-        return;
-    }
-    await eventSource.emit(event_types.MESSAGE_RECEIVED, 0, 'first_message');
-    await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, 0, 'first_message');
 }
 
 /**
@@ -10404,7 +9457,7 @@ async function saveCharacterAvatar(avatar, file) {
         crop_data = undefined;
 
         await getOneCharacter(avatar);
-        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: characterEditedId(avatar), character: charactersStore.get(avatar) } });
+        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: charactersStore.get(avatar) } });
         updateCharacterListRow(avatar);
         return true;
     } catch (error) {
@@ -10477,8 +9530,6 @@ export async function swipe(event, direction, { source, repeated, message = chat
             return;
         }
     }
-
-    cancelDebouncedChatSave();
 
     swipeState = SWIPE_STATE.SWIPING;
     try {
@@ -10865,19 +9916,6 @@ export async function swipe(event, direction, { source, repeated, message = chat
 
 /**
  * @deprecated Use `swipe` instead.
- * Handles the swipe to the left event.
- * @param {SwipeEvent} [event] Event.
- * @param {object} params Additional parameters.
- * @param {import('./scripts/constants.js').SWIPE_SOURCE} [params.source]  The source of the swipe event.
- * @param {boolean} [params.repeated] Is the swipe event repeated.
- * @param {object} [params.message] The chat message to swipe.
- */
-export async function swipe_left(event, { source, repeated, message } = {}) {
-    await swipe.call(this, event, SWIPE_DIRECTION.LEFT, { source: source, repeated: repeated, message: message });
-}
-
-/**
- * @deprecated Use `swipe` instead.
  * Handles the swipe to the right event.
  * @param {SwipeEvent} [event] Event.
  * @param {object} params Additional parameters.
@@ -10886,10 +9924,6 @@ export async function swipe_left(event, { source, repeated, message } = {}) {
  * @param {object} [params.message] The chat message to swipe.
  */
 //MARK: swipe_right
-export async function swipe_right(event = null, { source, repeated, message } = {}) {
-    await swipe.call(this, event, SWIPE_DIRECTION.RIGHT, { source: source, repeated: repeated, message: message });
-}
-
 const IMPORTS_IN_FLIGHT = 4;
 
 /**
@@ -11161,8 +10195,6 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
         return;
     }
 
-    //Fix it; New chat doesn't create while open create character menu
-    await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
     await clearChat({ clearData: true });
 
     chat_file_for_del = getCurrentChatDetails()?.sessionName;
@@ -11183,24 +10215,15 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
 /**
  * Renames a group or character chat.
  * @param {object} param Parameters for renaming chat
- * @param {number|string} [param.characterId] Character to rename chat for: an index into `getContext().characters`, or an avatar key
- * @param {string} [param.characterAvatar] Character avatar (identity) to rename chat for, used when `characterId` is null or undefined. Without `groupId`, both naming different characters renames nothing.
+ * @param {string} [param.characterAvatar] Character avatar (identity) to rename chat for
  * @param {string} [param.groupId] Group ID to rename chat for
  * @param {string} param.oldFileName Old name of the chat (no JSONL extension)
  * @param {string} param.newFileName New name for the chat (no JSONL extension)
  * @param {boolean} [param.loader=true] Whether to show loader during the operation
  */
-export async function renameGroupOrCharacterChat({ characterId, characterAvatar, groupId, oldFileName, newFileName, loader: showLoader }) {
+export async function renameGroupOrCharacterChat({ characterAvatar, groupId, oldFileName, newFileName, loader: showLoader }) {
     const currentChatId = getCurrentChatId();
-    let avatarUrl;
-    if (characterId == null) {
-        avatarUrl = characterAvatar;
-    } else if (characterAvatar !== undefined && !groupId) {
-        const resolved = resolveCharacterRefPair(characterId, characterAvatar);
-        avatarUrl = resolved === CHARACTER_REF_MISMATCH ? undefined : resolved.avatar;
-    } else {
-        avatarUrl = resolveCharacterRef(characterId)?.avatar;
-    }
+    const avatarUrl = characterAvatar;
     const body = {
         is_group: !!groupId,
         ...(groupId ? { group_id: groupId } : {}),
@@ -11251,8 +10274,6 @@ export async function renameGroupOrCharacterChat({ characterId, characterAvatar,
             await renameGroupChat(groupId, oldFileName, newFileName);
         } else if (idChanged && avatarUrl !== undefined && avatarUrl === this_avatar && charactersStore.get(avatarUrl)?.chat === oldFileName) {
             _setCurrentTarget(newFileName, chat_metadata.integrity);
-            $('#selected_chat_pole').val(charactersStore.get(avatarUrl).chat);
-            setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
             await fetch('/api/characters/merge-attributes', {
                 method: 'POST',
                 headers: getRequestHeaders(),
@@ -11299,7 +10320,6 @@ export async function closeCurrentChat() {
         return false;
     }
     if (is_send_press == false) {
-        await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
         await clearChat({ clearData: true });
         resetSelectedGroup();
         setCharacterId(undefined);
@@ -11324,14 +10344,14 @@ export async function closeCurrentChat() {
 
 /**
  * Forces the update of a character's stored active-chat pointer.
- * @param {string|number} characterId An index into `getContext().characters`, or an avatar key
+ * @param {string} avatar The character's avatar
  * @param {string} newName New pointer value (a node id, a legacy chat name, or '' to clear it - "no active chat" is a valid state)
  * @returns {Promise<void>}
  */
-export async function updateRemoteChatName(characterId, newName) {
-    const character = resolveCharacterRef(characterId);
+export async function updateRemoteChatName(avatar, newName) {
+    const character = charactersStore.get(avatar);
     if (!character) {
-        console.warn(`Character not found: ${characterId}`);
+        console.warn(`Character not found: ${avatar}`);
         return;
     }
     const answer = await saveActiveChat(character.avatar, newName);
@@ -11345,41 +10365,14 @@ function doCharListDisplaySwitch() {
     saveSettingsDebounced('power_user.charListGrid');
 }
 
-const DELETED_CHARACTER_INDEX = Symbol('deletedCharacterIndex');
-
-/**
- * Function to handle the deletion of a character, given a specific popup type and character ID.
- * If popup type equals "del_ch", it will proceed with deletion otherwise it will exit the function.
- * It fetches the delete character route, sending necessary parameters, and in case of success,
- * it proceeds to delete character from UI and saves settings.
- * In case of error during the fetch request, it logs the error details.
- *
- * @param {string|number} this_chid - An index into `getContext().characters`, or an avatar key. Shadows the
- * module's `this_chid` to keep upstream's parameter name.
- * @param {boolean} delete_chats - Whether to delete chats or not.
- */
-export async function handleDeleteCharacter(this_chid, delete_chats) {
-    const character = resolveCharacterRef(this_chid);
-    if (!character) {
-        return;
-    }
-
-    const key = Reflect.ownKeys({ [this_chid]: 0 })[0];
-    const index = typeof key === 'string' ? Number(key) : NaN;
-    const isIndex = Number.isInteger(index) && index >= 0 && String(index) === key && resolveCharacterRef(key) === character;
-
-    await deleteCharacter(character.avatar, { deleteChats: delete_chats, [DELETED_CHARACTER_INDEX]: isIndex ? index : undefined });
-}
-
 /**
  * Deletes a character completely, including associated chats if specified
  *
  * @param {string|string[]} characterKey - The key (avatar) of the character to be deleted
- * @param {{deleteChats?: boolean, [DELETED_CHARACTER_INDEX]?: number}} [options] - Optional parameters for the
- * deletion. `deleteChats` (default true): whether to delete associated chats or not
+ * @param {{deleteChats?: boolean}} [options] - `deleteChats` (default true): whether to delete associated chats or not
  * @return {Promise<boolean>} - A promise that resolves when the character is successfully deleted
  */
-export async function deleteCharacter(characterKey, { deleteChats = true, [DELETED_CHARACTER_INDEX]: deletedIndex = undefined } = {}) {
+export async function deleteCharacter(characterKey, { deleteChats = true } = {}) {
     if (blockWhileFieldEditing()) {
         return false;
     }
@@ -11458,7 +10451,6 @@ export async function deleteCharacter(characterKey, { deleteChats = true, [DELET
             continue;
         }
 
-        accountStorage.removeItem(`AlertRegex_${character.avatar}`);
         accountStorage.removeItem(`mediaWarningShown:${character.avatar}`);
         removeEntityTags(character.avatar);
         select_rm_info('char_delete', character.name);
@@ -11469,7 +10461,7 @@ export async function deleteCharacter(characterKey, { deleteChats = true, [DELET
             }
         }
 
-        await eventSource.emit(event_types.CHARACTER_DELETED, { id: deletedIndex, character: character });
+        await eventSource.emit(event_types.CHARACTER_DELETED, { character: character });
         removedCharacters.push({ avatar: character.avatar, entity: character });
         deleted = true;
     }
@@ -11617,7 +10609,6 @@ function addDebugFunctions() {
     });
 
     registerDebugFunction('copySetup', 'Copy ST setup to clipboard [WIP]', 'Useful data when reporting bugs', async () => {
-        const getContextContents = getContext();
         const getSettingsContents = settings;
         //console.log(getSettingsContents);
         const logMessage = `
@@ -11625,7 +10616,7 @@ function addDebugFunctions() {
 API: ${getSettingsContents.main_api}
 API Type: ${getSettingsContents[getSettingsContents.main_api + '_settings'].type}
 API server: ${getSettingsContents.api_server}
-Model: ${getContextContents.onlineStatus}
+Model: ${online_status}
 Context Template: ${power_user.context.preset}
 Instruct Template: ${power_user.instruct.preset}
 API Settings: ${JSON.stringify(getSettingsContents[getSettingsContents.main_api + '_settings'], null, 2)}
@@ -11659,7 +10650,7 @@ jQuery(async function () {
     eventSource.on(event_types.CHARACTER_EDITED, async (event) => {
         const edited = event?.detail?.character?.avatar;
         if (!edited || edited !== getCurrentCharacter()?.avatar) return;
-        await _mergeCardGreetingsIntoOpening({ greetingEdit: event.detail.greetingEdit, greetingEdits: event.detail.greetingEdits });
+        await _mergeCardGreetingsIntoOpening({ greetingEdit: event.detail.greetingEdit });
     });
 
     eventSource.on(event_types.CHAT_CHANGED, () => {
@@ -11981,19 +10972,7 @@ jQuery(async function () {
         read_avatar_load(inputElement);
     });
 
-    let createButtonClickedByUser = false;
-    $('#create_button').on('click', (e) => {
-        createButtonClickedByUser = e.originalEvent?.isTrusted === true;
-        setTimeout(() => { createButtonClickedByUser = false; });
-    });
-
-    $('#form_create').on('submit', (e) => {
-        const byUser = createButtonClickedByUser;
-        createButtonClickedByUser = false;
-        if (!byUser) {
-            void createOrEditCharacter(e.originalEvent);
-            return;
-        }
+    $('#form_create').on('submit', () => {
         if ($('#form_create').attr('actiontype') === 'createcharacter') {
             createCharacterFromCreateSave();
         }
@@ -12097,7 +11076,6 @@ jQuery(async function () {
         jumpGreetingPager();
     });
 
-    $('#firstmessage_textarea').on('input', onFirstMessageFieldInput);
 
     $('#favorite_button').on('click', async function () {
         const newState = !fav_ch_checked;
@@ -12200,7 +11178,6 @@ jQuery(async function () {
     $(document).on('click', '.exportChatButton, .exportRawChatButton', async function (e) {
         e.stopPropagation();
         const format = $(this).data('format') || 'txt';
-        await storePageChatChanges();
         const block = $(this).closest('.select_chat_block_wrapper').find('.select_chat_block');
         const chatId = block.attr('file_name');
         const filename = block.attr('chat_label') || chatId;
@@ -12441,7 +11418,6 @@ jQuery(async function () {
         cancelStatusCheck('Canceled because main api changed');
         changeMainAPI();
         saveSettingsDebounced('main_api');
-        await eventSource.emit(event_types.MAIN_API_CHANGED, { apiId: main_api });
     });
 
     ////////////////// OPTIMIZED RANGE SLIDER LISTENERS////////////////
@@ -13287,14 +12263,14 @@ jQuery(async function () {
         }
     });
 
-    charDragDropHandler = new DragAndDropHandler('body', async (files, event) => {
+    new DragAndDropHandler('body', async (files, event) => {
         if (!files.length) {
             await importFromURL(event.originalEvent.dataTransfer.items, files);
         }
         await processDroppedFiles(files);
     }, { noAnimation: true });
 
-    chatDragDropHandler = new DragAndDropHandler('#select_chat_popup', async (_, event) => {
+    new DragAndDropHandler('#select_chat_popup', async (_, event) => {
         const importFile = document.getElementById('chat_import_file');
         if (importFile instanceof HTMLInputElement) {
             importFile.files = event.originalEvent.dataTransfer.files;
@@ -13356,16 +12332,11 @@ jQuery(async function () {
         await showMoreMessages();
     });
 
-    $(document).on('click', '.open_characters_library', async function () {
-        await getCharacters();
-        await eventSource.emit(event_types.OPEN_CHARACTER_LIBRARY);
-    });
-
     // Added here to prevent execution before script.js is loaded and get rid of quirky timeouts
     await firstLoadInit();
 
     window.addEventListener('beforeunload', (e) => {
-        if (isChatSaving || this_edit_mes_id >= 0) {
+        if (this_edit_mes_id >= 0) {
             e.preventDefault();
             e.returnValue = true;
         }

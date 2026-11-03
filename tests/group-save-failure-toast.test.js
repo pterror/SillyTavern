@@ -78,7 +78,6 @@ jest.unstable_mockModule('../public/scripts/character-repository.js', () => ({
     isInvalidSortFieldError: (error) => error instanceof CharacterQueryError && error.reason === 'invalid-sort-field',
 }));
 
-jest.unstable_mockModule('../public/scripts/chat-compat-save.js', () => ({ saveGroupChat: jest.fn() }));
 jest.unstable_mockModule('../public/script.js', () => ({
     _snapshotMessages: jest.fn(),
     requestChatOpen: jest.fn(),
@@ -120,7 +119,6 @@ jest.unstable_mockModule('../public/script.js', () => ({
     getCurrentChatId: jest.fn(),
     setCharacterSettingsOverrides: jest.fn(),
     system_avatar: '',
-    isChatSaving: false,
     setExternalAbortController: jest.fn(),
     baseChatReplace: jest.fn(),
     createLazyFields: jest.fn(),
@@ -129,7 +127,6 @@ jest.unstable_mockModule('../public/script.js', () => ({
     animation_duration: 0,
     depth_prompt_role_default: '',
     shouldAutoContinue: jest.fn(),
-    unshallowCharacter: jest.fn(),
     chatElement: { find: () => ({ remove: jest.fn() }) },
     ensureMessageMediaIsArray: jest.fn(),
 }));
@@ -167,41 +164,13 @@ jest.unstable_mockModule('../public/scripts/request-headers.js', () => ({
     getRequestHeaders: jest.fn(() => ({})),
 }));
 
-jest.unstable_mockModule('../public/scripts/character-store.js', () => {
-    const CHARACTER_REF_MISMATCH = Symbol('CHARACTER_REF_MISMATCH');
-    const resolveCharacterRef = (ref) => {
-        const upstreamHit = characters[ref];
-        if (upstreamHit !== undefined) {
-            return upstreamHit;
-        }
-        if (typeof ref === 'string') {
-            return charactersStoreMock.get(ref);
-        }
-        if (typeof ref === 'object' && ref !== null && typeof ref.avatar === 'string') {
-            return charactersStoreMock.get(ref.avatar);
-        }
-        return undefined;
-    };
-    const resolveCharacterRefPair = (ref, avatar) => {
-        const character = resolveCharacterRef(ref);
-        return typeof character?.avatar === 'string' && character.avatar === avatar ? character : CHARACTER_REF_MISMATCH;
-    };
-    return {
-        characters,
-        charactersStore: charactersStoreMock,
-        exposedGroups: [],
-        exposedIndexOf: (avatar) => {
-            const index = characters.findIndex(c => c.avatar === avatar);
-            return index === -1 ? undefined : index;
-        },
-        holdCharacter: jest.fn(character => character),
-        setCharacterId: jest.fn(),
-        setExposedGroupId: jest.fn(),
-        resolveCharacterRef,
-        resolveCharacterRefPair,
-        CHARACTER_REF_MISMATCH,
-    };
-});
+jest.unstable_mockModule('../public/scripts/character-store.js', () => ({
+    characters,
+    charactersStore: charactersStoreMock,
+    holdCharacter: jest.fn(character => character),
+    setCharacterId: jest.fn(),
+    setOpenGroupId: jest.fn(),
+}));
 
 jest.unstable_mockModule('../public/scripts/events.js', () => ({
     eventSource: { emit: jest.fn() },

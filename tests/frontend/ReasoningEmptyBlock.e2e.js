@@ -8,7 +8,7 @@ import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.
 function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', 'Hello there.');
@@ -26,7 +26,7 @@ async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
@@ -40,7 +40,7 @@ async function openCharacter(page, avatar) {
 async function seedReply(page, avatar) {
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const { ensureOpeningRow } = await import('/scripts/chat-store.js');
         const opening = await ensureOpeningRow(0);
         const response = await fetch('/api/chats/message/append', {
@@ -65,7 +65,7 @@ async function seedReply(page, avatar) {
 function blockState(page, avatar) {
     return page.evaluate(async (avatar) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const { reasoningOf } = await import('/scripts/reasoning-block.js');
         const at = context.chat.findIndex(m => m.mes === 'Two days on foot.');
         const response = await fetch('/api/chats/open', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar }) });
@@ -123,7 +123,7 @@ test.describe('an empty reasoning block', () => {
 
         await page.evaluate(async () => {
             // @ts-ignore
-            await SillyTavern.getContext().executeSlashCommandsWithOptions('/reasoning-set at=2 ""');
+            await stTest.context().executeSlashCommandsWithOptions('/reasoning-set at=2 ""');
         });
         await expect.poll(() => blockState(page, avatar)).toEqual(EMPTY);
 

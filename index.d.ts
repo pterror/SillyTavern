@@ -66,8 +66,6 @@ declare global {
      */
     var DATA_ROOT: string;
 
-    var GLOBAL_EXTENSIONS_PATH: string;
-
     /**
      * Parsed command line arguments.
      */

@@ -1,6 +1,6 @@
 import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
-import { closeCurrentChat, displayPastChats, getCurrentChatDetails, getCurrentChatId, getFirstDisplayedMessageId, newAssistantChat, reloadCurrentChat, renameChat, saveSettings, showMoreMessages, storePageChatChanges } from '../../../script.js';
+import { closeCurrentChat, displayPastChats, getCurrentChatDetails, getCurrentChatId, getFirstDisplayedMessageId, newAssistantChat, reloadCurrentChat, renameChat, saveSettings, showMoreMessages } from '../../../script.js';
 import { chat } from '../../chat-state.js';
 import { eventSource, event_types } from '../../events.js';
 import { debounce_timeout } from '../../constants.js';
@@ -114,11 +114,10 @@ export function registerChatCommands() {
         name: 'forcesave',
         callback: async function () {
             await saveSettings();
-            await storePageChatChanges();
-            toastr.success(t`Chat and settings saved.`);
+            toastr.success(t`Settings saved.`);
             return '';
         },
-        helpString: t`Forces a save of the current chat and settings`,
+        helpString: t`Forces a save of the settings`,
     }));
 
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({

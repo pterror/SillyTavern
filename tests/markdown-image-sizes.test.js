@@ -10,19 +10,11 @@ jest.unstable_mockModule('../public/lib.js', () => ({
 jest.unstable_mockModule('../public/script.js', () => ({
     systemUserName: 'SillyTavern System',
     substituteParams: (text) => text,
-    setMesForShowdownParse: () => {},
 }));
 jest.unstable_mockModule('../public/scripts/slash-commands.js', () => ({ COMMENT_NAME_DEFAULT: 'Note' }));
-jest.unstable_mockModule('../public/scripts/extensions/regex/engine.js', () => ({
-    getRegexedString: (text) => text,
-    regex_placement: { MD_DISPLAY: 0, USER_INPUT: 1, AI_OUTPUT: 2, SLASH_COMMAND: 3, WORLD_INFO: 5, REASONING: 6 },
-}));
 jest.unstable_mockModule('../public/scripts/chats.js', () => ({
     encodeStyleTags: (text) => text,
     decodeStyleTags: (text) => text,
-}));
-jest.unstable_mockModule('../public/scripts/message-formatter.js', () => ({
-    MessageFormatter: { stage: {}, runStage: (_stage, text) => text },
 }));
 jest.unstable_mockModule('../public/scripts/power-user.js', () => ({
     power_user: {

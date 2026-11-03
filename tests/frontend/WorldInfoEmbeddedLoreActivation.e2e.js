@@ -37,7 +37,7 @@ test.describe('embedded lorebook activates with no linked World', () => {
         try {
             const result = await page.evaluate(async (avatar) => {
                 const { getSortedEntries, EMBEDDED_WORLD_NAME } = await import('./scripts/world-info.js');
-                const { selectCharacterByAvatar, saveCharacterField, getCurrentCharacter, eventSource, event_types } = await import('./script.js');
+                const { selectCharacterByAvatar, saveCharacterField, getCurrentCharacter } = await import('./script.js');
 
                 await selectCharacterByAvatar(avatar);
 
@@ -54,11 +54,7 @@ test.describe('embedded lorebook activates with no linked World', () => {
                 const character = getCurrentCharacter();
                 const savedBookEntryCount = character?.data?.character_book?.entries?.length ?? 0;
 
-                const captured = new Promise((resolve) => {
-                    eventSource.once(event_types.WORLDINFO_ENTRIES_LOADED, (data) => resolve(data));
-                });
-                await getSortedEntries();
-                const { characterLore } = await captured;
+                const characterLore = (await getSortedEntries()).filter(e => e.world === EMBEDDED_WORLD_NAME);
 
                 return {
                     savedBookEntryCount,

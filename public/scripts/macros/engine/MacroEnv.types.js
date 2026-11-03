@@ -72,7 +72,6 @@
  * @property {boolean} [isMobile]
  * @property {number} [utcOffset]
  * @property {string} [lastGenerationType]
- * @property {{ names: string[], disabled: string[] }} [extensions]
  * @property {Record<string, any>} [instruct]
  * @property {{ enabled?: boolean, content?: string }} [sysprompt]
  * @property {Record<string, any>} [context]

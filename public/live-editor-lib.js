@@ -7,4 +7,3 @@ export * as autocomplete from '@codemirror/autocomplete';
 export * as langMarkdown from '@codemirror/lang-markdown';
 export * as lezerMarkdown from '@lezer/markdown';
 export * as lezerHighlight from '@lezer/highlight';
-export * as lezerCommon from '@lezer/common';

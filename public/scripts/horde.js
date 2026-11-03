@@ -65,7 +65,7 @@ async function cancelTask(taskId) {
     }
 }
 
-export async function checkHordeStatus() {
+async function checkHordeStatus() {
     try {
         const response = await fetch('/api/horde/status', {
             method: 'POST',

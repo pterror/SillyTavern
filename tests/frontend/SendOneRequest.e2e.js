@@ -38,7 +38,7 @@ test.describe('sending a message', () => {
             await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText(`Mock reply 2 ${s}`, { timeout: 15000 });
             const stored = await page.evaluate(() => {
                 // @ts-ignore
-                const context = SillyTavern.getContext();
+                const context = stTest.context();
                 return { userExtra: context.chat[1].extra ?? {}, tainted: context.chatMetadata.tainted === true };
             });
             expect('reasoning' in stored.userExtra).toBe(false);
@@ -57,14 +57,14 @@ test.describe('sending a message', () => {
                 await openCharacter(page, avatar);
                 await connectLlamaCpp(page, mock.url);
                 // @ts-ignore
-                await page.evaluate((streaming) => { SillyTavern.getContext().textCompletionSettings.streaming = streaming; }, streaming);
+                await page.evaluate((streaming) => { stTest.context().textCompletionSettings.streaming = streaming; }, streaming);
                 await chatBox(page).fill(`Hello ${s}`);
                 await page.locator('#send_but').click();
                 await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText(`Mock reply 1 ${s}`, { timeout: 30000 });
 
                 await page.evaluate(async (s) => {
                     // @ts-ignore
-                    const context = SillyTavern.getContext();
+                    const context = stTest.context();
                     const { chatOpPatch } = await import('/scripts/chat-store.js');
                     await chatOpPatch([{ node_id: context.chat[2].node_id, patch: {
                         'extra.media': [{ url: 'img/ai4.png', type: 'image', source: 'api' }],
@@ -82,11 +82,11 @@ test.describe('sending a message', () => {
                     // @ts-ignore
                     window.__stale = [];
                     // @ts-ignore
-                    const newIndex = SillyTavern.getContext().chat[2].swipes?.length ?? 1;
+                    const newIndex = stTest.context().chat[2].swipes?.length ?? 1;
                     const sample = () => {
                         const mes = document.querySelector('#chat .mes[mesid="2"]');
                         // @ts-ignore
-                        const message = SillyTavern.getContext().chat[2];
+                        const message = stTest.context().chat[2];
                         const extra = message?.extra ?? {};
                         const seen = [];
                         const drawnOld = (mes?.querySelector('.mes_text')?.textContent ?? '').includes(`Mock reply 1 ${s}`);
@@ -117,7 +117,7 @@ test.describe('sending a message', () => {
 
                 const shown = await page.evaluate(async (avatar) => {
                     // @ts-ignore
-                    const context = SillyTavern.getContext();
+                    const context = stTest.context();
                     const response = await fetch('/api/chats/open', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar }) });
                     const stored = (await response.json()).messages[2];
                     return { page: JSON.parse(JSON.stringify(context.chat[2].extra)), stored: stored.extra };
@@ -129,33 +129,4 @@ test.describe('sending a message', () => {
         });
     }
 
-    test('a reply translated as it arrives keeps its translation', async ({ page }) => {
-        const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-        const mock = await startLlamaCpp({ reply: n => `Mock reply ${n} ${s}.` });
-        try {
-            await page.route('**/api/translate/**', route => route.fulfill({ status: 200, contentType: 'text/plain', body: `Translated ${s}` }));
-            const avatar = await createCharacter(page, `Translate ${s}`, `Greeting ${s}`);
-            await openCharacter(page, avatar);
-            await connectLlamaCpp(page, mock.url);
-            await page.evaluate(() => {
-                // @ts-ignore
-                const context = SillyTavern.getContext();
-                context.extensionSettings.translate.auto_mode = 'responses';
-                context.extensionSettings.translate.provider = 'google';
-            });
-            await chatBox(page).fill(`Hello ${s}`);
-            await page.locator('#send_but').click();
-            await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText(`Translated ${s}`, { timeout: 30000 });
-            const storedReply = () => page.evaluate(async (avatar) => {
-                // @ts-ignore
-                const context = SillyTavern.getContext();
-                const response = await fetch('/api/chats/open', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar }) });
-                const reply = (await response.json()).messages[2];
-                return { mes: reply?.mes, shown: reply?.extra?.display_text ?? null };
-            }, avatar);
-            await expect.poll(storedReply, { timeout: 10000 }).toEqual({ mes: `Mock reply 1 ${s}.`, shown: `Translated ${s}` });
-        } finally {
-            await mock.close();
-        }
-    });
 });

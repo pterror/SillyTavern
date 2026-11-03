@@ -16,7 +16,6 @@ setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 const { router } = await import('./chats.js');
 const { router: tokenizersRouter } = await import('./tokenizers-current.js');
 const { router: avatarsRouter } = await import('./avatars.js');
-const { router: spritesRouter } = await import('./sprites.js');
 const { writeAllSettings, readSettingsAtPaths } = await import('../settings-store.js');
 const { newSessionKey, chatNameAt, sessionTime } = await import('../chat-engine.js');
 const { SESSION_HEADER } = await import('../request-session.js');
@@ -52,7 +51,6 @@ app.use((req, _res, next) => {
 app.use('/api/chats', router);
 app.use('/api/tokenizers', tokenizersRouter);
 app.use('/api/avatars', avatarsRouter);
-app.use('/api/sprites', spritesRouter);
 const server = app.listen(0, '127.0.0.1');
 await new Promise(resolve => server.once('listening', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
@@ -208,21 +206,17 @@ test('a character opened by a page that does not hold it answers the whole card 
     assert.equal(asked.status, 200);
     assert.equal(asked.body.character.avatar, 'Card.png');
     assert.equal(asked.body.character.description, 'About Card.');
-    assert.equal(typeof asked.body.character._fieldsHash, 'number');
-    assert.equal(typeof asked.body.character._bodyHash, 'number');
     assert.equal((await open({ avatar_url: 'Card.png' })).body.character, undefined);
 });
 
 test('an open answers each part the page asked for, the same as the part\'s own route would, and no other', async () => {
     await writeCharacter('Parts.png', 'Parts', 'Hello, {{user}}.', { description: 'I am {{char}}.', alternateGreetings: ['Second\r\ngreeting.'] });
-    fs.mkdirSync(path.join(directories.characters, 'Parts'), { recursive: true });
-    fs.writeFileSync(path.join(directories.characters, 'Parts', 'joy.png'), baseImage);
     const tokenizer = { api: 'textgenerationwebui', type: 'ooba', url: '', model: '', tokenizerSetting: 1 };
 
-    const opened = await open({ avatar_url: 'Parts.png', parts: { card_token_counts: { tokenizer, macro_facts: {} }, personas: {}, sprites: {}, unknown: {} } });
+    const opened = await open({ avatar_url: 'Parts.png', parts: { card_token_counts: { tokenizer, macro_facts: {} }, personas: {}, unknown: {} } });
     assert.equal(opened.status, 200);
     const { parts } = opened.body;
-    assert.deepEqual(Object.keys(parts).sort(), ['card_token_counts', 'personas', 'sprites']);
+    assert.deepEqual(Object.keys(parts).sort(), ['card_token_counts', 'personas']);
 
     const texts = ['Parts', 'I am Parts.', '', '', '', '', '', '', 'Hello, Tester.', 'Second\ngreeting.'];
     const counted = await answerOf('/api/tokenizers/current/count', 'POST', { state: tokenizer, texts, padding: 0 });
@@ -232,12 +226,9 @@ test('an open answers each part the page asked for, the same as the part\'s own 
     assert.deepEqual(parts.card_token_counts.tokenizer, counted.tokenizer);
 
     assert.deepEqual(parts.personas, await answerOf('/api/avatars/get', 'POST'));
-    assert.deepEqual(parts.sprites, { folders: { Parts: await answerOf('/api/sprites/get?name=Parts', 'GET') } });
-    assert.equal(parts.sprites.folders.Parts[0].label, 'joy');
 
     await user.store.lib.writeGroup({ id: 'g3', name: 'Trio', members: ['Parts.png', 'Rex.png'], disabled_members: [] });
-    const group = await open({ group_id: 'g3', parts: { card_token_counts: { tokenizer }, sprites: {} } });
-    assert.deepEqual(Object.keys(group.body.parts), ['sprites'], 'a group\'s open has no card to count');
-    assert.deepEqual(group.body.parts.sprites.folders, { Parts: parts.sprites.folders.Parts, Rex: [] }, 'every member\'s folder');
+    const group = await open({ group_id: 'g3', parts: { card_token_counts: { tokenizer }, personas: {} } });
+    assert.deepEqual(Object.keys(group.body.parts), ['personas'], 'a group\'s open has no card to count');
     assert.deepEqual((await open({ avatar_url: 'Parts.png' })).body.parts, {});
 });

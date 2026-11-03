@@ -43,7 +43,7 @@ async function openPromptManagerWithCounts(page) {
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button').evaluate(el => el.click());
-    await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
+    await page.waitForFunction(n => window['stTest'].context().name2 === n, name);
 
     await page.locator('#leftNavDrawerIcon').click();
     await page.selectOption('#main_api', 'openai', { force: true });

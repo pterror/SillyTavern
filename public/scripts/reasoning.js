@@ -7,7 +7,6 @@ import { chatOpEdit, closeMessageEditor, messageFormatting, saveSettingsDebounce
 import { main_api } from './generation-params.js';
 import { chat } from './chat-state.js';
 import { event_types, eventSource } from './events.js';
-import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { getCurrentLocale, t, translate } from './i18n.js';
 import { macros, MacroCategory } from './macros/macro-system.js';
 import { chat_completion_sources, getChatCompletionModel, oai_settings } from './chat-completion-settings.js';
@@ -433,7 +432,7 @@ export class ReasoningHandler {
         const extra = chat[messageId].extra;
 
         const reasoningChanged = extra.reasoning !== reasoning;
-        this.reasoning = getRegexedString(reasoning ?? '', regex_placement.REASONING);
+        this.reasoning = reasoning ?? '';
 
         this.type = (this.#isParsingReasoning || this.#parsingReasoningMesStartIndex) ? ReasoningType.Parsed : ReasoningType.Model;
 
@@ -558,7 +557,6 @@ export class ReasoningHandler {
         if (this.state === ReasoningState.Thinking) {
             this.state = this.#isHiddenReasoningModel ? ReasoningState.Hidden : ReasoningState.Done;
             this.updateReasoning(messageId, null, { persist: true });
-            await eventSource.emit(event_types.STREAM_REASONING_DONE, this.reasoning, this.getDuration(), messageId, this.state);
         }
 
         this.updateDom(messageId);
@@ -968,14 +966,6 @@ function registerReasoningSlashCommands() {
         helpString: t`Extracts the reasoning block from a string using the Reasoning Formatting settings.`,
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
-                name: 'regex',
-                description: 'Whether to apply regex scripts to the reasoning content.',
-                typeList: [ARGUMENT_TYPE.BOOLEAN],
-                defaultValue: 'true',
-                isRequired: false,
-                enumList: commonEnumProviders.boolean('trueFalse')(),
-            }),
-            SlashCommandNamedArgument.fromProps({
                 name: 'return',
                 description: 'Whether to return the parsed reasoning or the content without reasoning',
                 typeList: [ARGUMENT_TYPE.STRING],
@@ -1025,10 +1015,7 @@ function registerReasoningSlashCommands() {
                 return parsedReasoning.content;
             }
 
-            const applyRegex = !isFalseBoolean(String(args.regex ?? ''));
-            return applyRegex
-                ? getRegexedString(parsedReasoning.reasoning, regex_placement.REASONING)
-                : parsedReasoning.reasoning;
+            return parsedReasoning.reasoning;
         },
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
@@ -1207,7 +1194,7 @@ function setReasoningEventHandlers() {
      * @param {string} value Reasoning value
      */
     function updateReasoningFromValue(messageId, message, value) {
-        const reasoning = getRegexedString(value, regex_placement.REASONING, { isEdit: true });
+        const reasoning = value;
         const type = reasoningOf(message.extra) !== null ? ReasoningType.Edited : ReasoningType.Manual;
         updateMessage(messageId, { extra: withReasoning(message.extra, reasoning, type) });
     }
@@ -1330,7 +1317,6 @@ function setReasoningEventHandlers() {
         closeReasoningDetailsWithoutContent(messageBlock);
 
         messageBlock.find('.mes_edit_done:visible').trigger('click');
-        await eventSource.emit(event_types.MESSAGE_REASONING_EDITED, messageId);
     });
 
     $(document).on('click', '.mes_reasoning_edit_cancel', function (e) {
@@ -1399,7 +1385,6 @@ function setReasoningEventHandlers() {
         const textarea = messageBlock.find('.reasoning_edit_textarea');
         unmountChatEditor(textarea[0]);
         textarea.remove();
-        await eventSource.emit(event_types.MESSAGE_REASONING_DELETED, messageId);
     });
 
     $(document).on('pointerup', '.mes_reasoning_copy', async function () {
@@ -1549,7 +1534,7 @@ export function parseReasoningInSwipes(swipes, swipeInfoArray, duration) {
         }
         const parsedReasoning = parseReasoningFromString(swipes[index]);
         if (parsedReasoning) {
-            swipes[index] = getRegexedString(parsedReasoning.content, regex_placement.REASONING);
+            swipes[index] = parsedReasoning.content;
             swipeInfoArray[index].extra.reasoning = parsedReasoning.reasoning;
             swipeInfoArray[index].extra.reasoning_duration = duration;
             swipeInfoArray[index].extra.reasoning_type = ReasoningType.Parsed;
@@ -1603,7 +1588,7 @@ function registerReasoningAppEvents() {
         }
 
         const existingExtra = (message.extra && typeof message.extra === 'object') ? message.extra : {};
-        const reasoning = getRegexedString(parsedReasoning.reasoning, regex_placement.REASONING);
+        const reasoning = parsedReasoning.reasoning;
         updateMessage(idx, { mes: parsedReasoning.content, extra: withReasoning(existingExtra, reasoning, ReasoningType.Parsed) });
         message = chat[idx];
 

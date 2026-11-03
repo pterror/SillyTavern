@@ -1,8 +1,5 @@
-import libs from './lib';
-import getContext from './scripts/st-context';
 import { power_user, getThemeObject } from './scripts/power-user';
-import { QuickReplyApi } from './scripts/extensions/quick-reply/api/QuickReplyApi';
-import { oai_settings } from './scripts/openai';
+import { oai_settings } from './scripts/chat-completion-settings';
 import { textgenerationwebui_settings } from './scripts/textgen-settings';
 import { FileAttachment } from './scripts/chats';
 import { ReasoningMessageExtra } from './scripts/reasoning';
@@ -173,18 +170,9 @@ declare global {
 
     var pdfjsLib;
     var ePub;
-    var quickReplyApi: QuickReplyApi;
-
-    var SillyTavern: {
-        getContext(): typeof getContext;
-        llm: any;
-        libs: typeof libs;
-    };
 
     // Jquery plugins
     interface JQuery {
-        nanogallery2(options?: any): JQuery;
-        nanogallery2(method: string, options?: any): JQuery;
         pagination(method: 'getCurrentPageNum'): number;
         pagination(method: string, options?: any): JQuery;
         pagination(options?: any): JQuery;

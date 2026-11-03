@@ -52,7 +52,7 @@ test.describe('a new chat keeps the earlier chat: it is listed and opens with al
             startNewChat: async (page) => {
                 await page.evaluate(async () => {
                     // @ts-ignore
-                    await SillyTavern.getContext().executeSlashCommandsWithOptions('/newchat');
+                    await stTest.context().executeSlashCommandsWithOptions('/newchat');
                 });
             },
         },

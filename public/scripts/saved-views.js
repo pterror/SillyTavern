@@ -122,7 +122,7 @@ function baseView() {
     return currentId && appliedView ? appliedView : allCharactersView();
 }
 
-export function hasUnsavedViewChanges() {
+function hasUnsavedViewChanges() {
     return !!deps && !deps.sameView(deps.getView(), baseView());
 }
 
@@ -724,6 +724,3 @@ function readDraft() {
     }
 }
 
-export function getCurrentSavedViewId() {
-    return currentId;
-}
