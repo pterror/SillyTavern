@@ -7,6 +7,8 @@
 - Search: filter pills; keyboard use; `"a b c"` vs `name:"a b c"`; repeated searches cached (LRU).
 - Startup steps not needed, let alone in series; a service worker. Switching character sometimes takes very long.
 - Tests simulating packet loss, slow connections, high latency.
+- Groups are still downloaded whole: every `getCharacters()` fetches `/api/groups/all` (`public/scripts/group-chats.js:932`, `src/endpoints/groups.js:327`); the page must hold only the groups it shows, as it now does for characters.
+- The character list's creator-notes prefix is 0 (`LIST_CREATOR_NOTES_CHARS`, `public/scripts/hash-utils.js`) until the list cards get a maximum width or the owner gives a length.
 - Smaller thumbnails (75% webp or lower, 100-200px max), cached by the client, served at the image data's hash.
 - Tags on bookmarks, messages, greetings. Favourite tags, not a binary favourite (e-hentai's model as prior art). The tag manager is awkward and out of the way.
 - A {{char}} mention could bring in that character's definitions.
