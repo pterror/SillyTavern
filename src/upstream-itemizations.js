@@ -1,5 +1,6 @@
 import { TYPE } from './library-engine.js';
 import { importedChatBookmarks } from './upstream-import.js';
+import { promptParts } from './prompt-itemization.js';
 
 const NAMED_CAP = 20;
 
@@ -142,39 +143,37 @@ export async function fromUpstream(entry, counter) {
         'beforeScenarioAnchor', 'afterScenarioAnchor', 'storyString', 'examplesString', 'mesSendString', 'instruction', 'promptBias',
     ];
     const counted = Object.fromEntries(await Promise.all(keys.map(async key => [key, await count(key)])));
-    const isChat = entry?.main_api === 'openai';
     const anchors = counted.beforeScenarioAnchor + counted.afterScenarioAnchor;
-    const shared = {
-        description: counted.charDescription, personality: counted.charPersonality, scenario: counted.scenarioText,
-        persona: counted.userPersona, world_info: counted.worldInfoString, post_history: 0,
-        extensions: counted.allAnchors, summary: counted.summarizeString, authors_note: counted.authorsNoteString,
-        smart_context: counted.smartContextString, chat_vectors: counted.chatVectorsString, data_bank_vectors: counted.dataBankVectorsString,
-    };
-    /** @type {Record<string, number>} */
-    let tokens;
-    if (isChat) {
-        const examples = numberOf(entry.oaiExamplesTokens);
-        const parts = {
-            ...shared,
-            main: numberOf(entry.oaiMainTokens), chat_start: numberOf(entry.oaiStartTokens), post_history: numberOf(entry.oaiJailbreakTokens),
-            auxiliary: numberOf(entry.oaiNsfwTokens), nudge: numberOf(entry.oaiNudgeTokens), impersonate: numberOf(entry.oaiImpersonateTokens),
-            examples, chat_history: numberOf(entry.oaiConversationTokens), bias: numberOf(entry.oaiBiasTokens),
-            other_prompts: Math.max(0, numberOf(entry.oaiPromptTokens) - anchors - counted.charDescription - counted.charPersonality - counted.scenarioText),
-        };
-        const sum = parts.chat_start + numberOf(entry.oaiPromptTokens) + examples + parts.main + parts.auxiliary + parts.bias
-            + parts.impersonate + parts.post_history + parts.nudge + parts.chat_history + parts.world_info;
-        tokens = { total: numberOf(entry.oaiTotalTokens) || sum, ...parts };
+    let total;
+    /** @type {[import('./prompt-itemization.js').PromptPartName, number][]} */
+    let inOrder;
+    if (entry?.main_api === 'openai') {
+        const named = counted.summarizeString + counted.authorsNoteString + counted.smartContextString + counted.chatVectorsString + counted.dataBankVectorsString;
+        inOrder = [
+            ['main', numberOf(entry.oaiMainTokens)], ['world_info', counted.worldInfoString], ['persona', counted.userPersona],
+            ['description', counted.charDescription], ['personality', counted.charPersonality], ['scenario', counted.scenarioText],
+            ['other_prompts', Math.max(0, numberOf(entry.oaiPromptTokens) - anchors - counted.charDescription - counted.charPersonality - counted.scenarioText)],
+            ['auxiliary', numberOf(entry.oaiNsfwTokens)], ['examples', numberOf(entry.oaiExamplesTokens)], ['chat_start', numberOf(entry.oaiStartTokens)],
+            ['chat_history', numberOf(entry.oaiConversationTokens)], ['post_history', numberOf(entry.oaiJailbreakTokens)],
+            ['nudge', numberOf(entry.oaiNudgeTokens)], ['impersonate', numberOf(entry.oaiImpersonateTokens)],
+            ['summary', counted.summarizeString], ['authors_note', counted.authorsNoteString], ['smart_context', counted.smartContextString],
+            ['chat_vectors', counted.chatVectorsString], ['data_bank_vectors', counted.dataBankVectorsString],
+            ['extensions', Math.max(0, counted.allAnchors - named)], ['bias', numberOf(entry.oaiBiasTokens)],
+        ];
+        total = numberOf(entry.oaiTotalTokens) || inOrder.reduce((sum, [, tokens]) => sum + tokens, 0);
     } else {
         const prompt = textOf(entry?.finalPrompt) || textOf(entry?.rawPrompt);
-        tokens = {
-            total: prompt ? await counter.count(prompt) : 0,
-            ...shared,
-            story_string: Math.max(0, counted.storyString - counted.worldInfoString),
-            system_prompt: counted.instruction,
-            examples: counted.examplesString,
-            chat_history: Math.max(0, counted.mesSendString - (counted.allAnchors - anchors)),
-            bias: counted.promptBias,
-        };
+        const inStory = counted.worldInfoString + counted.charDescription + counted.charPersonality + counted.scenarioText
+            + counted.userPersona + counted.instruction + anchors;
+        const injections = Math.max(0, counted.allAnchors - anchors);
+        inOrder = [
+            ['story_string', Math.max(0, counted.storyString - inStory)], ['system_prompt', counted.instruction],
+            ['world_info', counted.worldInfoString], ['description', counted.charDescription], ['personality', counted.charPersonality],
+            ['scenario', counted.scenarioText], ['persona', counted.userPersona], ['extensions', anchors],
+            ['examples', counted.examplesString], ['chat_history', Math.max(0, counted.mesSendString - injections)],
+            ['injections', injections], ['bias', counted.promptBias],
+        ];
+        total = prompt ? await counter.count(prompt) : 0;
     }
     /** @type {Record<string, unknown>} */
     let samplerConfig = {};
@@ -195,6 +194,7 @@ export async function fromUpstream(entry, counter) {
         rawPrompt: Array.isArray(entry?.rawPrompt) || typeof entry?.rawPrompt === 'string' ? entry.rawPrompt : '',
         messages_count: numberOf(entry?.messagesCount),
         examples_count: numberOf(entry?.examplesCount),
-        tokens,
+        total,
+        parts: promptParts(inOrder),
     };
 }

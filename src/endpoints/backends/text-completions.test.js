@@ -1313,8 +1313,8 @@ async function run() {
         assert.equal(stored.entry.presetName, undefined, 'none of what the page sends is stored');
         assert.ok(String(stored.entry.rawPrompt).includes('Say hi via llama.cpp.'), 'its prompt as sent');
         assert.equal(stored.entry.sampler_config.prompt, undefined, 'its parameters without the prompt');
-        assert.ok(stored.entry.tokens.total > 0 && stored.entry.tokens.chat_history > 0, 'its parts counted');
-        assert.equal(stored.entry.tokens.post_history, 0, 'no post-history instructions were set');
+        assert.ok(stored.entry.total > 0 && stored.entry.parts.some((/** @type {any} */ p) => p.part === 'chat_history' && p.tokens > 0), 'its parts counted');
+        assert.equal(stored.entry.parts.some((/** @type {any} */ p) => p.part === 'post_history'), false, 'no post-history instructions were set, so none is listed');
     }
 
     {

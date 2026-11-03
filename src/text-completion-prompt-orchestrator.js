@@ -23,9 +23,9 @@ import { createKoboldGenerationData } from './kobold-generation-data.js';
 import { createNovelGenerationData } from './novel-generation-data.js';
 import { substituteParams } from './macro-substitution.js';
 import { formatInstructModeExamples } from './instruct-mode-examples.js';
-import { createExtensionPromptTable, getExtensionPrompt, getExtensionPromptByName, doChatInject, extension_prompt_types } from './extension-prompt-table.js';
-import { persona_description_defaults, persona_description_positions } from '../public/scripts/constants.js';
-import { NAMED_EXTENSIONS, presetNameOf, samplerConfigOf } from './prompt-itemization.js';
+import { createExtensionPromptTable, getExtensionPrompt, doChatInject, extension_prompt_types } from './extension-prompt-table.js';
+import { persona_description_defaults } from '../public/scripts/constants.js';
+import { presetNameOf, promptParts, samplerConfigOf } from './prompt-itemization.js';
 import { addDepthInjections, addNoteAndPersona, addPageInjections } from './prompt-injections.js';
 import { exampleBlocks } from './example-blocks.js';
 import { reasoningOf } from '../public/scripts/reasoning-block.js';
@@ -472,11 +472,10 @@ export async function assembleTextCompletionPrompt(input) {
     const itemizedApi = isHorde ? 'koboldhorde' : mainApi;
     const itemize = () => itemizeTextPrompt({
         api: itemizedApi, settings, generate_data, combinedPrompt, thisMaxContext, tokenPadding,
-        fields, personaDescriptionPosition, system, worldInfoBefore, worldInfoAfter, combinedStoryString,
+        fields, system, worldInfoBefore, worldInfoAfter, combinedStoryString,
         beforeScenarioAnchor: effectiveBeforeScenarioAnchor, afterScenarioAnchor: effectiveAfterScenarioAnchor,
         mesExmString, examplesCount: pinExamples ? mesExamplesArray.length : countExmAdd,
         finalMesSend, jailbreak: sysPromptEnabled ? jailbreak : '', promptBias, biasInHistory: !isInstruct && !isImpersonate && promptBias.trim().length !== 0,
-        extensionPromptTable, macroContext,
     }, { countTokens, countPromptTokens });
 
     return {
@@ -515,7 +514,6 @@ export async function assembleTextCompletionPrompt(input) {
  * @property {number} thisMaxContext
  * @property {number} tokenPadding
  * @property {{ description?: string, personality?: string, scenario?: string, persona?: string }} fields
- * @property {number} personaDescriptionPosition
  * @property {string} system
  * @property {string} worldInfoBefore
  * @property {string} worldInfoAfter
@@ -528,8 +526,6 @@ export async function assembleTextCompletionPrompt(input) {
  * @property {string} jailbreak
  * @property {string} promptBias
  * @property {boolean} biasInHistory
- * @property {import('./extension-prompt-table.js').ExtensionPromptTable} extensionPromptTable
- * @property {import('./macro-substitution.js').SubstituteParamsContext} macroContext
  */
 
 /**
@@ -546,38 +542,31 @@ export async function itemizeTextPrompt(parts, { countTokens, countPromptTokens 
         ...history.map(e => e.extensionPrompts.join('')),
     ].join('');
     const postHistory = parts.jailbreak;
+    const story = parts.combinedStoryString ?? '';
 
-    const [
-        total, description, personality, scenario, persona, systemPrompt, worldInfoBefore, worldInfoAfter,
-        storyString, beforeAnchor, afterAnchor, examples, historyTokens, injections, postHistoryTokens, bias,
-    ] = await Promise.all([
+    /** @type {[import('./prompt-itemization.js').PromptPartName, string|undefined][]} */
+    const storyMembers = [
+        ['system_prompt', parts.system], ['world_info', parts.worldInfoBefore], ['description', parts.fields.description],
+        ['personality', parts.fields.personality], ['scenario', parts.fields.scenario], ['world_info', parts.worldInfoAfter],
+        ['persona', parts.fields.persona], ['extensions', parts.beforeScenarioAnchor], ['extensions', parts.afterScenarioAnchor],
+    ];
+    const inStory = storyMembers
+        .map(([part, text]) => ({ part, text: text ?? '', at: text ? story.indexOf(text) : -1 }))
+        .filter(member => member.at >= 0)
+        .sort((x, y) => x.at - y.at);
+
+    const [total, storyTokens, memberTokens, examples, historyTokens, injections, postHistoryTokens, bias] = await Promise.all([
         parts.combinedPrompt ? countPromptTokens(parts.combinedPrompt) : 0,
-        count(parts.fields.description),
-        count(parts.fields.personality),
-        count(parts.fields.scenario),
-        count(parts.personaDescriptionPosition === persona_description_positions.IN_PROMPT ? parts.fields.persona : ''),
-        count(parts.system),
-        count(parts.worldInfoBefore),
-        count(parts.worldInfoAfter),
-        count(parts.combinedStoryString),
-        count(parts.beforeScenarioAnchor),
-        count(parts.afterScenarioAnchor),
+        count(story),
+        Promise.all(inStory.map(member => count(member.text))),
         count(parts.mesExmString),
         count(history.map(e => e.message).join('')),
         count(inChatInjections),
         count(postHistory),
         count(parts.promptBias),
     ]);
-    /** @type {Record<string, number>} */
-    const named = {};
-    await Promise.all(Object.entries(NAMED_EXTENSIONS).map(async ([slot, key]) => {
-        const entry = parts.extensionPromptTable[key];
-        named[slot] = entry && entry.position !== extension_prompt_types.NONE
-            ? await count(getExtensionPromptByName(parts.extensionPromptTable, key, parts.macroContext))
-            : 0;
-    }));
+    const membersTotal = memberTokens.reduce((a, b) => a + b, 0);
 
-    const worldInfo = worldInfoBefore + worldInfoAfter;
     return {
         api: parts.api,
         preset: presetNameOf(parts.api, parts.settings),
@@ -587,19 +576,15 @@ export async function itemizeTextPrompt(parts, { countTokens, countPromptTokens 
         rawPrompt: parts.combinedPrompt,
         messages_count: Math.max(0, history.length - (postHistory ? 1 : 0)),
         examples_count: parts.examplesCount,
-        tokens: {
-            total,
-            story_string: Math.max(0, storyString - worldInfo - beforeAnchor - afterAnchor),
-            description, personality, scenario, persona,
-            system_prompt: systemPrompt,
-            examples,
-            world_info: worldInfo,
-            chat_history: Math.max(0, historyTokens - postHistoryTokens - (parts.biasInHistory ? bias : 0)),
-            post_history: postHistoryTokens,
-            extensions: beforeAnchor + afterAnchor + injections,
-            summary: named.summary, authors_note: named.authors_note, smart_context: named.smart_context,
-            chat_vectors: named.chat_vectors, data_bank_vectors: named.data_bank_vectors,
-            bias,
-        },
+        total,
+        parts: promptParts([
+            ['story_string', Math.max(0, storyTokens - membersTotal)],
+            ...inStory.map((member, i) => /** @type {[import('./prompt-itemization.js').PromptPartName, number]} */ ([member.part, memberTokens[i]])),
+            ['examples', examples],
+            ['chat_history', Math.max(0, historyTokens - postHistoryTokens - (parts.biasInHistory ? bias : 0))],
+            ['injections', injections],
+            ['post_history', postHistoryTokens],
+            ['bias', bias],
+        ]),
     };
 }

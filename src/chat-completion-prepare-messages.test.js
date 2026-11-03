@@ -102,16 +102,22 @@ function makeTokenHandler() {
     const itemized = await itemize();
     const sent = await Promise.all(chat.map(m => fakeCountTokenAsyncFn({ role: m.role, content: m.content })));
     const countOf = (/** @type {string} */ content) => sent[contents.indexOf(content)];
-    assert.equal(itemized.tokens.description, countOf('CHAR_DESCRIPTION_TEXT'));
-    assert.equal(itemized.tokens.main, countOf('DEFAULT MAIN CONTENT'));
-    assert.equal(itemized.tokens.post_history, countOf('DEFAULT JAILBREAK CONTENT'), 'post-history instructions are counted');
-    assert.equal(itemized.tokens.world_info, countOf('WI_BEFORE_TEXT'));
-    assert.equal(itemized.tokens.chat_history, countOf('USER_TURN_1 (oldest)') + countOf('ASSISTANT_TURN_1') + countOf('USER_TURN_2 (newest)'));
+    const tokens = Object.fromEntries(itemized.parts.map(p => [p.part, p.tokens]));
+    assert.equal(tokens.description, countOf('CHAR_DESCRIPTION_TEXT'));
+    assert.equal(tokens.main, countOf('DEFAULT MAIN CONTENT'));
+    assert.equal(tokens.post_history, countOf('DEFAULT JAILBREAK CONTENT'), 'post-history instructions are a part');
+    assert.equal(tokens.world_info, countOf('WI_BEFORE_TEXT'));
+    assert.equal(tokens.chat_history, countOf('USER_TURN_1 (oldest)') + countOf('ASSISTANT_TURN_1') + countOf('USER_TURN_2 (newest)'));
     assert.equal(itemized.messages_count, 3);
     assert.equal(itemized.examples_count, 1);
-    const { total, summary, authors_note, smart_context, chat_vectors, data_bank_vectors, ...parts } = itemized.tokens;
-    void summary; void authors_note; void smart_context; void chat_vectors; void data_bank_vectors;
-    assert.equal(Object.values(parts).reduce((a, b) => a + b, 0), total, 'every message is in exactly one part');
+    assert.ok(itemized.parts.every(p => p.tokens > 0), 'no empty part is listed');
+    assert.equal(new Set(itemized.parts.map(p => p.part)).size, itemized.parts.length, 'each part once');
+    assert.equal(itemized.parts.reduce((a, p) => a + p.tokens, 0), itemized.total, 'every message is in exactly one part');
+    const firstAt = (/** @type {string} */ content) => contents.indexOf(content);
+    const order = itemized.parts.map(p => p.part);
+    const expected = [['main', 'DEFAULT MAIN CONTENT'], ['description', 'CHAR_DESCRIPTION_TEXT'], ['chat_history', 'USER_TURN_1 (oldest)'], ['post_history', 'DEFAULT JAILBREAK CONTENT']]
+        .sort((x, y) => firstAt(x[1]) - firstAt(y[1])).map(([part]) => part);
+    assert.deepEqual(order.filter(part => expected.includes(part)), expected, 'the parts in the order they are in the prompt');
 
     console.log('PASS: full end-to-end happy path (8 modules compose correctly)');
 }

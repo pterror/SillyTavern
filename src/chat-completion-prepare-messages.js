@@ -9,8 +9,7 @@ import {
     isReasoningSignatureSupported,
     isInterleavedReasoningProvider,
 } from './chat-completion-tool-capabilities.js';
-import { extension_prompt_types, getExtensionPromptByName } from './extension-prompt-table.js';
-import { NAMED_EXTENSIONS } from './prompt-itemization.js';
+import { promptParts } from './prompt-itemization.js';
 
 /**
  * Server-side port of public/scripts/chat-completion-settings.js's `prepareOpenAIMessages()` - the
@@ -352,14 +351,7 @@ export async function prepareOpenAIMessages({
         });
         const extensionIds = new Set(preparedPrompts.collection.filter(p => p.extension).map(p => p.identifier));
         const counted = countedPromptParts(chatCompletion, extensionIds);
-        itemize = async () => ({
-            ...counted,
-            tokens: {
-                ...counted.tokens,
-                total: chatCompletion.getTotalTokenCount(),
-                ...await inChatExtensionTokens(counted.tokens, injectionTable, tokenHandler, macroContext),
-            },
-        });
+        itemize = async () => ({ ...counted, total: chatCompletion.getTotalTokenCount() });
     } finally {
         if (squashSystemMessages && dryRun == false) { // eslint-disable-line eqeqeq -- see judgment call 7: loose comparison kept verbatim from the client.
             await chatCompletion.squashSystemMessages();
@@ -374,17 +366,15 @@ export async function prepareOpenAIMessages({
  * @typedef {object} ChatPromptItemization
  * @property {number} messages_count
  * @property {number} examples_count
- * @property {import('./prompt-itemization.js').PromptTokens} tokens
+ * @property {number} total
+ * @property {import('./prompt-itemization.js').PromptPart[]} parts
  */
 
-const TOP_LEVEL_SLOTS = Object.freeze({
+/** @type {Readonly<Record<string, import('./prompt-itemization.js').PromptPartName>>} */
+const TOP_LEVEL_PARTS = Object.freeze({
     main: 'main', worldInfoBefore: 'world_info', worldInfoAfter: 'world_info',
     charDescription: 'description', charPersonality: 'personality', scenario: 'scenario', personaDescription: 'persona',
     nsfw: 'auxiliary', jailbreak: 'post_history', bias: 'bias', impersonate: 'impersonate', groupNudge: 'nudge',
-    summary: 'extensions', authorsNote: 'extensions', vectorsMemory: 'extensions', vectorsDataBank: 'extensions', smartContext: 'extensions',
-});
-
-const NAMED_PROMPT_SLOTS = Object.freeze({
     summary: 'summary', authorsNote: 'authors_note', smartContext: 'smart_context', vectorsMemory: 'chat_vectors', vectorsDataBank: 'data_bank_vectors',
 });
 
@@ -392,68 +382,42 @@ const NAMED_PROMPT_SLOTS = Object.freeze({
  * @param {string|null} group
  * @param {import('./chat-completion-budget.js').Message} message
  * @param {Set<string>} extensionIds
- * @returns {string}
+ * @returns {import('./prompt-itemization.js').PromptPartName}
  */
-function slotOf(group, message, extensionIds) {
+function partOf(group, message, extensionIds) {
     const id = message.identifier;
     if (group === 'chatHistory' || group === 'continueNudge') {
         if (id === 'newMainChat') return 'chat_start';
         if (id === 'groupNudge' || id === 'continueNudge') return 'nudge';
-        return message.injected ? 'extensions' : 'chat_history';
+        return message.injected ? 'injections' : 'chat_history';
     }
     if (group === 'dialogueExamples') return id === 'newChat' ? 'chat_start' : 'examples';
     if (group === 'controlPrompts') {
         if (id === 'impersonate') return 'impersonate';
         return id === 'continuePrefill' ? 'chat_history' : 'other_prompts';
     }
-    return TOP_LEVEL_SLOTS[/** @type {keyof typeof TOP_LEVEL_SLOTS} */ (id)] ?? (extensionIds.has(id) ? 'extensions' : 'other_prompts');
+    return TOP_LEVEL_PARTS[id] ?? (extensionIds.has(id) ? 'extensions' : 'other_prompts');
 }
 
 /**
  * @param {ChatCompletion} chatCompletion
  * @param {Set<string>} extensionIds
- * @returns {ChatPromptItemization}
+ * @returns {Omit<ChatPromptItemization, 'total'>}
  */
 function countedPromptParts(chatCompletion, extensionIds) {
-    /** @type {Record<string, number>} */
-    const tokens = {
-        total: 0, main: 0, chat_start: 0, post_history: 0, auxiliary: 0, nudge: 0, impersonate: 0,
-        description: 0, personality: 0, scenario: 0, persona: 0, examples: 0, world_info: 0, chat_history: 0,
-        extensions: 0, summary: 0, authors_note: 0, smart_context: 0, chat_vectors: 0, data_bank_vectors: 0,
-        bias: 0, other_prompts: 0,
-    };
+    /** @type {[import('./prompt-itemization.js').PromptPartName, number][]} */
+    const counted = [];
     let messagesCount = 0;
     const dialogues = new Set();
     for (const item of chatCompletion.getMessages().getCollection()) {
         const group = item instanceof MessageCollection ? item.identifier : null;
         for (const message of item instanceof MessageCollection ? item.flatten() : [item]) {
-            const slot = slotOf(group, message, extensionIds);
-            tokens[slot] += message.getTokens();
-            const named = group === 'main' || group === message.identifier ? NAMED_PROMPT_SLOTS[/** @type {keyof typeof NAMED_PROMPT_SLOTS} */ (message.identifier)] : undefined;
-            if (named) tokens[named] += message.getTokens();
-            if (slot === 'chat_history' && message.role !== 'tool' && !String(message.identifier).startsWith('toolCall-')) messagesCount++;
+            const part = partOf(group, message, extensionIds);
+            counted.push([part, message.getTokens()]);
+            if (part === 'chat_history' && message.role !== 'tool' && !String(message.identifier).startsWith('toolCall-')) messagesCount++;
             const dialogue = group === 'dialogueExamples' ? /^dialogueExamples (\d+)-/.exec(String(message.identifier)) : null;
             if (dialogue) dialogues.add(dialogue[1]);
         }
     }
-    return { messages_count: messagesCount, examples_count: dialogues.size, tokens: /** @type {import('./prompt-itemization.js').PromptTokens} */ (/** @type {unknown} */ (tokens)) };
-}
-
-/**
- * @param {import('./prompt-itemization.js').PromptTokens} tokens
- * @param {import('./extension-prompt-table.js').ExtensionPromptTable} table
- * @param {TokenHandler} tokenHandler
- * @param {import('./macro-substitution.js').SubstituteParamsContext} macroContext
- * @returns {Promise<Record<string, number>>}
- */
-async function inChatExtensionTokens(tokens, table, tokenHandler, macroContext) {
-    /** @type {Record<string, number>} */
-    const out = {};
-    await Promise.all(Object.entries(NAMED_EXTENSIONS).map(async ([slot, key]) => {
-        const entry = table[key];
-        if (!entry?.value || entry.position !== extension_prompt_types.IN_CHAT) return;
-        const content = getExtensionPromptByName(table, key, macroContext);
-        out[slot] = tokens[/** @type {keyof import('./prompt-itemization.js').PromptTokens} */ (slot)] + (content ? await tokenHandler.countAsync({ role: 'system', content }) : 0);
-    }));
-    return out;
+    return { messages_count: messagesCount, examples_count: dialogues.size, parts: promptParts(counted) };
 }

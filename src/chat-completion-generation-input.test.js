@@ -242,7 +242,7 @@ async function storedCountsSkipTextOnlyMessages() {
         assert.deepEqual(second.bodies.filter(isToolCallCount), first.bodies.filter(isToolCallCount), 'the tool-call message is counted both times');
         assert.deepEqual(second.bodies.filter(content => content === toolResultCount), first.bodies.filter(content => content === toolResultCount), 'the tool result is counted both times');
         assert.deepEqual(second.prepared.chat, first.prepared.chat, 'the same messages');
-        assert.deepEqual((await second.prepared.itemize()).tokens, (await first.prepared.itemize()).tokens, 'the same counts');
+        assert.deepEqual((await second.prepared.itemize()).parts, (await first.prepared.itemize()).parts, 'the same counts');
     } finally {
         stub.server.close();
     }

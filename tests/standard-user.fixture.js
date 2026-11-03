@@ -93,7 +93,7 @@ export async function buildStandardUser({ directories, store, handle = 'u' }) {
     ok(await chats.appendMessages({ ...alice, after: ids[2], contents: [msg('You', true, 'Another way.')] }));
     ok(await chats.mergeMetadata({ ...alice, at: ids[1], set: { note_prompt: 'Fork note.' }, unset: ['world_info'], variables: { set: { hp: 1 } } }));
     ok(await chats.mergeMetadata({ ...alice, at: sent[0], set: { note_prompt: 'Deeper.' }, unset: ['world_info'], variables: { set: { hp: 3, mp: 2 } } }));
-    await chats.recordItemization({ node_id: ids[2], entry: { api: 'textgenerationwebui', rawPrompt: 'the prompt', tokens: { total: 3 } } });
+    await chats.recordItemization({ node_id: ids[2], entry: { api: 'textgenerationwebui', rawPrompt: 'the prompt', total: 3, parts: [{ part: 'chat_history', tokens: 3 }] } });
     const [start] = ok(await chats.addOpenings({ ...alice, contents: [msg('Alice', false, 'Unnamed chat start.')] })).node_ids;
     ok(await chats.mergeMetadata({ ...alice, at: start, set: { unnamed: true }, unset: [] }));
     ok(await chats.select({ ...alice, node_id: ids[3] }));

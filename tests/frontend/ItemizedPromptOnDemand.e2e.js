@@ -9,7 +9,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 /** @param {string} rawPrompt */
 const itemization = (rawPrompt) => ({
     api: 'textgenerationwebui', preset: null, sampler_config: {}, tokenizer: null, max_context: 4096, padding: 0,
-    rawPrompt, messages_count: 1, examples_count: 0, tokens: { total: 4, story_string: 1, chat_history: 3 },
+    rawPrompt, messages_count: 1, examples_count: 0, total: 4, parts: [{ part: 'story_string', tokens: 1 }, { part: 'chat_history', tokens: 3 }],
 });
 
 /**
@@ -201,7 +201,8 @@ for (const streaming of [true, false]) {
                 return response.ok ? (await response.json()).entry : null;
             });
             expect(stored?.api).toBe('textgenerationwebui');
-            expect(stored.tokens.total).toBeGreaterThan(0);
+            expect(stored.total).toBeGreaterThan(0);
+            expect(stored.parts.length).toBeGreaterThan(0);
             expect(typeof stored?.rawPrompt).toBe('string');
             expect(stored.rawPrompt).toContain(`When does it turn ${stamp}?`);
 

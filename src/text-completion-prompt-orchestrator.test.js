@@ -1147,12 +1147,16 @@ test('assembleTextCompletionPrompt: the itemization counts each part as built, p
     assert.equal(itemized.sampler_config.prompt, undefined);
     assert.equal(itemized.max_context, result.thisMaxContext);
     assert.equal(itemized.padding, 64);
-    assert.equal(itemized.tokens.total, result.combinedPrompt.length);
-    assert.equal(itemized.tokens.post_history, postHistory.length);
-    assert.equal(itemized.tokens.description, description.length);
-    assert.equal(itemized.tokens.system_prompt, 'You are Aria.'.length);
-    assert.equal(itemized.tokens.world_info, result.worldInfoBefore.length + result.worldInfoAfter.length);
+    assert.equal(itemized.total, result.combinedPrompt.length);
     const history = result.finalMesSend.filter(e => !e.injected).map(e => e.message).join('');
-    assert.equal(itemized.tokens.chat_history, history.length - postHistory.length);
+    const story = result.combinedStoryString;
+    const members = [['system_prompt', 'You are Aria.'], ['world_info', result.worldInfoBefore], ['description', description]]
+        .sort((a, b) => story.indexOf(a[1]) - story.indexOf(b[1]));
+    assert.deepEqual(itemized.parts, [
+        { part: 'story_string', tokens: story.length - members.reduce((n, [, text]) => n + text.length, 0) },
+        ...members.map(([part, text]) => ({ part, tokens: text.length })),
+        { part: 'chat_history', tokens: history.length - postHistory.length },
+        { part: 'post_history', tokens: postHistory.length },
+    ], 'the parts in prompt order, post-history among them, none empty');
     assert.equal(itemized.messages_count, 4);
 });
