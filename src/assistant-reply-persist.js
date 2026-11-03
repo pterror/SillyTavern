@@ -175,7 +175,7 @@ async function persistReply(pending, generatedText) {
     const result = await storeReply(pending, generatedText);
     if (result && !('error' in result) && pending.itemization) {
         try {
-            await pending.chat.store.chats.recordItemization({ node_id: result.node_id, entry: pending.itemization });
+            await pending.chat.store.chats.recordItemization({ node_id: result.node_id, entry: await pending.itemization });
         } catch (error) {
             console.error('Failed to store the prompt itemization of a reply:', error);
             pending.itemizationNotSaved = itemizationNotSavedWarning(result.node_id);

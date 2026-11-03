@@ -20,7 +20,7 @@ import { GLOBAL_PROMPT_ORDER_ID, promptOrdersWithDefault, promptsWithDefaults } 
 import { chatCompletionSettingsWithDefaults } from '../public/scripts/chat-completion-defaults.js';
 import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
 import { countChatCompletionMessages } from './endpoints/tokenizers.js';
-import { resolveTokenizer, createTokenizerOutcome, tokenizerIdentity } from './tokenizer-resolve.js';
+import { resolveTokenizer, createTokenizerOutcome, tokenizerAnswer, tokenizerIdentity } from './tokenizer-resolve.js';
 import { createStoredCounter } from './token-count-store.js';
 import { formatMessageHistoryItem, getBiasStrings } from './prompt-line-formatting.js';
 import { appendFileAttachments } from './file-attachment-inline.js';
@@ -245,7 +245,7 @@ async function resolveChatHistory(chat, { branchName, nodeId }) {
  * @param {import('./extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections]
  * @param {import('./llamacpp-props.js').LlamaCppPropsCheck} [params.llamaCppProps]
  * @param {import('./token-count-store.js').PendingTokenRows} [params.tokenCountRows]
- * @returns {Promise<import('./chat-completion-prepare-messages.js').PrepareOpenAIMessagesInput & { worldInfoCandidates: WIEntry[], activations: import('./world-info/activation-record.js').ActivationRecord | null, tokenizerOutcome: import('./tokenizer-resolve.js').TokenizerOutcome, tokenCountRows: import('./token-count-store.js').PendingTokenRows }>}
+ * @returns {Promise<import('./chat-completion-prepare-messages.js').PrepareOpenAIMessagesInput & { worldInfoCandidates: WIEntry[], activations: import('./world-info/activation-record.js').ActivationRecord | null, tokenizerOutcome: import('./tokenizer-resolve.js').TokenizerOutcome, countedWith: () => object|null, tokenCountRows: import('./token-count-store.js').PendingTokenRows }>}
  */
 export async function resolveChatCompletionGenerationInput(directories, {
     avatar, groupId, chatContext, branchName, nodeId,
@@ -365,11 +365,15 @@ export async function resolveChatCompletionGenerationInput(directories, {
     if (!tokenHandler && countTokenAsyncFnOverride) {
         tokenHandler = new TokenHandler(countTokenAsyncFnOverride);
     }
+    /** @type {() => object|null} */
+    let countedWith = () => null;
     if (!tokenHandler) {
+        const tokenizerState = { api: 'openai', source: oaiSettings.chat_completion_source, model: model ?? '', url: oaiSettings.custom_url };
         const resolved = await resolveTokenizer(
-            { api: 'openai', source: oaiSettings.chat_completion_source, model: model ?? '', url: oaiSettings.custom_url },
+            tokenizerState,
             { directories, customIncludeHeaders: substituteParams(oaiSettings.custom_include_headers, macroContext), llamaCppProps },
         );
+        countedWith = () => tokenizerAnswer(tokenizerState, resolved, tokenizerOutcome);
         const identityFacts = { llamaCppProps: llamaCppProps?.props };
         const storedCounter = createStoredCounter({
             resolved, identity: await tokenizerIdentity(resolved, identityFacts), directories,
@@ -479,6 +483,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
 
         tokenHandler,
         tokenizerOutcome,
+        countedWith,
         tokenCountRows,
         maxContext: oaiSettings.openai_max_context ?? 4095,
         maxTokens: oaiSettings.openai_max_tokens ?? 300,

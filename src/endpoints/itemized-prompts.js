@@ -1,6 +1,9 @@
 import express from 'express';
 
 import { chatContext, chatNamePosition } from '../chat-request.js';
+import { readTokenizerState } from '../connection-state-header.js';
+import { tokenizerAnswer } from '../tokenizer-resolve.js';
+import { openTokenizer } from './tokenizers-current.js';
 import { importUpstreamItemizations } from '../upstream-itemizations.js';
 import { requestStore } from '../user-stores.js';
 
@@ -104,11 +107,18 @@ router.post('/delete', async function (request, response) {
 router.post('/import-upstream', async function (request, response) {
     try {
         const chats = request.body?.chats;
-        if (!Array.isArray(chats) || chats.length > IMPORT_MAX_CHATS) return response.sendStatus(400);
+        const state = readTokenizerState(request.body?.state);
+        if (!state || !Array.isArray(chats) || chats.length > IMPORT_MAX_CHATS) return response.sendStatus(400);
         for (const c of chats) {
             if (!isPlainObject(c) || typeof c.chat_id !== 'string' || c.chat_id === '' || !Array.isArray(c.entries)) return response.sendStatus(400);
         }
-        const results = await importUpstreamItemizations(await requestStore(request), request.user.directories.root, chats);
+        const tokenizer = await openTokenizer(state, request.user.directories);
+        const counter = await tokenizer.storedCounter();
+        const results = await importUpstreamItemizations(await requestStore(request), request.user.directories.root, chats, {
+            count: state.api === 'openai' ? text => counter.countChatMessage([{ content: text }]) : counter.countText,
+            tokenizer: () => tokenizerAnswer(state, tokenizer.resolved, tokenizer.outcome),
+        });
+        tokenizer.writeCounted().catch(error => console.error('Failed to store token counts:', error));
         return response.send({ results });
     } catch (error) {
         console.error('Error importing upstream itemized prompts:', error);

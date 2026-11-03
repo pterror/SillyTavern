@@ -5,7 +5,7 @@ import zlib from 'node:zlib';
 import { textEdit } from './text-edit.js';
 import { META, TOP, decodeMessage, encodeMessage, messageRecords } from './chat-codec.js';
 import { resolveAvatars, resolveAvatarsSync, withoutShownAvatar } from './avatar-refs.js';
-import { ITEMIZED_PROMPT_FLAG } from './itemization-of.js';
+import { ITEMIZED_PROMPT_FLAG } from './prompt-itemization.js';
 import { FIELD, NAME_HISTORY, TYPE, renamesOf } from './library-codes.js';
 import { storedValues } from './entity-values.js';
 import { jsonHash } from '../public/scripts/hash-utils.js';

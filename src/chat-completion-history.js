@@ -174,6 +174,7 @@ export async function populateChatHistory(messages, prompts, chatCompletion, {
         const prompt = new Prompt(chatPrompt);
         prompt.identifier = `chatHistory-${messages.length - index}`;
         const chatMessage = await Message.fromPromptAsync(preparePrompt(prompt, { macroContext }), tokenHandler);
+        chatMessage.injected = chatPrompt.injected === true;
 
         if (namesBehavior === character_names_behavior.COMPLETION && prompt.name) {
             const messageName = isValidChatCompletionName(prompt.name) ? prompt.name : sanitizeChatCompletionName(prompt.name);

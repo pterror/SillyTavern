@@ -3,6 +3,7 @@ import { substituteParams } from './macro-substitution.js';
 import { cleanUpReply } from './reply-cleanup.js';
 import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
 import { readSettingsFor, settingsContextOf } from './settings-reads.js';
+import { PRESET_SETTINGS } from './prompt-itemization.js';
 import { ReasoningType, reasoningOf, withReasoning } from '../public/scripts/reasoning-block.js';
 
 export { ReasoningType };
@@ -28,14 +29,6 @@ const HIDDEN_REASONING_MODELS = ['gpt-4.5', 'o1', 'o3', 'gemini-2.0-flash-thinki
  * @property {string|null|Promise<string|null>} model
  * @typedef {ReplyFinishBase & import('./reply-cleanup.js').ReplyCleanupSettings} ReplyFinishSettings
  */
-
-const PRESET_SETTINGS = {
-    openai: { key: 'oai_settings', name: 'preset_settings_openai' },
-    textgenerationwebui: { key: 'textgenerationwebui_settings', name: 'preset' },
-    kobold: { key: 'kai_settings', name: 'preset_settings' },
-    koboldhorde: { key: 'kai_settings', name: 'preset_settings' },
-    novel: { key: 'nai_settings', name: 'preset_settings_novel' },
-};
 
 /**
  * @param {import('./users.js').UserDirectoryList} directories

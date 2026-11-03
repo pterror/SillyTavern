@@ -11,7 +11,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 
 const { importUpstreamData, MAP_FILE } = await import('./upstream-import.js');
-const { importUpstreamItemizations } = await import('./upstream-itemizations.js');
+const { importUpstreamItemizations, fromUpstream } = await import('./upstream-itemizations.js');
 const { emptyUser, writeLibraryCard, treeOf } = await import('../tests/converted-user.fixture.js');
 
 const user = await emptyUser('st-upstream-itemizations-test-');
@@ -34,6 +34,9 @@ const write = (/** @type {string} */ rel, /** @type {string} */ text) => {
 };
 
 const NIA_CHAT = 'Nia - 2024-01-01@10h00m00s';
+
+const counter = { count: async (/** @type {string} */ text) => text.length, tokenizer: () => ({ name: 'by length' }) };
+const importAll = (/** @type {{ chat_id: string, entries: Record<string, unknown>[] }[]} */ chats) => importUpstreamItemizations(store, directories.root, chats, counter);
 const GROUP_ID = '1700000000000';
 
 async function itemizationsOf(owner, name) {
@@ -66,7 +69,7 @@ test('setup: upstream chats imported, with the map', async () => {
 });
 
 test('entries go onto the messages at their positions; the rest is listed with why', async () => {
-    const [nia, party] = await importUpstreamItemizations(store, directories.root, [
+    const [nia, party] = await importAll([
         {
             chat_id: NIA_CHAT,
             entries: [
@@ -91,7 +94,7 @@ test('entries go onto the messages at their positions; the rest is listed with w
 });
 
 test('a second run stores nothing again; a message keeps a different itemization it has', async () => {
-    const [again] = await importUpstreamItemizations(store, directories.root, [
+    const [again] = await importAll([
         { chat_id: NIA_CHAT, entries: [{ mesId: 0, rawPrompt: 'p0' }, { mesId: 2, rawPrompt: 'other' }] },
     ]);
     assert.deepEqual([again.stored, again.unchanged], [0, 1]);
@@ -100,7 +103,7 @@ test('a second run stores nothing again; a message keeps a different itemization
 });
 
 test('a chat id naming no chat, or more than one, is left out whole', async () => {
-    const results = await importUpstreamItemizations(store, directories.root, [
+    const results = await importAll([
         { chat_id: 'Nobody - 2020', entries: [{ mesId: 0 }] },
         { chat_id: 'Same name', entries: [{ mesId: 0 }] },
     ]);
@@ -111,7 +114,7 @@ test('a chat id naming no chat, or more than one, is left out whole', async () =
 
 test('without the map, a character\'s chat is found by its label', async () => {
     fs.rmSync(path.join(directories.root, MAP_FILE));
-    const [found] = await importUpstreamItemizations(store, directories.root, [
+    const [found] = await importAll([
         { chat_id: NIA_CHAT, entries: [{ mesId: 1, rawPrompt: 'p1' }] },
     ]);
     assert.equal(found.status, 'stored');
@@ -128,7 +131,7 @@ test('a batch is one commit, its cost per entry flat', async () => {
     let commits = 0;
     store.lib.store.commit = (/** @type {any} */ records) => { commits++; return commit(records); };
     try {
-        const [r] = await importUpstreamItemizations(store, directories.root, [
+        const [r] = await importAll([
             { chat_id: 'Big - long', entries: Array.from({ length: n }, (_, i) => ({ mesId: i, rawPrompt: `p${i}` })) },
         ]);
         assert.equal(r.stored, n);
@@ -136,4 +139,36 @@ test('a batch is one commit, its cost per entry flat', async () => {
         store.lib.store.commit = commit;
     }
     assert.equal(commits, 1);
+});
+
+test('an upstream text completion entry becomes the server\'s itemization, its parts counted', async () => {
+    const converted = await fromUpstream({
+        mesId: 3, main_api: 'textgenerationwebui', rawPrompt: 'STORYWIhistory', finalPrompt: 'STORYWIhistory',
+        storyString: 'STORYWI', worldInfoString: 'WI', mesSendString: 'history', allAnchors: '', charDescription: 'desc',
+        presetName: 'Preset', this_max_context: 4096, padding: 64, examplesCount: 2, messagesCount: 5,
+    }, counter);
+    assert.deepEqual(converted, {
+        mesId: 3, api: 'textgenerationwebui', preset: 'Preset', sampler_config: {}, tokenizer: { name: 'by length' },
+        max_context: 4096, padding: 64, rawPrompt: 'STORYWIhistory', messages_count: 5, examples_count: 2,
+        tokens: {
+            total: 14, description: 4, personality: 0, scenario: 0, persona: 0, world_info: 2, post_history: 0,
+            extensions: 0, summary: 0, authors_note: 0, smart_context: 0, chat_vectors: 0, data_bank_vectors: 0,
+            story_string: 5, system_prompt: 0, examples: 0, chat_history: 7, bias: 0,
+        },
+    });
+});
+
+test('an upstream chat completion entry keeps the counts it was sent with', async () => {
+    const converted = await fromUpstream({
+        main_api: 'openai', rawPrompt: [{ role: 'system', content: 'x' }], oaiMainTokens: 10, oaiJailbreakTokens: 4,
+        oaiConversationTokens: 30, oaiExamplesTokens: 5, oaiPromptTokens: 9, oaiStartTokens: 1, oaiTotalTokens: 60, charDescription: 'abcd',
+    }, counter);
+    assert.equal(converted.api, 'openai');
+    assert.deepEqual(converted.rawPrompt, [{ role: 'system', content: 'x' }]);
+    assert.equal(converted.tokens.total, 60);
+    assert.equal(converted.tokens.main, 10);
+    assert.equal(converted.tokens.post_history, 4);
+    assert.equal(converted.tokens.chat_history, 30);
+    assert.equal(converted.tokens.description, 4);
+    assert.equal(converted.tokens.other_prompts, 5);
 });

@@ -13,7 +13,6 @@ setConfigFilePath(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 
 
 const { router } = await import('./itemized-prompts.js');
 const { persistAssistantReply } = await import('../assistant-reply-persist.js');
-const { itemizationOf } = await import('../itemization-of.js');
 const { encodeStoredReplyFrame } = await import('./backends/llamacpp-compact-stream.js');
 const { newSessionKey } = await import('../chat-engine.js');
 const ITEMIZED_PROMPT_FLAG = 'has_itemized_prompt';
@@ -75,18 +74,18 @@ async function chatOf(session = newSessionKey()) {
 const record = (nodeId, entry) => user.store.chats.recordItemization({ node_id: nodeId, entry });
 
 describe('recording and reading one message', () => {
-    test('a stored reply records the itemization sent with it, the server\'s breakdown taking precedence', async () => {
+    test('a stored reply records the itemization the server built with its prompt', async () => {
         const { ids } = await makeChat('Recorded');
-        const itemization = itemizationOf({ presetName: 'P', rawPrompt: 'page', mesId: 7 }, { rawPrompt: 'server prompt', finalPrompt: 'f' });
+        const itemization = { api: 'openai', rawPrompt: 'server prompt', tokens: { total: 3 } };
         const persisted = await persistAssistantReply({
             chat: await chatOf(), anchorNodeId: ids[4], name2: 'Alice', isSwipe: false, isContinue: false, anchorContent: null,
-            warnings: [], itemization,
+            warnings: [], itemization: Promise.resolve(itemization),
         }, 'a new reply');
         assert.ok(persisted?.node_id);
 
         const read = await post('message', { node_id: persisted.node_id });
         assert.equal(read.status, 200);
-        assert.deepEqual(read.body.entry, { presetName: 'P', rawPrompt: 'server prompt', finalPrompt: 'f' }, 'no mesId is stored');
+        assert.deepEqual(read.body.entry, itemization);
         assert.equal(read.body.previous_node_id, null, 'nothing above it has a raw prompt');
     });
 
@@ -94,7 +93,7 @@ describe('recording and reading one message', () => {
         const { ids } = await makeChat('Unstorable');
         const pending = {
             chat: await chatOf(), anchorNodeId: ids[4], name2: 'Alice', isSwipe: false, isContinue: false, anchorContent: null,
-            warnings: [], itemization: { rawPrompt: 1n },
+            warnings: [], itemization: Promise.resolve({ rawPrompt: 1n }),
         };
         const persisted = await persistAssistantReply(pending, 'kept anyway');
         assert.ok(persisted?.node_id);
@@ -103,6 +102,18 @@ describe('recording and reading one message', () => {
         const nodeOnly = encodeStoredReplyFrame(persisted, null);
         assert.ok(withWarning.length > nodeOnly.length && withWarning.subarray(0, nodeOnly.length).equals(nodeOnly));
         assert.ok(withWarning.includes(Buffer.from('itemization-not-saved')));
+    });
+
+    test('an itemization that failed to be made leaves the reply stored and says so', async () => {
+        const { ids } = await makeChat('Uncounted');
+        const pending = {
+            chat: await chatOf(), anchorNodeId: ids[4], name2: 'Alice', isSwipe: false, isContinue: false, anchorContent: null,
+            warnings: [], itemization: Promise.reject(new Error('the tokenizer is gone')),
+        };
+        pending.itemization.catch(() => {});
+        const persisted = await persistAssistantReply(pending, 'kept anyway');
+        assert.ok(persisted?.node_id);
+        assert.deepEqual(pending.warnings.map(w => w.kind), ['itemization-not-saved']);
     });
 
     test('a message without one answers 404', async () => {

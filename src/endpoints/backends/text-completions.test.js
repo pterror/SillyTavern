@@ -1291,7 +1291,7 @@ async function run() {
         const app = buildTestApp();
         const { status, bytes } = await postGenerateStreamBytes(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi via llama.cpp.' }, stream: true, itemization: { presetName: 'Page preset' },
+            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Say hi via llama.cpp.' }, stream: true, itemization: { presetName: 'Page preset', rawPrompt: 'page' },
         });
         fakeBackend.server.close();
 
@@ -1308,9 +1308,13 @@ async function run() {
         assert.equal(userMsg.mes, 'Say hi via llama.cpp.');
         assert.equal(assistantMsg.mes, 'Hello from llama.cpp, streamed.', 'the full text, accumulated across every compact-stream event, was persisted');
         assert.equal(assistantMsg.name, 'Rex');
-        const stored = await user.store.chats.readItemization({ node_id: assistantMsg.node_id });
-        assert.equal(stored?.entry.presetName, 'Page preset', 'the page\'s part of the itemization is stored with the reply');
-        assert.ok(String(stored?.entry.rawPrompt).includes('Say hi via llama.cpp.'), 'with the server\'s breakdown of the prompt it built');
+        const stored = /** @type {any} */ (await user.store.chats.readItemization({ node_id: assistantMsg.node_id }));
+        assert.equal(stored?.entry.api, 'textgenerationwebui', 'the server stores the itemization of the prompt it built');
+        assert.equal(stored.entry.presetName, undefined, 'none of what the page sends is stored');
+        assert.ok(String(stored.entry.rawPrompt).includes('Say hi via llama.cpp.'), 'its prompt as sent');
+        assert.equal(stored.entry.sampler_config.prompt, undefined, 'its parameters without the prompt');
+        assert.ok(stored.entry.tokens.total > 0 && stored.entry.tokens.chat_history > 0, 'its parts counted');
+        assert.equal(stored.entry.tokens.post_history, 0, 'no post-history instructions were set');
     }
 
     {

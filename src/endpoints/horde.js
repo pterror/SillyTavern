@@ -8,7 +8,7 @@ import { generateTurnOf, textCompletionQuietInput } from '../page-writes.js';
 import { storeUserMessage } from '../stored-messages.js';
 import { persistAssistantReply } from '../assistant-reply-persist.js';
 import { readReplyFinishSettings } from '../reply-reasoning.js';
-import { itemizationOf } from '../itemization-of.js';
+import { startItemizing } from '../prompt-itemization.js';
 import { answerSessionOnHeaders, chatContext } from '../chat-request.js';
 import { withGenerationStop } from '../generation-stop.js';
 import {
@@ -290,7 +290,7 @@ async function buildRawActionHordePayload(request, response) {
     const rawActionPersist = !skipPersistence
         ? {
             chat, anchorNodeId: replyAnchorNodeId, name2: built.name2, isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
-            itemization: itemizationOf(request.body.itemization, built.itemization),
+            itemization: startItemizing(built.itemize),
             finish: await readReplyFinishSettings(directories, { mainApi: 'koboldhorde', avatar: characterAvatar, groupId, name1: built.name1, name2: built.name2 }),
         }
         : null;

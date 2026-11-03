@@ -1118,3 +1118,41 @@ test('assembleTextCompletionPrompt: a key without its own flags follows the glob
     assert.ok(!strict.includes('Upper case key content.'));
     assert.ok(!strict.includes('Part of a word content.'));
 });
+
+test('assembleTextCompletionPrompt: the itemization counts each part as built, post-history instructions among them', async () => {
+    const { charactersDir, chatsDir, root } = makeDirectories();
+    const avatar = 'itemized.png';
+    const directories = { characters: charactersDir, root, chats: chatsDir };
+    const description = 'Aria is a wandering ranger who guards the Whispering Woods.';
+    await writeCharacterCard(directories, avatar, {
+        spec: 'chara_card_v2', spec_version: '2.0', name: 'Aria', description, personality: '', scenario: '',
+        first_mes: 'Hello there, traveler!', mes_example: '', avatar,
+        data: {
+            name: 'Aria', description, personality: '', scenario: '', first_mes: 'Hello there, traveler!', mes_example: '',
+            system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '', extensions: {}, alternate_greetings: [],
+        },
+    });
+    const postHistory = 'Stay in character.';
+    const result = await assembleTextCompletionPrompt({
+        ...baseFixture(directories, avatar),
+        sysPromptEnabled: true, sysPromptContent: 'You are Aria.', sysPromptPostHistory: postHistory,
+        tokenPadding: 64, settings: { type: 'ooba', temp: 0.7, preset: 'Simple' },
+    });
+    assert.ok(result.combinedPrompt.includes(postHistory), 'the post-history instructions are in the prompt');
+
+    const itemized = await result.itemize();
+    assert.equal(itemized.api, 'textgenerationwebui');
+    assert.equal(itemized.preset, 'Simple');
+    assert.equal(itemized.rawPrompt, result.combinedPrompt);
+    assert.equal(itemized.sampler_config.prompt, undefined);
+    assert.equal(itemized.max_context, result.thisMaxContext);
+    assert.equal(itemized.padding, 64);
+    assert.equal(itemized.tokens.total, result.combinedPrompt.length);
+    assert.equal(itemized.tokens.post_history, postHistory.length);
+    assert.equal(itemized.tokens.description, description.length);
+    assert.equal(itemized.tokens.system_prompt, 'You are Aria.'.length);
+    assert.equal(itemized.tokens.world_info, result.worldInfoBefore.length + result.worldInfoAfter.length);
+    const history = result.finalMesSend.filter(e => !e.injected).map(e => e.message).join('');
+    assert.equal(itemized.tokens.chat_history, history.length - postHistory.length);
+    assert.equal(itemized.messages_count, 4);
+});
