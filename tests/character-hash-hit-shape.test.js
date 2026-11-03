@@ -44,7 +44,7 @@ jest.unstable_mockModule('../public/scripts/user.js', () => ({ getCurrentUserHan
 jest.unstable_mockModule('../public/scripts/request-headers.js', () => ({
     getRequestHeaders: () => ({ 'Content-Type': 'application/json' }),
 }));
-jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({ favsToHotswap: noop }));
+jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({ showHotswapFavs: noop, renderHotswap: noop }));
 jest.unstable_mockModule('../public/scripts/character-store.js', () => ({
     characters: residentCharacters,
     charactersStore: { get: () => undefined, has: () => false, onChange: () => noop, reindex: noop, reset: noop },

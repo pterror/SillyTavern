@@ -23,7 +23,7 @@ import {
     cardToGreetingsModel,
     getCurrentChatId,
 } from '../script.js';
-import { queryWithSortFallback, characterToEntity, groupToEntity, entitiesFilter } from './character-list.js';
+import { characterToEntity, groupToEntity } from './character-list.js';
 import { active_character, active_group, setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { main_api, max_context } from './generation-params.js';
 import { charactersStore } from './character-store.js';
@@ -33,8 +33,6 @@ import {
     send_on_enter_options,
 } from './power-user.js';
 
-import { characterRepository, buildCharacterQuery, normalizeQueryRow } from './character-repository.js';
-import { getRandomSortSeed } from './random-sort.js';
 import { selected_group, is_group_generating, openGroupById } from './group-chats.js';
 import { applyTagsOnCharacterSelect } from './tags.js';
 import {
@@ -356,45 +354,25 @@ async function RA_autoloadchat() {
     }
 }
 
-export async function favsToHotswap() {
-    try {
-        return await favsToHotswapImpl();
-    } catch (error) {
-        console.warn('[favsToHotswap] Could not refresh the hotswap row:', error);
-    }
+/** @type {import('./character-list.js').Entity[] | null} */
+let hotswapFavs = null;
+
+/**
+ * @param {Array<{type: 'character'|'group', item: any}>} rows
+ */
+export function showHotswapFavs(rows) {
+    hotswapFavs = rows.map(({ type, item }) => (type === 'group' ? groupToEntity(item) : characterToEntity(item)));
+    renderHotswap();
 }
 
-async function favsToHotswapImpl() {
+export function renderHotswap() {
+    if (hotswapFavs === null) return;
     const container = $('#right-nav-panel .hotswap');
-
-    const FAVS_LIMIT = 25;
-
-    const isRandom = power_user.sort_order === 'random';
-    const sortField = isRandom ? 'random' : power_user.sort_field;
-    const { FILTER_TYPES } = await import('./filters.js');
-    const searchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) || '';
-
-    const { filter, sort } = buildCharacterQuery({
-        fav: true,
-        includeGroups: true,
-        searchTerm,
-        sortField,
-        sortOrder: power_user.sort_order === 'desc' ? 'desc' : 'asc',
-        randomSeed: isRandom ? getRandomSortSeed(accountStorage) : undefined,
-    });
-    const { result } = await queryWithSortFallback(filter, sort,
-        trySort => characterRepository.query(filter, trySort, 1, FAVS_LIMIT, ['rows']));
-    const favs = (result.rows ?? []).map(row => {
-        const { type, item } = normalizeQueryRow(row);
-        return type === 'group' ? groupToEntity(item) : characterToEntity(item);
-    });
-
-    if (favs.length == 0) {
+    if (hotswapFavs.length == 0) {
         container.html(`<small><span><i class="fa-solid fa-star"></i>&nbsp;${DOMPurify.sanitize(container.attr('no_favs'))}</span></small>`);
         return;
     }
-
-    buildAvatarList(container, favs, { interactable: true, highlightFavs: false });
+    buildAvatarList(container, hotswapFavs, { interactable: true, highlightFavs: false });
 }
 
 //changes input bar and send button display depending on connection status

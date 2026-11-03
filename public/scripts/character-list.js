@@ -1,4 +1,4 @@
-import { favsToHotswap } from './RossAscends-mods.js';
+import { showHotswapFavs } from './RossAscends-mods.js';
 import { characters, charactersStore, this_avatar, resolveCharacterRef } from './character-store.js';
 import { getGroupBlock, takeInHeldGroupChanges } from './group-chats.js';
 import { groupsStore } from './group-store.js';
@@ -242,16 +242,15 @@ let pageTurnScroll = null;
 
 let pageFetchesInFlight = 0;
 let shownRefreshPending = false;
-/** @type {object | null} */
-let freshRefreshPendingFor = null;
+/** @type {{ filter: object, page: number, pageSize: number, result: import('./character-repository.js').CharacterQueryResult } | null} */
+let freshPage = null;
 let serverPagedList = false;
 
 function pageFetchSettled() {
     pageFetchesInFlight--;
     if (pageFetchesInFlight !== 0) return;
-    const freshFor = freshRefreshPendingFor;
-    freshRefreshPendingFor = null;
-    if (freshFor !== null && listPageContext.query?.filter === freshFor && !shownRefreshPending) {
+    if (freshPage !== null && listPageContext.query?.filter !== freshPage.filter) freshPage = null;
+    if (freshPage !== null && !shownRefreshPending) {
         refreshCharacterListCurrentPage();
         return;
     }
@@ -446,21 +445,19 @@ export async function printCharacters(fullRefresh = false) {
         pageFetchSettled();
     }
 
-    favsToHotswap();
     updatePersonaConnectionsAvatarList();
 
     async function printServerPaginated() {
         const { filter, sort: wantedSort } = buildCharacterQueryFromCurrentFilterState({ includeGroups: true });
 
-        const onFresh = () => {
-            if (pageFetchesInFlight > 0 || listPageContext.query?.filter !== filter) {
-                freshRefreshPendingFor = filter;
-                return;
-            }
+        const freshFor = (/** @type {number} */ page, /** @type {number} */ size) => (/** @type {import('./character-repository.js').CharacterQueryResult} */ result) => {
+            freshPage = { filter, page, pageSize: size, result };
+            if (pageFetchesInFlight > 0 || listPageContext.query?.filter !== filter) return;
             refreshCharacterListCurrentPage();
         };
         const { sort, result: firstPage } = await queryWithSortFallback(filter, wantedSort,
-            trySort => characterRepository.query(filter, trySort, 1, pageSize, PAGE_WANT, { onFresh }));
+            trySort => characterRepository.query(filter, trySort, 1, pageSize, PAGE_WANT, { onFresh: freshFor(1, pageSize), favs: hotswapQuery(trySort !== wantedSort) }));
+        const favs = hotswapQuery(sort !== wantedSort);
 
         let pendingFirstPage = firstPage;
         let pageTotalApprox = isApproxTotal(firstPage.total);
@@ -485,9 +482,15 @@ export async function printCharacters(fullRefresh = false) {
                 pageFetchesInFlight++;
                 const page = ajaxParams.data.pageNumber;
                 const requestedPageSize = ajaxParams.data.pageSize;
+                const fresh = freshPage !== null && freshPage.filter === filter && freshPage.page === page && freshPage.pageSize === requestedPageSize
+                    ? freshPage.result
+                    : undefined;
+                if (fresh) freshPage = null;
                 const resultPromise = (page === 1 && requestedPageSize === pageSize && pendingFirstPage)
                     ? Promise.resolve(pendingFirstPage)
-                    : characterRepository.query(filter, sort, page, requestedPageSize, PAGE_WANT, { onFresh });
+                    : fresh
+                        ? Promise.resolve(fresh)
+                        : characterRepository.query(filter, sort, page, requestedPageSize, PAGE_WANT, { onFresh: freshFor(page, requestedPageSize), favs });
                 pendingFirstPage = undefined;
                 resultPromise
                     .then(async result => {
@@ -504,6 +507,7 @@ export async function printCharacters(fullRefresh = false) {
                             totalApprox: pageTotalApprox,
                         };
                         if (result.searchBackend !== undefined) showSearchBackend(result.searchBackend);
+                        if (result.favs) showHotswapFavs(result.favs);
                         ajaxParams.success({ rows: pageEntities, total: result.total });
                     })
                     .catch(error => {
@@ -768,6 +772,25 @@ export function setCharacterView(view, { fromSearchBox = false } = {}) {
 
 function buildCharacterQueryFromCurrentFilterState({ includeGroups = false } = {}) {
     return buildCharacterQuery(viewToQueryState(getCharacterView(), { includeGroups }));
+}
+
+const HOTSWAP_FAVS_LIMIT = 25;
+
+/**
+ * @param {boolean} fallback
+ * @returns {import('./character-repository.js').FavsQuery}
+ */
+function hotswapQuery(fallback) {
+    const isRandom = power_user.sort_order === 'random';
+    const { filter, sort } = buildCharacterQuery({
+        fav: true,
+        includeGroups: true,
+        searchTerm: entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) || '',
+        sortField: isRandom ? 'random' : power_user.sort_field,
+        sortOrder: power_user.sort_order === 'desc' ? 'desc' : 'asc',
+        randomSeed: isRandom ? getRandomSortSeed(accountStorage) : undefined,
+    });
+    return { filter, sort: fallback ? fallbackSort(filter) : sort, pageSize: HOTSWAP_FAVS_LIMIT };
 }
 
 function queryRowToEntity(row) {

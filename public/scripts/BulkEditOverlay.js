@@ -13,7 +13,6 @@ import { getRequestHeaders } from './request-headers.js';
 import { charactersStore, this_avatar } from './character-store.js';
 import { event_types, eventSource } from './events.js';
 
-import { favsToHotswap } from './RossAscends-mods.js';
 import { loader } from './action-loader.js';
 import { convertCharacterToPersona, convertCharactersToPersonas } from './personas.js';
 import { callGenericPopup, POPUP_TYPE } from './popup.js';
@@ -1129,7 +1128,6 @@ class BulkEditOverlay {
             await eventSource.emit(event_types.CHARACTERS_BULK_EDITED, { action: 'fav', done: result.done, failed: result.failed.length });
         });
         await getCharacters({ keepListPosition: true });
-        await favsToHotswap();
         this.browseState();
     };
 

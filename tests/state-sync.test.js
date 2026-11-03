@@ -1,6 +1,6 @@
 import { describe, test, expect } from '@jest/globals';
 
-import { applyChanges, baselineAfter, baselineOf, changeOps, changesSince, changesStateHere, metadataChanges, replaceInPlace, unsavedVariables } from '../public/scripts/state-sync.js';
+import { applyChanges, baselineAfter, baselineOf, changeOps, changesSince, metadataChanges, replaceInPlace, unsavedVariables } from '../public/scripts/state-sync.js';
 
 const none = { set: {}, unset: [], variables: { set: {}, unset: [] } };
 
@@ -66,12 +66,8 @@ describe('chat_metadata as state, sent per key and per variable', () => {
         expect(target).toEqual({ note: 'c' });
     });
 
-    test('a failed save names its variables; a change re-reads the state only on the page\'s path', () => {
+    test('a failed save names its variables', () => {
         expect(unsavedVariables({ ...none, variables: { set: { a: 1, b: 2 }, unset: ['c', 'a'] } })).toEqual(['a', 'b', 'c']);
-        const path = [{ node_id: 'g' }, { node_id: 'r' }];
-        expect(changesStateHere(null, path)).toBe(true);
-        expect(changesStateHere('r', path)).toBe(true);
-        expect(changesStateHere('other', path)).toBe(false);
     });
 });
 

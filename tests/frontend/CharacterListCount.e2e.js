@@ -28,9 +28,9 @@ async function stubQuery(page) {
             calls: [],
             pageSizes: [],
         };
-        characterRepository.query = async (filter = {}, sort, _page, pageSize) => {
+        characterRepository.query = async (filter = {}, sort, _page, pageSize, _want, { favs } = {}) => {
             const stub = window['__stub'];
-            stub.calls.push({ fav: filter.fav, sort: sort?.field });
+            stub.calls.push({ fav: filter.fav, sort: sort?.field, ...(favs ? { favs: { fav: favs.filter.fav, sort: favs.sort?.field } } : {}) });
             stub.pageSizes.push(pageSize);
             if (stub.rejectSort !== null && sort?.field === stub.rejectSort) {
                 throw new CharacterQueryError('rejected by test', { status: 400, reason: 'invalid-sort-field' });
@@ -190,10 +190,8 @@ test.describe('character list count', () => {
         await expect.poll(() => navigatorText(page)).toBe('1-7 .. 7');
         await expect(page.locator('.toast-warning').filter({ hasText: '"nonsense-count"' })).toHaveCount(1);
         await expect.poll(() => page.evaluate(() => window['__stub'].calls)).toEqual([
-            { fav: undefined, sort: 'nonsense-count' },
-            { fav: undefined, sort: 'name' },
-            { fav: true, sort: 'nonsense-count' },
-            { fav: true, sort: 'name' },
+            { fav: undefined, sort: 'nonsense-count', favs: { fav: true, sort: 'nonsense-count' } },
+            { fav: undefined, sort: 'name', favs: { fav: true, sort: 'name' } },
         ]);
     });
 });

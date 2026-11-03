@@ -75,7 +75,9 @@ export async function applyPageWrites(response, chat, body) {
         const actor = session.actor();
         const merged = await store.chats.mergeMetadata({ tree, at, set, unset, variables, actor });
         if (!merged.ok) {
-            recordStored(response, { ref: metadata.ref, node_id: at ?? '', metadata_not_saved: true });
+            const read = await store.chats.stateAt({ tree, at, session: actor.session });
+            const state = read !== null && 'state' in read ? read.state : undefined;
+            recordStored(response, { ref: metadata.ref, node_id: at ?? '', metadata_not_saved: true, ...(state ? { state } : {}) });
             return fail(merged.reason ?? 'the chat metadata could not be saved');
         }
         recordStored(response, { ref: metadata.ref, node_id: at ?? '', integrity: actor.session });

@@ -24,7 +24,7 @@ import {
 } from './utils.js';
 import { normalizeFav } from './hash-utils.js';
 import { bringChatForward } from './drawer-stack.js';
-import { RA_CountCharTokens, dragElement, favsToHotswap, getMessageTimeStamp } from './RossAscends-mods.js';
+import { RA_CountCharTokens, dragElement, getMessageTimeStamp } from './RossAscends-mods.js';
 import { power_user, sortEntitiesList, invalidateGroupsFuseIndex } from './power-user.js';
 import { debounce_timeout } from './constants.js';
 import { getRandomSortSeed } from './random-sort.js';
@@ -84,7 +84,7 @@ import {
     chatOpenAsk,
     _snapshotMessages,
 } from '../script.js';
-import { getCharacters, queryWithSortFallback } from './character-list.js';
+import { getCharacters, printCharactersDebounced, queryWithSortFallback } from './character-list.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore, exposedGroups, exposedIndexOf, holdCharacter, setCharacterId, setExposedGroupId, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './character-store.js';
@@ -945,7 +945,7 @@ function updateGroupAvatar(group) {
         }
     });
 
-    favsToHotswap();
+    printCharactersDebounced();
 }
 
 /**
@@ -1910,7 +1910,7 @@ async function onFavoriteGroupClick() {
     if (openGroupId) {
         groupsStore.update(openGroupId, { fav: fav_grp_checked });
         await saveGroupField(openGroupId, { fav: fav_grp_checked }, true, false);
-        favsToHotswap();
+        printCharactersDebounced();
     }
 }
 

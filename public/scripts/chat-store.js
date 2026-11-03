@@ -73,11 +73,11 @@ export function setSendStoredListener(listener) {
     _sendStoredListener = listener;
 }
 
-/** @type {(entry: { ref: string, node_id: string, integrity: string|null, notSaved?: true }) => void} */
+/** @type {(entry: { ref: string, node_id: string, integrity: string|null, notSaved?: true, state?: ChatMetadata }) => void} */
 let _metadataStoredListener = () => {};
-let _stateChangedListener = () => {};
 
 let _globalVariablesListener = (/** @type {{ set: Record<string, unknown>, unset: string[] }} */ _changes) => {};
+let _chatVariablesListener = (/** @type {{ set: Record<string, unknown>, unset: string[] }} */ _changes) => {};
 
 /**
  * @param {(changes: { set: Record<string, unknown>, unset: string[] }) => void} listener
@@ -87,16 +87,16 @@ export function setGlobalVariablesListener(listener) {
 }
 
 /**
- * @param {() => void} listener
+ * @param {(changes: { set: Record<string, unknown>, unset: string[] }) => void} listener
  */
-export function setStateChangedListener(listener) {
-    _stateChangedListener = listener;
+export function setChatVariablesListener(listener) {
+    _chatVariablesListener = listener;
 }
 
 const _openingMetadataRefs = new Set();
 
 /**
- * @param {(entry: { ref: string, node_id: string, integrity: string|null, notSaved?: true }) => void} listener
+ * @param {(entry: { ref: string, node_id: string, integrity: string|null, notSaved?: true, state?: ChatMetadata }) => void} listener
  */
 export function setMetadataStoredListener(listener) {
     _metadataStoredListener = listener;
@@ -107,11 +107,10 @@ export function setMetadataStoredListener(listener) {
  */
 export function adoptStored(stored) {
     if (!Array.isArray(stored)) return;
-    let stateChanged = false;
     for (const entry of stored) {
         if (typeof entry?.ref !== 'string') continue;
-        if (entry.state_changed === true) {
-            stateChanged = true;
+        if (entry.variables && typeof entry.variables === 'object') {
+            _chatVariablesListener(entry.variables);
             continue;
         }
         if (entry.global_variables && typeof entry.global_variables === 'object') {
@@ -120,7 +119,8 @@ export function adoptStored(stored) {
         }
         if (entry.metadata_not_saved === true) {
             _openingMetadataRefs.delete(entry.ref);
-            _metadataStoredListener({ ref: entry.ref, node_id: typeof entry.node_id === 'string' ? entry.node_id : '', integrity: null, notSaved: true });
+            const state = entry.state && typeof entry.state === 'object' ? entry.state : undefined;
+            _metadataStoredListener({ ref: entry.ref, node_id: typeof entry.node_id === 'string' ? entry.node_id : '', integrity: null, notSaved: true, state });
             continue;
         }
         if ('integrity' in entry) {
@@ -144,7 +144,6 @@ export function adoptStored(stored) {
             break;
         }
     }
-    if (stateChanged) _stateChangedListener();
 }
 
 /**

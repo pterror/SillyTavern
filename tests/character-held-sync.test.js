@@ -48,7 +48,7 @@ jest.unstable_mockModule('../public/scripts/user.js', () => ({ getCurrentUserHan
 jest.unstable_mockModule('../public/scripts/request-headers.js', () => ({
     getRequestHeaders: () => ({ 'Content-Type': 'application/json' }),
 }));
-jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({ favsToHotswap: noop }));
+jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({ showHotswapFavs: noop, renderHotswap: noop }));
 jest.unstable_mockModule('../public/scripts/character-store.js', async () => {
     const { EntityStore } = await import('../public/scripts/entity-store.js');
     store = new EntityStore(residentCharacters, c => c.avatar);

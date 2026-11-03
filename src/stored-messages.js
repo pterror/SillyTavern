@@ -1,7 +1,7 @@
 import { storedForm } from './chat-engine.js';
 import { sanitizeUserMessageExtra } from './user-message-extra.js';
 
-/** @typedef {{ ref: string, node_id: string, integrity?: string | null, metadata_not_saved?: true, state_changed?: true, global_variables?: { set: Record<string, unknown>, unset: string[] } }} StoredMessage */
+/** @typedef {{ ref: string, node_id: string, integrity?: string | null, metadata_not_saved?: true, state?: Record<string, unknown>, variables?: { set: Record<string, unknown>, unset: string[] }, global_variables?: { set: Record<string, unknown>, unset: string[] } }} StoredMessage */
 
 /**
  * @param {any} body

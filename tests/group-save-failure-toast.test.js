@@ -38,7 +38,7 @@ jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({
     RA_CountCharTokens: jest.fn(),
     humanizedDateTime: jest.fn(),
     dragElement: jest.fn(),
-    favsToHotswap: jest.fn(),
+    showHotswapFavs: jest.fn(), renderHotswap: jest.fn(),
     getMessageTimeStamp: jest.fn(),
 }));
 

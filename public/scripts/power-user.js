@@ -27,7 +27,7 @@ import { setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore, setCharacterId, setRecentCharacters, getRecentCharacters, holdCharacter } from './character-store.js';
 import { eventSource, event_types } from './events.js';
-import { isMobile, favsToHotswap, countCharTokensWhenShown, onCharacterEditorMaybeShown, onStackedDrawersChanged } from './RossAscends-mods.js';
+import { isMobile, renderHotswap, countCharTokensWhenShown, onCharacterEditorMaybeShown, onStackedDrawersChanged } from './RossAscends-mods.js';
 import { drawerStackChanged } from './drawer-stack.js';
 import {
     resetSelectedGroup,
@@ -554,7 +554,7 @@ const contextControls = [
 let browser_has_focus = true;
 const debug_functions = [];
 
-const setHotswapsDebounced = debounce(favsToHotswap);
+const setHotswapsDebounced = debounce(renderHotswap);
 
 /**
  * Plays the message sound if enabled in power user settings.

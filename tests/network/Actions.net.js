@@ -86,6 +86,18 @@ for (const profile of [PROFILES.local, PROFILES['3g'], PROFILES['phone over vpn'
             });
             await page.locator('#select_chat_cross').click();
 
+            setLink(PROFILES.local);
+            if (await page.locator('#right-nav-panel.openDrawer').count()) {
+                await page.locator('#rightNavDrawerIcon').click();
+                await expect(page.locator('#right-nav-panel.openDrawer')).toHaveCount(0);
+            }
+            setLink({ ...profile });
+            await run({
+                action: 'open the character list',
+                profile: profile.name,
+                act: () => page.locator('#rightNavDrawerIcon').click(),
+                visible: { selector: `#right-nav-panel.openDrawer #rm_print_characters_block .character_select[data-avatar="${second}"]` },
+            });
             await openCharacterManagementDrawer(page);
             await run({
                 action: 'switch character',
