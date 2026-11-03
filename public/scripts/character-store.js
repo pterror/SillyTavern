@@ -82,14 +82,7 @@ function replaceInPlace(array, items) {
     return true;
 }
 
-/** @type {EntityStore<Group>|null} */
-let watchedGroupsStore = null;
-
 function refreshExposed() {
-    if (watchedGroupsStore !== groupsStore) {
-        watchedGroupsStore = groupsStore;
-        groupsStore.onChange(refreshExposed);
-    }
     const nextCharacters = exposedAvatars().map(avatar => charactersStore.get(avatar)).filter(Boolean);
     const group = openGroupId !== null ? groupsStore.get(openGroupId) : undefined;
     const charactersChanged = replaceInPlace(exposedCharacters, nextCharacters);
@@ -162,6 +155,7 @@ function releaseUnneededCharacters() {
     for (const avatar of unneeded) charactersStore.remove(avatar);
 }
 
+groupsStore.onChange(refreshExposed);
 charactersStore.onChange((change) => {
     refreshExposed();
     if (change.op === 'created' || change.op === 'reset') scheduleRelease();

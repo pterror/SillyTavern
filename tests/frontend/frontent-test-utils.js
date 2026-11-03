@@ -163,6 +163,25 @@ export async function holdCharacters(page, avatars) {
 
 /**
  * @param {import('@playwright/test').Page} page
+ * @param {string[]} ids
+ */
+export async function holdGroups(page, ids) {
+    const missing = await page.evaluate(async (ids) => {
+        const { holdGroups, keepHeldGroups } = await import('/scripts/group-store.js');
+        if (!window['__testHeldGroups']) {
+            const kept = new Set();
+            window['__testHeldGroups'] = kept;
+            keepHeldGroups(() => kept);
+        }
+        for (const id of ids) window['__testHeldGroups'].add(id);
+        const held = await holdGroups(ids);
+        return ids.filter(id => !held.has(id));
+    }, ids);
+    if (missing.length > 0) throw new Error(`holdGroups: no such groups: ${missing.join(', ')}`);
+}
+
+/**
+ * @param {import('@playwright/test').Page} page
  * @param {string} name
  * @returns {Promise<string|undefined>}
  */

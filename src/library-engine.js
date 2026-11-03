@@ -811,22 +811,24 @@ export class LibraryEngine {
     /**
      * @param {number} sinceSeq
      * @param {number} limit
-     * @returns {Promise<{ seq: number, changes: { id: string, op: 'upsert' | 'delete', fields?: null }[], truncated: false, hasMore: boolean }>}
+     * @returns {Promise<{ seq: number, changes: { id: string, op: 'upsert' | 'delete', fields?: null, type?: 'group' }[], truncated: false, hasMore: boolean }>}
      */
     async changes(sinceSeq, limit) {
         const page = await this.store.chatRead('entityChanges', { after: BigInt(Math.max(0, Math.trunc(sinceSeq))), limit });
         const live = page.entries.filter((/** @type {any} */ e) => e.gone === null);
         const keys = live.length ? await this.store.libraryKeys(live.map((/** @type {any} */ e) => e.id)) : [];
         const keyOf = new Map(live.map((/** @type {any} */ e, /** @type {number} */ i) => [e.id, keys[i]]));
-        /** @type {{ id: string, op: 'upsert' | 'delete', fields?: null }[]} */
+        /** @type {{ id: string, op: 'upsert' | 'delete', fields?: null, type?: 'group' }[]} */
         const changes = [];
         for (const e of page.entries) {
             if (e.gone !== null) {
                 if (e.gone.kind === TYPE.character) changes.push({ id: e.gone.key, op: 'delete' });
+                if (e.gone.kind === TYPE.group) changes.push({ id: e.gone.key, op: 'delete', type: 'group' });
                 continue;
             }
             const k = keyOf.get(e.id);
             if (k && k.type === TYPE.character) changes.push({ id: k.key, op: 'upsert', fields: null });
+            if (k && k.type === TYPE.group) changes.push({ id: k.key, op: 'upsert', type: 'group' });
         }
         const last = page.entries.length ? Number(page.entries[page.entries.length - 1].pos) : null;
         return { seq: last ?? Math.max(Math.trunc(sinceSeq), Number(page.end)), changes, truncated: false, hasMore: page.more };

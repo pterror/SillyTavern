@@ -191,9 +191,6 @@ describe('group routes send the normalized boolean, and the client hash of what 
         /** @type {[string, any][]} */
         const sent = [];
 
-        const all = await (await postJson('/api/groups/all', {})).json();
-        sent.push(['/api/groups/all', all.find(g => g.id === 'g1')]);
-
         const batch = await (await postJson('/api/groups/batch', { ids: ['g1'] })).json();
         sent.push(['/api/groups/batch', batch[0]]);
 

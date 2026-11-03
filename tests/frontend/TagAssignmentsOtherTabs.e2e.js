@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer, holdCharacters } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, holdCharacters, holdGroups } from './frontent-test-utils.js';
 
 /** @param {import('@playwright/test').Page} page */
 async function loadApp(page) {
@@ -185,6 +185,7 @@ test.describe('tag assignments changed in another tab', () => {
             await createTag(other, tagId);
 
             await loadApp(page);
+            await holdGroups(page, [groupId]);
             expect(await listDrawerOpen(page)).toBe(false);
             expect(await heldTagIds(page, groupId)).toEqual([]);
 
@@ -212,6 +213,7 @@ test.describe('tag assignments changed in another tab', () => {
 
             await loadApp(page);
             await holdCharacters(page, [a, b, c]);
+            await holdGroups(page, [g1, g2, g3]);
             expect(await listDrawerOpen(page)).toBe(false);
 
             await api(other, '/api/tags/restore', { tags: [], tagMap: { [a]: [tagId], [g1]: [tagId] }, overwrite: false });

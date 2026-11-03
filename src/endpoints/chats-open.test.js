@@ -167,6 +167,19 @@ test('a group opens on its current chat, or a named one, made current only when 
     assert.ok(switched.body.date_last_chat > 5);
 });
 
+test('a group opened by a page that does not hold it answers the whole group too, and only when asked', async () => {
+    await user.store.lib.writeGroup({ id: 'g2', name: 'Duo', members: ['Rex.png'], disabled_members: [] });
+    const tab = newSessionKey();
+    const asked = await open({ group_id: 'g2', with_group: true }, tab);
+    assert.equal(asked.status, 200);
+    assert.equal(asked.body.group.id, 'g2');
+    assert.equal(asked.body.group.name, 'Duo');
+    assert.deepEqual(asked.body.group.members, ['Rex.png']);
+    assert.equal(asked.body.group.chat_id, asked.body.chat);
+    assert.deepEqual(asked.body.group.chats, asked.body.chats);
+    assert.equal((await open({ group_id: 'g2' }, tab)).body.group, undefined);
+});
+
 test('unknown owners are 404', async () => {
     assert.equal((await open({ avatar_url: 'Nobody.png' })).status, 404);
     assert.equal((await open({ group_id: 'nope' })).status, 404);

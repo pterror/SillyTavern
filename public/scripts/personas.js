@@ -54,7 +54,7 @@ import {
 import { debounce_timeout, persona_description_defaults, persona_description_positions } from './constants.js';
 import { FILTER_TYPES, FilterHelper } from './filters.js';
 import { groupsStore, selected_group } from './group-chats.js';
-import { groups } from './group-store.js';
+import { getGroupRows } from './group-store.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
 import { t } from './i18n.js';
 import { openWorldInfoEditor, world_names } from './world-info.js';
@@ -954,23 +954,25 @@ async function drawPersonaConnectionsAvatarList() {
     /** @type {PersonaConnection[]} */
     const connections = personaStore.get(user_avatar)?.connections ?? [];
     const unheld = connections.filter(connection => connection.type === 'character' && !charactersStore.has(connection.id)).map(connection => connection.id);
-    /** @type {Map<string, Character>} */
-    let read = new Map();
-    if (unheld.length > 0) {
-        try {
-            read = await characterRepository.getMany(unheld);
-        } catch (error) {
+    const groupIds = connections.filter(connection => connection.type === 'group').map(connection => String(connection.id));
+    const [read, groupRows] = await Promise.all([
+        unheld.length === 0 ? new Map() : characterRepository.getMany(unheld).catch((error) => {
             console.error('Could not read the characters connected to the persona:', error);
-        }
-        if (drawId !== connectionsListDrawId) return;
-    }
+            return /** @type {Map<string, Character>} */ (new Map());
+        }),
+        groupIds.length === 0 ? new Map() : getGroupRows(groupIds).catch((error) => {
+            console.error('Could not read the groups connected to the persona:', error);
+            return /** @type {Map<string, Group>} */ (new Map());
+        }),
+    ]);
+    if (drawId !== connectionsListDrawId) return;
     const entities = connections.map(connection => {
         if (connection.type === 'character') {
             const character = charactersStore.get(connection.id) ?? read.get(connection.id);
             if (character) return characterToEntity(character);
         }
         if (connection.type === 'group') {
-            const group = groupsStore.get(connection.id);
+            const group = groupRows.get(String(connection.id));
             if (group) return groupToEntity(group);
         }
         return undefined;
@@ -1058,7 +1060,7 @@ export async function askForPersonaSelection(title, text, personas, { okButton =
                 saveSettingsDebounced('power_user.persona_data');
                 updatePersonaConnectionsAvatarList();
                 if (power_user.persona_show_notifications) {
-                    const name = (targetedChar.type == 'character' ? charactersStore.get(targetedChar.id)?.name : groups[targetedChar.id]?.name) ?? targetedChar.id;
+                    const name = (targetedChar.type == 'character' ? charactersStore.get(targetedChar.id)?.name : groupsStore.get(targetedChar.id)?.name) ?? targetedChar.id;
                     toastr.info(t`All connections to ${name} have been removed.`, t`Personas Unlocked`);
                 }
             },

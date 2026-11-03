@@ -51,7 +51,7 @@ jest.unstable_mockModule('../public/scripts/character-store.js', () => ({
     resolveCharacterRef: ref => residentCharacters[ref],
     this_avatar: undefined,
 }));
-jest.unstable_mockModule('../public/scripts/group-chats.js', () => ({ groups: [], getGroups: async () => {}, getGroupBlock: noop }));
+jest.unstable_mockModule('../public/scripts/group-chats.js', () => ({ getGroupBlock: noop, takeInHeldGroupChanges: async () => {} }));
 jest.unstable_mockModule('../public/scripts/power-user.js', () => ({ power_user: {}, sortEntitiesList: noop }));
 jest.unstable_mockModule('../public/scripts/utils.js', () => ({
     debounce: fn => fn,

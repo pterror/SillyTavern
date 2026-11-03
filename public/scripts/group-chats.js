@@ -2,7 +2,7 @@ import { shownThumbnail } from './shown-thumbnail.js';
 import { blockWhileFieldEditing } from './character-field-editor.js';
 import { Fuse } from '../lib.js';
 
-import { groups, groupsStore, setGroups, rebuildGroupsStoreCore } from './group-store.js';
+import { groupsStore, holdGroup, readGroups, keepHeldGroups, releaseUnshownGroupsSoon } from './group-store.js';
 import { onAnyEntityStoreChange } from './entity-store.js';
 
 import {
@@ -84,7 +84,7 @@ import {
     chatOpenSendKeys,
     _snapshotMessages,
 } from '../script.js';
-import { getCharacters, showCharacterSyncFailedToast, SYNC_REQUEST_TIMEOUT_MS, queryWithSortFallback } from './character-list.js';
+import { getCharacters, queryWithSortFallback } from './character-list.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore, exposedGroups, exposedIndexOf, holdCharacter, setCharacterId, setExposedGroupId, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './character-store.js';
@@ -113,7 +113,6 @@ export {
     generateGroupWrapper,
     deleteGroup,
     getGroupAvatar,
-    getGroups,
     regenerateGroup,
     resetSelectedGroup,
     select_group_chats,
@@ -125,22 +124,6 @@ let is_group_automode_enabled = false;
 let hideMutedSprites = false;
 export { groupsStore };
 
-function rebuildGroupsStore() {
-    rebuildGroupsStoreCore();
-    storedGroupFields.clear();
-    for (const group of groups) noteStoredGroupFields(group.id, group);
-    groupsStore.onChange(() => invalidateGroupsFuseIndex());
-    groupsStore.onChange(change => {
-        if (change.op === 'created') noteStoredGroupFields(change.id, change.entity);
-    });
-
-    groupsStore.onChange(change => {
-        if (change.op === 'updated' && change.patch && 'members' in change.patch) {
-            printGroupCandidates();
-            printGroupMembers();
-        }
-    });
-}
 /** @type {string|null} */
 let selected_group = null;
 let group_generation_id = null;
@@ -208,6 +191,47 @@ function noteStoredGroupFields(id, fields) {
     for (const [field, value] of Object.entries(fields)) stored.set(field, JSON.stringify(value));
 }
 
+groupsStore.onChange(() => invalidateGroupsFuseIndex());
+groupsStore.onChange(change => {
+    if (change.op === 'created') noteStoredGroupFields(change.id, change.entity);
+    if (change.op === 'removed') {
+        storedGroupFields.delete(change.id);
+        missingGroupMembers.delete(change.id);
+    }
+    if (change.op === 'updated' && change.patch && 'members' in change.patch) {
+        printGroupCandidates();
+        printGroupMembers();
+    }
+});
+keepHeldGroups(() => [selected_group, openGroupId]);
+
+/**
+ * @param {Set<string>} upserted
+ * @param {Set<string>} deleted
+ * @returns {Promise<void>}
+ */
+export async function takeInHeldGroupChanges(upserted, deleted) {
+    const changed = [...upserted].filter(id => groupsStore.has(id));
+    const gone = [...deleted].filter(id => groupsStore.has(id));
+    const fresh = changed.length > 0 ? await readGroups(changed) : new Map();
+    for (const id of changed) {
+        const group = fresh.get(id);
+        const held = groupsStore.get(id);
+        if (!held) continue;
+        if (!group) {
+            gone.push(id);
+            continue;
+        }
+        for (const field of Object.keys(held)) {
+            if (!(field in group)) delete held[field];
+        }
+        const patch = Object.fromEntries(Object.entries(group).filter(([field, value]) => JSON.stringify(held[field]) !== JSON.stringify(value)));
+        noteStoredGroupFields(id, group);
+        if (Object.keys(patch).length > 0) groupsStore.update(id, patch);
+    }
+    for (const id of gone) groupsStore.remove(id);
+}
+
 /**
  * @param {string} id
  * @param {boolean} immediately
@@ -232,13 +256,11 @@ export async function editGroup(id, immediately, reload = true) {
  * @param {string} id
  * @param {object} props
  * @param {boolean} reload
- * @param {object} [options]
- * @param {boolean} [options.silentGroups=false]
  */
-async function _saveProperty(id, props, reload = true, { silentGroups = false } = {}) {
+async function _saveProperty(id, props, reload = true) {
     await saveGroupProperty(id, props);
     if (reload) {
-        await getCharacters({ silentGroups });
+        await getCharacters();
     }
 }
 
@@ -249,14 +271,13 @@ const _groupFieldSaveTimers = new Map();
  * @param {string} id
  * @param {object} props
  * @param {boolean} reload
- * @param {object} options
  */
-function savePropertyDebounced(id, props, reload, options) {
+function savePropertyDebounced(id, props, reload) {
     const key = `${id}:${Object.keys(props).sort().join(',')}`;
     clearTimeout(_groupFieldSaveTimers.get(key));
     _groupFieldSaveTimers.set(key, setTimeout(() => {
         _groupFieldSaveTimers.delete(key);
-        _saveProperty(id, props, reload, options);
+        _saveProperty(id, props, reload);
     }, debounce_timeout.relaxed));
 }
 
@@ -265,20 +286,18 @@ function savePropertyDebounced(id, props, reload, options) {
  * @param {object} props
  * @param {boolean} immediately
  * @param {boolean} [reload=true]
- * @param {object} [options]
- * @param {boolean} [options.silentGroups=false]
  * @returns {Promise<void>}
  */
-async function saveGroupField(id, props, immediately, reload = true, { silentGroups = false } = {}) {
+async function saveGroupField(id, props, immediately, reload = true) {
     if (!id) {
         return;
     }
 
     if (immediately) {
-        return await _saveProperty(id, props, reload, { silentGroups });
+        return await _saveProperty(id, props, reload);
     }
 
-    savePropertyDebounced(id, props, reload, { silentGroups });
+    savePropertyDebounced(id, props, reload);
 }
 
 // Group chats
@@ -865,118 +884,7 @@ function resetSelectedGroup() {
     selected_group = null;
     setExposedGroupId(null);
     is_group_generating = false;
-}
-
-/**
- * Upstream's: renames a group member across the groups this page holds and their chats. Our own rename doesn't call
- * it (a rename keeps the avatar, and group chats keep the speaker names they carry until speakers are stored by id).
- * @param {string} oldAvatar Old avatar name
- * @param {string} newAvatar New avatar name
- * @param {string} newName New character name
- */
-export async function renameGroupMember(oldAvatar, newAvatar, newName) {
-    // Scan every group for our renamed character
-    for (const group of groups) {
-        try {
-            // Try finding the member by old avatar link
-            const memberIndex = group.members.findIndex(x => x == oldAvatar);
-
-            // Character was not present in the group...
-            if (memberIndex == -1) {
-                continue;
-            }
-
-            if (newAvatar !== oldAvatar) {
-                const response = await fetch('/api/groups/members', {
-                    method: 'POST',
-                    headers: getRequestHeaders(),
-                    body: JSON.stringify({ id: group.id, op: 'replace', avatar: oldAvatar, new_avatar: newAvatar }),
-                });
-                if (!response.ok) throw new Error('Group member could not be replaced');
-                const { members, disabled_members } = await response.json();
-                groupsStore.update(group.id, { members, disabled_members });
-            }
-
-            const response = await fetch('/api/chats/tree/rename-group-member', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ group_id: group.id, old_avatar: oldAvatar, new_avatar: newAvatar, new_name: newName }),
-            });
-
-            if (!response.ok) {
-                throw new Error('Group member could not be renamed');
-            }
-        } catch (error) {
-            console.error(`Could not rename a member of group ${group.id}:`, error);
-            toastr.error(t`${newName} could not be renamed in the group ${group.name}.`, t`Group could not be saved`);
-        }
-    }
-}
-
-/**
- * Fetches all groups from the server and processes them.
- * @param {object} [options]
- * @param {boolean} [options.silent=false] - If true, skips groupsStore's generic reset() notification; pass
- * this when the caller will report the specific create/delete/rename itself via groupsStore.reportCreated()/
- * .reportRemoved()/.reportRenamed() once this returns.
- */
-async function getGroups({ silent = false } = {}) {
-    try {
-        await fetchGroups({ silent });
-    } catch (error) {
-        console.error('Group sync failed:', error);
-        showCharacterSyncFailedToast();
-    }
-}
-
-async function fetchGroups({ silent }) {
-    const response = await fetch('/api/groups/all', {
-        method: 'POST',
-        headers: getRequestHeaders({ omitContentType: true }),
-        signal: AbortSignal.timeout(SYNC_REQUEST_TIMEOUT_MS),
-    });
-
-    if (response.ok) {
-        /** @type {Group[]} */
-        const data = await response.json();
-        setGroups(data.slice());
-
-        // Convert groups to new format
-        for (const group of groups) {
-            if (typeof group.id === 'number') {
-                group.id = String(group.id);
-            }
-            if (group.disabled_members == undefined) {
-                group.disabled_members = [];
-            }
-            if (group.chat_id == undefined) {
-                group.chat_id = group.id;
-                group.chats = [group.id];
-                try {
-                    const avatars = [];
-                    for (const name of group.members) {
-                        avatars.push((await findLegacyMemberByName(name))?.avatar);
-                    }
-                    group.members = avatars
-                        .filter(x => x)
-                        .filter(onlyUnique);
-                } catch (error) {
-                    console.warn('Could not convert legacy group members to avatars', group.id, error);
-                }
-            }
-            if (typeof group.chat_id === 'number') {
-                group.chat_id = String(group.chat_id);
-            }
-            if (Array.isArray(group.chats) && group.chats.some(x => typeof x === 'number')) {
-                group.chats = group.chats.map(x => String(x));
-            }
-        }
-
-        rebuildGroupsStore();
-        if (!silent) {
-            groupsStore.reset();
-        }
-    }
+    releaseUnshownGroupsSoon();
 }
 
 /**
@@ -1528,10 +1436,8 @@ async function deleteGroup(id) {
         removeEntityTags(id);
         resetChatState();
         await printMessages();
-        await getCharacters({ silentGroups: true });
-        if (group) {
-            groupsStore.reportRemoved(id, group);
-        }
+        groupsStore.remove(id);
+        await getCharacters();
 
         select_rm_info('group_delete', id);
 
@@ -1749,7 +1655,7 @@ async function onGroupNameInput() {
         const name = $(this).val();
         const change = groupsStore.update(openGroupId, { name });
         $('#rm_button_selected_ch').children('h2').text(change?.entity?.name);
-        await saveGroupField(openGroupId, { name }, false, true, { silentGroups: true });
+        await saveGroupField(openGroupId, { name }, false, true);
     }
 }
 
@@ -2047,6 +1953,7 @@ function toggleHiddenControls(group, generationMode = null) {
  */
 function select_group_chats(groupId, skipAnimation) {
     openGroupId = groupId;
+    releaseUnshownGroupsSoon();
     newGroupMembers = [];
     const group = openGroupId && groupsStore.get(openGroupId);
     const groupName = group?.name ?? '';
@@ -2171,7 +2078,7 @@ async function uploadGroupAvatar(event) {
     groupsStore.update(openGroupId, shown);
     $('#group_avatar_preview').empty().append(getGroupAvatar(_thisGroup));
     $('#rm_group_restore_avatar').show();
-    await saveGroupField(openGroupId, { avatar_url: saved.path }, true, true, { silentGroups: true });
+    await saveGroupField(openGroupId, { avatar_url: saved.path }, true, true);
 }
 
 async function restoreGroupAvatar() {
@@ -2190,7 +2097,7 @@ async function restoreGroupAvatar() {
     groupsStore.update(openGroupId, { avatar_url: '' });
     $('#group_avatar_preview').empty().append(getGroupAvatar(_thisGroup));
     $('#rm_group_restore_avatar').hide();
-    await saveGroupField(openGroupId, { avatar_url: '' }, true, true, { silentGroups: true });
+    await saveGroupField(openGroupId, { avatar_url: '' }, true, true);
 }
 
 async function onGroupActionClick(event) {
@@ -2256,32 +2163,49 @@ export async function openGroupById(groupId) {
         return false;
     }
 
-    if (!groupsStore.get(groupId)) {
-        console.log('Group not found', groupId);
+    if (is_send_press || is_group_generating) {
         return false;
     }
 
-    if (!is_send_press && !is_group_generating) {
-        select_group_chats(groupId, false);
-
-        if (selected_group !== groupId) {
-            groupChatQueueOrder = new Map();
-            setCharacterId(undefined);
-            setCharacterName('');
-            resetSelectedGroup();
-            await clearChat({ clearData: true });
-            cancelTtsPlay();
-            selected_group = groupId;
-            setExposedGroupId(groupId);
-            setEditedMessageId(undefined);
-            updateChatMetadata({}, true);
-            await holdOpenGroupMembers();
-            await openGroupConversation(groupId);
-            return true;
+    /** @type {import('../script.js').ChatOpenAnswer|null} */
+    let opened = null;
+    if (!groupsStore.has(groupId)) {
+        try {
+            opened = await requestChatOpen({ group_id: groupId, chat: null, make_current: false, with_group: true });
+        } catch (error) {
+            if (error?.status === 404) {
+                console.log('Group not found', groupId);
+                return false;
+            }
+            console.error('Could not open the group:', groupId, error);
+            toastr.error(t`The chat could not be opened. Check the server connection and try again.`, t`Chat not opened`);
+            return false;
+        }
+        if (!groupsStore.has(groupId)) {
+            console.log('Group not found', groupId);
+            return false;
         }
     }
 
-    return false;
+    select_group_chats(groupId, false);
+
+    if (selected_group === groupId) {
+        return false;
+    }
+
+    groupChatQueueOrder = new Map();
+    setCharacterId(undefined);
+    setCharacterName('');
+    resetSelectedGroup();
+    await clearChat({ clearData: true });
+    cancelTtsPlay();
+    selected_group = groupId;
+    setExposedGroupId(groupId);
+    setEditedMessageId(undefined);
+    updateChatMetadata({}, true);
+    await holdOpenGroupMembers();
+    await openGroupConversation(groupId, { opened });
+    return true;
 }
 
 /**
@@ -2359,9 +2283,9 @@ async function createGroup() {
     if (createGroupResponse.ok) {
         newGroupMembers = [];
         const data = await createGroupResponse.json();
+        holdGroup(data);
         createTagMapFromList('#groupTagList', data.id);
-        await getCharacters({ silentGroups: true });
-        groupsStore.reportCreated(String(data.id));
+        await getCharacters();
         select_rm_info('group_create', data.id);
     } else {
         toastr.error(t`The group was not created. Check the server console for details.`, t`Group could not be created`);
@@ -2480,7 +2404,7 @@ export async function renameGroupChat(groupId, oldChatId, newChatId) {
 
     groupsStore.update(group.id, { chats: group.chats, chat_id: group.chat_id });
 
-    await saveGroupField(groupId, { chats: group.chats, chat_id: group.chat_id }, true, true, { silentGroups: true });
+    await saveGroupField(groupId, { chats: group.chats, chat_id: group.chat_id }, true, true);
 }
 
 /**
@@ -2525,7 +2449,7 @@ export async function deleteGroupChatByName(groupId, chatName) {
         groupsStore.update(group.id, { chats, chat_id });
     }
 
-    await getCharacters({ silentGroups: true });
+    await getCharacters();
     await eventSource.emit(event_types.GROUP_CHAT_DELETED, chatName);
 }
 
@@ -2599,7 +2523,7 @@ export async function importGroupChat(formData, { refresh = true } = {}) {
             if (group) {
                 group.chats.push(chatId);
                 groupsStore.update(group.id, { chats: group.chats });
-                await saveGroupField(selected_group, { chats: group.chats }, true, true, { silentGroups: true });
+                await saveGroupField(selected_group, { chats: group.chats }, true, true);
                 if (refresh) {
                     await displayPastChats();
                 }

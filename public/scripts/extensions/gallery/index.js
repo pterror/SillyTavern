@@ -7,7 +7,7 @@ import {
 import { getRequestHeaders } from '../../request-headers.js';
 import { eventSource, event_types } from '../../events.js';
 import { selected_group } from '../../group-chats.js';
-import { groups } from '../../group-store.js';
+import { findGroupByName } from '../../group-store.js';
 import { loadFileToDocument, delay, getBase64Async, getSanitizedFilename, saveBase64AsFile, getFileExtension, getVideoThumbnail, clamp } from '../../utils.js';
 import { dragElement } from '../../RossAscends-mods.js';
 import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
@@ -741,7 +741,7 @@ SlashCommandParser.addCommandObject(SlashCommand.fromProps({
 
 async function listGalleryCommand(args) {
     try {
-        let url = args.char ?? (args.group ? groups.find(it => it.name == args.group)?.id : null) ?? selected_group;
+        let url = args.char ?? (args.group ? await findGroupByName(args.group) : null) ?? selected_group;
         if (!args.char && !args.group && getSelectionState().type === 'character') {
             url = getGalleryFolder(getCurrentCharacter());
         }

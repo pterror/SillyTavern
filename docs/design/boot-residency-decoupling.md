@@ -10,19 +10,19 @@ what boot does now, for the next reader. The main design doc is
 
 `firstLoadInit()` (`public/script.js`):
 
-1. `getSettings()` reads `/api/settings/get`. Its answer carries `characterChangesSeq`, the end of the
-   server's change log at that moment, and `startCharacterChangesAt()` (`character-list.js`) records it
-   as the point the page's character sync starts from. Nothing is held before this, so every
-   character the page holds later was read at or after that point.
+1. `getSettings()` reads `/api/settings/get`. Its answer carries `libraryChangesSeq`, the end of the
+   server's change log at that moment, and `startLibraryChangesAt()` (`character-list.js`) records it
+   as the point the page's sync starts from. Nothing is held before this, so every character and
+   group the page holds later was read at or after that point.
 2. Two things then run side by side:
    - `printCharacters(true)` renders the first page of the character list from `/api/characters/query`
      (hash mode). A row the shown-row cache has under the same content key costs nothing more; the
      rest come from one `/api/characters/batch` request with `fields`.
-   - `getCharacters()` brings the held characters up to date (see below), reads the groups, and
-     repaints; `reindexTagAssignments()` follows it.
+   - `getCharacters()` brings the held characters and groups up to date (see below) and repaints;
+     `reindexTagAssignments()` follows it.
 
-There is no whole-library fetch, manifest or diff anywhere on this path. `/api/characters/manifest` and
-the unsearched `/api/characters/all` stream are removed.
+There is no whole-library fetch, manifest or diff anywhere on this path. `/api/characters/manifest`,
+the unsearched `/api/characters/all` stream and `/api/groups/all` are removed.
 
 ## What the page holds
 
@@ -36,15 +36,21 @@ the unsearched `/api/characters/all` stream are removed.
   (no `navigator.storage`, as on plain-http LAN installs), the cache lives in memory only, bounded by
   `MEMORY_ROW_CACHE_BYTES`. Query results with rows are not kept in memory; an unchanged page is
   rebuilt from the kept page (`query-result-cache.js`) and this cache.
-- **Groups:** every group. `getGroups()` reads `/api/groups/all`, which streams all of them, on each
-  `getCharacters()`. This is the one whole-collection read left on the boot and sync path.
+- **Groups:** only the ones it shows in full (the open group chat, the group in the group panel), in
+  `groupsStore`/`groups` (`group-store.js`); the rest are let go two seconds after a group is held or
+  the open group or the group panel changes (`releaseUnshownGroupsSoon()`).
+  `openGroupById()` holds a group it doesn't hold from the `/api/chats/open` answer (`with_group`), so
+  opening one is one request. List, favourites, recent-chat and persona-connection rows are rows, not
+  held groups: query rows, or `getGroupRows()` (`/api/groups/batch`).
 
-## Keeping held characters current
+## Keeping held characters and groups current
 
 The change stream (`/api/characters/changes/stream`) tells the tab that something changed; the tab then
-calls `getCharacters()`. `syncHeldCharacters()` reads `/api/characters/changes` from the recorded
-position, keeps only the ids it holds, re-reads those in full (`characterRepository.readFull()`), and
-drops held characters that were deleted. Changes to characters the page doesn't hold download nothing.
+calls `getCharacters()`. `syncHeld()` reads `/api/characters/changes` from the recorded position (group
+entries carry `type: 'group'`), keeps only the ids it holds, re-reads those (characters in full through
+`characterRepository.readFull()`, groups through `takeInHeldGroupChanges()` and `/api/groups/batch`), and
+drops held ones that were deleted. Changes to characters and groups the page doesn't hold download
+nothing.
 
 ## Search and the list
 
@@ -54,5 +60,4 @@ local array. The group "add member" picker (`printGroupCandidates()`) pages thro
 
 ## Still open
 
-- Groups are read whole (above).
 - Fully offline search (no server reachable) needs a client-side index of the library; none exists.

@@ -98,8 +98,6 @@ async function createGroup(page, name, members) {
         const response = await fetch('/api/groups/create', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ name, members }) });
         if (!response.ok) throw new Error(`group create failed: ${response.status}`);
         const data = await response.json();
-        const { groupsStore } = await import('/scripts/group-chats.js');
-        groupsStore.reportCreated(String(data.id));
         return String(data.id);
     }, { name, members });
 }

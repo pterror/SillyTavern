@@ -11,7 +11,6 @@
 - `MacroValuesFromServer` "a character mention's card shows its creator's notes…": the hover card never opens (fails 8-9 of 10 alone, at c62c7316b and after).
 - `RawActionSendRequestLog` UI cases time out on clicks (a URL autocomplete covers the connect button), more with 4+ workers: the e2e setup leaves state between tests or races the page.
 - Upstream's exports go: 9318f049f restored every `public/scripts` export with upstream's names and signatures for upstream extensions, which aren't supported, and it harms the architecture (synchronous upstream forms kept beside the real ones, index-based parameters, `editGroup`/`saveGroupChat` back). Every export that exists only for upstream, and every compat form it forced, is removed.
-- Groups are still downloaded whole: every `getCharacters()` fetches `/api/groups/all` (`public/scripts/group-chats.js:932`, `src/endpoints/groups.js:327`); the page must hold only the groups it shows, as it now does for characters.
 - The character list's creator-notes prefix is 0 (`LIST_CREATOR_NOTES_CHARS`, `public/scripts/hash-utils.js`) until the list cards get a maximum width or the owner gives a length.
 - Smaller thumbnails (75% webp or lower, 100-200px max), cached by the client, served at the image data's hash.
 - Tags on bookmarks, messages, greetings. Favourite tags, not a binary favourite (e-hentai's model as prior art). The tag manager is awkward and out of the way.

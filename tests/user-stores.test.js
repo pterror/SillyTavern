@@ -127,7 +127,8 @@ describe('user stores', () => {
         expect((await s.lib.tags.tagIdsFor(['Dee.png']))['Dee.png'].sort()).toEqual([...seeded.tagIds].sort());
         expect((await s.lib.tags.seedCardTags('Dee.png', { onlyExisting: true })).tagIds).toEqual(seeded.tagIds);
         const all = await s.lib.changes(0, 1000);
-        expect(all.changes.filter(c => c.op === 'upsert').map(c => c.id).sort()).toEqual(['Alice.png', 'Bob.png', 'Cara.png', 'Dee.png']);
+        expect(all.changes.filter(c => c.op === 'upsert' && c.type !== 'group').map(c => c.id).sort()).toEqual(['Alice.png', 'Bob.png', 'Cara.png', 'Dee.png']);
+        expect(all.changes.filter(c => c.op === 'upsert' && c.type === 'group').map(c => c.id).sort()).toEqual(['1700000000001', '1700000000002']);
         expect(all).toMatchObject({ truncated: false, hasMore: false });
         await s.lib.setFav(0, 'Bob.png', false);
         await s.lib.deleteEntity(0, 'Cara.png');

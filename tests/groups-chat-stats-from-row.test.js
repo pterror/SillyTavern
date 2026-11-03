@@ -61,7 +61,7 @@ async function writeGroupWithChatFile(id, name, chatId, chatBytes) {
 }
 
 describe('the group routes take chat_size and date_last_chat from the group\'s chats, not the group chat files', () => {
-    test('/groups/all and the groups search', async () => {
+    test('the groups search', async () => {
         await writeGroupWithChatFile('g1', 'Quuxbrook', 'c1', 4321);
         await fixture.saveBranch(user.store, { group: 'g1' }, 'c1', [{}, { name: 'User', is_user: true, mes: 'hello there', send_date: 5678, extra: {} }]);
         const tree = await fixture.treeOf(user.store, { group: 'g1' });
@@ -77,9 +77,6 @@ describe('the group routes take chat_size and date_last_chat from the group\'s c
             const group = groups.find(g => g.id === id);
             return [id, group?.chat_size, group?.date_last_chat];
         });
-
-        const all = await (await fetch(`${baseUrl}/api/groups/all`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).json();
-        expect(stats(all)).toEqual(expected);
 
         const searched = await (await fetch(`${baseUrl}/api/characters/query`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },

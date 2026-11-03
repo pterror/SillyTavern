@@ -67,8 +67,8 @@ async function stored(id) {
 }
 
 async function storedIds() {
-    const all = await post('/api/groups/all', {});
-    return all.body.map(g => g.id).sort();
+    const page = await user.store.lib.query({ sortField: 'name', limit: 100, wantRows: false, wantTotal: false, wantHashes: true, groupsOnly: true });
+    return /** @type {{ id: string }[]} */ (page.hashRows).map(row => row.id).sort();
 }
 
 async function writeLegacyGroup(id = 777, extra = {}) {
@@ -199,12 +199,12 @@ describe('every group route accepts a digit string and an integer number', () =>
 });
 
 describe('a group with a numeric id', () => {
-    test('/api/groups/all and the stored group have the id as a string', async () => {
+    test('/api/groups/batch and the stored group have the id as a string', async () => {
         await writeLegacyGroup(777);
         expect((await stored(777)).id).toBe('777');
-        const { status, body } = await post('/api/groups/all', {});
+        const { status, body } = await post('/api/groups/batch', { ids: ['777'] });
         expect(status).toBe(200);
-        expect(body.find(g => g.name === 'Legacy 777')).toMatchObject({ id: '777' });
+        expect(body).toEqual([expect.objectContaining({ id: '777', name: 'Legacy 777' })]);
     });
 
     test('getGroupsByIds()', async () => {

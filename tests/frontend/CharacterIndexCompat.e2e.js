@@ -116,9 +116,7 @@ async function openGroupOf(page, avatars) {
         const response = await fetch('/api/groups/create', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ name, members }) });
         if (!response.ok) throw new Error(`group create failed: ${response.status}`);
         const id = String((await response.json()).id);
-        const { groupsStore, openGroupById } = await import('/scripts/group-chats.js');
-        await ctx.getCharacters({ silentGroups: true });
-        groupsStore.reportCreated(id);
+        const { openGroupById } = await import('/scripts/group-chats.js');
         await openGroupById(id);
         // @ts-ignore
         (window.__idxGroups ??= []).push(id);
@@ -544,9 +542,6 @@ test.describe('#10 Generate force_chid', () => {
             const response = await fetch('/api/groups/create', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ name, members }) });
             if (!response.ok) throw new Error(`group create failed: ${response.status}`);
             const data = await response.json();
-            const { groupsStore } = await import('/scripts/group-chats.js');
-            await ctx.getCharacters({ silentGroups: true });
-            groupsStore.reportCreated(String(data.id));
             return String(data.id);
         }, { members: [first, second], name: `IdxGroup-${stamp()}` });
         await page.evaluate(async (groupId) => {
@@ -1123,9 +1118,6 @@ test.describe('emitted indices: CHARACTER_EDITOR_OPENED (step 12)', () => {
             const response = await fetch('/api/groups/create', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ name, members }) });
             if (!response.ok) throw new Error(`group create failed: ${response.status}`);
             const data = await response.json();
-            const { groupsStore } = await import('/scripts/group-chats.js');
-            await ctx.getCharacters({ silentGroups: true });
-            groupsStore.reportCreated(String(data.id));
             return String(data.id);
         }, { members: [first, second], name: `IdxEditorEventPeek-${stamp()}` });
         try {

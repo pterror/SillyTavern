@@ -172,4 +172,22 @@ describe('POST /api/characters/changes', () => {
         const body = await response.json();
         expect(body.changes).toEqual([{ id: 'Legacy.png', op: 'upsert', fields: null }]);
     });
+
+    test('a group written or deleted comes back marked as a group, apart from a character', async () => {
+        await seedCharacter('Alice.png');
+        await user.store.lib.writeGroup({ id: '100', name: 'Party', members: ['Alice.png'] });
+        await user.store.lib.writeGroup({ id: '200', name: 'Other', members: [] });
+        const afterCreate = await (await postJson('/api/characters/changes', { sinceSeq: 0 })).json();
+        expect(afterCreate.changes).toEqual([
+            { id: 'Alice.png', op: 'upsert', fields: null },
+            { id: '100', op: 'upsert', type: 'group' },
+            { id: '200', op: 'upsert', type: 'group' },
+        ]);
+
+        await user.store.lib.updateGroup('100', group => { group.name = 'Renamed'; });
+        await user.store.lib.deleteEntity(TYPE.group, '200');
+
+        const body = await (await postJson('/api/characters/changes', { sinceSeq: afterCreate.seq })).json();
+        expect(body.changes).toEqual([{ id: '100', op: 'upsert', type: 'group' }, { id: '200', op: 'delete', type: 'group' }]);
+    });
 });

@@ -59,7 +59,8 @@ jest.unstable_mockModule('../public/scripts/character-store.js', async () => {
         this_avatar: undefined,
     };
 });
-jest.unstable_mockModule('../public/scripts/group-chats.js', () => ({ groups: [], getGroups: async () => {}, getGroupBlock: noop }));
+const takeInHeldGroupChanges = jest.fn(async () => {});
+jest.unstable_mockModule('../public/scripts/group-chats.js', () => ({ getGroupBlock: noop, takeInHeldGroupChanges }));
 jest.unstable_mockModule('../public/scripts/power-user.js', () => ({ power_user: {}, sortEntitiesList: noop }));
 jest.unstable_mockModule('../public/scripts/utils.js', () => ({
     debounce: fn => fn,
@@ -126,8 +127,10 @@ globalThis.toastr = { error: toastrError, warning: noop, info: noop, success: no
 
 const realFetch = globalThis.fetch;
 
-describe('the page syncs only the characters it holds', () => {
+describe('the page syncs only the characters and groups it holds', () => {
     let fixture;
+    /** @type {typeof import('../public/scripts/group-store.js')} */
+    let groupStore;
     let user;
     let characterList;
     let server;
@@ -143,7 +146,9 @@ describe('the page syncs only the characters it holds', () => {
 
         fixture = await import('./converted-user.fixture.js');
         const { router } = await import('../src/endpoints/characters.js');
+        const { router: groupsRouter } = await import('../src/endpoints/groups.js');
         const settings = await import('../src/endpoints/settings.js');
+        groupStore = await import('../public/scripts/group-store.js');
 
         process.chdir(path.resolve(originalCwd, '..'));
 
@@ -158,6 +163,7 @@ describe('the page syncs only the characters it holds', () => {
             next();
         });
         app.use('/api/characters', router);
+        app.use('/api/groups', groupsRouter);
         app.use('/api/settings', settings.router);
         server = app.listen(0, '127.0.0.1');
         await new Promise(resolve => server.once('listening', resolve));
@@ -175,8 +181,10 @@ describe('the page syncs only the characters it holds', () => {
         globalThis.DATA_ROOT = user.dataRoot;
         for (const records of localforageStores.values()) records.clear();
         residentCharacters.length = 0;
+        for (const group of [...groupStore.groups]) groupStore.groupsStore.remove(group.id);
         toastrError.mockClear();
         readFull.mockClear();
+        takeInHeldGroupChanges.mockClear();
         requested = [];
         globalThis.fetch = (url, init) => {
             requested.push(String(url));
@@ -211,13 +219,13 @@ describe('the page syncs only the characters it holds', () => {
 
     async function startFromSettings() {
         const settings = await (await postJson('/api/settings/get', {})).json();
-        expect(typeof settings.characterChangesSeq).toBe('number');
-        characterList.startCharacterChangesAt(settings.characterChangesSeq);
+        expect(typeof settings.libraryChangesSeq).toBe('number');
+        characterList.startLibraryChangesAt(settings.libraryChangesSeq);
     }
 
     async function sync() {
         requested = [];
-        await characterList.getCharacters({ silent: true, silentGroups: true, skipPrint: true });
+        await characterList.getCharacters({ silent: true, skipPrint: true });
         expect(toastrError).not.toHaveBeenCalled();
     }
 
@@ -226,6 +234,19 @@ describe('the page syncs only the characters it holds', () => {
     async function hold(...avatarKeys) {
         for (const [, record] of await readFullFromServer(avatarKeys)) store.create(record);
     }
+
+    async function createGroup(name) {
+        await new Promise(resolve => setTimeout(resolve, 2));
+        const group = await (await postJson('/api/groups/create', { name, members: [] })).json();
+        return String(group.id);
+    }
+
+    async function holdGroup(id) {
+        const [group] = await (await postJson('/api/groups/batch', { ids: [id] })).json();
+        groupStore.groupsStore.create(group);
+    }
+
+    const handedOn = () => takeInHeldGroupChanges.mock.calls.map(([upserted, deleted]) => [[...upserted].sort(), [...deleted].sort()]);
 
     test('a page that has not read its settings asks for nothing', async () => {
         await createCharacter('A');
@@ -311,6 +332,40 @@ describe('the page syncs only the characters it holds', () => {
         await startFromSettings();
         await sync();
         expect(store.get(a).fav).toBe(true);
+    });
+
+    test('a first sync on a library with groups downloads none of them', async () => {
+        await createGroup('G1');
+        await createGroup('G2');
+        await startFromSettings();
+        await sync();
+        expect(requested).toEqual(['/api/characters/changes']);
+        expect(handedOn()).toEqual([[[], []]]);
+        expect(groupStore.groups).toEqual([]);
+    });
+
+    test('a held group changed or deleted after the settings were read is handed on; a group the page does not hold is not', async () => {
+        const g1 = await createGroup('G1');
+        const g2 = await createGroup('G2');
+        const g3 = await createGroup('G3');
+        await startFromSettings();
+        await holdGroup(g1);
+        await holdGroup(g2);
+
+        await postJson('/api/groups/save-partial', { id: g1, props: { name: 'G1 renamed' } });
+        await postJson('/api/groups/delete', { id: g2 });
+        await postJson('/api/groups/save-partial', { id: g3, props: { name: 'G3 renamed' } });
+        await createGroup('G4');
+        await sync();
+
+        expect(requested).toEqual(['/api/characters/changes']);
+        expect(handedOn()).toEqual([[[g1], [g2]]]);
+    });
+
+    test('the whole group library can no longer be asked for', async () => {
+        await createGroup('G1');
+        const response = await realFetch(`${baseUrl}/api/groups/all`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        expect(response.status).toBe(404);
     });
 
     test('/batch with full answers whole cards with their edit hashes, a bounded number at a time', async () => {

@@ -89,11 +89,7 @@ test('a group chat with no messages shows its greetings unsaved, and stores them
         const context = SillyTavern.getContext();
         const response = await fetch('/api/groups/create', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ name: `Open group ${Date.now()}`, members }) });
         if (!response.ok) throw new Error(`group create failed: ${response.status}`);
-        const id = String((await response.json()).id);
-        const { groupsStore } = await import('/scripts/group-chats.js');
-        await context.getCharacters({ silentGroups: true });
-        groupsStore.reportCreated(id);
-        return id;
+        return String((await response.json()).id);
     }, [first, second]);
 
     const seen = await requestsDuring(page, async () => {

@@ -19,6 +19,7 @@ import { getCharacters } from './character-list.js';
 import { chat_metadata, chat } from './chat-state.js';
 import { setActiveGroup } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
+import { holdGroup } from './group-store.js';
 import {
     DEFAULT_AUTO_MODE_DELAY,
     group_activation_strategy,
@@ -404,7 +405,7 @@ export async function convertSoloToGroupChat() {
     }
 
     /** @type {Group} */
-    const group = await createGroupResponse.json();
+    const group = holdGroup(await createGroupResponse.json());
 
     // Convert tags list and assign to group
     createTagMapFromList('#tagList', group.id);

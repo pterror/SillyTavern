@@ -512,9 +512,7 @@ test.describe('persona switch redraws message 0', () => {
             const ctx = SillyTavern.getContext();
             const response = await fetch('/api/groups/create', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ name, members: [avatar] }) });
             const data = await response.json();
-            const { groupsStore, openGroupById } = await import('/scripts/group-chats.js');
-            await ctx.getCharacters();
-            groupsStore.reportCreated(String(data.id));
+            const { openGroupById } = await import('/scripts/group-chats.js');
             await openGroupById(String(data.id));
             return String(data.id);
         }, { avatar, name: `PersonaGroup-${s}` });

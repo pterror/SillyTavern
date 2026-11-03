@@ -8,7 +8,8 @@ const {
     exposedCharacters, exposedGroups, setExposedGroupId, setCharacterId, onExposedEntitiesChange, holdCharacter,
     setRecentCharacters, getRecentCharacters,
 } = await import('../public/scripts/character-store.js');
-const { setGroups, rebuildGroupsStoreCore } = await import('../public/scripts/group-store.js');
+const { groups, groupsStore, keepHeldGroups } = await import('../public/scripts/group-store.js');
+keepHeldGroups(() => groups.map(group => group.id));
 
 const alpha = { avatar: 'alpha.png', name: 'Alpha' };
 const digitStem = { avatar: '3.png', name: 'Digit stem' };
@@ -19,8 +20,9 @@ const party = { id: 'party', name: 'Party', members: ['alpha.png', '3.png', 'gam
 
 /** @param {object[]} groupList */
 function loadGroups(groupList) {
-    setGroups(groupList);
-    return rebuildGroupsStoreCore();
+    for (const group of [...groups]) groupsStore.remove(group.id);
+    for (const group of groupList) groupsStore.create(group);
+    return groupsStore;
 }
 
 beforeEach(() => {
@@ -244,11 +246,14 @@ describe('what extensions are shown', () => {
         expect(exposedCharacters).toEqual([gamma]);
     });
 
-    test('a rebuilt groups store is followed', async () => {
-        const rebuiltParty = { ...party, members: ['delta.png'] };
-        loadGroups([rebuiltParty]);
+    test('the open group is shown once it is held', async () => {
+        loadGroups([]);
+        setExposedGroupId('party');
+        expect(exposedGroups).toEqual([]);
+        const heldParty = { ...party, members: ['delta.png'] };
+        groupsStore.create(heldParty);
         await Promise.resolve();
-        expect(exposedGroups).toEqual([rebuiltParty]);
+        expect(exposedGroups).toEqual([heldParty]);
         expect(exposedCharacters).toEqual([delta]);
     });
 
