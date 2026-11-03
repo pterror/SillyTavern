@@ -4,6 +4,8 @@ import { normalizeTagIds } from './hash-utils.js';
 
 export const ROW_CACHE_QUOTA_SHARE = 0.1;
 
+export const MEMORY_ROW_CACHE_BYTES = 16 * 1024 * 1024;
+
 const EVICT_TO = 0.9;
 const TOTAL_KEY = '__total__';
 
@@ -15,6 +17,70 @@ const touchedThisSession = new Set();
 
 /** @type {Promise<number | null> | null} */
 let budgetPromise = null;
+
+/** @type {Map<string, { rows: Map<string, { row: Record<string, any>, size: number }>, total: number }>} */
+const memoryByHandle = new Map();
+
+function memory() {
+    const handle = getCurrentUserHandle();
+    let found = memoryByHandle.get(handle);
+    if (!found) {
+        found = { rows: new Map(), total: 0 };
+        memoryByHandle.set(handle, found);
+    }
+    return found;
+}
+
+/**
+ * @param {string[]} keys
+ * @returns {Map<string, Record<string, any>>}
+ */
+function readMemory(keys) {
+    const { rows } = memory();
+    /** @type {Map<string, Record<string, any>>} */
+    const found = new Map();
+    for (const key of keys) {
+        const item = rows.get(key);
+        if (!item) continue;
+        rows.delete(key);
+        rows.set(key, item);
+        found.set(key, structuredClone(item.row));
+    }
+    return found;
+}
+
+/**
+ * @param {{ key: string, stored: Record<string, any>, size: number }[]} sized
+ */
+function keepMemory(sized) {
+    const kept = memory();
+    for (const { key, stored, size } of sized) {
+        const before = kept.rows.get(key);
+        if (before) {
+            kept.rows.delete(key);
+            kept.total -= before.size;
+        }
+        kept.rows.set(key, { row: stored, size });
+        kept.total += size;
+    }
+    if (kept.total <= MEMORY_ROW_CACHE_BYTES) return;
+    const target = Math.floor(MEMORY_ROW_CACHE_BYTES * EVICT_TO);
+    for (const [key, item] of kept.rows) {
+        if (kept.total <= target) break;
+        kept.rows.delete(key);
+        kept.total -= item.size;
+    }
+}
+
+/**
+ * @param {{ key: string, row: Record<string, any> }[]} entries
+ */
+function sizedRows(entries) {
+    return entries.map(({ key, row }) => {
+        const stored = structuredClone({ ...row, tag_ids: normalizeTagIds(row.tag_ids) });
+        return { key, stored, size: JSON.stringify(stored).length };
+    });
+}
 
 export function getCacheUserHandle() {
     return getCurrentUserHandle();
@@ -43,7 +109,7 @@ function budget() {
             const { quota } = await navigator.storage.estimate();
             return typeof quota === 'number' && quota > 0 ? Math.floor(quota * ROW_CACHE_QUOTA_SHARE) : null;
         } catch (error) {
-            console.warn('[row-cache] the storage quota could not be read; shown rows are not kept:', error);
+            console.warn('[row-cache] the storage quota could not be read; shown rows are kept in memory only:', error);
             return null;
         }
     })();
@@ -82,7 +148,8 @@ export function groupRowKey(hashRow) {
 export async function readRows(keys) {
     /** @type {Map<string, Record<string, any>>} */
     const found = new Map();
-    if (keys.length === 0 || await budget() === null) return found;
+    if (keys.length === 0) return found;
+    if (await budget() === null) return readMemory(keys);
     const { rows } = stores();
     await Promise.all(keys.map(async (key) => {
         try {
@@ -118,15 +185,15 @@ async function touch(keys) {
 export async function keepRows(entries) {
     if (entries.length === 0) return;
     const limit = await budget();
-    if (limit === null) return;
+    if (limit === null) {
+        keepMemory(sizedRows(entries));
+        return;
+    }
     const { rows, meta } = stores();
     const now = Date.now();
     try {
         await locked(async () => {
-            const sized = entries.map(({ key, row }) => {
-                const stored = { ...row, tag_ids: normalizeTagIds(row.tag_ids) };
-                return { key, stored, size: JSON.stringify(stored).length };
-            });
+            const sized = sizedRows(entries);
             const before = await Promise.all(sized.map(({ key }) => meta.getItem(key)));
             await Promise.all(sized.map(async ({ key, stored, size }) => {
                 await rows.setItem(key, stored);

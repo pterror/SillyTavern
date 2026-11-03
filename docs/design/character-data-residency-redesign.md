@@ -1391,7 +1391,8 @@ The approach, given all that:
 
 **Superseded:** the shown-row cache (`character-cache.js`) is a least-recently-used cache bounded by
 `ROW_CACHE_QUOTA_SHARE` of the quota `navigator.storage.estimate()` reports, keyed by each row's content
-identity, and filled only with rows the page showed. Where no quota is reported, nothing is kept.
+identity, and filled only with rows the page showed. Where no quota is reported, it is kept in memory
+only, bounded by `MEMORY_ROW_CACHE_BYTES`.
 
 Frecency, evaluated against a byte budget rather than a row count:
 
