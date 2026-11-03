@@ -533,7 +533,9 @@ router.post('/generate', withGenerationStop(async function (request, response) {
     let tokenCountRows = null;
     const storeTokenCountRows = () => {
         if (!tokenCountRows) return;
-        writeBack(request.user.directories, tokenCountRows)
+        const rows = tokenCountRows;
+        Promise.resolve(pendingAssistantPersist?.itemization).catch(() => {})
+            .then(() => writeBack(request.user.directories, rows))
             .catch(error => console.error('Failed to store token counts:', error));
     };
 

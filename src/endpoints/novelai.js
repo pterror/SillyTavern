@@ -447,7 +447,9 @@ router.post('/generate', withGenerationStop(async function (req, res) {
         const url = req.body.streaming ? `${baseURL}/ai/generate-stream` : `${baseURL}/ai/generate`;
         const response = await fetch(url, { method: 'POST', ...args });
         if (tokenCountRows) {
-            writeBack(req.user.directories, tokenCountRows)
+            const rows = tokenCountRows;
+            Promise.resolve(pendingAssistantPersist?.itemization).catch(() => {})
+                .then(() => writeBack(req.user.directories, rows))
                 .catch(error => console.error('Failed to store token counts:', error));
         }
 
