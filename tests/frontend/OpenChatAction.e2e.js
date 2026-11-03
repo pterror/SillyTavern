@@ -32,7 +32,7 @@ async function requestsDuring(page, run) {
     const seen = [];
     const listener = (/** @type {import('@playwright/test').Request} */ request) => {
         const path = new URL(request.url()).pathname;
-        if (/^\/api\/(chats|itemized-prompts|settings|groups)\//.test(path) || path === '/api/characters/chat' || path === '/api/characters/chats') {
+        if (/^\/api\/(chats|itemized-prompts|settings|groups|tokenizers|sprites|avatars|macros)\//.test(path) || ['/api/characters/chat', '/api/characters/chats', '/api/characters/get'].includes(path)) {
             if (path === '/api/settings/save-partial' && !/active_(character|group)/.test(request.postData() ?? '')) return;
             seen.push(path);
         }
@@ -71,10 +71,9 @@ test('opening a character is one request and writes nothing but what was opened'
         const context = SillyTavern.getContext();
         const settings = await (await fetch('/api/settings/get', { method: 'POST', headers: context.getRequestHeaders(), body: '{}' })).json();
         const parsed = typeof settings.settings === 'string' ? JSON.parse(settings.settings) : settings.settings;
-        const { tabSession } = await import('/scripts/tab-session.js');
-        return { chat: context.characters.find(c => c.avatar === avatar)?.chat ?? null, session: tabSession(), active: parsed.active_character };
+        return { chat: context.characters.find(c => c.avatar === avatar)?.chat ?? null, current: context.getCurrentChatId(), active: parsed.active_character };
     }, avatar);
-    expect(state).toEqual({ chat: expect.stringMatching(new RegExp(`^s${state.session}\\.\\d+$`)), session: expect.stringMatching(/^[0-9a-f-]{36}$/), active: avatar });
+    expect(state).toEqual({ chat: expect.stringMatching(new RegExp(`^Open-${stamp} - \\d{4}-\\d{2}-\\d{2}@\\d{2}h\\d{2}m\\d{2}s\\d{3}ms$`)), current: state.chat, active: avatar });
 });
 
 test('a group chat with no messages shows its greetings unsaved, and stores them before the first message', async ({ page }) => {

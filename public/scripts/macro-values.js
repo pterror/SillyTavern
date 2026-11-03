@@ -11,6 +11,11 @@ export function setPageMacroFacts(facts) {
     pageMacroFacts = facts;
 }
 
+/** @returns {import('../../src/macro-facts.js').PageMacroFacts} */
+export function currentPageMacroFacts() {
+    return pageMacroFacts();
+}
+
 /**
  * @typedef {object} MacroScope
  * @property {string} [avatar_url]

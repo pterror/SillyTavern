@@ -19,7 +19,10 @@ import cacheBuster from '../middleware/cacheBuster.js';
 
 export const router = express.Router();
 
-router.post('/get', async function (request, response) {
+/**
+ * @param {import('express').Request} request
+ */
+export async function personaImagesAnswer(request) {
     const { lib } = await requestStore(request);
     const images = (await imagesOf(lib, TYPE.personaImage)).sort((a, b) => Intl.Collator().compare(a.key, b.key));
     /** @type {Record<string, string>} */
@@ -36,7 +39,11 @@ router.post('/get', async function (request, response) {
         if (crop) crops[image.key] = crop;
     }
     const refs = Object.fromEntries(images.map(i => [i.key, avatarRefString(TYPE.personaImage, i.key)]));
-    response.send({ avatars: images.map(i => i.key), thumbnails, thumbnails_still: stills, crops, refs });
+    return { avatars: images.map(i => i.key), thumbnails, thumbnails_still: stills, crops, refs };
+}
+
+router.post('/get', async function (request, response) {
+    response.send(await personaImagesAnswer(request));
 });
 
 router.post('/delete', getFileNameValidationFunction('avatar'), async function (request, response) {

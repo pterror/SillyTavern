@@ -2,6 +2,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import mime from 'mime-types';
+
 import { isPathUnderParent } from './util.js';
 
 export const ASSET_VERSION_PARAM = 'stv';
@@ -15,6 +17,7 @@ const HASHED_EXTENSIONS = new Set([
     '.woff', '.woff2', '.ttf', '.otf', '.eot',
     '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ico', '.avif',
 ]);
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ico', '.avif']);
 const MODULE_EXTENSIONS = new Set(['.js', '.mjs']);
 const RUNTIME_EXTENSIONS = new Set(['.css', '.html', '.json', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ico', '.avif']);
 
@@ -150,10 +153,13 @@ export class FrontendAssets {
         const extension = path.extname(filePath).toLowerCase();
         const patterns = REWRITE_PATTERNS[extension];
         const referenceBase = extension === '.html' ? '/' : urlPath;
+        const carriesImages = extension === '.css' && this.#isShipped(filePath);
         visiting.add(filePath);
 
         /** @type {Map<string, string>} */
         const rewrites = new Map();
+        /** @type {[string, string][]} */
+        const childHashes = [];
         for (const pattern of patterns) {
             for (const match of text.matchAll(pattern)) {
                 const reference = match[2].trim();
@@ -174,12 +180,15 @@ export class FrontendAssets {
                 } else {
                     childHash = await this.fileHash(childFile);
                 }
-                rewrites.set(reference, withVersion(reference, childHash));
+                childHashes.push([reference, childHash]);
+                rewrites.set(reference, carriesImages && IMAGE_EXTENSIONS.has(childExtension) && this.#isShipped(childFile)
+                    ? await dataUrl(childFile)
+                    : withVersion(reference, childHash));
             }
         }
         visiting.delete(filePath);
 
-        const children = JSON.stringify(Array.from(rewrites.entries()));
+        const children = JSON.stringify(childHashes);
         const cacheKey = `${filePath}\n${urlPath}`;
         const known = this.rewrittenBodies.get(cacheKey);
         if (known && known.mtimeMs === stat.mtimeMs && known.size === stat.size && known.children === children) {
@@ -296,6 +305,14 @@ export class FrontendAssets {
 
     /**
      * @param {string} filePath
+     * @returns {boolean}
+     */
+    #isShipped(filePath) {
+        return isPathUnderParent(this.options.publicDirectory, path.resolve(filePath));
+    }
+
+    /**
+     * @param {string} filePath
      * @param {fs.Stats} stat
      * @returns {Promise<string>}
      */
@@ -357,6 +374,15 @@ export function frontendAssetMiddleware(assets) {
             return next(error);
         }
     };
+}
+
+/**
+ * @param {string} filePath
+ * @returns {Promise<string>}
+ */
+async function dataUrl(filePath) {
+    const type = mime.lookup(filePath) || 'application/octet-stream';
+    return `data:${type};base64,${(await fs.promises.readFile(filePath)).toString('base64')}`;
 }
 
 /**

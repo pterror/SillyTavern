@@ -96,19 +96,29 @@ describe('FrontendAssets', () => {
     test('css references carry their hashes, nested @import included, and a changed font changes every css above it', async () => {
         const assets = makeAssets();
         const font = await assets.version('/fonts/f.woff2', directories());
-        const image = await assets.version('/img/bg.png', directories());
         const child = await assets.rewritten('/css/child.css', path.join(publicDirectory, 'css/child.css'), directories());
         expect(child.body).toContain(`url(../fonts/f.woff2?${ASSET_VERSION_PARAM}=${font})`);
 
         const parent = await assets.rewritten('/style.css', path.join(publicDirectory, 'style.css'), directories());
         expect(parent.body).toContain(`@import url(css/child.css?${ASSET_VERSION_PARAM}=${child.hash})`);
-        expect(parent.body).toContain(`url("img/bg.png?${ASSET_VERSION_PARAM}=${image}")`);
         expect(parent.body).toContain('url(data:image/png;base64,AAAA)');
         expect(parent.body).toContain('url(fonts/f.eot?#iefix)');
 
         write(path.join(publicDirectory, 'fonts/f.woff2'), 'font-2');
         const parentAfter = await assets.rewritten('/style.css', path.join(publicDirectory, 'style.css'), directories());
         expect(parentAfter.hash).not.toBe(parent.hash);
+    });
+
+    test('a css we ship carries the images we ship in itself, so showing what it styles fetches nothing', async () => {
+        const assets = makeAssets();
+        const css = await assets.rewritten('/style.css', path.join(publicDirectory, 'style.css'), directories());
+        expect(css.body).toContain(`url("data:image/png;base64,${Buffer.from(fs.readFileSync(path.join(publicDirectory, 'img/bg.png'))).toString('base64')}")`);
+        expect(css.body).not.toContain('img/bg.png');
+
+        write(path.join(publicDirectory, 'img/bg.png'), 'png-2');
+        const after = await assets.rewritten('/style.css', path.join(publicDirectory, 'style.css'), directories());
+        expect(after.body).toContain(`url("data:image/png;base64,${Buffer.from('png-2').toString('base64')}")`);
+        expect(after.hash).not.toBe(css.hash);
     });
 
     test('an extension css resolves its references from its own url', async () => {

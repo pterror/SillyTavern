@@ -14,6 +14,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
 const { router } = await import('./chats.js');
+const { router: tokenizersRouter } = await import('./tokenizers-current.js');
+const { router: avatarsRouter } = await import('./avatars.js');
+const { router: spritesRouter } = await import('./sprites.js');
 const { writeAllSettings, readSettingsAtPaths } = await import('../settings-store.js');
 const { newSessionKey, chatNameAt, sessionTime } = await import('../chat-engine.js');
 const { SESSION_HEADER } = await import('../request-session.js');
@@ -26,14 +29,14 @@ writeAllSettings(directories, { username: 'Tester' });
 
 const baseImage = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'img', 'ai4.png'));
 
-async function writeCharacter(avatar, name, firstMes) {
+async function writeCharacter(avatar, name, firstMes, { description = '', alternateGreetings = [] } = {}) {
     const card = {
-        spec: 'chara_card_v2', spec_version: '2.0', name, description: '', personality: '', scenario: '',
+        spec: 'chara_card_v2', spec_version: '2.0', name, description, personality: '', scenario: '',
         first_mes: firstMes, mes_example: '', avatar,
         data: {
-            name, description: '', personality: '', scenario: '', first_mes: firstMes, mes_example: '',
+            name, description, personality: '', scenario: '', first_mes: firstMes, mes_example: '',
             system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '',
-            alternate_greetings: [], extensions: {},
+            alternate_greetings: alternateGreetings, extensions: {},
         },
     };
     const cardJson = JSON.stringify(card);
@@ -47,6 +50,9 @@ app.use((req, _res, next) => {
     next();
 });
 app.use('/api/chats', router);
+app.use('/api/tokenizers', tokenizersRouter);
+app.use('/api/avatars', avatarsRouter);
+app.use('/api/sprites', spritesRouter);
 const server = app.listen(0, '127.0.0.1');
 await new Promise(resolve => server.once('listening', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
@@ -183,4 +189,55 @@ test('a group opened by a page that does not hold it answers the whole group too
 test('unknown owners are 404', async () => {
     assert.equal((await open({ avatar_url: 'Nobody.png' })).status, 404);
     assert.equal((await open({ group_id: 'nope' })).status, 404);
+});
+
+/**
+ * @param {string} route
+ * @param {'GET'|'POST'} method
+ * @param {object} [body]
+ */
+async function answerOf(route, method, body) {
+    const res = await fetch(`${base}${route}`, { method, headers: { 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    assert.equal(res.status, 200, route);
+    return res.json();
+}
+
+test('a character opened by a page that does not hold it answers the whole card too, and only when asked', async () => {
+    await writeCharacter('Card.png', 'Card', 'Hi from Card.', { description: 'About Card.' });
+    const asked = await open({ avatar_url: 'Card.png', with_character: true });
+    assert.equal(asked.status, 200);
+    assert.equal(asked.body.character.avatar, 'Card.png');
+    assert.equal(asked.body.character.description, 'About Card.');
+    assert.equal(typeof asked.body.character._fieldsHash, 'number');
+    assert.equal(typeof asked.body.character._bodyHash, 'number');
+    assert.equal((await open({ avatar_url: 'Card.png' })).body.character, undefined);
+});
+
+test('an open answers each part the page asked for, the same as the part\'s own route would, and no other', async () => {
+    await writeCharacter('Parts.png', 'Parts', 'Hello, {{user}}.', { description: 'I am {{char}}.', alternateGreetings: ['Second\r\ngreeting.'] });
+    fs.mkdirSync(path.join(directories.characters, 'Parts'), { recursive: true });
+    fs.writeFileSync(path.join(directories.characters, 'Parts', 'joy.png'), baseImage);
+    const tokenizer = { api: 'textgenerationwebui', type: 'ooba', url: '', model: '', tokenizerSetting: 1 };
+
+    const opened = await open({ avatar_url: 'Parts.png', parts: { card_token_counts: { tokenizer, macro_facts: {} }, personas: {}, sprites: {}, unknown: {} } });
+    assert.equal(opened.status, 200);
+    const { parts } = opened.body;
+    assert.deepEqual(Object.keys(parts).sort(), ['card_token_counts', 'personas', 'sprites']);
+
+    const texts = ['Parts', 'I am Parts.', '', '', '', '', '', '', 'Hello, Tester.', 'Second\ngreeting.'];
+    const counted = await answerOf('/api/tokenizers/current/count', 'POST', { state: tokenizer, texts, padding: 0 });
+    assert.deepEqual(parts.card_token_counts.counts, counted.counts);
+    assert.deepEqual(parts.card_token_counts.state, tokenizer);
+    assert.equal(parts.card_token_counts.avatar, 'Parts.png');
+    assert.deepEqual(parts.card_token_counts.tokenizer, counted.tokenizer);
+
+    assert.deepEqual(parts.personas, await answerOf('/api/avatars/get', 'POST'));
+    assert.deepEqual(parts.sprites, { folders: { Parts: await answerOf('/api/sprites/get?name=Parts', 'GET') } });
+    assert.equal(parts.sprites.folders.Parts[0].label, 'joy');
+
+    await user.store.lib.writeGroup({ id: 'g3', name: 'Trio', members: ['Parts.png', 'Rex.png'], disabled_members: [] });
+    const group = await open({ group_id: 'g3', parts: { card_token_counts: { tokenizer }, sprites: {} } });
+    assert.deepEqual(Object.keys(group.body.parts), ['sprites'], 'a group\'s open has no card to count');
+    assert.deepEqual(group.body.parts.sprites.folders, { Parts: parts.sprites.folders.Parts, Rex: [] }, 'every member\'s folder');
+    assert.deepEqual((await open({ avatar_url: 'Parts.png' })).body.parts, {});
 });

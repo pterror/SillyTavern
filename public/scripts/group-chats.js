@@ -81,7 +81,7 @@ import {
     ensureMessageMediaIsArray,
     requestChatOpen,
     takeChatOpenAnswer,
-    chatOpenSendKeys,
+    chatOpenAsk,
     _snapshotMessages,
 } from '../script.js';
 import { getCharacters, queryWithSortFallback } from './character-list.js';
@@ -2310,7 +2310,7 @@ export async function createNewGroupChat(groupId, { replace = null } = {}) {
     const response = await fetch('/api/chats/new', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ group_id: group.id, ...(replace ? { replace } : {}), send_keys: chatOpenSendKeys({ group_id: group.id }) }),
+        body: JSON.stringify({ group_id: group.id, ...(replace ? { replace } : {}), ...chatOpenAsk({ group_id: group.id }) }),
     });
     if (!response.ok) {
         toastr.error(t`The new chat was not created. Check the server console for details.`, t`Group chat could not be created`);

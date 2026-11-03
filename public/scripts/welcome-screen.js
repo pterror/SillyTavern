@@ -234,27 +234,27 @@ export async function openWelcomeScreen({ force = false, expand = false } = {}) 
         return;
     }
 
-    const recentChats = await getRecentChats();
-    shownRecentChats = recentChats;
-    const chatAfterFetch = getCurrentChatId();
-    if (chatAfterFetch !== currentChatId) {
+    const [recentChats, assistant] = await Promise.all([
+        getRecentChats(),
+        loadPermanentAssistant().catch((error) => {
+            console.error('Could not load the welcome page assistant:', error);
+            return undefined;
+        }),
+    ]);
+    const stillShown = () => getCurrentChatId() === currentChatId;
+    if (!stillShown()) {
         console.debug('Chat changed while fetching recent chats.');
         return;
     }
+    shownRecentChats = recentChats;
 
-    if (chatAfterFetch === undefined && force) {
+    if (currentChatId === undefined && force) {
         console.debug('Forcing welcome screen open.');
         chat.splice(0, chat.length);
         $('#chat').empty();
     }
 
-    await sendWelcomePanel(recentChats, expand);
-    let assistant;
-    try {
-        assistant = await loadPermanentAssistant();
-    } catch (error) {
-        console.error('Could not load the welcome page assistant:', error);
-    }
+    if (!await sendWelcomePanel(recentChats, expand, { stillShown })) return;
     sendAssistantMessage(assistant);
     sendWelcomePrompt();
 }
@@ -321,15 +321,17 @@ async function loadOlderRecentChats() {
  * Sends the welcome panel to the chat.
  * @param {RecentChat[]} chats List of recent chats
  * @param {boolean} [expand=false] If true, expands the recent chats section
- * @param {{ replace?: boolean }} [options] `replace`: draw it again where it is
+ * @param {{ replace?: boolean, stillShown?: () => boolean }} [options] `replace`: draw it again where it is;
+ * `stillShown`: false once the chat it was drawn for is no longer the open one
+ * @returns {Promise<boolean>} Whether it was drawn
  */
-async function sendWelcomePanel(chats, expand = false, { replace = false } = {}) {
+async function sendWelcomePanel(chats, expand = false, { replace = false, stillShown = () => true } = {}) {
     try {
         const chatElement = document.getElementById('chat');
         const sendTextArea = document.getElementById('send_textarea');
         if (!chatElement) {
             console.error('Chat element not found');
-            return;
+            return false;
         }
         const templateData = {
             chats,
@@ -474,6 +476,7 @@ async function sendWelcomePanel(chats, expand = false, { replace = false } = {})
                 await refreshWelcomeScreen({ flashChat: recentChat });
             });
         });
+        if (!stillShown()) return false;
         const drawn = chatElement.querySelector('.welcomePanel');
         if (drawn && replace) drawn.replaceWith(fragment.firstChild);
         else chatElement.append(fragment.firstChild);
@@ -484,8 +487,10 @@ async function sendWelcomePanel(chats, expand = false, { replace = false } = {})
                 }
             });
         }
+        return true;
     } catch (error) {
         console.error('Welcome screen error:', error);
+        return false;
     }
 }
 

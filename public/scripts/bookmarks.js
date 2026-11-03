@@ -11,7 +11,7 @@ import {
     isStoredNodeId,
     isProvisionalNodeId,
     takeChatOpenAnswer,
-    chatOpenSendKeys,
+    chatOpenAsk,
     adoptStored,
     openingForRequest,
 } from '../script.js';
@@ -199,7 +199,7 @@ async function requestBookmark(mesId, { label, nodeId = null, unique = false, al
     if (alsoNodeId) body.also_node_id = alsoNodeId;
     if (open) {
         body.open = true;
-        body.send_keys = chatOpenSendKeys(owner);
+        Object.assign(body, chatOpenAsk(owner));
     }
     const response = await fetch('/api/chats/bookmark', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(body) });
     if (!response.ok) return null;

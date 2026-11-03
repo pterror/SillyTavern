@@ -271,10 +271,14 @@ export function importChubRelatedLorebooks(directories, data) {
 
 export const router = express.Router();
 
-router.get('/get', function (request, response) {
-    const name = String(request.query.name);
+/**
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} name
+ * @returns {{ label: string, path: string }[]}
+ */
+export function spritesOf(directories, name) {
     const isSubfolder = name.includes('/');
-    const spritesPath = getSpritesPath(request.user.directories, name, isSubfolder);
+    const spritesPath = getSpritesPath(directories, name, isSubfolder);
     let sprites = [];
 
     try {
@@ -302,7 +306,11 @@ router.get('/get', function (request, response) {
     } catch (err) {
         console.error(err);
     }
-    return response.send(sprites);
+    return sprites;
+}
+
+router.get('/get', function (request, response) {
+    return response.send(spritesOf(request.user.directories, String(request.query.name)));
 });
 
 router.get('/folders', function (request, response) {

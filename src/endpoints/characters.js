@@ -2507,15 +2507,24 @@ router.post('/batch', async function (request, response) {
     }
 });
 
+/**
+ * @param {import('express').Request} request
+ * @param {string} avatar
+ * @returns {Promise<Record<string, any> | null>}
+ */
+export async function wholeCharacter(request, avatar) {
+    const [data] = await characterObjects(request, [avatar], { shallow: false });
+    if (!data) return null;
+    data._fieldsHash = characterDigestFieldsHash(data);
+    data._bodyHash = characterDigestCardBodyHash(data);
+    return data;
+}
+
 router.post('/get', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         if (!request.body) return response.sendStatus(400);
-        const [data] = await characterObjects(request, [request.body.avatar_url], { shallow: false });
+        const data = await wholeCharacter(request, request.body.avatar_url);
         if (!data) return response.sendStatus(404);
-
-        data._fieldsHash = characterDigestFieldsHash(data);
-        data._bodyHash = characterDigestCardBodyHash(data);
-
         return response.send(data);
     } catch (err) {
         console.error(err);

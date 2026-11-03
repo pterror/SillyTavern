@@ -9,7 +9,7 @@ import { substituteParams } from '../macro-substitution.js';
 import { readSettingsFor, settingsContextOf } from '../settings-reads.js';
 import { resolveTextGenBackend } from '../textgen-backend-resolve.js';
 import { storeRoute } from '../user-stores.js';
-import { isSafeMacro } from '../../public/scripts/safe-macros.js';
+import { isSafeMacro, macrosIn, withMacroValues } from '../../public/scripts/safe-macros.js';
 
 export const router = express.Router();
 
@@ -34,11 +34,11 @@ function modelOf(directories, settingsContext, mainApi, oaiSettings) {
 
 /**
  * @param {any} request
+ * @param {Record<string, any>} [body]
  * @returns {Promise<import('../macro-substitution.js').SubstituteParamsContext>}
  */
-async function previewContext(request) {
+async function previewContext(request, body = request.body ?? {}) {
     const { directories } = request.user;
-    const body = request.body ?? {};
     const avatar = typeof body.avatar_url === 'string' && body.avatar_url !== '' ? body.avatar_url : null;
     const groupId = typeof body.group_id === 'string' && body.group_id !== '' ? body.group_id : null;
     const speakers = await resolveSpeakers(directories, { avatar, groupId });
@@ -75,14 +75,14 @@ async function previewContext(request) {
     return { ...base, characterCard, model: modelOf(directories, settingsContext, mainApi, oaiSettings) };
 }
 
-router.post('/values', storeRoute('filling in macros', async (request, response) => {
-    const macros = request.body?.macros;
-    if (!Array.isArray(macros) || macros.length > MAX_MACROS || !macros.every(m => typeof m === 'string' && m.length <= MAX_MACRO_LENGTH)) {
-        return response.status(400).send({ error: `macros must be a list of at most ${MAX_MACROS} texts` });
-    }
-    const all = request.body.all === true;
-    const context = await previewContext(request);
-    const values = macros.map((macro) => {
+/**
+ * @param {import('../macro-substitution.js').SubstituteParamsContext} context
+ * @param {string[]} macros
+ * @param {boolean} all
+ * @returns {(string | null)[]}
+ */
+function macroValues(context, macros, all) {
+    return macros.map((macro) => {
         if (!all && (!/^\{\{[\s\S]*\}\}$/.test(macro) || !isSafeMacro(macro))) return null;
         try {
             return substituteParams(macro, context);
@@ -91,5 +91,25 @@ router.post('/values', storeRoute('filling in macros', async (request, response)
             return null;
         }
     });
-    return response.send({ values });
+}
+
+/**
+ * @param {any} request
+ * @param {{ avatar_url?: string, group_id?: string, at?: string | null, macro_facts?: unknown }} scope
+ * @param {string[]} texts
+ * @returns {Promise<string[]>}
+ */
+export async function withSafeMacrosFilled(request, scope, texts) {
+    const macros = [...new Set(texts.flatMap(text => macrosIn(text)))];
+    if (macros.length === 0) return texts.map(text => withMacroValues(text, () => null));
+    const values = new Map(macroValues(await previewContext(request, scope), macros, false).map((value, i) => [macros[i], value]));
+    return texts.map(text => withMacroValues(text, source => values.get(source)));
+}
+
+router.post('/values', storeRoute('filling in macros', async (request, response) => {
+    const macros = request.body?.macros;
+    if (!Array.isArray(macros) || macros.length > MAX_MACROS || !macros.every(m => typeof m === 'string' && m.length <= MAX_MACRO_LENGTH)) {
+        return response.status(400).send({ error: `macros must be a list of at most ${MAX_MACROS} texts` });
+    }
+    return response.send({ values: macroValues(await previewContext(request), macros, request.body.all === true) });
 }));

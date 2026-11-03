@@ -1,6 +1,8 @@
 import { handleFieldEditKey } from './character-field-editor.js';
 import { macrosIn, withMacroValues } from './safe-macros.js';
-import { MacroValues } from './macro-values.js';
+import { MacroValues, currentPageMacroFacts } from './macro-values.js';
+import { askOnChatOpen, chatOpenPart } from './chat-open-parts.js';
+import { cardTokenTexts } from './card-token-texts.js';
 import { getFocusedField } from './live-editor/registry.js';
 import { DOMPurify, Bowser } from '../lib.js';
 
@@ -18,11 +20,12 @@ import {
     keepOneRightPanelOpen,
     readSavedPanelOpenStates,
     isSwipingAllowed,
+    cardToGreetingsModel,
+    getCurrentChatId,
 } from '../script.js';
 import { queryWithSortFallback, characterToEntity, groupToEntity, entitiesFilter } from './character-list.js';
 import { active_character, active_group, setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { main_api, max_context } from './generation-params.js';
-import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 
 import {
@@ -34,7 +37,6 @@ import { characterRepository, buildCharacterQuery, normalizeQueryRow } from './c
 import { getRandomSortSeed } from './random-sort.js';
 import { selected_group, is_group_generating, openGroupById } from './group-chats.js';
 import { applyTagsOnCharacterSelect } from './tags.js';
-import { tagFetchStamp, isFetchedTagIdsCurrent } from './tag-fetch-stamps.js';
 import {
     SECRET_KEYS,
     secret_state,
@@ -42,7 +44,7 @@ import {
 import { debounce, getStringHash, isValidUrl } from './utils.js';
 import { drawerStackChanged } from './drawer-stack.js';
 import { chat_completion_sources, oai_settings, POLLINATIONS_ENDPOINT } from './chat-completion-settings.js';
-import { getRememberedTokenizerAnswer, getTokenCountsWithTokenizer } from './tokenizers.js';
+import { getRememberedTokenizerAnswer, getTokenCountsWithTokenizer, getTokenizerState, takeCountAnswer } from './tokenizers.js';
 import { renderCountBasis } from './tokenizer-notices.js';
 import { textgen_types, textgenerationwebui_settings as textgen_settings, getTextGenServer } from './textgen-settings.js';
 import { debounce_timeout, SWIPE_SOURCE } from './constants.js';
@@ -215,6 +217,23 @@ export function onCharacterEditorMaybeShown() {
     }
 }
 
+askOnChatOpen('card_token_counts', owner => (owner.type === 'character' ? { tokenizer: getTokenizerState(), macro_facts: currentPageMacroFacts() } : undefined));
+
+/**
+ * @returns {{ part: any, counts: Map<string, number> } | null}
+ */
+function openedCardCounts() {
+    if (menu_type === 'create') return null;
+    const avatar = String($('#avatar_url_pole').val() ?? '');
+    const part = chatOpenPart('card_token_counts', getCurrentChatId());
+    if (!part || part.avatar !== avatar || JSON.stringify(part.state) !== JSON.stringify(getTokenizerState())) return null;
+    const card = charactersStore.get(avatar);
+    if (!card) return null;
+    const texts = cardTokenTexts(card, cardToGreetingsModel(card).greetings);
+    if (!Array.isArray(part.counts) || texts.length !== part.counts.length) return null;
+    return { part, counts: new Map(texts.map((text, i) => [text, Number(part.counts[i])])) };
+}
+
 export async function RA_CountCharTokens() {
     editorCountPending = false;
     counterNonce = Date.now();
@@ -256,6 +275,34 @@ export async function RA_CountCharTokens() {
         }
     }
 
+    /**
+     * @param {typeof pending[number]} p
+     * @param {number} tokens
+     * @param {import('./tokenizers.js').CurrentTokenizer|null} answer
+     */
+    const showCount = (p, tokens, answer) => {
+        p.counter.text(tokens);
+        renderCountBasis(p.counter, answer);
+        p.counter.closest('.inline-drawer').toggleClass('token-count-zero', tokens === 0);
+        p.counter.closest('small').toggle(tokens !== 0);
+        total_tokens += tokens;
+        permanent_tokens += p.isPermanent ? tokens : 0;
+        p.input.data('last-value-hash', p.valueHash);
+    };
+
+    const opened = pending.length > 0 ? openedCardCounts() : null;
+    if (opened) {
+        const unknown = pending.filter(p => !opened.counts.has(p.value));
+        if (unknown.length < pending.length) {
+            takeCountAnswer(opened.part.state, opened.part);
+            totalAnswer = opened.part.tokenizer;
+            for (const p of pending) {
+                if (opened.counts.has(p.value)) showCount(p, /** @type {number} */ (opened.counts.get(p.value)), opened.part.tokenizer);
+            }
+        }
+        pending.splice(0, pending.length, ...unknown);
+    }
+
     if (pending.length > 0) {
         const values = new MacroValues(() => ({ ...openChatMacroScope(), avatar_url: String($('#avatar_url_pole').val() ?? '') }));
         if (menu_type !== 'create') await values.wantMacros(pending.flatMap(p => macrosIn(p.value)));
@@ -270,16 +317,7 @@ export async function RA_CountCharTokens() {
             return;
         }
 
-        pending.forEach((p, i) => {
-            const tokens = counted[i];
-            p.counter.text(tokens);
-            renderCountBasis(p.counter, answer);
-            p.counter.closest('.inline-drawer').toggleClass('token-count-zero', tokens === 0);
-            p.counter.closest('small').toggle(tokens !== 0);
-            total_tokens += tokens;
-            permanent_tokens += p.isPermanent ? tokens : 0;
-            p.input.data('last-value-hash', p.valueHash);
-        });
+        pending.forEach((p, i) => showCount(p, counted[i], answer));
     }
 
     const tokenLimit = Math.max(((main_api !== 'openai' ? max_context : oai_settings.openai_max_context) / 2), 1024);
@@ -292,36 +330,8 @@ export async function RA_CountCharTokens() {
 }
 async function RA_autoloadchat() {
     if (active_character !== null && active_character !== undefined) {
-        let activeCharacterEntity = charactersStore.get(active_character);
-
-        if (!activeCharacterEntity) {
-            try {
-                const fetchStamp = tagFetchStamp();
-                const resp = await fetch('/api/characters/get', {
-                    method: 'POST',
-                    headers: getRequestHeaders(),
-                    body: JSON.stringify({ avatar_url: active_character }),
-                });
-                if (resp.ok) {
-                    const data = await resp.json();
-                    data.shallow = false;
-                    if (!isFetchedTagIdsCurrent(active_character, fetchStamp)) {
-                        delete data.tag_ids;
-                    }
-                    if (!charactersStore.has(active_character)) {
-                        charactersStore.create(data);
-                    } else {
-                        charactersStore.update(active_character, data);
-                    }
-                    activeCharacterEntity = charactersStore.get(active_character);
-                }
-            } catch (err) {
-                console.error('[RA_autoloadchat] Failed to fetch active character directly:', err);
-            }
-        }
-
-        if (activeCharacterEntity) {
-            await selectCharacterByAvatar(activeCharacterEntity.avatar);
+        const found = await selectCharacterByAvatar(String(active_character), { toastMissing: false });
+        if (found) {
             applyTagsOnCharacterSelect();
         } else {
             setActiveCharacter(null);
