@@ -32,7 +32,8 @@ any other; it needs no extension point.
 Pasting a link, dropping a file and "Import" are one lookup: whoever handles that input.
 
 Still to specify per point: what it receives and returns, which part runs on the server (state) and which on the page
-(an editor), and load order. Today's page extension API keeps working as compat on top.
+(an editor), and load order. There is no compat with upstream's extension API: classic extensions, built-in and
+third-party, are removed, and a feature from one comes back only as a module.
 
 ## Capabilities
 
