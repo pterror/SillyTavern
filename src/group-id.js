@@ -55,7 +55,7 @@ export function tagEntityTypeOf(id) {
  */
 export function storedGroup(group) {
     normalizeGroupRecord(group);
-    const stored = { ...group, fav: normalizeFav(group.fav) };
+    const stored = { ...group, fav: normalizeFav(group.fav), disabled_members: Array.isArray(group.disabled_members) ? group.disabled_members : [] };
     delete stored.chat_id;
     delete stored.chats;
     return stored;

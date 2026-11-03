@@ -189,9 +189,7 @@ test.describe('readers of characters the page does not hold', () => {
             const response = await fetch('/api/groups/create', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ name: `Whole ${Date.now()}`, members }) });
             if (!response.ok) throw new Error(`group create failed: ${response.status}`);
             const id = String((await response.json()).id);
-            const { groupsStore, openGroupById, unshallowGroupMembers } = await import('./scripts/group-chats.js');
-            await ctx.getCharacters({ silentGroups: true });
-            groupsStore.reportCreated(id);
+            const { openGroupById, unshallowGroupMembers } = await import('./scripts/group-chats.js');
             await openGroupById(id);
             await unshallowGroupMembers(id);
         }, [first, second]);

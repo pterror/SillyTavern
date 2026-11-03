@@ -28,7 +28,8 @@ import { charactersStore, resolveCharacterRef } from './character-store.js';
 import { characterRepository } from './character-repository.js';
 import { event_types, eventSource } from './events.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
-import { deleteGroupChatByName, getGroupAvatar, groupsStore, is_group_generating, openGroupById, openGroupChat } from './group-chats.js';
+import { deleteGroupChatByName, getGroupAvatar, is_group_generating, openGroupById, openGroupChat } from './group-chats.js';
+import { getGroupRows, groupsStore, holdGroups } from './group-store.js';
 import { t } from './i18n.js';
 import { callGenericPopup, POPUP_TYPE } from './popup.js';
 import { getMessageTimeStamp } from './RossAscends-mods.js';
@@ -305,6 +306,8 @@ function sendWelcomePrompt() {
 /** @type {RecentChat[]} */
 let shownRecentChats = [];
 let recentChatsNext = null;
+/** @type {Map<string, Group>} */
+const recentChatGroups = new Map();
 
 async function loadOlderRecentChats() {
     if (recentChatsNext === null) return;
@@ -405,7 +408,7 @@ async function sendWelcomePanel(chats, expand = false, { replace = false } = {})
         });
         fragment.querySelectorAll('.recentChat.group').forEach((groupChat) => {
             const groupId = groupChat.getAttribute('data-group');
-            const group = groupsStore.get(groupId);
+            const group = recentChatGroups.get(groupId);
             if (group) {
                 const avatar = groupChat.querySelector('.avatar');
                 if (!avatar) {
@@ -516,14 +519,11 @@ async function openRecentCharacterChat(avatarId, fileName) {
  * @param {string} fileName Chat file name
  */
 async function openRecentGroupChat(groupId, fileName) {
-    const group = groupsStore.get(groupId);
-    if (!group) {
-        console.error(`Group not found for ID: ${groupId}`);
-        return;
-    }
-
     try {
         await openGroupById(groupId);
+        if (!groupsStore.has(groupId)) {
+            return;
+        }
         setActiveGroup(groupId);
         saveSettingsDebounced('active_character', 'active_group');
         const currentChatId = getCurrentChatId();
@@ -587,8 +587,7 @@ async function renameRecentCharacterChat(avatarId, fileName) {
  * @param {string} fileName Chat file name
  */
 async function renameRecentGroupChat(groupId, fileName) {
-    const group = groupsStore.get(groupId);
-    if (!group) {
+    if (!recentChatGroups.has(groupId)) {
         console.error(`Group not found for ID: ${groupId}`);
         return;
     }
@@ -642,14 +641,17 @@ async function deleteRecentCharacterChat(avatarId, fileName) {
  * @param {string} fileName Chat file name
  */
 async function deleteRecentGroupChat(groupId, fileName) {
-    const group = groupsStore.get(groupId);
-    if (!group) {
+    if (!recentChatGroups.has(groupId)) {
         console.error(`Group not found for ID: ${groupId}`);
         return;
     }
     try {
         const confirm = await callGenericPopup(t`Delete the Chat File?`, POPUP_TYPE.CONFIRM);
         if (!confirm) {
+            return;
+        }
+        if (!(await holdGroups([groupId])).has(groupId)) {
+            console.error(`Group not found for ID: ${groupId}`);
             return;
         }
         await deleteGroupChatByName(groupId, fileName);
@@ -809,15 +811,21 @@ async function getRecentChats({ before = null } = {}) {
     }
 
     const avatars = [...new Set(data.map(chat => chat.avatar).filter(avatar => typeof avatar === 'string' && avatar !== ''))];
-    /** @type {Map<string, Character>} */
-    let charactersByAvatar = new Map();
-    try {
-        charactersByAvatar = avatars.length > 0 ? await characterRepository.getMany(avatars) : new Map();
-    } catch (error) {
-        console.error('Could not read the characters of the recent chats:', error);
-    }
+    const groupIds = [...new Set(data.map(chat => chat.group).filter(group => typeof group === 'string' && group !== ''))];
+    const [charactersByAvatar, groupsById] = await Promise.all([
+        avatars.length === 0 ? new Map() : characterRepository.getMany(avatars).catch((error) => {
+            console.error('Could not read the characters of the recent chats:', error);
+            return /** @type {Map<string, Character>} */ (new Map());
+        }),
+        groupIds.length === 0 ? new Map() : getGroupRows(groupIds).catch((error) => {
+            console.error('Could not read the groups of the recent chats:', error);
+            return /** @type {Map<string, Group>} */ (new Map());
+        }),
+    ]);
+    if (before === null) recentChatGroups.clear();
+    for (const [id, group] of groupsById) recentChatGroups.set(id, group);
     const dataWithEntities = data
-        .map(chat => ({ chat, character: charactersByAvatar.get(chat.avatar), group: groupsStore.get(chat.group) }))
+        .map(chat => ({ chat, character: charactersByAvatar.get(chat.avatar), group: groupsById.get(chat.group) }))
         .filter(t => t.character || t.group)
         .sort((a, b) => {
             const isAPinned = PinnedChatsManager.isPinned(a.chat);

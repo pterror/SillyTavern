@@ -23,15 +23,6 @@ const isAppReady = page => page.evaluate(() => window['__appReady'] === true);
 const syncFailedToast = page => page.locator('#toast-container .toast-title', { hasText: 'Character sync failed' });
 
 test.describe('character residency failure at boot', () => {
-    test('a rejecting groups fetch still reaches APP_READY, with the toast shown', async ({ page }) => {
-        await page.route('**/api/groups/all', route => route.abort('failed'));
-        await testSetup.awaitST({ page });
-        await markAppReady(page);
-
-        await expect.poll(() => isAppReady(page), { timeout: 15000 }).toBe(true);
-        await expect(syncFailedToast(page)).toBeVisible();
-    });
-
     test('a /changes request that never answers still reaches APP_READY, with the toast shown', async ({ page }) => {
         await page.clock.install();
         await page.route('**/api/characters/changes', () => {});

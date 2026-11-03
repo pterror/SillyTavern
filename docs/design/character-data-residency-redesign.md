@@ -1074,7 +1074,7 @@ collapses to **one entry per id**, latest op winning. Also note nothing prunes t
 so `truncated` can currently only fire for a nonsense `sinceSeq` — the bounded-window behaviour
 described below is designed but not built. **Superseded:** `/api/characters/manifest` is removed.
 The page no longer keeps a copy of the library, so it reads `/changes` only for the characters it
-holds, starting from the `characterChangesSeq` the settings answer carries; a fresh page downloads
+holds, starting from the `libraryChangesSeq` the settings answer carries; a fresh page downloads
 nothing per card.
 
 `truncated: true` means `sinceSeq` predates the oldest retained `changes` row (the log is pruned to

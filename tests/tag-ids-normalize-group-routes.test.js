@@ -56,7 +56,7 @@ async function postJson(urlPath, body) {
     return response.json();
 }
 
-test('/api/groups/batch and /api/groups/all send tag_ids in JS sort order', async () => {
+test('/api/groups/batch sends tag_ids in JS sort order', async () => {
     await user.store.lib.writeGroup({ id: '1001', name: 'Group 1001', members: [], fav: false });
     for (const tagId of [HIGH_BMP, ASTRAL]) expect((await user.store.lib.tags.assign('1001', tagId)).result).toBe('ok');
 
@@ -64,6 +64,4 @@ test('/api/groups/batch and /api/groups/all send tag_ids in JS sort order', asyn
     expect(batched.tag_ids).toEqual(JS_SORTED);
     const [fields] = await postJson('/api/groups/batch', { ids: ['1001'], fields: ['tag_ids'] });
     expect(fields.tag_ids).toEqual(JS_SORTED);
-    const all = await postJson('/api/groups/all', {});
-    expect(all.find(g => g.id === '1001').tag_ids).toEqual(JS_SORTED);
 });

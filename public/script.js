@@ -12,7 +12,7 @@ import {
 
 import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown } from './scripts/RossAscends-mods.js';
 import { exposedCharacters, charactersStore, this_avatar, this_chid, setCharacterId, holdCharacter, keepHeldCharacters, selectCharacterById, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './scripts/character-store.js';
-import { printCharacters, printCharactersDebounced, getEntitiesList, findCharacterListPage, getOneCharacter, getCharacterSource, startCharacterChangesAt, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onCharacterListShown, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
+import { printCharacters, printCharactersDebounced, getEntitiesList, findCharacterListPage, getOneCharacter, getCharacterSource, startLibraryChangesAt, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onCharacterListShown, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
 import { onSavedViewsChanged } from './scripts/saved-views.js';
 export { exposedCharacters as characters, charactersStore, selectCharacterById, setCharacterId, this_chid };
 export { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, getCharacters, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT };
@@ -57,6 +57,7 @@ import {
     sendAuxBooksOp,
 } from './scripts/world-info.js';
 import { character_world_link } from './scripts/character-world-link.js';
+import { holdGroup } from './scripts/group-store.js';
 
 import {
     groupsStore,
@@ -6514,6 +6515,7 @@ export async function unshallowCharacter(characterId) {
  * @property {import('./scripts/chat-store.js').OpeningsResponse|null} card_openings
  * @property {string[]} [chats]
  * @property {number} [date_last_chat]
+ * @property {Group} [group] The whole group, when the open asked `with_group`.
  * @property {string|null} active_character
  * @property {string|null} active_group
  * @property {number} [settings_hash]
@@ -6522,7 +6524,7 @@ export async function unshallowCharacter(characterId) {
  */
 
 /**
- * @param {{ avatar_url?: string, group_id?: string, chat?: string|null, make_current?: boolean, fresh?: boolean }} body
+ * @param {{ avatar_url?: string, group_id?: string, chat?: string|null, make_current?: boolean, fresh?: boolean, with_group?: boolean }} body
  * @returns {Promise<ChatOpenAnswer>}
  */
 export async function requestChatOpen(body) {
@@ -6533,7 +6535,7 @@ export async function requestChatOpen(body) {
         cache: 'no-cache',
         body: JSON.stringify({ ...body, send_keys: keptSendKeys(owner) }),
     });
-    if (!response.ok) throw new Error(`/api/chats/open responded ${response.status}`);
+    if (!response.ok) throw Object.assign(new Error(`/api/chats/open responded ${response.status}`), { status: response.status });
     return takeChatOpenAnswer(body, await response.json());
 }
 
@@ -6559,6 +6561,7 @@ export function chatOpenSendKeys(body) {
  * @returns {ChatOpenAnswer}
  */
 export function takeChatOpenAnswer(body, answer) {
+    if (answer.group) holdGroup(answer.group);
     takeViews(answer.ui_views);
     forgetStoredSends(chatOpenOwner(body), Array.isArray(answer.stored_sends) ? answer.stored_sends : []);
     setActiveCharacter(answer.active_character);
@@ -7019,7 +7022,7 @@ export async function getSettings(initLoaderHandle = null, onStageChange = null,
     let data;
     try {
         data = await fetchRawSettings({ force });
-        startCharacterChangesAt(Number(data?.characterChangesSeq));
+        startLibraryChangesAt(Number(data?.libraryChangesSeq));
     } catch (error) {
         reloadLoop();
         toastr.error(t`Settings could not be loaded after multiple attempts. Please try again later.`);

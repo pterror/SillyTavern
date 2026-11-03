@@ -51,7 +51,8 @@ test.describe('public/scripts modules keep upstream\'s exports', () => {
             const response = await fetch('/api/groups/create', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ name: `EditGroup ${Date.now()}`, members: [] }) });
             if (!response.ok) throw new Error(`group create failed: ${response.status}`);
             const id = String((await response.json()).id);
-            await ctx.getCharacters({ silentGroups: true });
+            const { holdGroups } = await import('./scripts/group-store.js');
+            await holdGroups([id]);
             const members = groupChats.getGroupMembers(id);
             /** @type {any[]} */
             const sent = [];
@@ -67,8 +68,7 @@ test.describe('public/scripts modules keep upstream\'s exports', () => {
             } finally {
                 window.fetch = realFetch;
             }
-            const all = await (await fetch('/api/groups/all', { method: 'POST', headers: ctx.getRequestHeaders() })).json();
-            const stored = all.find((/** @type {any} */ g) => String(g.id) === id);
+            const [stored] = await (await fetch('/api/groups/batch', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ ids: [id] }) })).json();
             await fetch('/api/groups/delete', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ id }) });
             return { membersIsArray: Array.isArray(members), members: members.length, sent, fav: stored?.fav };
         });

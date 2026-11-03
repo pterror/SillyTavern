@@ -23,11 +23,7 @@ function storedAvatarUrl(page, id) {
  */
 async function openGroupEditor(page, id) {
     await page.evaluate(async (id) => {
-        // @ts-ignore
-        const ctx = SillyTavern.getContext();
-        const { groupsStore, openGroupById } = await import('/scripts/group-chats.js');
-        await ctx.getCharacters({ silentGroups: true });
-        groupsStore.reportCreated(id);
+        const { openGroupById } = await import('/scripts/group-chats.js');
         await openGroupById(id);
     }, id);
     if (!(await page.locator('#group_avatar_preview').isVisible())) await page.locator('#charInfoDrawerIcon').click();

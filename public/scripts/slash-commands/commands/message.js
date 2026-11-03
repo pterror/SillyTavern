@@ -9,7 +9,7 @@ import { getMessageTimeStamp } from '../../RossAscends-mods.js';
 import { hideChatMessageRange } from '../../chats.js';
 import { SWIPE_DIRECTION, SWIPE_SOURCE } from '../../constants.js';
 import { getRegexedString, regex_placement } from '../../extensions/regex/engine.js';
-import { groups } from '../../group-store.js';
+import { findGroupByName, groupsStore } from '../../group-store.js';
 import { findGroupMemberId, is_group_generating, openGroupById, regenerateGroup, resetSelectedGroup, selected_group } from '../../group-chats.js';
 import { t } from '../../i18n.js';
 import { personaAvatar, user_avatar } from '../../personas.js';
@@ -18,7 +18,7 @@ import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '
 import { commonEnumProviders, enumIcons } from '../SlashCommandCommonEnumsProvider.js';
 import { SlashCommandEnumValue, enumTypes } from '../SlashCommandEnumValue.js';
 import { slashCommandReturnHelper } from '../SlashCommandReturnHelper.js';
-import { delay, equalsIgnoreCaseAndAccents, findCharAsync, findPersona, isTrueBoolean, stringToRange, trimToEndSentence, trimToStartSentence, waitUntilCondition } from '../../utils.js';
+import { delay, findCharAsync, findPersona, isTrueBoolean, stringToRange, trimToEndSentence, trimToStartSentence, waitUntilCondition } from '../../utils.js';
 import { COMMENT_NAME_DEFAULT, NARRATOR_NAME_DEFAULT, NARRATOR_NAME_KEY, generateSystemMessage, getNameAndAvatarForMessage, sendMessageAs, sendNarratorMessage } from '../core.js';
 
 function trimStartCallback(_, value) {
@@ -294,12 +294,12 @@ async function goToCharacterCallback(_, name) {
         setActiveGroup(null);
         return character.name;
     }
-    const group = groups.find(it => equalsIgnoreCaseAndAccents(it.name, name));
-    if (group) {
-        await openGroupById(group.id);
+    const groupId = await findGroupByName(name);
+    if (groupId !== null) {
+        await openGroupById(groupId);
         setActiveCharacter(null);
-        setActiveGroup(group.id);
-        return group.name;
+        setActiveGroup(groupId);
+        return groupsStore.get(groupId)?.name ?? name;
     }
     console.warn(`No matches found for name "${name}"`);
     return '';

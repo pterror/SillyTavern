@@ -14,7 +14,7 @@ import { characters, charactersStore, exposedCharacters, exposedGroups, onExpose
 import { FILTER_TYPES, FILTER_STATES, DEFAULT_FILTER_STATE, isFilterState, FilterHelper } from './filters.js';
 
 import { groupCandidatesFilter, groupMembersFilter, selected_group } from './group-chats.js';
-import { groups, groupsStore } from './group-store.js';
+import { findGroupByName, groups, groupsStore } from './group-store.js';
 import { download, onlyUnique, parseJsonFile, uuidv4, getSortableDelay, flashHighlight, equalsIgnoreCaseAndAccents, includesIgnoreCaseAndAccents, removeFromArray, debounce, findChar, findCharAsync, escapeHtml } from './utils.js';
 import { power_user, invalidateCharactersFuseIndex, invalidateGroupsFuseIndex, invalidateTagsFuseIndex } from './power-user.js';
 import { EntityStore, onAnyEntityStoreChange } from './entity-store.js';
@@ -5906,16 +5906,6 @@ async function showOwnTagInViewList(id, { scrollTo = false } = {}) {
 }
 
 /**
- * @param {string} name
- * @returns {Promise<string|null>}
- */
-async function findGroupIdByName(name) {
-    const answer = await postTagsRead('/api/characters/find', { type: 'group', name });
-    const id = Array.isArray(answer?.ids) ? answer.ids[0] : undefined;
-    return typeof id === 'string' ? id : null;
-}
-
-/**
  * @param {string?} name
  * @returns {Promise<string|null>}
  */
@@ -5923,9 +5913,10 @@ async function findTagCommandEntityKey(name) {
     if (!name) return searchCharByName(name);
     const character = await findCharAsync({ name });
     if (character?.avatar) return character.avatar;
-    const heldGroup = groups.find(x => equalsIgnoreCaseAndAccents(x.name, name));
-    if (heldGroup) return String(heldGroup.id);
-    const groupId = await findGroupIdByName(name);
+    const groupId = await findGroupByName(name).catch((error) => {
+        console.error('Could not look up the group by name:', name, error);
+        return null;
+    });
     if (groupId) return groupId;
     toastr.warning(`Character ${name} not found.`);
     return null;

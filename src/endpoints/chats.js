@@ -22,6 +22,7 @@ import { applyPageWrites } from '../page-writes.js';
 import { storedMessagesOf } from '../stored-messages.js';
 import { engineStoreHere, requestStore } from '../user-stores.js';
 import { chatContext, chatNamePosition, compatChatIdOf, isOwnChat, openChatNamed, ownOf } from '../chat-request.js';
+import { groupObjects } from './groups.js';
 import { SESSION_GONE_HEADER, sessionHeaderOf } from '../request-session.js';
 import { ui, uiUser } from '../ui-wiring.js';
 import { pageSettingsHash } from '../settings-hash.js';
@@ -955,6 +956,7 @@ async function openChatAnswer(request, response, body) {
                 card_openings: null,
                 chats: (await chatListOf(chat)).map(r => r.file_id),
                 date_last_chat: stats.get(chat.tree)?.date_last_chat ?? 0,
+                ...(body.with_group === true ? { group: (await groupObjects(request, [groupId]))[0] } : {}),
                 ...await recordLastOpened(request, { character: null, group: groupId }),
             },
         };

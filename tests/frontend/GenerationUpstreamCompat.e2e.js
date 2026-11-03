@@ -208,9 +208,7 @@ test.describe('generation as upstream extensions see it', () => {
             const response = await fetch('/api/groups/create', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ name, members }) });
             if (!response.ok) throw new Error(`group create failed: ${response.status}`);
             const id = String((await response.json()).id);
-            const { groupsStore, openGroupById } = await import('/scripts/group-chats.js');
-            await ctx.getCharacters({ silentGroups: true });
-            groupsStore.reportCreated(id);
+            const { openGroupById } = await import('/scripts/group-chats.js');
             await openGroupById(id);
             await ctx.generate('normal');
         }, { members: [avatar], name: `DraftedGroup-${stamp()}` });

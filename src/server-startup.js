@@ -110,7 +110,6 @@ export function redirectDeprecatedEndpoints(app) {
     redirect('/getgroupchat', '/api/chats/group/get');
     redirect('/deletegroupchat', '/api/chats/group/delete');
     redirect('/savegroupchat', '/api/chats/group/save');
-    redirect('/getgroups', '/api/groups/all');
     redirect('/creategroup', '/api/groups/create');
     redirect('/editgroup', '/api/groups/edit');
     redirect('/deletegroup', '/api/groups/delete');

@@ -1,4 +1,4 @@
-import { describe, test, expect, jest, beforeEach, beforeAll } from '@jest/globals';
+import { describe, test, expect, jest, beforeEach, beforeAll, afterEach } from '@jest/globals';
 
 function makeChainable() {
     const target = () => makeChainable();
@@ -162,8 +162,6 @@ jest.unstable_mockModule('../public/scripts/character-field-editor.js', () => ({
 const unsupportedSortWarnings = [];
 jest.unstable_mockModule('../public/scripts/character-list.js', () => ({
     getCharacters: jest.fn(),
-    showCharacterSyncFailedToast: jest.fn(),
-    SYNC_REQUEST_TIMEOUT_MS: 60000,
     queryWithSortFallback: async (filter, sort, request) => {
         if (!(sort?.field === 'search' && !filter.search)) {
             try {
@@ -310,11 +308,15 @@ let groupsStore;
 let buildGroupCandidateQuery;
 /** @type {typeof import('../public/scripts/group-chats.js').printGroupCandidates} */
 let printGroupCandidates;
+/** @type {typeof import('../public/scripts/group-chats.js').takeInHeldGroupChanges} */
+let takeInHeldGroupChanges;
+/** @type {typeof import('../public/scripts/group-chats.js').editGroup} */
+let editGroup;
 /** @type {typeof import('../public/scripts/power-user.js').power_user} */
 let power_user;
 
 beforeAll(async () => {
-    ({ validateGroup, getGroupMembers, getGroupMembersResolved, groupsStore, buildGroupCandidateQuery, printGroupCandidates } = await import('../public/scripts/group-chats.js'));
+    ({ validateGroup, getGroupMembers, getGroupMembersResolved, groupsStore, buildGroupCandidateQuery, printGroupCandidates, takeInHeldGroupChanges, editGroup } = await import('../public/scripts/group-chats.js'));
     ({ power_user } = await import('../public/scripts/power-user.js'));
 });
 
@@ -702,5 +704,82 @@ describe('the add-member picker shows the candidates a page at a time from the s
         queryMock.mockRejectedValue(new TypeError('Failed to fetch'));
 
         await expect(printGroupCandidates()).rejects.toThrow('Failed to fetch');
+    });
+});
+
+describe('the held groups are brought up to the server\'s', () => {
+    const originalFetch = globalThis.fetch;
+    /** @type {Map<string, object>} */
+    let served;
+    /** @type {[string, any][]} */
+    let asked;
+
+    beforeEach(() => {
+        for (const group of [...groupsStore.getAll()]) groupsStore.remove(group.id);
+        served = new Map();
+        asked = [];
+        globalThis.fetch = jest.fn(async (url, options) => {
+            const body = JSON.parse(options.body);
+            asked.push([url, body]);
+            if (url === '/api/groups/batch') {
+                return { ok: true, status: 200, json: async () => body.ids.filter(id => served.has(id)).map(id => structuredClone(served.get(id))) };
+            }
+            return { ok: true, status: 200, json: async () => ({ ok: true }) };
+        });
+    });
+
+    afterEach(() => {
+        globalThis.fetch = originalFetch;
+    });
+
+    test('a held group changed on the server takes its fields as the server has them, and only held groups are read', async () => {
+        groupsStore.create({ id: 'g1', name: 'Old', members: ['a.png'], disabled_members: [], avatar_thumbnail_still: 's.webp' });
+        groupsStore.create({ id: 'g2', name: 'Kept', members: [], disabled_members: [] });
+        const held = groupsStore.get('g1');
+        served.set('g1', { id: 'g1', name: 'New', members: ['a.png'], disabled_members: [] });
+        const changes = [];
+        const stop = groupsStore.onChange(change => changes.push([change.op, change.id, change.patch]));
+
+        await takeInHeldGroupChanges(new Set(['g1', 'unheld']), new Set(['other']));
+        stop();
+
+        expect(asked).toEqual([['/api/groups/batch', { ids: ['g1'] }]]);
+        expect(groupsStore.get('g1')).toBe(held);
+        expect(held).toEqual({ id: 'g1', name: 'New', members: ['a.png'], disabled_members: [] });
+        expect(changes).toEqual([['updated', 'g1', { name: 'New' }]]);
+        expect(groupsStore.get('g2')).toEqual({ id: 'g2', name: 'Kept', members: [], disabled_members: [] });
+    });
+
+    test('a held group deleted, or not there when read, is let go', async () => {
+        groupsStore.create({ id: 'g1', members: [], disabled_members: [] });
+        groupsStore.create({ id: 'g2', members: [], disabled_members: [] });
+
+        await takeInHeldGroupChanges(new Set(['g2']), new Set(['g1']));
+
+        expect(groupsStore.has('g1')).toBe(false);
+        expect(groupsStore.has('g2')).toBe(false);
+    });
+
+    test('when nothing held changed, nothing is read', async () => {
+        groupsStore.create({ id: 'g1', members: [], disabled_members: [] });
+
+        const held = groupsStore.get('g1');
+        await takeInHeldGroupChanges(new Set(['unheld']), new Set(['other']));
+        expect(asked).toEqual([]);
+        expect(groupsStore.get('g1')).toBe(held);
+    });
+
+    test('once the server\'s fields are taken, saving the group sends only what the page changed after', async () => {
+        groupsStore.create({ id: 'g1', name: 'Old', members: [], disabled_members: [], fav: false });
+        served.set('g1', { id: 'g1', name: 'New', members: [], disabled_members: [], fav: false });
+        await takeInHeldGroupChanges(new Set(['g1']), new Set());
+        asked = [];
+
+        await editGroup('g1', true, false);
+        expect(asked).toEqual([]);
+
+        groupsStore.update('g1', { fav: true });
+        await editGroup('g1', true, false);
+        expect(asked).toEqual([['/api/groups/save-partial', { id: 'g1', props: { fav: true } }]]);
     });
 });

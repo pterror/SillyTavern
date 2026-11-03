@@ -1,6 +1,7 @@
 import { favsToHotswap } from './RossAscends-mods.js';
 import { characters, charactersStore, this_avatar, resolveCharacterRef } from './character-store.js';
-import { getGroups, getGroupBlock } from './group-chats.js';
+import { getGroupBlock, takeInHeldGroupChanges } from './group-chats.js';
+import { groupsStore } from './group-store.js';
 import { power_user, sortEntitiesList } from './power-user.js';
 import { normalizeFav } from './hash-utils.js';
 import { debounce, delay, PAGINATION_TEMPLATE, localizePagination, renderPaginationDropdown, paginationDropdownChangeHandler } from './utils.js';
@@ -151,39 +152,69 @@ export function renameCharacterListRow(previousId, id) {
 }
 
 /**
+ * @param {Entity} entity
+ * @returns {boolean}
+ */
+function isUnheldRow(entity) {
+    if (entity.type === 'character') return !charactersStore.has(String(entity.id));
+    if (entity.type === 'group') return !groupsStore.has(String(entity.id));
+    return false;
+}
+
+/**
+ * @param {Entity} entity
+ * @returns {Element|null}
+ */
+function listRowOf(entity) {
+    const attribute = entity.type === 'group' ? 'data-grid' : 'data-avatar';
+    return document.querySelector(`#rm_print_characters_block [${attribute}="${CSS.escape(String(entity.id))}"]`);
+}
+
+/**
+ * @param {Element} row
+ * @param {Entity} entity
+ */
+function redrawListRow(row, entity) {
+    if (entity.type === 'group') row.replaceWith(getGroupBlock(entity.item).get(0));
+    else updateCharacterBlock(row, entity.item, entity.id);
+}
+
+/**
  * @returns {Map<string, string[]>}
  */
 export function getUnheldRowTagIds() {
     /** @type {Map<string, string[]>} */
     const found = new Map();
     for (const entity of renderedPageEntities) {
-        if (entity.type !== 'character' || charactersStore.has(entity.id)) continue;
-        found.set(entity.id, Array.isArray(entity.item?.tag_ids) ? entity.item.tag_ids : []);
+        if (!isUnheldRow(entity)) continue;
+        found.set(String(entity.id), Array.isArray(entity.item?.tag_ids) ? entity.item.tag_ids : []);
     }
     return found;
 }
 
 /**
- * @param {string} avatar
+ * @param {string} key
  * @param {string[]} tagIds
  * @param {number} fetchStamp
  */
-export function setUnheldRowTagIds(avatar, tagIds, fetchStamp) {
-    let item = null;
+export function setUnheldRowTagIds(key, tagIds, fetchStamp) {
+    /** @type {Entity|null} */
+    let changed = null;
     renderedPageEntities = renderedPageEntities.map((entity) => {
-        if (entity.type !== 'character' || entity.id !== avatar) return entity;
-        item = { ...entity.item, tag_ids: [...tagIds], tagFetchStamp: fetchStamp };
-        return characterToEntity(item);
+        if ((entity.type !== 'character' && entity.type !== 'group') || String(entity.id) !== key) return entity;
+        const item = { ...entity.item, tag_ids: [...tagIds], tagFetchStamp: fetchStamp };
+        changed = entity.type === 'group' ? groupToEntity(item) : characterToEntity(item);
+        return changed;
     });
-    const row = document.querySelector(`#rm_print_characters_block [data-avatar="${CSS.escape(avatar)}"]`);
-    if (item && row) updateCharacterBlock(row, item, avatar);
+    const row = changed && listRowOf(changed);
+    if (row) redrawListRow(row, changed);
 }
 
 export function redrawUnheldRows() {
     for (const entity of renderedPageEntities) {
-        if (entity.type !== 'character' || charactersStore.has(entity.id)) continue;
-        const row = document.querySelector(`#rm_print_characters_block [data-avatar="${CSS.escape(entity.id)}"]`);
-        if (row) updateCharacterBlock(row, entity.item, entity.id);
+        if (!isUnheldRow(entity)) continue;
+        const row = listRowOf(entity);
+        if (row) redrawListRow(row, entity);
     }
 }
 
@@ -923,13 +954,13 @@ let changesSeq = null;
 /**
  * @param {number} seq
  */
-export function startCharacterChangesAt(seq) {
+export function startLibraryChangesAt(seq) {
     if (changesSeq === null && Number.isFinite(seq)) changesSeq = seq;
 }
 
 /**
  * @param {number} sinceSeq
- * @returns {Promise<{seq: number, changes: {id: string, op: 'upsert'|'delete'}[], hasMore: boolean}>}
+ * @returns {Promise<{seq: number, changes: {id: string, op: 'upsert'|'delete', type?: 'group'}[], hasMore: boolean}>}
  */
 async function fetchChangesPage(sinceSeq) {
     const changesResponse = await fetch('/api/characters/changes', {
@@ -947,28 +978,29 @@ async function fetchChangesPage(sinceSeq) {
 /**
  * @returns {Promise<boolean>} Whether a held character changed.
  */
-async function syncHeldCharacters() {
+async function syncHeld() {
     if (changesSeq === null) return false;
     let seq = changesSeq;
     /** @type {Set<string>} */
     const upserted = new Set();
     /** @type {Set<string>} */
     const deleted = new Set();
+    /** @type {Set<string>} */
+    const groupsUpserted = new Set();
+    /** @type {Set<string>} */
+    const groupsDeleted = new Set();
     for (;;) {
         const page = await fetchChangesPage(seq);
-        for (const { id, op } of page.changes) {
-            if (!charactersStore.has(id)) continue;
-            if (op === 'delete') {
-                upserted.delete(id);
-                deleted.add(id);
-            } else {
-                deleted.delete(id);
-                upserted.add(id);
-            }
+        for (const { id, op, type } of page.changes) {
+            const [store, live, gone] = type === 'group' ? [groupsStore, groupsUpserted, groupsDeleted] : [charactersStore, upserted, deleted];
+            if (!store.has(id)) continue;
+            (op === 'delete' ? live : gone).delete(id);
+            (op === 'delete' ? gone : live).add(id);
         }
         seq = Math.max(seq, page.seq);
         if (!page.hasMore) break;
     }
+    await takeInHeldGroupChanges(groupsUpserted, groupsDeleted);
     if (upserted.size > 0) {
         const full = await characterRepository.readFull([...upserted]);
         for (const avatar of upserted) {
@@ -991,7 +1023,7 @@ async function syncHeldCharacters() {
 const SYNC_MAX_RETRIES = 3;
 const SYNC_RETRY_DELAYS_MS = [1000, 3000, 8000];
 
-export const SYNC_REQUEST_TIMEOUT_MS = 60000;
+const SYNC_REQUEST_TIMEOUT_MS = 60000;
 
 export function showCharacterSyncFailedToast() {
     toastr.error(
@@ -1004,7 +1036,6 @@ export function showCharacterSyncFailedToast() {
 /**
  * @param {object} [options]
  * @param {boolean} [options.silent=false]
- * @param {boolean} [options.silentGroups=false]
  * @param {boolean} [options.skipPrint=false]
  * @param {boolean} [options.keepListPosition=false]
  */
@@ -1017,13 +1048,13 @@ export async function getCharacters(options = {}) {
     }
 }
 
-async function syncCharacters({ silent = false, silentGroups = false, skipPrint = false, keepListPosition = false } = {}) {
+async function syncCharacters({ silent = false, skipPrint = false, keepListPosition = false } = {}) {
     let lastError;
     let changed = false;
     takeInExtensionTagWrites();
     for (let attempt = 0; attempt <= SYNC_MAX_RETRIES; attempt++) {
         try {
-            changed = await syncHeldCharacters();
+            changed = await syncHeld();
             lastError = undefined;
             break;
         } catch (error) {
@@ -1059,7 +1090,6 @@ async function syncCharacters({ silent = false, silentGroups = false, skipPrint 
         }
     }
 
-    await getGroups({ silent: silentGroups });
     if (skipPrint) return;
     await printCharacters(!keepListPosition);
 }

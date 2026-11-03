@@ -74,7 +74,7 @@ async function postJson(urlPath, body) {
  * @param {number} seq
  */
 async function characterChangesSince(seq) {
-    return (await (await postJson('/api/characters/changes', { sinceSeq: seq })).json()).changes;
+    return (await (await postJson('/api/characters/changes', { sinceSeq: seq })).json()).changes.filter(change => change.type !== 'group');
 }
 
 /**

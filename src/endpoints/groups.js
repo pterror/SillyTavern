@@ -6,7 +6,7 @@ import express from 'express';
 import sanitize from 'sanitize-filename';
 import { sync as writeFileAtomicSync, default as writeFileAtomic } from 'write-file-atomic';
 
-import { color, tryParse, writeBackpressured } from '../util.js';
+import { color, tryParse } from '../util.js';
 import { forbiddenRegExp } from '../middleware/validateFileName.js';
 import { groupDigestContentHash, groupDigestFavHash, groupDigestTagIdsHash, normalizeFav } from '../../public/scripts/hash-utils.js';
 import { isValidGroupId, normalizeGroupId, normalizeGroupRecord, storedGroup } from '../group-id.js';
@@ -286,28 +286,17 @@ async function groupChats(store, request, tree, acted) {
 /**
  * @param {import('express').Request} request
  * @param {string[]} ids
- * @param {{ listed?: boolean }} [o]
  * @returns {Promise<(Record<string, any> | null)[]>}
  */
-export async function groupObjects(request, ids, { listed = false } = {}) {
+export async function groupObjects(request, ids) {
     const store = await requestStore(request);
     const { lib } = store;
     const entities = await lib.entities(await lib.ids(TYPE.group, ids));
     const groups = await lib.groups(ids);
-    const present = /** @type {bigint[]} */ (entities.filter(e => e !== null).map(e => /** @type {any} */ (e).id));
-    const stats = listed ? await lib.chatStats(present) : new Map();
     return Promise.all(groups.map(async (g, i) => {
         const e = entities[i];
         if (!g || !e) return null;
-        const group = { ...g, ...(await groupChats(store, request, e.id)) };
-        if (!listed) return group;
-        return {
-            ...group,
-            date_added: e.added,
-            create_date: new Date(e.added).toISOString(),
-            date_last_chat: stats.get(e.id)?.date_last_chat ?? 0,
-            chat_size: stats.get(e.id)?.chat_size ?? 0,
-        };
+        return { ...g, ...(await groupChats(store, request, e.id)) };
     }));
 }
 
@@ -321,40 +310,6 @@ export function groupDigests(group) {
         contentHash: groupDigestContentHash(group) >>> 0,
     };
 }
-
-const ALL_PAGE = 200;
-
-router.post('/all', async (request, response) => {
-    try {
-        const { lib } = await requestStore(request);
-        response.set('Content-Type', 'application/json');
-        response.status(200);
-        let wroteAny = false;
-        try {
-            await writeBackpressured(response, '[');
-            /** @type {string | undefined} */
-            let cursor;
-            for (;;) {
-                const page = await lib.query({ sortField: 'name', limit: ALL_PAGE, cursor, wantRows: false, wantTotal: false, wantHashes: true, groupsOnly: true });
-                const rows = /** @type {{ id: string }[]} */ (page.hashRows);
-                for (const group of await groupObjects(request, rows.map(r => r.id), { listed: true })) {
-                    if (!group) continue;
-                    await writeBackpressured(response, (wroteAny ? ',' : '') + JSON.stringify(group));
-                    wroteAny = true;
-                }
-                if (typeof page.cursor !== 'string' || rows.length === 0) break;
-                cursor = page.cursor;
-            }
-            await writeBackpressured(response, ']');
-        } catch (streamErr) {
-            console.error('[groups/all] Streaming response failed mid-flight; ending the connection:', streamErr);
-        }
-        return response.end();
-    } catch (err) {
-        console.error(err);
-        return response.status(500).send({ error: true });
-    }
-});
 
 const BATCH_MAX_IDS = 500;
 
