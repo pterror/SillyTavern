@@ -28,46 +28,6 @@ const keyMigrationMap = [
         migrate: (value) => value,
     },
     {
-        oldKey: 'enableExtensions',
-        newKey: 'extensions.enabled',
-        migrate: (value) => value,
-    },
-    {
-        oldKey: 'enableExtensionsAutoUpdate',
-        newKey: 'extensions.autoUpdate',
-        migrate: (value) => value,
-    },
-    {
-        oldKey: 'extras.disableAutoDownload',
-        newKey: 'extensions.models.autoDownload',
-        migrate: (value) => !value,
-    },
-    {
-        oldKey: 'extras.classificationModel',
-        newKey: 'extensions.models.classification',
-        migrate: (value) => value,
-    },
-    {
-        oldKey: 'extras.captioningModel',
-        newKey: 'extensions.models.captioning',
-        migrate: (value) => value,
-    },
-    {
-        oldKey: 'extras.embeddingModel',
-        newKey: 'extensions.models.embedding',
-        migrate: (value) => value,
-    },
-    {
-        oldKey: 'extras.speechToTextModel',
-        newKey: 'extensions.models.speechToText',
-        migrate: (value) => value,
-    },
-    {
-        oldKey: 'extras.textToSpeechModel',
-        newKey: 'extensions.models.textToSpeech',
-        migrate: (value) => value,
-    },
-    {
         oldKey: 'minLogLevel',
         newKey: 'logging.minLogLevel',
         migrate: (value) => value,

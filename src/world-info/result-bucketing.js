@@ -53,11 +53,9 @@ const DEFAULT_DEPTH = 4;
 
 /**
  * @param {WIActivatedEntry[]} activatedEntries
- * @param {object} [options]
- * @param {(entry: WIActivatedEntry) => string} [options.resolveContent]
  * @returns {WIBucketingResult}
  */
-export function bucketActivatedEntries(activatedEntries, { resolveContent = (entry) => entry.content } = {}) {
+export function bucketActivatedEntries(activatedEntries) {
     const WIBeforeEntries = [];
     const WIAfterEntries = [];
     const EMEntries = [];
@@ -70,7 +68,7 @@ export function bucketActivatedEntries(activatedEntries, { resolveContent = (ent
     const sortFn = (a, b) => b.order - a.order;
 
     [...activatedEntries].sort(sortFn).forEach((entry) => {
-        const content = resolveContent(entry);
+        const content = entry.content;
 
         if (!content) {
             return;

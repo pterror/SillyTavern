@@ -163,7 +163,7 @@ test.describe('Reasoning hidden blocks', () => {
 
     test('does not create duplicate reasoning editors when add is clicked repeatedly', async ({ page }) => {
         const result = await page.evaluate(async () => {
-            const context = window.SillyTavern.getContext();
+            const context = window.stTest.context();
             const chat = document.getElementById('chat');
             if (!chat) {
                 throw new Error('Missing #chat container');
@@ -281,7 +281,7 @@ test.describe('Reasoning hidden blocks', () => {
 
     test('collapses whitespace-only reasoning after confirming edit with show hidden enabled', async ({ page }) => {
         const result = await page.evaluate(async (messageHtml) => {
-            const context = window.SillyTavern.getContext();
+            const context = window.stTest.context();
             const chat = document.getElementById('chat');
             if (!chat) {
                 throw new Error('Missing #chat container');
@@ -328,7 +328,7 @@ test.describe('Reasoning hidden blocks', () => {
 
     test('collapses whitespace-only reasoning after canceling edit with show hidden enabled', async ({ page }) => {
         const result = await page.evaluate(async (messageHtml) => {
-            const context = window.SillyTavern.getContext();
+            const context = window.stTest.context();
             const chat = document.getElementById('chat');
             if (!chat) {
                 throw new Error('Missing #chat container');
@@ -374,7 +374,7 @@ test.describe('Reasoning hidden blocks', () => {
         const result = await page.evaluate(async (messageHtml) => {
             const scriptModule = await import('/script.js');
 
-            const context = window.SillyTavern.getContext();
+            const context = window.stTest.context();
             const chat = document.getElementById('chat');
             if (!chat) {
                 throw new Error('Missing #chat container');
@@ -428,7 +428,7 @@ test.describe('Reasoning hidden blocks', () => {
         const result = await page.evaluate(async (messageHtml) => {
             const scriptModule = await import('/script.js');
 
-            const context = window.SillyTavern.getContext();
+            const context = window.stTest.context();
             const chat = document.getElementById('chat');
             if (!chat) {
                 throw new Error('Missing #chat container');
@@ -485,7 +485,7 @@ test.describe('Reasoning hidden blocks', () => {
                 import('/scripts/power-user.js'),
             ]);
 
-            const context = window.SillyTavern.getContext();
+            const context = window.stTest.context();
             const chat = document.getElementById('chat');
             if (!chat) {
                 throw new Error('Missing #chat container');
@@ -522,7 +522,7 @@ test.describe('Reasoning hidden blocks', () => {
                 import('/scripts/power-user.js'),
             ]);
 
-            const context = window.SillyTavern.getContext();
+            const context = window.stTest.context();
             const chat = document.getElementById('chat');
             if (!chat) {
                 throw new Error('Missing #chat container');
@@ -569,7 +569,7 @@ test.describe('Reasoning hidden blocks', () => {
         const result = await page.evaluate(async (messageHtml) => {
             const slashCommandsModule = await import('/scripts/slash-commands.js');
 
-            const context = window.SillyTavern.getContext();
+            const context = window.stTest.context();
             const chat = document.getElementById('chat');
             if (!chat) {
                 throw new Error('Missing #chat container');
@@ -602,7 +602,7 @@ test.describe('Reasoning hidden blocks', () => {
         const result = await page.evaluate(async (messageHtml) => {
             const slashCommandsModule = await import('/scripts/slash-commands.js');
 
-            const context = window.SillyTavern.getContext();
+            const context = window.stTest.context();
             const chat = document.getElementById('chat');
             if (!chat) {
                 throw new Error('Missing #chat container');
@@ -636,7 +636,7 @@ test.describe('Reasoning hidden blocks', () => {
 
     test('keeps reasoning expanded after changing whitespace-only reasoning to visible content', async ({ page }) => {
         const result = await page.evaluate(async (messageHtml) => {
-            const context = window.SillyTavern.getContext();
+            const context = window.stTest.context();
             const chat = document.getElementById('chat');
             if (!chat) {
                 throw new Error('Missing #chat container');
@@ -671,7 +671,7 @@ test.describe('Reasoning hidden blocks', () => {
 
     test('collapses reasoning after changing whitespace-only reasoning to different whitespace', async ({ page }) => {
         const result = await page.evaluate(async (messageHtml) => {
-            const context = window.SillyTavern.getContext();
+            const context = window.stTest.context();
             const chat = document.getElementById('chat');
             if (!chat) {
                 throw new Error('Missing #chat container');

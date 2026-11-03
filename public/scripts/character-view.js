@@ -144,7 +144,7 @@ export function cleanRanges(ranges) {
  * @param {CharacterView['tags']} tags
  * @returns {'and'|'or'}
  */
-export function tagMode(tags) {
+function tagMode(tags) {
     return tags.mode === 'or' && tags.include.length > 1 ? 'or' : 'and';
 }
 

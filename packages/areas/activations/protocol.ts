@@ -13,7 +13,7 @@ export type Shown = {
     book: string;
     start: string;
     open: Opener;
-    why: 'key' | 'always' | 'sticky' | 'decorator' | 'external';
+    why: 'key' | 'always' | 'sticky' | 'decorator';
     keys: { key: string; where: Where[] }[];
     via: number[];
 };

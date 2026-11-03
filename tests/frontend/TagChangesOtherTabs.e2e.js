@@ -6,7 +6,7 @@ async function loadApp(page) {
     await testSetup.awaitST({ page });
     await page.evaluate(() => {
         window['__appReady'] = false;
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, () => { window['__appReady'] = true; });
     });
     await page.waitForFunction(() => window['__appReady'], null, { timeout: 60000 });
@@ -19,7 +19,7 @@ async function loadApp(page) {
  */
 async function api(page, path, body = {}) {
     return page.evaluate(async ({ path, body }) => {
-        const headers = window['SillyTavern'].getContext().getRequestHeaders();
+        const headers = window['stTest'].context().getRequestHeaders();
         const response = await fetch(path, { method: 'POST', headers, body: JSON.stringify(body) });
         if (!response.ok) throw new Error(`${path} -> ${response.status}`);
         const text = await response.text();
@@ -59,7 +59,7 @@ function tagBody(id, sortOrder, fields = {}) {
  */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
-        const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
+        const headers = window['stTest'].context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.append('ch_name', name);
         const response = await fetch('/api/characters/create', { method: 'POST', headers, body: form });
@@ -306,25 +306,4 @@ test.describe('tag changes from another tab', () => {
         }
     });
 
-    test('a field an extension changed here and hasn\'t stored yet survives another tab\'s edit of the same tag', async ({ page, browser }) => {
-        const { other, close } = await openOtherTab(browser);
-        try {
-            const id = 'tag-other-tabs-unstored';
-            await api(other, '/api/tags/create', tagBody(id, 1000));
-            const holder = await createHolder(other, 'TagOtherTabsUnstored', [id]);
-            await loadApp(page);
-            await selectCharacter(page, holder);
-            await expect.poll(() => heldTag(page, id), { timeout: 15000 }).toMatchObject({ id });
-
-            await page.evaluate(async (id) => { (await import('/scripts/tags.js')).tagsStore.getAll().find(t => t.id === id).color2 = '#abcdef'; }, id);
-            await api(other, '/api/tags/edit', { id, patch: { name: 'renamed elsewhere' } });
-            await expect.poll(() => heldTag(page, id), { timeout: 15000 }).toMatchObject({ name: 'renamed elsewhere', color2: '#abcdef' });
-
-            await page.evaluate(() => window['SillyTavern'].getContext().saveSettingsDebounced());
-            await expect.poll(async () => (await api(page, '/api/tags/by-ids', { ids: [id] })).tags[0], { timeout: 15000 })
-                .toMatchObject({ name: 'renamed elsewhere', color2: '#abcdef' });
-        } finally {
-            await close();
-        }
-    });
 });

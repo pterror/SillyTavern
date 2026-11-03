@@ -7,7 +7,7 @@ import { testSetup } from './frontent-test-utils.js';
 async function stored(page) {
     return page.evaluate(async () => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const { settings } = await (await fetch('/api/settings/get', { method: 'POST', headers, body: '{}' })).json();
         return JSON.parse(settings);
     });
@@ -20,7 +20,7 @@ async function stored(page) {
 async function savePartial(page, keys) {
     await page.evaluate(async (keys) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/settings/save-partial', { method: 'POST', headers, body: JSON.stringify({ keys }) });
         if (!response.ok) throw new Error(`save-partial: ${response.status}`);
     }, keys);
@@ -89,13 +89,13 @@ test.describe('shared settings panel fields', () => {
         await expect(page.locator('#amount_gen_counter')).toBeAttached();
         const preset = await page.evaluate(async () => {
             // @ts-ignore
-            const manager = SillyTavern.getContext().getPresetManager('novel');
+            const manager = stTest.context().getPresetManager('novel');
             const names = manager.getAllPresets();
             return names.find((/** @type {string} */ name) => name.includes('Kayra')) ?? names[0];
         });
         const lengths = await page.evaluate(async (name) => {
             // @ts-ignore
-            const headers = SillyTavern.getContext().getRequestHeaders();
+            const headers = stTest.context().getRequestHeaders();
             const data = await (await fetch('/api/settings/get', { method: 'POST', headers, body: '{}' })).json();
             const file = JSON.parse(data.novelai_settings[data.novelai_setting_names.indexOf(name)]);
             return { response: file.max_length, context: file.max_context, genamt: file.genamt };
@@ -103,7 +103,7 @@ test.describe('shared settings panel fields', () => {
         expect(lengths.genamt).toBeUndefined();
         await page.evaluate(async (name) => {
             // @ts-ignore
-            const manager = SillyTavern.getContext().getPresetManager('novel');
+            const manager = stTest.context().getPresetManager('novel');
             await manager.selectPreset(manager.findPreset(name));
         }, preset);
         await expect.poll(async () => (await stored(page)).amount_gen).toBe(lengths.response);

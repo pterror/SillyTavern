@@ -40,7 +40,7 @@ test('opening a chat reads no itemization; the Prompt view fetches its message\'
 
     const { avatar, ids } = await page.evaluate(async ({ name, first, second }) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', 'Welcome in.');
@@ -69,7 +69,7 @@ test('opening a chat reads no itemization; the Prompt view fetches its message\'
     const atOpen = await itemizationRequestsDuring(page, async () => {
         await page.evaluate(async (avatar) => {
             // @ts-ignore
-            await SillyTavern.getContext().getCharacters();
+            await stTest.context().getCharacters();
             const { selectCharacterByAvatar } = await import('/script.js');
             await selectCharacterByAvatar(avatar);
         }, avatar);
@@ -149,7 +149,7 @@ async function connectLlamaCpp(page, url) {
     await page.locator('#llamacpp_api_url_text').fill(url);
     await page.locator('#api_button_textgenerationwebui').click();
     // @ts-ignore
-    await expect.poll(() => page.evaluate(() => SillyTavern.getContext().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
+    await expect.poll(() => page.evaluate(() => stTest.context().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
     await page.locator('#API-status-top').click();
 }
 
@@ -162,7 +162,7 @@ for (const streaming of [true, false]) {
             const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
             const avatar = await page.evaluate(async (name) => {
                 // @ts-ignore
-                const context = SillyTavern.getContext();
+                const context = stTest.context();
                 const form = new FormData();
                 form.set('ch_name', name);
                 form.set('first_mes', 'Hello.');
@@ -176,7 +176,7 @@ for (const streaming of [true, false]) {
             await connectLlamaCpp(page, mock.url);
             await page.evaluate((streaming) => {
                 // @ts-ignore
-                SillyTavern.getContext().textCompletionSettings.streaming = streaming;
+                stTest.context().textCompletionSettings.streaming = streaming;
             }, streaming);
             await page.waitForTimeout(2500);
 
@@ -196,7 +196,7 @@ for (const streaming of [true, false]) {
 
             const stored = await page.evaluate(async () => {
                 // @ts-ignore
-                const context = SillyTavern.getContext();
+                const context = stTest.context();
                 const response = await fetch('/api/itemized-prompts/message', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ node_id: context.chat[2].node_id }) });
                 return response.ok ? (await response.json()).entry : null;
             });
@@ -210,7 +210,7 @@ for (const streaming of [true, false]) {
             await testSetup.awaitST({ page });
             await page.evaluate(async (avatar) => {
                 // @ts-ignore
-                await SillyTavern.getContext().getCharacters();
+                await stTest.context().getCharacters();
                 const { selectCharacterByAvatar } = await import('/script.js');
                 await selectCharacterByAvatar(avatar);
             }, avatar);

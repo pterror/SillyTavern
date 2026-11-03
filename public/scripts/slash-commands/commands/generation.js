@@ -2,7 +2,7 @@ import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
 import { activateSendButtons, deactivateSendButtons, generateQuietPrompt, generateRaw, stopGeneration } from '../../../script.js';
 import { chat_metadata } from '../../chat-state.js';
-import { saveMetadataDebounced } from '../../extensions.js';
+import { saveMetadataDebounced } from '../../metadata-store.js';
 import { t } from '../../i18n.js';
 import { addEphemeralStoppingString, flushEphemeralStoppingStrings } from '../../power-user.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '../SlashCommandArgument.js';

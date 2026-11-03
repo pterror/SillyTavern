@@ -109,7 +109,7 @@ export class SlashCommandScope {
 }
 
 
-export class SlashCommandScopeVariableExistsError extends Error {}
+class SlashCommandScopeVariableExistsError extends Error {}
 
 
-export class SlashCommandScopeVariableNotFoundError extends Error {}
+class SlashCommandScopeVariableNotFoundError extends Error {}

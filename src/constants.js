@@ -4,7 +4,6 @@ export const PUBLIC_DIRECTORIES = {
     images: 'public/img/',
     backups: 'backups/',
     sounds: 'public/sounds',
-    extensions: 'public/scripts/extensions',
 };
 
 export const SETTINGS_FILE = 'settings.json';
@@ -31,7 +30,6 @@ export const USER_DIRECTORY_TEMPLATE = Object.freeze({
     openAI_Settings: 'OpenAI Settings',
     textGen_Settings: 'TextGen Settings',
     themes: 'themes',
-    extensions: 'extensions',
     instruct: 'instruct',
     context: 'context',
     quickreplies: 'QuickReplies',

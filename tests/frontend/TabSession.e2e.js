@@ -47,7 +47,7 @@ async function moveToNewCharacter(page) {
     const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
     await page.evaluate(async (name) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', 'Hello.');

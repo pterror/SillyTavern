@@ -46,14 +46,3 @@ export function compareIgnoreCaseAndAccents(a, b, comparisonFunction) {
 export function equalsIgnoreCaseAndAccents(a, b) {
     return compareIgnoreCaseAndAccents(a, b, (a, b) => a === b);
 }
-
-/**
- * @param {{ names: string[], disabled: string[] }} extensions
- * @param {string} name
- * @returns {{name: string, enabled: boolean}|null}
- */
-export function findExtensionIn({ names, disabled }, name) {
-    const internalExtensionName = names.find(extName => equalsIgnoreCaseAndAccents(extName, name) || equalsIgnoreCaseAndAccents(extName, `third-party/${name}`));
-    if (!internalExtensionName) return null;
-    return { name: internalExtensionName, enabled: !disabled.includes(internalExtensionName) };
-}

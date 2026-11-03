@@ -26,7 +26,7 @@ export class SlashCommandAbortController extends AbstractEventTarget {
     }
 }
 
-export class SlashCommandAbortSignal {
+class SlashCommandAbortSignal {
     /**@type {boolean}*/ isQuiet = false;
     /**@type {boolean}*/ paused = false;
     /**@type {boolean}*/ aborted = false;

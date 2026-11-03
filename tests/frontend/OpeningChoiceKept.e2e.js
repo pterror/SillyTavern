@@ -14,7 +14,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 async function createCharacter(page, name, greetings) {
     return page.evaluate(async ({ name, greetings }) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', greetings[0]);
@@ -33,14 +33,14 @@ async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
     await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar, { timeout: 10000 });
     await expect.poll(() => page.evaluate((avatar) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         return context.characters[context.characterId]?.avatar === avatar && typeof context.chat[0]?.node_id === 'string';
     }, avatar), { timeout: 10000 }).toBe(true);
     await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1);
@@ -50,7 +50,7 @@ async function openCharacter(page, avatar) {
 async function shownText(page) {
     return page.evaluate(() => {
         // @ts-ignore
-        return SillyTavern.getContext().chat[0]?.mes;
+        return stTest.context().chat[0]?.mes;
     });
 }
 
@@ -65,7 +65,7 @@ async function showSwipe(page, swipeId, text) {
         const { swipe } = await import('/script.js');
         const { SWIPE_DIRECTION, SWIPE_SOURCE } = await import('/scripts/constants.js');
         // @ts-ignore
-        const current = SillyTavern.getContext().chat[0].swipe_id ?? 0;
+        const current = stTest.context().chat[0].swipe_id ?? 0;
         const direction = swipeId > current ? SWIPE_DIRECTION.RIGHT : SWIPE_DIRECTION.LEFT;
         await swipe(null, direction, { source: SWIPE_SOURCE.SWIPE_PICKER, forceMesId: 0, forceSwipeId: swipeId });
     }, swipeId);
@@ -80,7 +80,7 @@ async function showSwipe(page, swipeId, text) {
 async function swipeIndexOf(page, text) {
     return page.evaluate((text) => {
         // @ts-ignore
-        return SillyTavern.getContext().chat[0].swipes.indexOf(text);
+        return stTest.context().chat[0].swipes.indexOf(text);
     }, text);
 }
 
@@ -91,7 +91,7 @@ async function swipeIndexOf(page, text) {
 async function openings(page, avatar) {
     return page.evaluate(async (avatar) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/chats/openings', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar }) });
         return response.json();
     }, avatar);

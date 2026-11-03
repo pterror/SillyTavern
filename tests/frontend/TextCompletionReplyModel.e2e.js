@@ -56,10 +56,10 @@ for (const type of ['koboldcpp', 'generic']) {
             await page.evaluate((type) => { const field = $(`#${type}_api_url_text`); if (field.autocomplete('instance')) field.autocomplete('close'); }, type);
             await page.locator('#api_button_textgenerationwebui').click();
             // @ts-ignore
-            await expect.poll(() => page.evaluate(() => SillyTavern.getContext().onlineStatus), { timeout: 15000 }).toBe(MODEL);
+            await expect.poll(() => page.evaluate(() => stTest.context().onlineStatus), { timeout: 15000 }).toBe(MODEL);
             await page.locator('#API-status-top').click();
             // @ts-ignore
-            await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = false; });
+            await page.evaluate(() => { stTest.context().textCompletionSettings.streaming = false; });
             await page.waitForTimeout(2500);
 
             await chatBox(page).fill(`Question ${stamp}`);
@@ -68,7 +68,7 @@ for (const type of ['koboldcpp', 'generic']) {
 
             const stored = await page.evaluate(async (avatar) => {
                 // @ts-ignore
-                const headers = SillyTavern.getContext().getRequestHeaders();
+                const headers = stTest.context().getRequestHeaders();
                 const opened = await (await fetch('/api/chats/open', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar }) })).json();
                 return opened.messages?.[2]?.extra ?? null;
             }, avatar);

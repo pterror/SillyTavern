@@ -17,7 +17,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 async function createCharacter(page, name, greetings) {
     return page.evaluate(async ({ name, greetings }) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', greetings[0]);
@@ -36,14 +36,14 @@ async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
     await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar, { timeout: 10000 });
     await expect.poll(() => page.evaluate(() => {
         // @ts-ignore
-        return typeof SillyTavern.getContext().chat[0]?.node_id;
+        return typeof stTest.context().chat[0]?.node_id;
     }), { timeout: 10000 }).toBe('string');
     await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1);
 }
@@ -54,7 +54,7 @@ async function openCharacter(page, avatar) {
 async function openingState(page) {
     return page.evaluate(() => {
         // @ts-ignore
-        const chat = SillyTavern.getContext().chat;
+        const chat = stTest.context().chat;
         const m = chat[0];
         return {
             length: chat.length,
@@ -76,7 +76,7 @@ async function showSwipe(page, swipeId, text) {
         const { swipe } = await import('/script.js');
         const { SWIPE_DIRECTION, SWIPE_SOURCE } = await import('/scripts/constants.js');
         // @ts-ignore
-        const current = SillyTavern.getContext().chat[0].swipe_id ?? 0;
+        const current = stTest.context().chat[0].swipe_id ?? 0;
         const direction = swipeId > current ? SWIPE_DIRECTION.RIGHT : SWIPE_DIRECTION.LEFT;
         await swipe(null, direction, { source: SWIPE_SOURCE.SWIPE_PICKER, forceMesId: 0, forceSwipeId: swipeId });
     }, swipeId);
@@ -110,7 +110,7 @@ async function withOtherSession(browser, fn) {
 async function storedGreetings(session, avatar) {
     const card = await session.evaluate(async (avatar) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/characters/get', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar }) });
         if (!response.ok) throw new Error(`get failed: ${response.status}`);
         return response.json();
@@ -128,7 +128,7 @@ async function deleteGreetingViaApi(session, avatar, text) {
     expect(position).toBeGreaterThanOrEqual(0);
     const status = await session.evaluate(async ({ avatar, position, expectedHash }) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/characters/greetings/delete', {
             method: 'POST',
             headers,
@@ -177,7 +177,7 @@ async function editAcrossRemoteDeletes(page, browser, { name, greetings, index, 
         const refetched = page.waitForResponse(response => new URL(response.url()).pathname === '/api/characters/get', { timeout: 15000 });
         await page.evaluate(async (personality) => {
             // @ts-ignore
-            const { executeSlashCommandsWithOptions } = SillyTavern.getContext();
+            const { executeSlashCommandsWithOptions } = stTest.context();
             await executeSlashCommandsWithOptions(`/char-update personality="${personality}"`);
         }, `Personality ${name}`);
         expect((await refetched).ok()).toBe(true);
@@ -250,7 +250,7 @@ test.describe('editing the showing provisional greeting keeps it shown', () => {
                     otherEdited = true;
                     const status = await other.evaluate(async ({ avatar, expectedHash, text }) => {
                         // @ts-ignore
-                        const headers = SillyTavern.getContext().getRequestHeaders();
+                        const headers = stTest.context().getRequestHeaders();
                         const response = await fetch('/api/characters/greetings/edit', {
                             method: 'POST',
                             headers,

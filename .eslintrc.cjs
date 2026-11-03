@@ -1,28 +1,12 @@
-const noWholeFormCharacterSave = {
-    selector: 'ImportSpecifier[imported.name=/^(saveCharacterDebounced|createOrEditCharacter)$/]',
-    message: 'saveCharacterDebounced/createOrEditCharacter are upstream-compat exports for third-party extensions only - save the field you changed with saveCharacterField()/saveCharacterFieldDebounced() (script.js), or the greeting/chat/avatar path for it.',
-};
-
-const noAppChatSave = [
-    {
-        selector: 'CallExpression[callee.name=/^saveChat(Conditional|Debounced)?$/]',
-        message: 'saveChat()/saveChatConditional()/saveChatDebounced() are upstream-compat entry points for third-party extensions only (public/scripts/chat-compat-save.js). Send the node-addressed action for what you changed: chatOpEdit()/chatOpEditMany()/chatOpPatch()/chatOpAppend()/chatOpGraft()/chatOpCut()/chatOpAddAlternative()/chatOpSelect() (chat-store.js), saveMetadata() (metadata-store.js) for chat metadata.',
-    },
-    {
-        selector: 'CallExpression[callee.property.name=/^saveChat(Conditional|Debounced)?$/]',
-        message: 'getContext().saveChat() and the other whole-chat saves are upstream-compat entry points for third-party extensions only (public/scripts/chat-compat-save.js). Send the node-addressed action for what you changed: context.editMessage()/editMessages()/appendMessage(), or chatOpEdit()/chatOpPatch()/chatOpAppend()/chatOpCut()/... (chat-store.js), saveMetadata() for chat metadata.',
-    },
-];
-
 const pageTokenCounters = 'getTokenCountAsync|getPromptTokenCountAsync|getTokenCount|getTokenCountWithAnswer|countTokensOpenAI|countTokensOpenAIAsync|getTextTokens';
 const noPageTokenCounting = [
     {
         selector: `CallExpression[callee.name=/^(${pageTokenCounters})$/]`,
-        message: 'The page does not count tokens: the server sends counts with what they belong to (messages, alternatives, prompts); text only the page has goes in one batched request (getTokenCountsAsyncBatch). These per-text counters are upstream-compat API for third-party extensions only.',
+        message: 'The page does not count tokens: the server sends counts with what they belong to (messages, alternatives, prompts); text only the page has goes in one batched request (getTokenCountsAsyncBatch). Calls left from before that are marked with an eslint-disable comment.',
     },
     {
         selector: `CallExpression[callee.property.name=/^(${pageTokenCounters})$/]`,
-        message: 'The page does not count tokens: the server sends counts with what they belong to (messages, alternatives, prompts); text only the page has goes in one batched request (getTokenCountsAsyncBatch). getContext().getTokenCountAsync() and its siblings are upstream-compat API for third-party extensions only.',
+        message: 'The page does not count tokens: the server sends counts with what they belong to (messages, alternatives, prompts); text only the page has goes in one batched request (getTokenCountsAsyncBatch). Calls left from before that are marked with an eslint-disable comment.',
     },
 ];
 
@@ -89,7 +73,6 @@ module.exports = {
                 ePub: 'readonly',
                 pdfjsLib: 'readonly',
                 toastr: 'readonly',
-                SillyTavern: 'readonly',
             },
         },
         {
@@ -98,74 +81,16 @@ module.exports = {
                 'no-restricted-syntax': ['error',
                     {
                         selector: "CallExpression[callee.name='saveSettingsDebounced'][arguments.length=0]",
-                        message: "saveSettingsDebounced() requires at least one settings key — pass the key(s) you modified, e.g. saveSettingsDebounced('power_user'). Third-party extensions are exempt from this rule.",
+                        message: "saveSettingsDebounced() requires at least one settings key — pass the key(s) you modified, e.g. saveSettingsDebounced('power_user').",
                     },
-                    {
-                        selector: 'ImportDeclaration[source.value=/openai\\.js$/]',
-                        message: "openai.js was renamed to chat-completion-settings.js (it covers every Chat Completion provider, not just OpenAI) - import from there instead. The old path is kept only as a back-compat shim for third-party extensions.",
-                    },
-                    noWholeFormCharacterSave,
-                    ...noAppChatSave,
                     ...noPageTokenCounting,
                 ],
             },
         },
         {
-            files: ['public/**/*.js'],
-            excludedFiles: ['public/script.js', 'public/scripts/character-store.js'],
+            files: ['public/scripts/tokenizers.js'],
             rules: {
-                'no-restricted-syntax': ['error',
-                    {
-                        selector: "ImportSpecifier[imported.name='this_chid']",
-                        message: 'this_chid is a back-compat shim for third-party extensions/upstream parity only - use this_avatar/getCurrentCharacter()/charactersStore instead.',
-                    },
-                    noWholeFormCharacterSave,
-                    ...noAppChatSave,
-                    ...noPageTokenCounting,
-                ],
-            },
-        },
-        {
-            files: ['public/script.js'],
-            rules: {
-                'no-restricted-syntax': ['error', ...noAppChatSave, ...noPageTokenCounting],
-            },
-        },
-        {
-            files: ['public/scripts/extensions/**/*.js'],
-            rules: {
-                'no-restricted-syntax': ['error', noWholeFormCharacterSave, ...noAppChatSave, ...noPageTokenCounting],
-            },
-        },
-        {
-            files: ['src/**/*.js'],
-            rules: {
-                'no-restricted-syntax': ['error', ...noAppChatSave],
-            },
-        },
-        {
-            files: ['public/scripts/tokenizers.js', 'public/scripts/st-context.js'],
-            rules: {
-                'no-restricted-syntax': ['error',
-                    {
-                        selector: "ImportSpecifier[imported.name='this_chid']",
-                        message: 'this_chid is a back-compat shim for third-party extensions/upstream parity only - use this_avatar/getCurrentCharacter()/charactersStore instead.',
-                    },
-                    noWholeFormCharacterSave,
-                    ...noAppChatSave,
-                ],
-            },
-        },
-        {
-            files: ['public/scripts/chat-compat-save.js'],
-            rules: {
-                'no-restricted-syntax': ['error',
-                    {
-                        selector: "ImportSpecifier[imported.name='this_chid']",
-                        message: 'this_chid is a back-compat shim for third-party extensions/upstream parity only - use this_avatar/getCurrentCharacter()/charactersStore instead.',
-                    },
-                    noWholeFormCharacterSave,
-                ],
+                'no-restricted-syntax': 'off',
             },
         },
         {
@@ -204,7 +129,6 @@ module.exports = {
         '**/dist/**',
         '**/.git/**',
         'public/lib/**',
-        'public/scripts/extensions/third-party/**',
         'backups/**',
         'data/**',
         'cache/**',
@@ -213,8 +137,6 @@ module.exports = {
         'engine/target/**',
         'plugins/**',
         '**/*.min.js',
-        'public/scripts/extensions/quick-reply/lib/**',
-        'public/scripts/extensions/tts/lib/**',
     ],
     rules: {
         'jsdoc/no-undefined-types': ['warn', { disableReporting: true, markVariablesAsUsed: true }],

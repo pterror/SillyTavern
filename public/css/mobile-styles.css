@@ -172,12 +172,6 @@
         flex: 1 1 auto;
     }
 
-    #extensions_settings,
-    #extensions_settings2 {
-        width: 100% !important;
-        min-width: 100% !important;
-    }
-
     body:not(.waifuMode) .zoomed_avatar {
         min-width: 100px;
         min-height: 100px;
@@ -292,7 +286,6 @@
         background-position: center;
 
     }
-
 
     #sheld,
     .drawer-content {
@@ -413,40 +406,12 @@
         flex-basis: max(calc(100% / 3 - 10px), 190px);
     }
 
-    .expression-holder {
-        display: none;
-    }
-
     body.waifuMode #sheld {
         height: 40vh;
         height: 40dvh;
         top: 60vh;
         top: 60dvh;
         bottom: 0 !important;
-    }
-
-    body:not(.waifuMode) #expression-wrapper {
-        visibility: hidden;
-    }
-
-    #visual-novel-wrapper {
-        position: unset !important;
-    }
-
-    body.waifuMode .expression-holder {
-        max-width: 100vw;
-        height: 100vh;
-        width: max-content;
-        margin: 0 auto;
-        position: absolute;
-        left: 0;
-        right: 0;
-        filter: drop-shadow(2px 2px 2px #51515199);
-        z-index: 1 !important;
-    }
-
-    body.waifuMode img.expression {
-        object-fit: cover;
     }
 
     body.waifuMode .zoomed_avatar_container {
@@ -648,12 +613,6 @@ body.forceMobileView .bg_folder_breadcrumb .expander {
 body.forceMobileView #bg_current_folder_name {
         min-width: 0;
         flex: 1 1 auto;
-    }
-
-body.forceMobileView #extensions_settings,
-body.forceMobileView #extensions_settings2 {
-        width: 100% !important;
-        min-width: 100% !important;
     }
 
 body.forceMobileView:not(.waifuMode) .zoomed_avatar {
@@ -890,40 +849,12 @@ body.forceMobileView .drawer33pWidth {
         flex-basis: max(calc(100% / 3 - 10px), 190px);
     }
 
-body.forceMobileView .expression-holder {
-        display: none;
-    }
-
 body.forceMobileView.waifuMode #sheld {
         height: 40vh;
         height: 40dvh;
         top: 60vh;
         top: 60dvh;
         bottom: 0 !important;
-    }
-
-body.forceMobileView:not(.waifuMode) #expression-wrapper {
-        visibility: hidden;
-    }
-
-body.forceMobileView #visual-novel-wrapper {
-        position: unset !important;
-    }
-
-body.forceMobileView.waifuMode .expression-holder {
-        max-width: 100vw;
-        height: 100vh;
-        width: max-content;
-        margin: 0 auto;
-        position: absolute;
-        left: 0;
-        right: 0;
-        filter: drop-shadow(2px 2px 2px #51515199);
-        z-index: 1 !important;
-    }
-
-body.forceMobileView.waifuMode img.expression {
-        object-fit: cover;
     }
 
 body.forceMobileView.waifuMode .zoomed_avatar_container {
@@ -1055,10 +986,6 @@ body.forceMobileView.waifuMode:where(.drawerBarMobileBottom) #sheld {
 }
 
 @media screen and (max-width: 1000px) and (orientation: landscape) {
-    body.waifuMode img.expression {
-        object-fit: contain;
-    }
-
     .tag.excluded:after {
         top: unset;
         bottom: unset;
@@ -1114,7 +1041,6 @@ body.forceMobileView.waifuMode:where(.drawerBarMobileBottom) #sheld {
         top: unset;
         bottom: unset;
     }
-
 
     #leftSendForm,
     #rightSendForm {

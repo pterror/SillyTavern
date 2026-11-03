@@ -112,15 +112,13 @@ export class WorldInfoBuffer {
     #startDepth = 0;
     #worldInfoDepth;
     #globalDefaults;
-    #externalActivations;
 
     /**
      * @param {string[]} messages
      * @param {object} globalScanData
      * @param {import('../../public/scripts/world-info-globals.js').WorldInfoGlobals} globals
-     * @param {Map<string, object>} [externalActivations]
      */
-    constructor(messages, globalScanData, globals, externalActivations = new Map()) {
+    constructor(messages, globalScanData, globals) {
         this.#globalDefaults = matchDefaultsOf(globals);
         this.#worldInfoDepth = globals.world_info_depth;
         for (let depth = 0; depth < MAX_SCAN_DEPTH; depth++) {
@@ -128,11 +126,6 @@ export class WorldInfoBuffer {
             if (depth === messages.length - 1) break;
         }
         this.#globalScanData = globalScanData ?? {};
-        this.#externalActivations = externalActivations;
-    }
-
-    getExternallyActivated(entry) {
-        return this.#externalActivations.get(`${entry.world}.${entry.uid}`);
     }
 
     get(entry, scanState) {

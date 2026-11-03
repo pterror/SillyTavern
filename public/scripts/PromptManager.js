@@ -10,7 +10,7 @@ import { Message, MessageCollection, TokenHandler } from './chat-completion-sett
 import { power_user } from './power-user.js';
 import { debounce, waitUntilCondition, escapeHtml, uuidv4 } from './utils.js';
 import { debounce_timeout } from './constants.js';
-import { chatCompletionDefaultPrompts, promptManagerDefaultPromptOrder, promptManagerDefaultPromptOrders } from './prompt-manager-defaults.js';
+import { chatCompletionDefaultPrompts, promptManagerDefaultPromptOrder } from './prompt-manager-defaults.js';
 import { renderTemplateAsync } from './templates.js';
 import { Popup } from './popup.js';
 import { t } from './i18n.js';
@@ -203,7 +203,7 @@ class Prompt {
 /**
  * Representing a collection of prompts.
  */
-export class PromptCollection {
+class PromptCollection {
     /**
      * List of Prompts in the collection.
      * @type {Prompt[]}
@@ -2037,7 +2037,5 @@ class PromptManager {
 export {
     PromptManager,
     registerPromptManagerMigration,
-    chatCompletionDefaultPrompts,
-    promptManagerDefaultPromptOrders,
     Prompt,
 };

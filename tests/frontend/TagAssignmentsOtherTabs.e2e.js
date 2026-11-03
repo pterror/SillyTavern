@@ -6,7 +6,7 @@ async function loadApp(page) {
     await testSetup.awaitST({ page });
     await page.evaluate(() => {
         window['__appReady'] = false;
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, () => { window['__appReady'] = true; });
     });
     await page.waitForFunction(() => window['__appReady'], null, { timeout: 60000 });
@@ -19,7 +19,7 @@ async function loadApp(page) {
  */
 async function api(page, path, body = {}) {
     return page.evaluate(async ({ path, body }) => {
-        const headers = window['SillyTavern'].getContext().getRequestHeaders();
+        const headers = window['stTest'].context().getRequestHeaders();
         const response = await fetch(path, { method: 'POST', headers, body: JSON.stringify(body) });
         if (!response.ok) throw new Error(`${path} -> ${response.status}`);
         const text = await response.text();
@@ -56,7 +56,7 @@ async function createTag(page, id) {
  */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
-        const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
+        const headers = window['stTest'].context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.append('ch_name', name);
         const response = await fetch('/api/characters/create', { method: 'POST', headers, body: form });
@@ -135,13 +135,13 @@ test.describe('tag assignments changed in another tab', () => {
             expect(await listDrawerOpen(page)).toBe(false);
             expect(await heldTagIds(page, avatar)).toEqual([]);
             await page.evaluate((avatar) => {
-                window['__tagIds'] = window['SillyTavern'].getContext().characters.find(c => c.avatar === avatar).tag_ids;
+                window['__tagIds'] = window['stTest'].context().characters.find(c => c.avatar === avatar).tag_ids;
             }, avatar);
 
             expect(await api(other, '/api/tags/assign', { id: avatar, tagId })).toEqual({ result: 'ok', assigned: tagId, reason: null, defined: true });
             await expect.poll(() => heldTagIds(page, avatar), { timeout: 15000 }).toEqual([tagId]);
             await expect(page.locator(`#tagList .tag[id="${tagId}"]`)).toHaveCount(1);
-            expect(await page.evaluate(avatar => window['SillyTavern'].getContext().characters.find(c => c.avatar === avatar).tag_ids === window['__tagIds'], avatar)).toBe(true);
+            expect(await page.evaluate(avatar => window['stTest'].context().characters.find(c => c.avatar === avatar).tag_ids === window['__tagIds'], avatar)).toBe(true);
             expect(await listDrawerOpen(page)).toBe(false);
 
             await api(other, '/api/tags/unassign', { id: avatar, tagId });
@@ -234,42 +234,6 @@ test.describe('tag assignments changed in another tab', () => {
         } finally {
             await close();
         }
-    });
-
-    test('this tab\'s own assign is not applied a second time, and only that entity is re-read', async ({ page }) => {
-        await loadApp(page);
-        const tagId = 'tag-assign-other-tabs-own';
-        const avatar = await createCharacter(page, 'TagAssignOtherTabsOwn');
-        await createTag(page, tagId);
-        await page.reload();
-        await loadApp(page);
-        await holdCharacters(page, [avatar]);
-        await expect.poll(() => heldTagIds(page, avatar), { timeout: 15000 }).toEqual([]);
-        await page.evaluate(async (avatar) => {
-            const { selectCharacterByAvatar } = await import('/script.js');
-            await selectCharacterByAvatar(avatar);
-        }, avatar);
-        await expect.poll(() => page.evaluate(avatar => Object.hasOwn(window['SillyTavern'].getContext().tagMap, avatar), avatar)).toBe(true);
-        await page.waitForTimeout(STREAM_SETTLE_MS);
-
-        const requests = recordTagRequests(page);
-        await page.evaluate(({ avatar, tagId }) => {
-            const context = window['SillyTavern'].getContext();
-            window['__tagIds'] = context.characters.find(c => c.avatar === avatar).tag_ids;
-            context.tagMap[avatar].push(tagId);
-            context.saveSettingsDebounced();
-        }, { avatar, tagId });
-        await expect.poll(async () => (await api(page, '/api/tags/for', { ids: [avatar] }))[avatar], { timeout: 15000 }).toEqual([tagId]);
-        requests.length = 0;
-
-        await page.waitForTimeout(STREAM_SETTLE_MS);
-        expect(requests.map(r => r.path)).toContain('/api/tags/assignment-changes');
-        expect(requests.filter(r => r.path === '/api/tags/assign')).toEqual([]);
-        for (const request of requests.filter(r => r.path === '/api/tags/for')) {
-            expect(request.body.ids).toEqual([avatar]);
-        }
-        expect(await heldTagIds(page, avatar)).toEqual([tagId]);
-        expect(await page.evaluate(avatar => window['SillyTavern'].getContext().characters.find(c => c.avatar === avatar).tag_ids === window['__tagIds'], avatar)).toBe(true);
     });
 
     test('an ask that fails leaves the cursors where they were: the next ask brings what both changed', async ({ page, browser }) => {

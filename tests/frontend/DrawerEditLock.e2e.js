@@ -3,7 +3,7 @@ import { testSetup, setStackedDrawers } from './frontent-test-utils.js';
 
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise(resolve => {
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, resolve);
     }));
 }
@@ -14,7 +14,7 @@ async function awaitAppReady(page) {
  */
 async function openNewCharacter(page) {
     const avatar = await page.evaluate(async (name) => {
-        const context = window['SillyTavern'].getContext();
+        const context = window['stTest'].context();
         const form = new FormData();
         form.set('ch_name', name);
         form.set('description', 'A description.');
@@ -25,7 +25,7 @@ async function openNewCharacter(page) {
     }, `EditLock-${Date.now()}`);
     await page.locator('#charInfoDrawerIcon').click();
     await page.evaluate(async (avatar) => {
-        await window['SillyTavern'].getContext().getCharacters();
+        await window['stTest'].context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);

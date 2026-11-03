@@ -6,7 +6,7 @@ async function loadApp(page) {
     await testSetup.awaitST({ page });
     await page.evaluate(() => {
         window['__appReady'] = false;
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, () => { window['__appReady'] = true; });
     });
     await page.waitForFunction(() => window['__appReady'], null, { timeout: 60000 });
@@ -19,7 +19,7 @@ async function loadApp(page) {
  */
 async function api(page, path, body = {}) {
     return page.evaluate(async ({ path, body }) => {
-        const headers = window['SillyTavern'].getContext().getRequestHeaders();
+        const headers = window['stTest'].context().getRequestHeaders();
         const response = await fetch(path, { method: 'POST', headers, body: JSON.stringify(body) });
         if (!response.ok) throw new Error(`${path} -> ${response.status}`);
         const text = await response.text();
@@ -34,7 +34,7 @@ async function api(page, path, body = {}) {
  */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
-        const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
+        const headers = window['stTest'].context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.append('ch_name', name);
         const response = await fetch('/api/characters/create', { method: 'POST', headers, body: form });
@@ -144,7 +144,7 @@ async function deleteFromTagManager(page, tagId, mergeInto) {
 async function countSettingsUpdated(page) {
     await page.evaluate(() => {
         window['__settingsUpdated'] = 0;
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.on(eventTypes.SETTINGS_UPDATED, () => { window['__settingsUpdated']++; });
     });
 }
@@ -349,7 +349,7 @@ test.describe('Deleting a tag from the tag manager', () => {
         await expect(filterBar.locator(`.tag[id="${fixture.target}"].selected`)).toBeAttached();
         await expect(filterBar.locator(`.tag[id="${fixture.deleted}"]`)).toHaveCount(0);
         const stored = await page.evaluate(({ deleted, target }) => {
-            const { accountStorage } = window['SillyTavern'].getContext();
+            const { accountStorage } = window['stTest'].context();
             return { deleted: accountStorage.getItem(`CharacterList_tag_${deleted}`), target: accountStorage.getItem(`CharacterList_tag_${target}`) };
         }, fixture);
         expect(stored).toEqual({ deleted: null, target: 'SELECTED' });

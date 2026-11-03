@@ -7,7 +7,7 @@ import { testSetup } from './frontent-test-utils.js';
 async function stored(page) {
     return page.evaluate(async () => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const { settings } = await (await fetch('/api/settings/get', { method: 'POST', headers, body: '{}' })).json();
         return JSON.parse(settings);
     });
@@ -38,7 +38,7 @@ test.describe('chat completion settings panel', () => {
         await expect(page.locator('#temp_openai')).toHaveValue(next);
         await expect.poll(async () => (await stored(page)).oai_settings.temp_openai).toBe(Number(next));
         // @ts-ignore
-        expect(await page.evaluate(() => SillyTavern.getContext().chatCompletionSettings.temp_openai)).toBe(Number(next));
+        expect(await page.evaluate(() => stTest.context().chatCompletionSettings.temp_openai)).toBe(Number(next));
     });
 
     test('a value past the model\'s limit is refused and the control goes back', async ({ page }) => {
@@ -54,7 +54,7 @@ test.describe('chat completion settings panel', () => {
         const before = (await stored(page)).oai_settings.top_p_openai;
         await page.evaluate(async (value) => {
             // @ts-ignore
-            const headers = SillyTavern.getContext().getRequestHeaders();
+            const headers = stTest.context().getRequestHeaders();
             const keys = { 'oai_settings.top_p_openai': value };
             await fetch('/api/settings/save-partial', { method: 'POST', headers, body: JSON.stringify({ keys }) });
         }, before === 0.31 ? 0.32 : 0.31);
@@ -76,14 +76,14 @@ test.describe('chat completion settings panel', () => {
         await expect(page.locator('#wi_format_textarea')).toHaveValue('{0}');
     });
 
-    test('selecting a preset applies its values before the page says the preset changed', async ({ page }) => {
+    test('selecting a preset applies and stores its values', async ({ page }) => {
         await expect(page.locator('#temp_counter_openai')).toBeAttached();
         const name = `PresetTemp-${Date.now()}`;
         await edit(page, '#temp_counter_openai', '0.4');
         await expect(page.locator('#temp_openai')).toHaveValue('0.4');
         const before = await page.evaluate(async (name) => {
             // @ts-ignore
-            const manager = SillyTavern.getContext().getPresetManager('openai');
+            const manager = stTest.context().getPresetManager('openai');
             const before = manager.getSelectedPresetName();
             const { getChatCompletionPreset } = await import('/scripts/chat-completion-settings.js');
             await manager.savePreset(name, getChatCompletionPreset());
@@ -91,32 +91,24 @@ test.describe('chat completion settings panel', () => {
         }, name);
         await page.evaluate(async (before) => {
             // @ts-ignore
-            const manager = SillyTavern.getContext().getPresetManager('openai');
+            const manager = stTest.context().getPresetManager('openai');
             await manager.selectPreset(manager.findPreset(before));
         }, before);
         await edit(page, '#temp_counter_openai', '0.6');
         await expect(page.locator('#temp_openai')).toHaveValue('0.6');
-        const heard = await page.evaluate(async (name) => {
+        await page.evaluate(async (name) => {
             // @ts-ignore
-            const context = SillyTavern.getContext();
-            /** @type {number[]} */
-            const temps = [];
-            const listener = () => temps.push(context.chatCompletionSettings.temp_openai);
-            context.eventSource.on(context.eventTypes.PRESET_CHANGED, listener);
-            const manager = context.getPresetManager('openai');
+            const manager = stTest.context().getPresetManager('openai');
             await manager.selectPreset(manager.findPreset(name));
-            context.eventSource.removeListener(context.eventTypes.PRESET_CHANGED, listener);
-            return temps;
         }, name);
         expect((await stored(page)).oai_settings.temp_openai).toBe(0.4);
-        expect(heard).toEqual([0.4]);
         await expect(page.locator('#temp_openai')).toHaveValue('0.4');
     });
 
     test('the maximized editor of a field commits it when it closes', async ({ page }) => {
         await page.evaluate(async () => {
             // @ts-ignore
-            const headers = SillyTavern.getContext().getRequestHeaders();
+            const headers = stTest.context().getRequestHeaders();
             const keys = { 'oai_settings.chat_completion_source': 'claude' };
             await fetch('/api/settings/save-partial', { method: 'POST', headers, body: JSON.stringify({ keys }) });
         });

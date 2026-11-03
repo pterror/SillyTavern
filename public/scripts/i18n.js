@@ -16,30 +16,6 @@ let trackMissingDynamicTranslate = null;
 export const getCurrentLocale = () => localeFile;
 
 /**
- * Adds additional localization data to the current locale file.
- * @param {string} localeId Locale ID (e.g. 'fr-fr' or 'zh-cn')
- * @param {Record<string, string>} data Localization data to add
- */
-export function addLocaleData(localeId, data) {
-    if (!localeData) {
-        console.warn('Localization data not loaded yet. Additional data will not be added.');
-        return;
-    }
-
-    if (localeId !== localeFile) {
-        console.debug('Ignoring addLocaleData call for different locale', localeId);
-        return;
-    }
-
-    for (const [key, value] of Object.entries(data)) {
-        // Overrides for default locale data are not allowed
-        if (!Object.hasOwn(localeData, key)) {
-            localeData[key] = value;
-        }
-    }
-}
-
-/**
  * An observer that will check if any new i18n elements are added to the document
  * @type {MutationObserver}
  */

@@ -112,7 +112,7 @@ export function chatMessageHtml(message, text, render) {
 
 let queued = false;
 
-export function syncLoreMarks() {
+function syncLoreMarks() {
     if (queued) return;
     queued = true;
     queueMicrotask(() => {

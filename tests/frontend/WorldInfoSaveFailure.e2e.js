@@ -8,8 +8,7 @@ const BOOK_WRITE = /\/api\/worldinfo\/(entries\/apply|create)$/;
  */
 async function recordReports(page) {
     await page.evaluate(async () => {
-        const { eventSource, event_types } = await import('./script.js');
-        const reports = { error: [], success: [], updated: [] };
+        const reports = { error: [], success: [] };
         // @ts-ignore
         window.__wiReports = reports;
         for (const kind of ['error', 'success']) {
@@ -19,13 +18,12 @@ async function recordReports(page) {
                 return original.apply(window.toastr, args);
             };
         }
-        eventSource.on(event_types.WORLDINFO_UPDATED, (name) => reports.updated.push(name));
     });
 }
 
 /**
  * @param {import('@playwright/test').Page} page
- * @returns {Promise<{error: string[], success: string[], updated: string[]}>}
+ * @returns {Promise<{error: string[], success: string[]}>}
  */
 async function readReports(page) {
     // @ts-ignore
@@ -168,7 +166,6 @@ test.describe('a failed World Info write', () => {
             expect(failedReports.error).toHaveLength(1);
             expect(failedReports.error[0]).toContain(`'${bookName}' was not saved.`);
             expect(failedReports.success).toEqual([]);
-            expect(failedReports.updated).toEqual([]);
             expect(failed.characterWorldField).not.toBe(bookName);
             expect(failed.storedWorld).not.toBe(bookName);
             expect(failed.listed).toBe(false);
@@ -190,7 +187,6 @@ test.describe('a failed World Info write', () => {
             const importedReports = await readReports(page);
             expect(importedReports.error).toHaveLength(1);
             expect(importedReports.success).toHaveLength(1);
-            expect(importedReports.updated).toContain(bookName);
             expect(imported.storedWorld).toBe(bookName);
             expect(await serverBookNames(page)).toContain(bookName);
         } finally {
@@ -329,7 +325,6 @@ test.describe('a failed World Info write', () => {
         expect(reports.error).toHaveLength(2);
         expect(reports.error[0]).toContain(`'${refusedName}' was not saved. Check the server console for details.`);
         expect(reports.error[1]).toContain(`'${unreachableName}' was not saved. Check the server connection.`);
-        expect(reports.updated).toEqual([]);
 
         const onServer = await serverBookNames(page);
         expect(onServer).not.toContain(refusedName);
@@ -360,7 +355,6 @@ test.describe('a failed World Info write', () => {
             await expect.poll(async () => (await readReports(page)).error.length, { timeout: 10000 }).toBe(1);
             const reports = await readReports(page);
             expect(reports.error[0]).toContain(`'${bookName}' was not saved.`);
-            expect(reports.updated).toEqual([]);
         } finally {
             await page.unroute(BOOK_WRITE);
             await page.evaluate(async ({ bookName }) => {
@@ -421,7 +415,6 @@ test.describe('a failed World Info write', () => {
             const reports = await readReports(page);
             expect(reports.error).toHaveLength(1);
             expect(reports.error[0]).toContain(`Entry ${uids.first} (first edit) in '${bookName}' was not saved. Check the server connection.`);
-            expect(reports.updated).toEqual([bookName]);
         } finally {
             await page.unroute('**/api/worldinfo/entry/edit');
             await page.evaluate(async ({ bookName }) => {

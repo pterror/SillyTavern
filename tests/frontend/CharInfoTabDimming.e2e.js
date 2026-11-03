@@ -25,7 +25,7 @@ const stamp = () => `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise((resolve) => {
         // @ts-ignore
-        const ctx = SillyTavern.getContext();
+        const ctx = stTest.context();
         ctx.eventSource.once(ctx.eventTypes.APP_READY, resolve);
     }));
 }
@@ -38,7 +38,7 @@ async function awaitAppReady(page) {
 async function withCharacter(page, values, body) {
     const avatar = await page.evaluate(async ({ name, values }) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         for (const [key, value] of Object.entries(values)) form.set(key, value);
@@ -50,7 +50,7 @@ async function withCharacter(page, values, body) {
         await openCharacterManagementDrawer(page);
         await page.evaluate(async (avatar) => {
             // @ts-ignore
-            await SillyTavern.getContext().getCharacters();
+            await stTest.context().getCharacters();
             const { selectCharacterByAvatar } = await import('/script.js');
             await selectCharacterByAvatar(avatar);
         }, avatar);
@@ -59,7 +59,7 @@ async function withCharacter(page, values, body) {
     } finally {
         await page.evaluate(async (avatar) => {
             // @ts-ignore
-            const headers = SillyTavern.getContext().getRequestHeaders();
+            const headers = stTest.context().getRequestHeaders();
             const response = await fetch('/api/characters/delete', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, delete_chats: true }) });
             if (!response.ok) throw new Error(`delete failed: ${response.status}`);
         }, avatar);

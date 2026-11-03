@@ -1,4 +1,3 @@
-import { unshallowCharacter } from '../script.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
@@ -390,7 +389,6 @@ export class CharacterRepository {
      */
     async full(id) {
         if (this.store.has(id)) {
-            await unshallowCharacter(id);
             return this.store.get(id);
         }
         const response = await fetch('/api/characters/get', {

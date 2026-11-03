@@ -20,11 +20,11 @@ test.afterEach(async () => {
 
 test('a server-built prompt fills in variables, settings and the page\'s facts', async ({ page }) => {
     await connectLlamaCpp(page, llama.url);
-    const description = 'Mood {{getglobalvar::mood}}; ctx {{maxContext}}; ext {{hasExtension::memory}}; gen {{lastGenerationType}}; '
+    const description = 'Mood {{getglobalvar::mood}}; ctx {{maxContext}}; gen {{lastGenerationType}}; '
         + '{{if {{getglobalvar::mood}}}}shown{{/if}}; pick {{pick::a::b::c::d::e::f}}.';
     const avatar = await page.evaluate(async (description) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         context.variables.global.set('mood', 'sunny');
         const { saveSettings } = await import('/script.js');
         await saveSettings();
@@ -55,7 +55,7 @@ test('variables a server-built prompt\'s macros set are kept: the chat\'s stored
     await connectLlamaCpp(page, llama.url);
     const avatar = await page.evaluate(async () => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const form = new FormData();
         form.set('ch_name', `Macro setvar ${Date.now()}`);
         form.set('first_mes', 'Hello.');
@@ -72,7 +72,7 @@ test('variables a server-built prompt\'s macros set are kept: the chat\'s stored
     const variables = () => page.evaluate(async () => {
         const { chat_metadata } = await import('/scripts/chat-state.js');
         // @ts-ignore
-        const season = SillyTavern.getContext().variables.global.get('season');
+        const season = stTest.context().variables.global.get('season');
         return { weather: chat_metadata.variables?.weather, turns: chat_metadata.variables?.turns, season };
     });
     await expect.poll(variables, { timeout: 10000 }).toEqual({ weather: 'rainy', turns: 1, season: 'autumn' });

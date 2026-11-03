@@ -25,7 +25,7 @@ test.describe('live editor library bundle', () => {
         });
         expect(result.text).toBe('# hi *there*');
         expect(result.rendered).toBe('# hi *there*');
-        expect(result.modules).toEqual(['autocomplete', 'commands', 'langMarkdown', 'language', 'lezerCommon', 'lezerHighlight', 'lezerMarkdown', 'search', 'state', 'view']);
+        expect(result.modules).toEqual(['autocomplete', 'commands', 'langMarkdown', 'language', 'lezerHighlight', 'lezerMarkdown', 'search', 'state', 'view']);
     });
 
     test('lib.js still loads, and a copy the browser already has is answered with 304', async ({ page }) => {

@@ -4,7 +4,7 @@ import { testSetup } from './frontent-test-utils.js';
 /** @param {import('@playwright/test').Page} page */
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise(resolve => {
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, resolve);
     }));
 }
@@ -32,7 +32,7 @@ test.describe('Clicking a link in a chat message with click to edit on', () => {
         await page.evaluate(async () => {
             const { newAssistantChat } = await import('/script.js');
             await newAssistantChat({ temporary: true });
-            const context = window['SillyTavern'].getContext();
+            const context = window['stTest'].context();
             const message = {
                 name: 'Links',
                 is_user: false,

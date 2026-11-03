@@ -12,7 +12,7 @@ const SCROLLED_TO = 300;
 async function awaitAppReady(page) {
     await page.evaluate(() => {
         window['__appReady'] = false;
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, () => { window['__appReady'] = true; });
     });
     await page.waitForFunction(() => window['__appReady'], null, { timeout: 60000 });
@@ -32,7 +32,7 @@ for (const { layout, width, height } of [
             await awaitAppReady(page);
             await page.evaluate(async ({ count, prefix }) => {
                 // @ts-ignore
-                const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+                const headers = stTest.context().getRequestHeaders({ omitContentType: true });
                 for (let i = 0; i < count; i++) {
                     const form = new FormData();
                     form.set('ch_name', `${prefix} ${String(i).padStart(2, '0')}`);

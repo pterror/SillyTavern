@@ -1200,11 +1200,9 @@ export async function initPresetManager() {
             return;
         }
 
-        await eventSource.emit(event_types.PRESET_RENAMED_BEFORE, { apiId: apiId, oldName: oldName, newName: newName });
         const extensions = presetManager.readPresetExtensionField({ name: oldName, path: '' });
         await presetManager.renamePreset(newName);
         await presetManager.writePresetExtensionField({ name: newName, path: '', value: extensions });
-        await eventSource.emit(event_types.PRESET_RENAMED, { apiId: apiId, oldName: oldName, newName: newName });
 
         if (apiId === 'openai') {
             // This is a horrible mess, but prevents the renamed preset from being corrupted.
@@ -1278,13 +1276,11 @@ export async function initPresetManager() {
             return;
         }
 
-        const name = presetManager.getSelectedPresetName();
         const result = await presetManager.deletePreset();
 
         if (result) {
             const successToast = !presetManager.isAdvancedFormatting() ? t`Preset deleted` : t`Template deleted`;
             toastr.success(successToast);
-            await eventSource.emit(event_types.PRESET_DELETED, { apiId, name });
         } else {
             const warningToast = !presetManager.isAdvancedFormatting() ? t`Preset was not deleted from server` : t`Template was not deleted from server`;
             toastr.warning(warningToast);

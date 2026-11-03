@@ -14,7 +14,7 @@ import {
     saveReply, sendGenerationRequest, sendMessageAsUser, sendStreamingRequest, storeSentMessage,
     setCharacterName, setExtensionPrompt, setGenerationProgress, setInContextMessages, setSendButtonState,
     showStopButton, StreamingProcessor, substituteParams, swipe,
-    triggerAutoContinue, unblockGeneration, unshallowCharacter, updateMessageBlock, updateMessageItemizedPromptButton,
+    triggerAutoContinue, unblockGeneration, updateMessageBlock, updateMessageItemizedPromptButton,
 } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { main_api, max_context } from './generation-params.js';
@@ -33,8 +33,7 @@ import { appendFileContent, hasPendingFileAttachment } from './chats.js';
 import { GENERATION_TYPE_TRIGGERS, inject_ids, SWIPE_DIRECTION, SWIPE_SOURCE } from './constants.js';
 import { collectMessageTitles, isSystemChatItem } from './core-chat-predicates.js';
 import { eventSource, event_types } from './events.js';
-import { extension_settings, runGenerationInterceptors } from './extensions.js';
-import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
+import { extension_settings } from './extension-settings.js';
 import { generateGroupWrapper, getGroupDepthPrompts, groupsStore, is_group_generating, selected_group } from './group-chats.js';
 import { adjustHordeGenerationParams, horde_settings, isHordeGenerationNotAllowed, MIN_LENGTH } from './horde.js';
 import { t } from './i18n.js';
@@ -138,7 +137,7 @@ let replyInFlight = null;
 /**
  * @returns {number}
  */
-export function replyInFlightIndex() {
+function replyInFlightIndex() {
     if (replyInFlight === null) return -1;
     const message = /** @type {ChatMessage | undefined} */ (chat[replyInFlight.index]);
     if (message == null || message.is_user === true) return -1;
@@ -339,7 +338,6 @@ export async function finishStreamedReplyPersistence({ assistantNodeId }) {
  * @property {string} [quiet_prompt]
  * @property {boolean} [quietToLoud]
  * @property {boolean} [skipWIAN]
- * @property {number} [force_chid]
  * @property {string} [force_avatar]
  * @property {AbortSignal} [signal]
  * @property {string} [quietImage]
@@ -523,12 +521,12 @@ function rawActionWritesFor(type, lastMessage, lastMessageIndex, atStart) {
  * @param {boolean} dryRun
  * @returns {Promise<any>}
  */
-export async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage, quietName, jsonSchema = null, depth = 0 } = {}, dryRun = false) {
+export async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_avatar, signal, quietImage, quietName, jsonSchema = null, depth = 0 } = {}, dryRun = false) {
     /** @type {PendingSend[]} */
     const pendingSends = [];
     const replyBefore = replyInFlight;
     try {
-        return await generateOnce(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage, quietName, jsonSchema, depth }, dryRun, pendingSends);
+        return await generateOnce(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_avatar, signal, quietImage, quietName, jsonSchema, depth }, dryRun, pendingSends);
     } finally {
         if (replyInFlight !== replyBefore) replyInFlight = null;
         swipeAnchor = null;
@@ -543,14 +541,12 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
  * @param {PendingSend[]} pendingSends
  * @returns {Promise<any>}
  */
-async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage, quietName, jsonSchema = null, depth = 0 } = {}, dryRun = false, pendingSends = []) {
+async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_avatar, signal, quietImage, quietName, jsonSchema = null, depth = 0 } = {}, dryRun = false, pendingSends = []) {
     const metadataAtStart = changedMetadata();
     setGenerationProgress(0);
     generation_started = new Date();
 
-    await unshallowCharacter(getCurrentCharacter()?.avatar);
-
-    await eventSource.emit(event_types.GENERATION_STARTED, type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage }, dryRun);
+    await eventSource.emit(event_types.GENERATION_STARTED, type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_avatar, signal, quietImage }, dryRun);
 
     if (signal == null) {
         abortController = new AbortController();
@@ -567,8 +563,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             return Promise.resolve();
         }
     }
-
-    await eventSource.emit(event_types.GENERATION_AFTER_COMMANDS, type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage }, dryRun);
 
     if (main_api == 'kobold' && kai_settings.streaming_kobold && !kai_flags.can_use_streaming) {
         toastr.error(t`Streaming is enabled, but the version of Kobold used does not support token streaming.`, undefined, { timeOut: 10000, preventDuplicates: true });
@@ -600,7 +594,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
 
     if (selected_group != null && !is_group_generating) {
         if (!dryRun) {
-            return generateGroupWrapper(false, type, { quiet_prompt, force_chid, force_avatar, signal: abortController.signal, quietImage, jsonSchema });
+            return generateGroupWrapper(false, type, { quiet_prompt, force_avatar, signal: abortController.signal, quietImage, jsonSchema });
         }
 
         const group = groupsStore.get(selected_group);
@@ -769,29 +763,24 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     }
 
     coreChat = await Promise.all(coreChat.map(async (/** @type {ChatMessage} */ chatItem, index) => {
-        let message = chatItem === chat[0] ? substitutedFirstMessage : chatItem.mes;
-        let regexType = chatItem.is_user === true ? regex_placement.USER_INPUT : regex_placement.AI_OUTPUT;
-        let options = { isPrompt: true, depth: (coreChat.length - index - (isContinue ? 2 : 1)) };
-
-        let regexedMessage = getRegexedString(message ?? '', regexType, options);
+        const message = chatItem === chat[0] ? substitutedFirstMessage : chatItem.mes;
         const residentId = chat.indexOf(chatItem);
-        regexedMessage = await appendFileContent(chatItem, regexedMessage);
+        let text = await appendFileContent(chatItem, message ?? '');
         if (residentId >= 0) {
             chatItem = chat[residentId];
         }
 
-        regexedMessage = `${regexedMessage}${collectMessageTitles(chatItem)}`;
+        text = `${text}${collectMessageTitles(chatItem)}`;
 
         return {
             ...chatItem,
-            mes: regexedMessage,
+            mes: text,
             index,
         };
     }));
 
     const promptReasoning = new PromptReasoning();
     for (let i = coreChat.length - 1; i >= 0; i--) {
-        const depth = coreChat.length - i - (isContinue ? 2 : 1);
         const isPrefix = isContinue && i === coreChat.length - 1;
 
         const isOtherGroupMember = selected_group != null && coreChat[i].name !== name2;
@@ -803,7 +792,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 ? coreChat[i].mes
                 : promptReasoning.addToMessage(
                     coreChat[i].mes ?? '',
-                    reasoning === null ? null : getRegexedString(reasoning, regex_placement.REASONING, { isPrompt: true, depth: depth }),
+                    reasoning,
                     isPrefix,
                     coreChat[i].extra?.reasoning_duration ?? null,
                 ),
@@ -814,16 +803,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     }
 
     let this_max_context = getMaxPromptTokens();
-
-    if (!dryRun) {
-        const aborted = await runGenerationInterceptors(coreChat, this_max_context, type);
-
-        if (aborted) {
-            console.debug('Generation aborted by extension interceptors');
-            unblockGeneration(type);
-            return Promise.resolve();
-        }
-    }
 
     let rawActionGenerateData = null;
     if (!dryRun && (main_api === 'textgenerationwebui' || main_api === 'kobold' || main_api === 'novel' || main_api === 'koboldhorde')
@@ -1524,8 +1503,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 naiPreamble: nai_settings.preamble,
             };
 
-            await eventSource.emit(event_types.GENERATE_BEFORE_COMBINE_PROMPTS, data);
-
             return data.combinedPrompt == null ? combine() : data.combinedPrompt;
         };
 
@@ -1722,7 +1699,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                     streamingProcessor = null;
                     depth = depth + 1;
                     await ToolManager.saveFunctionToolInvocations(invocationResult.invocations);
-                    return Generate('normal', { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage, quietName, depth }, dryRun);
+                    return Generate('normal', { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_avatar, signal, quietImage, quietName, depth }, dryRun);
                 }
             }
 
@@ -1804,8 +1781,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         });
 
 
-        reasoning = getRegexedString(reasoning, regex_placement.REASONING);
-
         if (power_user.trim_spaces) {
             reasoning = reasoning.trim();
         }
@@ -1863,7 +1838,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
 
                 depth = depth + 1;
                 await ToolManager.saveFunctionToolInvocations(invocationResult.invocations);
-                return Generate('normal', { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage, quietName, depth }, dryRun);
+                return Generate('normal', { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_avatar, signal, quietImage, quietName, depth }, dryRun);
             }
         }
 

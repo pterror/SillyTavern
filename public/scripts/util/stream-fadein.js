@@ -1,6 +1,6 @@
 import { morphdom } from '../../lib.js';
 
-export function isSegmenterSupported() {
+function isSegmenterSupported() {
     return typeof Intl.Segmenter === 'function';
 }
 
@@ -9,7 +9,7 @@ export function isSegmenterSupported() {
  * @param {string} htmlContent
  * @param {'word'|'grapheme'|'sentence'} [granularity='word']
  */
-export function segmentTextInElement(htmlElement, htmlContent, granularity = 'word') {
+function segmentTextInElement(htmlElement, htmlContent, granularity = 'word') {
     htmlElement.innerHTML = htmlContent;
 
     if (!isSegmenterSupported()) {

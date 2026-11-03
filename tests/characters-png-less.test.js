@@ -106,14 +106,6 @@ describe('metadata edits on a PNG-less character stay DB-only', () => {
         expect(await hasImageFile('Alice.png')).toBe(false);
     });
 
-    test('/edit without an upload', async () => {
-        await createPngLessAlice();
-        const res = await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED' });
-        expect(res.status).toBe(200);
-        expect((await storedCard('Alice.png')).data.description).toBe('EDITED');
-        expect(await hasImageFile('Alice.png')).toBe(false);
-    });
-
     test('/edit-attribute', async () => {
         await createPngLessAlice();
         const res = await post('edit-attribute', { avatar_url: 'Alice.png', ch_name: 'Alice', field: 'description', value: 'ATTR' });
@@ -179,7 +171,7 @@ describe('image routes on a PNG-less character', () => {
 
     test('/export png returns the default avatar image carrying the current card', async () => {
         await createPngLessAlice();
-        await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'CURRENT' });
+        await post('merge-attributes', { avatar: 'Alice.png', data: { description: 'CURRENT' } });
 
         const res = await post('export', { avatar_url: 'Alice.png', format: 'png' });
         expect(res.status).toBe(200);

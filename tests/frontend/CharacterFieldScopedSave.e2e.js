@@ -22,7 +22,7 @@ async function setUnsavedInput(page, selector, value) {
 async function fetchStoredCharacter(page, avatar) {
     return page.evaluate(async (avatarUrl) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/characters/get', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatarUrl }) });
         return response.json();
     }, avatar);
@@ -54,7 +54,7 @@ async function createAndOpenCharacter(page, name) {
     const createResponse = page.waitForResponse(response => response.url().endsWith('/api/characters/create'));
     await page.locator('#create_button_label').click();
     const avatar = await (await createResponse).text();
-    await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
+    await page.waitForFunction(n => window['stTest'].context().name2 === n, name);
     await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar, { timeout: 10000 });
     await expect(page.locator('#right-nav-panel')).toHaveAttribute('data-menu-type', 'character_edit');
     return avatar;
@@ -172,7 +172,7 @@ test.describe('field-scoped character saves', () => {
         await page.locator('#create_button_label').click();
         const avatar = await (await createResponse).text();
 
-        await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
+        await page.waitForFunction(n => window['stTest'].context().name2 === n, name);
         await page.locator('#tagInput').waitFor({ state: 'visible', timeout: 10000 });
         try {
             const stored = await fetchStoredCharacter(page, avatar);

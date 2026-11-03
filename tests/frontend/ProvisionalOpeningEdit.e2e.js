@@ -14,7 +14,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 async function createCharacter(page, name, greetings) {
     return page.evaluate(async ({ name, greetings }) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', greetings[0]);
@@ -33,14 +33,14 @@ async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
     await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar, { timeout: 10000 });
     await expect.poll(() => page.evaluate(() => {
         // @ts-ignore
-        return typeof SillyTavern.getContext().chat[0]?.node_id;
+        return typeof stTest.context().chat[0]?.node_id;
     }), { timeout: 10000 }).toBe('string');
     await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1);
 }
@@ -52,7 +52,7 @@ async function openCharacter(page, avatar) {
 async function storedOpenings(page, avatar) {
     return page.evaluate(async (avatar) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/chats/openings', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, offset: 0, limit: 100 }) });
         const body = await response.json();
         return body.alternatives.map((/** @type {any} */ a) => ({ stored: a.node_id != null, mes: a.mes }));
@@ -65,7 +65,7 @@ async function storedOpenings(page, avatar) {
 async function opening(page) {
     return page.evaluate(() => {
         // @ts-ignore
-        const m = SillyTavern.getContext().chat[0];
+        const m = stTest.context().chat[0];
         return { mes: m.mes, node_id: m.node_id, swipes: [...m.swipes] };
     });
 }
@@ -121,7 +121,7 @@ test.describe('hiding messages that include a card greeting with no row', () => 
 
         await page.evaluate(async () => {
             // @ts-ignore
-            await SillyTavern.getContext().executeSlashCommandsWithOptions('/hide 0');
+            await stTest.context().executeSlashCommandsWithOptions('/hide 0');
         });
         await expect(page.locator('#chat .mes[mesid="0"]')).toHaveAttribute('is_system', 'true');
 
@@ -135,7 +135,7 @@ test.describe('hiding messages that include a card greeting with no row', () => 
         await openCharacter(page, avatar);
         const reloaded = await page.evaluate(() => {
             // @ts-ignore
-            const m = SillyTavern.getContext().chat[0];
+            const m = stTest.context().chat[0];
             return { mes: m.mes, is_system: m.is_system, node_id: m.node_id };
         });
         expect(reloaded.mes).toBe(g[0]);

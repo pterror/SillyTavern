@@ -8,7 +8,7 @@ import { ensureImageFormatSupported, getBase64Async, humanFileSize } from './uti
  * @type {import('../../src/users.js').UserViewModel} Logged in user
  */
 export let currentUser = null;
-export let accountsEnabled = false;
+let accountsEnabled = false;
 
 // Extend the session every 10 minutes
 const SESSION_EXTEND_INTERVAL = 10 * 60 * 1000;
@@ -35,7 +35,7 @@ export async function setUserControls(isEnabled) {
  * Check if the current user is an admin.
  * @returns {boolean} True if the current user is an admin
  */
-export function isAdmin() {
+function isAdmin() {
     if (!accountsEnabled) {
         return true;
     }

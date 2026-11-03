@@ -10,7 +10,7 @@ async function loadApp(page) {
     await testSetup.awaitST({ page });
     await page.evaluate(() => {
         window['__appReady'] = false;
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, () => { window['__appReady'] = true; });
     });
     await page.waitForFunction(() => window['__appReady'], null, { timeout: 60000 });
@@ -44,7 +44,7 @@ async function createUnheldCharacter(page, name) {
  * @returns {Promise<string>}
  */
 async function run(page, command) {
-    return page.evaluate(async (command) => (await window['SillyTavern'].getContext().executeSlashCommandsWithOptions(command)).pipe, command);
+    return page.evaluate(async (command) => (await window['stTest'].context().executeSlashCommandsWithOptions(command)).pipe, command);
 }
 
 test.describe('findCharAsync', () => {

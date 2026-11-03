@@ -10,7 +10,7 @@ async function loadApp(page) {
     await testSetup.awaitST({ page });
     await page.evaluate(() => {
         window['__appReady'] = false;
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, () => { window['__appReady'] = true; });
     });
     await page.waitForFunction(() => window['__appReady'], null, { timeout: 60000 });
@@ -70,21 +70,4 @@ test.describe('convertCharacterToPersona', () => {
         expect(result.persona?.description).toBe('A quiet librarian.');
     });
 
-    test('takes an index into getContext().characters, as upstream does', async ({ page }) => {
-        const name = `PersonaIndex ${Date.now()}`;
-        const avatar = await createCharacter(page, name, 'Keeps the lighthouse.');
-        await page.evaluate(async (avatar) => {
-            const { getCharacters } = await import('./scripts/character-list.js');
-            await getCharacters();
-            const { selectCharacterByAvatar } = await import('./script.js');
-            await selectCharacterByAvatar(avatar);
-        }, avatar);
-        const index = await page.evaluate(avatar => window['SillyTavern'].getContext().characters.findIndex(c => c.avatar === avatar), avatar);
-        expect(index).toBeGreaterThanOrEqual(0);
-
-        const result = await convert(page, index, `${name} (Persona).png`);
-
-        expect(result.converted).toBe(true);
-        expect(result.persona?.description).toBe('Keeps the lighthouse.');
-    });
 });

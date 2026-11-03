@@ -44,7 +44,7 @@ async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
@@ -98,7 +98,7 @@ function solidPng(r, g, b) {
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', 'Hello.');
@@ -135,11 +135,11 @@ test.describe('thumbnails', () => {
         const avatar = await createCharacter(page, `!Thumb-${Date.now()}`);
         await page.evaluate(async () => {
             // @ts-ignore
-            await SillyTavern.getContext().getCharacters();
+            await stTest.context().getCharacters();
         });
         const thumbnail = await page.evaluate(async (avatar) => {
             // @ts-ignore
-            const headers = SillyTavern.getContext().getRequestHeaders();
+            const headers = stTest.context().getRequestHeaders();
             return (await (await fetch('/api/characters/get', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar }) })).json()).thumbnail;
         }, avatar);
         expect(thumbnail).toMatch(STILL);
@@ -158,7 +158,7 @@ test.describe('thumbnails', () => {
         await openCharacterManagementDrawer(page);
         await page.evaluate(async (avatar) => {
             // @ts-ignore
-            await SillyTavern.getContext().getCharacters();
+            await stTest.context().getCharacters();
             const { selectCharacterByAvatar } = await import('/script.js');
             await selectCharacterByAvatar(avatar);
         }, avatar);
@@ -181,7 +181,7 @@ test.describe('thumbnails', () => {
     test('personas and backgrounds are listed with the thumbnails the server sent', async ({ page }) => {
         const personas = await page.evaluate(async () => {
             // @ts-ignore
-            const headers = SillyTavern.getContext().getRequestHeaders();
+            const headers = stTest.context().getRequestHeaders();
             return (await fetch('/api/avatars/get', { method: 'POST', headers })).json();
         });
         expect(personas.avatars.length).toBeGreaterThan(0);
@@ -223,19 +223,19 @@ test.describe('thumbnails', () => {
         const name = `!Moving-${Date.now()}`;
         const avatar = await page.evaluate(async ({ name, bytes }) => {
             // @ts-ignore
-            const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+            const headers = stTest.context().getRequestHeaders({ omitContentType: true });
             const form = new FormData();
             form.set('ch_name', name);
             form.set('avatar', new Blob([new Uint8Array(bytes)], { type: 'image/png' }), 'moving.png');
             const response = await fetch('/api/characters/create', { method: 'POST', headers, body: form });
             if (!response.ok) throw new Error(`create failed: ${response.status}`);
             // @ts-ignore
-            await SillyTavern.getContext().getCharacters();
+            await stTest.context().getCharacters();
             return (await response.text()).trim();
         }, { name, bytes: [...movingPng(60, 90, [[250, 0, 0], [0, 250, 0], [0, 0, 250]])] });
         const thumbnail = () => page.evaluate(async (avatar) => {
             // @ts-ignore
-            const headers = SillyTavern.getContext().getRequestHeaders();
+            const headers = stTest.context().getRequestHeaders();
             const character = await (await fetch('/api/characters/get', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar }) })).json();
             return (await import('/script.js')).characterThumbnail(character);
         }, avatar);

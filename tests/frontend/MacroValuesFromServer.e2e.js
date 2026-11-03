@@ -16,7 +16,7 @@ test.beforeEach(testSetup.awaitST);
 async function openWithDescription(page, description, notes = '') {
     const avatar = await page.evaluate(async ({ description, notes }) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         context.variables.global.set('mood', 'sunny');
         const { saveSettings } = await import('/script.js');
         await saveSettings();

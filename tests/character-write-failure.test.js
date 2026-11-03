@@ -92,13 +92,6 @@ async function storedCard() {
 }
 
 describe('a card write the store refuses fails its request', () => {
-    test('/edit without a new avatar', async () => {
-        breakCharacterWrites();
-        const res = await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'edited' });
-        expect(res.ok).toBe(false);
-        expect((await storedCard()).description).toBe('stored');
-    });
-
     test('/merge-attributes (the field editor\'s save)', async () => {
         breakCharacterWrites();
         const res = await post('merge-attributes', { avatar: 'Alice.png', description: 'edited', data: { description: 'edited' } });

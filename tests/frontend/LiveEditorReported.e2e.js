@@ -83,7 +83,7 @@ const value = (/** @type {import('@playwright/test').Page} */ page) => page.loca
 async function createAndOpen(page, values) {
     const avatar = await page.evaluate(async (values) => {
         // @ts-ignore
-        const ctx = SillyTavern.getContext();
+        const ctx = stTest.context();
         const form = new FormData();
         form.append('ch_name', `Reported-${Date.now()}-${Math.floor(Math.random() * 1e6)}`);
         for (const [key, value] of Object.entries(values)) form.append(key, value);
@@ -94,7 +94,7 @@ async function createAndOpen(page, values) {
     }, values);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().selectCharacterById(avatar);
+        await stTest.context().selectCharacterById(avatar);
     }, avatar);
     await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar);
 }
@@ -144,7 +144,7 @@ test.describe('live editor: reported problems', () => {
     test('ED6: in the chat box, quotes look as in chat: the quote color and no added quote marks', async ({ page }) => {
         await page.evaluate(async () => {
             // @ts-ignore
-            await SillyTavern.getContext().executeSlashCommandsWithOptions('/go Seraphina');
+            await stTest.context().executeSlashCommandsWithOptions('/go Seraphina');
         });
         const editor = page.locator('#send_form .cm-editor');
         await expect(editor).toHaveCount(1, { timeout: 10000 });

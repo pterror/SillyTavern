@@ -84,13 +84,13 @@ async function cardJsonOf(avatar) {
 const changeSeq = () => user.store.lib.changesEnd();
 
 describe('metadata-only edits do not touch the PNG', () => {
-    test('an /edit that changes only text leaves the file byte-identical and parks the content in the db', async () => {
+    test('a field merge that changes only text leaves the file byte-identical and parks the content in the db', async () => {
         expect((await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' })).status).toBe(200);
 
         expect(JSON.parse(await cardJsonOf('Alice.png')).data.description).toBe('original');
         const before = await fileStamp('Alice.png');
 
-        expect((await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED' })).status).toBe(200);
+        expect((await post('merge-attributes', { avatar: 'Alice.png', data: { description: 'EDITED' } })).status).toBe(200);
 
         expect(await fileStamp('Alice.png')).toEqual(before);
 
@@ -102,7 +102,7 @@ describe('metadata-only edits do not touch the PNG', () => {
 
     test('reads come back with the edited content, not the stale chunk', async () => {
         await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' });
-        await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED' });
+        await post('merge-attributes', { avatar: 'Alice.png', data: { description: 'EDITED' } });
 
         const got = await (await post('get', { avatar_url: 'Alice.png' })).json();
         expect(got.data.description).toBe('EDITED');
@@ -114,8 +114,8 @@ describe('metadata-only edits do not touch the PNG', () => {
     test('/batch resolves parked content for multiple characters in one request', async () => {
         await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' });
         await post('create', { ch_name: 'Bob', description: 'original', file_name: 'Bob' });
-        await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED-ALICE' });
-        await post('edit', { avatar_url: 'Bob.png', ch_name: 'Bob', description: 'EDITED-BOB' });
+        await post('merge-attributes', { avatar: 'Alice.png', data: { description: 'EDITED-ALICE' } });
+        await post('merge-attributes', { avatar: 'Bob.png', data: { description: 'EDITED-BOB' } });
 
         const batch = await (await post('batch', { avatars: ['Alice.png', 'Bob.png'] })).json();
         const byAvatar = Object.fromEntries(batch.map(c => [c.avatar, c]));
@@ -127,8 +127,8 @@ describe('metadata-only edits do not touch the PNG', () => {
         await post('create', { ch_name: 'Alice', description: 'v1', file_name: 'Alice' });
         const before = await fileStamp('Alice.png');
 
-        await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'v2' });
-        await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'v3' });
+        await post('merge-attributes', { avatar: 'Alice.png', data: { description: 'v2' } });
+        await post('merge-attributes', { avatar: 'Alice.png', data: { description: 'v3' } });
 
         expect(await fileStamp('Alice.png')).toEqual(before);
         const parked = JSON.parse(await cardJsonOf('Alice.png'));
@@ -151,7 +151,7 @@ describe('metadata-only edits do not touch the PNG', () => {
 describe('export still hands out a self-contained, current card', () => {
     test('PNG export carries the edited content even though the stored file does not', async () => {
         await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' });
-        await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED' });
+        await post('merge-attributes', { avatar: 'Alice.png', data: { description: 'EDITED' } });
 
         await expect(chunkOnDisk('Alice.png')).rejects.toThrow('PNG metadata does not contain any');
 
@@ -165,7 +165,7 @@ describe('export still hands out a self-contained, current card', () => {
 
     test('exporting does not mutate the stored file', async () => {
         await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' });
-        await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED' });
+        await post('merge-attributes', { avatar: 'Alice.png', data: { description: 'EDITED' } });
         const before = await fileStamp('Alice.png');
 
         await post('export', { avatar_url: 'Alice.png', format: 'png' });
@@ -177,7 +177,7 @@ describe('export still hands out a self-contained, current card', () => {
 
     test('JSON export uses the edited content too', async () => {
         await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' });
-        await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED' });
+        await post('merge-attributes', { avatar: 'Alice.png', data: { description: 'EDITED' } });
 
         const response = await post('export', { avatar_url: 'Alice.png', format: 'json' });
         expect(response.status).toBe(200);
@@ -188,7 +188,7 @@ describe('export still hands out a self-contained, current card', () => {
 describe('duplicate copies the current content', () => {
     test('the duplicate is image-only and its row holds the edited content', async () => {
         await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' });
-        await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED' });
+        await post('merge-attributes', { avatar: 'Alice.png', data: { description: 'EDITED' } });
 
         const response = await post('duplicate', { avatar_url: 'Alice.png' });
         expect(response.status).toBe(200);
@@ -202,7 +202,7 @@ describe('duplicate copies the current content', () => {
 describe('an image write keeps the stored card set', () => {
     test('the stored card is the content writeCard() was given', async () => {
         await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' });
-        await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED' });
+        await post('merge-attributes', { avatar: 'Alice.png', data: { description: 'EDITED' } });
 
         const cardJson = await cardJsonOf('Alice.png');
         await user.store.lib.writeCard(directories, 'Alice.png', /** @type {string} */ (cardJson));
@@ -597,27 +597,6 @@ describe('every greeting op answers with the greeting list as stored', () => {
     });
 });
 
-describe('/edit\'s content-hash conflict check survives the residency split', () => {
-    test('repeated load-then-save cycles keep matching, including after content is parked', async () => {
-        await post('create', { ch_name: 'Alice', description: 'v1', file_name: 'Alice' });
-
-        for (const description of ['v2', 'v3', 'v4']) {
-            const got = await (await post('get', { avatar_url: 'Alice.png' })).json();
-            const response = await fetch(`${baseUrl}/api/characters/edit`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'x-content-hashes': JSON.stringify({ fields: got._fieldsHash, body: got._bodyHash }),
-                },
-                body: JSON.stringify({ avatar_url: 'Alice.png', ch_name: 'Alice', description }),
-            });
-            expect(response.status).toBe(200);
-        }
-
-        expect(JSON.parse(await cardJsonOf('Alice.png')).data.description).toBe('v4');
-    });
-});
-
 describe('a character whose PNG is missing', () => {
     test('/batch still returns it from the stored card, never reading the PNG', async () => {
         await post('create', { ch_name: 'Alice', description: 'from-db', file_name: 'Alice' });
@@ -634,7 +613,7 @@ describe('/batch reads the stored rows', () => {
     test('returns the db\'s content for an edited character and the file\'s for an untouched one', async () => {
         await post('create', { ch_name: 'Alice', description: 'a', file_name: 'Alice' });
         await post('create', { ch_name: 'Bob', description: 'b', file_name: 'Bob' });
-        await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'a2' });
+        await post('merge-attributes', { avatar: 'Alice.png', data: { description: 'a2' } });
 
         const all = await (await post('batch', { avatars: ['Alice.png', 'Bob.png'] })).json();
         const byAvatar = Object.fromEntries(all.map(c => [c.avatar, c]));

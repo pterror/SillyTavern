@@ -69,16 +69,4 @@ assert.ok(parseRegexFromString('/abc/gi') instanceof RegExp);
     assert.equal(matchesEntryKeys(text, notAll, buffer), true, 'not all secondary words present (ice is missing)');
 }
 
-{
-    const forced = { uid: '1', world: 'w', content: 'forced' };
-    const buffer = new WorldInfoBuffer(['irrelevant'], {}, globalsWith(), new Map([['w.1', forced]]));
-    assert.equal(buffer.getExternallyActivated({ uid: '1', world: 'w' }), forced);
-    assert.equal(buffer.getExternallyActivated({ uid: '2', world: 'w' }), undefined);
-}
-
-{
-    const buffer = new WorldInfoBuffer(['irrelevant'], {}, globalsWith());
-    assert.equal(buffer.getExternallyActivated({ uid: '1', world: 'w' }), undefined);
-}
-
 console.log('key-matching.test.js: all assertions passed');

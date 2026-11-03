@@ -67,8 +67,6 @@ function Panel(props: { look: Look; view: Accessor<PanelView | undefined>; old: 
                 return t('Still in effect from an earlier reply');
             case 'decorator':
                 return t('Turned on by @@activate in its text');
-            case 'external':
-                return t('Turned on by an extension');
             case 'key': {
                 const found = entry.keys.filter((k) => k.where.length > 0);
                 if (found.length === 0) return null;

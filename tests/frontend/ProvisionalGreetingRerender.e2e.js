@@ -12,7 +12,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise((resolve) => {
         // @ts-ignore
-        const ctx = SillyTavern.getContext();
+        const ctx = stTest.context();
         ctx.eventSource.once(ctx.eventTypes.APP_READY, resolve);
     }));
 }
@@ -26,7 +26,7 @@ async function awaitAppReady(page) {
 async function createCharacter(page, name, greetings) {
     return page.evaluate(async ({ name, greetings }) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', greetings[0]);
@@ -47,7 +47,7 @@ async function createCharacter(page, name, greetings) {
 async function storeOpenings(page, avatar, name, texts) {
     return page.evaluate(async ({ avatar, name, texts }) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const contents = texts.map(mes => ({ name, is_user: false, is_system: false, send_date: Date.now(), mes, extra: {} }));
         const post = async (url, body) => {
             const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
@@ -70,7 +70,7 @@ async function storeOpenings(page, avatar, name, texts) {
 async function fetchOpenings(page, avatar) {
     return page.evaluate(async (avatar) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/chats/openings', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, offset: 0, limit: 1000 }) });
         const body = await response.json();
         return {
@@ -89,14 +89,14 @@ async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
     await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar, { timeout: 10000 });
     await expect.poll(() => page.evaluate(() => {
         // @ts-ignore
-        return typeof SillyTavern.getContext().chat[0]?.node_id;
+        return typeof stTest.context().chat[0]?.node_id;
     }), { timeout: 10000 }).toBe('string');
     await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1);
 }
@@ -107,7 +107,7 @@ async function openCharacter(page, avatar) {
 async function openingState(page) {
     return page.evaluate(() => {
         // @ts-ignore
-        const chat = SillyTavern.getContext().chat;
+        const chat = stTest.context().chat;
         const m = chat[0];
         return {
             length: chat.length,
@@ -130,7 +130,7 @@ async function showSwipe(page, swipeId, text) {
         const { swipe } = await import('/script.js');
         const { SWIPE_DIRECTION, SWIPE_SOURCE } = await import('/scripts/constants.js');
         // @ts-ignore
-        const current = SillyTavern.getContext().chat[0].swipe_id ?? 0;
+        const current = stTest.context().chat[0].swipe_id ?? 0;
         const direction = swipeId > current ? SWIPE_DIRECTION.RIGHT : SWIPE_DIRECTION.LEFT;
         await swipe(null, direction, { source: SWIPE_SOURCE.SWIPE_PICKER, forceMesId: 0, forceSwipeId: swipeId });
     }, swipeId);
@@ -194,7 +194,7 @@ async function popupDelete(page, index, remaining) {
 async function createPersona(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
-        const commands = SillyTavern.getContext().SlashCommandParser.commands;
+        const commands = stTest.context().SlashCommandParser.commands;
         return String(await commands['persona-create'].callback({ name, select: 'false' }));
     }, name);
 }
@@ -487,7 +487,7 @@ test.describe('persona switch redraws message 0', () => {
         await openCharacter(page, avatar);
         await page.evaluate(async () => {
             // @ts-ignore
-            const commands = SillyTavern.getContext().SlashCommandParser.commands;
+            const commands = stTest.context().SlashCommandParser.commands;
             await commands['send'].callback({}, 'a reply');
         });
         await expect.poll(async () => {
@@ -509,7 +509,7 @@ test.describe('persona switch redraws message 0', () => {
         const avatar = await createCharacter(page, `PersonaGroupMember-${s}`, [`Plain greeting ${s}`]);
         const groupId = await page.evaluate(async ({ avatar, name }) => {
             // @ts-ignore
-            const ctx = SillyTavern.getContext();
+            const ctx = stTest.context();
             const response = await fetch('/api/groups/create', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ name, members: [avatar] }) });
             const data = await response.json();
             const { openGroupById } = await import('/scripts/group-chats.js');

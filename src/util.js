@@ -34,7 +34,7 @@ let CONFIG_PATH = null;
  * Converts a configuration key to an environment variable key.
  * @param {string} key Configuration key
  * @returns {string} Environment variable key
- * @example keyToEnv('extensions.models.speechToText') // 'SILLYTAVERN_EXTENSIONS_MODELS_SPEECHTOTEXT'
+ * @example keyToEnv('logging.minLogLevel') // 'SILLYTAVERN_LOGGING_MINLOGLEVEL'
  */
 export const keyToEnv = (key) => 'SILLYTAVERN_' + String(key).toUpperCase().replace(/\./g, '_');
 
@@ -459,61 +459,6 @@ export function ensureDirectory(dirPath) {
         console.error(`ensureDirectory: Failed to prepare directory ${dirPath}`, error);
         return false;
     }
-}
-
-/**
- * Extracts all images from a ZIP archive.
- * @param {string} zipFilePath Path to the ZIP archive
- * @returns {Promise<[string, Buffer][]>} Array of image buffers
- */
-export async function getImageBuffers(zipFilePath) {
-    return new Promise((resolve, reject) => {
-        // Check if the zip file exists
-        if (!fs.existsSync(zipFilePath)) {
-            reject(new Error('File not found'));
-            return;
-        }
-
-        const imageBuffers = [];
-
-        yauzl.open(zipFilePath, { lazyEntries: true }, (err, zipfile) => {
-            if (err) {
-                reject(err);
-            } else {
-                zipfile.readEntry();
-                zipfile.on('entry', (entry) => {
-                    const mimeType = mime.lookup(entry.fileName);
-                    if (mimeType && mimeType.startsWith('image/') && !entry.fileName.startsWith('__MACOSX')) {
-                        zipfile.openReadStream(entry, (err, readStream) => {
-                            if (err) {
-                                reject(err);
-                            } else {
-                                const chunks = [];
-                                readStream.on('data', (chunk) => {
-                                    chunks.push(chunk);
-                                });
-
-                                readStream.on('end', () => {
-                                    imageBuffers.push([path.parse(entry.fileName).base, Buffer.concat(chunks)]);
-                                    zipfile.readEntry(); // Continue to the next entry
-                                });
-                            }
-                        });
-                    } else {
-                        zipfile.readEntry(); // Continue to the next entry
-                    }
-                });
-
-                zipfile.on('end', () => {
-                    resolve(imageBuffers);
-                });
-
-                zipfile.on('error', (err) => {
-                    reject(err);
-                });
-            }
-        });
-    });
 }
 
 /**

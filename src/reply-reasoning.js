@@ -1,9 +1,7 @@
 import { CHAT_COMPLETION_SOURCES, TEXTGEN_TYPES } from './constants.js';
 import { substituteParams } from './macro-substitution.js';
 import { cleanUpReply } from './reply-cleanup.js';
-import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
 import { readSettingsFor, settingsContextOf } from './settings-reads.js';
-import { PRESET_SETTINGS } from './prompt-itemization.js';
 import { ReasoningType, reasoningOf, withReasoning } from '../public/scripts/reasoning-block.js';
 
 export { ReasoningType };
@@ -22,8 +20,6 @@ const HIDDEN_REASONING_MODELS = ['gpt-4.5', 'o1', 'o3', 'gemini-2.0-flash-thinki
  * @property {string} promptPrefix
  * @property {boolean} trimSpaces
  * @property {string} replyBias
- * @property {object[]} regexScripts
- * @property {boolean} regexEnabled
  * @property {{name1: string, name2: string}} macroContext
  * @property {string} api
  * @property {string|null|Promise<string|null>} model
@@ -43,38 +39,12 @@ const HIDDEN_REASONING_MODELS = ['gpt-4.5', 'o1', 'o3', 'gemini-2.0-flash-thinki
  * @returns {Promise<ReplyFinishSettings>}
  */
 export async function readReplyFinishSettings(directories, { mainApi, source = null, model = null, avatar = null, groupId = null, name1 = '', name2 = '' }) {
-    const preset = PRESET_SETTINGS[mainApi];
-    const paths = ['power_user', 'extension_settings', 'oai_settings.show_thoughts'];
-    if (preset) paths.push(`${preset.key}.${preset.name}`, `${preset.key}.extensions`);
+    const paths = ['power_user', 'oai_settings.show_thoughts'];
     /** @type {any} */
     const settings = readSettingsFor(directories, settingsContextOf({ avatar, groupId }), paths);
     const powerUser = settings.power_user ?? {};
     const reasoning = powerUser.reasoning ?? {};
-    const extensionSettings = settings.extension_settings ?? {};
     const macroContext = { name1, name2 };
-
-    const regexEnabled = !(Array.isArray(extensionSettings.disabledExtensions) && extensionSettings.disabledExtensions.includes('regex'));
-    const regexScripts = [];
-    if (regexEnabled) {
-        if (Array.isArray(extensionSettings.regex)) regexScripts.push(...extensionSettings.regex);
-        if (avatar && Array.isArray(extensionSettings.character_allowed_regex) && extensionSettings.character_allowed_regex.includes(avatar)) {
-            try {
-                const { readCardContent } = await import('./endpoints/characters.js');
-                const raw = await readCardContent(directories, avatar);
-                const scoped = raw === undefined ? null : JSON.parse(raw)?.data?.extensions?.regex_scripts;
-                if (Array.isArray(scoped)) regexScripts.push(...scoped);
-            } catch (error) {
-                console.warn('Could not read the character\'s regex scripts:', error);
-            }
-        }
-        if (preset) {
-            const presetSettings = settings[preset.key] ?? {};
-            const presetName = presetSettings[preset.name];
-            const allowed = extensionSettings.preset_allowed_regex?.[mainApi === 'koboldhorde' ? 'kobold' : mainApi];
-            const presetScripts = presetSettings.extensions?.regex_scripts;
-            if (Array.isArray(allowed) && allowed.includes(presetName) && Array.isArray(presetScripts)) regexScripts.push(...presetScripts);
-        }
-    }
 
     /** @type {string[]} */
     const groupMemberNames = [];
@@ -108,8 +78,6 @@ export async function readReplyFinishSettings(directories, { mainApi, source = n
         promptPrefix: substituteParams(prefix, macroContext),
         trimSpaces: powerUser.trim_spaces !== false,
         replyBias: userPromptBias.length ? substituteParams(userPromptBias, macroContext) : '',
-        regexScripts,
-        regexEnabled,
         macroContext,
         api: mainApi === 'openai' ? (source || 'openai') : mainApi === 'textgenerationwebui' ? (source === 'ooba' ? 'textgenerationwebui' : String(source ?? '')) : mainApi,
         model,
@@ -319,16 +287,6 @@ function continuedReasoningPrefix(pending) {
 }
 
 /**
- * @param {string} reasoning
- * @param {ReplyFinishSettings} settings
- */
-function regexed(reasoning, settings) {
-    return getRegexedString(reasoning, regex_placement.REASONING, settings.regexScripts, {
-        regexExtensionEnabled: settings.regexEnabled, macroContext: settings.macroContext,
-    });
-}
-
-/**
  * @param {object} pending
  * @param {string} generatedText
  * @param {{data?: any}} [answer]
@@ -338,7 +296,7 @@ export function finishReply(pending, generatedText, answer = {}) {
     /** @type {any} */
     const settings = pending.finish ?? {
         mainApi: '', source: null, showThoughts: false, hiddenReasoningModel: false, autoParse: false, prefix: '', suffix: '', promptPrefix: '',
-        trimSpaces: false, replyBias: '', regexScripts: [], regexEnabled: false, macroContext: { name1: '', name2: '' },
+        trimSpaces: false, replyBias: '', macroContext: { name1: '', name2: '' },
     };
     const stream = pending.replyStream ?? null;
     const streamed = stream !== null;
@@ -373,7 +331,7 @@ export function finishReply(pending, generatedText, answer = {}) {
     if (anchorExtra.reasoning_type) extra.reasoning_type = anchorExtra.reasoning_type;
 
     if (native) {
-        const reasoning = streamed ? regexed(trimIf(native, settings.trimSpaces), settings) : trimIf(regexed(native, settings), settings.trimSpaces);
+        const reasoning = trimIf(native, settings.trimSpaces);
         if (pending.isContinue && anchorReasoning !== null && !continuedPrefix) {
             extra.reasoning = anchorReasoning + reasoning;
         } else {
@@ -386,7 +344,7 @@ export function finishReply(pending, generatedText, answer = {}) {
         const block = splitReasoningBlock(mes, settings, streamed || Boolean(continuedPrefix));
         if (block) {
             mes = block.content;
-            extra = withReasoning(extra, regexed(block.reasoning, settings), ReasoningType.Parsed);
+            extra = withReasoning(extra, block.reasoning, ReasoningType.Parsed);
             if (streamed) extra.reasoning_duration = measured;
         } else if (continuedPrefix) {
             mes = mes.slice(continuedPrefix.length);

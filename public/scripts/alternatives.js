@@ -99,7 +99,7 @@ export const alternativesOldPage = {
  * @param {number} messageId
  * @param {number} [at]
  */
-export function openAlternatives(messageId, at) {
+function openAlternatives(messageId, at) {
     const message = chat[messageId];
     if (!canOpenSwipePickerForMessage(messageId)) {
         toastr.info(t`This message has no other alternatives yet.`);

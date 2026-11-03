@@ -15,7 +15,6 @@ import {
     readAllSettings,
     valuesAtPaths,
     readAllSettingsAsJson,
-    readSettingsAtPaths,
     writeSettingsKeys,
     writeAllSettings,
     writeNamedSettings,
@@ -27,8 +26,6 @@ import { settingsDocumentOf } from '../settings-documents.js';
 import { openSettingsDocument } from '../settings-document.js';
 import { bundleRef, unitOfPath } from '../settings-model/settings-compat.js';
 
-const ENABLE_EXTENSIONS = !!getConfigValue('extensions.enabled', true, 'boolean');
-const ENABLE_EXTENSIONS_AUTO_UPDATE = !!getConfigValue('extensions.autoUpdate', true, 'boolean');
 const ENABLE_ACCOUNTS = !!getConfigValue('enableUserAccounts', false, 'boolean');
 const ENABLE_REQUEST_COMPRESSION = !!getConfigValue('performance.requestCompression.enabled', false, 'boolean');
 const REQUEST_COMPRESSION_MIN = bytes.parse(getConfigValue('performance.requestCompression.minPayloadSize', '256kb'));
@@ -416,37 +413,6 @@ function rangeOf(body) {
     return { from: typeof body?.range?.from === 'string' ? body.range.from : 'default', to: typeof body?.range?.to === 'string' ? body.range.to : 'character' };
 }
 
-router.post('/toggle-extension', async function (request, response) {
-    try {
-        const directories = request.user.directories;
-        const { name, enabled } = request.body ?? {};
-        if (typeof name !== 'string' || !name) {
-            return response.status(400).send({ result: 'error', error: 'Body must include a non-empty string "name".' });
-        }
-        if (typeof enabled !== 'boolean') {
-            return response.status(400).send({ result: 'error', error: 'Body must include a boolean "enabled".' });
-        }
-
-        const path = 'extension_settings.disabledExtensions';
-        const current = readSettingsAtPaths(directories, [path])[path];
-        const disabledExtensions = Array.isArray(current) ? current : [];
-        const nextDisabledExtensions = enabled
-            ? disabledExtensions.filter(x => x !== name)
-            : disabledExtensions.includes(name) ? disabledExtensions : [...disabledExtensions, name];
-
-        await writeSettingsKeys(directories, { [path]: nextDisabledExtensions });
-        triggerAutoSave(request.user.profile.handle, request.user.directories);
-        response.send({
-            result: 'ok',
-            disabledExtensions: nextDisabledExtensions,
-            settingsHash: pageSettingsHash(readAllSettings(directories)),
-        });
-    } catch (err) {
-        console.error(err);
-        response.send(err);
-    }
-});
-
 router.post('/get', storeRoute('reading settings', async (request, response) => {
     let settings;
     try {
@@ -469,8 +435,6 @@ router.post('/get', storeRoute('reading settings', async (request, response) => 
     const world_names = (await (await requestStore(request)).lib.books.list()).map(book => book.file_id);
 
     const themes = await parsed('theme');
-    const quickReplyPresets = await parsed('quickReplies');
-
     const instruct = await parsed('template.instruct');
     const context = await parsed('template.context');
     const sysprompt = await parsed('template.sysprompt');
@@ -496,13 +460,10 @@ router.post('/get', storeRoute('reading settings', async (request, response) => 
         textgenerationwebui_presets,
         textgenerationwebui_preset_names,
         themes,
-        quickReplyPresets,
         instruct,
         context,
         sysprompt,
         reasoning,
-        enable_extensions: ENABLE_EXTENSIONS,
-        enable_extensions_auto_update: ENABLE_EXTENSIONS_AUTO_UPDATE,
         enable_accounts: ENABLE_ACCOUNTS,
         request_compression: {
             enabled: ENABLE_REQUEST_COMPRESSION,

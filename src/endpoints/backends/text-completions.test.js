@@ -1623,52 +1623,6 @@ async function run() {
         }
     }
 
-    await tokenizerCase('profile generation, unmapped model: dropped warning, no llama', async () => {
-        const presetDir = path.join(directories.root, 'TextGen Settings');
-        fs.mkdirSync(presetDir, { recursive: true });
-        directories.textGen_Settings = presetDir;
-        fs.writeFileSync(path.join(presetDir, 'BiasPreset.json'), JSON.stringify({
-            temp: 0.7,
-            logit_bias: [
-                { id: 'a', text: 'hello', value: -5 },
-                { id: 'b', text: '{world}', value: 3 },
-                { id: 'c', text: '[11,12]', value: 2 },
-            ],
-        }));
-
-        let backendBody = null;
-        const fakeBackend = await startFakeBackend((_req, res, body) => {
-            backendBody = JSON.parse(body);
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ choices: [{ text: 'ok' }] }));
-        });
-        const settings = buildSettingsFixture();
-        settings.power_user.tokenizer = 99;
-        settings.extension_settings.connectionManager = {
-            profiles: [{ id: 'p-unmapped', api: 'generic', 'api-url': fakeBackend.url, model: 'some-unheard-of-model', preset: 'BiasPreset' }],
-        };
-        writeAllSettings(directories, settings);
-
-        const llamaBefore = llamaEncodes().length;
-        const app = buildTestApp();
-        const { status, data } = await postGenerate(app, {
-            connection_profile_id: 'p-unmapped',
-            messages: [{ role: 'user', content: 'Hi there.' }],
-            max_tokens: 20,
-            stream: false,
-        });
-        fakeBackend.server.close();
-
-        assert.equal(status, 200);
-        assert.equal(llamaEncodes().length, llamaBefore, 'no llama encode for a model no tokenizer is known for');
-        assert.deepEqual(backendBody.logit_bias, { 11: 2, 12: 2 }, 'raw-id entries still go through');
-        const dropped = (data.warnings ?? []).filter(w => w.kind === 'dropped');
-        assert.equal(dropped.length, 1, 'one dropped warning');
-        assert.deepEqual(dropped[0].entries, ['hello', '{world}']);
-        assert.ok(dropped[0].message.includes('hello') && dropped[0].message.includes('{world}'), 'the message lists the entries');
-        assert.equal(dropped[0].key, `textgenerationwebui|generic|${fakeBackend.url}|some-unheard-of-model|none`);
-    });
-
     await tokenizerCase('raw-action generation, unmapped model: bans and bias needing ids dropped and listed', async () => {
         const entryAvatar = await writeCharacter('EntryDrop.png', { name: 'EntryDrop', data: { name: 'EntryDrop', first_mes: 'Hi.' } });
         await saveBranch(user.store, { avatar: entryAvatar }, 'entry-drop-chat', [

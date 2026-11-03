@@ -7,7 +7,7 @@ import { testSetup } from './frontent-test-utils.js';
 async function stored(page) {
     return page.evaluate(async () => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const { settings } = await (await fetch('/api/settings/get', { method: 'POST', headers, body: '{}' })).json();
         return JSON.parse(settings);
     });
@@ -20,7 +20,7 @@ async function stored(page) {
 async function savePartial(page, keys) {
     await page.evaluate(async (keys) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/settings/save-partial', { method: 'POST', headers, body: JSON.stringify({ keys }) });
         if (!response.ok) throw new Error(`save-partial: ${response.status}`);
     }, keys);
@@ -57,7 +57,7 @@ test.describe('text generation settings panel', () => {
         await expect(page.locator('#temp_textgenerationwebui')).toHaveValue('0.45');
         await expect.poll(async () => (await stored(page)).textgenerationwebui_settings.temp).toBe(0.45);
         // @ts-ignore
-        expect(await page.evaluate(() => SillyTavern.getContext().textCompletionSettings.temp)).toBe(0.45);
+        expect(await page.evaluate(() => stTest.context().textCompletionSettings.temp)).toBe(0.45);
     });
 
     test('neutralize sets the samplers; top K is off as each backend takes it', async ({ page }) => {

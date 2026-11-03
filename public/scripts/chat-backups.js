@@ -1,9 +1,10 @@
 import { t } from './i18n.js';
 import { callGenericPopup, Popup, POPUP_TYPE } from './popup.js';
 import { getFileExtension, sortMoments, timestampToMoment } from './utils.js';
-import { displayPastChats, importCharacterChat } from '/script.js';
+import { displayPastChats, importCharacterChat, getCurrentCharacter, name2 } from '/script.js';
 import { getRequestHeaders } from '/scripts/request-headers.js';
-import { importGroupChat } from './group-chats.js';
+import { importGroupChat, selected_group } from './group-chats.js';
+import { name1 } from './app-selection-state.js';
 
 class BackupsBrowser {
     /** @type {HTMLElement} */
@@ -84,16 +85,15 @@ class BackupsBrowser {
             return;
         }
 
-        const context = SillyTavern.getContext();
 
         const formData = new FormData();
         formData.set('file_type', extension);
         formData.set('avatar', file);
-        formData.set('avatar_url', context.characterAvatar || '');
-        formData.set('user_name', context.name1);
-        formData.set('character_name', context.name2);
+        formData.set('avatar_url', getCurrentCharacter()?.avatar || '');
+        formData.set('user_name', name1);
+        formData.set('character_name', name2);
 
-        const importFn = context.groupId ? importGroupChat : importCharacterChat;
+        const importFn = selected_group ? importGroupChat : importCharacterChat;
         const result = await importFn(formData, { refresh: false });
 
         if (result.length === 0) {

@@ -8,7 +8,7 @@ import { SlashCommandBrowser } from './slash-commands/SlashCommandBrowser.js';
 import { renderTemplateAsync } from './templates.js';
 import { debounce } from './utils.js';
 
-export const DEFAULT_HELP_TOPIC = 'overview';
+const DEFAULT_HELP_TOPIC = 'overview';
 
 const BUILT_IN_TOPICS = [
     { id: 'overview', title: () => t`Overview`, aliases: ['help'], order: 10, render: templateTopic('help') },
@@ -99,11 +99,6 @@ export function openHelp(name) {
         return;
     }
     open = buildPanel(topic.id);
-}
-
-/** @returns {boolean} */
-export function isHelpOpen() {
-    return open !== null;
 }
 
 /**

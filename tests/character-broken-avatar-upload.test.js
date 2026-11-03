@@ -120,14 +120,4 @@ describe('a broken avatar upload', () => {
         expect(await res.text()).toMatch(/couldn't read my-avatar\.webp as an image/);
         expect((await imageOf('Alice.png')).equals(before)).toBe(true);
     });
-
-    test('an edit with a broken new avatar fails and keeps the old avatar', async () => {
-        const created = await postForm('create', { ch_name: 'Alice', file_name: 'Alice' }, null);
-        expect(created.status).toBe(200);
-        const before = await imageOf('Alice.png');
-
-        const res = await postForm('edit', { avatar_url: 'Alice.png', ch_name: 'Alice' }, notAnImage);
-        expect(res.status).toBe(400);
-        expect((await imageOf('Alice.png')).equals(before)).toBe(true);
-    });
 });

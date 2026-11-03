@@ -186,7 +186,7 @@ $('#rm_ch_create_block').on('input', function () { countTokensDebounced(); });
 /**
  * @returns {boolean}
  */
-export function isCharacterEditorShowing() {
+function isCharacterEditorShowing() {
     const panel = document.getElementById('char-info-panel');
     return Boolean(panel?.classList.contains('openDrawer'))
         && getComputedStyle(panel).visibility !== 'hidden'
@@ -205,7 +205,7 @@ export function countCharTokensWhenShown() {
     countTokensWhenShownDebounced();
 }
 
-export function countCharTokensWhenShownSoon() {
+function countCharTokensWhenShownSoon() {
     countTokensWhenShownSoonDebounced();
 }
 
@@ -540,8 +540,6 @@ export function dragElement($elmnt) {
     });
 }
 
-export async function initMovingUI() {}
-
 /**@type {HTMLTextAreaElement} */
 const sendTextArea = document.querySelector('#send_textarea');
 const chatBlock = document.getElementById('chat');
@@ -558,7 +556,7 @@ function autoFitSendTextArea() {
         chatBlock.scrollTop = chatBlock.scrollHeight - (chatBlock.offsetHeight + originalScrollBottom);
     }
 }
-export const autoFitSendTextAreaDebounced = debounce(autoFitSendTextArea, debounce_timeout.short);
+const autoFitSendTextAreaDebounced = debounce(autoFitSendTextArea, debounce_timeout.short);
 
 // ---------------------------------------------------
 

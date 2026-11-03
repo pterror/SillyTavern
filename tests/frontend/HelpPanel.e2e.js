@@ -3,7 +3,7 @@ import { testSetup, setStackedDrawers, chatBox } from './frontent-test-utils.js'
 
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise(resolve => {
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, resolve);
     }));
 }
@@ -14,7 +14,7 @@ async function awaitAppReady(page) {
  */
 function runSlash(page, command) {
     return page.evaluate(async (text) => {
-        const result = await window['SillyTavern'].getContext().executeSlashCommandsWithOptions(text);
+        const result = await window['stTest'].context().executeSlashCommandsWithOptions(text);
         return result?.pipe;
     }, command);
 }
@@ -31,11 +31,11 @@ test.describe('Help panel', () => {
     });
 
     test('/help opens the panel without adding to the chat or blocking the page', async ({ page }) => {
-        const chatLength = await page.evaluate(() => window['SillyTavern'].getContext().chat.length);
+        const chatLength = await page.evaluate(() => window['stTest'].context().chat.length);
         expect(await runSlash(page, '/help')).toBe('');
         await expect(panel(page)).toBeVisible();
         await expect(activeTopic(page)).toHaveAttribute('data-topic', 'overview');
-        expect(await page.evaluate(() => window['SillyTavern'].getContext().chat.length)).toBe(chatLength);
+        expect(await page.evaluate(() => window['stTest'].context().chat.length)).toBe(chatLength);
         expect(await page.locator('dialog[open]').count()).toBe(0);
 
         await page.locator('#leftNavDrawerIcon').click();
@@ -142,7 +142,7 @@ test.describe('Help panel', () => {
 
     test('extensions can add a topic, reachable by /help and listed', async ({ page }) => {
         await page.evaluate(() => {
-            window['SillyTavern'].getContext().registerHelpTopic({
+            window['stTest'].context().registerHelpTopic({
                 id: 'my-extension',
                 title: 'My Extension',
                 aliases: ['myext'],
@@ -178,10 +178,10 @@ test.describe('Hotkeys', () => {
     const overlay = page => page.locator('.hotkeyOverlay');
 
     test('the Hotkeys topic lists every handled hotkey, greying out ones that don\'t work right now', async ({ page }) => {
-        await page.evaluate(() => { window['SillyTavern'].getContext().powerUserSettings.enable_md_hotkeys = false; });
+        await page.evaluate(() => { window['stTest'].context().powerUserSettings.enable_md_hotkeys = false; });
         await runSlash(page, '/help hotkeys');
         const content = page.locator('.helpLayer .helpContent');
-        for (const combo of ['Ctrl+Enter', 'Ctrl+Space', 'F9', 'Ctrl+\\', 'Ctrl+F', 'Hold Ctrl']) {
+        for (const combo of ['Ctrl+Enter', 'Ctrl+Space', 'Ctrl+F', 'Hold Ctrl']) {
             await expect(content.locator('kbd', { hasText: combo }).first(), combo).toBeVisible();
         }
         await expect(content.locator('.hotkeyItem', { has: page.locator('kbd', { hasText: /^Ctrl\+B$/ }) })).toHaveClass(/hotkeyInactive/);
@@ -237,7 +237,7 @@ test.describe('Hotkeys', () => {
     });
 
     test('the setting turns it off, and extensions\' hotkeys are listed', async ({ page }) => {
-        await page.evaluate(() => window['SillyTavern'].getContext().registerHotkey({ category: 'My Extension', keys: ['Ctrl+Alt+M'], label: 'Do my thing' }));
+        await page.evaluate(() => window['stTest'].context().registerHotkey({ category: 'My Extension', keys: ['Ctrl+Alt+M'], label: 'Do my thing' }));
         await page.keyboard.down('Control');
         await expect(overlay(page)).toContainText('Do my thing');
         await page.keyboard.up('Control');

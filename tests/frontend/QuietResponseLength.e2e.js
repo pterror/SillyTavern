@@ -14,7 +14,7 @@ test('a quiet prompt with a response length asks the backend for that many token
         const asked = before + 7;
         await page.evaluate(async (responseLength) => {
             // @ts-ignore
-            await SillyTavern.getContext().generateQuietPrompt({ quietPrompt: 'Say hi.', responseLength });
+            await stTest.context().generateQuietPrompt({ quietPrompt: 'Say hi.', responseLength });
         }, asked);
         const completion = llama.log.filter(entry => entry.url.startsWith('/completion')).at(-1);
         expect(completion?.body.n_predict).toBe(asked);
@@ -32,16 +32,16 @@ test('the same over chat completion: max_tokens is the quiet prompt\'s, the sett
         const avatar = await createCharacter(page, `QuietLengthCC-${Date.now()}`);
         await openCharacter(page, avatar);
         // @ts-ignore
-        const before = await page.evaluate(() => SillyTavern.getContext().chatCompletionSettings.openai_max_tokens);
+        const before = await page.evaluate(() => stTest.context().chatCompletionSettings.openai_max_tokens);
         const asked = before + 7;
         await page.evaluate(async (responseLength) => {
             // @ts-ignore
-            await SillyTavern.getContext().generateQuietPrompt({ quietPrompt: 'Say hi.', responseLength });
+            await stTest.context().generateQuietPrompt({ quietPrompt: 'Say hi.', responseLength });
         }, asked);
         const completion = mock.log.filter(entry => entry.url.includes('/chat/completions')).at(-1);
         expect(completion?.body.max_tokens).toBe(asked);
         // @ts-ignore
-        expect(await page.evaluate(() => SillyTavern.getContext().chatCompletionSettings.openai_max_tokens)).toBe(before);
+        expect(await page.evaluate(() => stTest.context().chatCompletionSettings.openai_max_tokens)).toBe(before);
     } finally {
         await mock.close();
     }

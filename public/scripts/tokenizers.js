@@ -9,10 +9,8 @@ import { kai_settings } from './kai-settings.js';
 import { SERVER_INPUTS, textgen_types, textgenerationwebui_settings as textgen_settings, getTextGenServer, getTextGenModel } from './textgen-settings.js';
 import { horde_settings } from './horde.js';
 import { showTokenizerWarnings } from './tokenizer-notices.js';
-export { BYTES_PER_TOKEN as CHARACTERS_PER_TOKEN_RATIO };
 
-export const BYTES_PER_TOKEN = 3.35;
-export const TOKENIZER_WARNING_KEY = 'tokenizationWarningShown';
+const BYTES_PER_TOKEN = 3.35;
 export const TOKENIZER_SUPPORTED_KEY = 'tokenizationSupported';
 
 export const tokenizers = {
@@ -126,111 +124,6 @@ export const tokenizers = {
     NEMOTRON_3: 1086,
 };
 
-// A list of local tokenizers that support encoding and decoding token ids.
-export const ENCODE_TOKENIZERS = [
-    tokenizers.LLAMA,
-    tokenizers.MISTRAL,
-    tokenizers.YI,
-    tokenizers.LLAMA3,
-    tokenizers.GEMMA,
-    tokenizers.JAMBA,
-    tokenizers.QWEN2,
-    tokenizers.COMMAND_R,
-    tokenizers.COMMAND_A,
-    tokenizers.NEMO,
-    tokenizers.DEEPSEEK,
-    tokenizers.QWEN3,
-    tokenizers.LLAMA3_1,
-    tokenizers.NEMO_TEKKEN,
-    tokenizers.KIMI,
-    tokenizers.QWEN2_VL,
-    tokenizers.QWEN2_5,
-    tokenizers.QWEN3_5,
-    tokenizers.QWEN3_5_BASE,
-    tokenizers.QWEN3_8,
-    tokenizers.CODEQWEN1_5,
-    tokenizers.DEEPSEEK_V2,
-    tokenizers.DEEPSEEK_V2_5,
-    tokenizers.DEEPSEEK_R1,
-    tokenizers.DEEPSEEK_V3_1,
-    tokenizers.DEEPSEEK_V3_2,
-    tokenizers.DEEPSEEK_V4,
-    tokenizers.DEEPSEEK_V4_1,
-    tokenizers.DEEPSEEK_R1_DISTILL_QWEN,
-    tokenizers.DEEPSEEK_R1_DISTILL_LLAMA,
-    tokenizers.DEEPSEEK_R1_0528_QWEN3,
-    tokenizers.GEMMA_4,
-    tokenizers.GEMMA_4_ASSISTANT,
-    tokenizers.GEMMA_3_IT,
-    tokenizers.GEMMA_3_PT,
-    tokenizers.GEMMA_3N,
-    tokenizers.CODEGEMMA,
-    tokenizers.GEMMA_2_JPN,
-    tokenizers.LLAMA3_1_BASE,
-    tokenizers.LLAMA3_3,
-    tokenizers.LLAMA4,
-    tokenizers.LLAMA_GUARD_3_8B,
-    tokenizers.LLAMA_GUARD_3_11B_VISION,
-    tokenizers.LLAMA_GUARD_2,
-    tokenizers.LLAMA_GUARD_4,
-    tokenizers.MISTRAL_7B_V0_3,
-    tokenizers.MATHSTRAL,
-    tokenizers.MISTRAL_LARGE_2411,
-    tokenizers.MISTRAL_7B_V0_3_HF,
-    tokenizers.CODESTRAL_22B_HF,
-    tokenizers.CODESTRAL_MAMBA_HF,
-    tokenizers.MATHSTRAL_HF,
-    tokenizers.MISTRAL_LARGE_2411_HF,
-    tokenizers.MINISTRAL_8B_2410_HF,
-    tokenizers.MINISTRAL_3_INSTRUCT_HF,
-    tokenizers.MINISTRAL_3_BASE_HF,
-    tokenizers.MISTRAL_SMALL_4_HF,
-    tokenizers.SHIELDSTRAL_HF,
-    tokenizers.MISTRAL_SMALL_3_HF,
-    tokenizers.COMMAND_A_VISION,
-    tokenizers.COMMAND_A_PLUS,
-    tokenizers.AYA_VISION_32B,
-    tokenizers.TINY_AYA,
-    tokenizers.TINY_AYA_BASE,
-    tokenizers.COMMAND_R_08_2024_HF,
-    tokenizers.AYA_VISION_32B_HF,
-    tokenizers.GLM_4_0414,
-    tokenizers.GLM_4_5,
-    tokenizers.GLM_5,
-    tokenizers.GLM_EDGE,
-    tokenizers.AUTOGLM_PHONE,
-    tokenizers.KIMI_K2_BASE,
-    tokenizers.KIMI_K2_THINKING,
-    tokenizers.KIMI_K2_5,
-    tokenizers.KIMI_K3,
-    tokenizers.KIMI_VL,
-    tokenizers.MOONLIGHT,
-    tokenizers.MINIMAX_TEXT_01,
-    tokenizers.MINIMAX_M1,
-    tokenizers.MINIMAX_M2,
-    tokenizers.MINIMAX_M3,
-    tokenizers.GPT_OSS,
-    tokenizers.PHI_1,
-    tokenizers.PHI_3_HF,
-    tokenizers.PHI_3_SMALL,
-    tokenizers.PHI_3_VISION,
-    tokenizers.PHI_4,
-    tokenizers.PHI_4_MINI,
-    tokenizers.PHI_4_MULTIMODAL,
-    tokenizers.PHI_4_REASONING,
-    tokenizers.PHI_4_REASONING_VISION,
-    tokenizers.NEMOTRON_4,
-    tokenizers.LLAMA_3_1_NEMOTRON_51B,
-    tokenizers.NEMOTRON_H,
-    tokenizers.LLAMA_3_1_NEMOTRON_NANO_VL,
-    tokenizers.ACEREASON_NEMOTRON_1_1,
-    tokenizers.NEMOTRON_NANO_12B_V2_VL,
-    tokenizers.NEMOTRON_3,
-    // uncomment when NovelAI releases Kayra and Clio weights, lol
-    //tokenizers.NERD,
-    //tokenizers.NERD2,
-];
-
 /**
  * @param {string} [api]
  * @returns {boolean}
@@ -244,7 +137,7 @@ function isOpenAiApi(api = main_api) {
  * Populated in initTokenziers due to circular dependencies.
  * @type {string[]}
  */
-export const TEXTGEN_TOKENIZERS = [];
+const TEXTGEN_TOKENIZERS = [];
 
 const TOKENIZER_URLS = {
     [tokenizers.GPT2]: {
@@ -788,17 +681,6 @@ export function getTokenizerBestMatch(forApi) {
     }
 
     const tokenizer = forApi === main_api ? getCurrentTokenizerSync() : askTokenizerSync(getTokenizerState(forApi));
-    return tokenizer?.id ?? tokenizers.NONE;
-}
-
-/**
- * @param {string} type
- * @returns {number}
- */
-export function getTextgenTypeTokenizer(type) {
-    const tokenizer = main_api === 'textgenerationwebui' && textgen_settings.type === type
-        ? getCurrentTokenizerSync()
-        : askTokenizerSync(getTextgenTokenizerState(type));
     return tokenizer?.id ?? tokenizers.NONE;
 }
 
@@ -1378,7 +1260,6 @@ export async function initTokenizers() {
         event_types.ONLINE_STATUS_CHANGED,
         event_types.CHATCOMPLETION_SOURCE_CHANGED,
         event_types.CHATCOMPLETION_MODEL_CHANGED,
-        event_types.CONNECTION_PROFILE_LOADED,
     ]) {
         eventSource.on(event, refreshCurrentTokenizer);
     }

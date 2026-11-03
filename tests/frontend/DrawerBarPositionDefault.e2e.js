@@ -7,7 +7,8 @@ test('the drawer bar, desktop and mobile, is at the top on a new account', async
     await page.locator('dialog[open] .onboarding').waitFor({ state: 'visible' });
     await page.locator('dialog[open] .popup-button-ok').click();
     await page.waitForFunction(() => document.getElementById('preloader') === null, null, { timeout: 0 });
-    const settings = await page.evaluate(() => window['SillyTavern'].getContext().powerUserSettings);
+    await page.waitForFunction(() => window['stTest']?.ready(), null, { timeout: 0 });
+    const settings = await page.evaluate(() => window['stTest'].context().powerUserSettings);
     expect(settings.drawer_bar_position).toBe('top');
     expect(settings.drawer_bar_position_mobile).toBe('top');
     await expect(page.locator('body')).not.toHaveClass(/\bdrawerBarBottom\b/);

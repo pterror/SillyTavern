@@ -30,7 +30,7 @@ import { substituteParams } from '../macro-substitution.js';
  */
 
 /**
- * @typedef {'always' | 'sticky' | 'decorator' | 'external' | 'key'} ActivationWhy
+ * @typedef {'always' | 'sticky' | 'decorator' | 'key'} ActivationWhy
  * @typedef {{
  *   entry: WIEntry,
  *   why: ActivationWhy,
@@ -79,14 +79,13 @@ function viaOf(keys, recurseParts, recurseTexts, entry, defaults) {
  * @param {object} [options.chatMetadata]
  * @param {boolean} [options.isDryRun]
  * @param {{trigger?: string, characterFilename?: string, characterTags?: string[]}} [options.entryFilterContext]
- * @param {Map<string, WIEntry>} [options.externalActivations]
  * @param {string[]} [options.additionalScanInjects]
  * @returns {Promise<{activatedEntries: WIEntry[], content: string, trace: ActivationTrace}>}
  */
 export async function activateWorldInfoEntries(entries, chatMessages, options) {
     const {
         maxContext, globals, globalScanData = {}, macroContext = {}, countTokens, random = Math.random,
-        chatMetadata = {}, isDryRun = false, entryFilterContext = {}, externalActivations = new Map(),
+        chatMetadata = {}, isDryRun = false, entryFilterContext = {},
         additionalScanInjects = [],
     } = options;
     const recursive = globals.world_info_recursive;
@@ -103,7 +102,7 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
     const trace = { activated: [], cut: [], defaults: matchDefaultsOf(globals) };
     if (candidateEntries.length === 0) return { activatedEntries: [], content: '', trace };
 
-    const buffer = new WorldInfoBuffer(chatMessages, globalScanData, globals, externalActivations);
+    const buffer = new WorldInfoBuffer(chatMessages, globalScanData, globals);
     for (const text of additionalScanInjects) {
         if (text) buffer.addInject(text);
     }
@@ -158,13 +157,6 @@ export async function activateWorldInfoEntries(entries, chatMessages, options) {
                 continue;
             }
             if (decoratorActivation === 'suppress') continue;
-
-            const externallyActivated = buffer.getExternallyActivated(entry);
-            if (externallyActivated) {
-                activatedNow.push(externallyActivated);
-                why.set(externallyActivated, { why: 'external', keys: [] });
-                continue;
-            }
 
             if (entry.constant) {
                 activatedNow.push(entry);

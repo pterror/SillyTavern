@@ -6,7 +6,6 @@
 import { AutoCompleteOption } from './AutoCompleteOption.js';
 import {
     formatMacroSignature,
-    createSourceIndicator,
     createAliasIndicator,
     renderMacroDetails,
 } from '../macros/engine/MacroBrowser.js';
@@ -171,10 +170,6 @@ export class EnhancedMacroAutoCompleteOption extends AutoCompleteOption {
             aliasIcon.classList.add('macro-ac-indicator');
             li.append(aliasIcon);
         }
-
-        const sourceIcon = createSourceIndicator(this.#macro);
-        sourceIcon.classList.add('macro-ac-indicator');
-        li.append(sourceIcon);
 
         return li;
     }
@@ -487,7 +482,7 @@ export class MacroFlagAutoCompleteOption extends AutoCompleteOption {
  * @readonly
  * @enum {string}
  */
-export const VariableShorthandType = Object.freeze({
+const VariableShorthandType = Object.freeze({
     /** Local variable prefix (`.`) */
     LOCAL: '.',
     /** Global variable prefix (`$`) */
@@ -520,12 +515,6 @@ export const VariableShorthandDefinitions = new Map([
         operations: ['get', 'set (=)', 'increment (++)', 'decrement (--)', 'add (+=)', 'subtract (-=)', 'logical or (||)', 'nullish coalescing (??)', 'logical or assign (||=)', 'nullish coalescing assign (??=)', 'equals (==)', 'not equals (!=)', 'greater than (>)', 'greater than or equal (>=)', 'less than (<)', 'less than or equal (<=)'],
     }],
 ]);
-
-/**
- * Set of valid variable shorthand prefix symbols.
- * @type {Set<string>}
- */
-export const ValidVariableShorthandSymbols = new Set(Object.values(VariableShorthandType));
 
 /**
  * Regex pattern for valid variable shorthand names.

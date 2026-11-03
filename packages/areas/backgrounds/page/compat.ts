@@ -82,8 +82,6 @@ export function backgroundsCompat(
             return result.ok ? null : result.error;
         },
         autoSelect: () => pickByModel(client, view, quietPrompt, t),
-        forceSetBackground: (background: { path: string }) =>
-            client.send('backgrounds.addToChat', { file: background.path }),
     };
 }
 

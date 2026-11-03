@@ -1,5 +1,5 @@
 const BASE = 0xE000;
-export const MAX_MARKED_SPANS = 3200;
+const MAX_MARKED_SPANS = 3200;
 const SENTINEL = /[-]|%E[EF]%[89AB][0-9A-F]%[89AB][0-9A-F]/i;
 const SENTINELS = /[-]|%E[EF]%[89AB][0-9A-F]%[89AB][0-9A-F]/gi;
 

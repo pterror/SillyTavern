@@ -25,12 +25,12 @@ async function editedMessage(page) {
         const { power_user } = await import('/scripts/power-user.js');
         power_user.auto_save_msg_edits = false;
         // @ts-ignore
-        await SillyTavern.getContext().executeSlashCommandsWithOptions('/go Seraphina');
+        await stTest.context().executeSlashCommandsWithOptions('/go Seraphina');
     });
     await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1, { timeout: 10000 });
     const id = await page.evaluate(async (text) => {
         // @ts-ignore
-        const ctx = SillyTavern.getContext();
+        const ctx = stTest.context();
         await ctx.SlashCommandParser.commands['send'].callback({}, text);
         return ctx.chat.length - 1;
     }, TEXT);

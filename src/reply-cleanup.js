@@ -1,4 +1,3 @@
-import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
 import { getStoppingStrings } from './stopping-strings.js';
 
 /**
@@ -8,8 +7,6 @@ import { getStoppingStrings } from './stopping-strings.js';
  * @property {string} name2
  * @property {string} replyBias
  * @property {object} stoppingStringsParams
- * @property {object[]} regexScripts
- * @property {boolean} regexEnabled
  * @property {{name1: string, name2: string}} macroContext
  * @property {boolean} collapseNewlines
  * @property {boolean} allowName1Display
@@ -95,10 +92,6 @@ export function cleanUpReply(text, settings, { isContinue, lastIsUser = false, k
             }
         }
     }
-
-    message = getRegexedString(message, regex_placement.AI_OUTPUT, settings.regexScripts, {
-        regexExtensionEnabled: settings.regexEnabled, macroContext: settings.macroContext,
-    });
 
     if (settings.collapseNewlines) {
         message = message.replaceAll(/\n+/g, '\n');

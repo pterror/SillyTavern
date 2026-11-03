@@ -7,7 +7,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise(resolve => {
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, resolve);
     }));
 }
@@ -139,7 +139,7 @@ test.describe('character view', () => {
             const stamp = Date.now().toString(36);
             const ids = names.map(name => `viewpill-${name}-${stamp}`);
             await page.evaluate(async (ids) => {
-                const headers = window['SillyTavern'].getContext().getRequestHeaders();
+                const headers = window['stTest'].context().getRequestHeaders();
                 for (const id of ids) {
                     const tag = { id, name: id, folder_type: 'NONE', is_hidden_on_character_card: false, color: '', color2: '', create_date: Date.now() };
                     const response = await fetch('/api/tags/create', { method: 'POST', headers, body: JSON.stringify({ tag }) });

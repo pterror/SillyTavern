@@ -11,7 +11,7 @@ const IMAGE = path.join(process.cwd(), '..', 'default', 'content', 'user-default
 function storedAvatarUrl(page, id) {
     return page.evaluate(async (id) => {
         // @ts-ignore
-        const ctx = SillyTavern.getContext();
+        const ctx = stTest.context();
         const response = await fetch('/api/groups/batch', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ ids: [id], fields: ['avatar_url'] }) });
         return response.ok ? (await response.json())[0]?.avatar_url ?? '' : `status ${response.status}`;
     }, id);
@@ -34,7 +34,7 @@ test('a group\'s own image is stored and shown, and restoring brings the collage
     await testSetup.awaitST({ page });
     const id = await page.evaluate(async () => {
         // @ts-ignore
-        const ctx = SillyTavern.getContext();
+        const ctx = stTest.context();
         const response = await fetch('/api/groups/create', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ name: `Avatar group ${Date.now()}`, members: ['default_Seraphina.png'] }) });
         if (!response.ok) throw new Error(`group create failed: ${response.status}`);
         return String((await response.json()).id);
@@ -50,7 +50,7 @@ test('a group\'s own image is stored and shown, and restoring brings the collage
     const stored = await storedAvatarUrl(page, id);
     const url = await page.evaluate(async (id) => {
         // @ts-ignore
-        const ctx = SillyTavern.getContext();
+        const ctx = stTest.context();
         const response = await fetch('/api/groups/batch', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ ids: [id] }) });
         return (await response.json())[0]?.avatar_thumbnail ?? '';
     }, id);

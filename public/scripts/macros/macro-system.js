@@ -11,7 +11,7 @@ import { setPageMacroFacts } from '../macro-values.js';
 import { setMacroRegistry } from '../macro-pill.js';
 import { refreshMacroColors, setMacroList } from '../macro-colors.js';
 
-export { MacroCategory, MacroValueType };
+export { MacroCategory };
 
 initMacroEngine({ chevrotain, moment, seedrandom, droll, timestampToMoment });
 

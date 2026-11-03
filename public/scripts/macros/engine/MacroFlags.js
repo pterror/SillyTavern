@@ -151,32 +151,3 @@ export function parseFlags(flagSymbols) {
     return flags;
 }
 
-/**
- * Checks if a MacroFlags object has any flags set.
- *
- * @param {MacroFlags} flags - The flags object to check.
- * @returns {boolean} True if at least one flag is set.
- */
-export function hasAnyFlag(flags) {
-    return flags.raw.length > 0;
-}
-
-/**
- * Gets the flag definition for a given symbol.
- *
- * @param {string} symbol - The flag symbol (e.g., '!').
- * @returns {MacroFlagDefinition|undefined}
- */
-export function getFlagDefinition(symbol) {
-    return MacroFlagDefinitions.get(symbol);
-}
-
-/**
- * Checks if a given symbol is a valid macro flag.
- *
- * @param {string} symbol - The symbol to check.
- * @returns {boolean}
- */
-export function isValidFlag(symbol) {
-    return ValidFlagSymbols.has(symbol);
-}

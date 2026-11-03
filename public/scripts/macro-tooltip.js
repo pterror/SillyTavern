@@ -2,7 +2,7 @@ import { macroPersonCard } from './macro-pill.js';
 import { OVERLAYS_CHANGED_EVENT } from './drawer-stack.js';
 import { unclippedSpace } from './util/unclipped-space.js';
 
-export const MACRO_TOOLTIP_ANCHOR = '[data-macro-source]';
+const MACRO_TOOLTIP_ANCHOR = '[data-macro-source]';
 
 const HOVER_DELAY = 300;
 const GAP = 4;

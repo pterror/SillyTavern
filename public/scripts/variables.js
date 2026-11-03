@@ -1,6 +1,7 @@
 import { getCurrentChatId, saveSettingsDebounced } from '../script.js';
 import { chat_metadata } from './chat-state.js';
-import { extension_settings, saveMetadataDebounced } from './extensions.js';
+import { extension_settings } from './extension-settings.js';
+import { saveMetadataDebounced } from './metadata-store.js';
 import { executeSlashCommandsWithOptions } from './slash-commands.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { SlashCommandAbortController } from './slash-commands/SlashCommandAbortController.js';
@@ -32,43 +33,43 @@ setGlobalVariablesListener(({ set, unset }) => {
     saveSettingsDebounced('extension_settings');
 });
 
-export function getLocalVariable(name, args = {}) {
+function getLocalVariable(name, args = {}) {
     return localVariables.get(name, args);
 }
 
-export function setLocalVariable(name, value, args = {}) {
+function setLocalVariable(name, value, args = {}) {
     return localVariables.set(name, value, args);
 }
 
-export function getGlobalVariable(name, args = {}) {
+function getGlobalVariable(name, args = {}) {
     return globalVariables.get(name, args);
 }
 
-export function setGlobalVariable(name, value, args = {}) {
+function setGlobalVariable(name, value, args = {}) {
     return globalVariables.set(name, value, args);
 }
 
-export function addLocalVariable(name, value) {
+function addLocalVariable(name, value) {
     return localVariables.add(name, value);
 }
 
-export function addGlobalVariable(name, value) {
+function addGlobalVariable(name, value) {
     return globalVariables.add(name, value);
 }
 
-export function incrementLocalVariable(name) {
+function incrementLocalVariable(name) {
     return localVariables.inc(name);
 }
 
-export function incrementGlobalVariable(name) {
+function incrementGlobalVariable(name) {
     return globalVariables.inc(name);
 }
 
-export function decrementLocalVariable(name) {
+function decrementLocalVariable(name) {
     return localVariables.dec(name);
 }
 
-export function decrementGlobalVariable(name) {
+function decrementGlobalVariable(name) {
     return globalVariables.dec(name);
 }
 
@@ -92,14 +93,6 @@ export function resolveVariable(name, scope = null) {
     }
 
     return name;
-}
-
-/**
- * @deprecated The macro engine registers the variable macros itself (macros/definitions/variable-macros.js).
- * @returns {{ regex: RegExp, replace: (substring: string, ...args: any[]) => string }[]} None.
- */
-export function getVariableMacros() {
-    return [];
 }
 
 async function listVariablesCallback(args) {
@@ -260,7 +253,7 @@ async function ifCallback(args, value) {
  * @param {string} name Local variable name
  * @returns {boolean} True if the local variable exists, false otherwise
  */
-export function existsLocalVariable(name) {
+function existsLocalVariable(name) {
     return localVariables.has(name);
 }
 
@@ -269,7 +262,7 @@ export function existsLocalVariable(name) {
  * @param {string} name Global variable name
  * @returns {boolean} True if the global variable exists, false otherwise
  */
-export function existsGlobalVariable(name) {
+function existsGlobalVariable(name) {
     return globalVariables.has(name);
 }
 
@@ -278,7 +271,7 @@ export function existsGlobalVariable(name) {
  * @param {object} args Command arguments
  * @returns {{a: string | number, b: string | number?, rule: string}} Boolean operands
  */
-export function parseBooleanOperands(args) {
+function parseBooleanOperands(args) {
     // Resolution order: numeric literal, local variable, global variable, string literal
     /**
      * @param {string} operand Boolean operand candidate
@@ -332,7 +325,7 @@ export function parseBooleanOperands(args) {
  * @param {string|number?} b The right operand
  * @returns {boolean} True if the rule yields true, false otherwise
  */
-export function evalBoolean(rule, a, b) {
+function evalBoolean(rule, a, b) {
     if (a === undefined) {
         throw new Error('Left operand is not provided');
     }
@@ -430,7 +423,7 @@ async function executeSubCommands(command, scope = null, parserFlags = null, abo
  * @param {string} name Variable name to delete
  * @returns {string} Empty string
  */
-export function deleteLocalVariable(name) {
+function deleteLocalVariable(name) {
     return localVariables.del(name);
 }
 
@@ -439,7 +432,7 @@ export function deleteLocalVariable(name) {
  * @param {string} name Variable name to delete
  * @returns {string} Empty string
  */
-export function deleteGlobalVariable(name) {
+function deleteGlobalVariable(name) {
     return globalVariables.del(name);
 }
 

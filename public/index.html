@@ -40,7 +40,6 @@
     <link rel="stylesheet" type="text/css" href="css/group-avatars.css">
     <link rel="stylesheet" type="text/css" href="css/toggle-dependent.css">
     <link rel="stylesheet" type="text/css" href="css/world-info.css">
-    <link rel="stylesheet" type="text/css" href="css/extensions-panel.css">
     <link rel="stylesheet" type="text/css" href="css/select2-overrides.css">
     <link rel="stylesheet" type="text/css" href="css/mobile-styles.css">
     <link rel="stylesheet" type="text/css" href="css/macros.css">
@@ -4170,19 +4169,6 @@
                                 <input id="show_card_avatar_urls" type="checkbox" />
                                 <small data-i18n="Show avatar filenames">Show avatar filenames</small>
                             </label>
-                            <div id="hold_recent_characters_block" class="flex-container flexFlowColumn flexNoGap">
-                                <div class="flex-container alignitemscenter">
-                                    <label class="checkbox_label flex1" for="hold_recent_characters" title="Usually leave this off. Only turn it on if an extension needs to see more characters than the one you have open. Each character kept uses memory." data-i18n="[title]hold_recent_characters_tooltip">
-                                        <input id="hold_recent_characters" type="checkbox" />
-                                        <small data-i18n="Keep recently used characters">Keep recently used characters</small>
-                                    </label>
-                                    <label for="hold_recent_characters_count" class="flex-container alignitemscenter">
-                                        <small data-i18n="How many">How many</small>
-                                        <input id="hold_recent_characters_count" class="text_pole widthUnset" type="number" min="1" max="5000" step="1" />
-                                    </label>
-                                </div>
-                                <small class="hold_recent_characters_note" data-i18n="hold_recent_characters_note">Usually leave this off. It's only for extensions that need to see more characters than the one you have open: they then see your most recently used ones too. Each character kept uses memory.</small>
-                            </div>
                             <label class="checkbox_label" for="spoiler_free_mode" title="Hide character definitions from the editor panel behind a spoiler button." data-i18n="[title]Hide character definitions from the editor panel behind a spoiler button">
                                 <input id="spoiler_free_mode" type="checkbox" />
                                 <small data-i18n="Spoiler Free Mode">Spoiler Free Mode</small>
@@ -4612,92 +4598,6 @@
                 <div class="drawer-icon fa-solid fa-panorama fa-fw closedIcon"></div>
             </div>
             <div id="Backgrounds" class="drawer-content closedDrawer bg-drawer-layout">
-            </div>
-        </div>
-        <div id="extensions-settings-button" class="drawer">
-            <div class="drawer-toggle">
-                <div class="drawer-icon fa-solid fa-cubes fa-fw closedIcon" title="Extensions" data-i18n="[title]Extensions"></div>
-            </div>
-            <div id="rm_extensions_block" class="drawer-content closedDrawer">
-                <div class="extensions_block flex-container">
-                    <div class="alignitemscenter flex-container wide100p">
-                        <h3 class="margin0 flex1" data-i18n="Extensions">
-                            Extensions
-                        </h3>
-                        <label for="extensions_notify_updates" class="checkbox_label flexNoGap">
-                            <input id="extensions_notify_updates" type="checkbox">
-                            <span data-i18n="Notify on extension updates">Notify on extension updates</span>
-                        </label>
-                        <div id="extensions_details" class="menu_button_icon menu_button">
-                            <i class="fa-solid fa-cubes"></i>
-                            <span data-i18n="Manage extensions">Manage extensions</span>
-                        </div>
-                        <div id="third_party_extension_button" title="Import Extension From Git Repo" data-i18n="[title]Import Extension From Git Repo" class="menu_button menu_button_icon">
-                            <i class="fa-solid fa-cloud-arrow-down"></i>
-                            <span data-i18n="Install extension">Install extension</span>
-                        </div>
-                    </div>
-                    <div id="extensions_settings_tabs" class="wide100p">
-                        <ul id="extensions_settings_tabs_list"></ul>
-                    </div>
-                    <div id="extensions_settings" class="flex1 wide50p" style="display: none;">
-                        <div id="assets_container" class="extension_container"></div>
-                        <div id="typing_indicator_container" class="extension_container"></div>
-                        <div id="expressions_container" class="extension_container"></div>
-                        <div id="sd_container" class="extension_container"></div>
-                        <div id="tts_container" class="extension_container"></div>
-                        <div id="rvc_container" class="extension_container"></div>
-                        <div id="stt_container" class="extension_container"></div>
-                        <div id="audio_container" class="extension_container"></div>
-                        <div id="silence_container" class="extension_container"></div>
-                        <div id="objective_container" class="extension_container"></div>
-                        <div id="blip_container" class="extension_container"></div>
-                        <div id="live2d_container" class="extension_container"></div>
-                        <div id="vrm_container" class="extension_container"></div>
-                        <div id="timelines_container" class="extension_container"></div>
-                        <div id="webllm_container" class="extension_container"></div>
-                        <div id="rss_container" class="extension_container"></div>
-                    </div>
-                    <div id="extensions_settings2" class="flex1 wide50p" style="display: none;">
-                        <div id="websearch_container" class="extension_container"></div>
-                        <div id="emulatorjs_container" class="extension_container"></div>
-                        <div id="qr_container" class="extension_container"></div>
-                        <div id="translation_container" class="extension_container"></div>
-                        <div id="caption_container" class="extension_container"></div>
-                        <div id="idle_container" class="extension_container"></div>
-                        <div id="summarize_container" class="extension_container"></div>
-                        <div id="hypebot_container" class="extension_container"></div>
-                        <div id="regex_container" class="extension_container"></div>
-                        <div id="vectors_container" class="extension_container"></div>
-                        <div id="randomizer_container" class="extension_container"></div>
-                        <div id="chromadb_container" class="extension_container"></div>
-                        <div id="message_limit_container" class="extension_container"></div>
-                        <div id="injects_container" class="extension_container"></div>
-                        <div id="accuweather_container" class="extension_container"></div>
-                        <div id="dice_container" class="extension_container"></div>
-                    </div>
-                    <hr class="wide100p margin0">
-                    <div class="alignitemscenter flex-container justifyCenter wide100p" style="justify-content: space-between;">
-                        <h4 class="margin0">
-                            <span data-i18n="(DEPRECATED)">(DEPRECATED)</span>
-                            <span data-i18n="Extras API:">Extras API:</span>
-                        </h4>
-                        <div class="flex-container">
-                            <div id="extensions_status" data-i18n="Not connected...">Not connected...</div>
-                            <label for="extensions_autoconnect" class="checkbox_label flexNoGap">
-                                <input id="extensions_autoconnect" type="checkbox">
-                                <span data-i18n="Auto-connect">Auto-connect</span>
-                            </label>
-                        </div>
-                    </div>
-                    <div class="alignitemsflexstart flex-container wide100p">
-                        <input id="extensions_url" type="text" class="flex1 heightFitContent text_pole widthNatural" data-i18n="[placeholder]Extras API URL" placeholder="Extras API URL">
-                        <input id="extensions_api_key" type="text" class="flex1 heightFitContent text_pole widthNatural" data-i18n="[placeholder]Extras API key (optional)" placeholder="Extras API key (optional)">
-                        <div class="extensions_url_block">
-                            <div id="extensions_connect" class="menu_button" data-i18n="Connect">Connect</div>
-                        </div>
-                    </div>
-                </div>
             </div>
         </div>
         <div id="persona-management-button" class="drawer">
@@ -5195,7 +5095,6 @@
                                             </span>
                                         </div>
                                         <textarea id="greeting_field" class="field_edit_textarea mdHotkeys autoSetHeight" rows="6" data-macros data-i18n="[placeholder]This will be the greeting from the character that starts every chat." placeholder="This will be the greeting from the character that starts every chat."></textarea>
-                                        <textarea id="firstmessage_textarea" class="displayNone" tabindex="-1" aria-hidden="true"></textarea>
                                         <div class="field_preview macro_preview_content mes_text" data-for="greeting_field"></div>
                                     </div>
                                 </div>
@@ -5334,11 +5233,8 @@
                             </div>
                             <!-- these divs are invisible and used for server communication purposes -->
                             <div id="hidden-divs">
-                                <input id="character_json_data" name="json_data" type="hidden">
                                 <input id="character_book_json" type="hidden">
                                 <input id="avatar_url_pole" name="avatar_url" type="hidden">
-                                <input id="selected_chat_pole" name="chat" type="hidden">
-                                <input id="create_date_pole" name="create_date" type="hidden">
                                 <input id="last_mes_pole" name="last_mes" type="hidden">
                                 <input id="character_world" name="world" type="hidden">
                             </div>
@@ -5446,10 +5342,6 @@
                                                     <input id="rm_group_automode" type="checkbox" />
                                                     <span data-i18n="Auto Mode">Auto Mode</span>
                                                     <input id="rm_group_automode_delay" class="text_pole textarea_compact widthUnset" type="number" min="1" max="999" step="1" value="5" title="Auto Mode delay" data-i18n="[title]Auto Mode delay" />
-                                                </label>
-                                                <label id="rm_group_hidemutedsprites_label" class="checkbox_label whitespacenowrap">
-                                                    <input id="rm_group_hidemutedsprites" type="checkbox" />
-                                                    <span data-i18n="Hide Muted Member Sprites">Hide Muted Member Sprites</span>
                                                 </label>
                                             </div>
                                         </div>
@@ -6289,9 +6181,6 @@
                         <div class="mes_buttons">
                             <div title="Message Actions" class="mes_button extraMesButtonsHint fa-solid fa-ellipsis" data-i18n="[title]Message Actions"></div>
                             <div class="extraMesButtons">
-                                <div title="Translate message" class="mes_button mes_translate fa-solid fa-language" data-i18n="[title]Translate message"></div>
-                                <div title="Generate Image" class="mes_button sd_message_gen fa-solid fa-paintbrush" data-i18n="[title]Generate Image"></div>
-                                <div title="Narrate" class="mes_button mes_narrate fa-solid fa-bullhorn" data-i18n="[title]Narrate"></div>
                                 <div title="Prompt" class="mes_button mes_prompt fa-solid fa-square-poll-horizontal " data-i18n="[title]Prompt" style="display: none;"></div>
                                 <div title="Exclude message from prompts" class="mes_button mes_hide fa-solid fa-eye" data-i18n="[title]Exclude message from prompts"></div>
                                 <div title="Include message in prompts" class="mes_button mes_unhide fa-solid fa-eye-slash" data-i18n="[title]Include message in prompts"></div>
@@ -6391,12 +6280,8 @@
                             <i class="fa-solid fa-cloud-arrow-down"></i>
                             <span data-i18n="onboarding_import">Import</span>
                         </span>
-                        <span data-i18n="from supported sources or view">
-                            from supported sources or view
-                        </span>
-                        <span class="open_characters_library menu_button menu_button_icon">
-                            <i class="fa-solid fa-image-portrait"></i>
-                            <span data-i18n="Sample characters">Sample characters</span>
+                        <span data-i18n="from supported sources">
+                            from supported sources
                         </span>
                     </span>
                 </div>
@@ -6511,7 +6396,6 @@
             <div class="mes_media_container mes_img_container">
                 <div class="mes_img_controls">
                     <div title="Expand and zoom" class="right_menu_button fa-lg fa-solid fa-magnifying-glass mes_media_enlarge" data-i18n="[title]Expand and zoom"></div>
-                    <div title="Caption" class="right_menu_button fa-lg fa-solid fa-envelope-open-text mes_img_caption" data-i18n="[title]Caption"></div>
                     <div title="Delete" class="right_menu_button fa-lg fa-solid fa-trash-can mes_media_delete" data-i18n="[title]Delete"></div>
                 </div>
                 <img class="mes_img" src="" />
@@ -6522,7 +6406,6 @@
             <div class="mes_media_container mes_video_container">
                 <div class="mes_video_controls">
                     <div title="Expand and zoom" class="right_menu_button fa-lg fa-solid fa-magnifying-glass mes_media_enlarge" data-i18n="[title]Expand and zoom"></div>
-                    <div title="Caption" class="right_menu_button fa-lg fa-solid fa-envelope-open-text mes_img_caption" data-i18n="[title]Caption"></div>
                     <div title="Delete" class="right_menu_button fa-lg fa-solid fa-trash-can mes_media_delete" data-i18n="[title]Delete"></div>
                 </div>
                 <video class="mes_video" controls preload="metadata"></video>

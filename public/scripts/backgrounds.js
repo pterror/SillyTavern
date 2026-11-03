@@ -10,19 +10,6 @@ export const background_settings = new Proxy(/** @type {Record<string, unknown>}
     getOwnPropertyDescriptor: (_target, key) => ({ ...Reflect.getOwnPropertyDescriptor(compat().background_settings, key), configurable: true }),
 });
 
-export async function getBackgrounds() {
-    await compat().getBackgrounds();
-}
-
-export function initBackgrounds() {
-    compat().initBackgrounds();
-}
-
-/** @param {unknown} settings */
-export function loadBackgroundSettings(settings) {
-    compat().loadBackgroundSettings(settings);
-}
-
 /** @param {string} fileUrl */
 export function getBackgroundPath(fileUrl) {
     return compat().getBackgroundPath(fileUrl);
@@ -31,10 +18,6 @@ export function getBackgroundPath(fileUrl) {
 /** @param {string} fileUrl */
 export function isCustomBackgroundUrl(fileUrl) {
     return compat().isCustomBackgroundUrl(fileUrl);
-}
-
-export function getActiveBackgroundTab() {
-    return compat().getActiveBackgroundTab();
 }
 
 /** @returns {{ file: string, chat: boolean }[]} */

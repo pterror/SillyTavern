@@ -7,7 +7,6 @@ import { MacroParser } from '../engine/MacroParser.js';
 import { MacroCstWalker } from '../engine/MacroCstWalker.js';
 
 import { ELSE_MARKER } from '../engine/MacroConstants.js';
-export { ELSE_MARKER };
 
 export function registerCoreMacros() {
     MacroRegistry.registerMacro('space', {

@@ -1,14 +1,11 @@
 import { SlashCommandParser } from './SlashCommandParser.js';
-import { addOneMessage, default_avatar, extractMessageBias, generateQuietPrompt, getCurrentCharacter, characterAvatar, name2, neutralCharacterName, reloadCurrentChat, removeMacros, setExtensionPrompt, storeSentMessage, substituteParams, system_avatar, system_message_types } from '../../script.js';
-import { name1 } from '../app-selection-state.js';
+import { addOneMessage, default_avatar, extension_prompts, extractMessageBias, generateQuietPrompt, getCurrentCharacter, characterAvatar, name2, neutralCharacterName, reloadCurrentChat, removeMacros, setExtensionPrompt, storeSentMessage, substituteParams, system_avatar, system_message_types } from '../../script.js';
 import { chat, chat_metadata } from '../chat-state.js';
 import { eventSource, event_types } from '../events.js';
 import { getMessageTimeStamp } from '../RossAscends-mods.js';
 import { AUTOCOMPLETE_STATE, AutoComplete } from '../autocomplete/AutoComplete.js';
 import { chat_completion_sources } from '../chat-completion-settings.js';
 import { buildConnectApiMap } from '../connect-api-map.js';
-import { getContext } from '../extensions.js';
-import { getRegexedString, regex_placement } from '../extensions/regex/engine.js';
 import { t } from '../i18n.js';
 import { POPUP_TYPE, callGenericPopup } from '../popup.js';
 import { power_user } from '../power-user.js';
@@ -25,7 +22,7 @@ import { accountStorage } from '../util/AccountStorage.js';
 import { canUseNegativeLookbehind, debounce, delay, findCharAsync, isTrueBoolean } from '../utils.js';
 
 /** @type {SlashCommandParser} */
-export let parser;
+let parser;
 /**
  * @returns {SlashCommandParser}
  */
@@ -34,12 +31,6 @@ export function getParser() {
         parser = new SlashCommandParser();
     }
     return parser;
-}
-/**
- * @deprecated
- */
-export function registerSlashCommand(...args) {
-    return SlashCommandParser.addCommand(...args);
 }
 export function getSlashCommandsHelp(...args) {
     return getParser().getHelpString(...args);
@@ -114,7 +105,7 @@ export async function generateSystemMessage(args, prompt) {
     const message = await generateQuietPrompt({ quietPrompt: prompt, trimToSentence: trim });
     toastr.clear(toast);
 
-    return await sendNarratorMessage(args, getRegexedString(message, regex_placement.SLASH_COMMAND));
+    return await sendNarratorMessage(args, message);
 }
 
 /**
@@ -132,24 +123,6 @@ export function validateArrayArgString(arg, name, { allowUndefined = true } = {}
     }
     if (!Array.isArray(arg)) throw new Error(t`Argument "${name}" must be an array`);
     if (!arg.every(x => typeof x === 'string')) throw new Error(t`Argument "${name}" must be an array of strings`);
-    return arg;
-}
-
-/**
- * @param {string|SlashCommandClosure|(string|SlashCommandClosure)[]|undefined} arg
- * @param {string} name
- * @param {object} [options={}]
- * @param {boolean} [options.allowUndefined=false]
- * @throws {Error}
- * @returns {(string|SlashCommandClosure)[]}
- */
-export function validateArrayArg(arg, name, { allowUndefined = true } = {}) {
-    if (arg === undefined) {
-        if (allowUndefined) return [];
-        throw new Error(t`Argument "${name}" is undefined, but must be an array of strings or closures`);
-    }
-    if (!Array.isArray(arg)) throw new Error(t`Argument "${name}" must be an array`);
-    if (!arg.every(x => typeof x === 'string' || x instanceof SlashCommandClosure)) throw new Error(t`Argument "${name}" must be an array of strings or closures`);
     return arg;
 }
 
@@ -194,8 +167,6 @@ export async function sendMessageAs(args, text) {
     }
 
     let mesText = String(text ?? '').trim();
-
-    mesText = getRegexedString(mesText, regex_placement.SLASH_COMMAND, { characterOverride: name });
 
     const bias = extractMessageBias(mesText);
     const isSystem = bias && !removeMacros(mesText).length;
@@ -305,77 +276,32 @@ export async function sendNarratorMessage(args, text) {
     if (!isNaN(insertAt) && insertAt >= 0 && insertAt <= chat.length) {
         chat.splice(insertAt, 0, message);
         await storeSentMessage(insertAt, { graft: true });
-        await eventSource.emit(event_types.MESSAGE_SENT, insertAt);
         await reloadCurrentChat();
-        await eventSource.emit(event_types.USER_MESSAGE_RENDERED, insertAt);
     } else {
         const newIndex = chat.length;
         chat.push(message);
-        await eventSource.emit(event_types.MESSAGE_SENT, (chat.length - 1));
         addOneMessage(message);
-        await eventSource.emit(event_types.USER_MESSAGE_RENDERED, (chat.length - 1));
         await storeSentMessage(newIndex);
     }
 
     return await slashCommandReturnHelper.doReturn(args.return ?? 'none', message, { objectToStringFunc: x => x.mes });
 }
 
-export async function promptQuietForLoudResponse(who, text) {
-    const character = getCurrentCharacter();
-    if (who === 'sys') {
-        text = 'System: ' + text;
-    } else if (who === 'user') {
-        text = name1 + ': ' + text;
-    } else if (who === 'char') {
-        text = character.name + ': ' + text;
-    } else if (who === 'raw') {
-    }
-
-    let reply = await generateQuietPrompt({ quietPrompt: text, quietToLoud: true });
-    text = await getRegexedString(reply, regex_placement.SLASH_COMMAND);
-
-    const message = {
-        name: character.name,
-        is_user: false,
-        is_name: true,
-        is_system: false,
-        send_date: getMessageTimeStamp(),
-        mes: substituteParams(text.trim()),
-        extra: {
-            type: system_message_types.COMMENT,
-            gen_id: Date.now(),
-            api: 'manual',
-            model: 'slash command',
-        },
-    };
-
-    chat_metadata.tainted = true;
-
-    const newIndex = chat.length;
-    chat.push(message);
-    await eventSource.emit(event_types.MESSAGE_SENT, (chat.length - 1));
-    addOneMessage(message);
-    await eventSource.emit(event_types.USER_MESSAGE_RENDERED, (chat.length - 1));
-    await storeSentMessage(newIndex);
-}
-
 export function processChatSlashCommands() {
-    const context = getContext();
-
-    if (!(context.chatMetadata.script_injects)) {
+    if (!(chat_metadata.script_injects)) {
         return;
     }
 
-    for (const id of Object.keys(context.extensionPrompts)) {
+    for (const id of Object.keys(extension_prompts)) {
         if (!id.startsWith(SCRIPT_PROMPT_KEY)) {
             continue;
         }
 
         console.log('Removing script injection', id);
-        delete context.extensionPrompts[id];
+        delete extension_prompts[id];
     }
 
-    for (const [id, inject] of Object.entries(context.chatMetadata.script_injects)) {
+    for (const [id, inject] of Object.entries(chat_metadata.script_injects)) {
         /**
          * @returns {SlashCommandClosure | null}
          */
@@ -426,13 +352,13 @@ const clearCommandProgressDebounced = debounce(clearCommandProgress);
 
 export let isExecutingCommandsFromChatInput = false;
 
-export let commandsFromChatInputAbortController;
+let commandsFromChatInputAbortController;
 
-export function activateScriptButtons() {
+function activateScriptButtons() {
     document.querySelector('#form_sheld').classList.add('isExecutingCommandsFromChatInput');
 }
 
-export function deactivateScriptButtons() {
+function deactivateScriptButtons() {
     document.querySelector('#form_sheld').classList.remove('isExecutingCommandsFromChatInput');
 }
 
@@ -567,7 +493,7 @@ export async function executeSlashCommandsOnChatInput(text, options = {}) {
  * @param {Boolean} isFloating
  * @returns {Promise<AutoComplete>}
  */
-export async function setSlashCommandAutoComplete(textarea, isFloating = false) {
+async function setSlashCommandAutoComplete(textarea, isFloating = false) {
     if (!canUseNegativeLookbehind()) {
         console.warn('Cannot use negative lookbehind in this browser');
         return;
@@ -680,24 +606,3 @@ export async function executeSlashCommandsWithOptions(text, options = {}) {
     }
 }
 
-/**
- * @deprecated
- * @param {string} text
- * @param {boolean} handleParserErrors
- * @param {SlashCommandScope} scope
- * @param {boolean} handleExecutionErrors
- * @param {{[id:import('./SlashCommandParser.js').PARSER_FLAG]:boolean}} parserFlags
- * @param {SlashCommandAbortController} abortController
- * @param {(done:number, total:number)=>void} onProgress
- * @returns {Promise<SlashCommandClosureResult>}
- */
-export async function executeSlashCommands(text, handleParserErrors = true, scope = null, handleExecutionErrors = false, parserFlags = null, abortController = null, onProgress = null) {
-    return executeSlashCommandsWithOptions(text, {
-        handleParserErrors,
-        scope,
-        handleExecutionErrors,
-        parserFlags,
-        abortController,
-        onProgress,
-    });
-}

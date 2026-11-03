@@ -20,7 +20,7 @@ export async function connectOpenAICompat(page, url, model = 'mock-chat-model') 
     await page.evaluate(() => { for (const id of ['#custom_api_url_text', '#custom_model_id']) { const field = $(id); if (field.autocomplete('instance')) field.autocomplete('close'); } });
     await page.locator('#api_button_openai').click();
     // @ts-ignore
-    await expect.poll(() => page.evaluate(() => SillyTavern.getContext().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
+    await expect.poll(() => page.evaluate(() => stTest.context().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
     await page.locator('#API-status-top').click();
     await page.waitForTimeout(2500);
 }

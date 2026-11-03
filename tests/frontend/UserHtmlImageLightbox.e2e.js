@@ -7,7 +7,7 @@ const IMAGE_SRC = /\/img\/ai4\.png$/;
 /** @param {import('@playwright/test').Page} page */
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise(resolve => {
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, resolve);
     }));
 }
@@ -18,7 +18,7 @@ async function awaitAppReady(page) {
  */
 async function runScript(page, script) {
     await page.evaluate(script => {
-        window['SillyTavern'].getContext().executeSlashCommandsWithOptions(script);
+        window['stTest'].context().executeSlashCommandsWithOptions(script);
     }, script);
 }
 
@@ -78,7 +78,7 @@ test.describe('Lightbox on images in user-written HTML', () => {
     test.describe('chat message', () => {
         test.beforeEach(async ({ page }) => {
             await page.evaluate((image) => {
-                const context = window['SillyTavern'].getContext();
+                const context = window['stTest'].context();
                 const message = {
                     name: 'Lightbox',
                     is_user: false,
@@ -126,62 +126,6 @@ test.describe('Lightbox on images in user-written HTML', () => {
 
             await expectLightboxThenClose(page);
         });
-    });
-
-    test('an image in the regex debugger message render shows in the lightbox', async ({ page }) => {
-        await page.evaluate(() => {
-            window['SillyTavern'].getContext().extensionSettings.regex.push({
-                id: 'lightbox-test-rule',
-                scriptName: 'Lightbox test rule',
-                findRegex: '/text-the-input-does-not-hold/g',
-                replaceString: '',
-                trimStrings: [],
-                placement: [],
-                disabled: false,
-                markdownOnly: false,
-                promptOnly: false,
-                runOnEdit: false,
-                substituteRegex: 0,
-                minDepth: null,
-                maxDepth: null,
-            });
-        });
-        await page.locator('#open_regex_debugger').evaluate(el => el.click());
-        await page.locator('#regex_debugger_raw_input').fill(`debugger words <img src="${IMAGE}" alt="in debugger">`);
-        await page.locator('#regex_debugger_render_mode').selectOption('message');
-        await page.locator('#regex_debugger_run_test').click();
-        const image = page.locator('#regex_debugger_final_output .mes .mes_text img');
-        await expect(image).toBeVisible();
-        await expect(image).toHaveCSS('cursor', 'pointer');
-
-        await image.click();
-
-        await expectLightboxThenClose(page);
-        await expect(page.locator('#regex_debugger_final_output')).toBeVisible();
-    });
-
-    test('an image in the streaming display panel shows in the lightbox', async ({ page }) => {
-        await page.evaluate(async (image) => {
-            const { StreamingDisplay } = await import('/scripts/streaming-display.js');
-            const display = new StreamingDisplay().show({ label: 'Lightbox test' });
-            display.updateReasoning(`thinking words\n\n<img src="${image}" alt="in reasoning">`);
-            display.updateContent(`content words\n\n<img src="${image}" alt="in content">`);
-            window['lightboxTestDisplay'] = display;
-        }, IMAGE);
-        try {
-            for (const part of ['.streaming-display-reasoning-content', '.streaming-display-text-content']) {
-                const image = page.locator(`.streaming-display ${part} img`);
-                await expect(image).toBeVisible();
-                await expect(image).toHaveCSS('cursor', 'pointer');
-
-                await image.click();
-
-                await expectLightboxThenClose(page);
-            }
-        } finally {
-            await page.evaluate(() => window['lightboxTestDisplay'].hide({ instant: true }));
-        }
-        await expect(page.locator('.streaming-display')).toHaveCount(0);
     });
 
     test.describe('STscript popup', () => {

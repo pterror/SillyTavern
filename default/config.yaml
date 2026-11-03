@@ -1,8 +1,6 @@
 # -- DATA CONFIGURATION --
 # Root directory for user data storage
 dataRoot: ./data
-# Directory for global (all-user) third-party extensions
-globalExtensionsPath: ./public/scripts/extensions/third-party
 # -- SERVER CONFIGURATION --
 # Listen for incoming connections
 listen: false
@@ -352,22 +350,6 @@ whitelistImportDomains:
 ##   headers:
 ##     User-Agent: "Googlebot/2.1 (+http://www.google.com/bot.html)"
 requestOverrides: []
-
-# EXTENSIONS CONFIGURATION
-extensions:
-  # Enable UI extensions
-  enabled: true
-  # Automatically update extensions when a release version changes
-  autoUpdate: true
-  models:
-    # Enables automatic model download from HuggingFace
-    autoDownload: true
-    # Additional models for extensions. Expects model IDs from HuggingFace model hub in ONNX format
-    classification: Cohee/distilbert-base-uncased-go-emotions-onnx
-    captioning: Xenova/vit-gpt2-image-captioning
-    embedding: Cohee/jina-embeddings-v2-base-en
-    speechToText: Xenova/whisper-small
-    textToSpeech: Xenova/speecht5_tts
 
 # Git backend for plugin/extension repository operations.
 # - Use "auto" to prefer system git, falling back to the integrated backend

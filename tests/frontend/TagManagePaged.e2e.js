@@ -8,7 +8,7 @@ async function loadApp(page) {
     await testSetup.awaitST({ page });
     await page.evaluate(() => {
         window['__appReady'] = false;
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, () => { window['__appReady'] = true; });
     });
     await page.waitForFunction(() => window['__appReady'], null, { timeout: 60000 });
@@ -21,7 +21,7 @@ async function loadApp(page) {
  */
 async function api(page, path, body = {}) {
     return page.evaluate(async ({ path, body }) => {
-        const headers = window['SillyTavern'].getContext().getRequestHeaders();
+        const headers = window['stTest'].context().getRequestHeaders();
         const response = await fetch(path, { method: 'POST', headers, body: JSON.stringify(body) });
         if (!response.ok) throw new Error(`${path} -> ${response.status}`);
         return response.json();
@@ -52,7 +52,7 @@ async function elsewhere(browser, work) {
  */
 async function createTags(page, ids, firstSortOrder) {
     await page.evaluate(async ({ ids, firstSortOrder }) => {
-        const headers = window['SillyTavern'].getContext().getRequestHeaders();
+        const headers = window['stTest'].context().getRequestHeaders();
         for (let i = 0; i < ids.length; i += 25) {
             await Promise.all(ids.slice(i, i + 25).map(async (id, j) => {
                 const tag = {
@@ -73,7 +73,7 @@ async function createTags(page, ids, firstSortOrder) {
  */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
-        const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
+        const headers = window['stTest'].context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.append('ch_name', name);
         const response = await fetch('/api/characters/create', { method: 'POST', headers, body: form });

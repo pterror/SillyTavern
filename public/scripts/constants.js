@@ -135,17 +135,6 @@ export const MEDIA_TYPE = {
 };
 
 /**
- * Bitwise flag-style media request types.
- * @readonly
- * @enum {number}
- */
-export const MEDIA_REQUEST_TYPE = {
-    IMAGE: 0b001,
-    VIDEO: 0b010,
-    AUDIO: 0b100,
-};
-
-/**
  * Scroll behavior options when appending media to messages.
  * @readonly
  * @enum {string}
@@ -203,3 +192,6 @@ export const SWIPE_STATE = {
     SWIPING: 'swiping',
     EDITING: 'editing',
 };
+
+/** Sent as a card field's value to /api/characters/merge-attributes to delete the field. */
+export const UNSET_VALUE = '__@@UNSET@@__';

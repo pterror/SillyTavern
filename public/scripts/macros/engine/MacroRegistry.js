@@ -146,7 +146,6 @@ export const MacroValueType = Object.freeze({
  * @property {string[]} exampleUsage - Example usage strings for documentation.
  * @property {boolean} delayArgResolution - If true, nested macros in arguments are NOT resolved before calling the handler. The handler receives raw argument text and must call resolve() manually. Use sparingly - only for control-flow macros like {{if}}.
  * @property {MacroHandler} handler
- * @property {MacroSource} source
  * @property {string|null} aliasOf - If this is an alias, the primary macro name this is an alias of. Can also be used to check if this is an alias macro.
  * @property {boolean|null} aliasVisible - If this is an alias, whether this alias is visible in docs/autocomplete.
  */
@@ -155,13 +154,6 @@ export const MacroValueType = Object.freeze({
  * @typedef {Object} MacroResolvedAlias
  * @property {string} alias - The alias name.
  * @property {boolean} visible - Whether this alias is visible in documentation/autocomplete.
- */
-
-/**
- * @typedef {Object} MacroSource
- * @property {string} name - Source identifier (extension name or script path)
- * @property {boolean} isExtension - True if registered from an extension
- * @property {boolean} isThirdParty - True if registered from a third-party extension
  */
 
 /**
@@ -213,11 +205,7 @@ class MacroRegistry {
         name = typeof name === 'string' ? name.trim() : String(name);
 
         try {
-            const { isExtension, isThirdParty, source } = detectMacroSource();
-
-            const definition = this.buildMacroDefFromOptions(name, options, {
-                source: { name: source, isExtension, isThirdParty },
-            });
+            const definition = this.buildMacroDefFromOptions(name, options);
 
             this.#registerMacroEntry(name, definition);
 
@@ -270,12 +258,7 @@ class MacroRegistry {
                 throw new Error(`Could not resolve primary definition for target macro "${targetMacroName}".`);
             }
 
-            const { isExtension, isThirdParty, source } = detectMacroSource();
-
-            const aliasDefinition = {
-                ...primaryDefinition,
-                source: { name: source, isExtension, isThirdParty },
-            };
+            const aliasDefinition = { ...primaryDefinition };
 
             this.#registerMacroEntry(aliasName, aliasDefinition, { primaryMacroName: primaryDefinition.name, aliasVisible: visible });
 
@@ -466,12 +449,10 @@ class MacroRegistry {
      *
      * @param {string} name - Macro name (identifier).
      * @param {MacroDefinitionOptions} options - Macro definition options.
-     * @param {Object} [buildOptions] - Additional options for building.
-     * @param {MacroSource} [buildOptions.source] - Source information. Defaults to dynamic source.
      * @returns {MacroDefinition} The built macro definition.
      * @throws {Error} If validation fails.
      */
-    buildMacroDefFromOptions(name, options, { source } = {}) {
+    buildMacroDefFromOptions(name, options) {
         name = typeof name === 'string' ? name.trim() : String(name);
 
         if (!isIdentifierValid(name)) throw new Error(`Macro name "${name}" is invalid. Must start with a letter, followed by alphanumeric characters or hyphens.`);
@@ -661,7 +642,6 @@ class MacroRegistry {
             exampleUsage,
             delayArgResolution,
             handler,
-            source: source ?? { name: 'dynamic', isExtension: false, isThirdParty: false },
             aliasOf: null,
             aliasVisible: null,
         };
@@ -771,43 +751,4 @@ function isValueOfType(value, type) {
     }
 
     return false;
-}
-
-/**
- * Detects the source of a macro registration from the call stack.
- * Similar to how SlashCommandParser detects command sources.
- *
- * @returns {{ isExtension: boolean, isThirdParty: boolean, source: string }}
- */
-function detectMacroSource() {
-    const stack = new Error().stack?.split('\n').map(line => line.trim()) ?? [];
-
-    const isExtension = stack.some(line => line.includes('/scripts/extensions/'));
-    const isThirdParty = stack.some(line => line.includes('/scripts/extensions/third-party/'));
-
-    let source = 'unknown';
-    if (isThirdParty) {
-        const match = stack.find(line => line.includes('/scripts/extensions/third-party/'));
-        if (match) {
-            source = match.replace(/^.*?\/scripts\/extensions\/third-party\/([^/]+)\/.*$/, '$1');
-        }
-    } else if (isExtension) {
-        const match = stack.find(line => line.includes('/scripts/extensions/'));
-        if (match) {
-            source = match.replace(/^.*?\/scripts\/extensions\/([^/]+)\/.*$/, '$1');
-        }
-    } else {
-        const callerIdx = stack.findIndex(line =>
-            line.includes('registerMacro') && line.includes('MacroRegistry'),
-        );
-        if (callerIdx >= 0 && callerIdx + 1 < stack.length) {
-            const callerLine = stack[callerIdx + 1];
-            const scriptMatch = callerLine.match(/\/((?:scripts\/)?(?:macros\/)?[^/]+\.js)/);
-            if (scriptMatch) {
-                source = scriptMatch[1];
-            }
-        }
-    }
-
-    return { isExtension, isThirdParty, source };
 }

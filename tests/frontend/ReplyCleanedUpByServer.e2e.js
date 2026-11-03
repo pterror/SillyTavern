@@ -62,7 +62,7 @@ function startLlamaCpp(reply) {
 function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', 'Hello.');
@@ -80,7 +80,7 @@ async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
@@ -101,7 +101,7 @@ async function connectLlamaCpp(page, url) {
     await page.locator('#llamacpp_api_url_text').fill(url);
     await page.locator('#api_button_textgenerationwebui').click();
     // @ts-ignore
-    await expect.poll(() => page.evaluate(() => SillyTavern.getContext().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
+    await expect.poll(() => page.evaluate(() => stTest.context().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
     await page.locator('#API-status-top').click();
 }
 
@@ -111,7 +111,7 @@ async function connectLlamaCpp(page, url) {
 function lastReply(page) {
     return page.evaluate(async () => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const at = context.chat.length - 1;
         const message = context.chat[at];
         const block = document.querySelector(`#chat .mes[mesid="${at}"]`);
@@ -127,7 +127,7 @@ function lastReply(page) {
 }
 
 for (const streaming of [true, false]) {
-    test(`a reply is stored and shown cleaned up: stopping string, AI_OUTPUT regex, incomplete sentence (${streaming ? 'streaming' : 'not streaming'})`, async ({ page }) => {
+    test(`a reply is stored and shown cleaned up: stopping string, incomplete sentence (${streaming ? 'streaming' : 'not streaming'})`, async ({ page }) => {
         const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
         const mock = await startLlamaCpp(() => `Ahoy ${stamp}, what a colour. Then half\n###E`);
         try {
@@ -138,16 +138,12 @@ for (const streaming of [true, false]) {
             await connectLlamaCpp(page, mock.url);
             await page.evaluate(async (streaming) => {
                 // @ts-ignore
-                const context = SillyTavern.getContext();
+                const context = stTest.context();
                 context.textCompletionSettings.streaming = streaming;
                 context.powerUserSettings.custom_stopping_strings = JSON.stringify(['###END']);
                 context.powerUserSettings.trim_sentences = true;
-                context.extensionSettings.regex = [{
-                    id: 'tidy-colour', scriptName: 'colour', findRegex: '/colour/g', replaceString: 'color', trimStrings: [],
-                    placement: [2], disabled: false, markdownOnly: false, promptOnly: false, runOnEdit: true, substituteRegex: 0, minDepth: null, maxDepth: null,
-                }];
                 const { saveSettingsDebounced } = await import('/script.js');
-                saveSettingsDebounced('power_user.custom_stopping_strings', 'power_user.trim_sentences', 'extension_settings');
+                saveSettingsDebounced('power_user.custom_stopping_strings', 'power_user.trim_sentences');
             }, streaming);
             await page.waitForTimeout(2500);
 
@@ -157,11 +153,11 @@ for (const streaming of [true, false]) {
             await expect(page.locator('#send_but')).toBeVisible({ timeout: 30000 });
             await expect.poll(() => page.evaluate(() => {
                 // @ts-ignore
-                const chat = SillyTavern.getContext().chat;
+                const chat = stTest.context().chat;
                 return typeof chat[chat.length - 1]?.node_id === 'string';
             }), { timeout: 10000 }).toBe(true);
 
-            const text = `Ahoy ${stamp}, what a color.`;
+            const text = `Ahoy ${stamp}, what a colour.`;
             const want = { mes: text, drawnText: text, stored: { mes: text, api: 'llamacpp', model: MODEL } };
             await expect.poll(() => lastReply(page), { timeout: 10000 }).toEqual(want);
 

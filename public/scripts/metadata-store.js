@@ -4,6 +4,7 @@ import { getRequestHeaders } from './request-headers.js';
 import { selected_group } from './group-chats.js';
 import { setChatVariablesListener, setMetadataStoredListener } from './chat-store.js';
 import { delay } from './utils.js';
+import { debounce_timeout } from './constants.js';
 import { t } from './i18n.js';
 import { isStoredNodeId } from './node-identity.js';
 import { applyChanges, baselineAfter, baselineOf, metadataChanges, replaceInPlace, unsavedVariables } from './state-sync.js';
@@ -43,17 +44,10 @@ export function takeServerState(state) {
  * @param {ChatMetadata} state
  * @param {import('./state-sync.js').MetadataChanges} changes
  */
-export function metadataChangesNotSaved(state, changes) {
+function metadataChangesNotSaved(state, changes) {
     takeServerState(state);
     const names = unsavedVariables(changes);
     toastr.error(names.length ? t`Chat variables not saved: ${names.join(', ')}` : t`Chat metadata not saved.`, t`Save failed`);
-}
-
-/**
- * @param {ChatMetadata} metadata
- */
-export function noteMetadataStored(metadata) {
-    _metadataBaseline = baselineOf(metadata);
 }
 
 /**
@@ -168,7 +162,7 @@ let _metadataSaveChain = Promise.resolve();
 /**
  * @param {{avatar_url: string}|{group_id: string}} owner
  */
-export async function _postChatMetadata(owner) {
+async function _postChatMetadata(owner) {
     const run = async () => {
         const changes = changedMetadata();
         if (!changes) return;
@@ -206,4 +200,26 @@ export async function saveMetadata() {
     const owner = openOwner();
     if (!owner) return;
     return await _postChatMetadata(owner);
+}
+
+let saveMetadataTimeout = null;
+
+export function cancelDebouncedMetadataSave() {
+    clearTimeout(saveMetadataTimeout);
+    saveMetadataTimeout = null;
+}
+
+/**
+ * Saves the open chat's metadata after a pause, unless another chat is open by then.
+ */
+export function saveMetadataDebounced() {
+    const owner = JSON.stringify(openOwner());
+    cancelDebouncedMetadataSave();
+    saveMetadataTimeout = setTimeout(async () => {
+        if (JSON.stringify(openOwner()) !== owner) {
+            console.warn('Another chat was opened, not saving metadata');
+            return;
+        }
+        await saveMetadata();
+    }, debounce_timeout.relaxed);
 }

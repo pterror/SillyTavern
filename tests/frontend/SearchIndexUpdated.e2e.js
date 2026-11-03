@@ -15,7 +15,7 @@ const EVENT_SOURCE_CLOSED = 2;
 
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise(resolve => {
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, resolve);
     }));
 }
@@ -387,7 +387,7 @@ test.describe('re-rendering the visible page keeps the list\'s scroll distance',
     async function createCharacters(page, term) {
         await page.evaluate(async ({ term, count }) => {
             // @ts-ignore
-            const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+            const headers = stTest.context().getRequestHeaders({ omitContentType: true });
             for (let i = 0; i < count; i++) {
                 const form = new FormData();
                 form.set('ch_name', `${term} ${i}`);
@@ -493,7 +493,7 @@ test.describe('a refresh the user didn\'t ask for keeps the list\'s page and scr
         term = `Pagekeep${Date.now()}`;
         avatars = await page.evaluate(async ({ term, count, size }) => {
             // @ts-ignore
-            const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+            const headers = stTest.context().getRequestHeaders({ omitContentType: true });
             const created = [];
             for (let i = 0; i < count; i++) {
                 const form = new FormData();
@@ -669,7 +669,7 @@ test.describe('a refresh the user didn\'t ask for keeps the list\'s page and scr
         const from = await toPage2Scrolled(page);
 
         await page.evaluate(async (name) => {
-            const { executeSlashCommandsWithOptions } = window['SillyTavern'].getContext();
+            const { executeSlashCommandsWithOptions } = window['stTest'].context();
             await executeSlashCommandsWithOptions(`/tag-add name="${name}" Keeptag${Date.now()}`);
         }, `${term} 00`);
         await expect.poll(() => listPageQueries(from).length).toBeGreaterThan(0);
@@ -704,7 +704,7 @@ test.describe('a refresh the user didn\'t ask for keeps the list\'s page and scr
         test('a filter (favorites only)', async ({ page }) => {
             await page.evaluate(async (avatars) => {
                 // @ts-ignore
-                const headers = SillyTavern.getContext().getRequestHeaders();
+                const headers = stTest.context().getRequestHeaders();
                 const response = await fetch('/api/characters/fav', {
                     method: 'POST',
                     headers,

@@ -5,7 +5,6 @@ import { amount_gen, max_context } from './generation-params.js';
 import { getRequestHeaders } from './request-headers.js';
 import { eventSource, event_types } from './events.js';
 import { textgenerationwebui_settings as textgen_settings, textgen_types } from './textgen-settings.js';
-import { getTextgenTypeTokenizer } from './tokenizers.js';
 import { renderTemplateAsync } from './templates.js';
 import { POPUP_TYPE, callGenericPopup } from './popup.js';
 import { t } from './i18n.js';
@@ -21,7 +20,7 @@ let aphroditeModels = [];
 let featherlessModels = [];
 let tabbyModels = [];
 let llamacppModels = [];
-export let openRouterModels = [];
+let openRouterModels = [];
 
 /**
  * List of OpenRouter providers.
@@ -1357,20 +1356,6 @@ function calculateOpenRouterCost() {
     // Schedule an update when settings change
     eventSource.removeListener(event_types.SETTINGS_UPDATED, calculateOpenRouterCost);
     eventSource.once(event_types.SETTINGS_UPDATED, calculateOpenRouterCost);
-}
-
-/**
- * @returns {number}
- */
-export function getCurrentOpenRouterModelTokenizer() {
-    return getTextgenTypeTokenizer(textgen_types.OPENROUTER);
-}
-
-/**
- * @returns {number}
- */
-export function getCurrentDreamGenModelTokenizer() {
-    return getTextgenTypeTokenizer(textgen_types.DREAMGEN);
 }
 
 export function initTextGenModels() {

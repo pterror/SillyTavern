@@ -15,7 +15,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', 'Hello there.');
@@ -29,7 +29,7 @@ function createCharacter(page, name) {
 function runImport(page) {
     return page.evaluate(async () => {
         // @ts-ignore
-        const response = await fetch('/api/upstream-import', { method: 'POST', headers: SillyTavern.getContext().getRequestHeaders(), body: '{}' });
+        const response = await fetch('/api/upstream-import', { method: 'POST', headers: stTest.context().getRequestHeaders(), body: '{}' });
         if (!response.ok) throw new Error(`import failed: ${response.status}`);
         return response.json();
     });
@@ -39,7 +39,7 @@ test.describe('the upstream data import', () => {
     test('an upstream chat file opens by its name with its swipes, once', async ({ page, stServer }) => {
         await testSetup.awaitST({ page });
         await page.evaluate(() => new Promise(resolve => {
-            const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+            const { eventSource, eventTypes } = window['stTest'].context();
             eventSource.once(eventTypes.APP_READY, resolve);
         }));
         const name = `Upstreamer${Date.now()}`;
@@ -60,7 +60,7 @@ test.describe('the upstream data import', () => {
         await openCharacterManagementDrawer(page);
         await page.evaluate(async (avatar) => {
             // @ts-ignore
-            await SillyTavern.getContext().getCharacters();
+            await stTest.context().getCharacters();
             const { selectCharacterByAvatar, openCharacterChat } = await import('/script.js');
             await selectCharacterByAvatar(avatar);
             await openCharacterChat('Upstream chat');
@@ -68,7 +68,7 @@ test.describe('the upstream data import', () => {
         await expect(page.locator('#chat .mes .mes_text').last()).toHaveText('Swipe two.', { timeout: 15000 });
         const shown = await page.evaluate(() => {
             // @ts-ignore
-            const { chat } = SillyTavern.getContext();
+            const { chat } = stTest.context();
             return { mes: chat.map(m => m.mes), swipes: chat[chat.length - 1].swipes, swipeId: chat[chat.length - 1].swipe_id };
         });
         expect(shown).toEqual({ mes: ['From upstream.', 'Hi.', 'Swipe two.'], swipes: ['Swipe one.', 'Swipe two.', 'Swipe three.'], swipeId: 1 });

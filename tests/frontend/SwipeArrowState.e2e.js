@@ -8,16 +8,16 @@ test('only a message on its last alternative is marked so; Ctrl+Up without a use
     await testSetup.awaitST({ page });
     await page.evaluate(async () => {
         // @ts-ignore
-        await SillyTavern.getContext().executeSlashCommandsWithOptions('/go Seraphina');
+        await stTest.context().executeSlashCommandsWithOptions('/go Seraphina');
     });
     const greeting = page.locator('#chat .mes[mesid="0"]');
     await expect(greeting).toHaveCount(1, { timeout: 10000 });
     await page.evaluate(async () => {
         // @ts-ignore
-        await SillyTavern.getContext().SlashCommandParser.commands['addswipe'].callback({ quiet: 'true' }, 'Another greeting.');
+        await stTest.context().SlashCommandParser.commands['addswipe'].callback({ quiet: 'true' }, 'Another greeting.');
     });
     // @ts-ignore
-    await expect.poll(() => page.evaluate(() => SillyTavern.getContext().chat[0].swipe_id)).toBe(0);
+    await expect.poll(() => page.evaluate(() => stTest.context().chat[0].swipe_id)).toBe(0);
     await expect(greeting).not.toHaveClass(/\blast_swipe\b/);
 
     await page.locator('#send_textarea').focus();

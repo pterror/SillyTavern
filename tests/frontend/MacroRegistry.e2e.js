@@ -393,38 +393,6 @@ test.describe('MacroRegistry', () => {
                 expect(result.aliasOf).toBe('primary-macro');
             });
 
-            test('should have independent source for alias', async ({ page }) => {
-                const result = await page.evaluate(async () => {
-                    /** @type {import('../../public/scripts/macros/engine/MacroRegistry.js')} */
-                    const { MacroRegistry } = await import('./scripts/macros/engine/MacroRegistry.js');
-
-                    MacroRegistry.unregisterMacro('source-target');
-                    MacroRegistry.unregisterMacro('source-alias');
-
-                    MacroRegistry.registerMacro('source-target', {
-                        description: 'Target',
-                        handler: () => '',
-                    });
-
-                    MacroRegistry.registerMacroAlias('source-target', 'source-alias');
-
-                    const targetDef = MacroRegistry.getMacro('source-target');
-                    const aliasDef = MacroRegistry.getMacro('source-alias');
-
-                    return {
-                        // Both should have source objects
-                        targetHasSource: !!targetDef?.source,
-                        aliasHasSource: !!aliasDef?.source,
-                        // The alias has its own source object (not shared reference)
-                        sourcesAreDifferentObjects: targetDef?.source !== aliasDef?.source,
-                    };
-                });
-
-                expect(result.targetHasSource).toBe(true);
-                expect(result.aliasHasSource).toBe(true);
-                expect(result.sourcesAreDifferentObjects).toBe(true);
-            });
-
             test('should be case-insensitive for lookup', async ({ page }) => {
                 const result = await page.evaluate(async () => {
                     /** @type {import('../../public/scripts/macros/engine/MacroRegistry.js')} */

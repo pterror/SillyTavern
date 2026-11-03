@@ -31,7 +31,7 @@ test('every world info setting the page stores is in the shared defaults, and no
 
 test('the page takes each setting\'s default from the shared defaults', () => {
     for (const key of Object.keys(WORLD_INFO_GLOBAL_DEFAULTS)) {
-        assert.match(PAGE, new RegExp(`export let ${key} = WORLD_INFO_GLOBAL_DEFAULTS\\.${key};`), key);
+        assert.match(PAGE, new RegExp(`^(?:export )?let ${key} = WORLD_INFO_GLOBAL_DEFAULTS\\.${key};`, 'm'), key);
     }
 });
 

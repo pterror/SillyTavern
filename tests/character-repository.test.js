@@ -5,7 +5,6 @@ import {
 import { installBrowserStorage } from './util/browser-storage.js';
 
 const getRequestHeadersMock = jest.fn(() => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }));
-const unshallowCharacterMock = jest.fn();
 
 function groupHashes(group) {
     return {
@@ -236,9 +235,6 @@ function fetchedUrls() {
     return global.fetch.mock.calls.map(([url]) => url);
 }
 
-jest.unstable_mockModule('../public/script.js', () => ({
-    unshallowCharacter: unshallowCharacterMock,
-}));
 jest.unstable_mockModule('../public/scripts/request-headers.js', () => ({
     getRequestHeaders: getRequestHeadersMock,
 }));
@@ -306,7 +302,6 @@ function makeStore(initial = []) {
 
 beforeEach(() => {
     getRequestHeadersMock.mockClear();
-    unshallowCharacterMock.mockReset();
     for (const records of localforageStores.values()) records.clear();
     server = { characters: new Map(), versions: new Map(), groups: new Map(), live: new Map(), queryResponses: [] };
     liveCounter = 0;
@@ -427,19 +422,15 @@ describe('getMany()', () => {
 });
 
 describe('full()', () => {
-    test('delegates to unshallowCharacter() for a resident id and returns the (now-hydrated) resident entity', async () => {
-        const alice = { avatar: 'alice', shallow: true };
+    test('returns the resident entity for a resident id, without asking the server', async () => {
+        const alice = { avatar: 'alice', description: 'held' };
         const store = makeStore([alice]);
         const repo = new CharacterRepository(store);
-        unshallowCharacterMock.mockImplementation(async (id) => {
-            if (id === 'alice') Object.assign(alice, { shallow: false, description: 'hydrated' });
-        });
 
         const result = await repo.full('alice');
 
-        expect(unshallowCharacterMock).toHaveBeenCalledWith('alice');
         expect(result).toBe(alice);
-        expect(result.description).toBe('hydrated');
+        expect(global.fetch).not.toHaveBeenCalled();
     });
 
     test('reads a non-resident id from the server without making it resident', async () => {
@@ -451,7 +442,6 @@ describe('full()', () => {
 
         expect(result).toEqual({ avatar: 'bob', name: 'Bob', description: 'full', chat: '', shallow: false });
         expect(store.has('bob')).toBe(false);
-        expect(unshallowCharacterMock).not.toHaveBeenCalled();
         const [url, init] = global.fetch.mock.calls[0];
         expect(url).toBe('/api/characters/get');
         expect(JSON.parse(init.body)).toEqual({ avatar_url: 'bob' });

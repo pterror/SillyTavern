@@ -8,7 +8,7 @@ import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.
 function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', 'Hello there.');
@@ -26,7 +26,7 @@ async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
@@ -45,7 +45,7 @@ async function chatWithQuestion(page) {
     await expect(page.locator('#chat .mes')).toHaveCount(1);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const { ensureOpeningRow } = await import('/scripts/chat-store.js');
         const opening = await ensureOpeningRow(0);
         const response = await fetch('/api/chats/message/append', {
@@ -62,14 +62,14 @@ async function chatWithQuestion(page) {
     }, avatar);
     await expect(page.locator('#chat .mes')).toHaveCount(3);
     // @ts-ignore
-    const question = await page.evaluate(() => SillyTavern.getContext().chat[1].node_id);
+    const question = await page.evaluate(() => stTest.context().chat[1].node_id);
     return { avatar, question };
 }
 
 function storedAlternatives(page, nodeId) {
     return page.evaluate(async (nodeId) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const response = await fetch('/api/chats/alternatives', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ node_id: nodeId }) });
         return (await response.json()).alternatives.map((/** @type {any} */ a) => a.mes);
     }, nodeId);
@@ -78,7 +78,7 @@ function storedAlternatives(page, nodeId) {
 function storedPath(page, avatar) {
     return page.evaluate(async (avatar) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const response = await fetch('/api/chats/open', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar }) });
         return (await response.json()).messages.map((/** @type {any} */ m) => m.mes);
     }, avatar);
@@ -87,7 +87,7 @@ function storedPath(page, avatar) {
 function shown(page, mesId) {
     return page.evaluate((mesId) => ({
         // @ts-ignore
-        chat: SillyTavern.getContext().chat.map(m => m.mes),
+        chat: stTest.context().chat.map(m => m.mes),
         counter: document.querySelector(`#chat .mes[mesid="${mesId}"] .swipes-counter`)?.textContent?.replace(/\u200b/g, '').trim(),
     }), mesId);
 }
@@ -120,7 +120,7 @@ test.describe('overswiping a user message', () => {
         const message = await overswipeAndWrite(page, 1, 'How far is the city?');
         expect((await shown(page, 1)).counter).toBe('2/2');
         // @ts-ignore
-        expect(await page.evaluate(() => SillyTavern.getContext().chat.length)).toBe(2);
+        expect(await page.evaluate(() => stTest.context().chat.length)).toBe(2);
         expect(await storedAlternatives(page, question)).toEqual(['How far is it?']);
 
         await message.locator('.mes_edit_done').click({ force: true });
@@ -178,7 +178,7 @@ test.describe('overswiping a user message', () => {
     test('the opening: Done stores a new opening and leaves the first as it was', async ({ page }) => {
         const { avatar } = await chatWithQuestion(page);
         // @ts-ignore
-        const opening = await page.evaluate(() => SillyTavern.getContext().chat[0].node_id);
+        const opening = await page.evaluate(() => stTest.context().chat[0].node_id);
         const message = await overswipeAndWrite(page, 0, 'Welcome back.');
         expect(await storedAlternatives(page, opening)).toEqual(['Hello there.']);
         await message.locator('.mes_edit_done').click({ force: true });

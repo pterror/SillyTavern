@@ -9,8 +9,7 @@ import { parseDecorators } from '../world-info/decorators.js';
 import { activateWorldInfoEntries } from '../world-info/activation.js';
 import { buildActivationRecord } from '../world-info/activation-record.js';
 import { userStore } from '../user-stores.js';
-import { bucketActivatedEntries, world_info_position } from '../world-info/result-bucketing.js';
-import { getRegexedString, regex_placement } from '../regex-scripts-engine.js';
+import { bucketActivatedEntries } from '../world-info/result-bucketing.js';
 import { appendFileAttachments } from '../file-attachment-inline.js';
 import { resolveAuthorsNote } from '../authors-note.js';
 import { getStoppingStrings } from '../stopping-strings.js';
@@ -30,7 +29,6 @@ import { extension_prompt_roles, extension_prompt_types, placeEntry, positionedE
 import './providers.js';
 
 const GENERATION_TYPE_TRIGGERS = ['normal', 'continue', 'impersonate', 'swipe', 'regenerate'];
-const WI_DEFAULT_DEPTH = 4;
 const FORMAT_TOKEN = '\u0000\ufffc\u0000\ufffd';
 const OUTLET_REFERENCE = /\{\{outlet::([^}]+)\}\}/g;
 
@@ -71,8 +69,6 @@ const DEPTH_ROLE_ORDER = { [extension_prompt_roles.ASSISTANT]: 0, [extension_pro
  * @property {string} [reasoningPrefix]
  * @property {string} [reasoningSeparator]
  * @property {string} [reasoningSuffix]
- * @property {import('../regex-scripts-engine.js').RegexScript[]} [regexScripts]
- * @property {boolean} [regexExtensionEnabled]
  * @property {import('./injections.js').PageInjections} [pageInjections]
  * @property {number} thisMaxContext
  * @property {number} [maxContext]
@@ -95,7 +91,6 @@ const DEPTH_ROLE_ORDER = { [extension_prompt_roles.ASSISTANT]: 0, [extension_pro
  * @property {import('../world-info/activation.js').WIEntry[]} [worldInfoCandidates]
  * @property {import('../../public/scripts/world-info-globals.js').WorldInfoGlobals} worldInfoGlobals
  * @property {object} [entryFilterContext]
- * @property {Map<string, object>} [externalActivations]
  * @property {() => number} [worldInfoRandom]
  * @property {import('../authors-note.js').AuthorsNoteSettings} [noteSettings]
  * @property {boolean} [hasCharacterOrGroup]
@@ -198,11 +193,10 @@ export async function buildTextCompletionPrompt(input) {
         personaDescription, chatMetadata = {}, chat, sentMessage = null, textareaText = '', userPromptBias = '',
         alwaysForceName2 = false, forceName2Override,
         reasoningAddToPrompts = false, reasoningMaxAdditions = 999999, reasoningPrefix = '', reasoningSeparator = '', reasoningSuffix = '',
-        regexScripts = [], regexExtensionEnabled = true,
         tokenPadding = 0, countTokens, countPromptTokens = countTokens, encodeTokens, encodeTokensByType, novelTokenizerType, amountGen = 0, requestTokenProbabilities = false,
         chatGuidanceScale, groupchatIndividualChars = false, charaCfg, globalCfg, promptCombine = [], promptSeparator, promptInsertionDepth = 1, chatMetadataPrompts = {},
         worldInfoCandidates = [], worldInfoGlobals,
-        entryFilterContext = {}, externalActivations = new Map(), worldInfoRandom = Math.random,
+        entryFilterContext = {}, worldInfoRandom = Math.random,
         noteSettings = {}, hasCharacterOrGroup = false,
         storyStringTemplate: template = '', storyStringPosition = 0, storyStringDepth = 1, storyStringRole = 0,
         sysPromptEnabled = false, sysPromptContent = '', personaDescriptionPosition = 0, stripExamples = false,
@@ -245,13 +239,9 @@ export async function buildTextCompletionPrompt(input) {
 
     let coreChat = buildCoreChat(chat, { canUseTools, isSwipe });
     const scannedMessages = coreChat.map(m => ({ nodeId: m === sentMessage ? null : (m.node_id ?? ''), text: m.mes ?? '' })).reverse();
-    const coreChatLength = coreChat.length;
     coreChat = await Promise.all(coreChat.map(async (chatItem, index) => {
         const message = chatItem === chat[0] ? substituteParams(chatItem.mes ?? '', macroContext) : chatItem.mes;
-        const regexType = chatItem.is_user ? regex_placement.USER_INPUT : regex_placement.AI_OUTPUT;
-        const depth = coreChatLength - index - (isContinue ? 2 : 1);
-        const regexedMessage = getRegexedString(message, regexType, regexScripts, { isPrompt: true, depth, macroContext, regexExtensionEnabled });
-        const resolvedMessage = await appendFileAttachments(chatItem.extra, regexedMessage, { directories });
+        const resolvedMessage = await appendFileAttachments(chatItem.extra, message, { directories });
         return finalizeCoreChatMessage(chatItem, index, resolvedMessage);
     }));
 
@@ -263,9 +253,7 @@ export async function buildTextCompletionPrompt(input) {
         if (!isOtherGroupMember) {
             const reasoning = reasoningOf(coreChat[i].extra);
             const duration = coreChat[i].extra?.reasoning_duration ?? null;
-            const reasoningDepth = coreChat.length - i - (isContinue ? 2 : 1);
-            const regexedReasoning = reasoning === null ? null : getRegexedString(reasoning, regex_placement.REASONING, regexScripts, { isPrompt: true, depth: reasoningDepth, macroContext, regexExtensionEnabled });
-            const { content, state } = foldReasoningIntoMessage(reasoningState, coreChat[i].mes, regexedReasoning, isPrefix, duration, reasoningConfig);
+            const { content, state } = foldReasoningIntoMessage(reasoningState, coreChat[i].mes, reasoning, isPrefix, duration, reasoningConfig);
             reasoningState = state;
             coreChat[i] = { ...coreChat[i], mes: content };
         }
@@ -301,19 +289,14 @@ export async function buildTextCompletionPrompt(input) {
     const { activatedEntries, trace } = await activateWorldInfoEntries(decoratedCandidates, chatForWI, {
         maxContext: thisMaxContext, globals: worldInfoGlobals,
         globalScanData, macroContext, countTokens, random: worldInfoRandom, chatMetadata, isDryRun,
-        entryFilterContext, externalActivations, additionalScanInjects: scanInjects.map(([, text]) => text),
+        entryFilterContext, additionalScanInjects: scanInjects.map(([, text]) => text),
     });
     const activations = isDryRun || !directories ? null : await buildActivationRecord(trace, {
         messages: scannedMessages,
         injects: scanInjects.map(([label]) => label),
         books: (await userStore(directories)).lib.books,
     });
-    const lore = bucketActivatedEntries(activatedEntries, {
-        resolveContent: (entry) => {
-            const regexDepth = entry.position === world_info_position.atDepth ? (entry.depth ?? WI_DEFAULT_DEPTH) : null;
-            return getRegexedString(entry.content, regex_placement.WORLD_INFO, regexScripts, { depth: regexDepth, isMarkdown: false, isPrompt: true, macroContext, regexExtensionEnabled });
-        },
-    });
+    const lore = bucketActivatedEntries(activatedEntries);
 
     const rawExampleBlocks = exampleBlocks(fields.mesExamples, lore.worldInfoExamples, {
         mainApi, isInstruct, exampleSeparator: contextSettings.example_separator, macroContext,

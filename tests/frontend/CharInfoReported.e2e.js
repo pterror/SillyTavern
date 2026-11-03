@@ -16,7 +16,7 @@ const stamp = () => `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 async function createAndOpen(page, greetings, name = `CharInfo-${stamp()}`) {
     const avatar = await page.evaluate(async ({ name, greetings }) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', greetings[0] ?? '');
@@ -42,7 +42,7 @@ async function createAndOpen(page, greetings, name = `CharInfo-${stamp()}`) {
 async function storedGreetings(page, avatar) {
     return page.evaluate(async (avatar) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/characters/get', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar }) });
         const card = await response.json();
         return [card.data.first_mes, ...(card.data.alternate_greetings ?? [])];
@@ -193,7 +193,7 @@ test.describe('character list', () => {
         const avatar = await createAndOpen(page, ['hi']);
         await page.evaluate(async () => {
             // @ts-ignore
-            await SillyTavern.getContext().getCharacters();
+            await stTest.context().getCharacters();
         });
         const row = page.locator(`#rm_print_characters_block .character_select[data-avatar="${avatar}"]`);
         await expect(row).toHaveCount(1, { timeout: 10000 });

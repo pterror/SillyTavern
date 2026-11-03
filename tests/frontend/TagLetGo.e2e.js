@@ -10,7 +10,7 @@ async function loadApp(page) {
     await testSetup.awaitST({ page });
     await page.evaluate(() => {
         window['__appReady'] = false;
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, () => { window['__appReady'] = true; });
     });
     await page.waitForFunction(() => window['__appReady'], null, { timeout: 60000 });
@@ -23,7 +23,7 @@ async function loadApp(page) {
  */
 async function api(page, path, body = {}) {
     return page.evaluate(async ({ path, body }) => {
-        const headers = window['SillyTavern'].getContext().getRequestHeaders();
+        const headers = window['stTest'].context().getRequestHeaders();
         const response = await fetch(path, { method: 'POST', headers, body: JSON.stringify(body) });
         if (!response.ok) throw new Error(`${path} -> ${response.status}`);
         return response.json();
@@ -45,7 +45,7 @@ async function createTag(page, id) {
  */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
-        const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
+        const headers = window['stTest'].context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.append('ch_name', name);
         const response = await fetch('/api/characters/create', { method: 'POST', headers, body: form });
@@ -113,21 +113,6 @@ test.describe('letting go of tags', () => {
         await expect(page.locator('#tag_view_list')).toHaveCount(0);
         await expect.poll(() => holds(page, shown), { timeout: SWEEP_TIMEOUT_MS }).toBe(false);
         expect(await holds(page, carried)).toBe(true);
-    });
-
-    test('a tag an extension put into `tags` is kept after it is stored', async ({ page }) => {
-        const stamp = Date.now();
-        const id = `letgo-extension-${stamp}`;
-        await loadApp(page);
-        await page.evaluate(async (id) => {
-            const { tags } = await import('/scripts/tags.js');
-            const { saveSettingsDebounced } = await import('/script.js');
-            tags.push({ id, name: id, color: '', color2: '', folder_type: 'NONE' });
-            saveSettingsDebounced();
-        }, id);
-        await expect.poll(async () => (await api(page, '/api/tags/by-ids', { ids: [id] })).tags.length).toBe(1);
-        await page.waitForTimeout(5000);
-        expect(await holds(page, id)).toBe(true);
     });
 
     test('a tag a filter is set on is kept', async ({ browser, page }) => {

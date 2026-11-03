@@ -1,4 +1,4 @@
-import { cardToGreetingsModel, getCurrentCharacter, getCurrentChatId, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, redisplayChat, updateViewMessageIds, refreshSwipeButtons, updateMessageBlock, _messageSnapshots, markStoredAs, isAsStored, forgetStored, isReplyGenerating } from '../script.js';
+import { cardToGreetingsModel, getCurrentCharacter, getCurrentChatId, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, redisplayChat, refreshSwipeButtons, updateMessageBlock, _messageSnapshots, markStoredAs, isAsStored, forgetStored, isReplyGenerating } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
@@ -384,11 +384,10 @@ export async function rememberCardOpening(text) {
 /**
  * @param {object} [options]
  * @param {{from: string, to: string, index?: number}|null} [options.greetingEdit]
- * @param {{from: string, to: string, index?: number}[]} [options.greetingEdits]
  * @param {{ openings: OpeningsResponse|null, card_openings: OpeningsResponse|null }|null} [options.openings]
  */
-export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, greetingEdits, openings = null } = {}) {
-    const edits = Array.isArray(greetingEdits) ? greetingEdits : (greetingEdit ? [greetingEdit] : []);
+export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, openings = null } = {}) {
+    const edits = greetingEdit ? [greetingEdit] : [];
     const opening = _chatAt(0);
     const character = getCurrentCharacter();
     if (opening?.node_id == null || opening.node_id === '' || character?.avatar == null || character.avatar === '') return;
@@ -570,54 +569,6 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
     refreshSwipeButtons(true);
 }
 
-/**
- * @param {number} mesId
- * @param {{redraw?: boolean}} [options]
- * @returns {Promise<boolean>}
- */
-export async function _restoreContinuation(mesId, { redraw = true } = {}) {
-    const message = _chatAt(mesId);
-    if (!isStoredNodeId(message?.node_id)) return false;
-
-    let payload;
-    try {
-        const response = await fetch('/api/chats/message/select', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ node_id: message.node_id, chat_name: getCurrentChatId() }),
-        });
-        if (!response.ok) return false;
-        payload = await response.json();
-    } catch (error) {
-        console.warn('[restore] Could not fetch what follows:', error);
-        return false;
-    }
-
-    await _takeStateFrom(payload);
-    const following = payload?.messages ?? [];
-    if (!following.length && chat.length === mesId + 1) return false;
-
-    const replaced = chat.splice(mesId + 1, chat.length - (mesId + 1), ...following);
-    forgetStored(replaced.map(m => m.node_id));
-    for (const m of following) if (isStoredNodeId(m?.node_id)) markStoredAs(m.node_id, m);
-    if (redraw) {
-        await redisplayChat({ startIndex: mesId });
-        updateViewMessageIds();
-        refreshSwipeButtons(true);
-    }
-    return true;
-}
-
-/**
- * @param {{ chat_metadata?: ChatMetadata } | null | undefined} answer
- */
-async function _takeStateFrom(answer) {
-    if (!answer?.chat_metadata) return;
-    const { takeServerState } = await import('./metadata-store.js');
-    takeServerState(answer.chat_metadata);
-}
-
-
 /** @typedef {Error & {status: number}} HttpError */
 
 /**
@@ -649,16 +600,6 @@ async function _retryTransient(fn, { attempts = 3, baseDelayMs = 500 } = {}) {
         }
     }
     throw lastError;
-}
-
-/**
- * @template T
- * @param {() => Promise<T>} fn
- * @param {{attempts?: number, baseDelayMs?: number}} [options]
- * @returns {Promise<T>}
- */
-export async function retryTransient(fn, options) {
-    return _retryTransient(fn, options);
 }
 
 /** @returns {{group_id: string}|{avatar_url: string}|null} */
@@ -738,7 +679,7 @@ async function _chatOpPostAnswering(path, body, answered) {
  * @param {number} mesId
  * @param {string|null|undefined} nodeId
  */
-export function _markMessageSaved(mesId, nodeId) {
+function _markMessageSaved(mesId, nodeId) {
     const live = mesId < chat.length ? chat[mesId] : null;
     if (live?.node_id != null && live.node_id !== '' && live.node_id === nodeId) {
         markStoredAs(live.node_id, live);
@@ -768,7 +709,7 @@ const DERIVED_EXTRA = ['branches', 'bookmark_link', ITEMIZED_PROMPT_FLAG, 'token
  * @param {unknown} extra
  * @returns {Record<string, unknown>}
  */
-export function extraOf(extra) {
+function extraOf(extra) {
     const own = extra && typeof extra === 'object' && !Array.isArray(extra) ? { ...extra } : {};
     for (const key of DERIVED_EXTRA) delete own[key];
     return own;
@@ -778,7 +719,7 @@ export function extraOf(extra) {
  * @param {ChatMessage} message
  * @returns {Record<string, any>}
  */
-export function contentOf(message) {
+function contentOf(message) {
     /** @type {Record<string, any>} */
     const content = { ...message };
     for (const key of ['node_id', 'swipes', 'swipe_id', 'swipe_info', 'swipe_speaker_default']) delete content[key];
@@ -791,7 +732,7 @@ export function contentOf(message) {
  * @param {Record<string, any>} now
  * @returns {{ patch: Record<string, any>, unset: string[] } | null}
  */
-export function patchOf(before, now) {
+function patchOf(before, now) {
     /** @type {Record<string, any>} */
     const patch = {};
     /** @type {string[]} */
@@ -1120,21 +1061,6 @@ function _takeCopies(copied, from) {
 }
 
 /**
- * @param {string[]} nodeIds
- * @returns {Promise<{ not_on_path: string[], refused: { node_id: string, reason: string }[] }>}
- */
-export async function chatOpCutNamed(nodeIds) {
-    const answer = await _chatOpPostAnswering('/api/chats/message/cut-many', { node_ids: nodeIds }, [409]);
-    if (answer?.drops && hasDrops(answer.drops)) warnDropped(answer.drops, t);
-    forgetStored(nodeIds);
-    _takeCopies(answer?.copied, 0);
-    return {
-        not_on_path: Array.isArray(answer?.not_on_path) ? answer.not_on_path : [],
-        refused: Array.isArray(answer?.refused) ? answer.refused : [],
-    };
-}
-
-/**
  * @param {{ node_id: string, patch?: Record<string, unknown>, unset?: string[] }[]} edits
  * @returns {Promise<{ node_id: string, reason: string }[]>}
  */
@@ -1142,26 +1068,6 @@ export async function chatOpPatch(edits) {
     if (!edits.length) return [];
     const answer = await _chatOpPostAnswering('/api/chats/message/edit-batch', { edits }, [409]);
     return Array.isArray(answer?.refused) ? answer.refused : [];
-}
-
-/**
- * @param {string} siblingNodeId
- * @param {Record<string, unknown>} content
- * @returns {Promise<string|null>}
- */
-export async function chatOpAddAlternativeBeside(siblingNodeId, content) {
-    const created = await _chatOpPost('/api/chats/message/alternative', { sibling_node_id: siblingNodeId, contents: [content] });
-    return created?.node_ids?.[0] ?? null;
-}
-
-/**
- * @param {string} nodeId
- * @param {string} label
- * @returns {Promise<string|null>}
- */
-export async function chatOpBookmarkNode(nodeId, label) {
-    const answer = await _chatOpPostAnswering('/api/chats/bookmark', { node_id: nodeId, label }, [409]);
-    return answer?.ok === true && typeof answer.id === 'string' ? answer.id : null;
 }
 
 /**
@@ -1183,21 +1089,6 @@ export async function chatOpAddAlternative(mesId, text) {
         contents: [_messageContent(msg, text)],
     });
     return created?.node_ids?.[0] ?? null;
-}
-
-/**
- * @param {number} mesId
- * @param {number} swipeId
- */
-export async function chatOpSelect(mesId, swipeId) {
-    const msg = _chatAt(mesId);
-    const nodeId = msg?.swipe_info?.[swipeId]?.node_id;
-    if (!isStoredNodeId(nodeId) || msg == null) return false;
-
-    await _takeStateFrom(await _chatOpPost('/api/chats/message/select', { node_id: nodeId }));
-    if (msg.node_id !== nodeId) updateMessage(mesId, { node_id: nodeId });
-    _markMessageSaved(mesId, nodeId);
-    return true;
 }
 
 /**

@@ -39,7 +39,6 @@ export async function startServer(dataRoot) {
         'server.js',
         '--dataRoot', dataRoot,
         '--configPath', path.join(dataRoot, 'config.yaml'),
-        '--globalExtensionsPath', path.join(dataRoot, 'global-extensions'),
         '--port', String(port),
         '--listen', 'false',
         '--browserLaunchEnabled', 'false',

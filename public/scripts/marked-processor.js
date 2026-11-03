@@ -9,7 +9,7 @@ const EXCLUSION_MARKER = '​';
  * @param {(text: string) => string} [substituteParamsFn]
  * @returns {import('marked').MarkedExtension}
  */
-export function markdownExclusionExt(escapeStrings, substituteParamsFn = identitySubstitute) {
+function markdownExclusionExt(escapeStrings, substituteParamsFn = identitySubstitute) {
     if (!escapeStrings) {
         return {};
     }

@@ -386,14 +386,12 @@ describe('the page syncs only the characters and groups it holds', () => {
         expect(response.status).toBe(404);
     });
 
-    test('/batch with full answers whole cards with their edit hashes, a bounded number at a time', async () => {
+    test('/batch with full answers whole cards, a bounded number at a time', async () => {
         const a = await createCharacter('A');
         const [record] = await (await postJson('/api/characters/batch', { avatars: [a], full: true })).json();
         expect(record.avatar).toBe(a);
         expect(record.description).toBe('d');
         expect(record.shallow).toBeUndefined();
-        expect(typeof record._fieldsHash).toBe('number');
-        expect(typeof record._bodyHash).toBe('number');
 
         const tooMany = Array.from({ length: 201 }, (_, i) => `c${i}.png`);
         const response = await realFetch(`${baseUrl}/api/characters/batch`, {

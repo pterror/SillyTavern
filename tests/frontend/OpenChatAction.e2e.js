@@ -13,7 +13,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 async function createCharacter(page, name, greeting) {
     return page.evaluate(async ({ name, greeting }) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', greeting);
@@ -55,7 +55,7 @@ test('opening a character is one request and writes nothing but what was opened'
 
     await page.evaluate(async () => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
     });
     const seen = await requestsDuring(page, async () => {
         await page.evaluate(async (avatar) => {
@@ -68,7 +68,7 @@ test('opening a character is one request and writes nothing but what was opened'
 
     const state = await page.evaluate(async (avatar) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const settings = await (await fetch('/api/settings/get', { method: 'POST', headers: context.getRequestHeaders(), body: '{}' })).json();
         const parsed = typeof settings.settings === 'string' ? JSON.parse(settings.settings) : settings.settings;
         return { chat: context.characters.find(c => c.avatar === avatar)?.chat ?? null, current: context.getCurrentChatId(), active: parsed.active_character };
@@ -85,7 +85,7 @@ test('a group chat with no messages shows its greetings unsaved, and stores them
 
     const groupId = await page.evaluate(async (members) => {
         // @ts-ignore
-        const context = SillyTavern.getContext();
+        const context = stTest.context();
         const response = await fetch('/api/groups/create', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ name: `Open group ${Date.now()}`, members }) });
         if (!response.ok) throw new Error(`group create failed: ${response.status}`);
         return String((await response.json()).id);
@@ -104,7 +104,7 @@ test('a group chat with no messages shows its greetings unsaved, and stores them
         const { sendMessageAsUser } = await import('/script.js');
         await sendMessageAsUser('Hello both.', '');
         // @ts-ignore
-        return SillyTavern.getContext().chat.map(m => ({ mes: m.mes, node_id: m.node_id }));
+        return stTest.context().chat.map(m => ({ mes: m.mes, node_id: m.node_id }));
     });
     expect(stored.map(m => m.mes)).toEqual(['A says hi.', 'B says hi.', 'Hello both.']);
     for (const message of stored) expect(message.node_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
@@ -118,6 +118,6 @@ test('a group chat with no messages shows its greetings unsaved, and stores them
     await expect(page.locator('#chat .mes')).toHaveCount(3);
     expect(await page.evaluate(() => {
         // @ts-ignore
-        return SillyTavern.getContext().chat.map(m => m.mes);
+        return stTest.context().chat.map(m => m.mes);
     })).toEqual(['A says hi.', 'B says hi.', 'Hello both.']);
 });

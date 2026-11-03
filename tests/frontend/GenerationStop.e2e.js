@@ -73,7 +73,7 @@ function startSlowLlamaCpp({ delayMs = 100, pieces = PIECES } = {}) {
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', 'Hello.');
@@ -91,7 +91,7 @@ async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
@@ -113,7 +113,7 @@ async function connectLlamaCpp(page, url) {
     await page.locator('#llamacpp_api_url_text').fill(url);
     await page.locator('#api_button_textgenerationwebui').click();
     // @ts-ignore
-    await expect.poll(() => page.evaluate(() => SillyTavern.getContext().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
+    await expect.poll(() => page.evaluate(() => stTest.context().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
     await page.locator('#API-status-top').click();
 }
 
@@ -127,7 +127,7 @@ test.describe('stopping a generation', () => {
             await openCharacter(page, avatar);
             await connectLlamaCpp(page, mock.url);
             // @ts-ignore
-            await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = true; });
+            await page.evaluate(() => { stTest.context().textCompletionSettings.streaming = true; });
             await page.waitForTimeout(2500);
 
             const stopRequests = [];
@@ -149,12 +149,12 @@ test.describe('stopping a generation', () => {
 
             await expect.poll(() => page.evaluate(() => {
                 // @ts-ignore
-                const chat = SillyTavern.getContext().chat;
+                const chat = stTest.context().chat;
                 return typeof chat[chat.length - 1]?.node_id === 'string';
             }), { timeout: 10000 }).toBe(true);
             const stored = await page.evaluate(async () => {
                 // @ts-ignore
-                const context = SillyTavern.getContext();
+                const context = stTest.context();
                 const post = async (url, body) => (await fetch(url, { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify(body) })).json();
                 const last = context.chat[context.chat.length - 1];
                 const path = (await post('/api/chats/ancestry', { node_id: last.node_id })).messages;
@@ -188,7 +188,7 @@ test.describe('stopping a generation', () => {
             await connectLlamaCpp(page, mock.url);
             await page.evaluate(async () => {
                 // @ts-ignore
-                SillyTavern.getContext().textCompletionSettings.streaming = false;
+                stTest.context().textCompletionSettings.streaming = false;
                 const { saveSettings } = await import('/script.js');
                 await saveSettings('textgenerationwebui_settings');
             });
@@ -209,7 +209,7 @@ test.describe('stopping a generation', () => {
             await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText('The whole reply, already stored.', { timeout: 4000 });
             const lastNode = await page.evaluate(() => {
                 // @ts-ignore
-                const chat = SillyTavern.getContext().chat;
+                const chat = stTest.context().chat;
                 return chat[chat.length - 1]?.node_id ?? null;
             });
             expect(typeof lastNode).toBe('string');
@@ -229,7 +229,7 @@ test.describe('streaming display', () => {
             await openCharacter(page, avatar);
             await connectLlamaCpp(page, mock.url);
             // @ts-ignore
-            await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = true; });
+            await page.evaluate(() => { stTest.context().textCompletionSettings.streaming = true; });
             await page.waitForTimeout(2500);
 
             await chatBox(page).fill(`Say one thing ${stamp}.`);

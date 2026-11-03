@@ -7,7 +7,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise(resolve => {
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, resolve);
     }));
 }
@@ -28,7 +28,7 @@ function setView(page, view) {
 /** @param {import('@playwright/test').Page} page */
 async function clearViews(page) {
     await page.evaluate(async () => {
-        const headers = window['SillyTavern'].getContext().getRequestHeaders();
+        const headers = window['stTest'].context().getRequestHeaders();
         for (;;) {
             const list = await (await fetch('/api/views/list', { method: 'POST', headers, body: '{}' })).json();
             if (list.views.length === 0) return;
@@ -160,7 +160,7 @@ test.describe('saved views', () => {
         await expect(page.locator('#character_view_picker')).not.toHaveClass(/unsaved/);
         const id = await page.locator('#character_view_picker').getAttribute('data-view-id');
         const stored = await page.evaluate(async (id) => {
-            const headers = window['SillyTavern'].getContext().getRequestHeaders();
+            const headers = window['stTest'].context().getRequestHeaders();
             return (await (await fetch('/api/views/get', { method: 'POST', headers, body: JSON.stringify({ id }) })).json()).view;
         }, id);
         expect(stored.text).toBe('paladin');
@@ -229,7 +229,7 @@ test.describe('saved views', () => {
         await other.goto(page.url());
         await testSetup.awaitST({ page: other });
         await other.evaluate(async ({ id }) => {
-            const headers = window['SillyTavern'].getContext().getRequestHeaders();
+            const headers = window['stTest'].context().getRequestHeaders();
             await fetch('/api/views/change', { method: 'POST', headers, body: JSON.stringify({ id, name: 'Wyrms', view: { text: 'wyrm', tags: { include: [], exclude: [] } } }) });
         }, { id });
 

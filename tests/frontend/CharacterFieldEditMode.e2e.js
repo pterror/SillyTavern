@@ -48,7 +48,7 @@ const stamp = () => `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise((resolve) => {
         // @ts-ignore
-        const ctx = SillyTavern.getContext();
+        const ctx = stTest.context();
         ctx.eventSource.once(ctx.eventTypes.APP_READY, resolve);
     }));
 }
@@ -62,7 +62,7 @@ async function awaitAppReady(page) {
 async function createCharacter(page, name, values) {
     return page.evaluate(async ({ name, values }) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         for (const [key, value] of Object.entries(values)) form.set(key, value);
@@ -79,7 +79,7 @@ async function createCharacter(page, name, values) {
 async function deleteCharacterOnServer(page, avatar) {
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/characters/delete', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, delete_chats: true }) });
         if (!response.ok) throw new Error(`delete failed: ${response.status}`);
     }, avatar);
@@ -94,7 +94,7 @@ async function deleteCharacterOnServer(page, avatar) {
 async function createGroup(page, name, members) {
     return page.evaluate(async ({ name, members }) => {
         // @ts-ignore
-        const ctx = SillyTavern.getContext();
+        const ctx = stTest.context();
         const response = await fetch('/api/groups/create', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ name, members }) });
         if (!response.ok) throw new Error(`group create failed: ${response.status}`);
         const data = await response.json();
@@ -109,7 +109,7 @@ async function createGroup(page, name, members) {
 async function deleteGroupOnServer(page, id) {
     await page.evaluate(async (id) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/groups/delete', { method: 'POST', headers, body: JSON.stringify({ id }) });
         if (!response.ok) throw new Error(`group delete failed: ${response.status}`);
     }, id);
@@ -123,7 +123,7 @@ async function deleteGroupOnServer(page, id) {
 async function fetchStoredCharacter(page, avatar) {
     return page.evaluate(async (avatarUrl) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/characters/get', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatarUrl }) });
         return response.json();
     }, avatar);
@@ -137,7 +137,7 @@ async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
@@ -299,13 +299,13 @@ async function withDrawerPinned(page, body) {
 async function addUserMessageWithReasoning(page) {
     const mesId = await page.evaluate(async () => {
         // @ts-ignore
-        const ctx = SillyTavern.getContext();
+        const ctx = stTest.context();
         await ctx.SlashCommandParser.commands['send'].callback({}, 'a user message');
         return ctx.chat.length - 1;
     });
     await expect.poll(() => page.evaluate((mesId) => {
         // @ts-ignore
-        const node = SillyTavern.getContext().chat[mesId]?.node_id;
+        const node = stTest.context().chat[mesId]?.node_id;
         return typeof node === 'string' && !node.startsWith('card:');
     }, mesId), { timeout: 10000 }).toBe(true);
     const editResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chats/message/edit', { timeout: 15000 });
@@ -557,7 +557,7 @@ test.describe('character field edit mode', () => {
                             await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar);
                             expect(await page.evaluate(() => {
                                 // @ts-ignore
-                                return SillyTavern.getContext().groupId;
+                                return stTest.context().groupId;
                             })).toBeFalsy();
                             await expectEditMode(page, field);
                             await expect(f.textarea).toHaveValue('in progress');
@@ -730,7 +730,7 @@ test.describe('character field edit mode', () => {
                         await expect(page.locator('#chat .mes')).toHaveCount(1, { timeout: 10000 });
                         const swipesBefore = await page.evaluate(() => {
                             // @ts-ignore
-                            return SillyTavern.getContext().chat[0].swipes.length;
+                            return stTest.context().chat[0].swipes.length;
                         });
                         await enterEdit(page, field);
                         const f = fieldLocators(page, field.id);
@@ -738,7 +738,7 @@ test.describe('character field edit mode', () => {
                         await page.locator('#chat .mes[mesid="0"] .swipe_right').click();
                         await expect.poll(() => page.evaluate(() => {
                             // @ts-ignore
-                            return SillyTavern.getContext().chat[0].swipes.length;
+                            return stTest.context().chat[0].swipes.length;
                         })).toBe(swipesBefore + 1);
                         await openInfoTab(page, field.tab);
                         await expectEditMode(page, field);
@@ -1028,7 +1028,7 @@ test.describe('character field edit mode', () => {
                     }
                     const vars = await page.evaluate((k) => {
                         // @ts-ignore
-                        const ctx = SillyTavern.getContext();
+                        const ctx = stTest.context();
                         return [Boolean(ctx.variables.local.has(k)), Boolean(ctx.variables.local.has(`${k}n`))];
                     }, key);
                     expect(vars).toEqual([false, false]);

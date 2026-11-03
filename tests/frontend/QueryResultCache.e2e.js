@@ -6,7 +6,7 @@ async function loadApp(page) {
     await testSetup.awaitST({ page });
     await page.evaluate(() => {
         window['__appReady'] = false;
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, () => { window['__appReady'] = true; });
     });
     await page.waitForFunction(() => window['__appReady'], null, { timeout: 60000 });
@@ -19,7 +19,7 @@ async function loadApp(page) {
  */
 async function createCharacter(page, name) {
     return page.evaluate(async (name) => {
-        const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
+        const headers = window['stTest'].context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.append('ch_name', name);
         const response = await fetch('/api/characters/create', { method: 'POST', headers, body: form });
@@ -113,7 +113,7 @@ test.describe('kept character list pages', () => {
         await expect(rowName(page, first)).toHaveText(`Swap${stamp} First`);
         await waitForKeptPage(page, `Swap${stamp}`);
 
-        const headers = await page.evaluate(() => window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true }));
+        const headers = await page.evaluate(() => window['stTest'].context().getRequestHeaders({ omitContentType: true }));
         const origin = new URL(page.url()).origin;
         await page.goto('about:blank');
         const created = await page.context().request.post(`${origin}/api/characters/create`, { headers, multipart: { ch_name: `Swap${stamp} Later` } });

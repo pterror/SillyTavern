@@ -12,7 +12,7 @@ export function hasDrops(drops) {
  * @param {Translate} t
  * @returns {string[]}
  */
-export function dropLines(drops, t) {
+function dropLines(drops, t) {
     return [
         ...drops.bookmarks.map(b => t`Bookmark: ${b.name ?? `b${b.id}`}`),
         ...drops.changes.map(c => (c.variable ? t`Chat variable: ${String(c.key)}` : t`Chat setting: ${String(c.key)}`)),

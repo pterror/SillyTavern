@@ -8,7 +8,7 @@ import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.
 async function createAndOpen(page, name) {
     const avatar = await page.evaluate(async (name) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         const response = await fetch('/api/characters/create', { method: 'POST', headers, body: form });
@@ -17,7 +17,7 @@ async function createAndOpen(page, name) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
@@ -51,5 +51,5 @@ test('Escape leaves the name; Enter renames it, past messages too, without askin
     await expect(heading(page)).toHaveText(`${name} Renamed`, { timeout: 15000 });
     await expect(page.locator('dialog[open]')).toHaveCount(0);
     // @ts-ignore
-    expect(await page.evaluate(() => SillyTavern.getContext().characters[SillyTavern.getContext().characterId].name)).toBe(`${name} Renamed`);
+    expect(await page.evaluate(() => stTest.context().characters[stTest.context().characterId].name)).toBe(`${name} Renamed`);
 });

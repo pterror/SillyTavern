@@ -86,7 +86,7 @@ function describe(source) {
  * @param {boolean} [compact]
  * @returns {{ kind: 'mention' | 'value' | 'empty' | 'later', label: string, icon: string | null, note: string }}
  */
-export function macroPillContent({ source, name, category, value }, t, compact = false) {
+function macroPillContent({ source, name, category, value }, t, compact = false) {
     const icon = CATEGORY_ICONS[/** @type {keyof typeof CATEGORY_ICONS} */ (category)] ?? DEFAULT_ICON;
     if (value === null) {
         return { kind: 'later', label: shorten(describe(source), SHOWN_LENGTH), icon, note: t`Filled in when sent` };

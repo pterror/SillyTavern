@@ -15,7 +15,7 @@ const stamp = () => `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 async function createCharacter(page, name, greetings) {
     return page.evaluate(async ({ name, greetings }) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', greetings[0]);
@@ -34,13 +34,13 @@ async function createCharacter(page, name, greetings) {
 async function openCharacter(page, avatar, { switchMenu = true } = {}) {
     await page.evaluate(async ({ avatar, switchMenu }) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar, { switchMenu });
     }, { avatar, switchMenu });
     await expect.poll(() => page.evaluate(() => {
         // @ts-ignore
-        return typeof SillyTavern.getContext().chat[0]?.node_id;
+        return typeof stTest.context().chat[0]?.node_id;
     }), { timeout: 15000 }).toBe('string');
     await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1);
 }
@@ -52,7 +52,7 @@ async function openCharacter(page, avatar, { switchMenu = true } = {}) {
 async function storedModel(page, avatar) {
     const card = await page.evaluate(async (avatar) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/characters/get', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar }) });
         return response.json();
     }, avatar);
@@ -65,7 +65,7 @@ async function storedModel(page, avatar) {
  */
 async function pageModel(page, avatar) {
     // @ts-ignore
-    const card = await page.evaluate((avatar) => JSON.parse(JSON.stringify(SillyTavern.getContext().getCharacterByAvatar(avatar))), avatar);
+    const card = await page.evaluate((avatar) => JSON.parse(JSON.stringify(stTest.context().getCharacterByAvatar(avatar))), avatar);
     return cardToGreetingsModel(card);
 }
 
@@ -83,14 +83,14 @@ const shownRows = page => list(page).locator('li.alternative:visible');
 async function swipeGo(page, n) {
     await page.evaluate(async (n) => {
         // @ts-ignore
-        await SillyTavern.getContext().executeSlashCommandsWithOptions(`/swipe-go message=0 ${n}`);
+        await stTest.context().executeSlashCommandsWithOptions(`/swipe-go message=0 ${n}`);
     }, n);
 }
 
 /** @param {import('@playwright/test').Page} page */
 const chatSwipe = (page, mesId = 0) => page.evaluate((mesId) => {
     // @ts-ignore
-    const message = SillyTavern.getContext().chat[mesId];
+    const message = stTest.context().chat[mesId];
     return { id: message.swipe_id ?? 0, text: message.mes };
 }, mesId);
 
@@ -160,7 +160,7 @@ test.describe('the alternatives of a message', () => {
 
         await page.evaluate(async () => {
             // @ts-ignore
-            await SillyTavern.getContext().executeSlashCommandsWithOptions('/swipe-go message=0 20');
+            await stTest.context().executeSlashCommandsWithOptions('/swipe-go message=0 20');
         });
         await expect.poll(async () => (await chatSwipe(page)).id).toBe(19);
     });
@@ -172,7 +172,7 @@ test.describe('the alternatives of a message', () => {
         await openCharacter(page, avatar);
         await page.evaluate(async () => {
             // @ts-ignore
-            await SillyTavern.getContext().executeSlashCommandsWithOptions('/swipe-go message=0 55');
+            await stTest.context().executeSlashCommandsWithOptions('/swipe-go message=0 55');
         });
         await expect.poll(async () => (await chatSwipe(page)).id).toBe(54);
 
@@ -246,7 +246,7 @@ test.describe('the alternatives of a message', () => {
         await openCharacter(page, avatar);
         await page.evaluate(async (s) => {
             // @ts-ignore
-            const context = SillyTavern.getContext();
+            const context = stTest.context();
             await context.executeSlashCommandsWithOptions(`/send Hi ${s}`);
             await context.executeSlashCommandsWithOptions(`/sendas name=Narrator One more ${s}`);
             await context.executeSlashCommandsWithOptions(`/sendas name=Narrator Last ${s}`);
@@ -461,7 +461,7 @@ test.describe('the alternatives of a message', () => {
             const { getStringHash } = await import('/scripts/utils.js');
             const hash = (/** @type {string} */ text) => getStringHash(JSON.stringify(text));
             // @ts-ignore
-            const headers = { ...SillyTavern.getContext().getRequestHeaders(), 'Content-Type': 'application/json' };
+            const headers = { ...stTest.context().getRequestHeaders(), 'Content-Type': 'application/json' };
             const send = (/** @type {object} */ payload) => fetch('/api/ui/action', { method: 'POST', headers, body: JSON.stringify({ type: 'alternatives.greeting', payload }) })
                 .then(r => r.text())
                 .then(text => JSON.parse(text.split('\n')[0]));
@@ -522,11 +522,11 @@ test.describe('the alternatives of a message', () => {
         const added = `Added ${s}`;
         await page.evaluate(async (text) => {
             // @ts-ignore
-            await SillyTavern.getContext().SlashCommandParser.commands['addswipe'].callback({ quiet: 'true' }, text);
+            await stTest.context().SlashCommandParser.commands['addswipe'].callback({ quiet: 'true' }, text);
         }, added);
         const openings = () => page.evaluate(async (avatar) => {
             // @ts-ignore
-            const headers = SillyTavern.getContext().getRequestHeaders();
+            const headers = stTest.context().getRequestHeaders();
             const response = await fetch('/api/chats/openings', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, offset: 0, limit: 100 }) });
             const answer = await response.json();
             return { stored: answer.stored, texts: answer.alternatives.map((/** @type {any} */ a) => a.mes) };
@@ -538,12 +538,12 @@ test.describe('the alternatives of a message', () => {
         await openCharacter(page, avatar);
         await expect.poll(() => page.evaluate(() => {
             // @ts-ignore
-            return [...SillyTavern.getContext().chat[0].swipes];
+            return [...stTest.context().chat[0].swipes];
         })).toContain(added);
 
         const status = await page.evaluate(async ({ avatar, text, hash }) => {
             // @ts-ignore
-            const headers = SillyTavern.getContext().getRequestHeaders();
+            const headers = stTest.context().getRequestHeaders();
             const response = await fetch('/api/characters/greetings/edit', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, position: 0, expected_hash: hash, text }) });
             return response.status;
         }, { avatar, text: `Zero edited ${s}`, hash: hashGreetingText(g[0]) });
@@ -658,9 +658,9 @@ test.describe('on a phone', () => {
         await createCharacter(page, `AltTap-${s}`, [`First ${s}.`, `Second ${s}.`]);
         await page.evaluate(async (name) => {
             // @ts-ignore
-            await SillyTavern.getContext().getCharacters();
+            await stTest.context().getCharacters();
             // @ts-ignore
-            await SillyTavern.getContext().executeSlashCommandsWithOptions(`/go ${name}`);
+            await stTest.context().executeSlashCommandsWithOptions(`/go ${name}`);
         }, `AltTap-${s}`);
         await expect(page.locator('#chat .mes[mesid="0"]')).toContainText(`First ${s}.`, { timeout: 15000 });
         const editor = page.locator('#charInfoHolder > .drawer-toggle .drawer-icon');
@@ -798,7 +798,7 @@ test.describe('on a phone', () => {
         const avatar = await createCharacter(page, `AltBudget3k-${s}`, greetings);
         const opened = await page.evaluate(async ({ avatar, s }) => {
             // @ts-ignore
-            const context = SillyTavern.getContext();
+            const context = stTest.context();
             const swipes = Array.from({ length: 2000 }, (_, i) => `Stored opening ${i} ${s}. *It was a quiet night.* "Hello," says the keeper. ${'The tide comes in slowly, wave over wave. '.repeat(20)}`);
             const header = { user_name: 'User', character_name: 'Keeper', chat_metadata: {} };
             const first = { name: 'Keeper', is_user: false, send_date: Date.now(), mes: swipes[0], swipes, swipe_id: 0, swipe_info: swipes.map(() => ({ send_date: Date.now(), extra: {} })) };

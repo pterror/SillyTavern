@@ -5,12 +5,12 @@ test('the chat\'s overrides are kept on OK and discarded on Escape', async ({ pa
     await testSetup.awaitST({ page });
     await page.evaluate(async () => {
         // @ts-ignore
-        await SillyTavern.getContext().executeSlashCommandsWithOptions('/go Seraphina');
+        await stTest.context().executeSlashCommandsWithOptions('/go Seraphina');
     });
     await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1, { timeout: 10000 });
     await openCharacterManagementDrawer(page);
     // @ts-ignore
-    const scenario = () => page.evaluate(() => SillyTavern.getContext().chatMetadata.scenario ?? '');
+    const scenario = () => page.evaluate(() => stTest.context().chatMetadata.scenario ?? '');
     const before = await scenario();
 
     const open = () => page.locator('#char-management-dropdown').selectOption({ label: 'Character Settings Overrides' }, { force: true });

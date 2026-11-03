@@ -97,7 +97,7 @@ export function readFieldDraft(storage, ref) {
  * @param {string} text
  * @param {string} base
  */
-export function keepFieldDraft(storage, ref, text, base) {
+function keepFieldDraft(storage, ref, text, base) {
     if (!isCompleteRef(ref)) return;
     try {
         storage.setItem(buildFieldDraftKey(ref), JSON.stringify({ text, base }));

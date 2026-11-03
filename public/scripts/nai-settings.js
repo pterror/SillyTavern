@@ -8,7 +8,6 @@ import {
     startStatusLoading,
 } from '../script.js';
 import { getRequestHeaders } from './request-headers.js';
-import { event_types, eventSource } from './events.js';
 import { power_user } from './power-user.js';
 import { newUi, newUiStarted } from './new-ui-page.js';
 import { getEntryTokenIds, getTokenizerBestMatch, registerEntryTextSource, showDroppedEntries, tokenizers } from './tokenizers.js';
@@ -85,7 +84,7 @@ const samplers = {
 let novel_data = null;
 const BIAS_KEY = '#range_block_novel';
 
-export function setNovelData(data) {
+function setNovelData(data) {
     novel_data = data;
 }
 
@@ -102,7 +101,7 @@ export function getKayraMaxContextTokens() {
     return null;
 }
 
-export function getNovelMaxResponseTokens() {
+function getNovelMaxResponseTokens() {
     switch (novel_data?.tier) {
         case 1:
             return 150;
@@ -147,19 +146,11 @@ export function convertNovelPreset(data) {
     };
 }
 
-export function getNovelTier() {
+function getNovelTier() {
     return nai_tiers[novel_data?.tier] ?? 'no_connection';
 }
 
-export function getNovelAnlas() {
-    return novel_data?.trainingStepsLeft?.fixedTrainingStepsLeft ?? 0;
-}
-
-export function getNovelUnlimitedImageGeneration() {
-    return novel_data?.perks?.unlimitedImageGeneration ?? false;
-}
-
-export async function loadNovelSubscriptionData() {
+async function loadNovelSubscriptionData() {
     const result = await fetch('/api/novelai/status', {
         method: 'POST',
         headers: getRequestHeaders(),
@@ -831,7 +822,7 @@ $('#nai_preamble_restore').on('click', function () {
     saveSettingsDebounced('nai_settings');
 });
 
-export async function getStatusNovel() {
+async function getStatusNovel() {
     try {
         const result = await loadNovelSubscriptionData();
 
@@ -883,7 +874,6 @@ export function initNovelAISettings() {
         loadNovelPreset(preset);
         await saveSettings('nai_settings');
         if (newUiStarted()) await newUi().settings.reread();
-        await eventSource.emit(event_types.PRESET_CHANGED, { apiId: 'novel', name: nai_settings.preset_settings_novel });
     });
 
     $('#model_novel_select').on('change', function () {

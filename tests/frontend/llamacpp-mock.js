@@ -62,7 +62,7 @@ export function startLlamaCpp({ model = 'mock-llamacpp-model', reply = n => `Moc
 export function createCharacter(page, name, greeting = 'Hello.') {
     return page.evaluate(async ({ name, greeting }) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', greeting);
@@ -80,7 +80,7 @@ export async function openCharacter(page, avatar) {
     await openCharacterManagementDrawer(page);
     await page.evaluate(async (avatar) => {
         // @ts-ignore
-        await SillyTavern.getContext().getCharacters();
+        await stTest.context().getCharacters();
         const { selectCharacterByAvatar } = await import('/script.js');
         await selectCharacterByAvatar(avatar);
     }, avatar);
@@ -104,7 +104,7 @@ export async function connectLlamaCpp(page, url) {
     await page.evaluate(() => { const field = $('#llamacpp_api_url_text'); if (field.autocomplete('instance')) field.autocomplete('close'); });
     await page.locator('#api_button_textgenerationwebui').click();
     // @ts-ignore
-    await expect.poll(() => page.evaluate(() => SillyTavern.getContext().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
+    await expect.poll(() => page.evaluate(() => stTest.context().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
     await page.locator('#API-status-top').click();
     await page.waitForTimeout(2500);
 }

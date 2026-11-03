@@ -3,7 +3,7 @@ import { testSetup, setStackedDrawers, awaitPowerUserSettingStored, findCharacte
 
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise(resolve => {
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, resolve);
     }));
 }
@@ -58,7 +58,7 @@ async function openChatWithCharacterMessage(page) {
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button').evaluate(el => el.click());
-    await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
+    await page.waitForFunction(n => window['stTest'].context().name2 === n, name);
     await expect(async () => {
         if (await page.locator('#right-nav-panel').evaluate(el => el.classList.contains('openDrawer'))) {
             await page.locator('#rightNavDrawerIcon').click();
@@ -229,7 +229,6 @@ const TOP_DRAWERS = {
     'WorldInfo': { name: 'World Info', pin: '#WI_panel_pin' },
     'user-settings-block': { name: 'User Settings' },
     'Backgrounds': { name: 'Backgrounds' },
-    'rm_extensions_block': { name: 'Extensions' },
     'PersonaManagement': { name: 'Persona Management' },
     'right-nav-panel': { name: 'Character Management', pin: '#rm_button_panel_pin', fullscreenToggle: '#galleryFullscreenToggle', fullscreenClass: 'galleryFullscreen' },
     'char-info-panel': { name: 'Character Info', pin: '#charInfo_button_panel_pin', fullscreenToggle: '#charInfoFullscreenToggle', fullscreenClass: 'charInfoFullscreen' },
@@ -531,7 +530,7 @@ function drawerPairTests(layout) {
                 await openDrawer(page, b.id);
                 await expectStackCut(page, `after opening ${b.id}`, b.id);
 
-                await page.evaluate(av => window['SillyTavern'].getContext().selectCharacterById(av), avatar);
+                await page.evaluate(av => window['stTest'].context().selectCharacterById(av), avatar);
                 await expect(page.locator('#char-info-panel')).toHaveAttribute('data-active-menu', 'rm_ch_create_block');
                 await expectStackCut(page, 'after selecting a character', 'char-info-panel');
             });
@@ -590,7 +589,7 @@ test.describe('Drawer overlap, desktop', () => {
         await openDrawer(page, 'char-info-panel');
         await openDrawer(page, 'user-settings-block');
         await expectStackCut(page, 'after opening user-settings-block', 'user-settings-block');
-        await page.evaluate(av => window['SillyTavern'].getContext().selectCharacterById(av), avatar);
+        await page.evaluate(av => window['stTest'].context().selectCharacterById(av), avatar);
         await expectStackCut(page, 'after selecting a character', 'char-info-panel');
     });
 

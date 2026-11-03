@@ -116,7 +116,7 @@ export function unmountChatEditor(textarea) {
     drawerStackChanged();
 }
 
-export function takeDetachedEditorsAway() {
+function takeDetachedEditorsAway() {
     for (const textarea of [...editors.keys()]) {
         if (!textarea.isConnected) unmountChatEditor(textarea);
     }

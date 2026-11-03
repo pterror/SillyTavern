@@ -14,7 +14,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 async function createCharacters(page, names, world) {
     return page.evaluate(async ({ names, world }) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
         const avatars = [];
         for (const name of names) {
             const form = new FormData();
@@ -36,7 +36,7 @@ async function createCharacters(page, names, world) {
 async function deleteCharacters(page, avatars) {
     await page.evaluate(async (avatars) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         for (const avatar of avatars) {
             await fetch('/api/characters/delete', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, delete_chats: true }) });
         }
@@ -51,7 +51,7 @@ async function deleteCharacters(page, avatars) {
 async function storedWorld(page, avatar) {
     return page.evaluate(async (avatar) => {
         // @ts-ignore
-        const headers = SillyTavern.getContext().getRequestHeaders();
+        const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/characters/get', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar }) });
         const card = await response.json();
         return String(card?.data?.extensions?.world ?? '');

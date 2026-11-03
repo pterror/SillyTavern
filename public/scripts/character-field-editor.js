@@ -120,7 +120,7 @@ function isMessageEditOpen() {
  * @param {string} id
  * @returns {boolean}
  */
-export function isFieldInEdit(id) {
+function isFieldInEdit(id) {
     return activeEdit?.id === id;
 }
 

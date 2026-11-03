@@ -483,18 +483,13 @@ describe('a crop', () => {
         const before = (await (await post('/api/characters/get', { avatar_url: avatar })).json()).thumbnail;
         const form = new FormData();
         form.set('avatar_url', avatar);
-        form.set('ch_name', 'Recrop');
         form.set('avatar', new Blob([image]), 'upload');
         const second = { x: 200, y: 300, width: 200, height: 300 };
-        expect((await fetch(`${baseUrl}/api/characters/edit?crop=${encodeURIComponent(JSON.stringify(second))}`, { method: 'POST', body: form })).status).toBe(200);
+        expect((await fetch(`${baseUrl}/api/characters/edit-avatar?crop=${encodeURIComponent(JSON.stringify(second))}`, { method: 'POST', body: form })).status).toBe(200);
         const after = (await (await post('/api/characters/get', { avatar_url: avatar })).json()).thumbnail;
         expect(after).toBe(urls.stillUrl(identity.stillHash(image), 'avatar', second));
         expect(after).not.toBe(before);
-        const plain = new FormData();
-        plain.set('avatar_url', avatar);
-        plain.set('ch_name', 'Recrop');
-        plain.set('description', 'changed');
-        expect((await fetch(`${baseUrl}/api/characters/edit`, { method: 'POST', body: plain })).status).toBe(200);
+        expect((await post('/api/characters/merge-attributes', { avatar, data: { description: 'changed' } })).status).toBe(200);
         expect((await (await post('/api/characters/get', { avatar_url: avatar })).json()).thumbnail).toBe(after);
     });
 

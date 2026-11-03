@@ -1,9 +1,8 @@
 import { DOMPurify, moment, sha256 } from '../lib.js';
 import { saveSettings } from '../script.js';
 import { getRequestHeaders } from './request-headers.js';
-import { event_types, eventSource } from './events.js';
 import { t } from './i18n.js';
-import { chat_completion_sources } from './chat-completion-settings.js';
+import { chat_completion_sources, oai_settings } from './chat-completion-settings.js';
 import { callGenericPopup, Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from './slash-commands/SlashCommandArgument.js';
@@ -13,7 +12,8 @@ import { SlashCommandExecutor } from './slash-commands/SlashCommandExecutor.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { SlashCommandScope } from './slash-commands/SlashCommandScope.js';
 import { renderTemplateAsync } from './templates.js';
-import { textgen_types } from './textgen-settings.js';
+import { textgen_types, textgenerationwebui_settings } from './textgen-settings.js';
+import { main_api } from './generation-params.js';
 import { getCurrentUserHandle } from './user.js';
 import { copyText, isTrueBoolean, uuidv4 } from './utils.js';
 import { accountStorage } from './util/AccountStorage.js';
@@ -197,10 +197,10 @@ const INPUT_MAP = {
  * Resolves the secret key based on the selected API, chat completion source, and text completion type.
  * @returns {string|null} The secret key corresponding to the selected API, or null if no key is found.
  */
-export function resolveSecretKey() {
-    const { mainApi, chatCompletionSettings, textCompletionSettings } = SillyTavern.getContext();
-    const chatCompletionSource = chatCompletionSettings.chat_completion_source;
-    const textCompletionType = textCompletionSettings.type;
+function resolveSecretKey() {
+    const mainApi = main_api;
+    const chatCompletionSource = oai_settings.chat_completion_source;
+    const textCompletionType = textgenerationwebui_settings.type;
 
     if (mainApi === 'koboldhorde') {
         return SECRET_KEYS.HORDE;
@@ -219,7 +219,7 @@ export function resolveSecretKey() {
 
     if (mainApi === 'openai') {
         if (chatCompletionSource === chat_completion_sources.VERTEXAI) {
-            switch (chatCompletionSettings.vertexai_auth_mode) {
+            switch (oai_settings.vertexai_auth_mode) {
                 case 'express':
                     return SECRET_KEYS.VERTEXAI;
                 case 'full':
@@ -234,25 +234,6 @@ export function resolveSecretKey() {
     }
 
     return null;
-}
-
-/**
- * Gets the label of a secret by its ID.
- * @param {string} id The ID of the secret to find.
- * @returns {string} The label of the secret with the given ID, or an empty string if not found.
- */
-export function getSecretLabelById(id) {
-    for (const key of Object.values(SECRET_KEYS)) {
-        const secrets = secret_state[key];
-        if (!Array.isArray(secrets)) {
-            continue;
-        }
-        const secret = secrets.find(s => s.id === id);
-        if (secret) {
-            return `${secret.label} (${secret.value})`;
-        }
-    }
-    return '';
 }
 
 export function updateSecretDisplay() {
@@ -367,7 +348,6 @@ export async function writeSecret(key, value, label, { allowEmpty } = {}) {
         const { id } = await response.json();
         $(INPUT_MAP[key]).val('').trigger('input');
         await readSecretState();
-        await eventSource.emit(event_types.SECRET_WRITTEN, key);
         return id;
     } catch (error) {
         console.error(`Could not write secret value: ${key}`, error);
@@ -380,7 +360,7 @@ export async function writeSecret(key, value, label, { allowEmpty } = {}) {
  * @param {string} key Secret key
  * @param {string} [id] (Optional) ID of the secret key to delete. If not provided, deletes an active key.
  */
-export async function deleteSecret(key, id) {
+async function deleteSecret(key, id) {
     try {
         const response = await fetch('/api/secrets/delete', {
             method: 'POST',
@@ -392,7 +372,6 @@ export async function deleteSecret(key, id) {
             await readSecretState();
             // Force reconnection to the API with the new key
             $('#main_api').trigger('change');
-            await eventSource.emit(event_types.SECRET_DELETED, key);
         }
     } catch (error) {
         console.error(`Could not delete secret value: ${key}`, error);
@@ -426,7 +405,7 @@ export async function readSecretState() {
  * @param {string} [id] ID of the secret to find. If not provided, will return the active secret.
  * @returns {Promise<string?>} Secret value, or null if keys are not exposed
  */
-export async function findSecret(key, id) {
+async function findSecret(key, id) {
     try {
         const response = await fetch('/api/secrets/find', {
             method: 'POST',
@@ -451,7 +430,7 @@ export async function findSecret(key, id) {
  * @param {string} key Secret key to rotate
  * @param {string} id ID of the secret to rotate
  */
-export async function rotateSecret(key, id) {
+async function rotateSecret(key, id) {
     try {
         const response = await fetch('/api/secrets/rotate', {
             method: 'POST',
@@ -463,7 +442,6 @@ export async function rotateSecret(key, id) {
             await readSecretState();
             // Force reconnection to the API with the new key
             $('#main_api').trigger('change');
-            await eventSource.emit(event_types.SECRET_ROTATED, key);
         }
     } catch (error) {
         console.error(`Could not rotate secret value: ${key}`, error);
@@ -476,7 +454,7 @@ export async function rotateSecret(key, id) {
  * @param {string} id ID of the secret to rename
  * @param {string} label Label to rename the secret to
  */
-export async function renameSecret(key, id, label) {
+async function renameSecret(key, id, label) {
     try {
         const response = await fetch('/api/secrets/rename', {
             method: 'POST',
@@ -486,7 +464,6 @@ export async function renameSecret(key, id, label) {
 
         if (response.ok) {
             await readSecretState();
-            await eventSource.emit(event_types.SECRET_EDITED, key);
         }
     } catch (error) {
         console.error(`Could not rename secret value: ${key}`, error);

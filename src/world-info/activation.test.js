@@ -227,17 +227,6 @@ const countTokens = async (text) => Math.ceil(text.length / 4);
 }
 
 {
-    const original = { uid: '1', world: 'w', key: ['nonexistent-keyword'], content: 'original content' };
-    const forced = { uid: '1', world: 'w', key: ['nonexistent-keyword'], content: 'forced content override' };
-    const externalActivations = new Map([['w.1', forced]]);
-    const { activatedEntries } = await activateWorldInfoEntries([original], ['nothing relevant'], {
-        maxContext: 4000, budgetPercent: 100, depth: 1, countTokens, externalActivations,
-    });
-    assert.equal(activatedEntries.length, 1);
-    assert.equal(activatedEntries[0].content, 'forced content override', 'the forced entry object is used, not the original candidate');
-}
-
-{
     const entries = [{ uid: '1', world: 'w', key: ['nonexistent-keyword'], content: 'never matches' }];
     const { activatedEntries } = await activateWorldInfoEntries(entries, ['nothing relevant'], {
         maxContext: 4000, budgetPercent: 100, depth: 1, countTokens,

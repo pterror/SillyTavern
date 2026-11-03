@@ -10,7 +10,7 @@ async function loadApp(page) {
     await testSetup.awaitST({ page });
     await page.evaluate(() => {
         window['__appReady'] = false;
-        const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+        const { eventSource, eventTypes } = window['stTest'].context();
         eventSource.once(eventTypes.APP_READY, () => { window['__appReady'] = true; });
     });
     await page.waitForFunction(() => window['__appReady'], null, { timeout: 60000 });
@@ -155,19 +155,4 @@ test.describe('character names searched on the server', () => {
         }
     });
 
-    test('the tts voice list for any name holds only the current chat and the names with a voice set', async ({ page }) => {
-        const stamp = `${Date.now()}`;
-        const name = `Ttsunheld${stamp}`;
-        const avatar = await createUnheldCharacter(page, name);
-        try {
-            const names = await page.evaluate(async () => {
-                const { getCharacters } = await import('./scripts/extensions/tts/index.js');
-                return getCharacters(true);
-            });
-            expect(names).toContain('[Default Voice]');
-            expect(names).not.toContain(name);
-        } finally {
-            await deleteCharacter(page, avatar);
-        }
-    });
 });

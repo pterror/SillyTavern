@@ -3,7 +3,6 @@ import { DOMPurify } from '../lib.js';
 import { addOneMessage, chatOpAppend, getGeneratingApi, getGeneratingModel, system_avatar, systemUserName } from '../script.js';
 import { main_api } from './generation-params.js';
 import { chat } from './chat-state.js';
-import { event_types, eventSource } from './events.js';
 import { chat_completion_sources, custom_prompt_post_processing_types, getChatCompletionModel, model_list, oai_settings } from './chat-completion-settings.js';
 import { Popup } from './popup.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
@@ -911,9 +910,7 @@ export class ToolManager {
         };
         const newIndex = chat.length;
         chat.push(message);
-        await eventSource.emit(event_types.TOOL_CALLS_PERFORMED, invocations);
         addOneMessage(message);
-        await eventSource.emit(event_types.TOOL_CALLS_RENDERED, invocations);
         await chatOpAppend(newIndex).catch(error =>
             console.error('Could not save the tool invocation message:', error));
     }
