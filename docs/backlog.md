@@ -88,6 +88,7 @@ Lorebook / world
 
 State and other
 - State layers beyond layer 1 (time, meters, items, crafting, rollback, per-character histories, a composed turn pipeline, consistency agents); author's notes are the wrong model; multiplayer chats.
+- State values can be defined by rules over other state values, not only set by events (a schedule is one case: "evenings: in the Tankard", where the time is itself just a value the world defines); things move in time and space. Nothing about time or place is built into the state layer, worldbuilding views (which lay out any ordered value as an axis) or activation (which reads the same state).
 - Per-card scripted tools, sandboxed.
 - Mad libs / multiple-choice greetings, more generic.
 - Browse chats by latest message. Chat/bookmark tagging plus cross-character chat search.
