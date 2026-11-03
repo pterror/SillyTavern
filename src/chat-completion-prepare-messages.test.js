@@ -71,7 +71,7 @@ function makeTokenHandler() {
     const tokenHandler = makeTokenHandler();
     const fixture = baseFixture();
 
-    const { chat, counts } = await prepareOpenAIMessages({
+    const { chat, itemize } = await prepareOpenAIMessages({
         ...fixture,
         tokenHandler,
         maxContext: 1_000_000,
@@ -99,9 +99,19 @@ function makeTokenHandler() {
     assert.ok(contents.includes('EXAMPLE_USER_TURN'), 'expected a dialogue example turn in chat');
     assert.ok(contents.includes('EXAMPLE_ASSISTANT_TURN'), 'expected a dialogue example turn in chat');
 
-    assert.strictEqual(counts, tokenHandler.counts);
-    assert.strictEqual(tokenHandler.getTotal(), 0, 'documents the getTotal()-always-0 finding above - NOT a claim that no tokenization happened');
-    assert.ok(Number.isNaN(counts[undefined]), 'documents the counts[undefined] === NaN finding above');
+    const itemized = await itemize();
+    const sent = await Promise.all(chat.map(m => fakeCountTokenAsyncFn({ role: m.role, content: m.content })));
+    const countOf = (/** @type {string} */ content) => sent[contents.indexOf(content)];
+    assert.equal(itemized.tokens.description, countOf('CHAR_DESCRIPTION_TEXT'));
+    assert.equal(itemized.tokens.main, countOf('DEFAULT MAIN CONTENT'));
+    assert.equal(itemized.tokens.post_history, countOf('DEFAULT JAILBREAK CONTENT'), 'post-history instructions are counted');
+    assert.equal(itemized.tokens.world_info, countOf('WI_BEFORE_TEXT'));
+    assert.equal(itemized.tokens.chat_history, countOf('USER_TURN_1 (oldest)') + countOf('ASSISTANT_TURN_1') + countOf('USER_TURN_2 (newest)'));
+    assert.equal(itemized.messages_count, 3);
+    assert.equal(itemized.examples_count, 1);
+    const { total, summary, authors_note, smart_context, chat_vectors, data_bank_vectors, ...parts } = itemized.tokens;
+    void summary; void authors_note; void smart_context; void chat_vectors; void data_bank_vectors;
+    assert.equal(Object.values(parts).reduce((a, b) => a + b, 0), total, 'every message is in exactly one part');
 
     console.log('PASS: full end-to-end happy path (8 modules compose correctly)');
 }
@@ -120,10 +130,9 @@ function makeTokenHandler() {
 
     assert.deepStrictEqual(
         result,
-        { chat: null, counts: false, canUseTools: false, canPerformToolCalls: false },
-        'early-return shape must match the documented {chat: null, counts: false, canUseTools: false, canPerformToolCalls: false}',
+        { chat: null, itemize: null, canUseTools: false, canPerformToolCalls: false },
+        'early-return shape must match the documented {chat: null, itemize: null, canUseTools: false, canPerformToolCalls: false}',
     );
-    assert.strictEqual(tokenHandler.getTotal(), 0, 'no tokenization should have happened before the early return');
 
     console.log('PASS: early-return guard (!hasActiveCharacter && dryRun)');
 }

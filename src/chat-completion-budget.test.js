@@ -18,32 +18,9 @@ const fakeCountTokens = async (messages) => JSON.stringify(messages).length;
 
 {
     const th = new TokenHandler(fakeCountTokens);
-    assert.deepEqual(th.getCounts(), {
-        start_chat: 0, prompt: 0, bias: 0, nudge: 0, jailbreak: 0, impersonate: 0, examples: 0, conversation: 0,
-    });
-
-    const n = await th.countAsync({ role: 'system', content: 'hello' }, false, 'prompt');
+    const n = await th.countAsync({ role: 'system', content: 'hello' }, false);
     assert.equal(n, JSON.stringify({ role: 'system', content: 'hello' }).length);
-    assert.equal(th.getCounts().prompt, n);
-    assert.equal(th.getTokensForIdentifier('prompt'), n);
-    assert.equal(th.getTokensForIdentifier('nonexistent'), 0);
-
-    await th.countAsync({ role: 'user', content: 'x' }, false, 'conversation');
-    const total = th.getTotal();
-    assert.equal(total, th.getCounts().prompt + th.getCounts().conversation);
-
-    th.uncount(5, 'prompt');
-    assert.equal(th.getCounts().prompt, n - 5);
-
-    th.resetCounts();
-    assert.equal(th.getTotal(), 0);
-    assert.ok(Object.values(th.getCounts()).every((v) => v === 0));
-
-    th.setCounts({ prompt: 42 });
-    assert.deepEqual(th.getCounts(), { prompt: 42 });
-
-    th.setCounts({ prompt: 10, bogus: NaN });
-    assert.equal(th.getTotal(), 10);
+    assert.deepEqual(Object.keys(th), ['countTokenAsyncFn'], 'a handler counts; what each count is for is the message\'s');
 }
 
 {
@@ -55,8 +32,7 @@ const fakeCountTokens = async (messages) => JSON.stringify(messages).length;
     const expected = JSON.stringify({ role: 'system', content: 'hello world' }).length;
     assert.equal(msg.tokens, expected);
     assert.equal(msg.getTokens(), expected);
-    assert.ok(Number.isNaN(th.getCounts().undefined));
-    assert.equal(th.getTotal(), 0);
+    assert.equal(msg.injected, false);
 }
 
 {

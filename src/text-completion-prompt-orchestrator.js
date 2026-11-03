@@ -23,8 +23,9 @@ import { createKoboldGenerationData } from './kobold-generation-data.js';
 import { createNovelGenerationData } from './novel-generation-data.js';
 import { substituteParams } from './macro-substitution.js';
 import { formatInstructModeExamples } from './instruct-mode-examples.js';
-import { createExtensionPromptTable, getExtensionPrompt, doChatInject, extension_prompt_types } from './extension-prompt-table.js';
-import { persona_description_defaults } from '../public/scripts/constants.js';
+import { createExtensionPromptTable, getExtensionPrompt, getExtensionPromptByName, doChatInject, extension_prompt_types } from './extension-prompt-table.js';
+import { persona_description_defaults, persona_description_positions } from '../public/scripts/constants.js';
+import { NAMED_EXTENSIONS, presetNameOf, samplerConfigOf } from './prompt-itemization.js';
 import { addDepthInjections, addNoteAndPersona, addPageInjections } from './prompt-injections.js';
 import { exampleBlocks } from './example-blocks.js';
 import { reasoningOf } from '../public/scripts/reasoning-block.js';
@@ -397,7 +398,7 @@ export async function assembleTextCompletionPrompt(input) {
         arrMes, cyclePrompt, type, isInstruct, instructWrap,
     });
 
-    const { mesSend, mesExmString } = await resolvePromptStrings({
+    const { mesSend, mesExmString, countExmAdd } = await resolvePromptStrings({
         mesSend: builtMesSend, mesExamplesArray, countExmAdd: initialCountExmAdd, pinExmString,
         combinedStoryString, generatedPromptCache, thisMaxContext, countTokens: countPromptTokens, mainApi, naiPreamble, chatStart,
         macroContext, modifyLastPromptLineParams,
@@ -468,9 +469,20 @@ export async function assembleTextCompletionPrompt(input) {
         });
     }
 
+    const itemizedApi = isHorde ? 'koboldhorde' : mainApi;
+    const itemize = () => itemizeTextPrompt({
+        api: itemizedApi, settings, generate_data, combinedPrompt, thisMaxContext, tokenPadding,
+        fields, personaDescriptionPosition, system, worldInfoBefore, worldInfoAfter, combinedStoryString,
+        beforeScenarioAnchor: effectiveBeforeScenarioAnchor, afterScenarioAnchor: effectiveAfterScenarioAnchor,
+        mesExmString, examplesCount: pinExamples ? mesExamplesArray.length : countExmAdd,
+        finalMesSend, jailbreak: sysPromptEnabled ? jailbreak : '', promptBias, biasInHistory: !isInstruct && !isImpersonate && promptBias.trim().length !== 0,
+        extensionPromptTable, macroContext,
+    }, { countTokens, countPromptTokens });
+
     return {
         combinedPrompt,
         generate_data,
+        itemize,
         droppedEntries,
         messageBias, promptBias, isUserPromptBias,
         characterCardFields: fields,
@@ -495,20 +507,99 @@ export async function assembleTextCompletionPrompt(input) {
 }
 
 /**
- * @param {Awaited<ReturnType<typeof assembleTextCompletionPrompt>>} assembled
- * @returns {Record<string, *>}
+ * @typedef {object} TextPromptParts
+ * @property {string} api
+ * @property {Record<string, any>} settings
+ * @property {Record<string, any>} generate_data
+ * @property {string} combinedPrompt
+ * @property {number} thisMaxContext
+ * @property {number} tokenPadding
+ * @property {{ description?: string, personality?: string, scenario?: string, persona?: string }} fields
+ * @property {number} personaDescriptionPosition
+ * @property {string} system
+ * @property {string} worldInfoBefore
+ * @property {string} worldInfoAfter
+ * @property {string} combinedStoryString
+ * @property {string} beforeScenarioAnchor
+ * @property {string} afterScenarioAnchor
+ * @property {string} mesExmString
+ * @property {number} examplesCount
+ * @property {import('./final-prompt-combination.js').FinalMesSendEntry[]} finalMesSend
+ * @property {string} jailbreak
+ * @property {string} promptBias
+ * @property {boolean} biasInHistory
+ * @property {import('./extension-prompt-table.js').ExtensionPromptTable} extensionPromptTable
+ * @property {import('./macro-substitution.js').SubstituteParamsContext} macroContext
  */
-export function buildItemizationBreakdown(assembled) {
+
+/**
+ * @param {TextPromptParts} parts
+ * @param {{ countTokens: (text: string) => Promise<number>, countPromptTokens: (text: string) => Promise<number> }} counters
+ * @returns {Promise<Omit<import('./prompt-itemization.js').PromptItemization, 'tokenizer'>>}
+ */
+export async function itemizeTextPrompt(parts, { countTokens, countPromptTokens }) {
+    const count = async (/** @type {string|undefined|null} */ text) => (text ? countTokens(text) : 0);
+    const history = parts.finalMesSend.filter(e => !e.injected);
+    const injected = parts.finalMesSend.filter(e => e.injected);
+    const inChatInjections = [
+        ...injected.map(e => `${e.extensionPrompts.join('')}${e.message}`),
+        ...history.map(e => e.extensionPrompts.join('')),
+    ].join('');
+    const postHistory = parts.jailbreak;
+
+    const [
+        total, description, personality, scenario, persona, systemPrompt, worldInfoBefore, worldInfoAfter,
+        storyString, beforeAnchor, afterAnchor, examples, historyTokens, injections, postHistoryTokens, bias,
+    ] = await Promise.all([
+        parts.combinedPrompt ? countPromptTokens(parts.combinedPrompt) : 0,
+        count(parts.fields.description),
+        count(parts.fields.personality),
+        count(parts.fields.scenario),
+        count(parts.personaDescriptionPosition === persona_description_positions.IN_PROMPT ? parts.fields.persona : ''),
+        count(parts.system),
+        count(parts.worldInfoBefore),
+        count(parts.worldInfoAfter),
+        count(parts.combinedStoryString),
+        count(parts.beforeScenarioAnchor),
+        count(parts.afterScenarioAnchor),
+        count(parts.mesExmString),
+        count(history.map(e => e.message).join('')),
+        count(inChatInjections),
+        count(postHistory),
+        count(parts.promptBias),
+    ]);
+    /** @type {Record<string, number>} */
+    const named = {};
+    await Promise.all(Object.entries(NAMED_EXTENSIONS).map(async ([slot, key]) => {
+        const entry = parts.extensionPromptTable[key];
+        named[slot] = entry && entry.position !== extension_prompt_types.NONE
+            ? await count(getExtensionPromptByName(parts.extensionPromptTable, key, parts.macroContext))
+            : 0;
+    }));
+
+    const worldInfo = worldInfoBefore + worldInfoAfter;
     return {
-        storyString: assembled.combinedStoryString,
-        worldInfoString: (assembled.worldInfoBefore || '') + (assembled.worldInfoAfter || ''),
-        examplesString: assembled.examplesString || '',
-        mesSendString: assembled.mesSendString,
-        promptBias: assembled.promptBias,
-        generatedPromptCache: assembled.generatedPromptCache,
-        beforeScenarioAnchor: assembled.resolvedBeforeScenarioAnchor,
-        afterScenarioAnchor: assembled.resolvedAfterScenarioAnchor,
-        finalPrompt: assembled.combinedPrompt,
-        rawPrompt: assembled.combinedPrompt,
+        api: parts.api,
+        preset: presetNameOf(parts.api, parts.settings),
+        sampler_config: samplerConfigOf(parts.generate_data, ['prompt', 'input']),
+        max_context: parts.thisMaxContext,
+        padding: parts.tokenPadding,
+        rawPrompt: parts.combinedPrompt,
+        messages_count: Math.max(0, history.length - (postHistory ? 1 : 0)),
+        examples_count: parts.examplesCount,
+        tokens: {
+            total,
+            story_string: Math.max(0, storyString - worldInfo - beforeAnchor - afterAnchor),
+            description, personality, scenario, persona,
+            system_prompt: systemPrompt,
+            examples,
+            world_info: worldInfo,
+            chat_history: Math.max(0, historyTokens - postHistoryTokens - (parts.biasInHistory ? bias : 0)),
+            post_history: postHistoryTokens,
+            extensions: beforeAnchor + afterAnchor + injections,
+            summary: named.summary, authors_note: named.authors_note, smart_context: named.smart_context,
+            chat_vectors: named.chat_vectors, data_bank_vectors: named.data_bank_vectors,
+            bias,
+        },
     };
 }

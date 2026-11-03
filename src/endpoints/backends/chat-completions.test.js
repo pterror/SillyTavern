@@ -1736,9 +1736,16 @@ async function run() {
             assert.deepEqual(rest, { choices: [{ message: { content: claudeContent[0].text ?? '' } }], content: claudeContent }, 'the client-facing reply shape is exactly this function\'s own pre-existing (unmodified) content[0]-only wrapping');
             assert.deepEqual(assistant_message, {
                 mes: 'Rex says hello back, Claude-style.',
-                extra: { api: 'claude', model: 'claude-test-model', reasoning: 'The user wants a greeting back.', reasoning_duration: null, reasoning_signature: null },
+                extra: { api: 'claude', model: 'claude-test-model', reasoning: 'The user wants a greeting back.', reasoning_duration: null, reasoning_signature: null, has_itemized_prompt: true },
             }, 'the reply as stored is sent too: its thinking block is its reasoning, as upstream\'s page stored it');
             assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
+            const stored = /** @type {any} */ ((await user.store.chats.readItemization({ node_id: assistant_node_id }))?.entry);
+            assert.equal(stored?.api, 'openai', 'the server stores the itemization of the prompt it built');
+            assert.equal(stored.rawPrompt.at(-1).role, 'user', 'with the messages it sent');
+            assert.ok(JSON.stringify(stored.rawPrompt.at(-1).content).includes('Say hi, Claude.'));
+            assert.equal(stored.tokens.post_history, 0, 'no post-history instructions were set');
+            assert.ok(stored.tokens.chat_history > 0 && stored.tokens.total >= stored.tokens.chat_history, 'with the counts it budgeted with');
+            assert.equal(stored.messages_count, 2);
         }
 
         const branchAfter = await loadBranch(user.store, { avatar: ownerId }, claudeBranch);

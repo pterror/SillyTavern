@@ -76,12 +76,18 @@
                 <div class="flex1" style="color: gold;"><span data-i18n="World Info:">World Info:</span></div>
                 <div class="">{{worldInfoStringTokens}}</div>
             </div>
-            <div class="wide100p flex-container">
-                <div class="flex1" style="color: palegreen;">
-                    <span data-i18n="Chat History:">Chat History:</span>
-                    {{#if messagesCount}}<small>({{messagesCount}})</small>{{/if}}
+            <div class="wide100p flex-container flexNoGap flexFlowColumn">
+                <div class="wide100p flex-container">
+                    <div class="flex1" style="color: palegreen;">
+                        <span data-i18n="Chat History:">Chat History:</span>
+                        {{#if messagesCount}}<small>({{messagesCount}})</small>{{/if}}
+                    </div>
+                    <div class=""> {{ActualChatHistoryTokens}}</div>
                 </div>
-                <div class=""> {{ActualChatHistoryTokens}}</div>
+                <div class="flex-container">
+                    <div class=" flex1 tokenItemizingSubclass">-- Post-History Instructions:</div>
+                    <div class="tokenItemizingSubclass"> {{postHistoryTokens}}</div>
+                </div>
             </div>
             <div class="wide100p flex-container flexNoGap flexFlowColumn">
                 <div class="wide100p flex-container">

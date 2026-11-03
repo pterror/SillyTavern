@@ -8,8 +8,8 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 
 /** @param {string} rawPrompt */
 const itemization = (rawPrompt) => ({
-    main_api: 'textgenerationwebui', rawPrompt, finalPrompt: rawPrompt, storyString: 'Story.', mesSendString: rawPrompt,
-    examplesString: '', worldInfoString: '', allAnchors: '', promptBias: '', padding: 0, this_max_context: 4096,
+    api: 'textgenerationwebui', preset: null, sampler_config: {}, tokenizer: null, max_context: 4096, padding: 0,
+    rawPrompt, messages_count: 1, examples_count: 0, tokens: { total: 4, story_string: 1, chat_history: 3 },
 });
 
 /**
@@ -192,8 +192,7 @@ for (const streaming of [true, false]) {
             await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText(REPLY, { timeout: 30000 });
             await expect(page.locator('#send_but')).toBeVisible({ timeout: 15000 });
             await expect(page.locator('#chat .mes[mesid="2"] .mes_prompt')).not.toHaveCSS('display', 'none');
-            expect(sentItemization?.main_api).toBe('textgenerationwebui');
-            expect(sentItemization).not.toHaveProperty('mesId');
+            expect(sentItemization).toBeNull();
 
             const stored = await page.evaluate(async () => {
                 // @ts-ignore
@@ -201,7 +200,8 @@ for (const streaming of [true, false]) {
                 const response = await fetch('/api/itemized-prompts/message', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ node_id: context.chat[2].node_id }) });
                 return response.ok ? (await response.json()).entry : null;
             });
-            expect(stored?.main_api).toBe('textgenerationwebui');
+            expect(stored?.api).toBe('textgenerationwebui');
+            expect(stored.tokens.total).toBeGreaterThan(0);
             expect(typeof stored?.rawPrompt).toBe('string');
             expect(stored.rawPrompt).toContain(`When does it turn ${stamp}?`);
 

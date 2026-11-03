@@ -5,11 +5,11 @@ import {
     doChatInject, extension_prompts, extension_prompt_types,
     extractJsonFromData, extractMessageFromData, extractMultiSwipes, extractTitleFromData,
     flushWIInjections, formatMessageHistoryItem,
-    getAllExtensionPrompts, getBiasStrings, getCharacterCardFields, getCurrentCharacter, getCurrentDraftContext,
+    getBiasStrings, getCharacterCardFields, getCurrentCharacter, getCurrentDraftContext,
     getExtensionPrompt, getExtensionPromptRoleByName, getMaxPromptTokens,
     hideStopButton, hideSwipeButtons, isStreamingEnabled,
     menu_type, name2, online_status,
-    parseAndSaveLogprobs, parseMesExamples, parseTokenCounts, processCommands,
+    parseAndSaveLogprobs, parseMesExamples, processCommands,
     removeDepthPrompts, removeLastMessage, removeMacros, requestedResponseLength, resolveClientToolHandoffLoop, responseLengthFor,
     saveReply, sendGenerationRequest, sendMessageAsUser, sendStreamingRequest, storeSentMessage,
     setCharacterName, setExtensionPrompt, setGenerationProgress, setInContextMessages, setSendButtonState,
@@ -43,13 +43,12 @@ import { getKoboldGenerationData, kai_flags, kai_settings, koboldai_setting_name
 import { adjustNovelInstructionPrompt, getNovelGenerationData, nai_settings, novelai_setting_names, novelai_settings } from './nai-settings.js';
 import { user_avatar, getPersonaDescriptionPosition } from './personas.js';
 import { collapseNewlines, generatedTextFiltered, persona_description_positions, playMessageSound, power_user, renderStoryString } from './power-user.js';
-import { getPresetManager } from './preset-manager.js';
 import { extractReasoningFromData, extractReasoningSignatureFromData, markServerFinishedReply, PromptReasoning } from './reasoning.js';
 import { reasoningOf } from './reasoning-block.js';
 import { takeStoredReply } from './llamacpp-compact-stream.js';
 import { sendSystemMessage, system_message_types } from './system-messages.js';
-import { getTextGenGenerationData, textgenerationwebui_settings as textgen_settings } from './textgen-settings.js';
-import { getFriendlyTokenizerName, getPromptTokenCountAsync, getTokenCountAsync, saveTokenCache, showTrimEstimateWarning } from './tokenizers.js';
+import { getTextGenGenerationData } from './textgen-settings.js';
+import { getPromptTokenCountAsync, getTokenCountAsync, saveTokenCache, showTrimEstimateWarning } from './tokenizers.js';
 import { ToolManager } from './tool-calling.js';
 import { showTokenizerWarnings, REPLY_NOT_SAVED_EVENT, REPLY_STORED_EVENT } from './tokenizer-notices.js';
 import { shiftDownByOne, shiftUpByOne, uuidv4 } from './utils.js';
@@ -904,7 +903,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     let useCfgPrompt = false;
     /** @type {string[]} */
     let mesExamplesArray = [];
-    let worldInfoString = '';
     let worldInfoBefore = '';
     let worldInfoAfter = '';
     let beforeScenarioAnchor = '';
@@ -932,8 +930,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     let getCombinedPrompt = async () => '';
     let finalPrompt = '';
     let maxLength = 0;
-    /** @type {any[]} */
-    let thisPromptBits = [];
 
     if (!rawActionGenerateData && !rawActionChatCompletionData) {
         if (main_api == 'koboldhorde' && (horde_settings.auto_adjust_context_length || horde_settings.auto_adjust_response_length)) {
@@ -988,7 +984,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
             trigger: GENERATION_TYPE_TRIGGERS.includes(type) ? type : 'normal',
         };
         let worldInfoExamples, worldInfoDepth, outletEntries;
-        ({ worldInfoString, worldInfoBefore, worldInfoAfter, worldInfoExamples, worldInfoDepth, outletEntries } = await getWorldInfoPrompt(chatForWI, this_max_context, dryRun, globalScanData));
+        ({ worldInfoBefore, worldInfoAfter, worldInfoExamples, worldInfoDepth, outletEntries } = await getWorldInfoPrompt(chatForWI, this_max_context, dryRun, globalScanData));
         setExtensionPrompt(inject_ids.QUIET_PROMPT, '', extension_prompt_types.IN_PROMPT, 0, true);
 
         for (const example of worldInfoExamples) {
@@ -1540,7 +1536,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         finalPrompt = eventData.prompt;
 
         maxLength = Number(responseLengthFor(main_api));
-        thisPromptBits = [];
     }
 
     /** @type {any} */
@@ -1597,7 +1592,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 generate_data = { rawAction: rawActionChatCompletionData };
                 break;
             }
-            let [prompt, counts] = await prepareOpenAIMessages({
+            const [prompt] = await prepareOpenAIMessages({
                 name2: name2,
                 charDescription: description,
                 charPersonality: personality,
@@ -1616,10 +1611,6 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
                 messageExamples: /** @type {string[]} */ (/** @type {unknown} */ (oaiMessageExamples)),
             }, dryRun);
             generate_data = { prompt: prompt };
-
-            if (counts !== false) {
-                parseTokenCounts(counts, thisPromptBits);
-            }
 
             if (!dryRun) {
                 setInContextMessages(openai_messages_count, type);
@@ -1646,56 +1637,8 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
 
         showStopButton();
 
-        let currentArrayEntry = Number(thisPromptBits.length - 1);
-        const samplerSettingsByApi = /** @type {Record<string, any>} */ ({
-            kobold: kai_settings,
-            koboldhorde: kai_settings,
-            textgenerationwebui: textgen_settings,
-            novel: nai_settings,
-            openai: oai_settings,
-        });
-        const activeSamplerSettings = samplerSettingsByApi[main_api];
-        const extensionPromptsTable = /** @type {Partial<Record<string, {value: string, position: number, depth: number, scan: boolean, role: number, filter: (() => Promise<boolean>|boolean)|null}>>} */ (extension_prompts);
-        const activePresetManager = /** @type {ReturnType<typeof getPresetManager> | null} */ (getPresetManager());
-        let additionalPromptStuff = {
-            ...thisPromptBits[currentArrayEntry],
-            rawPrompt: generate_data.prompt || generate_data.input,
-            allAnchors: await getAllExtensionPrompts(),
-            chatInjects: injectedIndices.map(index => arrMes[arrMes.length - index - 1]).join('') || '',
-            summarizeString: extensionPromptsTable['1_memory']?.value ?? '',
-            authorsNoteString: extensionPromptsTable['2_floating_prompt']?.value ?? '',
-            smartContextString: extensionPromptsTable.chromadb?.value ?? '',
-            chatVectorsString: extensionPromptsTable['3_vectors']?.value ?? '',
-            dataBankVectorsString: extensionPromptsTable['4_vectors_data_bank']?.value ?? '',
-            worldInfoString: worldInfoString,
-            storyString: storyString,
-            beforeScenarioAnchor: beforeScenarioAnchor,
-            afterScenarioAnchor: afterScenarioAnchor,
-            examplesString: examplesString,
-            mesSendString: mesSendString,
-            generatedPromptCache: generatedPromptCache,
-            promptBias: promptBias,
-            finalPrompt: finalPrompt,
-            charDescription: description,
-            charPersonality: personality,
-            scenarioText: scenario,
-            this_max_context: this_max_context,
-            padding: power_user.token_padding,
-            main_api: main_api,
-            instruction: main_api !== 'openai' && power_user.sysprompt.enabled ? substituteParams(power_user.prefer_character_prompt && system ? system : power_user.sysprompt.content) : '',
-            userPersona: (getPersonaDescriptionPosition() == persona_description_positions.IN_PROMPT ? (persona || '') : ''),
-            tokenizer: getFriendlyTokenizerName(main_api).tokenizerName || '',
-            presetName: activePresetManager?.getSelectedPresetName() ?? '',
-            samplerConfigJson: JSON.stringify(activeSamplerSettings ?? {}),
-            messagesCount: main_api !== 'openai' ? mesSend.length : oaiMessages.length,
-            examplesCount: main_api !== 'openai' ? (pinExmString != null ? mesExamplesArray.length : count_exm_add) : oaiMessageExamples.length,
-            historyParts: main_api === 'openai' ? oaiMessages.map(m => m.content) : mesSend.map(e => e.message),
-        };
-
         const rawAction = rawActionGenerateData ?? rawActionChatCompletionData;
-        const replyItemizationSent = rawAction !== null && type !== 'quiet' && !isImpersonate;
-        if (rawAction !== null && replyItemizationSent) {
-            rawAction.itemization = additionalPromptStuff;
+        if (rawAction !== null && type !== 'quiet' && !isImpersonate) {
             const onMessage = type === 'swipe' || isContinue;
             const index = onMessage ? chat.length - 1 : chat.length;
             const named = onMessage ? chat[index]?.node_id : null;

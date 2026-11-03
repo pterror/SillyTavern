@@ -18,57 +18,15 @@ export class TokenHandler {
      */
     constructor(countTokenAsyncFn) {
         this.countTokenAsyncFn = countTokenAsyncFn;
-        this.counts = {
-            'start_chat': 0,
-            'prompt': 0,
-            'bias': 0,
-            'nudge': 0,
-            'jailbreak': 0,
-            'impersonate': 0,
-            'examples': 0,
-            'conversation': 0,
-        };
-    }
-
-    getCounts() {
-        return this.counts;
-    }
-
-    resetCounts() {
-        Object.keys(this.counts).forEach((key) => this.counts[key] = 0);
-    }
-
-    setCounts(counts) {
-        this.counts = counts;
-    }
-
-    uncount(value, type) {
-        this.counts[type] -= value;
     }
 
     /**
      * @param {object|any[]} messages
      * @param {boolean} [full]
-     * @param {string} [type]
      * @returns {Promise<number>}
      */
-    async countAsync(messages, full, type) {
-        const token_count = await this.countTokenAsyncFn(messages, full);
-        this.counts[type] += token_count;
-
-        return token_count;
-    }
-
-    getTokensForIdentifier(identifier) {
-        return this.counts[identifier] ?? 0;
-    }
-
-    getTotal() {
-        return Object.values(this.counts).reduce((a, b) => a + (isNaN(b) ? 0 : b), 0);
-    }
-
-    log() {
-        console.table({ ...this.counts, 'total': this.getTotal() });
+    countAsync(messages, full) {
+        return this.countTokenAsyncFn(messages, full);
     }
 }
 
@@ -188,6 +146,8 @@ export class Message {
     signature = null;
     /** @type {string?} */
     reasoning = null;
+    /** @type {boolean} */
+    injected = false;
 
     /**
      * @constructor

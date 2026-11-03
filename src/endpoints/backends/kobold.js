@@ -6,18 +6,18 @@ import { delay } from '../../util.js';
 import { getOverrideHeaders, setAdditionalHeaders, setAdditionalHeadersByType } from '../../additional-headers.js';
 import { TEXTGEN_TYPES } from '../../constants.js';
 import { readSettingsFor, settingsContextOf } from '../../settings-reads.js';
-import { resolveTokenizer, createTokenizerOutcome, sendTokenizerWarnings, tokenizerIdentity } from '../../tokenizer-resolve.js';
+import { resolveTokenizer, createTokenizerOutcome, sendTokenizerWarnings, tokenizerAnswer, tokenizerIdentity } from '../../tokenizer-resolve.js';
 import { createStoredCounter, writeBack } from '../../token-count-store.js';
 import { fetchKoboldStatus, koboldCanUseTokenization, lookupBackendModel, rememberRemoteTokenization } from '../../backend-status.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
-import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
+import { assembleTextCompletionPrompt } from '../../text-completion-prompt-orchestrator.js';
+import { startItemizing } from '../../prompt-itemization.js';
 import { generateTurnOf, textCompletionQuietInput } from '../../page-writes.js';
 import { storeUserMessage, withStoredMessages } from '../../stored-messages.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { attachStoredReply, persistAssistantReply } from '../../assistant-reply-persist.js';
 import { readReplyFinishSettings } from '../../reply-reasoning.js';
-import { itemizationOf } from '../../itemization-of.js';
 import { answerSessionOnHeaders, chatContext } from '../../chat-request.js';
 import { withGenerationStop } from '../../generation-stop.js';
 import { forwardAndPersistCompactStream } from './text-completions.js';
@@ -42,7 +42,7 @@ export const router = express.Router();
  * @param {import('../../extension-prompt-table.js').ExtensionPromptTable} [params.pageInjections]
  * @param {object} [params.userMessageExtra]
  * @param {object} [params.macroExtras]
- * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, activations: import('../../world-info/activation-record.js').ActivationRecord|null, tokenCountRows: import('../../token-count-store.js').PendingTokenRows, name1: string, name2: string, warnings: object[], itemization: object }>}
+ * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, activations: import('../../world-info/activation-record.js').ActivationRecord|null, tokenCountRows: import('../../token-count-store.js').PendingTokenRows, name1: string, name2: string, warnings: object[], itemize: () => Promise<import('../../prompt-itemization.js').PromptItemization> }>}
  */
 export async function buildRawActionKoboldRequest(directories, {
     request, characterAvatar, groupId, chat, nodeId,
@@ -120,7 +120,7 @@ export async function buildRawActionKoboldRequest(directories, {
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
         warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
         macroVariables: macroVariableChanges(orchestratorInput.chatMetadata, orchestratorInput.macroFacts.globalVariables, orchestratorInput.variablesBefore),
-        itemization: buildItemizationBreakdown(assembled),
+        itemize: async () => ({ ...(await assembled.itemize()), tokenizer: tokenizerAnswer(tokenizerState, resolvedTokenizer, tokenizerOutcome) }),
     };
 }
 
@@ -195,7 +195,7 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
                 activations: built.activations,
                 sentNodeId: replyAnchorNodeId !== built.anchorNodeId ? replyAnchorNodeId : null,
                 warnings, generationStop: response_generate.locals.generationStop,
-                itemization: itemizationOf(request.body.itemization, built.itemization),
+                itemization: startItemizing(built.itemize),
                 finish: await readReplyFinishSettings(directories, {
                     mainApi: 'kobold', avatar: characterAvatar, groupId, name1: built.name1, name2: built.name2,
                     model: lookupBackendModel({ api: 'kobold', url: built.params?.api_server ?? '' }),

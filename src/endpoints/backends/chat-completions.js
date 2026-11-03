@@ -77,7 +77,7 @@ import { getGroupsByIds } from '../groups.js';
 import { attachStoredReply, persistAssistantReply, replyTextAsPageShows, unreadableReplyWarning } from '../../assistant-reply-persist.js';
 import { noteReplyReasoning, noteReplyText, readReplyFinishSettings } from '../../reply-reasoning.js';
 import { noteReplyImages } from '../../reply-images.js';
-import { itemizationOf } from '../../itemization-of.js';
+import { presetNameOf, samplerConfigOf, startItemizing } from '../../prompt-itemization.js';
 import { answerSessionOnHeaders, chatContext } from '../../chat-request.js';
 import { storedForm } from '../../chat-engine.js';
 import { storeUserMessage, withStoredMessages } from '../../stored-messages.js';
@@ -2516,7 +2516,7 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
  * @param {object} [params.jsonSchema]
  * @param {string[]} [params.stealthClientToolNames]
  * @param {import('../../page-writes.js').QuietPrompt} [params.quiet]
- * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, anchorContent: object|null, activations: import('../../world-info/activation-record.js').ActivationRecord|null, name1: string, name2: string, enabledServerTools: import('../../server-tools.js').ServerToolRegistration[], enabledClientToolNames: Set<string>, enabledStealthClientToolNames: Set<string>, warnings: Array<{kind: string, key: string, message: string, entries?: string[]}>, tokenCountRows: import('../../token-count-store.js').PendingTokenRows }>}
+ * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, anchorContent: object|null, activations: import('../../world-info/activation-record.js').ActivationRecord|null, name1: string, name2: string, enabledServerTools: import('../../server-tools.js').ServerToolRegistration[], enabledClientToolNames: Set<string>, enabledStealthClientToolNames: Set<string>, warnings: Array<{kind: string, key: string, message: string, entries?: string[]}>, tokenCountRows: import('../../token-count-store.js').PendingTokenRows, itemize: () => Promise<import('../../prompt-itemization.js').PromptItemization> }>}
  */
 export async function buildRawActionChatCompletionRequest(directories, {
     characterAvatar, groupId, ownerId, chat, nodeId,
@@ -2584,7 +2584,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
         throw new Error('Cannot continue/swipe an empty chat.');
     }
 
-    const { chat: messages } = await prepareOpenAIMessages(orchestratorInput, false);
+    const { chat: messages, itemize: itemizeParts } = await prepareOpenAIMessages(orchestratorInput, false);
 
     const biasPresetEntries = settings.bias_preset_selected ? settings.bias_presets?.[settings.bias_preset_selected] : undefined;
     const useLogprobs = Boolean(powerUser.request_token_probabilities);
@@ -2641,8 +2641,20 @@ export async function buildRawActionChatCompletionRequest(directories, {
     const warnings = await chatCompletionSendWarnings(settings.chat_completion_source, orchestratorInput.model, droppedBiasEntries, orchestratorInput.tokenizerOutcome,
         chatCompletionConnection(settings, directories, orchestratorInput.macroContext, llamaCppProps));
 
+    /** @returns {Promise<import('../../prompt-itemization.js').PromptItemization>} */
+    const itemize = async () => ({
+        api: 'openai',
+        preset: presetNameOf('openai', settings),
+        sampler_config: samplerConfigOf(generate_data, ['messages']),
+        tokenizer: orchestratorInput.countedWith(),
+        max_context: orchestratorInput.maxContext - orchestratorInput.maxTokens,
+        padding: 0,
+        rawPrompt: messages,
+        ...await itemizeParts(),
+    });
+
     return {
-        params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledServerTools, enabledClientToolNames, enabledStealthClientToolNames, warnings, tokenCountRows,
+        params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledServerTools, enabledClientToolNames, enabledStealthClientToolNames, warnings, tokenCountRows, itemize,
         activations: orchestratorInput.activations,
         macroVariables: macroVariableChanges(orchestratorInput.macroContext.chatMetadata, orchestratorInput.macroContext.globalVariables, orchestratorInput.variablesBefore),
     };
@@ -3375,7 +3387,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                     sentNodeId: replyAnchorNodeId !== built.anchorNodeId ? replyAnchorNodeId : null,
                     warnings,
                     generationStop: response.locals.generationStop,
-                    itemization: itemizationOf(request.body.itemization, null),
+                    itemization: startItemizing(built.itemize),
                     finish: await readReplyFinishSettings(directories, {
                         mainApi: 'openai', source: built.settings.chat_completion_source, model: built.params?.model ?? null,
                         avatar: characterAvatar, groupId, name1: built.name1, name2: built.name2,
