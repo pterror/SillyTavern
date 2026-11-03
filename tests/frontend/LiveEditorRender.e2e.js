@@ -42,7 +42,8 @@ test.describe('live editor rendering', () => {
         const lines = page.locator('#liveEditorTestHost .cm-line');
         await expect(lines).toHaveCount(8);
         await expect(lines.nth(0)).toHaveText('# Title');
-        await expect(lines.nth(0)).toHaveClass(/live-heading1/);
+        await expect(page.locator('#liveEditorTestHost .cm-content > h1 > .cm-line')).toHaveText('# Title');
+        await expect(page.locator('#liveEditorTestHost .cm-content > blockquote > .cm-line')).toHaveText('> quoted');
         await expect(page.locator('#liveEditorTestHost .cm-line em')).toHaveText('*em*');
         await expect(page.locator('#liveEditorTestHost .cm-line strong')).toHaveText('**strong**');
         const syntax = page.locator('#liveEditorTestHost .live-syntax');

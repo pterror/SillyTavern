@@ -3,7 +3,7 @@ import { chatMarkdownExtensions } from './grammar.js';
 import { DOMPurify } from '../../lib.js';
 
 const { Facet, StateField } = cmState;
-const { EditorView, Decoration, WidgetType, ViewPlugin } = cmView;
+const { EditorView, Decoration, WidgetType, ViewPlugin, BlockWrapper } = cmView;
 const { syntaxTree, ensureSyntaxTree } = cmLanguage;
 
 /**
@@ -195,14 +195,6 @@ const textStyle = ViewPlugin.fromClass(class {
                     if (tag && node.from < node.to) {
                         ranges.push(Decoration.mark({ tagName: tag }).range(node.from, node.to));
                     }
-                    const heading = /^(?:ATX|Setext)Heading(\d)$/.exec(node.name);
-                    if (heading) {
-                        for (let pos = node.from; pos <= node.to;) {
-                            const line = state.doc.lineAt(pos);
-                            ranges.push(Decoration.line({ class: `live-heading live-heading${heading[1]}` }).range(line.from));
-                            pos = line.to + 1;
-                        }
-                    }
                     if (node.name === 'Link' || node.name === 'Image') {
                         ranges.push(Decoration.mark({ class: 'live-link' }).range(node.from, node.to));
                     }
@@ -278,12 +270,75 @@ const htmlBlocks = StateField.define({
     provide: field => EditorView.decorations.from(field),
 });
 
+const BLOCK_CONTAINERS = new Set(['Blockquote', 'BulletList', 'OrderedList', 'ListItem']);
+
+/**
+ * @param {string} name
+ * @returns {string | null}
+ */
+function chatBlockTag(name) {
+    if (name === 'Blockquote') return 'blockquote';
+    const heading = /^(?:ATX|Setext)Heading(\d)$/.exec(name);
+    return heading ? `h${heading[1]}` : null;
+}
+
+/** @type {Map<string, import('@codemirror/view').BlockWrapper>} */
+const chatBlockWrappers = new Map();
+
+/**
+ * @param {string} tagName
+ * @param {number} depth
+ */
+function chatBlockWrapper(tagName, depth) {
+    const rank = Math.max(0, 100 - depth);
+    const key = `${tagName} ${rank}`;
+    let wrapper = chatBlockWrappers.get(key);
+    if (!wrapper) {
+        wrapper = BlockWrapper.create({ tagName, attributes: { class: 'live-block' }, rank });
+        chatBlockWrappers.set(key, wrapper);
+    }
+    return wrapper;
+}
+
+/**
+ * @param {import('@codemirror/state').EditorState} state
+ * @returns {import('@codemirror/state').RangeSet<import('@codemirror/view').BlockWrapper>}
+ */
+function chatBlocks(state) {
+    const tree = ensureSyntaxTree(state, state.doc.length, 500) ?? syntaxTree(state);
+    /** @type {import('@codemirror/state').Range<import('@codemirror/view').BlockWrapper>[]} */
+    const ranges = [];
+    /**
+     * @param {import('@lezer/common').SyntaxNode} parent
+     * @param {number} depth
+     */
+    const visit = (parent, depth) => {
+        for (let node = parent.firstChild; node; node = node.nextSibling) {
+            const tagName = chatBlockTag(node.name);
+            if (tagName) ranges.push(chatBlockWrapper(tagName, depth).range(state.doc.lineAt(node.from).from, node.to));
+            if (BLOCK_CONTAINERS.has(node.name)) visit(node, depth + 1);
+        }
+    };
+    visit(tree.topNode, 0);
+    return BlockWrapper.set(ranges, true);
+}
+
+const blockElements = StateField.define({
+    create: state => chatBlocks(state),
+    update(value, tr) {
+        if (tr.docChanged && tr.isUserEvent('input.type.compose')) return value.map(tr.changes);
+        if (tr.docChanged || syntaxTree(tr.state) !== syntaxTree(tr.startState)) return chatBlocks(tr.state);
+        return value;
+    },
+    provide: field => EditorView.blockWrappers.from(field),
+});
+
 /**
  * @param {RenderOptions} options
  * @returns {import('@codemirror/state').Extension}
  */
 export function liveRendering(options) {
-    return [renderOptions.of(options), textStyle, htmlBlocks];
+    return [renderOptions.of(options), textStyle, htmlBlocks, blockElements];
 }
 
 export { renderOptions };
