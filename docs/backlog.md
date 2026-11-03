@@ -8,6 +8,7 @@
 - Startup steps not needed, let alone in series; a service worker. Switching character sometimes takes very long.
 - External media: replace `forbid_external_media` (`public/scripts/power-user.js:351`) and its per-chat allow (`public/scripts/chats.js:838-849`). Nothing external is fetched without the user's action, not even once on import (that still tracks, as email shows); shared content (cards, worlds, their looks' fonts and pictures) carries its own files by hash; anything else external waits in place and loads by a decision per source, remembered.
 - Tests simulating packet loss, slow connections, high latency.
+- Upstream's exports go: 9318f049f restored every `public/scripts` export with upstream's names and signatures for upstream extensions, which aren't supported, and it harms the architecture (synchronous upstream forms kept beside the real ones, index-based parameters, `editGroup`/`saveGroupChat` back). Every export that exists only for upstream, and every compat form it forced, is removed.
 - Groups are still downloaded whole: every `getCharacters()` fetches `/api/groups/all` (`public/scripts/group-chats.js:932`, `src/endpoints/groups.js:327`); the page must hold only the groups it shows, as it now does for characters.
 - The character list's creator-notes prefix is 0 (`LIST_CREATOR_NOTES_CHARS`, `public/scripts/hash-utils.js`) until the list cards get a maximum width or the owner gives a length.
 - Smaller thumbnails (75% webp or lower, 100-200px max), cached by the client, served at the image data's hash.
