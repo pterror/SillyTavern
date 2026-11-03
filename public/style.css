@@ -362,11 +362,6 @@ input[type='checkbox']:focus-visible {
     animation: none;
 }
 
-.tokenItemizingSubclass {
-    font-size: calc(var(--mainFontSize) * 0.8);
-    color: var(--SmartThemeEmColor);
-}
-
 .tokenItemizingMaintext {
     font-size: calc(var(--mainFontSize) * 0.8);
 }

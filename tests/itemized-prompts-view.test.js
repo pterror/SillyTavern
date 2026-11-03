@@ -84,21 +84,21 @@ const answer = (name, basis) => ({ id: 13, name, basis, key: 'textgenerationwebu
 const textSet = (tokenizer = answer('Gemma / Gemini', 'local')) => ({
     mesId: 0, api: 'textgenerationwebui', preset: 'Simple', sampler_config: { temp: 0.7 }, tokenizer,
     max_context: 4000, padding: 64, rawPrompt: 'the prompt', messages_count: 3, examples_count: 1,
-    tokens: {
-        total: 100, story_string: 20, description: 10, personality: 5, scenario: 2, persona: 1, system_prompt: 4, examples: 6,
-        world_info: 10, chat_history: 40, post_history: 8, extensions: 12, summary: 3, authors_note: 4, smart_context: 0,
-        chat_vectors: 1, data_bank_vectors: 0, bias: 2,
-    },
+    total: 100,
+    parts: [
+        { part: 'story_string', tokens: 20 }, { part: 'system_prompt', tokens: 4 }, { part: 'description', tokens: 10 },
+        { part: 'examples', tokens: 6 }, { part: 'chat_history', tokens: 52 }, { part: 'post_history', tokens: 8 },
+    ],
 });
 
 const chatSet = (tokenizer = answer('Gemma / Gemini', 'local')) => ({
     mesId: 0, api: 'openai', preset: null, sampler_config: {}, tokenizer,
     max_context: 8000, padding: 0, rawPrompt: [{ role: 'system', content: 'x' }], messages_count: 4, examples_count: 0,
-    tokens: {
-        total: 200, main: 30, chat_start: 2, post_history: 9, auxiliary: 0, nudge: 1, impersonate: 0,
-        description: 20, personality: 5, scenario: 5, persona: 4, examples: 6, other_prompts: 3, world_info: 15,
-        chat_history: 90, extensions: 8, summary: 0, authors_note: 8, smart_context: 0, chat_vectors: 0, data_bank_vectors: 0, bias: 2,
-    },
+    total: 200,
+    parts: [
+        { part: 'main', tokens: 30 }, { part: 'description', tokens: 20 }, { part: 'chat_history', tokens: 90 },
+        { part: 'authors_note', tokens: 8 }, { part: 'post_history', tokens: 52 },
+    ],
 });
 
 beforeEach(() => {
@@ -106,43 +106,46 @@ beforeEach(() => {
     global.$ = cheerio.load('');
 });
 
-describe('the prompt view shows what the server counted', () => {
-    test('a text completion itemization: its parts, post-history instructions in the chat history', async () => {
+describe('the prompt view lists the stored parts', () => {
+    test('in their order, with their counts and shares; the chat history and examples with how many', async () => {
         const params = await itemizedParams([textSet()], 0, 0);
+        expect(params.parts.map(p => [p.label, p.tokens, p.count, p.percent])).toEqual([
+            ['Story string', 20, undefined, '20.00'], ['System prompt', 4, undefined, '4.00'], ['Description', 10, undefined, '10.00'],
+            ['Example dialogues', 6, 1, '6.00'], ['Chat history', 52, 3, '52.00'], ['Post-history instructions', 8, undefined, '8.00'],
+        ]);
         expect(params).toMatchObject({
-            this_main_api: 'textgenerationwebui', presetName: 'Simple', messagesCount: '3', examplesCount: '1',
-            samplerConfig: JSON.stringify({ temp: 0.7 }, null, 2), selectedTokenizer: 'Gemma / Gemini',
-            storyStringTokens: 20, charDescriptionTokens: 10, instructionTokens: 4, examplesStringTokens: 6, worldInfoStringTokens: 10,
-            ActualChatHistoryTokens: 48, postHistoryTokens: 8, allAnchorsTokens: 12, authorsNoteStringTokens: 4, promptBiasTokens: 2,
-            totalTokensInPrompt: 100, thisPrompt_max_context: 4000, thisPrompt_padding: 64, thisPrompt_actual: 3936,
-            storyStringTokensPercentage: '20.00', ActualChatHistoryTokensPercentage: '48.00',
+            presetName: 'Simple', samplerConfig: JSON.stringify({ temp: 0.7 }, null, 2), selectedTokenizer: 'Gemma / Gemini',
+            total: 100, maxContext: 4000, padding: 64,
         });
     });
 
-    test('a chat completion itemization: its parts, post-history instructions among the system ones', async () => {
+    test('each API shows only its own parts', async () => {
         const params = await itemizedParams([chatSet()], 0, 0);
-        expect(params).toMatchObject({
-            this_main_api: 'openai', presetName: '(Unknown)',
-            oaiMainTokens: 30, oaiStartTokens: 2, oaiJailbreakTokens: 9, oaiNudgeTokens: 1, oaiSystemTokens: 42,
-            oaiPromptTokens: 43, ActualChatHistoryTokens: 90, allAnchorsTokens: 8, authorsNoteStringTokens: 8, oaiBiasTokens: 2,
-            finalPromptTokens: 200, thisPrompt_max_context: 8000,
-            oaiSystemTokensPercentage: '20.00', oaiStartTokensPercentage: '1.00', ActualChatHistoryTokensPercentage: '45.00',
-        });
+        expect(params.parts.map(p => p.label)).toEqual(['Main prompt', 'Description', 'Chat history', 'Author\'s Note', 'Post-history instructions']);
+        expect(params.presetName).toBe('(Unknown)');
     });
 
-    test('an itemization without counts shows zeros, not NaN', async () => {
-        const params = await itemizedParams([{ mesId: 0, api: 'textgenerationwebui', rawPrompt: 'p' }], 0, 0);
-        expect(params.totalTokensInPrompt).toBe(0);
-        expect(params.storyStringTokensPercentage).toBe('0.00');
-        expect(params.tokenizerAnswer).toBe(null);
+    test('an empty part is never a row', async () => {
+        const set = { ...textSet(), parts: [{ part: 'bias', tokens: 0 }, { part: 'chat_history', tokens: 5 }] };
+        expect((await itemizedParams([set], 0, 0)).parts.map(p => p.label)).toEqual(['Chat history']);
+        expect((await itemizedParams([{ mesId: 0, api: 'textgenerationwebui', rawPrompt: 'p' }], 0, 0))).toMatchObject({ parts: [], total: 0, tokenizerAnswer: null });
     });
 
-    test('the rendered views show the counts', async () => {
+    test('the one view renders every API\'s parts, and padding only when there is some', async () => {
         await promptItemize([textSet()], 0);
-        expect(view('body').text()).toContain('Post-History Instructions:');
-        expect(view('body').text().replace(/\s+/g, ' ')).toContain('Total Tokens in Prompt: 100');
+        const text = view('body').text().replace(/\s+/g, ' ');
+        expect(text).toContain('Post-history instructions 8');
+        expect(text).toContain('Chat history (3) 52');
+        expect(text).toContain('Total Tokens in Prompt: 100');
+        expect(text).toContain('Padding: 64');
+        expect(text).not.toContain('Bias');
+
         await promptItemize([chatSet()], 0);
-        expect(view('body').text().replace(/\s+/g, ' ')).toContain('Total Tokens in Prompt: 200');
+        const chatText = view('body').text().replace(/\s+/g, ' ');
+        expect(chatText).toContain('Main prompt 30');
+        expect(chatText).toContain('Total Tokens in Prompt: 200');
+        expect(chatText).not.toContain('Padding');
+        expect(view('.tokenGraph > div')).toHaveLength(5);
     });
 });
 

@@ -150,11 +150,11 @@ test('an upstream text completion entry becomes the server\'s itemization, its p
     assert.deepEqual(converted, {
         mesId: 3, api: 'textgenerationwebui', preset: 'Preset', sampler_config: {}, tokenizer: { name: 'by length' },
         max_context: 4096, padding: 64, rawPrompt: 'STORYWIhistory', messages_count: 5, examples_count: 2,
-        tokens: {
-            total: 14, description: 4, personality: 0, scenario: 0, persona: 0, world_info: 2, post_history: 0,
-            extensions: 0, summary: 0, authors_note: 0, smart_context: 0, chat_vectors: 0, data_bank_vectors: 0,
-            story_string: 5, system_prompt: 0, examples: 0, chat_history: 7, bias: 0,
-        },
+        total: 14,
+        parts: [
+            { part: 'story_string', tokens: 1 }, { part: 'world_info', tokens: 2 }, { part: 'description', tokens: 4 },
+            { part: 'chat_history', tokens: 7 },
+        ],
     });
 });
 
@@ -165,10 +165,10 @@ test('an upstream chat completion entry keeps the counts it was sent with', asyn
     }, counter);
     assert.equal(converted.api, 'openai');
     assert.deepEqual(converted.rawPrompt, [{ role: 'system', content: 'x' }]);
-    assert.equal(converted.tokens.total, 60);
-    assert.equal(converted.tokens.main, 10);
-    assert.equal(converted.tokens.post_history, 4);
-    assert.equal(converted.tokens.chat_history, 30);
-    assert.equal(converted.tokens.description, 4);
-    assert.equal(converted.tokens.other_prompts, 5);
+    assert.equal(converted.total, 60);
+    assert.deepEqual(converted.parts, [
+        { part: 'main', tokens: 10 }, { part: 'description', tokens: 4 }, { part: 'other_prompts', tokens: 5 },
+        { part: 'examples', tokens: 5 }, { part: 'chat_start', tokens: 1 }, { part: 'chat_history', tokens: 30 },
+        { part: 'post_history', tokens: 4 },
+    ]);
 });

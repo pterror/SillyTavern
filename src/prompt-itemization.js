@@ -19,44 +19,32 @@ export const PRESET_SETTINGS = {
  * @property {string|object[]} rawPrompt
  * @property {number} messages_count
  * @property {number} examples_count
- * @property {PromptTokens} tokens
+ * @property {number} total
+ * @property {PromptPart[]} parts In the order each first appears in the prompt; none is empty.
  */
 
 /**
- * @typedef {object} PromptTokens
- * @property {number} total
- * @property {number} description
- * @property {number} personality
- * @property {number} scenario
- * @property {number} persona
- * @property {number} examples
- * @property {number} world_info
- * @property {number} chat_history
- * @property {number} post_history
- * @property {number} extensions Includes summary, authors_note, smart_context, chat_vectors and data_bank_vectors.
- * @property {number} summary
- * @property {number} authors_note
- * @property {number} smart_context
- * @property {number} chat_vectors
- * @property {number} data_bank_vectors
- * @property {number} bias
- * @property {number} [story_string]
- * @property {number} [system_prompt]
- * @property {number} [main]
- * @property {number} [chat_start]
- * @property {number} [auxiliary]
- * @property {number} [nudge]
- * @property {number} [impersonate]
- * @property {number} [other_prompts]
+ * @typedef {'main'|'system_prompt'|'story_string'|'description'|'personality'|'scenario'|'persona'|'world_info'
+ *   |'examples'|'chat_start'|'chat_history'|'injections'|'post_history'|'auxiliary'|'nudge'|'impersonate'
+ *   |'extensions'|'summary'|'authors_note'|'smart_context'|'chat_vectors'|'data_bank_vectors'|'bias'|'other_prompts'} PromptPartName
  */
 
-export const NAMED_EXTENSIONS = Object.freeze({
-    summary: '1_memory',
-    authors_note: '2_floating_prompt',
-    smart_context: 'chromadb',
-    chat_vectors: '3_vectors',
-    data_bank_vectors: '4_vectors_data_bank',
-});
+/**
+ * @typedef {object} PromptPart
+ * @property {PromptPartName} part
+ * @property {number} tokens
+ */
+
+/**
+ * @param {[PromptPartName, number][]} counted In prompt order; a part may come more than once.
+ * @returns {PromptPart[]}
+ */
+export function promptParts(counted) {
+    /** @type {Map<PromptPartName, number>} */
+    const parts = new Map();
+    for (const [part, tokens] of counted) parts.set(part, (parts.get(part) ?? 0) + (Number(tokens) || 0));
+    return [...parts].filter(([, tokens]) => tokens > 0).map(([part, tokens]) => ({ part, tokens }));
+}
 
 /**
  * @param {string} api

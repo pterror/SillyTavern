@@ -1743,8 +1743,9 @@ async function run() {
             assert.equal(stored?.api, 'openai', 'the server stores the itemization of the prompt it built');
             assert.equal(stored.rawPrompt.at(-1).role, 'user', 'with the messages it sent');
             assert.ok(JSON.stringify(stored.rawPrompt.at(-1).content).includes('Say hi, Claude.'));
-            assert.equal(stored.tokens.post_history, 0, 'no post-history instructions were set');
-            assert.ok(stored.tokens.chat_history > 0 && stored.tokens.total >= stored.tokens.chat_history, 'with the counts it budgeted with');
+            const history = stored.parts.find((/** @type {any} */ p) => p.part === 'chat_history');
+            assert.equal(stored.parts.some((/** @type {any} */ p) => p.part === 'post_history'), false, 'no post-history instructions were set, so none is listed');
+            assert.ok(history?.tokens > 0 && stored.total >= history.tokens, 'with the counts it budgeted with');
             assert.equal(stored.messages_count, 2);
         }
 

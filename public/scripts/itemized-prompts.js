@@ -198,14 +198,33 @@ async function showMessageItemization(mesId) {
     }
 }
 
-/**
- * @param {number} part
- * @param {number} total
- * @returns {string}
- */
-function percentOf(part, total) {
-    return (total > 0 ? (part / total) * 100 : 0).toFixed(2);
-}
+/** @type {Record<string, { label: () => string, color: string }>} */
+const PART_VIEWS = {
+    main: { label: () => t`Main prompt`, color: 'grey' },
+    system_prompt: { label: () => t`System prompt`, color: 'grey' },
+    story_string: { label: () => t`Story string`, color: 'indianred' },
+    description: { label: () => t`Description`, color: 'indianred' },
+    personality: { label: () => t`Personality`, color: 'indianred' },
+    scenario: { label: () => t`Scenario`, color: 'indianred' },
+    persona: { label: () => t`Persona description`, color: 'indianred' },
+    world_info: { label: () => t`World info`, color: 'gold' },
+    examples: { label: () => t`Example dialogues`, color: 'salmon' },
+    chat_start: { label: () => t`Chat start markers`, color: 'grey' },
+    chat_history: { label: () => t`Chat history`, color: 'palegreen' },
+    injections: { label: () => t`Injected into the chat`, color: 'cornflowerblue' },
+    post_history: { label: () => t`Post-history instructions`, color: 'grey' },
+    auxiliary: { label: () => t`Auxiliary prompt`, color: 'grey' },
+    nudge: { label: () => t`Nudges`, color: 'grey' },
+    impersonate: { label: () => t`Impersonation prompt`, color: 'grey' },
+    extensions: { label: () => t`Extensions`, color: 'cornflowerblue' },
+    summary: { label: () => t`Summary`, color: 'cornflowerblue' },
+    authors_note: { label: () => t`Author's Note`, color: 'cornflowerblue' },
+    smart_context: { label: () => t`Smart Context`, color: 'cornflowerblue' },
+    chat_vectors: { label: () => t`Vector Storage (chats)`, color: 'cornflowerblue' },
+    data_bank_vectors: { label: () => t`Vector Storage (Data Bank)`, color: 'cornflowerblue' },
+    bias: { label: () => t`Prompt bias`, color: 'mediumpurple' },
+    other_prompts: { label: () => t`Other prompts`, color: 'grey' },
+};
 
 /**
  * Upstream's export: the prompt view's values for an itemization, as the server counted it.
@@ -215,78 +234,34 @@ function percentOf(part, total) {
  */
 export async function itemizedParams(itemizedPrompts, thisPromptSet, incomingMesId) {
     const set = itemizedPrompts[thisPromptSet];
-    const tokens = set.tokens ?? {};
-    const n = (/** @type {string} */ key) => Number(tokens[key]) || 0;
-    const total = n('total');
+    const total = Number(set.total) || 0;
     const getFriendlyName = (value) => $(`#rm_api_block select option[value="${value}"]`).first().text() || value;
     const apiUsed = chat[incomingMesId]?.extra?.api;
-
-    const params = {
-        this_main_api: set.api,
+    const countOf = { chat_history: set.messages_count, examples: set.examples_count };
+    const parts = (Array.isArray(set.parts) ? set.parts : [])
+        .filter(p => Number(p?.tokens) > 0)
+        .map(p => {
+            const view = PART_VIEWS[p.part] ?? { label: () => String(p.part), color: 'grey' };
+            return {
+                label: view.label(),
+                color: view.color,
+                tokens: Number(p.tokens),
+                count: countOf[p.part] || undefined,
+                percent: (total > 0 ? (Number(p.tokens) / total) * 100 : 0).toFixed(2),
+            };
+        });
+    return {
         mainApiFriendlyName: set.api ? getFriendlyName(set.api) : '',
         modelUsed: chat[incomingMesId]?.extra?.model,
         apiUsed: apiUsed ? getFriendlyName(apiUsed) : apiUsed,
         presetName: set.preset || t`(Unknown)`,
-        messagesCount: String(set.messages_count ?? ''),
-        examplesCount: String(set.examples_count ?? ''),
         samplerConfig: JSON.stringify(set.sampler_config ?? {}, null, 2),
         tokenizerAnswer: set.tokenizer ?? null,
         selectedTokenizer: set.tokenizer?.name ?? '',
-        thisPrompt_max_context: Number(set.max_context) || 0,
-        thisPrompt_padding: Number(set.padding) || 0,
-        charDescriptionTokens: n('description'),
-        charPersonalityTokens: n('personality'),
-        scenarioTextTokens: n('scenario'),
-        userPersonaStringTokens: n('persona'),
-        examplesStringTokens: n('examples'),
-        worldInfoStringTokens: n('world_info'),
-        allAnchorsTokens: n('extensions'),
-        summarizeStringTokens: n('summary'),
-        authorsNoteStringTokens: n('authors_note'),
-        smartContextStringTokens: n('smart_context'),
-        chatVectorsStringTokens: n('chat_vectors'),
-        dataBankVectorsStringTokens: n('data_bank_vectors'),
-        postHistoryTokens: n('post_history'),
-        worldInfoStringTokensPercentage: percentOf(n('world_info'), total),
-        allAnchorsTokensPercentage: percentOf(n('extensions'), total),
-    };
-
-    if (set.api === 'openai') {
-        const system = n('chat_start') + n('main') + n('post_history') + n('auxiliary') + n('nudge') + n('impersonate');
-        const prompt = n('description') + n('personality') + n('scenario') + n('examples') + n('persona') + n('other_prompts');
-        return {
-            ...params,
-            oaiStartTokens: n('chat_start'),
-            oaiMainTokens: n('main'),
-            oaiJailbreakTokens: n('post_history'),
-            oaiNsfwTokens: n('auxiliary'),
-            oaiNudgeTokens: n('nudge'),
-            oaiImpersonateTokens: n('impersonate'),
-            oaiBiasTokens: n('bias'),
-            oaiSystemTokens: system,
-            oaiPromptTokens: prompt,
-            ActualChatHistoryTokens: n('chat_history'),
-            finalPromptTokens: total,
-            oaiSystemTokensPercentage: percentOf(system - n('chat_start'), total),
-            oaiStartTokensPercentage: percentOf(n('chat_start'), total),
-            storyStringTokensPercentage: percentOf(prompt, total),
-            ActualChatHistoryTokensPercentage: percentOf(n('chat_history'), total),
-            promptBiasTokensPercentage: percentOf(n('bias'), total),
-        };
-    }
-
-    const history = n('chat_history') + n('post_history');
-    return {
-        ...params,
-        storyStringTokens: n('story_string'),
-        instructionTokens: n('system_prompt'),
-        promptBiasTokens: n('bias'),
-        ActualChatHistoryTokens: history,
-        totalTokensInPrompt: total,
-        thisPrompt_actual: params.thisPrompt_max_context - params.thisPrompt_padding,
-        storyStringTokensPercentage: percentOf(n('story_string'), total),
-        ActualChatHistoryTokensPercentage: percentOf(history, total),
-        promptBiasTokensPercentage: percentOf(n('bias'), total),
+        parts,
+        total,
+        maxContext: Number(set.max_context) || 0,
+        padding: Number(set.padding) || 0,
     };
 }
 
@@ -323,9 +298,7 @@ export async function promptItemize(itemizedPrompts, requestedMesId, { loadPrevi
     const params = await itemizedParams(itemizedPrompts, thisPromptSet, incomingMesId);
     const flatten = (rawPrompt) => Array.isArray(rawPrompt) ? rawPrompt.map(x => x.content).join('\n') : rawPrompt;
 
-    const template = params.this_main_api == 'openai'
-        ? await renderTemplateAsync('itemizationChat', params)
-        : await renderTemplateAsync('itemizationText', params);
+    const template = await renderTemplateAsync('itemization', params);
 
     const popup = new Popup(template, POPUP_TYPE.TEXT);
 

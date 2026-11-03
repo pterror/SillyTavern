@@ -1,0 +1,61 @@
+<h3 class="flex-container justifyCenter alignitemscenter">
+    <span data-i18n="Prompt Itemization">Prompt Itemization</span>
+    <div id="showRawPrompt" class="fa-solid fa-square-poll-horizontal menu_button" title="Show Raw Prompt" data-i18n="[title]Show Raw Prompt"></div>
+    <div id="copyPromptToClipboard" class="fa-solid fa-copy menu_button" title="Copy Prompt" data-i18n="[title]Copy Prompt"></div>
+    <div id="diffPrevPrompt" class="fa-solid fa-code-compare menu_button" title="Show Prompt Differences" data-i18n="[title]Show Prompt Differences"></div>
+</h3>
+<div>
+    <div>
+        <span data-i18n="API/Model:">API/Model:</span> {{mainApiFriendlyName}} {{#if apiUsed}}({{apiUsed}}){{/if}} {{#if modelUsed}}&ndash; {{modelUsed}}{{/if}}
+    </div>
+    <div>
+        <small><span data-i18n="Preset:">Preset:</span> {{presetName}}</small>
+        <span>|</span>
+        <small><span data-i18n="Tokenizer:">Tokenizer:</span> <span id="itemizationTokenizerName">{{selectedTokenizer}}</span></small>
+    </div>
+    {{#if samplerConfig}}
+    <details>
+        <summary data-i18n="Sampler Settings">Sampler Settings</summary>
+        <pre class="justifyLeft">{{samplerConfig}}</pre>
+    </details>
+    {{/if}}
+</div>
+<hr>
+<div class="justifyLeft">
+    <div class="flex-container">
+        <div class="flex-container flex1 flexFlowColumns flexNoGap wide50p tokenGraph">
+            {{#each parts}}
+            <div class="wide100p" style="background-color: {{color}}; height: {{percent}}%;"></div>
+            {{/each}}
+        </div>
+        <div class="flex-container wide50p flexNoGap flexFlowColumn">
+            {{#each parts}}
+            <div class="flex-container wide100p">
+                <div class="flex1" style="color: {{color}};">{{label}}{{#if count}} <small>({{count}})</small>{{/if}}</div>
+                <div>{{tokens}}</div>
+            </div>
+            {{/each}}
+        </div>
+    </div>
+    <hr>
+    <div class="wide100p flex-container flexFlowColumns">
+        <div class="flex-container wide100p">
+            <div class="flex1"><span data-i18n="Total Tokens in Prompt:">Total Tokens in Prompt:</span></div>
+            <div>{{total}}</div>
+        </div>
+        <div class="flex-container wide100p">
+            <div class="flex1"><span data-i18n="Max Context">Max Context</span>&nbsp;<small data-i18n="(Context Size - Response Length)">(Context Size - Response Length)</small>:</div>
+            <div>{{maxContext}}</div>
+        </div>
+        {{#if padding}}
+        <div class="flex-container wide100p">
+            <div class="flex1" data-i18n="Padding:">Padding:</div>
+            <div>{{padding}}</div>
+        </div>
+        {{/if}}
+    </div>
+</div>
+<hr>
+<div id="rawPromptPopup" class="list-group">
+    <div id="rawPromptWrapper" class="tokenItemizingMaintext"></div>
+</div>

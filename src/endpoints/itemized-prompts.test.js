@@ -76,7 +76,7 @@ const record = (nodeId, entry) => user.store.chats.recordItemization({ node_id: 
 describe('recording and reading one message', () => {
     test('a stored reply records the itemization the server built with its prompt', async () => {
         const { ids } = await makeChat('Recorded');
-        const itemization = { api: 'openai', rawPrompt: 'server prompt', tokens: { total: 3 } };
+        const itemization = { api: 'openai', rawPrompt: 'server prompt', total: 3, parts: [{ part: 'main', tokens: 3 }] };
         const persisted = await persistAssistantReply({
             chat: await chatOf(), anchorNodeId: ids[4], name2: 'Alice', isSwipe: false, isContinue: false, anchorContent: null,
             warnings: [], itemization: Promise.resolve(itemization),
