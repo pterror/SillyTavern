@@ -362,6 +362,24 @@ describe('the page syncs only the characters and groups it holds', () => {
         expect(handedOn()).toEqual([[[g1], [g2]]]);
     });
 
+    test('a chat another tab saves for a held character or group brings that owner up to date', async () => {
+        const a = await createCharacter('A');
+        const g1 = await createGroup('G1');
+        await startFromSettings();
+        await hold(a);
+        await holdGroup(g1);
+        const { newSessionKey } = await import('../src/chat-engine.js');
+        const actor = { user: 'u', session: newSessionKey() };
+        for (const owner of [{ avatar: a }, { group: g1 }]) {
+            const tree = await fixture.treeOf(user.store, owner);
+            expect((await user.store.chats.createBookmark({ tree, node_id: null, name: 'Elsewhere', actor })).ok).toBe(true);
+        }
+        await sync();
+
+        expect(readFull).toHaveBeenCalledWith([a]);
+        expect(handedOn()).toEqual([[[g1], []]]);
+    });
+
     test('the whole group library can no longer be asked for', async () => {
         await createGroup('G1');
         const response = await realFetch(`${baseUrl}/api/groups/all`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });

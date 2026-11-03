@@ -50,7 +50,9 @@ calls `getCharacters()`. `syncHeld()` reads `/api/characters/changes` from the r
 entries carry `type: 'group'`), keeps only the ids it holds, re-reads those (characters in full through
 `characterRepository.readFull()`, groups through `takeInHeldGroupChanges()` and `/api/groups/batch`), and
 drops held ones that were deleted. Changes to characters and groups the page doesn't hold download
-nothing.
+nothing. A saved chat made, renamed or deleted for a character or group is logged as a change of that
+owner (the engine's bookmark derivers in `engine/src/store/chat.rs`), so a held owner's chat list comes
+up to date the same way; a message sent is not.
 
 ## Search and the list
 
