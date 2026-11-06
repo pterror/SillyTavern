@@ -104,3 +104,31 @@ State and other
 - /sysgen not using the selected request formatting.
 - Console noise: an ordinary action logs nothing on success.
 - A browser test reaches aihorde.net.
+
+## From the owner's 11-06 review
+
+- The whole codebase: about 260k lines against the 30k goal, 480 test files, and the issues below share one cause, no coherent architecture under the upstream-derived page. A top-down rewrite: the architecture first (core and modules per `docs/design/modules.md`, the page shell on interact), then each area rebuilt into it, its old code deleted in the same change.
+- Opening a chat: `takeChatOpenAnswer` wires each part's answer by hand; a part that asks for something also takes its answer, so nothing is wired twice.
+- Character management: names have no line cap; the arrow buttons shift as the position numbers change width.
+- Messages: the edit bar is a separate UI with its own controls; buttons are small and inconsistently sized; the send buttons sit in a different element from the burger menu beside them. The WYSIWYG editor's UI needs a UX pass. `<details>` doesn't stop click-to-edit. CodeMirror shows comments as the HTML preview under the markup.
+- UI consistency: every piece (the greetings/alternatives modal most of all) is built its own way; one component library (interact) and one design system.
+- Greetings:
+  - The card editor's greeting view jumps back to the first greeting some time after a greeting save, likely when the save's request completes.
+  - An in-chat greeting equal to a card greeting links back to it (the other direction of "go"), so editing the card's updates the chat, and an edit in the chat can be applied to the card.
+  - Editing a greeting in the chat twice with no message after it doesn't keep the first edit as a separate alternative.
+  - An edit that becomes identical to an existing greeting or swipe goes to that one, with no duplicate.
+  - Arrows on an in-chat greeting step through the card's greetings, skipping edits.
+- Example messages: the input needs its redesign.
+- Slowness and frozen UI: favouriting freezes the UI thread; invalidating a search and opening a card stall it.
+- Trigger marks: shown for entries activated by any visible message, not only the latest reply. "Lorebook entries used for this reply" is redesigned with worldbuilding.
+- Group chats: characters answering one at a time is slow and awkward; the narrator approach makes it hard to see who speaks, with no pictures. A group chat model that's good at both.
+- Message styling per thing, cascading (character, group, chat, user, device) through the same levels as settings and looks, in place of dialogue colorizing.
+- Lorebook names: trimmed on create but not on rename. Ordering global lorebooks needs a real order, not a leading-space hack.
+- Embedded lorebooks identical to their card's book still sit in the lorebook list; once confirmed identical, they're removed.
+- Shared code lives in the page's folder: `src/library-engine.js` imports `public/scripts/hash-utils.js`. Code both sides use belongs in a shared package.
+- `LibraryEngine.query` is unreadable.
+- Dependencies: lodash (18 files) and node-fetch (29 files) go, for the platform's own.
+- `patches/` holds patch-package changes with narrating comments ("rhi.zone patch (2026-08)").
+- `plugins/` is upstream's server plugin system, empty here; it goes like the extensions.
+- Logging: "[Macro] Warning: Parsing errors detected" logs the whole prompt, thousands of lines. Best-in-class logging: short, structured, nothing dumped.
+- interact: the components package holds every component, each split by technique into many files (combobox in ten), with test pages inside `src/` and the command bridge inside components although components know nothing of commands. Re-examined before more is built on it.
