@@ -10,7 +10,7 @@
 - Tests simulating packet loss, slow connections, high latency.
 - The test suite's run time: "ideally it's <1min if not <15s" (owner, 2026-09-25T19:56:40).
 - `MacroValuesFromServer` "a character mention's card shows its creator's notes…": the hover card never opens (fails 8-9 of 10 alone, at c62c7316b and after).
-- Library pushes still only say that something changed, and the page pulls: a character or group change (`data: {}`) makes it read `/api/characters/changes` (and `/api/characters/batch` for a held one); `groups-changed`, `tags-changed` and `views-changed` re-read too; actions that change characters call `getCharacters()` after their own request (a fav toggle is four requests). The push carries what changed; an action's answer carries what it changed. "reprinting the list is prohibitively expensive i.e. wrong" (owner, 2026-09-22T16:19:05).
+- Library pushes still only say that something changed, and the page pulls: a character or group change (`data: {}`) makes it read `/api/characters/changes` (and `/api/characters/batch` for a held one); `groups-changed`, `tags-changed` and `views-changed` re-read too; actions that change characters call `getCharacters()` after their own request (a fav toggle is four requests); a held character's re-read reselects it, rebuilding the open editor after every save (`character-list.js` `selectCharacterByAvatar`). The push carries what changed; an action's answer carries what it changed. "reprinting the list is prohibitively expensive i.e. wrong" (owner, 2026-09-22T16:19:05).
 - A chat state push for another tab's change is dropped when it arrives before this tab has taken the place its own send or select moved it to (`takePushedState`, `public/scripts/metadata-store.js`), so the tab keeps the state without that change until the next push.
 - e2e flaky or failing at staging and after 6682bb45f: `SearchIndexUpdated`, `DrawerEditLock` (the same test every run), `ReasoningSurvivesRerender`, `AutoFixMarkdownGone`, `GenerationStop`, `TagRestoreKeepsAssignments`; server `chats-import`, `chats-save`, `chats-save-compat`.
 - Typing `/` into the chat box's editor shrinks `.cm-scroller` for ~100ms (32px to 29px; 1px at staging), so the send form shifts and the slash command list placed in that window overlaps the editor by 3px until the next placement; `ChatBoxLiveEditor` "the slash command suggestions show above the editor" fails 5 of 6 since boot got faster without extensions.
@@ -51,7 +51,7 @@ Thin client and compat
 Drawers / UI
 - Firefox: top-bar drawers don't slide in and don't cut the chat.
 - Renaming a lorebook re-renders the whole world info drawer.
-- Greeting delete in the character info panel; greetings reset to the first after editing or adding; the greeting number input too narrow.
+- Greeting delete in the character info panel.
 - `.macro_preview_content` has its own 90dvh max-height instead of the drawer's scrollbar.
 - Distinct default colors for {{user}} / {{char}} / other macros.
 - The "More..." `<select>` and the button rows everywhere.
@@ -74,7 +74,6 @@ Drawers / UI
 - The client doesn't display generation errors (e.g. llama.cpp not running); the log spam around it.
 - Can't export from an arbitrary message.
 - Favoriting takes a while to update in the character list; reload force-restores the favorite pill.
-- Creating a new character: can't add the first greeting, tags go missing.
 - Closing and reopening character management loses its scroll position; on refresh it shows character management instead of an open chat.
 - Formatting bar on the chat input overlaps quick replies / guided generations.
 
@@ -117,7 +116,6 @@ State and other
 - Messages: the edit bar is a separate UI with its own controls; buttons are small and inconsistently sized; the send buttons sit in a different element from the burger menu beside them. The WYSIWYG editor's UI needs a UX pass. `<details>` doesn't stop click-to-edit. CodeMirror shows comments as the HTML preview under the markup.
 - UI consistency: every piece (the greetings/alternatives modal most of all) is built its own way; one component library (interact) and one design system. The expanded editor is a modal, not a sidebar drawer: "bring the modal back, sidebar drawer is unacceptable" (owner, 2026-10-02T00:59:40).
 - Greetings:
-  - The card editor's greeting view jumps back to the first greeting some time after a greeting save, likely when the save's request completes.
   - An in-chat greeting equal to a card greeting links back to it (the other direction of "go"), so editing the card's updates the chat, and an edit in the chat can be applied to the card.
   - Editing a greeting in the chat twice with no message after it doesn't keep the first edit as a separate alternative.
   - An edit that becomes identical to an existing greeting or swipe goes to that one, with no duplicate.
