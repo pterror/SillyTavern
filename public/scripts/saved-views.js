@@ -1,3 +1,4 @@
+import { addLayer } from './drawer-stack.js';
 import { contentHashOf } from './hash-utils.js';
 
 let t = (/** @type {TemplateStringsArray} */ strings, /** @type {any[]} */ ...values) => String.raw({ raw: strings }, ...values);
@@ -572,7 +573,7 @@ async function openPopover() {
     const list = document.createElement('div');
     list.className = 'view_picker_list';
     popover.append(search, list, makeSaveRow());
-    document.body.append(popover);
+    addLayer(popover);
     const box = picker.getBoundingClientRect();
     popover.style.left = `${Math.max(4, Math.min(box.left, window.innerWidth - popover.offsetWidth - 4))}px`;
     popover.style.top = `${box.bottom + 4}px`;

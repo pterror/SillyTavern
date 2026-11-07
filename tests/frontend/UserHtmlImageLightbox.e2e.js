@@ -145,18 +145,6 @@ test.describe('Lightbox on images in user-written HTML', () => {
             await expect(popup).toHaveCount(0);
         });
 
-        test('/popup: an image that is a result control closes the popup and shows no lightbox', async ({ page }) => {
-            await runScript(page, `/popup <img src="${IMAGE}" alt="button" data-result="1"> control words`);
-            const popup = openPopup(page, 'control words');
-            await expect(popup).toBeVisible();
-            await expect(popup.locator('.popup-content img')).not.toHaveCSS('cursor', 'pointer');
-
-            await popup.locator('.popup-content img').click();
-
-            await expect(popup).toHaveCount(0);
-            await expect(page.locator('.img_enlarged_container')).toHaveCount(0);
-        });
-
         test('/buttons: an image in the text shows in the lightbox', async ({ page }) => {
             await runScript(page, `/buttons labels=["one","two"] <img src="${IMAGE}" alt="in buttons"> buttons words`);
             const popup = openPopup(page, 'buttons words');

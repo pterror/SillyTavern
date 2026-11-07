@@ -905,7 +905,7 @@ export function registerCharacterCommands() {
                     new SlashCommandEnumValue('description', t`Character description`, enumTypes.enum),
                     new SlashCommandEnumValue('personality', t`Character personality`, enumTypes.enum),
                     new SlashCommandEnumValue('scenario', t`Character scenario`, enumTypes.enum),
-                    new SlashCommandEnumValue('first_mes', t`First message`, enumTypes.enum),
+                    new SlashCommandEnumValue('first_mes', t`Greeting`, enumTypes.enum),
                     new SlashCommandEnumValue('mes_example', t`Message examples`, enumTypes.enum),
                     new SlashCommandEnumValue('creator_notes', t`Creator notes`, enumTypes.enum),
                     new SlashCommandEnumValue('system_prompt', t`System prompt`, enumTypes.enum),

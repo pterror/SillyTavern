@@ -22,7 +22,7 @@ import {
     paginationDropdownChangeHandler,
 } from './utils.js';
 import { normalizeFav } from './hash-utils.js';
-import { bringChatForward } from './drawer-stack.js';
+import { addLayer, bringChatForward } from './drawer-stack.js';
 import { RA_CountCharTokens, dragElement, getMessageTimeStamp } from './RossAscends-mods.js';
 import { power_user, sortEntitiesList, invalidateGroupsFuseIndex } from './power-user.js';
 import { debounce_timeout } from './constants.js';
@@ -2370,7 +2370,7 @@ function doCurMemberListPopout() {
         // Remove pagination from popout
         newElement.find('.group_pagination').empty();
 
-        $('#movingDivs').append(newElement);
+        addLayer(newElement[0], document.getElementById('movingDivs') ?? document.body);
         $('#groupMemberListPopout').fadeIn(animation_duration);
         dragElement(newElement);
         $('#groupMemberListPopoutClose').off('click').on('click', function () {

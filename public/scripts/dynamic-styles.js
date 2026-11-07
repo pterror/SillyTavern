@@ -9,6 +9,7 @@ let dynamicExtensionStyleSheet = null;
  * An observer that will check if any new stylesheets are added to the head
  * @type {MutationObserver}
  */
+// eslint-disable-next-line no-restricted-syntax -- watches the page from before the ban: whatever changes it is to say so
 const observer = new MutationObserver(mutations => {
     mutations.forEach(mutation => {
         if (mutation.type !== 'childList') return;

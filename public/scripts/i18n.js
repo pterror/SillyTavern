@@ -19,6 +19,7 @@ export const getCurrentLocale = () => localeFile;
  * An observer that will check if any new i18n elements are added to the document
  * @type {MutationObserver}
  */
+// eslint-disable-next-line no-restricted-syntax -- watches the page from before the ban: whatever changes it is to say so
 const observer = new MutationObserver(mutations => {
     mutations.forEach(mutation => {
         mutation.addedNodes.forEach(node => {

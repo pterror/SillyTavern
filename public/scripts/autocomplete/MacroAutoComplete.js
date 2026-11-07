@@ -235,6 +235,7 @@ function handleNodeChange(node) {
  * MutationObserver to watch for dynamically added elements with macro autocomplete attribute.
  * @type {MutationObserver}
  */
+// eslint-disable-next-line no-restricted-syntax -- watches the page from before the ban: whatever changes it is to say so
 const observer = new MutationObserver(mutations => {
     for (const mutation of mutations) {
         if (mutation.type === 'childList') {

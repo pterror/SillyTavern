@@ -1,10 +1,10 @@
 import { describe, test, expect, jest, beforeAll } from '@jest/globals';
 import { Marked } from 'marked';
-import showdown from 'showdown';
+import { EMOJIS } from '../public/scripts/emojis.js';
 import * as lezerMarkdown from '@lezer/markdown';
 import * as lezerHighlight from '@lezer/highlight';
 
-jest.unstable_mockModule('../public/lib.js', () => ({ Marked, showdown }));
+jest.unstable_mockModule('../public/lib.js', () => ({ Marked }));
 jest.unstable_mockModule('../public/live-editor-lib.js', () => ({ lezerMarkdown, lezerHighlight }));
 
 /** @type {typeof import('../public/scripts/live-editor/grammar.js')} */
@@ -34,7 +34,7 @@ const INLINE_NAMES = {
  * @returns {string[]}
  */
 function lezerConstructs(text, options) {
-    const tree = grammar.chatMarkdownParser({ emojis: showdown.helper.emojis, ...options }).parse(text);
+    const tree = grammar.chatMarkdownParser({ emojis: EMOJIS, ...options }).parse(text);
     /** @type {string[]} */
     const found = [];
     const top = tree.topNode.firstChild;

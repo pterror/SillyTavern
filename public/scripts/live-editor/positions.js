@@ -39,7 +39,7 @@ export function editPosition(event, rendered, source, clickToEdit) {
         const link = target.closest('a[href]');
         if (link && rendered.contains(link)) return null;
     }
-    if (target instanceof HTMLImageElement && !target.closest('[data-result]')) return null;
+    if (target instanceof HTMLImageElement) return null;
     return source ? sourcePosition(source, renderedOffset(rendered, event)) : 0;
 }
 

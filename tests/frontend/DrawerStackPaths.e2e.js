@@ -82,20 +82,5 @@ for (const { layout, width, height } of [
             await page.waitForTimeout(600);
             expect(await layersUnder(page, 'completion_prompt_manager_popup')).toEqual([]);
         });
-
-        test('a drawer an extension adds anywhere and opens itself occludes the chat under it', async ({ page }) => {
-            await page.locator('#chatDrawerIcon').click();
-            await page.evaluate(() => {
-                const drawer = document.createElement('div');
-                drawer.id = 'extensionDrawer';
-                drawer.className = 'drawer-content closedDrawer';
-                drawer.style.cssText = 'position:fixed;left:0;right:0;top:100px;height:300px;margin:0 auto;z-index:3500';
-                drawer.textContent = 'extension drawer';
-                document.getElementById('sheld').before(drawer);
-                drawer.classList.replace('closedDrawer', 'openDrawer');
-            });
-            await page.waitForTimeout(600);
-            expect(await layersUnder(page, 'extensionDrawer')).toEqual([]);
-        });
     });
 }

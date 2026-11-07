@@ -123,6 +123,7 @@ export class SlashCommandBrowser {
         }
         parent.append(this.dom);
 
+        // eslint-disable-next-line no-restricted-syntax -- watches the page from before the ban: whatever changes it is to say so
         this.mo = new MutationObserver(muts => {
             if (muts.find(mut => Array.from(mut.removedNodes).find(it => it === this.dom || it.contains(this.dom)))) {
                 this.mo.disconnect();

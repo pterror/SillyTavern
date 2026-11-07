@@ -1,5 +1,4 @@
 import {
-    showdown,
     moment,
     DOMPurify,
     hljs,
@@ -189,9 +188,7 @@ import {
     onEntityTagsChanged,
 } from './scripts/tags.js';
 import { checkOpenRouterAuth, initSecrets, readSecretState } from './scripts/secrets.js';
-import { markdownExclusionExt } from './scripts/showdown-exclusion.js';
 import { reloadMarkedProcessor } from './scripts/marked-processor.js';
-import { markdownUnderscoreExt } from './scripts/showdown-underscore.js';
 import { NOTE_MODULE_NAME, initAuthorsNote, metadata_keys, shouldWIAddPrompt } from './scripts/authors-note.js';
 import { registerPromptManagerMigration } from './scripts/PromptManager.js';
 import { initLogprobs, saveLogprobsForActiveMessage } from './scripts/logprobs.js';
@@ -247,10 +244,9 @@ import { initDynamicStyles } from './scripts/dynamic-styles.js';
 import { initInputMarkdown } from './scripts/input-md-formatting.js';
 import { autosizeTextareas, initAutosizeTextareas } from './scripts/autosize-textareas.js';
 import { AbortReason } from './scripts/util/AbortReason.js';
-import { initDrawerStack, isDrawerCovered, frontmostOf, raiseDrawer, drawerStackChanged, bringChatForward, restoreLayerOrder } from './scripts/drawer-stack.js';
+import { initDrawerStack, isDrawerCovered, frontmostOf, raiseDrawer, drawerStackChanged, drawerLayersChanged, addLayer, bringChatForward, restoreLayerOrder } from './scripts/drawer-stack.js';
 import { initSystemPrompts } from './scripts/sysprompt.js';
 import { ToolManager } from './scripts/tool-calling.js';
-import { addShowdownPatch } from './scripts/util/showdown-patch.js';
 import { applyBrowserFixes } from './scripts/browser-fixes.js';
 import { initServerHistory } from './scripts/server-history.js';
 import { initSettingsSearch } from './scripts/setting-search.js';
@@ -384,6 +380,7 @@ toastr.options = {
 };
 
 toastr.subscribe(function (args) {
+    drawerLayersChanged();
     if (args.state !== 'visible') {
         return;
     }
@@ -411,9 +408,6 @@ toastr.subscribe(function (args) {
 });
 
 export const characterGroupOverlay = new BulkEditOverlay();
-
-/** @type {import('showdown').Converter} */
-let converter;
 
 // array for prompt token calculations
 
@@ -997,25 +991,7 @@ async function getClientVersion() {
 }
 
 export function reloadMarkdownProcessor() {
-    converter = new showdown.Converter({
-        emoji: true,
-        literalMidWordUnderscores: true,
-        parseImgDimensions: true,
-        tables: true,
-        underline: true,
-        simpleLineBreaks: true,
-        strikethrough: true,
-        disableForced4SpacesIndentedSublists: true,
-        extensions: [markdownUnderscoreExt()],
-    });
-
-    // Inject the dinkus extension after creating the converter
-    // Maybe move this into power_user init?
-    converter.addExtension(markdownExclusionExt(), 'exclusion');
-
     reloadMarkedProcessor(power_user.markdown_escape_strings, substituteParams);
-
-    return converter;
 }
 
 export function getCurrentChatId() {
@@ -1274,7 +1250,6 @@ async function firstLoadInit() {
     registerPromptManagerMigration();
     initDomHandlers();
     initStandaloneMode();
-    addShowdownPatch(showdown);
     addDOMPurifyHooks();
     initMessageMediaVolume();
     reloadMarkdownProcessor();
@@ -11143,6 +11118,7 @@ jQuery(async function () {
 
     const nameHeading = document.querySelector('#rm_button_selected_ch h2');
     const showRenameButton = () => $('#character_rename_inline').toggle(getSelectionState().type === 'character' && Boolean(nameHeading?.textContent));
+    // eslint-disable-next-line no-restricted-syntax -- watches the page from before the ban: whatever changes it is to say so
     if (nameHeading) new MutationObserver(showRenameButton).observe(nameHeading, { childList: true, characterData: true, subtree: true });
     eventSource.on(event_types.CHAT_CHANGED, showRenameButton);
     $(document).on('click', '#character_rename_inline', () => beginInlineCharacterRename());
@@ -11955,7 +11931,7 @@ jQuery(async function () {
             newElement.addClass('draggable');
             newElement.find('.drag-grabber').attr('id', `zoomFor_${charname}header`);
 
-            $('body').append(newElement);
+            addLayer(newElement[0]);
             newElement.fadeIn(animation_duration);
             const zoomedAvatarImgElement = $(`.zoomed_avatar[forChar="${charname}"] img`);
             if (messageElement.attr('is_user') == 'true' || (messageElement.attr('is_system') == 'true' && !isValidCharacter)) {

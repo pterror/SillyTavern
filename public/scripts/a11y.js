@@ -129,6 +129,7 @@ function setAccessibilityObserver() {
     applyA11yRules(document.body);
 
     // Setup observer for dynamic content
+    // eslint-disable-next-line no-restricted-syntax -- watches the page from before the ban: whatever changes it is to say so
     const observer = new MutationObserver((mutationsList) => {
         for (const mutation of mutationsList) {
             if (mutation.type === 'childList') {

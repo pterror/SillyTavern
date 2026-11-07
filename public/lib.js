@@ -11,7 +11,6 @@ import css from '@adobe/css-tools';
 import Bowser from 'bowser';
 import DiffMatchPatch from 'diff-match-patch';
 import { isProbablyReaderable, Readability } from '@mozilla/readability';
-import showdown from 'showdown';
 import { Marked } from 'marked';
 import moment from 'moment';
 import seedrandom from 'seedrandom';
@@ -33,7 +32,6 @@ export {
     DiffMatchPatch,
     Readability,
     isProbablyReaderable,
-    showdown,
     Marked,
     moment,
     seedrandom,

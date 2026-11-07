@@ -1,10 +1,9 @@
 import { describe, test, expect, jest, beforeAll } from '@jest/globals';
 import { Marked } from 'marked';
-import showdown from 'showdown';
+import { EMOJIS } from '../public/scripts/emojis.js';
 
 jest.unstable_mockModule('../public/lib.js', () => ({
     Marked,
-    showdown,
     DOMPurify: { sanitize: (html) => html },
 }));
 jest.unstable_mockModule('../public/script.js', () => ({
@@ -40,7 +39,6 @@ beforeAll(async () => {
     ({ messageFormatting } = await import('../public/scripts/message-formatting.js'));
 });
 
-const EMOJIS = showdown.helper.emojis;
 
 const renderedCases = [
     ['alone', ':smile:', '<p>😄</p>'],
@@ -76,7 +74,7 @@ describe('renderMarkdown', () => {
         expect(String(renderMarkdown(input)).trim()).toBe(expected);
     });
 
-    test('every name in showdown\'s emoji set renders as showdown renders it', () => {
+    test('every name in the emoji set renders as its emoji', () => {
         const names = Object.keys(EMOJIS);
         expect(names.length).toBeGreaterThan(1000);
         const wrong = names.filter((name) => String(renderMarkdown(`:${name}:`)).trim() !== `<p>${EMOJIS[name]}</p>`);

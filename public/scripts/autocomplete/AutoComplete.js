@@ -1,3 +1,4 @@
+import { addLayer } from '../drawer-stack.js';
 import { power_user } from '../power-user.js';
 import { debounce, escapeRegex } from '../utils.js';
 import { AutoCompleteOption } from './AutoCompleteOption.js';
@@ -513,7 +514,7 @@ export class AutoComplete {
             }
             this.dom.append(frag);
             this.updatePosition();
-            this.getLayer().append(this.domWrap);
+            addLayer(this.domWrap, this.getLayer());
         } else {
             this.domWrap.remove();
         }
@@ -528,7 +529,7 @@ export class AutoComplete {
         if (!this.isShowingDetails && this.isReplaceable) return this.detailsWrap.remove();
         this.detailsDom.innerHTML = '';
         this.detailsDom.append(this.selectedItem?.renderDetails() ?? 'NO ITEM');
-        this.getLayer().append(this.detailsWrap);
+        addLayer(this.detailsWrap, this.getLayer());
         this.updateDetailsPositionDebounced();
     }
 
@@ -702,6 +703,7 @@ export class AutoComplete {
             this.clone.style.position = 'fixed';
             this.clone.style.visibility = 'hidden';
             document.body.append(this.clone);
+            // eslint-disable-next-line no-restricted-syntax -- watches the page from before the ban: whatever changes it is to say so
             const mo = new MutationObserver(muts => {
                 if (muts.find(it => Array.from(it.removedNodes).includes(this.textarea))) {
                     this.clone.remove();

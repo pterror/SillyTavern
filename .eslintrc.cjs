@@ -1,4 +1,11 @@
 const pageTokenCounters = 'getTokenCountAsync|getPromptTokenCountAsync|getTokenCount|getTokenCountWithAnswer|countTokensOpenAI|countTokensOpenAIAsync|getTextTokens';
+const noPageDomWatching = [
+    {
+        selector: "NewExpression[callee.name='MutationObserver']",
+        message: 'The page does not watch its own DOM: the code that changes something tells what depends on it (a call or an event). Observers left from before that are marked with an eslint-disable comment.',
+    },
+];
+
 const noPageTokenCounting = [
     {
         selector: `CallExpression[callee.name=/^(${pageTokenCounters})$/]`,
@@ -94,6 +101,7 @@ module.exports = {
                         message: "saveSettingsDebounced() requires at least one settings key — pass the key(s) you modified, e.g. saveSettingsDebounced('power_user').",
                     },
                     ...noPageTokenCounting,
+                    ...noPageDomWatching,
                 ],
             },
         },

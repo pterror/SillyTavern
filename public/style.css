@@ -5479,7 +5479,80 @@ h5 {
     grid-template-columns: 340px auto;
 }
 
+/* The layout jQuery UI's autocomplete, slider and sortable need to work at all; the look is ours. */
+.ui-helper-hidden-accessible {
+    border: 0;
+    clip: rect(0 0 0 0);
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    padding: 0;
+    position: absolute;
+    width: 1px;
+}
+
+.ui-menu {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: block;
+    outline: 0;
+}
+
+.ui-menu .ui-menu-item {
+    margin: 0;
+    cursor: pointer;
+}
+
+.ui-menu .ui-menu-item-wrapper {
+    position: relative;
+    padding: 3px 1em 3px .4em;
+}
+
+.ui-slider {
+    position: relative;
+    text-align: left;
+}
+
+.ui-slider .ui-slider-handle {
+    position: absolute;
+    z-index: 2;
+    cursor: pointer;
+    touch-action: none;
+}
+
+.ui-slider .ui-slider-range {
+    position: absolute;
+    z-index: 1;
+    display: block;
+}
+
+.ui-slider-horizontal {
+    height: .8em;
+}
+
+.ui-slider-horizontal .ui-slider-handle {
+    top: -.3em;
+}
+
+.ui-slider-horizontal .ui-slider-range {
+    top: 0;
+    height: 100%;
+}
+
+.ui-slider-horizontal .ui-slider-range-min {
+    left: 0;
+}
+
+.ui-sortable-handle {
+    touch-action: none;
+}
+
 body .ui-autocomplete {
+    position: absolute;
+    top: 0;
+    left: 0;
+    cursor: default;
     max-height: 300px;
     overflow-y: auto;
 }
@@ -5546,38 +5619,12 @@ body .ui-widget button {
     font-size: inherit;
 }
 
-body .ui-widget-header {
-    background: none;
-    border: none;
-    color: inherit;
-    font-weight: normal;
-}
-
-body .ui-widget-header a {
-    color: inherit;
-}
-
 body .ui-widget-content a {
     color: inherit;
 }
 
-body .ui-tabs.ui-widget-content {
-    border: none !important;
-    background: none;
-}
-
-body .ui-tabs .ui-tabs-panel {
-    background: none;
-    border: none !important;
-    border-radius: 0;
-    box-shadow: none;
-    backdrop-filter: none;
-    padding: 0;
-}
-
 body .ui-state-default,
-body .ui-widget-content .ui-state-default,
-body .ui-widget-header .ui-state-default {
+body .ui-widget-content .ui-state-default {
     border: none;
     background: none;
     color: inherit;
@@ -5586,13 +5633,10 @@ body .ui-widget-header .ui-state-default {
 
 body .ui-state-hover,
 body .ui-widget-content .ui-state-hover,
-body .ui-widget-header .ui-state-hover,
 body .ui-state-focus,
 body .ui-widget-content .ui-state-focus,
-body .ui-widget-header .ui-state-focus,
 body .ui-state-active,
-body .ui-widget-content .ui-state-active,
-body .ui-widget-header .ui-state-active {
+body .ui-widget-content .ui-state-active {
     border: none;
     background-color: var(--white30a);
     color: inherit;
@@ -5628,8 +5672,7 @@ body .ui-widget-content li {
     transition: opacity var(--animation-duration-2x);
 }
 
-body .ui-widget-content li:hover,
-body .ui-widget-content li.ui-tabs-active {
+body .ui-widget-content li:hover {
     opacity: 1;
 }
 
@@ -5867,7 +5910,7 @@ a:hover {
     cursor: pointer;
 }
 
-:where(#chat .mes_text, #chat .mes_reasoning, #chat .mes_bias, .field_preview, .image_lightbox, .zoomed_avatar) img:where(:not([data-result], [data-result] *)) {
+:where(#chat .mes_text, #chat .mes_reasoning, #chat .mes_bias, .field_preview, .image_lightbox, .zoomed_avatar) img {
     cursor: pointer;
 }
 

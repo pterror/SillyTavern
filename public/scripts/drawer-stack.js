@@ -475,21 +475,30 @@ export function drawerStackChanged() {
     scheduleUpdate();
 }
 
-function drawerLayersChanged() {
+/**
+ * Puts a layer (a floating panel, a picker, a dragged-out avatar) on the page. Layers come only this way or with an
+ * event the stack listens to, so it knows them without watching the page; a removed layer needs no call, as its size
+ * watcher reports it.
+ * @param {HTMLElement} layer
+ * @param {Element} [parent]
+ */
+export function addLayer(layer, parent = document.body) {
+    parent.append(layer);
+    drawerLayersChanged();
+}
+
+/** For a layer the page doesn't add itself (toastr's container). */
+export function drawerLayersChanged() {
+    if (!sizeWatcher) return;
     found = null;
     observeLayers();
     drawerStackChanged();
 }
 
-let classWatcher = /** @type {MutationObserver | null} */ (null);
 let sizeWatcher = /** @type {ResizeObserver | null} */ (null);
 function observeLayers() {
-    if (!classWatcher || !sizeWatcher) return;
-    classWatcher.disconnect();
+    if (!sizeWatcher) return;
     sizeWatcher.disconnect();
-    for (const el of orderedLayers().filter(el => el.matches(DRAWER_SELECTOR))) {
-        classWatcher.observe(el, { attributes: true, attributeFilter: ['class'] });
-    }
     for (const el of allLayers()) sizeWatcher.observe(el);
 }
 
@@ -500,12 +509,8 @@ function observeLayers() {
 export function initDrawerStack(visibilityChanged, front) {
     onVisibilityChanged = visibilityChanged;
     onFront = el => (front && el.matches(STACK_DRAWER_SELECTOR) ? front(el) : raiseDrawer(el));
-    classWatcher = new MutationObserver(drawerStackChanged);
     sizeWatcher = new ResizeObserver(() => { if (!frame) drawerStackChanged(); });
     observeLayers();
-    const movingDivs = document.getElementById('movingDivs');
-    if (movingDivs) new MutationObserver(drawerLayersChanged).observe(movingDivs, { childList: true });
-    new MutationObserver(drawerLayersChanged).observe(document.body, { childList: true });
     $(document).on('autocompleteopen autocompleteclose select2:open select2:close', drawerLayersChanged);
     document.addEventListener(OVERLAYS_CHANGED_EVENT, drawerLayersChanged);
     document.addEventListener('toggle', drawerLayersChanged, true);

@@ -1,4 +1,5 @@
-import { DOMPurify, showdown } from '../lib.js';
+import { DOMPurify } from '../lib.js';
+import { EMOJIS } from './emojis.js';
 import { renderMarkdownLiteralTags } from './marked-processor.js';
 import { refreshCharInfoTabDimming } from './char-info-tab-dimming.js';
 import { keepViewState, openEditorLayer } from './editor-layer.js';
@@ -271,7 +272,7 @@ async function mountFieldEditor(id) {
         if (holder.ended) return;
         const editor = await mountLiveEditor(textarea, {
             render: text => FIELDS[id].render(text, values.valueOf),
-            grammar: { emojis: showdown.helper.emojis, dialogueQuotes: isGreeting },
+            grammar: { emojis: EMOJIS, dialogueQuotes: isGreeting },
             contentClass: [...(preview?.classList ?? [])].filter(c => PREVIEW_TEXT_CLASSES.has(c)).join(' '),
             macros: {
                 values,

@@ -1,4 +1,4 @@
-import { showdown } from '../lib.js';
+import { EMOJIS } from './emojis.js';
 import { MacroValues } from './macro-values.js';
 import { macrosIn } from './safe-macros.js';
 import { getFocusedField, loadLiveEditor, mountLiveEditor } from './live-editor/registry.js';
@@ -53,7 +53,7 @@ function chatEditorOptions(chatDeps, target) {
     return {
         render: text => messageFormatting(text, nameNow(), isSystem, isUser, messageIdNow(), {}, isReasoning),
         grammar: {
-            emojis: showdown.helper.emojis,
+            emojis: EMOJIS,
             dialogueQuotes: !isSystem,
             encodeTags: !isSystem && Boolean(power_user.encode_tags),
         },

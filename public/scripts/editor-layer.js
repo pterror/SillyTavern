@@ -1,3 +1,5 @@
+import { addLayer } from './drawer-stack.js';
+
 /**
  * @typedef {object} EditorLayer
  * @property {HTMLElement} element
@@ -53,7 +55,7 @@ export function openEditorLayer(content, { closeTitle, closeIcon = 'fa-minimize'
         close();
     });
 
-    (document.getElementById('movingDivs') ?? document.body).appendChild(layer);
+    addLayer(layer, document.getElementById('movingDivs') ?? document.body);
     return { element: layer, close };
 }
 

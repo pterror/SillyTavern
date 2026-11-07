@@ -120,6 +120,7 @@ class PresetManager {
                 this.applyOrder();
             }
         }, 100);
+        // eslint-disable-next-line no-restricted-syntax -- watches the page from before the ban: whatever changes it is to say so
         const observer = new MutationObserver(() => applyDebounced());
         observer.observe($(this.select).get(0), { childList: true });
     }

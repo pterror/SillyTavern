@@ -91,6 +91,7 @@ export class AudioPlayer {
     }
 
     setupDOMObserver() {
+        // eslint-disable-next-line no-restricted-syntax -- watches the page from before the ban: whatever changes it is to say so
         this.observer = new MutationObserver((mutations) => {
             for (const mutation of mutations) {
                 for (const node of mutation.removedNodes) {

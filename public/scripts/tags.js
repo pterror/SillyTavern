@@ -5710,6 +5710,7 @@ function initTagsDrawerUnderlayClip() {
     }
 
     registerUnderlayClip(update);
+    // eslint-disable-next-line no-restricted-syntax -- watches the page from before the ban: whatever changes it is to say so
     new MutationObserver(track).observe(icon, { attributes: true, attributeFilter: ['class'] });
     const resizeObserver = new ResizeObserver(() => icon.classList.contains('up') && update());
     resizeObserver.observe(panel);
@@ -5723,6 +5724,7 @@ export function initTags() {
     createTagInput('#tagInput', '#tagList', { tagOptions: { removable: true } });
     createTagInput('#groupTagInput', '#groupTagList', { tagOptions: { removable: true } });
 
+    // eslint-disable-next-line no-restricted-syntax -- watches the page from before the ban: whatever changes it is to say so
     new MutationObserver(updateTagsDivPreview).observe(document.getElementById('tagList'), { childList: true });
     updateTagsDivPreview();
 

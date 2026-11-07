@@ -33,6 +33,7 @@ const NOT_FOCUSABLE_CONTROL_CLASS = 'not_focusable';
 const DISABLED_CONTROL_CLASS = 'disabled';
 
 /** @type {MutationObserver} */
+// eslint-disable-next-line no-restricted-syntax -- watches the page from before the ban: whatever changes it is to say so
 const observer = new MutationObserver(mutations => {
     mutations.forEach(mutation => {
         if (mutation.type === 'childList') {

@@ -228,6 +228,7 @@ export function mountLiveEditor(textarea, options = {}) {
     };
     textarea.addEventListener('input', onOutsideInput, true);
 
+    // eslint-disable-next-line no-restricted-syntax -- watches the page from before the ban: whatever changes it is to say so
     const observer = new MutationObserver((mutations) => {
         applyLook(view, readLook(textarea));
         if (mutations.some(m => m.attributeName === 'placeholder')) {
@@ -236,6 +237,7 @@ export function mountLiveEditor(textarea, options = {}) {
     });
     observer.observe(textarea, { attributes: true, attributeFilter: ['style', 'class', 'placeholder'] });
 
+    // eslint-disable-next-line no-restricted-syntax -- watches the page from before the ban: whatever changes it is to say so
     const tooltipWatcher = new MutationObserver(() => {
         watchTooltips();
         view.dom.dispatchEvent(new Event(OVERLAYS_CHANGED_EVENT, { bubbles: true }));

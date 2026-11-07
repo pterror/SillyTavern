@@ -11,9 +11,6 @@ export function initImageLightbox(show) {
  * @param {JQuery.ClickEvent} event
  */
 export function onLightboxImageClick(event) {
-    if (this.closest('[data-result]')) {
-        return;
-    }
     event.stopPropagation();
     showLightbox(this.src, this.alt || '');
 }

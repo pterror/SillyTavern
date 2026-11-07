@@ -1,3 +1,4 @@
+import { addLayer } from './drawer-stack.js';
 import { RANGE_FIELDS, SEARCH_FIELDS, canonicalSearchField, cleanRanges } from './character-view.js';
 
 let t = (/** @type {TemplateStringsArray} */ strings, /** @type {any[]} */ ...values) => String.raw({ raw: strings }, ...values);
@@ -9,7 +10,7 @@ const FIELD_NAMES = () => ({
     description: t`Description`,
     personality: t`Personality`,
     scenario: t`Scenario`,
-    greeting: t`First message`,
+    greeting: t`Greeting`,
     alternate: t`Other greetings`,
     example: t`Example messages`,
     notes: t`Creator's notes`,
@@ -233,7 +234,7 @@ function openFieldPicker(anchor, onPick, { special = false } = {}) {
  * @param {HTMLElement} focus
  */
 function showPopover(popover, anchor, focus) {
-    document.body.append(popover);
+    addLayer(popover);
     const box = anchor.getBoundingClientRect();
     popover.style.left = `${Math.max(4, Math.min(box.left, window.innerWidth - popover.offsetWidth - 4))}px`;
     popover.style.top = `${box.bottom + 4}px`;

@@ -1,10 +1,8 @@
 import { describe, test, expect, jest, beforeAll } from '@jest/globals';
 import { Marked } from 'marked';
-import showdown from 'showdown';
 
 jest.unstable_mockModule('../public/lib.js', () => ({
     Marked,
-    showdown,
     DOMPurify: { sanitize: (html) => html },
 }));
 jest.unstable_mockModule('../public/script.js', () => ({

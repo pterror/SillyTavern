@@ -1,4 +1,5 @@
-import { Marked, showdown } from '../lib.js';
+import { Marked } from '../lib.js';
+import { EMOJIS } from './emojis.js';
 
 const identitySubstitute = (text) => text;
 
@@ -190,7 +191,6 @@ const htmlBlockExt = {
     }],
 };
 
-const EMOJIS = showdown.helper.emojis;
 const emojiShortcodeRegex = /^:([^\s:]+):/;
 const emojiCandidateRegex = /:([^\s:]+):/g;
 

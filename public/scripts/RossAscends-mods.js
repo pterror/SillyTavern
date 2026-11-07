@@ -79,6 +79,7 @@ const countTokensWhenShownDebounced = debounce(countCharTokensIfShown, debounce_
 const countTokensWhenShownSoonDebounced = debounce(countCharTokensIfShown, debounce_timeout.short);
 const checkStatusDebounced = debounce(RA_checkOnlineStatus, debounce_timeout.short);
 
+// eslint-disable-next-line no-restricted-syntax -- watches the page from before the ban: whatever changes it is to say so
 const observer = new MutationObserver(function (mutations) {
     mutations.forEach(function (mutation) {
         if (!(mutation.target instanceof HTMLElement)) {
