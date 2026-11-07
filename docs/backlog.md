@@ -125,6 +125,7 @@ State and other
 - Trigger marks: shown for entries activated by any visible message, not only the latest reply. "Lorebook entries used for this reply" is redesigned with worldbuilding.
 - Group chats: characters answering one at a time is slow and awkward; the narrator approach makes it hard to see who speaks, with no pictures. A group chat model that's good at both. "ideally need full unification of group chats with regular chats" (owner, 2026-09-15T15:16:27).
 - Message styling per thing, cascading (character, group, chat, user, device) through the same levels as settings and looks, in place of dialogue colorizing.
+- A lorebook's name is edited where it's shown: the editor header's name is a field, committing it is the rename (one request, `/rename`'s answer), and the rename button goes, for every book; on a card's own book it renames the card's book. Owner approved 2026-11-08.
 - Lorebook names: trimmed on create but not on rename. Ordering global lorebooks needs a real order, not a leading-space hack.
 - Embedded lorebooks identical to their card's book still sit in the lorebook list; once confirmed identical, they're removed.
 - Shared code lives in the page's folder: `src/library-engine.js` imports `public/scripts/hash-utils.js`. Code both sides use belongs in a shared package.
