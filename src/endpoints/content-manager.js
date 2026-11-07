@@ -698,7 +698,7 @@ async function downloadJannyCharacter(uuid) {
             console.error('Janny failed to download', downloadResult);
         }
     } else {
-        console.error('Janny returned error', result.statusText, await result.text());
+        console.error('Janny returned error', result.status, result.statusText);
     }
 
     throw new Error('Failed to download character');

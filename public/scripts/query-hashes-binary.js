@@ -1,10 +1,8 @@
-const HASH_QUERY_SEARCH_BACKEND_NAMES = { 1: 'tantivy', 2: 'native', 3: 'wasm', 4: 'unavailable' };
-
 /** @typedef {{id:string, isGroup:boolean, version:number|null, favHash:number, tagIdsHash:number, contentHash:number, date_added:number, create_date:number|null, date_last_chat:number, chat_size:number, data_size:number, chat:string|null}} HashRow */
 
 /**
  * @param {ArrayBuffer} buffer
- * @returns {{seq: number, token: string|null, total: number|undefined, totalApprox: boolean, hidden: number|undefined, hiddenApprox: boolean, searchBackend: string|undefined, more: boolean, cursor: string|undefined, hashRows: HashRow[], favHashRows: HashRow[]|undefined}}
+ * @returns {{seq: number, token: string|null, total: number|undefined, totalApprox: boolean, hidden: number|undefined, hiddenApprox: boolean, more: boolean, cursor: string|undefined, hashRows: HashRow[], favHashRows: HashRow[]|undefined}}
  */
 export function deserializeQueryHashesBinary(buffer) {
     const view = new DataView(buffer);
@@ -18,8 +16,6 @@ export function deserializeQueryHashesBinary(buffer) {
     const hasCursor = (headerFlags & 0b1000) !== 0;
     const hasHidden = (headerFlags & 0b10000) !== 0;
     const hasFavs = (headerFlags & 0b100000) !== 0;
-    const searchBackendCode = view.getUint8(offset); offset += 1;
-    const searchBackend = HASH_QUERY_SEARCH_BACKEND_NAMES[searchBackendCode];
     const seq = view.getFloat64(offset, true); offset += 8;
     const total = view.getFloat64(offset, true); offset += 8;
 
@@ -85,5 +81,5 @@ export function deserializeQueryHashesBinary(buffer) {
 
     const favHashRows = hasFavs ? readRows() : undefined;
 
-    return { seq, token, total: hasTotal ? total : undefined, totalApprox, searchBackend, hashRows, hidden, hiddenApprox, more, cursor, favHashRows };
+    return { seq, token, total: hasTotal ? total : undefined, totalApprox, hashRows, hidden, hiddenApprox, more, cursor, favHashRows };
 }

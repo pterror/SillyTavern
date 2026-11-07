@@ -88,9 +88,8 @@ removed again (10-29) for this reason; what replaces it for users is decided whe
   (SillyTavern Launcher, Pinokio, StabilityMatrix) call them. They become thin: in a launcher install they hand
   off to the launcher; in a plain checkout they run it as a version, as now (dependencies, the page and engine fetched
   or built, then start), the server running pending migrations itself.
-- The start script's probes for better-sqlite3 and inotify, and its "falls back to Fuse.js search" message,
-  predate the engine: what's still needed is decided while building the archives (each native module either ships
-  prebuilt or goes).
+- The start script's probe for inotify: whether it's still needed is decided while building the archives (each
+  native module either ships prebuilt or goes).
 - Remote access (`Remote-Link.cmd`) and the config file become launcher settings shown in the page.
 
 ## Running elsewhere, and reaching it

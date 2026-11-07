@@ -38,18 +38,16 @@ function createFakeLocalforageInstance({ name }) {
 
 installBrowserStorage({ quota: 1e9 });
 
-const SEARCH_BACKEND_CODES = { tantivy: 1, native: 2, wasm: 3, unavailable: 4 };
 
 /**
- * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string}} params
+ * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[]}} params
  * @returns {ArrayBuffer}
  */
-function encodeQueryHashes({ seq, token, total, approxTotal, hashRows, searchBackend, more = false, cursor }) {
+function encodeQueryHashes({ seq, token, total, approxTotal, hashRows, more = false, cursor }) {
     const hasTotal = typeof total === 'number';
     const cursorBytes = cursor ? Buffer.byteLength(cursor, 'utf8') : 0;
-    const searchBackendCode = SEARCH_BACKEND_CODES[searchBackend] ?? 0;
 
-    let totalSize = 1 + 1 + 8 + 8 + 2;
+    let totalSize = 1 + 8 + 8 + 2;
     for (const row of hashRows) {
         const idBytes = Buffer.byteLength(row.id, 'utf8');
         const chatBytes = row.chat ? Buffer.byteLength(row.chat, 'utf8') : 0;
@@ -64,7 +62,6 @@ function encodeQueryHashes({ seq, token, total, approxTotal, hashRows, searchBac
 
     const headerFlags = (hasTotal ? 0b01 : 0) | (hasTotal && approxTotal ? 0b10 : 0) | (more ? 0b100 : 0) | (cursor ? 0b1000 : 0);
     buf.writeUInt8(headerFlags, offset); offset += 1;
-    buf.writeUInt8(searchBackendCode, offset); offset += 1;
     buf.writeDoubleLE(seq ?? 0, offset); offset += 8;
     buf.writeDoubleLE(hasTotal ? total : 0, offset); offset += 8;
     buf.writeUInt16LE(hashRows.length, offset); offset += 2;
@@ -147,8 +144,8 @@ function addGroup(group) {
     return group;
 }
 
-function queueQuery({ ids = [], total = undefined, approxTotal = false, seq, token = null, searchBackend = undefined, unchanged = false, more = false, cursor = undefined, refused = undefined }) {
-    server.queryResponses.push({ ids, total, approxTotal, seq, token, searchBackend, unchanged, more, cursor, refused });
+function queueQuery({ ids = [], total = undefined, approxTotal = false, seq, token = null, unchanged = false, more = false, cursor = undefined, refused = undefined }) {
+    server.queryResponses.push({ ids, total, approxTotal, seq, token, unchanged, more, cursor, refused });
 }
 
 function jsonResponse(data) {
@@ -177,12 +174,11 @@ async function fakeFetch(url, init) {
         if (!body.want.includes('hashes')) {
             const payload = { seq: next.seq, token: next.token };
             if (next.total !== undefined) payload.total = next.approxTotal ? `~${next.total}` : next.total;
-            if (next.searchBackend !== undefined) payload.searchBackend = next.searchBackend;
             if (next.cursor !== undefined) payload.cursor = next.cursor;
             return jsonResponse(payload);
         }
         const buffer = encodeQueryHashes({
-            seq: next.seq, token: next.token, total: next.total, approxTotal: next.approxTotal, searchBackend: next.searchBackend,
+            seq: next.seq, token: next.token, total: next.total, approxTotal: next.approxTotal,
             hashRows: next.ids.map(hashRowFor), more: next.more, cursor: next.cursor,
         });
         return {
@@ -467,13 +463,13 @@ describe('query()', () => {
         const store = makeStore([]);
         const repo = new CharacterRepository(store);
         const a = addCharacter({ avatar: 'a', name: 'A' });
-        queueQuery({ ids: ['a'], total: 1, seq: 5, searchBackend: 'tantivy' });
+        queueQuery({ ids: ['a'], total: 1, seq: 5 });
 
         const filter = { search: 'tsundere', fav: true };
         const sort = { field: 'random', seed: 42 };
         const result = await repo.query(filter, sort, 2, 50, ['rows', 'total']);
 
-        expect(result).toEqual({ rows: [hashModeCharacter(a)], total: 1, seq: 5, token: null, searchBackend: 'tantivy' });
+        expect(result).toEqual({ rows: [hashModeCharacter(a)], total: 1, seq: 5, token: null });
         const [url, init] = global.fetch.mock.calls[0];
         expect(url).toBe('/api/characters/query');
         expect(init.method).toBe('POST');

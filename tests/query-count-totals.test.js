@@ -129,7 +129,7 @@ async function binaryTotal(filter) {
     const view = new DataView(await response.arrayBuffer());
     const flags = view.getUint8(0);
     expect(flags & 0b01).toBe(0b01);
-    return { total: view.getFloat64(1 + 1 + 8, true), approx: (flags & 0b10) !== 0 };
+    return { total: view.getFloat64(1 + 8, true), approx: (flags & 0b10) !== 0 };
 }
 
 /**
@@ -229,7 +229,7 @@ describe('/query search totals on a small set', () => {
         if (!binary) return (await response.json()).total;
         const view = new DataView(await response.arrayBuffer());
         const flags = view.getUint8(0);
-        const total = view.getFloat64(1 + 1 + 8, true);
+        const total = view.getFloat64(1 + 8, true);
         return (flags & 0b10) !== 0 ? `~${total}` : total;
     }
 

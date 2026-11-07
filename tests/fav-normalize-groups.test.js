@@ -105,7 +105,7 @@ function columnAndDigestFor(expected) {
 function decodeHashRows(buffer) {
     const view = new DataView(buffer);
     const decoder = new TextDecoder();
-    let offset = 1 + 1 + 8 + 8;
+    let offset = 1 + 8 + 8;
     const rowCount = view.getUint16(offset, true); offset += 2;
     const rows = [];
     for (let i = 0; i < rowCount; i++) {

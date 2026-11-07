@@ -58,6 +58,16 @@ module.exports = {
         },
         {
             files: ['src/**/*.js'],
+            excludedFiles: ['**/*.test.js'],
+            rules: {
+                'no-restricted-syntax': ['error', {
+                    selector: "CallExpression[callee.object.name='console'] > :matches(Identifier[name=/^(models|modelIds|modelResponse)$/], CallExpression[callee.property.name='map'], AwaitExpression, MemberExpression[object.name='request'][property.name='body'])",
+                    message: 'The server logs what went wrong, never what an API or a request sent: no model lists, response bodies or request bodies in the log.',
+                }],
+            },
+        },
+        {
+            files: ['src/**/*.js'],
             excludedFiles: ['**/*.test.js', 'src/character-card-parser.js', 'src/image-identity.js'],
             rules: {
                 'no-restricted-imports': ['error', {

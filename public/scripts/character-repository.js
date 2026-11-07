@@ -35,7 +35,6 @@ import { deserializeQueryHashesBinary } from './query-hashes-binary.js';
  * @property {number|string} [total]
  * @property {number} rev
  * @property {string|null} [token]
- * @property {string} [searchBackend]
  * @property {number|string} [hidden]
  * @property {string} [cursor]
  * @property {Array<{type: 'character', item: Character}|{type: 'group', item: object}>} [favs]
@@ -525,7 +524,7 @@ export class CharacterRepository {
         const [rows, favs] = await this.#resolveHashRowSets([kept.hashRows, kept.favHashRows], includeGroups);
         /** @type {CharacterQueryResult} */
         const result = { seq: kept.seq, token: kept.token, rows };
-        for (const field of /** @type {const} */ (['total', 'hidden', 'searchBackend', 'cursor'])) {
+        for (const field of /** @type {const} */ (['total', 'hidden', 'cursor'])) {
             if (kept[field] !== undefined) result[field] = kept[field];
         }
         resultHashRows.set(result, kept.hashRows);
@@ -583,7 +582,7 @@ export class CharacterRepository {
             if (hashRows) {
                 /** @type {import('./query-result-cache.js').QueryCacheEntry} */
                 const entry = { hashRows, token: result.token, seq: result.seq };
-                for (const field of /** @type {const} */ (['total', 'hidden', 'searchBackend', 'cursor'])) {
+                for (const field of /** @type {const} */ (['total', 'hidden', 'cursor'])) {
                     if (result[field] !== undefined) entry[field] = result[field];
                 }
                 const favHashRows = resultFavHashRows.get(result);
@@ -655,7 +654,6 @@ export class CharacterRepository {
         const result = { seq: decoded.seq, token: decoded.token };
         if (decoded.total !== undefined) result.total = decoded.totalApprox ? `~${decoded.total}` : decoded.total;
         if (decoded.hidden !== undefined) result.hidden = decoded.hiddenApprox ? `~${decoded.hidden}` : decoded.hidden;
-        if (decoded.searchBackend !== undefined) result.searchBackend = decoded.searchBackend;
         if (decoded.more) result.more = true;
         if (decoded.cursor !== undefined) result.cursor = decoded.cursor;
         const [rows, favs] = await this.#resolveHashRowSets([decoded.hashRows, decoded.favHashRows], includeGroups);

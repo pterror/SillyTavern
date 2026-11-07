@@ -136,7 +136,7 @@ async function serverGroupHashes() {
     const buffer = await response.arrayBuffer();
     const view = new DataView(buffer);
     const decoder = new TextDecoder();
-    let offset = 1 + 1 + 8 + 8;
+    let offset = 1 + 8 + 8;
     const rowCount = view.getUint16(offset, true); offset += 2;
     const result = new Map();
     for (let i = 0; i < rowCount; i++) {

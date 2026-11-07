@@ -23,7 +23,6 @@ async function stubQuery(page) {
         const { characterRepository, CharacterQueryError } = await import('/scripts/character-repository.js');
         window['__stub'] = {
             pageTotal: () => 0,
-            backend: 'tantivy',
             rejectSort: null,
             calls: [],
             pageSizes: [],
@@ -36,7 +35,6 @@ async function stubQuery(page) {
                 throw new CharacterQueryError('rejected by test', { status: 400, reason: 'invalid-sort-field' });
             }
             const result = { seq: 0, token: null, rows: [], total: stub.pageTotal(filter) };
-            if (String(filter.search ?? '').trim()) result.searchBackend = stub.backend;
             return result;
         };
     });
@@ -124,38 +122,6 @@ test.describe('character list count', () => {
             await page.locator(`#rm_characters_block .rm_tag_filter [id="${TAG_ID}"]`).click();
 
             await expect.poll(() => navigatorText(page)).toBe('1-5 .. 5');
-        });
-
-        test('the search-backend indicator and its toast follow the list page\'s searchBackend', async ({ page }) => {
-            const indicator = page.locator('#character_search_backend_indicator');
-            const changedToasts = page.locator('.toast').filter({ hasText: 'Search backend changed' });
-            await page.evaluate(() => {
-                window['__stub'].pageTotal = () => 2;
-                window['__stub'].backend = 'native';
-                window['__stub'].pageSizes = [];
-            });
-            await setSearchTerm(page, 'zq');
-
-            await expect(indicator).toBeVisible();
-            await expect(indicator).toHaveClass(/\bwarning\b/);
-            await expect(page.locator('.toast-warning').filter({ hasText: 'Search backend changed' })).toHaveCount(1);
-            expect(await page.evaluate(() => window['__stub'].pageSizes)).not.toContain(500);
-
-            const callsBefore = await page.evaluate(() => window['__stub'].calls.length);
-            await requeryPage(page);
-            await expect.poll(() => page.evaluate(() => window['__stub'].calls.length)).toBeGreaterThan(callsBefore);
-            await expect(indicator).toBeVisible();
-            await expect(changedToasts).toHaveCount(1);
-
-            await page.evaluate(() => { window['__stub'].backend = 'unavailable'; });
-            await requeryPage(page);
-            await expect(indicator).toHaveClass(/\berror\b/);
-            await expect(page.locator('.toast-error').filter({ hasText: 'Search backend changed' })).toHaveCount(1);
-
-            await page.evaluate(() => { window['__stub'].backend = 'tantivy'; });
-            await requeryPage(page);
-            await expect(indicator).toBeHidden();
-            await expect(changedToasts).toHaveCount(2);
         });
 
         test('an approximate page total is shown with its ~', async ({ page }) => {

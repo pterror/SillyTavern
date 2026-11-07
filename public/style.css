@@ -3920,17 +3920,6 @@ select option[disabled]:not(:checked) {
     background: transparent;
 }
 
-#character_search_backend_indicator {
-    display: flex;
-    align-items: center;
-    font-size: 1.1em;
-    cursor: help;
-}
-
-#character_search_backend_indicator.error {
-    color: #ff3b3b;
-}
-
 #rm_button_search {
     font-size: 1.1em;
     margin: 0 2px;

@@ -253,10 +253,8 @@ performance:
   # content-identity duplicate check above) off the main thread. Confirmed genuinely CPU-bound, not I/O-bound
   # (main thread measured at ~87% CPU with libuv workers idle during a real scan pass), and confirmed to
   # scale close to linearly with worker count on real corpus files (2026-08 local-import worker-pool
-  # investigation - 5.6-6.4x speedup measured for the isolated pipeline at higher pool sizes). Every sqlite
-  # read/write in this feature stays on the main thread regardless of this setting - see
-  # local-import-worker.js's own header on why worker-thread sqlite access isn't safe here (no WAL journal
-  # mode/busy_timeout configured, and a whole scan pass runs inside one write transaction).
+  # investigation - 5.6-6.4x speedup measured for the isolated pipeline at higher pool sizes). Every store
+  # read/write in this feature stays on the main thread regardless of this setting.
   #
   # 0 (the default) means "don't hardcode a number here - auto-detect from this machine's core count instead",
   # same shape as node's own `os.cpus().length`-driven defaults elsewhere; the auto-detected value itself is

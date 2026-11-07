@@ -10,7 +10,6 @@ const INDEX_KEY = '__index__';
  * @property {number} seq
  * @property {number|string} [total]
  * @property {number|string} [hidden]
- * @property {string} [searchBackend]
  * @property {string} [cursor]
  * @property {object[]} [favHashRows]
  */

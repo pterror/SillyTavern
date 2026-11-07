@@ -2164,7 +2164,6 @@ router.post('/status', async function (request, statusResponse) {
                         }
                     }
 
-                    console.debug('Available Fireworks models:', models.map(m => m.id));
                     return statusResponse.send({ data: models });
                 } else {
                     console.warn('Fireworks models endpoint failed:', response.status, response.statusText);
@@ -2189,7 +2188,6 @@ router.post('/status', async function (request, statusResponse) {
 
             try {
                 const models = await fetchGoogleModels(modelsUrl);
-                console.info('Available Google AI Studio models:', models.map(m => m.id));
                 return statusResponse.send({ data: models });
             } catch (error) {
                 if (error instanceof GoogleModelsHttpError) {
@@ -2266,7 +2264,6 @@ router.post('/status', async function (request, statusResponse) {
                 const modelId = /** @type {any} */ (modelResponse)?.model;
                 if (!modelId) {
                     console.warn('Azure status check succeeded but could not find a model ID in the response.');
-                    console.debug('Azure Response Body:', modelResponse);
                     // Keep a benign success to avoid UX disruption in the UI
                     return statusResponse.send({ data: [] });
                 }
@@ -2318,7 +2315,6 @@ router.post('/status', async function (request, statusResponse) {
                         ? data.result.map(model => ({ ...model, id: model.name }))
                         : [];
 
-                    console.debug('Available Cloudflare Workers AI models:', models.map(m => m.id));
                     return statusResponse.send({ data: models });
                 } else {
                     console.warn('Cloudflare Workers AI models endpoint failed:', response.status, response.statusText);
@@ -2384,30 +2380,8 @@ router.post('/status', async function (request, statusResponse) {
 
             if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.OPENROUTER && Array.isArray(data?.data)) {
                 rememberOpenRouterModels(data.data);
-                let models = [];
-
-                data.data.forEach(model => {
-                    const context_length = model.context_length;
-                    const tokens_dollar = Number(1 / (1000 * model.pricing?.prompt));
-                    const tokens_rounded = (Math.round(tokens_dollar * 1000) / 1000).toFixed(0);
-                    models[model.id] = {
-                        tokens_per_dollar: tokens_rounded + 'k',
-                        context_length: context_length,
-                    };
-                });
-
-                console.info('Available OpenRouter models:', models);
-            } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.MISTRALAI) {
-                // no-op
-            } else {
-                const models = data?.data;
-
-                if (Array.isArray(models)) {
-                    const modelIds = models.filter(x => x && typeof x === 'object').map(x => x.id).sort();
-                    console.info('Available models:', modelIds);
-                } else {
-                    console.warn('Chat Completion endpoint did not return a list of models.');
-                }
+            } else if (request.body.chat_completion_source !== CHAT_COMPLETION_SOURCES.MISTRALAI && !Array.isArray(data?.data)) {
+                console.warn('Chat Completion endpoint did not return a list of models.');
             }
         } else {
             console.error('Chat Completion status check failed. Either Access Token is incorrect or API endpoint is down.');

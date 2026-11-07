@@ -1962,8 +1962,6 @@ router.post('/changes', async function (request, response) {
     }
 });
 
-const HASH_QUERY_SEARCH_BACKEND_CODES = { tantivy: 1, native: 2, wasm: 3, unavailable: 4 };
-
 /**
  * @param {any} row
  */
@@ -2012,19 +2010,18 @@ function writeHashRow(buf, offset, row) {
 }
 
 /**
- * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string, hidden?:number, approxHidden?:boolean, more?:boolean, cursor?:string, favHashRows?:object[]}} params
+ * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], hidden?:number, approxHidden?:boolean, more?:boolean, cursor?:string, favHashRows?:object[]}} params
  * @returns {Buffer}
  */
-export function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, searchBackend, hidden, approxHidden = false, more = false, cursor, favHashRows }) {
+export function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, hidden, approxHidden = false, more = false, cursor, favHashRows }) {
     const hasTotal = typeof total === 'number';
     const hasCursor = typeof cursor === 'string' && cursor.length > 0;
     const cursorBytes = hasCursor ? Buffer.byteLength(cursor, 'utf8') : 0;
     const hasHidden = typeof hidden === 'number';
     const hasFavs = Array.isArray(favHashRows);
-    const searchBackendCode = HASH_QUERY_SEARCH_BACKEND_CODES[searchBackend] ?? 0;
 
     const tokenBytes = token ? Buffer.byteLength(token, 'utf8') : 0;
-    let totalSize = 1 + 1 + 8 + 8 + 2;
+    let totalSize = 1 + 8 + 8 + 2;
     for (const row of hashRows) totalSize += hashRowSize(row);
     totalSize += 2 + tokenBytes;
     if (hasCursor) totalSize += 2 + cursorBytes;
@@ -2040,7 +2037,6 @@ export function serializeQueryHashesBinary({ seq, token, total, approxTotal, has
     const headerFlags = (hasTotal ? 0b01 : 0) | (hasTotal && approxTotal ? 0b10 : 0) | (more ? 0b100 : 0) | (hasCursor ? 0b1000 : 0)
         | (hasHidden ? 0b10000 : 0) | (hasFavs ? 0b100000 : 0);
     buf.writeUInt8(headerFlags, offset); offset += 1;
-    buf.writeUInt8(searchBackendCode, offset); offset += 1;
     buf.writeDoubleLE(seq ?? 0, offset); offset += 8;
     buf.writeDoubleLE(hasTotal ? total : 0, offset); offset += 8;
     buf.writeUInt16LE(hashRows.length, offset); offset += 2;
@@ -2068,7 +2064,7 @@ export function serializeQueryHashesBinary({ seq, token, total, approxTotal, has
 
 /**
  * @param {import("express").Response} response
- * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string}} params
+ * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[]}} params
  */
 function sendHashQueryResponse(response, params) {
     response.set('Content-Type', 'application/octet-stream');
@@ -2584,7 +2580,6 @@ router.post('/duplicate', validateAvatarUrlMiddleware, async function (request, 
 
         if (!request.body.avatar_url) {
             console.warn('avatar URL not found in request body');
-            console.debug(request.body);
             return response.sendStatus(400);
         }
 

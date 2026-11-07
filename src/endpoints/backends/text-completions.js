@@ -817,7 +817,6 @@ ollama.post('/download', async function (request, response) {
             return response.status(500).send({ error: true });
         }
 
-        console.debug('Ollama pull response:', await fetchResponse.json());
         return response.send({ ok: true });
     } catch (error) {
         console.error(error);

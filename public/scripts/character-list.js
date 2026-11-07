@@ -506,7 +506,6 @@ export async function printCharacters(fullRefresh = false) {
                             total: saveCharactersTotal,
                             totalApprox: pageTotalApprox,
                         };
-                        if (result.searchBackend !== undefined) showSearchBackend(result.searchBackend);
                         if (result.favs) showHotswapFavs(result.favs);
                         ajaxParams.success({ rows: pageEntities, total: result.total });
                     })
@@ -1115,60 +1114,12 @@ async function syncCharacters({ silent = false, skipPrint = false, keepListPosit
     await printCharacters(!keepListPosition);
 }
 
-/** @type {Record<string, { icon: string, tone: 'warning' | 'error', tooltip: string } | null>} */
-const SEARCH_BACKEND_INDICATOR = {
-    tantivy: null,
-    get native() {
-        return {
-            icon: 'fa-triangle-exclamation',
-            tone: 'warning',
-            tooltip: t`Character search is running on the SQLite fallback engine because the faster tantivy search backend isn't available on this install - same ranking and 'label:query' filter support as usual, just slower. See the server console for details.`,
-        };
-    },
-    get wasm() {
-        return {
-            icon: 'fa-triangle-exclamation',
-            tone: 'warning',
-            tooltip: t`Character search is running on the WebAssembly SQLite engine, two fallback tiers below the primary tantivy backend - same ranking and 'label:query' filter support as usual, just slower. See the server console for details.`,
-        };
-    },
-    get unavailable() {
-        return {
-            icon: 'fa-circle-exclamation',
-            tone: 'error',
-            tooltip: t`Character search is unavailable - none of the tantivy, native SQLite, or WebAssembly SQLite search backends could be loaded on this install. See the server console for details.`,
-        };
-    },
-};
-
 /**
  * @param {number|string|undefined} total
  * @returns {boolean}
  */
 function isApproxTotal(total) {
     return typeof total === 'string' && total.startsWith('~');
-}
-
-/** @type {string | null} */
-let lastKnownSearchBackend = null;
-
-/**
- * @param {string} searchBackend
- */
-function showSearchBackend(searchBackend) {
-    const indicatorInfo = SEARCH_BACKEND_INDICATOR[searchBackend] ?? null;
-    const indicator = $('#character_search_backend_indicator');
-    indicator.toggle(Boolean(indicatorInfo));
-    if (indicatorInfo) {
-        indicator
-            .attr('class', `fa-solid ${indicatorInfo.icon} ${indicatorInfo.tone}`)
-            .attr('title', indicatorInfo.tooltip);
-    }
-    if (searchBackend !== lastKnownSearchBackend && indicatorInfo) {
-        const toastFn = indicatorInfo.tone === 'error' ? toastr.error : toastr.warning;
-        toastFn(indicatorInfo.tooltip, t`Search backend changed`, { timeOut: 0, extendedTimeOut: 0 });
-    }
-    lastKnownSearchBackend = searchBackend;
 }
 
 export function initCharacterSearch() {

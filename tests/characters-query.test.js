@@ -660,7 +660,7 @@ describe('POST /api/characters/query', () => {
  */
 function hashResponseToken(buffer) {
     const view = new DataView(buffer);
-    let offset = 1 + 1 + 8 + 8;
+    let offset = 1 + 8 + 8;
     const rowCount = view.getUint16(offset, true); offset += 2;
     for (let i = 0; i < rowCount; i++) {
         const isGroup = (view.getUint8(offset) & 0b1) !== 0;
@@ -862,7 +862,6 @@ describe('POST /api/characters/query - filter.search (design doc §5.1/§5)', ()
         const body = await response.json();
         expect(body.rows.map(r => r.avatar)).toEqual(['Vampire.png']);
         expect(body.total).toBe(1);
-        expect(body.searchBackend).toBeUndefined();
     });
 
     test('a fav toggle through setCharacterFav() (not the card file) is reflected by favorites-only search, caught up by incremental maintenance rather than the explicit full-rebuild endpoint', async () => {
