@@ -171,13 +171,16 @@ describe('library search on the engine', () => {
 });
 
 describe('word pairs on the engine', () => {
-    test('built over a store made without them, in the background, answering the same before and after', async () => {
-        await build(60);
+    test('kept from the store\'s first write: every write keeps its pairs, with nothing built afterwards, answering as a store without them', async () => {
         const phrase = async () => (/** @type {any} */ (await library.query({ search: '"dark knight"', sortField: 'search', limit: 100, includeGroups: true }))).rows.map((/** @type {any} */ r) => r.id).sort();
-        const before = await phrase();
-        expect(await library.pairsBuilt()).toBe(false);
-        await library.buildPairs(0);
+        await build(60);
+        const without = await phrase();
+        await library.close();
+        fs.rmSync(path.join(tempDir, 'store'), { recursive: true, force: true });
+        library = await lib.LibraryEngine.open(engine, path.join(tempDir, 'store'));
+        await library.keepPairs();
+        await build(60);
         expect(await library.pairsBuilt()).toBe(true);
-        expect(await phrase()).toEqual(before);
+        expect(await phrase()).toEqual(without);
     });
 });

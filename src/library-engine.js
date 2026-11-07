@@ -332,10 +332,6 @@ export class LibraryEngine {
         this.writing = new Map();
         this.tags = new LibraryTags(this);
         this.books = new WorldInfoEngine(this);
-        /** @type {Promise<void> | null} */
-        this.pairsRun = null;
-        this.pairsAgain = false;
-        this.pairsStopped = false;
         this.batches = 0;
         this.cardCommits = new GroupedCommits(store);
         /** @type {Promise<import('./actor-ids.js').NextIds> | null} */
@@ -378,8 +374,6 @@ export class LibraryEngine {
     }
 
     async close() {
-        this.pairsStopped = true;
-        await this.pairsRun;
         await this.tags.stopPass();
         return this.store.close();
     }
@@ -392,37 +386,12 @@ export class LibraryEngine {
     }
 
     /**
-     * @param {number} [pauseMs]
+     * Turns word pairs on for a store that holds no text yet: from then on every write keeps its pairs, so there is
+     * never anything to build afterwards.
      * @returns {Promise<void>}
      */
-    async buildPairs(pauseMs) {
-        const mode = await this.store.pairsMode();
-        if (mode !== PAIRS.indexing && mode !== PAIRS.indexed) await this.store.commit([{ kind: 'searchPairs', on: true }]);
-        return this.runPairs(pauseMs);
-    }
-
-    /**
-     * @param {number} [pauseMs]
-     * @returns {Promise<void>}
-     */
-    runPairs(pauseMs = 10) {
-        if (this.pairsRun) {
-            this.pairsAgain = true;
-            return this.pairsRun;
-        }
-        this.pairsRun = (async () => {
-            try {
-                do {
-                    this.pairsAgain = false;
-                    while (!this.pairsStopped && await this.store.pairsStep()) {
-                        await new Promise(resolve => setTimeout(resolve, pauseMs));
-                    }
-                } while (this.pairsAgain && !this.pairsStopped);
-            } finally {
-                this.pairsRun = null;
-            }
-        })();
-        return this.pairsRun;
+    async keepPairs() {
+        await this.store.commit([{ kind: 'searchPairs', on: true }]);
     }
 
     /**

@@ -110,6 +110,7 @@ async function openStore(root, handle) {
     const lib = await LibraryEngine.open(engineOf(), dir);
     try {
         if (made) {
+            await lib.keepPairs();
             await lib.tags.markSeedPending();
             await markUpstreamImportPending(lib);
         }
@@ -140,7 +141,6 @@ export async function resumeStoreWork(directoriesList, also) {
             const store = await userStore(d);
             const { lib } = store;
             lib.tags.startPass();
-            void lib.buildPairs();
             await lib.tags.importSettingsTags(d);
             if (also) await also(store, d);
         } catch (err) {
