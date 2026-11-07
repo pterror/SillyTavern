@@ -1,12 +1,14 @@
 import { beforeAll, beforeEach, describe, expect, jest, test } from '@jest/globals';
 import { readFileSync } from 'node:fs';
-import * as cheerio from 'cheerio';
+import { Window } from 'happy-dom';
 import Handlebars from 'handlebars';
 
-global.$ = cheerio.load('');
-
-/** @type {cheerio.CheerioAPI|null} */
-let view = null;
+const window = new Window();
+const jquery = { exports: /** @type {any} */ ({}) };
+new Function('window', 'module', readFileSync(new URL('../public/lib/jquery-3.5.1.min.js', import.meta.url), 'utf8'))(window, jquery);
+/** @type {JQueryStatic} */
+const view = jquery.exports;
+global.$ = view;
 
 jest.unstable_mockModule('../public/lib.js', () => ({
     DiffMatchPatch: jest.fn(),
@@ -33,16 +35,14 @@ jest.unstable_mockModule('../public/scripts/popup.js', () => ({
     Popup: class {
         /** @param {string} template */
         constructor(template) {
-            view = cheerio.load(template);
-            global.$ = view;
+            window.document.body.innerHTML = template;
             const control = () => ({ style: {}, addEventListener: jest.fn() });
             this.dlg = {
                 querySelector: (selector) => {
-                    const node = view(selector)[0];
                     if (['#diffPrevPrompt', '#copyPromptToClipboard', '#showRawPrompt'].includes(selector)) {
                         return control();
                     }
-                    return node ?? null;
+                    return window.document.querySelector(selector);
                 },
             };
         }
@@ -102,8 +102,7 @@ const chatSet = (tokenizer = answer('Gemma / Gemini', 'local')) => ({
 });
 
 beforeEach(() => {
-    view = null;
-    global.$ = cheerio.load('');
+    window.document.body.innerHTML = '';
 });
 
 describe('the prompt view lists the stored parts', () => {

@@ -82,7 +82,7 @@ jest.unstable_mockModule('../public/script.js', () => ({
     _snapshotMessages: jest.fn(),
     requestChatOpen: jest.fn(),
     takeChatOpenAnswer: jest.fn((_owner, answer) => answer),
-    chatOpenSendKeys: jest.fn(() => []),
+    chatOpenAsk: jest.fn(() => ({})),
     sendSystemMessage: jest.fn(),
     printMessages: jest.fn(),
     substituteParams: jest.fn(),
@@ -150,6 +150,7 @@ jest.unstable_mockModule('../public/scripts/character-field-editor.js', () => ({
 
 jest.unstable_mockModule('../public/scripts/character-list.js', () => ({
     getCharacters: jest.fn(),
+    printCharactersDebounced: jest.fn(),
     showCharacterSyncFailedToast: jest.fn(),
     SYNC_REQUEST_TIMEOUT_MS: 60000,
     queryWithSortFallback: async (filter, sort, request) => ({ sort, result: await request(sort) }),

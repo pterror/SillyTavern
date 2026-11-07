@@ -3,10 +3,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-jest.unstable_mockModule('../src/endpoints/characters.js', () => ({
-    readCardContent: jest.fn(),
-}));
-
 /** @type {import('../src/endpoints/chats.js')} */
 let chats;
 

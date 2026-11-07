@@ -90,7 +90,7 @@ jest.unstable_mockModule('../public/script.js', () => ({
     _snapshotMessages: jest.fn(),
     requestChatOpen: jest.fn(),
     takeChatOpenAnswer: jest.fn((_owner, answer) => answer),
-    chatOpenSendKeys: jest.fn(() => []),
+    chatOpenAsk: jest.fn(() => ({})),
     sendSystemMessage: jest.fn(),
     printMessages: jest.fn(),
     substituteParams: jest.fn(),
@@ -159,6 +159,7 @@ jest.unstable_mockModule('../public/scripts/character-field-editor.js', () => ({
 const unsupportedSortWarnings = [];
 jest.unstable_mockModule('../public/scripts/character-list.js', () => ({
     getCharacters: jest.fn(),
+    printCharactersDebounced: jest.fn(),
     queryWithSortFallback: async (filter, sort, request) => {
         if (!(sort?.field === 'search' && !filter.search)) {
             try {
