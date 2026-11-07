@@ -32,13 +32,20 @@ export async function markUpstreamImportPending(lib) {
 }
 
 /**
+ * @param {import('./library-engine.js').LibraryEngine} lib
+ */
+export async function upstreamImportPending(lib) {
+    const [pending] = await lib.store.meta([UPSTREAM_META]);
+    return pending !== null && pending !== undefined;
+}
+
+/**
  * @param {import('./user-stores.js').UserStore} store
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<UpstreamImportReport | null>}
  */
 export async function resumeUpstreamImport(store, directories) {
-    const [pending] = await store.lib.store.meta([UPSTREAM_META]);
-    if (pending === null || pending === undefined) return null;
+    if (!(await upstreamImportPending(store.lib))) return null;
     const report = await importUpstreamData(store, directories);
     await store.lib.store.commit([{ kind: 'metaValue', key: UPSTREAM_META }]);
     return report;
@@ -106,25 +113,7 @@ async function runImport(store, directories) {
         await paced();
     }
 
-    for (const file of jsonFiles(directories.worlds)) {
-        const where = rel(file);
-        const name = path.parse(file).name;
-        try {
-            const content = JSON.parse(await fs.promises.readFile(file, 'utf8'));
-            if (!content || typeof content !== 'object' || !('entries' in content)) {
-                report.notImported.push({ file: where, why: 'not a World Info book (no entries)' });
-            } else if (await store.lib.books.exists(name)) {
-                report.present.push({ file: where, why: `a book named "${name}" is in the store already` });
-            } else if (await store.lib.books.write(name, content, actor) === 'card copy') {
-                report.notImported.push({ file: where, why: 'a copy of a character\'s embedded lorebook; the character keeps its own' });
-            } else {
-                report.imported.worlds++;
-            }
-        } catch (err) {
-            report.notImported.push({ file: where, why: `unreadable book file: ${messageOf(err)}` });
-        }
-        await paced();
-    }
+    await importWorlds(store, directories, report, actor, paced);
 
     /**
      * @param {string} file
@@ -210,6 +199,49 @@ async function runImport(store, directories) {
     if (report.notImported.length) {
         console.warn(`[upstream-import] ${report.notImported.length} file(s) were NOT imported:\n${report.notImported.map(n => `  ${n.file}: ${n.why}`).join('\n')}`);
     }
+    return report;
+}
+
+/**
+ * @param {import('./user-stores.js').UserStore} store
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {UpstreamImportReport} report
+ * @param {import('./world-info-engine.js').Actor} actor
+ * @param {() => Promise<void>} paced
+ */
+async function importWorlds(store, directories, report, actor, paced) {
+    for (const file of jsonFiles(directories.worlds)) {
+        const where = path.relative(directories.root, file).split(path.sep).join('/');
+        const name = path.parse(file).name;
+        try {
+            const content = JSON.parse(await fs.promises.readFile(file, 'utf8'));
+            if (!content || typeof content !== 'object' || !('entries' in content)) {
+                report.notImported.push({ file: where, why: 'not a World Info book (no entries)' });
+            } else if (await store.lib.books.exists(name)) {
+                report.present.push({ file: where, why: `a book named "${name}" is in the store already` });
+            } else if (await store.lib.books.write(name, content, actor) === 'card copy') {
+                report.notImported.push({ file: where, why: 'a copy of a character\'s embedded lorebook; the character keeps its own' });
+            } else {
+                report.imported.worlds++;
+            }
+        } catch (err) {
+            report.notImported.push({ file: where, why: `unreadable book file: ${messageOf(err)}` });
+        }
+        await paced();
+    }
+}
+
+/**
+ * @param {import('./user-stores.js').UserStore} store
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<UpstreamImportReport>}
+ */
+export async function importUpstreamWorlds(store, directories) {
+    /** @type {UpstreamImportReport} */
+    const report = { imported: { groups: 0, worlds: 0, chats: 0, groupChats: 0, messages: 0, backgrounds: 0, personas: 0 }, present: [], notImported: [] };
+    await importWorlds(store, directories, report, { user: store.handle, session: newSessionKey() }, async () => {});
+    if (report.imported.worlds > 0) console.info(`[upstream-import] ${directories.root}: imported ${report.imported.worlds} book(s) before the settings.`);
+    if (report.notImported.length) console.warn(`[upstream-import] ${report.notImported.length} book file(s) were NOT imported:\n${report.notImported.map(n => `  ${n.file}: ${n.why}`).join('\n')}`);
     return report;
 }
 

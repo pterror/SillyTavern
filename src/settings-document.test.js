@@ -256,3 +256,54 @@ test('a write that selects another preset takes its values of the fields the ser
     await settingsStore.writeSettingsKeys(directories, { oai_settings: settingsStore.readAllSettings(directories).oai_settings });
     assert.equal(document.settings.oai_settings.temp_openai, 0.7);
 });
+
+test('upstream books go in before upstream settings are converted, so the books they choose are kept; a name that is no book is left out, warned', async () => {
+    const { userStore } = await import('./user-stores.js');
+    const { upstreamImportPending } = await import('./upstream-import.js');
+    const directories = seedUser('upstream-books');
+    const upstream = structuredClone(SHIPPED);
+    upstream.world_info_settings.world_info = { globalSelect: ['Lore', 'Missing'] };
+    upstream.power_user.persona_data = { 'me.png': { name: 'Me', description: '', lorebook: 'Lore', connections: [] }, 'you.png': { name: 'You', description: '', lorebook: 'Missing', connections: [] } };
+    fs.writeFileSync(path.join(directories.root, 'settings.json'), JSON.stringify(upstream));
+    fs.writeFileSync(path.join(directories.worlds, 'Lore.json'), JSON.stringify({ entries: { 0: { uid: 0, key: ['x'], content: 'x' } } }));
+    const { lib } = await userStore(directories, 'upstream-books');
+    assert.equal(await upstreamImportPending(lib), true);
+    /** @type {string[]} */
+    const warned = [];
+    const warn = console.warn;
+    console.warn = (/** @type {unknown[]} */ ...args) => { warned.push(args.map(String).join(' ')); };
+    try {
+        await openSettingsDocument(directories, 'upstream-books');
+    } finally {
+        console.warn = warn;
+    }
+    const settings = settingsStore.readAllSettings(directories);
+    assert.deepEqual(settings.world_info_settings.world_info, { globalSelect: ['Lore'] });
+    assert.equal(settings.power_user.persona_data['me.png'].lorebook, 'Lore');
+    assert.equal(settings.power_user.persona_data['you.png'].lorebook, '');
+    assert.deepEqual(warned.filter(w => w.includes('Missing')), [
+        '[settings] upstream-books: world_info_settings.world_info.globalSelect names "Missing", which is no lorebook; left out',
+        '[settings] upstream-books: persona "you.png": its lorebook "Missing" is no lorebook; left out',
+    ]);
+    await reopen(directories, 'upstream-books');
+    assert.deepEqual(settingsStore.readAllSettings(directories).world_info_settings.world_info, { globalSelect: ['Lore'] });
+});
+
+test('a save choosing books keeps those that are books, and shows what it kept', async () => {
+    const { userStore } = await import('./user-stores.js');
+    const directories = seedUser('chooses');
+    await openSettingsDocument(directories, 'chooses');
+    const { lib } = await userStore(directories, 'chooses');
+    await lib.books.write('Here', { entries: {} });
+    const settings = settingsStore.readAllSettings(directories);
+    const pending = settingsStore.writeSettingsKeys(directories, { 'world_info_settings.world_info': { globalSelect: ['Nowhere', 'Here'] } });
+    assert.deepEqual(settingsStore.readAllSettings(directories).world_info_settings.world_info.globalSelect, ['Nowhere', 'Here']);
+    await pending;
+    assert.deepEqual(settingsStore.readAllSettings(directories).world_info_settings.world_info, { globalSelect: ['Here'] });
+    settings.power_user.persona_data = { 'me.png': { name: 'Me', description: '', lorebook: 'Here', connections: [] } };
+    await settingsStore.writeNamedSettings(directories, { power_user: settings.power_user });
+    await reopen(directories, 'chooses');
+    const back = settingsStore.readAllSettings(directories);
+    assert.deepEqual(back.world_info_settings.world_info, { globalSelect: ['Here'] });
+    assert.equal(back.power_user.persona_data['me.png'].lorebook, 'Here');
+});

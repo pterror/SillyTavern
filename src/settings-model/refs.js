@@ -1,5 +1,4 @@
 import { TYPE } from '../library-codes.js';
-import { bookKey } from '../world-info-keys.js';
 import { PRESET_PART_LISTS } from './sampler-presets.js';
 import { CAPABILITY_SLOTS } from './capabilities.js';
 
@@ -37,7 +36,6 @@ export const REF_VALUES = Object.freeze({
         instruct: TYPE.template, context: TYPE.template, sysprompt: TYPE.template, 'reasoning-template': TYPE.template,
     }),
     [TYPE.modelTemplateBinding]: Object.freeze({ instruct: TYPE.template, context: TYPE.template }),
-    [TYPE.persona]: Object.freeze({ lorebook: TYPE.book }),
 });
 
 export const REF_ARRAYS = Object.freeze({
@@ -55,11 +53,3 @@ export const REF_LISTS = Object.freeze({
     [TYPE.regexPreset]: Object.freeze({ 0: TYPE.regexScript, 1: TYPE.regexScript, 2: TYPE.regexScript }),
     [TYPE.quickReply]: Object.freeze({ 0: TYPE.quickReplySet, 1: TYPE.quickReplySet }),
 });
-
-/**
- * @param {number} type
- * @param {string} name
- */
-export function refKey(type, name) {
-    return type === TYPE.book ? bookKey(name) : name;
-}

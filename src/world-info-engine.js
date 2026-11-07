@@ -516,8 +516,25 @@ export class WorldInfoEngine {
     }
 
     /**
+     * @param {bigint} book
+     * @returns {Promise<import('./settings-documents.js').BookChooser[]>}
+     */
+    async choosers(book) {
+        /** @type {import('./settings-documents.js').BookChooser[]} */
+        const found = [];
+        let after;
+        for (;;) {
+            const page = await this.store.worldRead('choosers', { book, after, limit: 1000 });
+            pushAll(found, page.choosers);
+            if (!page.more) break;
+            after = found[found.length - 1].holder;
+        }
+        return found;
+    }
+
+    /**
      * @param {string} name
-     * @returns {Promise<{ characters: bigint[], trees: bigint[] } | null>}
+     * @returns {Promise<{ characters: bigint[], trees: bigint[], choosers: import('./settings-documents.js').BookChooser[] } | null>}
      */
     delete(name) {
         const key = bookKey(name);
@@ -541,10 +558,12 @@ export class WorldInfoEngine {
                     after = page.changes[page.changes.length - 1].id;
                 }
             }
+            const choosers = await this.choosers(found.id);
+            for (const c of choosers) records.push({ kind: 'bookUnchoose', holder: c.holder, slot: c.slot, book: found.id });
             const s = await this.stored(found.id, true);
             pushAll(records, await this.eraseRecords(s));
             await this.store.commit(records);
-            return { characters: changed, trees: [...trees] };
+            return { characters: changed, trees: [...trees], choosers };
         });
     }
 

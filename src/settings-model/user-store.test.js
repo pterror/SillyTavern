@@ -50,6 +50,7 @@ function everything() {
         servers: [{ label: 'kobold', url: 'http://127.0.0.1:5001', lastConnection: 5 }],
         model_templates_mappings: { 'm.gguf': { instruct: 'ChatML', context: 'ChatML' } },
     });
+    settings.world_info_settings.world_info = { globalSelect: ['Shared lore', 'Ann lore'] };
     settings.user_avatar = 'a.png';
     settings.username = 'Ann';
     settings.proxies = [{ name: 'None', url: '', password: '' }, { name: 'P', url: 'http://p', password: 'x' }];
@@ -78,6 +79,7 @@ test('a user\'s model comes back from the store as it went in: assembled, the sa
     const lib = await LibraryEngine.open(loadEngine().binding, path.join(root, 'everything'));
     opened.push(lib);
     await lib.writeCard({}, 'Bob.png', card('Bob'));
+    for (const name of ['Ann lore', 'Shared lore']) await lib.books.write(name, { entries: {} });
     const settings = everything();
     const model = importUpstream(settings, { bundles, newKey: keys() });
     const { warnings } = await writeUserModel(lib, 'default-user', model);
@@ -104,6 +106,74 @@ test('a statement at a character not in the library is kept as it came, warned',
     assert.ok(!again.warnings.some(w => w.includes('Bob.png')));
 });
 
+test('the books a model chooses are kept by id: a name that is no lorebook is left out, warned, and a rename shows', async () => {
+    const lib = await LibraryEngine.open(loadEngine().binding, path.join(root, 'choices'));
+    opened.push(lib);
+    await lib.books.write('Shared lore', { entries: {} });
+    const model = importUpstream(everything(), { bundles, newKey: keys() });
+    const { warnings, chosen } = await writeUserModel(lib, 'default-user', model);
+    assert.deepEqual(warnings.filter(w => w.includes('lore')), [
+        'world_info_settings.world_info.globalSelect names "Ann lore", which is no lorebook; left out',
+        'persona "a.png": its lorebook "Ann lore" is no lorebook; left out',
+    ]);
+    assert.deepEqual(chosen.selected, ['Shared lore']);
+    assert.deepEqual([...chosen.personas], [['a.png', '']]);
+    const [user] = await lib.ids(TYPE.user, ['default-user']);
+    const stored = (await lib.entities([user]))[0]?.values.find(v => v.field === 'o:world_info_settings.world_info');
+    assert.equal(stored, undefined, 'the selection is no setting of the user');
+    const [persona] = await lib.ids(TYPE.persona, ['a.png']);
+    assert.ok(!(await lib.entities([persona]))[0]?.values.some(v => v.field === 'lorebook'), 'nor is a lorebook a value of its persona');
+
+    assert.equal(await lib.books.rename('Shared lore', 'Renamed lore'), 'ok');
+    await lib.books.write('Ann lore', { entries: {} });
+    const back = /** @type {any} */ (await readUserModel(lib, 'default-user'));
+    assert.deepEqual(back.user.overrides['world_info_settings.world_info'], { globalSelect: ['Renamed lore'] });
+    assert.equal(back.choicesByName, false);
+    const next = structuredClone(back);
+    next.entities.find((/** @type {any} */ e) => e.type === TYPE.persona).values.lorebook = 'Ann lore';
+    next.user.overrides['world_info_settings.world_info'] = { globalSelect: ['Ann lore', 'Renamed lore', 'Ann lore'] };
+    const again = await writeUserModel(lib, 'default-user', next, { previous: back });
+    assert.deepEqual(again.warnings, []);
+    assert.deepEqual(again.chosen.selected, ['Ann lore', 'Renamed lore']);
+    const read = /** @type {any} */ (await readUserModel(lib, 'default-user'));
+    assert.equal(read.entities.find((/** @type {any} */ e) => e.type === TYPE.persona).values.lorebook, 'Ann lore');
+    assert.deepEqual(read.user.overrides['world_info_settings.world_info'], { globalSelect: ['Ann lore', 'Renamed lore'] });
+});
+
+test('a model stored with its choices by name carries over once: what names a lorebook is kept, the rest left out', async () => {
+    const lib = await LibraryEngine.open(loadEngine().binding, path.join(root, 'carried'));
+    opened.push(lib);
+    await lib.books.write('Kept lore', { entries: {} });
+    const model = importUpstream(everything(), { bundles, newKey: keys() });
+    await writeUserModel(lib, 'default-user', model);
+    const [user] = await lib.ids(TYPE.user, ['default-user']);
+    const [persona, other] = await lib.ids(TYPE.persona, ['a.png', 'b.png']);
+    assert.equal(other, null);
+    const [kept] = await lib.ids(TYPE.book, ['Kept lore']);
+    const placeholder = lib.nextId++;
+    const otherPersona = lib.nextId++;
+    await lib.store.commit([
+        { kind: 'entityCreate', entity: placeholder, type: TYPE.book, key: 'Placeholder lore', added: 0 },
+        { kind: 'jsonValue', entity: user, field: 'o:world_info_settings.world_info', json: JSON.stringify({ globalSelect: ['Kept lore', 'Gone lore'], other: 1 }) },
+        { kind: 'textValue', entity: persona, field: 'lorebook', text: String(placeholder) },
+        { kind: 'entityCreate', entity: otherPersona, type: TYPE.persona, key: 'b.png', added: 0 },
+        { kind: 'textValue', entity: otherPersona, field: 'model:defined', text: '' },
+        { kind: 'textValue', entity: otherPersona, field: 'lorebook', text: String(kept) },
+    ]);
+    const old = /** @type {any} */ (await readUserModel(lib, 'default-user'));
+    assert.equal(old.choicesByName, true);
+    assert.deepEqual(old.warnings, [`persona "a.png": its lorebook "${placeholder}" is no lorebook; left out`]);
+    const written = await writeUserModel(lib, 'default-user', old);
+    assert.deepEqual(written.warnings.filter(w => w.includes('lore')), ['world_info_settings.world_info.globalSelect names "Gone lore", which is no lorebook; left out']);
+    const back = /** @type {any} */ (await readUserModel(lib, 'default-user'));
+    assert.equal(back.choicesByName, false);
+    assert.deepEqual(back.user.overrides['world_info_settings.world_info'], { other: 1, globalSelect: ['Kept lore'] });
+    assert.deepEqual(Object.fromEntries(back.entities.filter((/** @type {any} */ e) => e.type === TYPE.persona).map((/** @type {any} */ e) => [e.key, e.values.lorebook])), { 'a.png': '', 'b.png': 'Kept lore' });
+    const values = (await lib.entities([user, persona, otherPersona])).map(e => e?.values ?? []);
+    assert.deepEqual(JSON.parse(/** @type {string} */ (values[0].find(v => v.field === 'o:world_info_settings.world_info')?.json)), { other: 1 });
+    assert.ok(!values[1].some(v => v.field === 'lorebook') && !values[2].some(v => v.field === 'lorebook'));
+});
+
 /**
  * @param {any} a
  * @param {any} b
@@ -120,6 +190,7 @@ test('the bundles\' files go into the store with the model, and assemble from th
     const lib = await LibraryEngine.open(loadEngine().binding, path.join(root, 'bundles'));
     opened.push(lib);
     await lib.writeCard({}, 'Bob.png', card('Bob'));
+    for (const name of ['Ann lore', 'Shared lore']) await lib.books.write(name, { entries: {} });
     const directories = /** @type {any} */ ({
         openAI_Settings: path.join(CONTENT, 'presets/openai'), textGen_Settings: path.join(CONTENT, 'presets/textgen'),
         novelAI_Settings: path.join(CONTENT, 'presets/novel'), koboldAI_Settings: path.join(CONTENT, 'presets/kobold'),

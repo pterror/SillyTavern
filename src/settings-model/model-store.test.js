@@ -12,7 +12,6 @@ import { presetFromUpstream } from './sampler-presets.js';
 import { profilesFromUpstream } from './connection-catalogs.js';
 import { regexPresetsFromUpstream } from './regex.js';
 import { quickReplySetFromUpstream } from './quick-replies.js';
-import { personasFromUpstream } from './personas.js';
 import { draft } from './entity-draft.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'model-store-test-'));
@@ -76,17 +75,13 @@ test('refs are stored as ids: a profile names its connection and bundles, a name
     assert.deepEqual(await readDraft(lib, TYPE.connectionProfile, 'p1'), json(profiles[0]));
 });
 
-test('ref lists, part lists of parts with lists, and a persona\'s book', async () => {
+test('ref lists, and part lists of parts with lists', async () => {
     const lib = await open('lists');
     const { presets } = regexPresetsFromUpstream([{ id: 'rp', name: 'Mine', isSelected: false, global: [{ id: 'r1' }, { id: 'r2' }], scoped: [], preset: [] }], () => 'x');
     const { set } = quickReplySetFromUpstream('Tools', { version: 2, name: 'Tools', qrList: [{ id: 1, label: 'Go', contextList: [{ set: 'Other', isChained: true }] }] });
-    const { personas } = personasFromUpstream({ persona_data: { 'a.png': { name: 'A', description: '', lorebook: 'Ann: Lore', connections: [] } } });
-    await writeDrafts(lib, [...presets, set, ...personas]);
+    await writeDrafts(lib, [...presets, set]);
     assert.deepEqual(await readDraft(lib, TYPE.regexPreset, 'rp'), json(presets[0]));
     assert.deepEqual(await readDraft(lib, TYPE.quickReplySet, 'Tools'), json(set));
-    const persona = await readDraft(lib, TYPE.persona, 'a.png');
-    assert.equal(persona?.values.lorebook, 'Ann Lore');
-    assert.notEqual((await lib.ids(TYPE.book, ['Ann Lore']))[0], null);
 });
 
 test('every write keeps its history', async () => {

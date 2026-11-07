@@ -4,8 +4,8 @@ import path from 'node:path';
 
 import express from 'express';
 import sanitize from 'sanitize-filename';
-import { readAllSettings, writeSettingsKeys } from '../settings-store.js';
-import { readUserSettings } from '../settings-reads.js';
+import { readAllSettings } from '../settings-store.js';
+import { settingsDocumentOf } from '../settings-documents.js';
 import { isPlainObject } from '../util.js';
 import { resolveCharacterWorldLink } from '../../public/scripts/character-world-link.js';
 import { engineStoreHere, requestStore, storeRoute, userStore } from '../user-stores.js';
@@ -162,7 +162,10 @@ router.post('/delete', storeRoute('deleting a World Info book', async (request, 
 
     const worldInfoName = request.body.name;
     const { lib } = await requestStore(request);
-    const deleted = await lib.books.delete(worldInfoName);
+    const { deleted, settings } = await withBookChoices(request, async () => {
+        const gone = await lib.books.delete(worldInfoName);
+        return { deleted: gone, choosers: gone?.choosers ?? [] };
+    });
     if (!deleted) {
         throw new Error(`World info file ${sanitize(`${worldInfoName}.json`)} doesn't exist.`);
     }
@@ -173,8 +176,29 @@ router.post('/delete', storeRoute('deleting a World Info book', async (request, 
         ok: true,
         characters_updated: characters.filter(Boolean).map((/** @type {any} */ k) => k.key),
         chats_updated: trees.filter(Boolean).map((/** @type {any} */ k) => (k.type === TYPE.group ? { group: k.key } : { avatar: k.key })),
+        ...settingsAnswer(request, settings),
     });
 }));
+
+/**
+ * @template {{ choosers: import('../settings-documents.js').BookChooser[] }} T
+ * @param {any} request
+ * @param {() => Promise<T>} change
+ * @returns {Promise<T & { settings: Record<string, unknown> }>}
+ */
+async function withBookChoices(request, change) {
+    const document = settingsDocumentOf(request.user.directories);
+    if (document) return document.booksChanged(change);
+    return { ...(await change()), settings: {} };
+}
+
+/**
+ * @param {any} request
+ * @param {Record<string, unknown>} settings
+ */
+function settingsAnswer(request, settings) {
+    return { settings, ...(Object.keys(settings).length ? { settings_hash: pageSettingsHash(readAllSettings(request.user.directories)) } : {}) };
+}
 
 /**
  * @param {any} request
@@ -332,11 +356,14 @@ router.post('/rename', storeRoute('renaming a World Info book', async (request, 
     if (typeof name !== 'string' || !name || typeof newName !== 'string' || !newName.trim() || name === newName) {
         return response.status(400).send({ error: 'name and a different new_name are required' });
     }
-    const directories = request.user.directories;
     const { lib } = await requestStore(request);
     /** @type {bigint[]} */
     const moved = [];
-    const renamed = await lib.books.rename(name, newName, { relink: relinkCharacters === true, moved });
+    const { renamed, settings } = await withBookChoices(request, async () => {
+        const result = await lib.books.rename(name, newName, { relink: relinkCharacters === true, moved });
+        const found = result === 'ok' ? await lib.books.find(newName) : null;
+        return { renamed: result, choosers: found?.defined ? await lib.books.choosers(found.id) : [] };
+    });
     if (renamed === 'missing') {
         return response.status(404).send({ error: `Lorebook '${name}' not found` });
     }
@@ -344,38 +371,13 @@ router.post('/rename', storeRoute('renaming a World Info book', async (request, 
         return response.status(409).send({ error: `World Info file '${newName}' already exists` });
     }
 
-    const rename = (/** @type {unknown} */ value) => value === name ? newName : value;
-    const current = readUserSettings(directories, ['world_info_settings', 'power_user.persona_data']);
-    /** @type {Record<string, unknown>} */
-    const settings = {};
-    const worldInfoSettings = isPlainObject(current.world_info_settings) ? structuredClone(current.world_info_settings) : null;
-    if (worldInfoSettings && isPlainObject(worldInfoSettings.world_info)) {
-        const worldInfo = worldInfoSettings.world_info;
-        const before = JSON.stringify(worldInfo);
-        if (Array.isArray(worldInfo.globalSelect)) worldInfo.globalSelect = [...new Set(worldInfo.globalSelect.map(rename))];
-        if (JSON.stringify(worldInfo) !== before) settings.world_info_settings = worldInfoSettings;
-    }
-    const personaData = isPlainObject(current['power_user.persona_data']) ? structuredClone(current['power_user.persona_data']) : null;
-    if (personaData) {
-        let personasChanged = false;
-        for (const persona of Object.values(personaData)) {
-            if (isPlainObject(persona) && persona.lorebook === name) {
-                persona.lorebook = newName;
-                personasChanged = true;
-            }
-        }
-        if (personasChanged) settings['power_user.persona_data'] = personaData;
-    }
-    if (Object.keys(settings).length) await writeSettingsKeys(directories, settings);
-
     const keys = moved.length ? await lib.store.libraryKeys(moved) : [];
     return response.send({
         ok: true,
         name: newName,
         characters_updated: keys.filter(Boolean).map((/** @type {any} */ k) => k.key),
         characters_failed: [],
-        settings,
-        ...(Object.keys(settings).length ? { settings_hash: pageSettingsHash(readAllSettings(directories)) } : {}),
+        ...settingsAnswer(request, settings),
     });
 }));
 

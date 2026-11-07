@@ -132,7 +132,7 @@ test('deleting a lorebook the tab\'s chat links pushes the state without it, eve
         const isState = (/** @type {any} */ f) => f?.type === 'state';
         await chats.mergeMetadata({ tree, at, set: { world_info: 'Doomed' }, unset: [], actor: { user: 'u', session } });
         expect(await frameArrives(stream.frames, isState, 1000)).toBe(false);
-        expect(await lib.books.delete('Doomed')).toEqual({ characters: [], trees: [tree] });
+        expect(await lib.books.delete('Doomed')).toEqual({ characters: [], trees: [tree], choosers: [] });
         expect(await frameArrives(stream.frames, isState)).toBe(true);
         const pushed = stream.frames.find(isState);
         expect(pushed.tree).toEqual({ avatar: 'Alice.png' });

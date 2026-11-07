@@ -306,7 +306,7 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             await books.write('D', data);
             await books.write('D2', /** @type {object} */ (await books.read('D')));
             await same('D2', json(data));
-            expect(await books.delete('D')).toEqual({ characters: [], trees: [] });
+            expect(await books.delete('D')).toEqual({ characters: [], trees: [], choosers: [] });
             expect(await books.delete('D')).toBeNull();
             expect(await books.read('D')).toBeNull();
             expect(await books.exists('D')).toBe(false);
@@ -359,7 +359,7 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             expect(scanned).toBe(6);
             expect(copies).toEqual(['Copy A', 'Copy B']);
 
-            for (const name of copies) expect(await books.delete(name)).toEqual({ characters: [], trees: [] });
+            for (const name of copies) expect(await books.delete(name)).toEqual({ characters: [], trees: [], choosers: [] });
             expect((await books.cardCopyPage()).copies).toEqual([]);
             expect((await books.list()).map(b => b.file_id)).toEqual(['Odd', 'Plain 1', 'Plain 2', 'Plain 3']);
         });
@@ -383,11 +383,11 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             const head = await library.store.chatRead('nextIds', {});
             await chats.mergeMetadata({ tree, at: null, set: { world_info: 'Lore 2' }, unset: [], actor });
             expect(await library.store.chatRead('nextIds', {})).toEqual(head);
-            expect(await books.delete('Lore 2')).toEqual({ characters: [], trees: [tree] });
+            expect(await books.delete('Lore 2')).toEqual({ characters: [], trees: [tree], choosers: [] });
             expect(await lorebook()).toBeUndefined();
             await books.write('Lore 2', { entries: {} });
             expect(await lorebook()).toBeUndefined();
-            expect(await books.delete('Lore 2')).toEqual({ characters: [], trees: [] });
+            expect(await books.delete('Lore 2')).toEqual({ characters: [], trees: [], choosers: [] });
             await chats.mergeMetadata({ tree, at: null, set: { world_info: 'Ghost' }, unset: [], actor });
             expect(await lorebook()).toBe('Ghost');
             await books.write('Ghost', { entries: {} });
@@ -401,6 +401,42 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             expect(await lorebook()).toBeNull();
             await chats.mergeMetadata({ tree, at: null, set: {}, unset: ['world_info'], actor });
             expect(await chats.metadata(/** @type {bigint} */ (tree), null)).toEqual({ other: 1 });
+        }, 120_000);
+
+        test('settings choose a book by id: its rename shows at every holder, and its delete unchooses it at every holder in the same commit', async () => {
+            const { CHOICE, chooseRecord, readChoices } = await import('../src/settings-model/book-choices.js');
+            await library.writeCard(directories, 'c.png', JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', data: { name: 'C', extensions: {} } }));
+            await library.writeGroup({ id: 'g1', name: 'G', members: ['c.png'], chat_id: 'g1', chats: ['g1'] });
+            const [character] = await library.ids(lib.TYPE.character, ['c.png']);
+            const [group] = await library.ids(lib.TYPE.group, ['g1']);
+            const [user, persona] = [library.nextId++, library.nextId++];
+            await library.store.commit([
+                { kind: 'entityCreate', entity: user, type: lib.TYPE.user, key: 'u', added: 0 },
+                { kind: 'entityCreate', entity: persona, type: lib.TYPE.persona, key: 'p.png', added: 0 },
+            ]);
+            for (const name of ['Lore', 'Other']) await books.write(name, { entries: { 0: { uid: 0, key: ['k'], content: name } } });
+            const holders = [user, persona, /** @type {bigint} */ (character), /** @type {bigint} */ (group)];
+            await library.store.commit([
+                chooseRecord(user, CHOICE.selected, ['Other', 'Lore']),
+                chooseRecord(persona, CHOICE.lorebook, ['Lore']),
+                chooseRecord(/** @type {bigint} */ (character), CHOICE.selected, ['Lore']),
+                chooseRecord(/** @type {bigint} */ (group), CHOICE.selected, ['Lore', 'Other']),
+            ]);
+            const shown = async () => [...(await readChoices(library, holders)).values()].map(slots => Object.fromEntries(slots));
+            expect(await books.rename('Lore', 'Lore 2')).toBe('ok');
+            expect(await shown()).toEqual([{ 0: ['Other', 'Lore 2'] }, { 1: ['Lore 2'] }, { 0: ['Lore 2'] }, { 0: ['Lore 2', 'Other'] }]);
+            const [id] = await library.ids(lib.TYPE.book, ['Lore 2']);
+            const deleted = await books.delete('Lore 2');
+            expect(deleted?.choosers.map(c => [c.holder, c.slot, c.type, c.key])).toEqual([
+                [user, CHOICE.selected, lib.TYPE.user, 'u'],
+                [persona, CHOICE.lorebook, lib.TYPE.persona, 'p.png'],
+                [character, CHOICE.selected, lib.TYPE.character, 'c.png'],
+                [group, CHOICE.selected, lib.TYPE.group, 'g1'],
+            ].sort((a, b) => (a[0] < b[0] ? -1 : 1)));
+            expect(await shown()).toEqual([{ 0: ['Other'] }, {}, {}, { 0: ['Other'] }]);
+            expect(await library.store.worldRead('choosers', { book: id, limit: 10 })).toEqual({ choosers: [], more: false });
+            await books.write('Lore 2', { entries: {} });
+            expect(await shown()).toEqual([{ 0: ['Other'] }, {}, {}, { 0: ['Other'] }]);
         }, 120_000);
 
         test('a large book is written and edited one entry at a time', async () => {

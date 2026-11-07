@@ -12,6 +12,11 @@ import path from 'node:path';
  * @property {(context: { avatar?: string | null, groupId?: string | null }, range: { from: string, to: string }, path: string, value: unknown) => Promise<void>} writeAt
  * @property {(context: { avatar?: string | null, groupId?: string | null }, range: { from: string, to: string }, entries: [string, unknown][]) => Promise<void>} writeAll
  * @property {(holder: string, change: { bundles?: Record<string, string | null>, set?: Record<string, unknown>, delete?: string[] }) => Promise<void>} writeLevel
+ * @property {<T extends { choosers: BookChooser[] }>(change: () => Promise<T>) => Promise<T & { settings: Record<string, unknown> }>} booksChanged
+ */
+
+/**
+ * @typedef {{ holder: bigint, slot: number, type: number | null, key: string | null }} BookChooser
  */
 
 /** @type {Map<string, OpenSettingsDocument>} */

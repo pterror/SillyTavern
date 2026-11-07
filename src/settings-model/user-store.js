@@ -1,10 +1,12 @@
 import { STATEMENT_PREFIX, TYPE } from '../library-codes.js';
 import { historyWrites } from '../entity-values.js';
 import { canonicalStringify } from '../../public/scripts/hash-utils.js';
-import { draft } from './entity-draft.js';
+import { bookKey } from '../world-info-keys.js';
+import { draft, without } from './entity-draft.js';
 import { BUNDLE_TYPES, USER_LISTS } from './refs.js';
 import { FOLLOWS_TEXT_GENERATION } from './capabilities.js';
 import { keysOf, readCatalog, readDraft, writeDrafts } from './model-store.js';
+import { CHOICE, SELECTION_FIELD, chooseRecord, readChoices, selectionOf } from './book-choices.js';
 
 
 const CATALOG_TYPES = Object.freeze([
@@ -26,7 +28,36 @@ const STATEMENTS = Object.freeze({
  * @typedef {import('./settings-compat.js').UserModel} UserModel
  * @typedef {{ bundles?: Record<string, string>, overrides?: Record<string, unknown> }} LevelSettings
  * @typedef {{ personas?: string[], dataBank?: string[], quickReplies?: { items: string[], hidden: string[] }, settings?: LevelSettings }} HolderStatements
+ * @typedef {import('./book-choices.js').Chosen} Chosen
  */
+
+/**
+ * @param {UserModel} model
+ * @returns {{ selected: string[], personas: Map<string, string> }}
+ */
+function choicesOf(model) {
+    return {
+        selected: selectionOf(model.user.overrides[SELECTION_FIELD])?.names ?? [],
+        personas: new Map(model.entities.filter(e => e.type === TYPE.persona).map(e => [e.key, typeof e.values.lorebook === 'string' ? e.values.lorebook : ''])),
+    };
+}
+
+/**
+ * @param {UserModel} model
+ * @param {Chosen} chosen
+ * @returns {UserModel}
+ */
+export function withChosen(model, chosen) {
+    let { user, entities } = model;
+    if (chosen.selected) {
+        const rest = selectionOf(user.overrides[SELECTION_FIELD])?.rest ?? {};
+        user = { ...user, overrides: { ...user.overrides, [SELECTION_FIELD]: { ...rest, globalSelect: chosen.selected } } };
+    }
+    if (chosen.personas.size) {
+        entities = entities.map(e => (e.type === TYPE.persona && chosen.personas.has(e.key) ? { ...e, values: { ...e.values, lorebook: chosen.personas.get(e.key) } } : e));
+    }
+    return { ...model, user, entities };
+}
 
 /**
  * @param {string | null} statement
@@ -85,7 +116,11 @@ export function userDraftOf(handle, model, holders) {
     const { user, statements } = model;
     /** @type {Record<string, unknown>} */
     const values = {};
-    for (const [field, value] of Object.entries(user.overrides)) values[`o:${field}`] = value;
+    for (const [field, value] of Object.entries(user.overrides)) {
+        const selection = field === SELECTION_FIELD ? selectionOf(value) : null;
+        if (!selection) values[`o:${field}`] = value;
+        else if (Object.keys(selection.rest).length) values[`o:${field}`] = selection.rest;
+    }
     for (const [group, ref] of Object.entries(user.bundles)) values[`b:${group}`] = ref;
     const slot = (/** @type {string} */ name, /** @type {unknown} */ value) => {
         if (value !== undefined) values[`s:${name}`] = value;
@@ -125,7 +160,7 @@ export function userDraftOf(handle, model, holders) {
  * @param {string} handle
  * @param {UserModel} model
  * @param {{ actor?: import('../world-info-engine.js').Actor | null, bundles?: EntityDraft[], previous?: UserModel }} [options]
- * @returns {Promise<{ warnings: string[], kept: string[] }>}
+ * @returns {Promise<{ warnings: string[], kept: string[], chosen: Chosen }>}
  */
 export async function writeUserModel(lib, handle, model, { actor = null, bundles = [], previous } = {}) {
     /** @type {string[]} */
@@ -156,9 +191,28 @@ export async function writeUserModel(lib, handle, model, { actor = null, bundles
     const changed = previous ? model.entities.filter(d => before.get(id(d)) !== canonicalStringify(d)) : model.entities;
     const kept = new Set(model.entities.map(id));
     const gone = (previous?.entities ?? []).filter(d => !kept.has(id(d)));
-    await writeDrafts(lib, [...bundles, ...changed, user], {
+    const next = choicesOf(model);
+    const was = previous ? choicesOf(previous) : null;
+    const selectedChanged = was ? JSON.stringify(was.selected) !== JSON.stringify(next.selected) : next.selected.length > 0;
+    const personasChanged = [...next.personas].filter(([avatar, name]) => (was?.personas.get(avatar) ?? '') !== name);
+    /** @type {{ id: bigint, avatar: string | null, asked: string[] }[]} */
+    const chose = [];
+    const stored = (/** @type {EntityDraft} */ d) => (d.type === TYPE.persona && Object.hasOwn(d.values, 'lorebook') ? { ...d, values: without(d.values, ['lorebook']) } : d);
+    await writeDrafts(lib, [...bundles, ...changed.map(stored), user], {
         actor, warnings, refs,
         extra: async (ids, stamp) => {
+            const choices = [];
+            const userId = ids.get(`${TYPE.user}:${handle}`);
+            if (selectedChanged && userId !== undefined) {
+                choices.push(chooseRecord(userId, CHOICE.selected, next.selected));
+                chose.push({ id: userId, avatar: null, asked: next.selected });
+            }
+            for (const [avatar, name] of personasChanged) {
+                const persona = ids.get(`${TYPE.persona}:${avatar}`);
+                if (persona === undefined) continue;
+                choices.push(chooseRecord(persona, CHOICE.lorebook, name ? [name] : []));
+                chose.push({ id: persona, avatar, asked: name ? [name] : [] });
+            }
             const writes = historyWrites(stamp);
             const goneIds = await lib.store.libraryIds(gone.flatMap(partsAndSelf).map(d => [d.type, d.key]));
             const removed = goneIds.filter(x => x !== null).map(entity => ({ kind: 'histEntityDelete', entity, ...stamp() }));
@@ -192,10 +246,24 @@ export async function writeUserModel(lib, handle, model, { actor = null, bundles
                     if (json !== was) records.push(...writes.json(holder, field, json, was));
                 }
             }
-            return [...records, ...removed];
+            return [...records, ...removed, ...choices];
         },
     });
-    return { warnings, kept: orphans.map(o => o.key) };
+    /** @type {Chosen} */
+    const chosen = { personas: new Map() };
+    const read = chose.length ? await readChoices(lib, chose.map(c => c.id)) : new Map();
+    for (const { id: holder, avatar, asked } of chose) {
+        const names = read.get(holder)?.get(avatar === null ? CHOICE.selected : CHOICE.lorebook) ?? [];
+        for (const name of asked) {
+            if (names.includes(bookKey(name))) continue;
+            warnings.push(avatar === null
+                ? `${SELECTION_FIELD}.globalSelect names ${JSON.stringify(name)}, which is no lorebook; left out`
+                : `persona ${JSON.stringify(avatar)}: its lorebook ${JSON.stringify(name)} is no lorebook; left out`);
+        }
+        if (avatar === null) chosen.selected = names;
+        else chosen.personas.set(avatar, names[0] ?? '');
+    }
+    return { warnings, kept: orphans.map(o => o.key), chosen };
 }
 
 /**
@@ -289,7 +357,48 @@ export async function readUserModel(lib, handle) {
         if (says.quickReplies) (statements.quickReplies ??= { user: { items: [], hidden: [] }, characters: [] }).characters.push({ avatar: key, ...says.quickReplies });
         if (says.settings) (statements.levels ??= {})[`${type === TYPE.group ? 'group' : 'character'}:${key}`] = says.settings;
     }
-    return { user: level, entities, ext, unknown, elsewhere: {}, statements, secrets: [], warnings: [], kept: orphans.map(o => o.key) };
+    const chosen = await storedChoices(lib, handle, level, entities);
+    return { user: level, entities, ext, unknown, elsewhere: {}, statements, secrets: [], warnings: chosen.warnings, kept: orphans.map(o => o.key), choicesByName: chosen.byName };
+}
+
+/**
+ * @param {import('../library-engine.js').LibraryEngine} lib
+ * @param {string} handle
+ * @param {UserModel['user']} level
+ * @param {EntityDraft[]} entities
+ * @returns {Promise<{ byName: boolean, warnings: string[] }>}
+ */
+async function storedChoices(lib, handle, level, entities) {
+    /** @type {string[]} */
+    const warnings = [];
+    let byName = false;
+    const personas = entities.filter(e => e.type === TYPE.persona);
+    const [userId] = await lib.ids(TYPE.user, [handle]);
+    const personaIds = personas.length ? await lib.ids(TYPE.persona, personas.map(p => p.key)) : [];
+    const read = await readChoices(lib, [userId, ...personaIds].filter(id => id !== null));
+    const stored = level.overrides[SELECTION_FIELD];
+    const selection = selectionOf(stored);
+    const named = selection !== null && (typeof stored !== 'object' || Array.isArray(stored) || Object.hasOwn(/** @type {object} */ (stored), 'globalSelect'));
+    if (named) byName = true;
+    const selected = named ? /** @type {{ names: string[] }} */ (selection).names : (userId === null ? undefined : read.get(userId)?.get(CHOICE.selected)) ?? [];
+    level.overrides[SELECTION_FIELD] = { ...(selection?.rest ?? {}), globalSelect: selected };
+    const oldIds = personas.map(p => p.values.lorebook).filter(v => typeof v === 'string' && /^[1-9]\d*$/.test(v));
+    /** @type {{ id: bigint, key: string | null, defined: boolean }[]} */
+    const resolved = oldIds.length ? await lib.store.worldRead('resolved', { ids: oldIds.map(v => BigInt(/** @type {string} */ (v))) }) : [];
+    const oldNames = new Map(oldIds.map((v, i) => [v, resolved[i]?.defined ? resolved[i].key : null]));
+    personas.forEach((persona, i) => {
+        if (Object.hasOwn(persona.values, 'lorebook')) {
+            byName = true;
+            const old = persona.values.lorebook;
+            const name = typeof old === 'string' ? oldNames.get(old) : undefined;
+            if (old !== '' && !name) warnings.push(`persona ${JSON.stringify(persona.key)}: its lorebook ${JSON.stringify(old)} is no lorebook; left out`);
+            persona.values.lorebook = name ?? '';
+            return;
+        }
+        const id = personaIds[i];
+        persona.values.lorebook = (id === null ? undefined : read.get(id)?.get(CHOICE.lorebook)?.[0]) ?? '';
+    });
+    return { byName, warnings };
 }
 
 

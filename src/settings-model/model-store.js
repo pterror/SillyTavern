@@ -1,5 +1,5 @@
 import { POSITION_GAP, historyWrites, itemField, pushAll, valueRecords } from '../entity-values.js';
-import { NO_PLACEHOLDER, PART_LISTS, REF_ARRAYS, REF_LISTS, REF_VALUES, refKey } from './refs.js';
+import { NO_PLACEHOLDER, PART_LISTS, REF_ARRAYS, REF_LISTS, REF_VALUES } from './refs.js';
 
 const EMPTY_LIST = 'list:';
 
@@ -64,7 +64,7 @@ export async function writeDrafts(lib, drafts, { actor = null, warnings = [], re
     /** @type {[number, string][]} */
     const targets = [];
     const noteRef = (/** @type {number} */ type, /** @type {unknown} */ name) => {
-        if (typeof name === 'string' && name !== '' && !ids.has(idKey(type, refKey(type, name)))) targets.push([type, refKey(type, name)]);
+        if (typeof name === 'string' && name !== '' && !ids.has(idKey(type, name))) targets.push([type, name]);
     };
     for (const [type, name] of refs) noteRef(type, name);
     for (const d of all) {
@@ -89,7 +89,7 @@ export async function writeDrafts(lib, drafts, { actor = null, warnings = [], re
     }
     const refText = (/** @type {number} */ type, /** @type {unknown} */ name) => {
         if (typeof name !== 'string' || name === '') return name;
-        const id = ids.get(idKey(type, refKey(type, name)));
+        const id = ids.get(idKey(type, name));
         return id === undefined ? undefined : String(id);
     };
 

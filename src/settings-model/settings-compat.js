@@ -71,6 +71,7 @@ const TOP_PREFERENCES = Object.freeze(['firstRun', 'currentVersion', 'swipes', '
  * @property {{ connection: string, value: string }[]} secrets
  * @property {string[]} warnings
  * @property {string[]} [kept]
+ * @property {boolean} [choicesByName]
  */
 
 /**

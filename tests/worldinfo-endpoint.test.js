@@ -141,7 +141,7 @@ describe('worldinfo /delete', () => {
         await saveBook({ name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha') } } });
         const res = await postJson('/api/worldinfo/delete', { name: 'Book' });
         expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ ok: true, characters_updated: [], chats_updated: [] });
+        expect(await res.json()).toEqual({ ok: true, characters_updated: [], chats_updated: [], settings: {} });
         expect(await getBook('Book')).toEqual({ entries: {} });
         const errors = jest.spyOn(console, 'error').mockImplementation(() => {});
         try {
@@ -169,7 +169,7 @@ describe('worldinfo /delete unlinks', () => {
 
         const res = await postJson('/api/worldinfo/delete', { name: 'Linked' });
         expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ ok: true, characters_updated: ['linker.png'], chats_updated: [{ avatar: 'linker.png' }] });
+        expect(await res.json()).toEqual({ ok: true, characters_updated: ['linker.png'], chats_updated: [{ avatar: 'linker.png' }], settings: {} });
 
         expect((await chats.metadata(tree, null)).world_info).toBeUndefined();
         expect(/** @type {any} */ ((await lib.cards(['linker.png']))[0]).data.extensions.world).toBeUndefined();
@@ -457,27 +457,15 @@ describe('lorebook actions', () => {
         expect((await postJson('/api/worldinfo/duplicate', { name: 'Ghost', new_name: 'Copy 2' })).status).toBe(404);
     });
 
-    test('rename moves the book and the links naming it in settings', async () => {
-        const { writeAllSettings, readSettingsAtPaths } = await import('../src/settings-store.js');
-        writeAllSettings(directories, {
-            world_info_settings: { world_info: { globalSelect: ['Old', 'Other'], charLore: [{ name: 'a', extraBooks: ['Old', 'Other'] }] } },
-            power_user: { persona_data: { 'p.png': { lorebook: 'Old' }, 'q.png': { lorebook: 'Other' } } },
-        });
+    test('rename moves the book; a taken name and a missing book are refused', async () => {
         await writeBook('Old', { 0: makeEntry(0, 'zero') });
 
         const res = await postJson('/api/worldinfo/rename', { name: 'Old', new_name: 'New' });
         expect(res.status).toBe(200);
         const result = await res.json();
-        expect(result.characters_updated).toEqual([]);
-        expect(result.characters_failed).toEqual([]);
+        expect(result).toEqual({ ok: true, name: 'New', characters_updated: [], characters_failed: [], settings: {} });
         expect(await getBook('Old')).toEqual({ entries: {} });
         expect((await getBook('New')).entries['0'].content).toBe('zero');
-
-        const stored = readSettingsAtPaths(directories, ['world_info_settings', 'power_user.persona_data']);
-        expect(stored.world_info_settings.world_info).toEqual({ globalSelect: ['New', 'Other'] });
-        expect(stored['power_user.persona_data']).toEqual({ 'p.png': { lorebook: 'New' }, 'q.png': { lorebook: 'Other' } });
-        expect(result.settings).toEqual(stored);
-        expect(typeof result.settings_hash).toBe('number');
 
         await writeBook('Taken2', { 0: makeEntry(0, 'x') });
         expect((await postJson('/api/worldinfo/rename', { name: 'New', new_name: 'Taken2' })).status).toBe(409);

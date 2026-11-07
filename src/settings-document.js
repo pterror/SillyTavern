@@ -12,7 +12,9 @@ import { getAtPath, setAtPath } from '../public/scripts/hash-utils.js';
 import { writeBundle } from './bundle-store.js';
 import { bundleDraftOf, bundleDraftsFromFiles, bundleEntityOf, bundleFileFromStore, statedBundleFiles } from './settings-model/bundle-import.js';
 import { readDraft, writeDrafts } from './settings-model/model-store.js';
-import { readUserModel, writeUserModel } from './settings-model/user-store.js';
+import { readUserModel, withChosen, writeUserModel } from './settings-model/user-store.js';
+import { CHOICE, readChoices } from './settings-model/book-choices.js';
+import { importUpstreamWorlds, upstreamImportPending } from './upstream-import.js';
 import { userConnections } from './settings-model/settings-compat.js';
 import { keyOf } from './settings-model/keys.js';
 import { serverDirectory } from './server-directory.js';
@@ -29,6 +31,8 @@ const opening = new Map();
 export const LEVEL_POSITIONS = Object.freeze(['default', 'preset', 'user', 'group', 'character']);
 
 const FULL_RANGE = Object.freeze({ from: 'default', to: 'character' });
+
+const BOOK_CHOICE_PATHS = Object.freeze(['world_info_settings', 'power_user.persona_data']);
 
 /**
  * @param {{ from: string, to: string }} range
@@ -109,13 +113,20 @@ async function bundlesOf(lib, settings, connections) {
  * @param {string} handle
  */
 async function open(directories, handle) {
-    const { lib } = await userStore(directories, handle);
+    const store = await userStore(directories, handle);
+    const { lib } = store;
     const newKey = (/** @type {string} */ hint) => keyOf(handle, hint);
     let model = await readUserModel(lib, handle);
+    if (model?.choicesByName) {
+        const written = await writeUserModel(lib, handle, model);
+        for (const warning of [...model.warnings, ...written.warnings]) console.warn(`[settings] ${handle}: ${warning}`);
+        model = await readUserModel(lib, handle);
+    }
     if (!model) {
         const upstream = fs.existsSync(settingsDirPath(directories)) || fs.existsSync(legacySettingsPath(directories))
             ? readAllSettings(directories)
             : JSON.parse(fs.readFileSync(path.join(serverDirectory, 'default/content/settings.json'), 'utf8'));
+        if (await upstreamImportPending(lib)) await importUpstreamWorlds(store, directories);
         await lib.tags.importSettingsTags(directories);
         const made = importUpstream(upstream, { bundles: bundleFilesOf(directories), newKey });
         const imported = bundleDraftsFromFiles(directories, made.entities.filter(e => e.type === TYPE.connection), newKey);
@@ -335,6 +346,7 @@ async function open(directories, handle) {
 
     let writing = Promise.resolve();
     let latest = 0;
+    let settled = 0;
     /** @type {import('./settings-documents.js').OpenSettingsDocument} */
     const document = {
         settings: assemble(current, { bundles: userBundles, extrasApiKey: extrasKey() }).settings,
@@ -376,7 +388,7 @@ async function open(directories, handle) {
                 const nextModel = { ...current, statements: { ...current.statements, levels } };
                 const written = await writeUserModel(lib, handle, nextModel, { previous: current });
                 for (const warning of written.warnings) console.warn(`[settings] ${handle}: ${warning}`);
-                current = { ...nextModel, kept: written.kept };
+                current = withChosen({ ...nextModel, kept: written.kept }, written.chosen);
                 userSourcesMemo = null;
                 await loadLevelBundles();
             });
@@ -413,13 +425,41 @@ async function open(directories, handle) {
                 }
                 const written = await writeUserModel(lib, handle, nextModel, { previous: current });
                 for (const warning of written.warnings) console.warn(`[settings] ${handle}: ${warning}`);
-                current = { ...nextModel, elsewhere: {}, kept: written.kept };
+                current = withChosen({ ...nextModel, elsewhere: {}, kept: written.kept }, written.chosen);
                 userBundles = bundles;
                 userSourcesMemo = null;
                 contexts.clear();
                 if (mine === latest) document.settings = assemble(current, { bundles, extrasApiKey: extrasKey() }).settings;
             });
-            writing = run.catch(() => {});
+            writing = run.catch(() => {}).then(() => {
+                settled = mine;
+            });
+            return run;
+        },
+        booksChanged(change) {
+            const run = writing.then(async () => {
+                const result = await change();
+                const user = result.choosers.filter(c => c.type === TYPE.user && c.key === handle);
+                const personas = result.choosers.filter(c => c.type === TYPE.persona);
+                if (!user.length && !personas.length) return { ...result, settings: {} };
+                const read = await readChoices(lib, [...user, ...personas].map(c => c.holder));
+                /** @type {import('./settings-model/book-choices.js').Chosen} */
+                const chosen = { personas: new Map(personas.map(c => [c.key, read.get(c.holder)?.get(CHOICE.lorebook)?.[0] ?? ''])) };
+                if (user.length) chosen.selected = read.get(user[0].holder)?.get(CHOICE.selected) ?? [];
+                current = withChosen(current, chosen);
+                userSourcesMemo = null;
+                contexts.clear();
+                const before = document.settings;
+                if (settled === latest) document.settings = assemble(current, { bundles: userBundles, extrasApiKey: extrasKey() }).settings;
+                /** @type {Record<string, unknown>} */
+                const settings = {};
+                for (const path of BOOK_CHOICE_PATHS) {
+                    const after = getAtPath(document.settings, path);
+                    if (JSON.stringify(getAtPath(before, path)) !== JSON.stringify(after)) settings[path] = structuredClone(after);
+                }
+                return { ...result, settings };
+            });
+            writing = run.then(() => {}, () => {});
             return run;
         },
         model: () => current,
