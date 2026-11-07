@@ -868,11 +868,10 @@ function scheduleSettingsSave({ full }) {
 }
 
 /**
- * @param {number|string} [loopCounter]
- * @param {...string} keys
+ * @param {...string} keys The settings that changed; none makes it a full save.
  */
-export function saveSettingsDebounced(loopCounter, ...keys) {
-    scheduleSettingsSave(readSettingsSaveArgs(loopCounter, keys));
+export function saveSettingsDebounced(...keys) {
+    scheduleSettingsSave(noteSettingsKeys(keys));
 }
 
 const getCharactersDebounced = debounce(() => getCharacters({ keepListPosition: true, skipPrint: !isCharacterListShowing() }), 2000);
@@ -6944,11 +6943,10 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
 
 //MARK: saveSettings()
 /**
- * @param {number|string} [loopCounter]
- * @param {...string} keys
+ * @param {...string} keys The settings that changed; none makes it a full save.
  */
-export async function saveSettings(loopCounter, ...keys) {
-    const save = readSettingsSaveArgs(loopCounter, keys);
+export async function saveSettings(...keys) {
+    const save = noteSettingsKeys(keys);
     if (!save.full && !_settingsSaveWindow.full) {
         cancelDebounce(_debouncedSaveImpl);
         _settingsSaveWindow = { full: false };
@@ -6957,16 +6955,12 @@ export async function saveSettings(loopCounter, ...keys) {
 }
 
 /**
- * @param {any} loopCounter
- * @param {any[]} keys
+ * @param {string[]} keys
  * @returns {{ full: boolean }}
  */
-function readSettingsSaveArgs(loopCounter, keys) {
-    const keyed = typeof loopCounter === 'string';
-    for (const key of keyed ? [loopCounter, ...keys] : keys) {
-        if (typeof key === 'string') pendingSettingsKeys.add(key);
-    }
-    return { full: !keyed };
+function noteSettingsKeys(keys) {
+    for (const key of keys) pendingSettingsKeys.add(key);
+    return { full: keys.length === 0 };
 }
 
 /**

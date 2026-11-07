@@ -77,7 +77,7 @@ Two separate questions:
 | backend adapters, standard formats (card PNG / JSON, upstream's files, JSONL) | ours, on |
 | quick replies, connection profiles, token counts, attaching a file | not modules: commands, profiles, counts at the text, part of a message |
 | regex | core's transform point, with today's cleanups as its default rules |
-| vectors and the data bank, summarize, gallery, expressions, image generation, captioning, TTS, translate | ours; on as upstream has them for now. The target: installed from a catalogue of official modules (a first-run page offers it), not shipped in every install |
+| vectors and the data bank, summarize, gallery, expressions, image generation, captioning, TTS, translate | removed with the extension system (`3500d3e9e`). The target: installed from a catalogue of official modules (a first-run page offers it), not shipped in every install |
 | importers (below) | ours, an extension |
 | the character library, and other modules | someone else's |
 

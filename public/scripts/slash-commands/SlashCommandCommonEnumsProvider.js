@@ -1,4 +1,4 @@
-import { listBackgroundFiles } from '../backgrounds.js';
+import { newUi } from '../new-ui-page.js';
 import { substituteParams, extension_prompt_roles, extension_prompt_types, name2, neutralCharacterName } from '../../script.js';
 import { chat_metadata, chat } from '../chat-state.js';
 import { characters } from '../character-store.js';
@@ -382,7 +382,7 @@ export const commonEnumProviders = {
         new SlashCommandEnumValue('system', null, enumTypes.enum, enumIcons.system),
     ],
 
-    backgrounds: () => listBackgroundFiles().map(it => new SlashCommandEnumValue(it.file)),
+    backgrounds: () => newUi().backgrounds.listBackgroundFiles().map(it => new SlashCommandEnumValue(it.file)),
 };
 
 

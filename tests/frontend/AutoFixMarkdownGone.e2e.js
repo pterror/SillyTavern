@@ -48,7 +48,7 @@ test.describe('Auto-fix Markdown, with an old settings file that has it on', () 
 
     test('the setting reads as off, takes writes without effect, and has no checkbox', async ({ page }) => {
         const seen = await page.evaluate(async () => {
-            const { power_user, fixMarkdown } = await import('/scripts/power-user.js');
+            const { power_user } = await import('/scripts/power-user.js');
             const context = window['stTest'].context();
             const afterLoad = power_user.auto_fix_generated_markdown;
             power_user.auto_fix_generated_markdown = true;
@@ -60,7 +60,6 @@ test.describe('Auto-fix Markdown, with an old settings file that has it on', () 
                 inKeys: Object.keys(power_user).includes('auto_fix_generated_markdown'),
                 inJson: JSON.stringify(power_user).includes('auto_fix_generated_markdown'),
                 inSpread: Object.hasOwn({ ...power_user }, 'auto_fix_generated_markdown'),
-                fixed: [fixMarkdown('* a * "b', true), fixMarkdown('* a * "b', false), fixMarkdown('* a * "b')],
             };
         });
         expect(seen).toEqual({
@@ -70,7 +69,6 @@ test.describe('Auto-fix Markdown, with an old settings file that has it on', () 
             inKeys: false,
             inJson: false,
             inSpread: false,
-            fixed: ['* a * "b', '* a * "b', '* a * "b'],
         });
         await expect(page.locator('#auto_fix_generated_markdown')).toHaveCount(0);
     });

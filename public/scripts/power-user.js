@@ -66,7 +66,6 @@ import { DEFAULT_REASONING_TEMPLATE, loadReasoningTemplates } from './reasoning.
 import { bindModelTemplates } from './chat-templates.js';
 import { IMAGE_OVERSWIPE, MEDIA_DISPLAY } from './constants.js';
 import { t } from './i18n.js';
-import { getBackgroundPath, isCustomBackgroundUrl } from './backgrounds.js';
 import {
     persona_description_positions as _persona_description_positions,
     DEFAULT_DEPTH as PERSONA_DEFAULT_DEPTH,
@@ -78,7 +77,7 @@ import { initHotkeyOverlay } from './hotkey-overlay.js';
 import { storyStringWithAnchors } from './story-string-anchors.js';
 import { THEME_FIELDS } from './theme-fields.js';
 import { CONTEXT_TEMPLATE_POWER_USER_KEYS } from './preset-file-keys.js';
-import { SERVER_OWNED, newUiStarted } from './new-ui-page.js';
+import { SERVER_OWNED, newUi, newUiStarted } from './new-ui-page.js';
 
 export const toastPositionClasses = [
     'toast-top-left',
@@ -577,16 +576,6 @@ export function playMessageSound({ force } = {}) {
  */
 export function collapseNewlines(x) {
     return x.replaceAll(/\n+/g, '\n');
-}
-
-/**
- * Does nothing: returns the text as it was given. Kept for extensions that call it.
- * @param {string} text Text to be processed.
- * @param {boolean} [forDisplay] Unused.
- * @returns {string} The same text.
- */
-export function fixMarkdown(text, forDisplay) {
-    return text;
 }
 
 function switchHotswap() {
@@ -2018,8 +2007,6 @@ function loadCharListState() {
     }
 }
 
-export function loadMovingUIState() {}
-
 function loadMaxContextUnlocked() {
     switchMaxContextSize();
 }
@@ -2921,8 +2908,8 @@ async function setAvgBG(args) {
 
     if (bgOverride) {
         // Use the specified background file
-        const isCustom = isCustomBackgroundUrl(bgOverride);
-        bgUrl = isCustom ? bgOverride : getBackgroundPath(bgOverride);
+        const isCustom = newUi().backgrounds.isCustomBackgroundUrl(bgOverride);
+        bgUrl = isCustom ? bgOverride : newUi().backgrounds.getBackgroundPath(bgOverride);
     } else {
         // Use the currently active background
         bgUrl = $('#bg1')

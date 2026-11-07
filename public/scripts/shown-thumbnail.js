@@ -1,4 +1,4 @@
-import { background_settings } from './backgrounds.js';
+import { newUi } from './new-ui-page.js';
 
 /**
  * @param {string | null | undefined} thumbnail
@@ -9,7 +9,7 @@ export function shownThumbnail(thumbnail, still) {
     if (!still) return thumbnail;
     let animated = true;
     try {
-        animated = background_settings.animatedThumbnails !== false;
+        animated = newUi().backgrounds.background_settings.animatedThumbnails !== false;
     } catch {
         animated = true;
     }

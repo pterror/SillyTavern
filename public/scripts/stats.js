@@ -4,7 +4,6 @@ import { getCurrentCharacter } from '../script.js';
 import { getRequestHeaders } from './request-headers.js';
 import { humanizeGenTime } from './RossAscends-mods.js';
 import { callGenericPopup, POPUP_TYPE } from './popup.js';
-import { registerDebugFunction } from './power-user.js';
 import { t, translate } from './i18n.js';
 
 let charStats = {};
@@ -132,29 +131,11 @@ async function getStats(avatars) {
     charStats = await response.json();
 }
 
-async function recreateStats() {
-    const response = await fetch('/api/stats/recreate', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({}),
-        cache: 'no-cache',
-    });
-
-    if (!response.ok) {
-        toastr.error(t`Stats could not be recounted. Try reloading the page.`);
-        throw new Error('Error recounting stats');
-    } else {
-        toastr.success(t`Counting your stats again from your chats, in the background.`);
-    }
-}
-
-
 export function initStats() {
     $('.rm_stats_button').on('click', function () {
         const character = getCurrentCharacter();
         if (character) showCharacterStats(character);
     });
-    registerDebugFunction('refreshStats', 'Refresh Stat File', 'Recreates the stats file based on existing chat files', recreateStats);
 }
 
 export { userStatsHandler };

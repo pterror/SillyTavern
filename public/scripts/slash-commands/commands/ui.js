@@ -2,7 +2,7 @@ import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
 import { Fuse } from '../../../lib.js';
 import { isMobile } from '../../RossAscends-mods.js';
-import { background_settings, listBackgroundFiles, selectBackground } from '../../backgrounds.js';
+import { newUi } from '../../new-ui-page.js';
 import { t } from '../../i18n.js';
 import { playMessageSound } from '../../power-user.js';
 import { ARGUMENT_TYPE, SlashCommandArgument } from '../SlashCommandArgument.js';
@@ -11,12 +11,12 @@ import { showFontAwesomePicker } from '../../utils.js';
 
 async function setBackgroundCallback(_, bg) {
     if (!bg) {
-        return background_settings.name;
+        return newUi().backgrounds.background_settings.name;
     }
 
     console.log('Set background to ' + bg);
 
-    const fuse = new Fuse(listBackgroundFiles(), { keys: ['file'] });
+    const fuse = new Fuse(newUi().backgrounds.listBackgroundFiles(), { keys: ['file'] });
     const result = fuse.search(bg);
 
     if (!result.length) {
@@ -25,7 +25,7 @@ async function setBackgroundCallback(_, bg) {
     }
 
     const { file, chat } = result[0].item;
-    const refused = await selectBackground(file, chat);
+    const refused = await newUi().backgrounds.selectBackground(file, chat);
     if (refused) toastr.warning(refused);
     return '';
 }

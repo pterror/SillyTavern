@@ -160,13 +160,12 @@ test.describe('backgrounds', () => {
         await expect(page.locator('#bg_menu_content .bg_example').nth(1)).toBeVisible();
     });
 
-    test('the fitting is the server\'s, and upstream\'s module reads it', async ({ page }) => {
+    test('the fitting is the server\'s', async ({ page }) => {
         await openDrawer(page);
         const current = await page.locator('#background_fitting').inputValue();
         const next = current === 'cover' ? 'contain' : 'cover';
         await page.locator('#background_fitting').selectOption(next);
         await expect(page.locator('#bg1')).toHaveClass(new RegExp(`\\b${next}\\b`));
-        await expect.poll(() => page.evaluate(async () => (await import('/scripts/backgrounds.js')).background_settings.fitting)).toBe(next);
         await page.reload();
         await testSetup.awaitST({ page });
         await expect(page.locator('#bg1')).toHaveClass(new RegExp(`\\b${next}\\b`));

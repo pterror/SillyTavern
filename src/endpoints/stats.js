@@ -133,10 +133,3 @@ router.post('/totals', async function (request, response) {
         return response.sendStatus(500);
     }
 });
-
-/**
- * Upstream's recount: the stats are exact at every write, so there is nothing to count again.
- */
-router.post('/recreate', function (_request, response) {
-    return response.sendStatus(200);
-});
