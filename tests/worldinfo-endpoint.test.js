@@ -172,6 +172,22 @@ describe('worldinfo /import', () => {
     });
 });
 
+describe('a copy of a character\'s embedded lorebook', () => {
+    const copy = { entries: { 0: makeEntry(0, 'Card lore') }, originalData: { name: 'Card book', entries: [{ id: 0, keys: ['key0'], content: 'Card lore', enabled: true, insertion_order: 100 }] } };
+
+    test('is not stored by /import, /create or a save', async () => {
+        const imported = await postJson('/api/worldinfo/import', { importFilename: 'Copy.json', convertedData: JSON.stringify(copy) });
+        expect(imported.status).toBe(400);
+        expect((await saveBook({ name: 'Copy', data: copy })).status).toBe(400);
+        expect(await getBook('Copy')).toEqual({ entries: {} });
+
+        await saveBook({ name: 'Own', data: { entries: copy.entries } });
+        const applied = await postJson('/api/worldinfo/entries/apply', { name: 'Own', fields: [{ key: 'originalData', base_hash: null, value: copy.originalData }] });
+        expect(applied.status).toBe(400);
+        expect(await getBook('Own')).toEqual({ entries: copy.entries });
+    });
+});
+
 describe('worldinfo /entry/transplant', () => {
     async function seedBooks() {
         await saveBook({

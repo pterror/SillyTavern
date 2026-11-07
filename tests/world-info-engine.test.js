@@ -95,15 +95,26 @@ function makeBook(r, n) {
         entries[k] = makeEntry(r, typeof k === 'number' ? k : i);
     }
     /** @type {Record<string, unknown>} */
-    const book = r() < 0.5 ? { entries, name: 'Display' } : { name: 'Display', extensions: { x: 1 }, entries };
-    if (r() < 0.3) {
-        book.originalData = {
+    return r() < 0.5 ? { entries, name: 'Display' } : { name: 'Display', extensions: { x: 1 }, entries };
+}
+
+function withCardBook(book) {
+    return {
+        ...book,
+        originalData: {
             name: 'card book',
             extensions: {},
-            entries: Object.values(entries).slice(0, 3).map((e, i) => ({ id: i, uid: /** @type {any} */ (e).uid, keys: ['k'], content: 'c', enabled: true, insertion_order: 100, extensions: {} })),
-        };
-    }
-    return book;
+            entries: Object.values(book.entries).slice(0, 3).map((e, i) => ({ id: i, uid: /** @type {any} */ (e).uid, keys: ['k'], content: 'c', enabled: true, insertion_order: 100, extensions: {} })),
+        },
+    };
+}
+
+async function storeCardCopy(name, data) {
+    const id = library.nextId++;
+    const keyed = [];
+    const records = await books.bookRecords(id, null, data, { world: true }, await books.stamper(null, keyed));
+    records.unshift({ kind: 'entityCreate', entity: id, type: lib.TYPE.book, key: name, added: Date.now() });
+    await library.store.commit([...keyed, ...records]);
 }
 
 function expectSameBook(got, want) {
@@ -216,7 +227,6 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             const r = rng(13);
             const a = makeBook(r, 12);
             const b = makeBook(r, 6);
-            delete a.originalData;
             /** @type {Record<string, any>} */
             const model = { A: json(a), B: json(b) };
             await books.write('A', a);
@@ -277,11 +287,11 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             }
         }, 120_000);
 
-        test('originalData follows an entry deleted through apply', async () => {
+        test('a stored card copy\'s originalData follows an entry deleted through apply', async () => {
             const r = rng(21);
-            let data;
-            do data = makeBook(r, 5); while (!data.originalData);
-            await books.write('O', data);
+            const data = withCardBook(makeBook(r, 5));
+            await storeCardCopy('O', data);
+            await same('O', json(data));
             const current = json(data);
             const uid = Object.keys(current.entries)[0];
             const entries = [{ uid, base_hash: hashUtils.jsonHash(current.entries[uid]), data: null }];
@@ -303,6 +313,55 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             await books.write('D', { entries: {} });
             expect(await books.read('D')).toEqual({ entries: {} });
         }, 120_000);
+    });
+
+    describe('copies of a character\'s embedded book', () => {
+        async function same(name, want) {
+            expectSameBook(json(await books.read(name)), want);
+        }
+
+        test('no write makes one', async () => {
+            const r = rng(31);
+            const plain = makeBook(r, 4);
+            expect(await books.write('Copy', withCardBook(plain))).toBe('card copy');
+            expect(await books.exists('Copy')).toBe(false);
+            await books.write('Plain', plain);
+            const card = withCardBook(plain).originalData;
+            expect(await books.apply('Plain', [], [{ key: 'originalData', base_hash: null, value: card }])).toBe('card copy');
+            await same('Plain', json(plain));
+            expect(await books.write('Plain', withCardBook(plain))).toBe('card copy');
+            await same('Plain', json(plain));
+        });
+
+        test('a stored copy is still edited, and found by every page of the scan', async () => {
+            const r = rng(37);
+            const copy = withCardBook(makeBook(r, 3));
+            await storeCardCopy('Copy A', copy);
+            await storeCardCopy('Copy B', { ...makeBook(r, 2), originalData: { entries: [1, 'not an entry'] } });
+            for (const name of ['Plain 1', 'Plain 2', 'Plain 3']) await books.write(name, makeBook(r, 2));
+            await books.write('Odd', { ...makeBook(r, 2), originalData: { name: 'no entries' } });
+
+            const next = { ...copy.originalData, name: 'renamed card book' };
+            const applied = await books.apply('Copy A', [], [{ key: 'originalData', base_hash: hashUtils.jsonHash(copy.originalData), value: next }]);
+            expect(applied).toMatchObject({ ok: true, conflicts: [] });
+
+            const copies = [];
+            let scanned = 0;
+            let after;
+            for (;;) {
+                const page = await books.cardCopyPage({ after, limit: 2 });
+                scanned += page.scanned;
+                copies.push(...page.copies);
+                if (!page.more) break;
+                after = page.after;
+            }
+            expect(scanned).toBe(6);
+            expect(copies).toEqual(['Copy A', 'Copy B']);
+
+            for (const name of copies) expect(await books.delete(name)).toBe(true);
+            expect((await books.cardCopyPage()).copies).toEqual([]);
+            expect((await books.list()).map(b => b.file_id)).toEqual(['Odd', 'Plain 1', 'Plain 2', 'Plain 3']);
+        });
     });
 
 

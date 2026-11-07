@@ -190,10 +190,6 @@ export function charaFormatData(data, directories) {
         try {
             const file = readWorldInfoFile(directories, data.world, false);
 
-            if (file && file.originalData) {
-                setAtPath(char, 'data.character_book', file.originalData);
-            }
-
             if (file && file.entries) {
                 setAtPath(char, 'data.character_book', convertWorldInfoToCharacterBook(data.world, file.entries));
             }

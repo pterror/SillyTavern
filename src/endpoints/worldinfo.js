@@ -21,6 +21,7 @@ import { sessionHeaderOf } from '../request-session.js';
 /** @type {Set<string>} */
 const reportedMisses = new Set();
 const REPORTED_MISS_LIMIT = 10_000;
+const CARD_COPY = 'This is a copy of a character\'s embedded lorebook. The character keeps its own lorebook, so the copy isn\'t added to the list.';
 
 /**
  * @param {{ root: string }} directories
@@ -180,7 +181,7 @@ function actorOf(request) {
  * @param {string} desiredName
  * @param {string} fileContents
  * @param {import('../world-info-engine.js').Actor | null} [actor]
- * @returns {Promise<string>}
+ * @returns {Promise<string | null>}
  */
 export async function importWorldInfoFromRaw(directories, desiredName, fileContents, actor = null) {
     const filename = `${path.parse(sanitize(desiredName)).name}.json`;
@@ -196,8 +197,8 @@ export async function importWorldInfoFromRaw(directories, desiredName, fileConte
         throw new Error('World file must have a name');
     }
 
-    await (await userStore(directories)).lib.books.write(worldName, worldContent, actor);
-    return worldName;
+    const written = await (await userStore(directories)).lib.books.write(worldName, worldContent, actor);
+    return written === 'card copy' ? null : worldName;
 }
 
 router.post('/import', storeRoute('importing a World Info book', async (request, response) => {
@@ -217,6 +218,7 @@ router.post('/import', storeRoute('importing a World Info book', async (request,
 
     try {
         const worldName = await importWorldInfoFromRaw(request.user.directories, filename, fileContents, actorOf(request));
+        if (worldName === null) return response.status(400).send(CARD_COPY);
         return response.send({ name: worldName });
     } catch (err) {
         return response.status(400).send(err instanceof Error ? err.message : 'Is not a valid world info file');
@@ -251,7 +253,9 @@ router.post('/create', storeRoute('creating a World Info book', async (request, 
         }
     }
 
-    await lib.books.write(finalName, data ?? { entries: {} }, actorOf(request));
+    if (await lib.books.write(finalName, data ?? { entries: {} }, actorOf(request)) === 'card copy') {
+        return response.status(400).send({ error: CARD_COPY });
+    }
 
     return response.send({ ok: true, name: finalName });
 }));
@@ -287,6 +291,9 @@ router.post('/entries/apply', storeRoute('applying World Info changes', async (r
     }
 
     const result = await lib.books.apply(name, entryChanges, fieldChanges, actorOf(request));
+    if (result === 'card copy') {
+        return response.status(400).send({ error: CARD_COPY });
+    }
     if (!result) {
         return response.status(404).send({ error: `Lorebook '${name}' not found` });
     }
@@ -306,7 +313,9 @@ router.post('/duplicate', storeRoute('duplicating a World Info book', async (req
     if (await lib.books.exists(newName)) {
         return response.status(409).send({ error: `World Info file '${newName}' already exists` });
     }
-    await lib.books.write(newName, book, actorOf(request));
+    if (await lib.books.write(newName, book, actorOf(request)) === 'card copy') {
+        return response.status(400).send({ error: CARD_COPY });
+    }
     return response.send({ ok: true, name: newName });
 }));
 

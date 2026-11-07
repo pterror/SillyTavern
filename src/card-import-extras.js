@@ -133,7 +133,8 @@ export async function importChubRelatedLorebooks(directories, avatar, card) {
     for (const lorebookPath of paths) {
         try {
             const result = await downloadChubLorebook(lorebookPath);
-            if (result) names.push(await importWorldInfoFromRaw(directories, result.fileName, result.buffer.toString('utf8')));
+            const name = result ? await importWorldInfoFromRaw(directories, result.fileName, result.buffer.toString('utf8')) : null;
+            if (name !== null) names.push(name);
         } catch (error) {
             console.error(`Failed to import related Chub lorebook "${lorebookPath}"`, error);
         }

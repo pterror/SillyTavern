@@ -107,6 +107,7 @@ test('what can\'t be imported is listed with why, and the rest goes in', async (
     write('chats/nia/Broken.jsonl', `${JSON.stringify({ chat_metadata: {} })}\n{not json\n${JSON.stringify({ name: 'Nia', mes: 'ok', extra: {} })}`);
     write('group chats/Orphan.jsonl', jsonl([{ name: 'User', is_user: true, mes: 'x', extra: {} }]));
     write('worlds/NotABook.json', JSON.stringify({ name: 'no entries' }));
+    write('worlds/Card Copy.json', JSON.stringify({ entries: { 0: { uid: 0, content: 'x' } }, originalData: { entries: [{ id: 0, keys: ['x'], content: 'x' }] } }));
     write('groups/bad.json', '{');
     write('chats/nia/Nia - fine.jsonl', jsonl([{ name: 'Nia', is_user: false, mes: 'Fine.', extra: {} }]));
 
@@ -118,7 +119,9 @@ test('what can\'t be imported is listed with why, and the rest goes in', async (
     assert.match(why['group chats/Orphan.jsonl'], /no group lists this chat/);
     assert.match(why['worlds/NotABook.json'], /not a World Info book/);
     assert.match(why['groups/bad.json'], /unreadable group file/);
-    assert.equal(Object.keys(why).length, 5);
+    assert.match(why['worlds/Card Copy.json'], /copy of a character's embedded lorebook/);
+    assert.equal(await store.lib.books.exists('Card Copy'), false);
+    assert.equal(Object.keys(why).length, 6);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(directories.root, MAP_FILE), 'utf8')).notImported, run.notImported);
 });
 

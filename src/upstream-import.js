@@ -115,8 +115,9 @@ async function runImport(store, directories) {
                 report.notImported.push({ file: where, why: 'not a World Info book (no entries)' });
             } else if (await store.lib.books.exists(name)) {
                 report.present.push({ file: where, why: `a book named "${name}" is in the store already` });
+            } else if (await store.lib.books.write(name, content, actor) === 'card copy') {
+                report.notImported.push({ file: where, why: 'a copy of a character\'s embedded lorebook; the character keeps its own' });
             } else {
-                await store.lib.books.write(name, content, actor);
                 report.imported.worlds++;
             }
         } catch (err) {

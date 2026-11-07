@@ -63,6 +63,15 @@ export function isEntryList(v) {
 }
 
 /**
+ * @param {unknown} book
+ * @returns {boolean}
+ */
+export function isCardBookCopy(book) {
+    const original = isPlainObject(book) ? /** @type {any} */ (book).originalData : undefined;
+    return isPlainObject(original) && Array.isArray(original.entries);
+}
+
+/**
  * @param {Record<string, unknown>} o
  * @param {string} key
  * @param {unknown} value
@@ -488,9 +497,10 @@ export class WorldInfoEngine {
      * @param {string} name
      * @param {Record<string, unknown>} data
      * @param {Actor | null} [actor]
-     * @returns {Promise<{ records: number }>}
+     * @returns {Promise<{ records: number } | 'card copy'>}
      */
     write(name, data, actor = null) {
+        if (isCardBookCopy(data)) return Promise.resolve('card copy');
         const key = bookKey(name);
         return this.lane([key], async () => {
             const [found] = await this.lib.ids(TYPE.book, [key]);
@@ -569,6 +579,38 @@ export class WorldInfoEngine {
     }
 
     /**
+     * @param {{ id: bigint, entity: import('./entity-values.js').StoredEntity | null }[]} books
+     * @returns {Promise<boolean[]>}
+     */
+    async cardCopies(books) {
+        const owned = await this.lib.ids(TYPE.ownedBook, books.map(b => `${b.id}:${SLOT.originalData}`));
+        return books.map((b, i) => {
+            if (owned[i] !== null) return true;
+            const v = b.entity?.values.find(x => x.field === 'originalData');
+            if (!v) return false;
+            return isCardBookCopy({ originalData: v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json)) });
+        });
+    }
+
+    /**
+     * @param {{ after?: string, limit?: number }} [page]
+     * @returns {Promise<{ scanned: number, copies: string[], after: string | undefined, more: boolean }>}
+     */
+    async cardCopyPage({ after, limit = 1000 } = {}) {
+        const page = await this.store.worldRead('books', { after, limit });
+        /** @type {{ id: bigint, key: string }[]} */
+        const books = page.books;
+        const entities = await this.lib.entities(books.map(b => b.id));
+        const copy = await this.cardCopies(books.map((b, i) => ({ id: b.id, entity: entities[i] })));
+        return {
+            scanned: books.length,
+            copies: books.filter((_, i) => copy[i]).map(b => b.key),
+            after: books.length ? books[books.length - 1].key : after,
+            more: page.more,
+        };
+    }
+
+    /**
      * @param {bigint} book
      * @returns {Promise<bigint[]>}
      */
@@ -591,7 +633,7 @@ export class WorldInfoEngine {
      * @param {{ uid: string | number, base_hash?: number | null, data?: object | null }[]} entryChanges
      * @param {{ key: string, base_hash?: number | null, value?: unknown }[]} fieldChanges
      * @param {Actor | null} [actor]
-     * @returns {Promise<null | { ok: true, entries: Record<string, object>, deleted: string[], fields: Record<string, unknown>, conflicts: object[] }>}
+     * @returns {Promise<null | 'card copy' | { ok: true, entries: Record<string, object>, deleted: string[], fields: Record<string, unknown>, conflicts: object[] }>}
      */
     apply(name, entryChanges, fieldChanges, actor = null) {
         const key = bookKey(name);
@@ -600,6 +642,8 @@ export class WorldInfoEngine {
             if (!found?.defined) return null;
             const book = found.id;
             const [bookEntity] = await this.lib.entities([book]);
+            const copying = fieldChanges.some(c => c.key === 'originalData' && isCardBookCopy({ originalData: c.value }));
+            if (copying && !(await this.cardCopies([{ id: book, entity: bookEntity }]))[0]) return 'card copy';
             const keys = entryChanges.map(c => String(c.uid));
             const ids = await this.lib.ids(TYPE.entry, keys.map(k => `${book}:${k}`));
             const entities = await this.lib.entities(ids);
