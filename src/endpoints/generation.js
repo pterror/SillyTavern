@@ -15,6 +15,7 @@ import { chatContext } from '../chat-request.js';
 import { readPageMacroFacts } from '../macro-facts.js';
 import { readPageInjections } from '../page-injections.js';
 import { writeBack } from '../token-count-store.js';
+import { applySettingsChanges } from './settings.js';
 
 /** What makes the prompt on each kind of connection. */
 const PROMPT_BUILDERS = Object.freeze({
@@ -87,14 +88,36 @@ function generationTarget(request, response, { needsOwner = true } = {}) {
     return { avatar, groupId, api };
 }
 
-router.post('/generate', requireSessionHeader, async function (request, response) {
+/**
+ * Applies the settings changes the page carried with the action before anything is read from the settings, and names
+ * the answer to them in a header; refused changes refuse the action.
+ * @type {import('express').RequestHandler}
+ */
+async function applyCarriedSettings(request, response, next) {
+    const carried = request.body?.settings_changes;
+    if (carried === undefined || carried === null) return next();
+    delete request.body.settings_changes;
+    try {
+        const applied = await applySettingsChanges(request, carried?.keys, carried?.expectedHashes);
+        if (applied.status !== 200) {
+            return response.status(applied.status).send({ ...applied.answer, settings_not_saved: true, error: { message: 'The settings changed in another tab or device, so nothing was generated.' } });
+        }
+        response.setHeader('X-ST-Settings-Saved', encodeURIComponent(JSON.stringify(applied.answer)));
+        return next();
+    } catch (error) {
+        console.error('Could not apply the settings changes the action carried:', error);
+        return response.status(500).send({ settings_not_saved: true, error: { message: 'The settings changes could not be saved, so nothing was generated.' } });
+    }
+}
+
+router.post('/generate', requireSessionHeader, applyCarriedSettings, async function (request, response) {
     const target = generationTarget(request, response);
     if (!target) return;
     request.body.owner_id = target.groupId ?? target.avatar;
     return GENERATORS[target.api](request, response);
 });
 
-router.post('/prompt', requireSessionHeader, async function (request, response) {
+router.post('/prompt', requireSessionHeader, applyCarriedSettings, async function (request, response) {
     const target = generationTarget(request, response);
     if (!target) return;
     const { avatar, groupId, api } = target;
@@ -158,7 +181,7 @@ const RAW_REQUESTS = Object.freeze({
     },
 });
 
-router.post('/raw', async function (request, response) {
+router.post('/raw', applyCarriedSettings, async function (request, response) {
     const target = generationTarget(request, response, { needsOwner: false });
     if (!target) return;
     const { avatar, groupId, api } = target;

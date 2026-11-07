@@ -298,63 +298,77 @@ router.post('/save', async function (request, response) {
     }
 });
 
-router.post('/save-partial', async function (request, response) {
-    try {
-        const directories = request.user.directories;
+/**
+ * Applies settings changes the page sends, by key, refusing those another session changed since the page saw them.
+ * @param {import('express').Request} request
+ * @param {unknown} sent The changed values, by settings key or path.
+ * @param {unknown} expectedHashes The hashes of the values the page changed, by the same keys.
+ * @returns {Promise<{ status: 200, answer: { result: 'ok', settingsHash: number, keyHashes: Record<string, number>, shown_counts?: object, card_token_counts?: object } } | { status: 400 | 409, answer: Record<string, unknown> }>}
+ */
+export async function applySettingsChanges(request, sent, expectedHashes) {
+    const directories = request.user.directories;
+    if (typeof sent !== 'object' || sent === null || Array.isArray(sent)) {
+        return {
+            status: 400,
+            answer: { result: 'error', error: 'Partial update body must include a "keys" object of top-level settings keys to merge.' },
+        };
+    }
+    const over = settingsSavedOver(request, directories);
+    const keys = Object.fromEntries(Object.entries(sent).flatMap(([key, value]) => {
+        const write = pageWrite(key, value, over);
+        return write ? [[key, write.value]] : [];
+    }));
 
-        const { keys: sent, expectedHashes } = request.body ?? {};
-        if (typeof sent !== 'object' || sent === null || Array.isArray(sent)) {
-            return response.status(400).send({
-                result: 'error',
-                error: 'Partial update body must include a "keys" object of top-level settings keys to merge.',
-            });
-        }
-        const over = settingsSavedOver(request, directories);
-        const keys = Object.fromEntries(Object.entries(sent).flatMap(([key, value]) => {
-            const write = pageWrite(key, value, over);
-            return write ? [[key, write.value]] : [];
-        }));
-
-        if (expectedHashes && typeof expectedHashes === 'object' && !Array.isArray(expectedHashes)) {
-            const paths = Object.keys(expectedHashes);
-            const currentValues = valuesAtPaths(pageSettings(over), paths);
-            const conflictingKeys = paths.filter(path => getStringHash(JSON.stringify(currentValues[path], null, 4)) !== expectedHashes[path]);
-            if (conflictingKeys.length > 0) {
-                return response.status(409).send({
+    if (expectedHashes && typeof expectedHashes === 'object' && !Array.isArray(expectedHashes)) {
+        const paths = Object.keys(expectedHashes);
+        const currentValues = valuesAtPaths(pageSettings(over), paths);
+        const conflictingKeys = paths.filter(path => getStringHash(JSON.stringify(currentValues[path], null, 4)) !== expectedHashes[path]);
+        if (conflictingKeys.length > 0) {
+            return {
+                status: 409,
+                answer: {
                     result: 'conflict',
                     error: 'Some of the settings keys in this update were changed by another session since this client last saw them.',
                     conflictingKeys,
-                });
-            }
+                },
+            };
         }
+    }
 
-        try {
-            const at = savedIn(request);
-            if (at) {
-                const saved = structuredClone(at.document.view(at.context, at.range).settings);
-                for (const [key, given] of Object.entries(keys)) {
-                    const { value, skip } = settingsWithoutCharLore(key, given);
-                    if (!skip) setAtPath(saved, key, structuredClone(value));
-                }
-                await at.document.saveIn(at.context, at.range, saved);
-            } else {
-                await writeSettingsKeys(directories, keys);
+    try {
+        const at = savedIn(request);
+        if (at) {
+            const saved = structuredClone(at.document.view(at.context, at.range).settings);
+            for (const [key, given] of Object.entries(keys)) {
+                const { value, skip } = settingsWithoutCharLore(key, given);
+                if (!skip) setAtPath(saved, key, structuredClone(value));
             }
-        } catch (err) {
-            console.error('Could not write partial settings update', err);
-            return response.status(400).send({ result: 'error', error: err.message });
+            await at.document.saveIn(at.context, at.range, saved);
+        } else {
+            await writeSettingsKeys(directories, keys);
         }
-        const carried = Object.entries(keys).map(([key, value]) => settingsWithoutCharLore(key, value).charLore).find(x => x !== undefined);
-        void reportIgnoredCharLore(request, carried);
+    } catch (err) {
+        console.error('Could not write partial settings update', err);
+        return { status: 400, answer: { result: 'error', error: err.message } };
+    }
+    const carried = Object.entries(keys).map(([key, value]) => settingsWithoutCharLore(key, value).charLore).find(x => x !== undefined);
+    void reportIgnoredCharLore(request, carried);
 
-        triggerAutoSave(request.user.profile.handle, request.user.directories);
-        const stored = settingsSavedOver(request, directories);
-        const keyHashes = {};
-        const known = pageSettings(stored);
-        for (const top of new Set(Object.keys(keys).map(key => key.split('.')[0]))) {
-            if (Object.hasOwn(known, top)) seedKeyHashes(keyHashes, known[top], top);
-        }
-        response.send({ result: 'ok', settingsHash: pageSettingsHash(stored), keyHashes, ...await shownCountsOf(request) });
+    triggerAutoSave(request.user.profile.handle, request.user.directories);
+    const stored = settingsSavedOver(request, directories);
+    const keyHashes = {};
+    const known = pageSettings(stored);
+    for (const top of new Set(Object.keys(keys).map(key => key.split('.')[0]))) {
+        if (Object.hasOwn(known, top)) seedKeyHashes(keyHashes, known[top], top);
+    }
+    return { status: 200, answer: { result: 'ok', settingsHash: pageSettingsHash(stored), keyHashes, ...await shownCountsOf(request) } };
+}
+
+router.post('/save-partial', async function (request, response) {
+    try {
+        const { keys: sent, expectedHashes } = request.body ?? {};
+        const applied = await applySettingsChanges(request, sent, expectedHashes);
+        return response.status(applied.status).send(applied.answer);
     } catch (err) {
         console.error(err);
         response.send(err);

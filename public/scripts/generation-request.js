@@ -26,6 +26,7 @@ const GENERATE_URL = '/api/generation/generate';
  * @property {(() => AsyncGenerator<StreamedReply, void, void>) | null} stream The reply as it comes, when the server streams it.
  * @property {any} data The whole answer, when it doesn't.
  * @property {string} generationId
+ * @property {any} settingsSaved The answer to the settings changes the action carried, when it carried any.
  */
 
 /**
@@ -39,11 +40,27 @@ function errorMessageOf(body) {
 }
 
 /**
+ * The answer to the settings changes an action carried, which the server names in a header.
+ * @param {Response} response
+ * @returns {any}
+ */
+export function settingsSavedOf(response) {
+    const header = response.headers.get('X-ST-Settings-Saved');
+    if (!header) return null;
+    try {
+        return JSON.parse(decodeURIComponent(header));
+    } catch {
+        return null;
+    }
+}
+
+/**
  * The answer is an error: shown where it needs more than its text, and thrown with the text.
  * @param {any} body
+ * @param {any} [settingsSaved]
  * @returns {never}
  */
-function failWith(body) {
+function failWith(body, settingsSaved = null) {
     if (body?.quota_error) {
         renderTemplateAsync('quotaError').then((html) => Popup.show.text('Quota Error', html));
     }
@@ -52,7 +69,7 @@ function failWith(body) {
         const reasons = `Reasons: ${body?.error?.metadata?.reasons?.join(', ') ?? '(N/A)'}`;
         toastr.info(body?.error?.metadata?.flagged_input ?? '(N/A)', reasons, { timeOut: 10000 });
     }
-    throw { error: { message } };
+    throw { error: { message }, settings_saved: settingsSaved, ...(body?.settings_not_saved ? { settings_conflict: body.conflictingKeys ?? null } : {}) };
 }
 
 /**
@@ -145,16 +162,17 @@ export async function sendGeneration(body, signal, url = GENERATE_URL) {
     }
     reportStoredHeader(response);
     const connection = response.headers.get('X-ST-Connection') ?? '';
+    const settingsSaved = settingsSavedOf(response);
     if (response.ok && response.headers.get('X-ST-Stream-Format') === 'compact-v1') {
         streamServerGeneration(generationId);
-        return { connection, stream: streamOf(response, connection), data: null, generationId };
+        return { connection, stream: streamOf(response, connection), data: null, generationId, settingsSaved };
     }
     try {
         const data = await response.json().catch(() => ({ error: { message: response.statusText } }));
         reportStored(data?.stored);
-        if (!response.ok || data?.error) failWith(data);
+        if (!response.ok || data?.error) failWith(data, settingsSaved);
         showTokenizerWarnings(data.warnings);
-        return { connection, stream: null, data, generationId };
+        return { connection, stream: null, data, generationId, settingsSaved };
     } catch (error) {
         takeInStoppedReply(generationId);
         throw error;

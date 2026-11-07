@@ -4,7 +4,8 @@ import {
     online_status, parseAndSaveLogprobs, processCommands, removeLastMessage, removeMacros, resolveClientToolHandoffLoop,
     saveReply, sendMessageAsUser, setGenerationProgress, setSendButtonState, showStopButton, storeSentMessage,
     StreamingProcessor, substituteParams, swipe, triggerAutoContinue, unblockGeneration, updateMessageBlock,
-    updateMessageItemizedPromptButton,
+    updateMessageItemizedPromptButton, takePendingSettingsChanges, noteSettingsChangesSaved, settingsChangesConflicted,
+    returnPendingSettingsChanges,
 } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { name1 } from './app-selection-state.js';
@@ -29,7 +30,7 @@ import { ToolManager } from './tool-calling.js';
 import { REPLY_NOT_SAVED_EVENT, REPLY_STORED_EVENT } from './tokenizer-notices.js';
 import { uuidv4 } from './utils.js';
 import { stopServerGenerations, takeStreamStopResult } from './generation-stop.js';
-import { sendGeneration, wholeReplyOf } from './generation-request.js';
+import { sendGeneration, settingsSavedOf, wholeReplyOf } from './generation-request.js';
 import { getRequestHeaders } from './request-headers.js';
 import { world_info_overflow_alert } from './world-info.js';
 import { pageMacroFacts } from './macros/engine/MacroEnvBuilder.js';
@@ -517,6 +518,38 @@ function generationOwner() {
  */
 
 /**
+ * Sends a generation action with the settings changes the server hasn't seen yet, which it applies first.
+ * @param {object} body
+ * @param {AbortSignal} signal
+ * @param {string} [url]
+ * @returns {Promise<import('./generation-request.js').GenerationAnswer>}
+ */
+export async function sendCarryingSettings(body, signal, url = undefined) {
+    const changes = takePendingSettingsChanges();
+    try {
+        const answer = await sendGeneration({ ...body, settings_changes: changes }, signal, url);
+        if (changes) await noteSettingsChangesSaved(answer.settingsSaved ?? {}, changes.keys);
+        return answer;
+    } catch (error) {
+        await settleCarriedSettings(changes, /** @type {any} */ (error));
+        throw error;
+    }
+}
+
+/**
+ * What became of settings changes an action carried that didn't succeed: taken if the server applied them, reloaded
+ * if it refused them, and saved again if they never reached it.
+ * @param {ReturnType<typeof takePendingSettingsChanges>} changes
+ * @param {{ settings_saved?: any, settings_conflict?: string[]|null }|null|undefined} failure
+ */
+async function settleCarriedSettings(changes, failure) {
+    if (!changes) return;
+    if (failure?.settings_saved) await noteSettingsChangesSaved(failure.settings_saved, changes.keys);
+    else if (failure && 'settings_conflict' in failure) await settingsChangesConflicted(failure.settings_conflict ?? undefined);
+    else returnPendingSettingsChanges(changes);
+}
+
+/**
  * The prompt the next reply would be sent with, as the server builds it, without sending it.
  * @param {string} [type]
  * @returns {Promise<BuiltPrompt|null>} Null when no chat is open.
@@ -531,17 +564,30 @@ export async function buildPrompt(type = 'normal') {
             break;
         }
     }
-    const response = await fetch('/api/generation/prompt', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({
-            ...owner, node_id: nodeId, type,
-            macro_facts: pageMacroFacts(),
-            extension_prompts: await pageInjections(),
-        }),
-    });
+    const changes = takePendingSettingsChanges();
+    let response;
+    try {
+        response = await fetch('/api/generation/prompt', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                ...owner, node_id: nodeId, type,
+                macro_facts: pageMacroFacts(),
+                extension_prompts: await pageInjections(),
+                settings_changes: changes,
+            }),
+        });
+    } catch (error) {
+        await settleCarriedSettings(changes, null);
+        throw error;
+    }
     const answer = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(answer?.error?.message ?? response.statusText);
+    const settingsSaved = settingsSavedOf(response);
+    if (!response.ok) {
+        await settleCarriedSettings(changes, { settings_saved: settingsSaved, ...(answer?.settings_not_saved ? { settings_conflict: answer.conflictingKeys ?? null } : {}) });
+        throw new Error(answer?.error?.message ?? response.statusText);
+    }
+    if (changes) await noteSettingsChangesSaved(settingsSaved ?? {}, changes.keys);
     return answer;
 }
 
@@ -724,7 +770,7 @@ async function generateOnce(type, options = {}, pendingSends = []) {
             replyInFlight = { index, anchor: isStoredNodeId(named) ? /** @type {string} */ (named) : null };
         }
 
-        const answer = await sendGeneration(action, abortController.signal);
+        const answer = await sendCarryingSettings(action, abortController.signal);
         connection = answer.connection;
 
         if (answer.stream && type !== 'quiet') {

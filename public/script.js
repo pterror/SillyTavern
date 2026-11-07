@@ -247,7 +247,7 @@ import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMess
 import { event_types, eventSource } from './scripts/events.js';
 import { token, setToken, getRequestHeaders } from './scripts/request-headers.js';
 import { observeSessionAnswers, onChangeStream, prepareTabSession } from './scripts/tab-session.js';
-import { onStoppedReply, sendGeneration, wholeReplyOf } from './scripts/generation-request.js';
+import { onStoppedReply, wholeReplyOf } from './scripts/generation-request.js';
 import { chat, chat_metadata, setChatMetadata } from './scripts/chat-state.js';
 import { active_character, active_group, name1, default_user_name, setActiveCharacter, setActiveGroup, setActiveCharacterAndGroupFromSettings, setName1Raw } from './scripts/app-selection-state.js';
 import { amount_gen, max_context, main_api, setAmountGen, setMaxContext, setMainApi } from './scripts/generation-params.js';
@@ -303,7 +303,7 @@ export { saveMetadata };
 import { switchToNode, switchToAlternativePath } from './scripts/node-navigation.js';
 export { switchToNode };
 import {
-    Generate, buildPrompt, stopGeneration,
+    Generate, buildPrompt, stopGeneration, sendCarryingSettings,
     streamingProcessor, abortController, setAbortController, kobold_horde_model, generation_started,
     _messageSnapshots, _snapshotMessages, markStoredAs, isAsStored, forgetStored, finishStreamedReplyPersistence, applyStoredReply,
     stampReplyNode, beginSwipeReply, isReplyGenerating,
@@ -3727,7 +3727,7 @@ export async function generateRaw({ prompt = '', instructOverride = false, quiet
     const stop = () => stopController.abort(new Error('Cancelled by stop event'));
     eventSource.on(event_types.GENERATION_STOPPED, stop);
     try {
-        const answer = await sendGeneration({
+        const answer = await sendCarryingSettings({
             character_avatar: typeof avatar === 'string' && avatar !== '' ? avatar : undefined,
             group_id: selected_group != null ? String(selected_group) : undefined,
             prompt, system_prompt: systemPrompt, prefill,
@@ -6293,16 +6293,11 @@ async function runSettingsSave({ full }) {
 }
 
 /**
- * @param {{ full: boolean }} save
+ * The settings the page holds, as a save sends them.
+ * @returns {Record<string, any>}
  */
-async function performSave({ full }) {
-    const dirtyKeys = full ? null : [...pendingSettingsKeys];
-    pendingSettingsKeys.clear();
-    if (dirtyKeys && dirtyKeys.length === 0) {
-        return;
-    }
-
-    const payload = {
+function settingsPayload() {
+    return {
         firstRun: firstRun,
         currentVersion: currentVersion,
         username: name1,
@@ -6324,36 +6319,115 @@ async function performSave({ full }) {
         proxies: proxies,
         selected_proxy: selected_proxy,
     };
+}
 
+/**
+ * The changed settings as a partial save sends them, with the hashes of the values they change.
+ * @param {Record<string, any>} payload
+ * @param {string[]} dirtyKeys
+ * @returns {{ keys: Record<string, any>, expectedHashes: Record<string, number> }|null}
+ */
+function partialChangesOf(payload, dirtyKeys) {
+    /** @type {Record<string, any>} */
+    const partialPayload = {};
+    for (const key of dirtyKeys) {
+        if (key.includes('.')) {
+            const topLevel = key.split('.')[0];
+            if (topLevel in payload) {
+                const value = getAtPath(payload, key);
+                if (value !== undefined) {
+                    partialPayload[key] = value;
+                }
+            }
+        } else if (key in payload && payload[key] !== undefined) {
+            partialPayload[key] = payload[key];
+        }
+    }
+    if (Object.keys(partialPayload).length === 0) {
+        return null;
+    }
+    /** @type {Record<string, number>} */
+    const expectedHashes = {};
+    for (const key of Object.keys(partialPayload)) {
+        if (key in serverKeyHashes) {
+            expectedHashes[key] = serverKeyHashes[key];
+        }
+    }
+    return { keys: partialPayload, expectedHashes };
+}
+
+/**
+ * The settings changes the page holds that the server hasn't been sent, taken out of the waiting save, for an action
+ * that the server answers from the settings to carry: the server applies them first.
+ * @returns {{ keys: Record<string, any>, expectedHashes: Record<string, number> }|undefined}
+ */
+export function takePendingSettingsChanges() {
+    if (!settingsReady) return undefined;
+    const { full } = _settingsSaveWindow;
+    _settingsSaveWindow = { full: false };
+    const payload = settingsPayload();
+    const dirtyKeys = full ? Object.keys(payload) : [...pendingSettingsKeys];
+    pendingSettingsKeys.clear();
+    return partialChangesOf(payload, dirtyKeys) ?? undefined;
+}
+
+/**
+ * Settings changes an action carried that never reached the server go back to wait for the next save.
+ * @param {{ keys: Record<string, any> }} changes
+ */
+export function returnPendingSettingsChanges(changes) {
+    scheduleSettingsSave(noteSettingsKeys(Object.keys(changes.keys)));
+}
+
+/**
+ * Takes the server's answer to settings changes it applied, as a save's or an action's that carried them.
+ * @param {{ keyHashes?: Record<string, number>, settingsHash?: number, shown_counts?: any, card_token_counts?: any }} answer
+ * @param {Record<string, any>} sent The changes as they were sent, by key.
+ */
+export async function noteSettingsChangesSaved(answer, sent) {
+    if (!takeServerKeyHashes(answer.keyHashes, Object.keys(sent).map(key => key.split('.')[0]))) {
+        for (const [key, value] of Object.entries(sent)) {
+            seedSettingsHashes(value, key);
+        }
+    }
+    if (answer.settingsHash != null) {
+        knownServerSettingsHash = answer.settingsHash;
+    }
+    takeShownCounts(answer.shown_counts);
+    takeCardCounts(answer.card_token_counts);
+    await eventSource.emit(event_types.SETTINGS_UPDATED);
+}
+
+/**
+ * Settings changes the server refused because another tab or device changed the same settings since.
+ * @param {string[]} [conflictingKeys]
+ */
+export async function settingsChangesConflicted(conflictingKeys) {
+    console.warn('Partial settings save rejected, conflicting keys:', conflictingKeys);
+    toastr.warning(t`Settings were changed in another tab or device. Refreshing - please reapply your change.`, t`Settings save rejected`);
+    await getSettings(null, null, { force: true });
+}
+
+/**
+ * @param {{ full: boolean }} save
+ */
+async function performSave({ full }) {
+    const dirtyKeys = full ? null : [...pendingSettingsKeys];
+    pendingSettingsKeys.clear();
+    if (dirtyKeys && dirtyKeys.length === 0) {
+        return;
+    }
+
+    const payload = settingsPayload();
     const payloadString = JSON.stringify(payload);
     const payloadHash = getStringHash(payloadString);
 
     if (dirtyKeys) {
-        const partialPayload = {};
-        for (const key of dirtyKeys) {
-            if (key.includes('.')) {
-                const topLevel = key.split('.')[0];
-                if (topLevel in payload) {
-                    const value = getAtPath(payload, key);
-                    if (value !== undefined) {
-                        partialPayload[key] = value;
-                    }
-                }
-            } else if (key in payload && payload[key] !== undefined) {
-                partialPayload[key] = payload[key];
-            }
-        }
-
-        if (Object.keys(partialPayload).length === 0) {
+        const changes = partialChangesOf(payload, dirtyKeys);
+        if (!changes) {
             return;
         }
-
-        const expectedHashes = {};
-        for (const key of Object.keys(partialPayload)) {
-            if (key in serverKeyHashes) {
-                expectedHashes[key] = serverKeyHashes[key];
-            }
-        }
+        const { keys: partialPayload, expectedHashes } = changes;
 
         try {
             const result = await fetch('/api/settings/save-partial', {
@@ -6364,10 +6438,8 @@ async function performSave({ full }) {
             });
 
             if (result.status === 409) {
-                const data = await result.json().catch(() => ({}));
-                console.warn('Partial settings save rejected, conflicting keys:', data.conflictingKeys);
-                toastr.warning(t`Settings were changed in another tab or device. Refreshing - please reapply your change.`, t`Settings save rejected`);
-                await getSettings(null, null, { force: true });
+                const refused = await result.json().catch(() => ({}));
+                await settingsChangesConflicted(refused.conflictingKeys);
                 return;
             }
 
@@ -6375,18 +6447,7 @@ async function performSave({ full }) {
                 throw new Error(`Failed to save partial settings: ${result.statusText}`);
             }
 
-            const partialSaveResponse = await result.json().catch(() => ({}));
-            if (!takeServerKeyHashes(partialSaveResponse.keyHashes, Object.keys(partialPayload).map(key => key.split('.')[0]))) {
-                for (const key of Object.keys(partialPayload)) {
-                    seedSettingsHashes(partialPayload[key], key);
-                }
-            }
-            if (partialSaveResponse.settingsHash != null) {
-                knownServerSettingsHash = partialSaveResponse.settingsHash;
-            }
-            takeShownCounts(partialSaveResponse.shown_counts);
-            takeCardCounts(partialSaveResponse.card_token_counts);
-            await eventSource.emit(event_types.SETTINGS_UPDATED);
+            await noteSettingsChangesSaved(await result.json().catch(() => ({})), partialPayload);
         } catch (error) {
             console.error('Error saving settings:', error);
             toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Settings could not be saved`);
