@@ -1,4 +1,4 @@
-import { readWorldInfo, getCharacterWorldLink } from '../endpoints/worldinfo.js';
+import { readWorldInfo, getCharacterWorldLink } from '../world-info-files.js';
 import { character_world_link } from '../../public/scripts/character-world-link.js';
 import { parseDecorators } from './decorators.js';
 import { getStringHash } from '../../public/scripts/hash-utils.js';

@@ -7,6 +7,8 @@ setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
 /** @type {typeof import('../src/endpoints/worldinfo.js')} */
 let worldinfo;
+/** @type {typeof import('../src/world-info-files.js')} */
+let worldInfoFiles;
 /** @type {typeof import('../src/user-stores.js')} */
 let stores;
 /** @type {import('node:http').Server} */
@@ -22,6 +24,7 @@ beforeAll(async () => {
     directories = user.directories;
     stores = await import('../src/user-stores.js');
     worldinfo = await import('../src/endpoints/worldinfo.js');
+    worldInfoFiles = await import('../src/world-info-files.js');
     const express = (await import('express')).default;
     const app = express();
     app.use(express.json());
@@ -120,18 +123,18 @@ describe('readWorldInfoFile (upstream\'s synchronous export)', () => {
     test('reads what /get reads; a missing book is the dummy object or null', async () => {
         const data = { entries: { 0: makeEntry(0, 'Alpha') }, name: 'Sync' };
         await saveBook({ name: 'Sync', data });
-        expect(worldinfo.readWorldInfoFile(directories, 'Sync', false)).toEqual(await getBook('Sync'));
-        expect(worldinfo.readWorldInfoFile(directories, 'Missing', true, { logMissing: false })).toEqual({ entries: {} });
-        expect(worldinfo.readWorldInfoFile(directories, 'Missing', false, { logMissing: false })).toBeNull();
-        expect(worldinfo.readWorldInfoFile(directories, '', true)).toEqual({ entries: {} });
+        expect(worldInfoFiles.readWorldInfoFile(directories, 'Sync', false)).toEqual(await getBook('Sync'));
+        expect(worldInfoFiles.readWorldInfoFile(directories, 'Missing', true, { logMissing: false })).toEqual({ entries: {} });
+        expect(worldInfoFiles.readWorldInfoFile(directories, 'Missing', false, { logMissing: false })).toBeNull();
+        expect(worldInfoFiles.readWorldInfoFile(directories, '', true)).toEqual({ entries: {} });
     });
 
     test('before the store is open it opens it on this thread, and that is the store every later read and write uses', async () => {
         await saveBook({ name: 'Before', data: { entries: { 0: makeEntry(0, 'kept') } } });
         await stores.closeUserStores();
-        expect(worldinfo.readWorldInfoFile(directories, 'Before', false).entries['0'].content).toBe('kept');
+        expect(worldInfoFiles.readWorldInfoFile(directories, 'Before', false).entries['0'].content).toBe('kept');
         await saveBook({ name: 'Before', data: { entries: { 0: makeEntry(0, 'changed') } } });
-        expect(worldinfo.readWorldInfoFile(directories, 'Before', false).entries['0'].content).toBe('changed');
+        expect(worldInfoFiles.readWorldInfoFile(directories, 'Before', false).entries['0'].content).toBe('changed');
         expect((await getBook('Before')).entries['0'].content).toBe('changed');
     });
 });
@@ -410,7 +413,7 @@ describe('worldinfo missing books', () => {
         const errors = jest.spyOn(console, 'error').mockImplementation(() => {});
         for (let i = 0; i < 3; i++) {
             expect(await getBook('Ghost Get')).toEqual({ entries: {} });
-            expect(worldinfo.readWorldInfoFile(directories, 'Ghost Get', true)).toEqual({ entries: {} });
+            expect(worldInfoFiles.readWorldInfoFile(directories, 'Ghost Get', true)).toEqual({ entries: {} });
         }
         expect(printsFor(errors, 'Ghost Get')).toBe(1);
         await postJson('/api/worldinfo/create', { name: 'Ghost Get' });

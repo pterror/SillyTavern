@@ -11,7 +11,6 @@ import { download, debounce, initScrollHeight, resetScrollHeight, parseJsonFile,
 import { selected_group } from './group-chats.js';
 import { isMobile } from './RossAscends-mods.js';
 import { FILTER_TYPES, FilterHelper } from './filters.js';
-import { getTokenCountWithAnswer } from './tokenizers.js';
 import { renderCountBasis } from './tokenizer-notices.js';
 import { power_user, personaStore } from './power-user.js';
 import { findTagsByNames, readTagsForIds, searchTagsByName, tagsStore } from './tags.js';
@@ -655,6 +654,40 @@ function versionOf(book) {
  * @param {string|number} uid
  * @param {any} entry
  */
+/** @type {Map<string, { counts: Map<string, number>, tokenizer: any }>} */
+const entryCounts = new Map();
+
+/**
+ * Takes the counts of entries' contents the server answered with, and shows them beside the entries.
+ * @param {string} name
+ * @param {{ token_counts?: Record<string, number>, counted_with?: any }|null|undefined} answer
+ */
+function takeEntryCounts(name, answer) {
+    if (!answer?.token_counts || typeof answer.token_counts !== 'object') return;
+    const known = entryCounts.get(name) ?? { counts: new Map(), tokenizer: null };
+    known.tokenizer = answer.counted_with ?? known.tokenizer;
+    for (const [uid, count] of Object.entries(answer.token_counts)) {
+        known.counts.set(String(uid), Number(count));
+        const counter = $(`#world_popup_entries_list .world_entry[uid="${uid}"] .world_entry_form_token_counter`);
+        counter.text(String(count));
+        if (counter.length) renderCountBasis(counter, known.tokenizer);
+    }
+    entryCounts.set(name, known);
+}
+
+/**
+ * @param {string} name
+ * @param {string|number} uid
+ * @param {JQuery} counter
+ */
+function showEntryCount(name, uid, counter) {
+    const known = entryCounts.get(name);
+    const count = known?.counts.get(String(uid));
+    if (count === undefined) return;
+    counter.text(String(count));
+    renderCountBasis(counter, known?.tokenizer ?? null);
+}
+
 function noteStoredEntry(name, uid, entry) {
     const version = bookVersions.get(name);
     if (!version) return;
@@ -1845,12 +1878,13 @@ export async function loadWorldInfo(name) {
     const response = await fetch('/api/worldinfo/get', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ name: name }),
+        body: JSON.stringify({ name: name, with_counts: true }),
         cache: 'no-cache',
     });
 
     if (response.ok) {
-        const data = await response.json();
+        const { token_counts: tokenCounts, counted_with: countedWith, ...data } = await response.json();
+        takeEntryCounts(name, { token_counts: tokenCounts, counted_with: countedWith });
         worldInfoCache.set(name, data);
         bookVersions.set(name, versionOf(data));
         noteBookId(name, response);
@@ -3842,12 +3876,6 @@ async function getWorldEntry(name, data, entry) {
 
         // Content
         const counter = editTemplate.find('.world_entry_form_token_counter');
-        const countTokensDebounced = debounce(async function (counter, value) {
-            // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
-            const { count: numberOfTokens, answer } = await getTokenCountWithAnswer(value);
-            $(counter).text(numberOfTokens);
-            renderCountBasis(counter, answer);
-        }, debounce_timeout.relaxed);
         const contentInputId = `world_entry_content_${entry.uid}`;
         const contentInput = editTemplate.find('textarea[name="content"]');
         contentInput.data('uid', entry.uid);
@@ -3860,9 +3888,6 @@ async function getWorldEntry(name, data, entry) {
                 entryData.content = text;
                 setWIOriginalDataValue(data, uid, 'content', text);
             },
-        });
-        contentInput.on('input', function (_, { skipCount } = {}) {
-            if (!skipCount) countTokensDebounced(counter, $(this).val());
         });
         editTemplate.find('.editor_maximize').attr('data-for', contentInputId);
 
@@ -4041,7 +4066,7 @@ async function getWorldEntry(name, data, entry) {
             },
         });
 
-        countTokensDebounced(counter, contentInput.val());
+        showEntryCount(name, entry.uid, counter);
 
         editTemplate.find('.inline-drawer-content').css('display', 'none');
         editOutlet.append(editTemplate);
@@ -4498,6 +4523,7 @@ async function _save(name, data) {
 
     const result = await response.json().catch(() => ({}));
     for (const [uid, entry] of Object.entries(result.entries ?? {})) noteStoredEntry(name, uid, entry);
+    takeEntryCounts(name, result);
     const deletedBookId = bookIds.get(name);
     for (const uid of result.deleted ?? []) {
         noteStoredEntry(name, uid, null);
@@ -4676,7 +4702,9 @@ async function _saveEntry(name, uid, entryData, data) {
         return false;
     }
 
-    noteStoredEntry(name, uid, (await response.json().catch(() => null))?.entry ?? null);
+    const saved = await response.json().catch(() => null);
+    noteStoredEntry(name, uid, saved?.entry ?? null);
+    takeEntryCounts(name, saved);
     return true;
 }
 

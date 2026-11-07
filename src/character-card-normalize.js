@@ -1,5 +1,5 @@
 import { deepMerge, tryParse } from './util.js';
-import { readWorldInfoFile, getCharacterWorldLink } from './endpoints/worldinfo.js';
+import { readWorldInfoFile, getCharacterWorldLink } from './world-info-files.js';
 import { character_world_link } from '../public/scripts/character-world-link.js';
 import { getAtPath, setAtPath } from '../public/scripts/hash-utils.js';
 export { computeContentIdentityHash, stripInstallLocalFields } from './card-identity-hash.js';

@@ -7,110 +7,46 @@ import sanitize from 'sanitize-filename';
 import { readAllSettings } from '../settings-store.js';
 import { settingsDocumentOf } from '../settings-documents.js';
 import { isPlainObject } from '../util.js';
-import { resolveCharacterWorldLink } from '../../public/scripts/character-world-link.js';
-import { engineStoreHere, requestStore, storeRoute, userStore } from '../user-stores.js';
-import { MAX_UID, bookExistsHere, readBookHere } from '../world-info-engine.js';
+import { requestStore, storeRoute, userStore } from '../user-stores.js';
+import { MAX_UID } from '../world-info-engine.js';
+import { readWorldInfo } from '../world-info-files.js';
 import { bookKey } from '../world-info-keys.js';
 import { TYPE } from '../library-codes.js';
 import { sessionHeaderOf } from '../request-session.js';
+import { countWithConnection } from '../connection-counts.js';
 
 /**
  * World info is stored in the user's engine store (`lib.books`, `src/world-info-engine.js`); a book is found by the
  * stem of the file its name would have had (`bookKey()`). Upstream's format comes in through importWorldInfoFromRaw().
  */
 
-/** @type {Set<string>} */
-const reportedMisses = new Set();
-const REPORTED_MISS_LIMIT = 10_000;
 const CARD_COPY = 'This is a copy of a character\'s embedded lorebook. The character keeps its own lorebook, so the copy isn\'t added to the list.';
-
-/**
- * @param {{ root: string }} directories
- * @param {string} worldInfoName
- */
-function reportMissing(directories, worldInfoName) {
-    const at = `${path.resolve(directories.root)}\0${bookKey(worldInfoName)}`;
-    if (reportedMisses.has(at)) {
-        reportedMisses.delete(at);
-        reportedMisses.add(at);
-        return;
-    }
-    reportedMisses.add(at);
-    if (reportedMisses.size > REPORTED_MISS_LIMIT) reportedMisses.delete(reportedMisses.values().next().value);
-    console.error(`World info file ${sanitize(`${worldInfoName}.json`)} doesn't exist.`);
-}
-
-/**
- * @param {{ root: string }} directories
- * @param {string} worldInfoName
- */
-function foundAgain(directories, worldInfoName) {
-    reportedMisses.delete(`${path.resolve(directories.root)}\0${bookKey(worldInfoName)}`);
-}
-
-/**
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {{data?: {extensions?: {world?: string}, character_book?: object}}|null|undefined} character
- * @returns {string}
- */
-export function getCharacterWorldLink(directories, character) {
-    return resolveCharacterWorldLink(character, (name) => !!name && bookExistsHere(engineStoreHere(directories), name));
-}
 
 function sanitizeEntryUid(uid) {
     const safe = sanitize(String(uid));
     return safe ? safe : null;
 }
 
-/**
- * Reads a World Info file and returns its contents (upstream's export, on this thread: the book is read from one
- * state of the user's store, opened here when no read has opened it yet).
- * @param {import('../users.js').UserDirectoryList} directories User directories
- * @param {string} worldInfoName Name of the World Info file
- * @param {boolean} allowDummy If true, returns an empty object if the file doesn't exist
- * @param {{ logMissing?: boolean }} [options] logMissing: false for a caller that reports a missing file itself.
- * @returns {object} World Info file contents
- */
-export function readWorldInfoFile(directories, worldInfoName, allowDummy, { logMissing = true } = {}) {
-    const dummyObject = allowDummy ? { entries: {} } : null;
-
-    if (!worldInfoName) {
-        return dummyObject;
-    }
-
-    const book = readBookHere(engineStoreHere(directories), worldInfoName);
-    if (!book) {
-        if (logMissing) reportMissing(directories, worldInfoName);
-        return dummyObject;
-    }
-    foundAgain(directories, worldInfoName);
-    return book;
-}
-
-/**
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} worldInfoName
- * @param {boolean} allowDummy
- * @param {{ logMissing?: boolean }} [options]
- * @returns {Promise<object>}
- */
-export async function readWorldInfo(directories, worldInfoName, allowDummy, { logMissing = true } = {}) {
-    const dummyObject = allowDummy ? { entries: {} } : null;
-
-    if (!worldInfoName) {
-        return dummyObject;
-    }
-
-    const book = await (await userStore(directories)).lib.books.read(worldInfoName);
-    if (!book) {
-        if (logMissing) reportMissing(directories, worldInfoName);
-        return dummyObject;
-    }
-    foundAgain(directories, worldInfoName);
-    return book;
-}
-
 export const router = express.Router();
+
+/**
+ * The entries' contents counted as the chosen connection counts them, keyed by uid.
+ * @param {import('express').Request} request
+ * @param {Record<string, any>|null|undefined} entries
+ * @returns {Promise<{ token_counts?: Record<string, number>, counted_with?: object|null }>}
+ */
+async function entryCounts(request, entries) {
+    const listed = Object.entries(entries ?? {}).filter(([, entry]) => entry && typeof entry === 'object');
+    if (listed.length === 0) return {};
+    try {
+        const counted = await countWithConnection(request.user.directories, {}, listed.map(([, entry]) => String(entry.content ?? '')));
+        if (!counted) return {};
+        return { token_counts: Object.fromEntries(listed.map(([uid], i) => [uid, counted.counts[i]])), counted_with: counted.tokenizer };
+    } catch (error) {
+        console.error('Could not count the lorebook entries:', error);
+        return {};
+    }
+}
 
 router.post('/get', storeRoute('reading a World Info book', async (request, response) => {
     if (!request.body?.name) {
@@ -122,6 +58,7 @@ router.post('/get', storeRoute('reading a World Info book', async (request, resp
     const file = await readWorldInfo(request.user.directories, request.body.name, true);
 
     if (found?.defined) response.set('X-ST-Book-Id', String(found.id));
+    if (request.body.with_counts === true) return response.send({ ...file, ...await entryCounts(request, file.entries) });
     return response.send(file);
 }));
 
@@ -374,7 +311,7 @@ router.post('/entries/apply', storeRoute('applying World Info changes', async (r
     if (!result) {
         return response.status(404).send({ error: `Lorebook '${name}' not found` });
     }
-    return response.send(result);
+    return response.send({ ...result, ...await entryCounts(request, /** @type {any} */ (result).entries) });
 }));
 
 router.post('/duplicate', storeRoute('duplicating a World Info book', async (request, response) => {
@@ -501,5 +438,5 @@ router.post('/entry/edit', storeRoute('saving a World Info entry', async (reques
     if (result === 'no entry') {
         return response.status(404).send({ error: `Entry uid '${String(uid)}' not found in lorebook '${name}'` });
     }
-    return response.send({ ok: true, entry: result.entry });
+    return response.send({ ok: true, entry: result.entry, ...await entryCounts(request, { [String(result.entry?.uid ?? uid)]: result.entry }) });
 }));

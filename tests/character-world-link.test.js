@@ -6,8 +6,8 @@ import { character_world_link, resolveCharacterWorldLink } from '../public/scrip
 
 setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
 
-/** @type {typeof import('../src/endpoints/worldinfo.js')} */
-let worldinfo;
+/** @type {typeof import('../src/world-info-files.js')} */
+let worldInfoFiles;
 /** @type {typeof import('../src/world-info/candidate-resolution.js')} */
 let candidates;
 /** @type {typeof import('../src/character-card-normalize.js')} */
@@ -20,7 +20,7 @@ let directories;
 beforeAll(async () => {
     user = await (await import('./converted-user.fixture.js')).convertedUser('st-character-world-link-');
     directories = user.directories;
-    worldinfo = await import('../src/endpoints/worldinfo.js');
+    worldInfoFiles = await import('../src/world-info-files.js');
     candidates = await import('../src/world-info/candidate-resolution.js');
     normalize = await import('../src/character-card-normalize.js');
 });
@@ -114,10 +114,10 @@ describe('getCharacterWorldLink (server)', () => {
         await writeWorld('Stored', {});
         const errors = captureErrors();
 
-        expect(await worldinfo.getCharacterWorldLink(directories, card('Stored', embeddedBook('Stored')))).toBe(character_world_link.FILE);
-        expect(await worldinfo.getCharacterWorldLink(directories, card('Link Embedded', embeddedBook('Link Embedded')))).toBe(character_world_link.EMBEDDED);
-        expect(await worldinfo.getCharacterWorldLink(directories, card('Link Missing'))).toBe(character_world_link.MISSING);
-        expect(await worldinfo.getCharacterWorldLink(directories, card(''))).toBe(character_world_link.NONE);
+        expect(await worldInfoFiles.getCharacterWorldLink(directories, card('Stored', embeddedBook('Stored')))).toBe(character_world_link.FILE);
+        expect(await worldInfoFiles.getCharacterWorldLink(directories, card('Link Embedded', embeddedBook('Link Embedded')))).toBe(character_world_link.EMBEDDED);
+        expect(await worldInfoFiles.getCharacterWorldLink(directories, card('Link Missing'))).toBe(character_world_link.MISSING);
+        expect(await worldInfoFiles.getCharacterWorldLink(directories, card(''))).toBe(character_world_link.NONE);
         expect(errors).not.toHaveBeenCalled();
     });
 });
