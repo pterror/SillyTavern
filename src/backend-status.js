@@ -246,7 +246,7 @@ function fetchKoboldJson(url, fallback) {
 export async function fetchKoboldCppVersion(apiServer) {
     /** @type {any} */
     const reply = await fetchKoboldJson(`${apiServer}/extra/version`, { version: '0.0' });
-    return reply.result;
+    return reply?.result === 'KoboldCpp' && typeof reply.version === 'string' ? reply.version : undefined;
 }
 
 /**

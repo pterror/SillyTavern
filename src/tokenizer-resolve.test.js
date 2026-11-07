@@ -521,7 +521,7 @@ await check('OOBA that looks like LM Studio has no encode endpoint', async () =>
     }
 });
 
-await check('kobold /status remembers can_use_tokenization from the /extra/version result field (KoboldCpp quirk)', async () => {
+await check('kobold /status remembers can_use_tokenization from the KoboldCpp version /extra/version reports', async () => {
     const { router } = await import('./endpoints/backends/kobold.js');
     const kcpp = await startFakeBackend({
         '/api/v1/info/version': json({ result: '1.2.5' }),
@@ -542,7 +542,7 @@ await check('kobold /status remembers can_use_tokenization from the /extra/versi
         });
         assert.equal(res.status, 200);
         const body = await res.json();
-        assert.deepEqual(body, { koboldUnitedVersion: '1.2.5', koboldCppVersion: 'KoboldCpp', model: 'koboldcpp/gemma-2-9b-it' });
+        assert.deepEqual(body, { koboldUnitedVersion: '1.2.5', koboldCppVersion: '1.70', model: 'koboldcpp/gemma-2-9b-it' });
         assert.equal(backendStatus.recallRemoteTokenization('kobold', undefined, `${kcpp.url}/api`), true);
 
         kcpp.paths.length = 0;

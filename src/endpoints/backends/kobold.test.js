@@ -122,7 +122,7 @@ const fakeTokenizerOptions = {
 /** What a KoboldCpp that streams, and takes nothing newer, answers when asked its versions. */
 const VERSIONS = {
     '/v1/info/version': { result: '1.0.0' },
-    '/extra/version': { result: '1.30' },
+    '/extra/version': { result: 'KoboldCpp', version: '1.30' },
     '/v1/model': { result: 'koboldcpp/test-model' },
 };
 
