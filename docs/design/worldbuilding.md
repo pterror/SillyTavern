@@ -102,8 +102,8 @@ it.
 
 Inside the overview and inside every cell of a board or grid, entries are grouped by the view's grouping relation:
 
-- An entry's **card** shows what a reader needs to tell what the entry is and how it fits: its name in its look, its
-  small picture, the first sentence of its text, and its relations line. Nothing from character cards ("there is zero
+- An entry's **card** shows its name in its look, its small picture, its text (as much as the card holds, all of it
+  when short, fading where cut), and its relations line. It doesn't follow the character card's layout ("there is zero
   fucking reason for lorebook ui to mirror character card ui", owner, 2026-11-03T04:21:19).
 - An entry with members is a **region**, headed by the entry's own card with its member count, and holding its
   members' cards. A member with members of its own is a region nested inside, headed the same way.
