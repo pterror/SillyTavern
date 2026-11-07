@@ -3,8 +3,7 @@
 This doc was a design pass on one gap: boot waited on the whole character library before the app
 was usable. Its options (render first and fill the library in the background, or keep the chunked
 fetch and stop awaiting it) are moot: the page no longer holds the library at all. What follows is
-what boot does now, for the next reader. The main design doc is
-[`character-data-residency-redesign.md`](character-data-residency-redesign.md).
+what boot does now, for the next reader.
 
 ## What boot does
 
@@ -22,7 +21,7 @@ what boot does now, for the next reader. The main design doc is
      `reindexTagAssignments()` follows it.
 
 There is no whole-library fetch, manifest or diff anywhere on this path. `/api/characters/manifest`,
-the unsearched `/api/characters/all` stream and `/api/groups/all` are removed.
+`/api/characters/all` and `/api/groups/all` are removed.
 
 ## What the page holds
 
