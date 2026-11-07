@@ -128,7 +128,6 @@ State and other
 - Shared code lives in the page's folder: `src/library-engine.js` imports `public/scripts/hash-utils.js`. Code both sides use belongs in a shared package.
 - `LibraryEngine.query` is unreadable.
 - Dependencies: lodash (18 files) and node-fetch (29 files) go, for the platform's own.
-- `patches/` holds patch-package changes with narrating comments ("rhi.zone patch (2026-08)").
 - Logging: "[Macro] Warning: Parsing errors detected" logs the whole prompt, thousands of lines. Best-in-class logging: short, structured, nothing dumped.
 - interact: the components package holds every component, each split by technique into many files (combobox in ten), with test pages inside `src/` and the command bridge inside components although components know nothing of commands. Re-examined before more is built on it.
 - Settings have no owner: `applySettings` (`public/script.js:6826`) copies them into dozens of globals and the DOM, kept roughly in step by hand, with a hash over a hand-built snapshot; `saveSettings`/`saveSettingsDebounced` (382 call sites) decide full or partial from the first argument's type (`readSettingsSaveArgs`, `:6972`), which also writes a global. The settings model and `settings-scopes.md` (one source per value, a cascade) replace all of it.

@@ -38,21 +38,13 @@ then
     fi
 fi
 
-# Same shape as the better-sqlite3 block above, plus one extra step: this repo also carries a real source patch
-# for inotify-remastered-plus (patches/inotify-remastered-plus+*.patch - see probe-inotify-remastered-plus.js
-# and that patch file's own comments on why an UNPATCHED build is actually worse than no binding at all - it
-# crashes the whole process on a real inotify queue overflow instead of just missing the fast-path detection).
-# --ignore-scripts above means neither patch-package nor this package's own node-gyp build ever ran on install,
-# so both need running here, in order (patch the source, then build it). A no-op on non-Linux (the probe exits
-# 0 immediately there - see its own header) since this package is `os: linux`-gated and never gets installed
-# elsewhere.
+# inotify-remastered-plus is built from patched source (patches/inotify-remastered-plus+*.patch): an unpatched
+# build kills the process on an inotify queue overflow. --ignore-scripts above skipped both patch-package and the
+# node-gyp build, so both run here, patch first. The probe exits 0 on non-Linux, where the package isn't installed.
 if ! node src/probe-inotify-remastered-plus.js > /dev/null 2>&1
 then
     echo "inotify-remastered-plus native binding is missing, unpatched, or broken, attempting a rebuild..."
-    # patch-package with NO package-name argument is its apply mode (applying every patch found in patches/) -
-    # passing a package name instead switches it into GENERATE mode (diffing node_modules against a fresh
-    # install to CREATE a patch from local changes), which is a different command entirely and would silently
-    # do nothing useful here (confirmed the hard way: it reported "no changes" and made this whole chain fail).
+    # patch-package without a package name applies patches/; with one it generates a patch instead.
     if ./node_modules/.bin/patch-package > /dev/null 2>&1 && npm rebuild inotify-remastered-plus --ignore-scripts=false
     then
         echo "inotify-remastered-plus rebuild finished."

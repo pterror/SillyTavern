@@ -34,8 +34,7 @@ rem this same batch file might run under.
 node src\probe-inotify-remastered-plus.js >nul 2>&1
 if errorlevel 1 (
     echo inotify-remastered-plus native binding is missing, unpatched, or broken, attempting a rebuild...
-    rem patch-package with NO package-name argument is its apply mode - see start.sh's own comment on why
-    rem passing a package name here instead would silently do the wrong thing (its GENERATE mode).
+    rem patch-package without a package name applies patches/; with one it generates a patch instead.
     call npx patch-package >nul 2>&1
     call npm rebuild inotify-remastered-plus --ignore-scripts=false
     if errorlevel 1 (
