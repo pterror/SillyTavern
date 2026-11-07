@@ -332,12 +332,11 @@ async function showKudos() {
         headers: getRequestHeaders({ omitContentType: true }),
     });
 
+    const data = await response.json().catch(() => null);
     if (!response.ok) {
-        toastr.warning('Could not load user info from Horde. Please try again later.');
+        toastr.warning(data?.error?.message ?? response.statusText, 'Could not load user info from Horde');
         return;
     }
-
-    const data = await response.json();
 
     if (data.anonymous) {
         toastr.info('You are in anonymous mode. Set your personal Horde API key to see kudos.');

@@ -1,6 +1,5 @@
 import express from 'express';
-import { AIHorde } from '@zeldafan0225/ai_horde';
-import { getVersion, delay, Cache } from '../util.js';
+import { getVersion, delay, Cache, tryParse } from '../util.js';
 import { readSecret, SECRET_KEYS } from './secrets.js';
 import { buildRawActionKoboldRequest } from './backends/kobold.js';
 import { generateTurnOf, textCompletionQuietInput } from '../page-writes.js';
@@ -66,8 +65,8 @@ function registerHordePoll(jobId) {
 }
 
 /**
- * Returns the AIHorde client agent.
- * @returns {Promise<string>} AIHorde client agent
+ * Returns the client agent AI Horde is told.
+ * @returns {Promise<string>} The client agent
  */
 async function getClientAgent() {
     const version = await getVersion();
@@ -75,13 +74,19 @@ async function getClientAgent() {
 }
 
 /**
- * Returns the AIHorde client.
- * @returns {Promise<AIHorde>} AIHorde client
+ * @param {string} route An AI Horde API route, from `/`.
+ * @param {Record<string, string>} [headers]
+ * @returns {Promise<any>} The route's JSON answer.
  */
-async function getHordeClient() {
-    return new AIHorde({
-        client_agent: await getClientAgent(),
+async function hordeApi(route, headers = {}) {
+    const response = await fetchOutgoing(`https://aihorde.net/api/v2${route}`, {
+        headers: { 'Client-Agent': await getClientAgent(), ...headers },
     });
+    if (!response.ok) {
+        const body = tryParse(await response.text());
+        throw new Error(`AI Horde answered ${response.status}: ${body?.message ?? response.statusText}`);
+    }
+    return response.json();
 }
 
 router.post('/text-workers', async (request, response) => {
@@ -441,18 +446,11 @@ router.post('/user-info', async (request, response) => {
     }
 
     try {
-        const ai_horde = await getHordeClient();
-        const sharedKey = await (async () => {
-            try {
-                return await ai_horde.getSharedKey(api_key_horde);
-            } catch {
-                return null;
-            }
-        })();
-        const user = await ai_horde.findUser({ token: api_key_horde });
+        const sharedKey = await hordeApi(`/sharedkeys/${encodeURIComponent(api_key_horde)}`).catch(() => null);
+        const user = await hordeApi('/find_user', { apikey: api_key_horde });
         return response.send({ user, sharedKey, anonymous: false });
     } catch (error) {
-        console.error(error);
-        return response.sendStatus(500);
+        console.error('Could not load the AI Horde user:', error);
+        return response.status(502).send({ error: { message: error.message } });
     }
 });

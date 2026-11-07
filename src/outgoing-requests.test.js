@@ -6,6 +6,7 @@ import { getGlobalDispatcher, setGlobalDispatcher } from 'undici';
 
 import { initOutgoingRequests } from './outgoing-requests.js';
 import { fetchOutgoing } from './outgoing-fetch.js';
+import { forEachBodyText } from './util.js';
 
 const original = getGlobalDispatcher();
 /** @type {http.Server} */
@@ -93,4 +94,23 @@ test('fetchOutgoing() says why a request failed', async () => {
     const refused = await fetchOutgoing(`http://127.0.0.1:${closedPort}/`).then(() => null, (/** @type {Error & { code?: string }} */ e) => e);
     assert.match(String(refused?.message), /^Connection refused: /);
     assert.equal(refused?.code, 'ECONNREFUSED');
+});
+
+test('a connection that closes mid-reply is reported as that, whichever way the body is read', async () => {
+    filterOn({ privateAddressWhitelist: ['127.0.0.0/8'] });
+    const cut = http.createServer((_request, response) => {
+        response.writeHead(200, { 'Content-Type': 'text/plain' });
+        response.write('partial');
+        setTimeout(() => response.socket?.destroy(), 20);
+    });
+    await new Promise(resolve => cut.listen(0, '127.0.0.1', () => resolve(undefined)));
+    const cutPort = /** @type {import('node:net').AddressInfo} */ (cut.address()).port;
+    try {
+        const text = await (await fetchOutgoing(`http://127.0.0.1:${cutPort}/`)).text().then(() => null, (/** @type {Error} */ e) => e);
+        assert.match(String(text?.message), /^The connection closed before the reply ended: /);
+        const failure = await forEachBodyText(/** @type {ReadableStream<Uint8Array>} */ ((await fetchOutgoing(`http://127.0.0.1:${cutPort}/`)).body), () => {});
+        assert.match(String(/** @type {Error} */ (failure)?.message), /^The connection closed before the reply ended: /);
+    } finally {
+        await new Promise(resolve => cut.close(() => resolve(undefined)));
+    }
 });
