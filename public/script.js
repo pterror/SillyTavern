@@ -214,6 +214,7 @@ import { getFocusedField, getMountedTextarea } from './scripts/live-editor/regis
 import { initChatBoxEditor, initChatLiveEditor, mountChatEditor, unmountChatEditor } from './scripts/chat-live-editor.js';
 import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, initCharacterFieldEditor, isFieldBeingEdited, setFieldValue } from './scripts/character-field-editor.js';
 import { initCharInfoTabDimming, refreshCharInfoTabDimming } from './scripts/char-info-tab-dimming.js';
+import { selectedGreetingIndex } from './scripts/greeting-pager-selection.js';
 import { initPresetManager } from './scripts/preset-manager.js';
 import { getLastMessageId, initMacros } from './scripts/macros.js';
 import { currentUser, setUserControls } from './scripts/user.js';
@@ -7313,7 +7314,7 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
     $('#character_version_textarea').val(characterFormValue(character, '#character_version_textarea'));
     setFieldValue('personality_textarea', characterFormValue(character, '#personality_textarea'));
     const greetingModel = cardToGreetingsModel(character);
-    setGreetingPagerGreetings(greetingModel.greetings, greetingModel.defaultIndex, greetingModel.greetings.map(hashGreetingText));
+    setGreetingPagerGreetings(character.avatar, greetingModel.greetings, greetingModel.defaultIndex, greetingModel.greetings.map(hashGreetingText));
     setFieldValue('scenario_pole', characterFormValue(character, '#scenario_pole'));
     setFieldValue('depth_prompt_prompt', characterFormValue(character, '#depth_prompt_prompt'));
     $('#depth_prompt_depth').val(characterFormValue(character, '#depth_prompt_depth'));
@@ -7399,8 +7400,10 @@ function select_rm_create({ switchMenu = true, show = true } = {}) {
     $('#creator_textarea').val(create_save.creator);
     $('#character_version_textarea').val(create_save.character_version);
     setFieldValue('personality_textarea', create_save.personality);
-    const greetingModel = cardToGreetingsModel({ first_mes: create_save.first_message, data: { alternate_greetings: create_save.alternate_greetings, extensions: create_save.extensions } });
-    setGreetingPagerGreetings(greetingModel.greetings, greetingModel.defaultIndex, greetingModel.greetings.map(hashGreetingText));
+    if (show) {
+        const greetingModel = cardToGreetingsModel({ first_mes: create_save.first_message, data: { alternate_greetings: create_save.alternate_greetings, extensions: create_save.extensions } });
+        setGreetingPagerGreetings(null, greetingModel.greetings, greetingModel.defaultIndex, greetingModel.greetings.map(hashGreetingText));
+    }
     $('#talkativeness_slider').val(create_save.talkativeness);
     setFieldValue('scenario_pole', create_save.scenario);
     setFieldValue('depth_prompt_prompt', create_save.depth_prompt_prompt);
@@ -8162,7 +8165,9 @@ function applyGreetingOpSuccess(character, result, edit) {
     }
     const before = cardToGreetingsModel(character).greetings;
     applyGreetingsModelToCharacter(character, { greetings: result.greetings, defaultIndex: result.defaultPosition });
-    setGreetingPagerGreetings(result.greetings, result.defaultPosition, result.hashes);
+    if (greetingPagerState.owner === character.avatar) {
+        setGreetingPagerGreetings(character.avatar, result.greetings, result.defaultPosition, result.hashes);
+    }
     run.character = character;
     if (!edit) return;
     const from = before.find(text => hashGreetingText(text) === edit.expectedHash);
@@ -8240,8 +8245,11 @@ function queueGreetingSave(avatar, save) {
 }
 
 const greetingPagerState = {
+    /** @type {string|null} */
+    owner: null,
     greetings: [''],
     defaultIndex: 0,
+    /** @type {number[]} */
     hashes: [],
     committed: [false],
     index: 0,
@@ -8252,7 +8260,7 @@ const greetingPagerState = {
  * @property {number} position
  * @property {boolean} committed
  * @property {number|undefined} hash
- * @property {{greetings: string[], defaultIndex: number|null, hashes: number[]}|null} pending
+ * @property {{owner: string|null, greetings: string[], defaultIndex: number|null, hashes: number[]}|null} pending
  */
 
 /** @type {GreetingPagerEdit|null} */
@@ -8273,16 +8281,12 @@ function endGreetingPagerEdit() {
         }
         return;
     }
-    const { greetings, defaultIndex, hashes } = edit.pending;
-    if (edit.committed && Number.isFinite(edit.hash)) {
-        if (hashes[edit.position] === edit.hash) {
-            greetingPagerState.index = edit.position;
-        } else {
-            const matches = hashes.flatMap((hash, i) => (hash === edit.hash ? [i] : []));
-            if (matches.length === 1) greetingPagerState.index = matches[0];
-        }
-    }
-    setGreetingPagerGreetings(greetings, defaultIndex, hashes);
+    const { owner, greetings, defaultIndex, hashes } = edit.pending;
+    setGreetingPagerGreetings(owner, greetings, defaultIndex, hashes, {
+        owner: greetingPagerState.owner,
+        index: edit.position,
+        hash: edit.committed ? edit.hash : undefined,
+    });
 }
 
 /**
@@ -8305,20 +8309,25 @@ function dropUncommittedPagerSlot(position) {
 }
 
 /**
+ * @param {string|null} owner a character's avatar, or null for the create form
  * @param {string[]} greetings
  * @param {number|null} defaultIndex
  * @param {number[]} hashes
+ * @param {import('./scripts/greeting-pager-selection.js').GreetingSelection} [selected]
  */
-function setGreetingPagerGreetings(greetings, defaultIndex, hashes) {
+function setGreetingPagerGreetings(owner, greetings, defaultIndex, hashes, selected) {
     if (greetingPagerEdit) {
-        greetingPagerEdit.pending = { greetings: greetings.slice(), defaultIndex, hashes: hashes.slice() };
+        greetingPagerEdit.pending = { owner, greetings: greetings.slice(), defaultIndex, hashes: hashes.slice() };
         return;
     }
+    const { index } = greetingPagerState;
+    const shown = selected ?? { owner: greetingPagerState.owner, index, hash: greetingPagerState.hashes[index] };
+    greetingPagerState.owner = owner;
     greetingPagerState.greetings = greetings.length > 0 ? greetings.slice() : [''];
     greetingPagerState.defaultIndex = greetings.length > 0 ? defaultIndex : 0;
     greetingPagerState.hashes = greetings.length > 0 ? hashes.slice() : [];
     greetingPagerState.committed = greetings.length > 0 ? greetingPagerState.greetings.map(() => true) : [false];
-    greetingPagerState.index = Math.max(0, Math.min(greetingPagerState.index, greetingPagerState.greetings.length - 1));
+    greetingPagerState.index = selectedGreetingIndex(shown, owner, greetingPagerState.hashes, greetingPagerState.greetings.length);
     renderGreetingPager();
 }
 
@@ -8461,7 +8470,7 @@ async function deleteGreetingPagerGreeting() {
         create_save.alternate_greetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'greeting pager delete (create mode)');
         if (!create_save.extensions) create_save.extensions = {};
         create_save.extensions[GREETING_DEFAULT_POSITION_KEY] = fields.greetingDefaultPosition;
-        setGreetingPagerGreetings(remaining, remainingDefault, remaining.map(hashGreetingText));
+        setGreetingPagerGreetings(null, remaining, remainingDefault, remaining.map(hashGreetingText));
         return;
     }
 
@@ -8676,7 +8685,7 @@ async function createCharacterFromCreateSave({ jsonData } = {}) {
             field.callback && field.callback(fieldValue);
         });
         create_save.first_message = '';
-        setGreetingPagerGreetings([''], 0, []);
+        setGreetingPagerGreetings(null, [''], 0, []);
 
         if (Array.isArray(create_save.extra_books) && create_save.extra_books.length > 0) {
             await sendAuxBooksOp(getCharaFilename(avatarId), 'set', create_save.extra_books);
