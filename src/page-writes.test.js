@@ -19,7 +19,7 @@ const { applyPageWrites } = await import('./page-writes.js');
 const { chatContext } = await import('./chat-request.js');
 const { newSessionKey } = await import('./chat-engine.js');
 const { SESSION_HEADER } = await import('./request-session.js');
-const { router: textRouter } = await import('./endpoints/backends/text-completions.js');
+const { router: generationRouter } = await import('./endpoints/generation.js');
 const { writeAllSettings } = await import('./settings-store.js');
 const { convertedUser, writeLibraryCard, treeOf, seedMessages } = await import('../tests/converted-user.fixture.js');
 
@@ -168,9 +168,11 @@ test('a message\'s token count is not stored', async () => {
 });
 
 /**
+ * A backend answering `reply`, and the app's generation route sending to it; both close when the test ends.
+ * @param {import('node:test').TestContext} t
  * @param {string} reply
  */
-async function generateServer(reply) {
+async function generateServer(t, reply) {
     const seen = { prompt: '' };
     const backend = http.createServer((req, res) => {
         let raw = '';
@@ -183,8 +185,9 @@ async function generateServer(reply) {
         });
     });
     await new Promise(resolve => backend.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise(resolve => backend.close(() => resolve(undefined))));
     writeAllSettings(user.directories, {
-        username: 'Tester', amount_gen: 100, max_context: 4096,
+        main_api: 'textgenerationwebui', username: 'Tester', amount_gen: 100, max_context: 4096,
         power_user: { instruct: { enabled: false }, context: {}, reasoning: {}, sysprompt: {} },
         world_info: { globalSelect: [], charLore: [] }, world_info_settings: {},
         textgenerationwebui_settings: { type: 'generic', generic_model: 'm', server_urls: { generic: `http://127.0.0.1:${backend.address().port}` } },
@@ -193,29 +196,29 @@ async function generateServer(reply) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => { req.user = user.user; next(); });
-    app.use('/', textRouter);
+    app.use('/api/generation', generationRouter);
     const server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
+    t.after(() => {
+        server.closeAllConnections();
+        return new Promise(resolve => server.close(() => resolve(undefined)));
+    });
     return {
         seen,
         /**
          * @param {object} body
          * @param {Record<string, string>} [headers]
          */
-        post: (body, headers = {}) => fetch(`http://127.0.0.1:${server.address().port}/generate`, {
+        post: (body, headers = {}) => fetch(`http://127.0.0.1:${server.address().port}/api/generation/generate`, {
             method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none', ...headers }, body: JSON.stringify(body),
         }),
-        close: () => {
-            server.close();
-            backend.close();
-        },
     };
 }
 
-test('the user message is stored as the page sent it, and the prompt has what the page added', async () => {
+test('the user message is stored as the page sent it, and the prompt has what the page added', async (t) => {
     const avatar = `pw-route-${randomUUID()}.png`;
     await writeCharacter(avatar, 'Rex');
-    const generate = await generateServer('At dawn.');
+    const generate = await generateServer(t, 'At dawn.');
     const sent = { name: 'Tester', is_user: true, is_system: false, send_date: '2026-10-10T00:00:00.000Z', mes: 'When do we leave, Rex?', persona: 'tester.png', force_avatar: '/thumbnail?type=persona&file=tester.png', extra: { isSmallSys: false, bias: 'Calmly' } };
     const answer = await generate.post({
         owner_id: avatar, character_avatar: avatar, type: 'normal', stream: false,
@@ -225,7 +228,6 @@ test('the user message is stored as the page sent it, and the prompt has what th
         user_message: sent, user_message_ref: 'u',
     }, { [SESSION_HEADER]: 'none' });
     const data = await answer.json();
-    generate.close();
 
     assert.equal(answer.status, 200);
     assert.ok(generate.seen.prompt.includes('Thunder rolls.'), 'the message the page added is in the prompt');
@@ -243,10 +245,10 @@ test('the user message is stored as the page sent it, and the prompt has what th
     assert.equal((await user.store.chats.pointer(made)).at, data.assistant_node_id, 'the session is at the reply');
 });
 
-test('a quiet generation\'s prompt reaches the backend, and its answer isn\'t stored', async () => {
+test('a quiet generation\'s prompt reaches the backend, and its answer isn\'t stored', async (t) => {
     const avatar = `pw-quiet-${randomUUID()}.png`;
     await writeCharacter(avatar, 'Rex');
-    const generate = await generateServer('A quiet answer.');
+    const generate = await generateServer(t, 'A quiet answer.');
     const answer = await generate.post({
         owner_id: avatar, character_avatar: avatar, type: 'quiet', stream: false,
         node_id: null,
@@ -254,33 +256,31 @@ test('a quiet generation\'s prompt reaches the backend, and its answer isn\'t st
         quiet_prompt: 'Describe the weather in one word.',
     }, { [SESSION_HEADER]: 'none' });
     const data = await answer.json();
-    generate.close();
 
     assert.equal(answer.status, 200);
     assert.ok(generate.seen.prompt.endsWith('Hi.\nDescribe the weather in one word.'), 'the quiet prompt ends the prompt sent to the backend');
     assert.equal(data.assistant_node_id ?? null, null, 'a quiet answer is not stored');
 });
 
-test('a first send in a new chat with no greeting starts the chat with the user message', async () => {
+test('a first send in a new chat with no greeting starts the chat with the user message', async (t) => {
     const avatar = `pw-empty-${randomUUID()}.png`;
     await writeCharacter(avatar, 'Rex');
-    const generate = await generateServer('Hello.');
+    const generate = await generateServer(t, 'Hello.');
     const answer = await generate.post({
         owner_id: avatar, character_avatar: avatar, type: 'normal', stream: false, node_id: null,
         user_message: { name: 'Tester', is_user: true, mes: 'Anyone here?', extra: {} }, user_message_ref: 'u',
     }, { [SESSION_HEADER]: newSessionKey() });
     const data = await answer.json();
-    generate.close();
     assert.equal(answer.status, 200);
     assert.deepEqual((await pathTo({ avatar }, data.assistant_node_id)).messages.map(m => m.mes), ['Anyone here?', 'Hello.']);
 });
 
-test('no node_id is refused once the chat has messages and the session isn\'t at its start, and taken at the start of a new chat', async () => {
+test('no node_id is refused once the chat has messages and the session isn\'t at its start, and taken at the start of a new chat', async (t) => {
     const avatar = `pw-root-${randomUUID()}.png`;
     await writeCharacter(avatar, 'Rex');
     const elsewhere = newSessionKey();
     await seedMessages(user.store, { avatar }, null, [{ name: 'Rex', is_user: false, mes: 'Earlier.', extra: {} }], { session: elsewhere });
-    const generate = await generateServer('Again.');
+    const generate = await generateServer(t, 'Again.');
     const body = { owner_id: avatar, character_avatar: avatar, type: 'normal', stream: false, node_id: null, user_message: { name: 'Tester', is_user: true, mes: 'Hi?', extra: {} } };
 
     const behind = await generate.post(body, { [SESSION_HEADER]: elsewhere });
@@ -290,7 +290,6 @@ test('no node_id is refused once the chat has messages and the session isn\'t at
     const fresh = newSessionKey();
     await user.store.chats.goTo({ tree: await treeOf(user.store, { avatar }), node_id: null, actor: { user: 'u', session: fresh } });
     const atStart = await generate.post(body, { [SESSION_HEADER]: fresh });
-    generate.close();
     assert.equal(atStart.status, 200);
     const data = await atStart.json();
     assert.deepEqual((await pathTo({ avatar }, data.assistant_node_id)).messages.map(m => m.mes), ['Hi?', 'Again.']);

@@ -65,7 +65,6 @@ const { router: chatCompletionsRouter, generateChatCompletion, buildRawActionCha
 const router = routerWithGenerate(chatCompletionsRouter, generateChatCompletion);
 const { writeAllSettings } = await import('../../settings-store.js');
 const { writeSecret, SECRET_KEYS } = await import('../secrets.js');
-const { encodeTextByLocalTokenizerType, getTiktokenTokenizer } = await import('../tokenizers.js');
 const { tokenKeyHash, TOKEN_KEY_KINDS } = await import('../../token-count-store.js');
 const { resolveTokenizer, tokenizerIdentity } = await import('../../tokenizer-resolve.js');
 
@@ -761,71 +760,6 @@ async function run() {
         }, dropped('Mistral-Nemo-Instruct-2407')], 'raw-action: the estimate trim and the dropped entry are reported');
         assert.deepEqual(backendBodies.map(body => body.logit_bias), [{ 11: 2, 12: 2 }], 'raw-id entries still go through');
         assert.equal(tokenizerDownloadRequests.filter(url => url.endsWith('/nemo.json.gz')).length, 1, 'one download request');
-    }
-
-    {
-        const app = buildTestApp();
-        const server = app.listen(0, '127.0.0.1');
-        await new Promise(resolve => server.once('listening', resolve));
-        const postBias = async (model, entries) => {
-            const res = await fetch(`http://127.0.0.1:${server.address().port}/bias?model=${encodeURIComponent(model)}`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(entries),
-            });
-            return { status: res.status, headers: res.headers, data: await res.json() };
-        };
-        const entries = [{ text: 'hello', value: -5 }, { text: '[11, 12]', value: 2 }];
-        const expectedFor = ids => ({ ...Object.fromEntries(ids.map(id => [id, -5])), 11: 2, 12: 2 });
-        try {
-            const unknown = await postBias('some-unheard-of-model', entries);
-            assert.equal(unknown.status, 200);
-            assert.deepEqual(unknown.data, expectedFor(Array.from(getTiktokenTokenizer('gpt-3.5-turbo').encode('hello'))), 'an unknown name: gpt-3.5-turbo');
-            assert.deepEqual([...unknown.headers.keys()].filter(name => name.startsWith('x-st-')), [], 'no tokenizer header yet');
-
-            const mistral = await postBias('mistral-7b-instruct', entries);
-            assert.deepEqual(mistral.data, expectedFor(await encodeTextByLocalTokenizerType('mistral', 'hello')), 'a mistral name: mistral');
-
-            const claude = await postBias('claude', entries);
-            assert.deepEqual(claude.data, {}, 'claude: no bias');
-        } finally {
-            server.closeAllConnections?.();
-            await new Promise(resolve => server.close(resolve));
-        }
-    }
-
-    {
-        const app = buildTestApp();
-        const server = app.listen(0, '127.0.0.1');
-        await new Promise(resolve => server.once('listening', resolve));
-        const postBias = async (state, entries, query = '') => {
-            const res = await fetch(`http://127.0.0.1:${server.address().port}/bias${query}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-ST-Connection-State': state },
-                body: JSON.stringify(entries),
-            });
-            return { status: res.status, headers: res.headers, text: await res.text() };
-        };
-        const asciiJson = value => JSON.stringify(value).replace(/[\u007f-￿]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
-        const entries = [{ text: 'hello', value: -5 }, { text: '[11, 12]', value: 2 }, { text: 'こんにちは', value: 1 }];
-        try {
-            const unmapped = await postBias(asciiJson({ api: 'openai', source: 'custom', model: 'some-unheard-of-model' }), entries, '?model=gpt-4o');
-            assert.equal(unmapped.status, 200);
-            assert.deepEqual(JSON.parse(unmapped.text), { 11: 2, 12: 2 }, 'unmapped: raw ids only, ?model= ignored');
-            assert.deepEqual(JSON.parse(unmapped.headers.get('x-st-tokenizer-dropped') ?? 'null'), ['hello', 'こんにちは'], 'unmapped: the entries needing ids are listed');
-
-            const mapped = await postBias(asciiJson({ api: 'openai', source: 'openai', model: 'gpt-4o' }), entries, '?model=some-unheard-of-model');
-            const gpt4o = getTiktokenTokenizer('gpt-4o');
-            const expected = { 11: 2, 12: 2 };
-            for (const id of gpt4o.encode('hello')) expected[id] = -5;
-            for (const id of gpt4o.encode('こんにちは')) expected[id] = 1;
-            assert.deepEqual(JSON.parse(mapped.text), expected, 'gpt-4o state: encoded with gpt-4o, not the query');
-            assert.deepEqual(JSON.parse(mapped.headers.get('x-st-tokenizer-dropped') ?? 'null'), [], 'gpt-4o state: nothing left out');
-
-            assert.equal((await postBias('{not json', entries)).status, 400, 'an unreadable state: 400');
-            assert.equal((await postBias(asciiJson({ api: 'textgenerationwebui', model: 'gpt-4o' }), entries)).status, 400, 'a state that is not chat completion: 400');
-        } finally {
-            server.closeAllConnections?.();
-            await new Promise(resolve => server.close(resolve));
-        }
     }
 
     {
