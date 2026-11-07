@@ -219,11 +219,12 @@ order; each property comes from the highest active state that sets it, otherwise
 ### The trigger mark
 
 The words that brought an entry into a reply are marked in the chat, on every message, each from that reply's own
-activation record. Perhaps also a temporary mark for what will be brought up as of the next message ("also perhaps
-temporary 'will be brought up as of next message' too", owner, 2026-11-08): the words in the unsent message and in the
-context the next reply sees, in its own state's look, never stored, replaced by the reply's marks once it's sent. How it
-is computed is not decided: the page doesn't hold lorebooks, so it's either a debounced preview answered by the server
-while typing, or the page holding the active books' key index. The mark is a look set at the theme level,
+activation record. Perhaps also, temporarily, what will be brought up as of the next message ("also perhaps temporary 'will be brought up
+as of next message' too", owner, 2026-11-08): the words in the latest model message, and the rest of what the next
+reply's scan reads, that will bring entries into it. The server runs that scan when it stores a reply and sends the
+marks in the same answer; an edit, swipe or delete that changes what the scan reads answers with them again. They are
+never stored and give way to the next reply's own marks. Possibly the unsent message's words too; how those would be
+computed without a request per keystroke is not decided. The mark is a look set at the theme level,
 in the same editor, per state: **dotted** (the default), **dashed**, **large dots** or **none**, with color and opacity.
 "Only when pointing at the message" is none at rest and dotted when the message is pointed at. The mark is drawn outside
 the name's span, so no name look can cover it. Custom CSS can restyle it through its class.
