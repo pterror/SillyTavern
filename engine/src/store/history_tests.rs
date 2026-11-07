@@ -1315,3 +1315,113 @@ fn a_settings_entity_is_deleted_with_its_history_and_restored_from_it() {
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }
+
+fn erase() -> Record {
+    rec("entityDelete", vec![Value::Id(ENTRY_ID)])
+}
+
+fn deleted_ids(s: &Store) -> Vec<u64> {
+    let page = s
+        .chat_read(|v| history::deleted_page(v, BOOK_ID, None, 100))
+        .unwrap();
+    let Js::Arr(rows) = get(&page, "entries") else {
+        panic!()
+    };
+    rows.iter()
+        .map(|r| match get(r, "id") {
+            Js::Big(id) => *id,
+            other => panic!("{other:?}"),
+        })
+        .collect()
+}
+
+fn nothing_of_the_entry_left(s: &Store) {
+    s.derived(|v| {
+        for space in [history::HIST, history::GONE, history::FORGET, history::KEEP, key::HEAD] {
+            let p = key::id(space, ENTRY_ID);
+            assert!(v.scan(&p, &key::prefix_end(&p), 1)?.is_empty(), "{space}");
+        }
+        assert_eq!(library::entity_info(v, ENTRY_ID)?, None);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(deleted_ids(s), Vec::<u64>::new());
+    assert_eq!(changes(s, Some(&content())), Vec::new());
+    assert_eq!(changes(s, None), Vec::new());
+    let kinds = live_kinds(s);
+    for kind in ["histSet", "histEdit", "histEntityDelete", "histRestore", "entityDelete", "histForget"] {
+        assert_eq!(count(&kinds, kind), 0, "{kind} in {kinds:?}");
+    }
+    assert_eq!(count(&kinds, "entityCreate"), 1, "only the book's: {kinds:?}");
+    assert_eq!(count(&kinds, "jsonValue"), 1, "only the book's: {kinds:?}");
+}
+
+fn whole() -> Record {
+    rec(
+        "jsonValue",
+        vec![
+            Value::Sel(0, ENTRY_ID),
+            Value::Field(FieldRef::Key(b"whole".to_vec())),
+            text("{}"),
+            Value::Absent,
+            Value::Absent,
+        ],
+    )
+}
+
+#[test]
+fn a_deleted_entry_is_erased_with_its_tombstone_and_history_even_through_a_reopen() {
+    let dir = temp_dir("erase-gone");
+    let s = open(&dir);
+    let f = content();
+    s.commit_wait(vec![
+        set(100, &f, "dragon", false, NOBODY),
+        edit(101, &f, 6, 0, "s", NOBODY),
+        whole(),
+    ])
+    .unwrap();
+    s.commit_wait(vec![entity_delete(102)]).unwrap();
+    s.commit_wait(vec![restore(103, "1:0")]).unwrap();
+    s.commit_wait(vec![set(104, &f, "wyrm", false, NOBODY)]).unwrap();
+    s.commit_wait(vec![entity_delete(105)]).unwrap();
+    assert_eq!(deleted_ids(&s), vec![ENTRY_ID]);
+    s.commit_wait(vec![erase()]).unwrap();
+    assert_eq!(deleted_ids(&s), Vec::<u64>::new());
+    assert_eq!(changes(&s, Some(&f)), Vec::new());
+    assert!(refused(&s, vec![restore(106, "1:0")]), "nothing is left to restore");
+    assert!(refused(&s, vec![erase()]), "nothing is left to erase");
+    s.abandon();
+    std::mem::forget(s);
+    let s = open(&dir);
+    wait_forgotten(&s);
+    nothing_of_the_entry_left(&s);
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_live_entry_is_erased_in_one_record_with_its_history() {
+    let dir = temp_dir("erase-live");
+    let s = open(&dir);
+    let f = content();
+    s.commit_wait(vec![set(100, &f, "dragon", false, NOBODY), whole()])
+        .unwrap();
+    s.commit_wait(vec![forget(Some(&f), Some(100), Some(101))])
+        .unwrap_err();
+    s.commit_wait(vec![set(102, &f, "wyrm", false, NOBODY)]).unwrap();
+    s.commit_wait(vec![forget(Some(&f), Some(100), Some(103))])
+        .unwrap();
+    s.commit_wait(vec![forget(None, None, None)]).unwrap();
+    s.commit_wait(vec![erase()]).unwrap();
+    assert_eq!(found(&s, "wyrm"), Vec::<u64>::new());
+    assert_eq!(deleted_ids(&s), Vec::<u64>::new());
+    wait_forgotten(&s);
+    nothing_of_the_entry_left(&s);
+    let p = key::of(history::MARKS);
+    assert!(
+        s.derived(|v| v.scan(&p, &key::prefix_end(&p), 1)).unwrap().is_empty(),
+        "no marker is left"
+    );
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}

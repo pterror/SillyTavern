@@ -1118,12 +1118,7 @@ impl Deriver for EntityDelete {
             )));
         }
         place_change(view, out, e, None, Family::Entity, m.change())?;
-        super::searched::gone(view, out, e, kind, &k)?;
-        super::book_stats::gone(view, out, e, kind, &k)?;
-        super::tags::entity_gone(view, out, e)?;
-        super::local_import::entity_gone(view, out, e)?;
         if kind == ENTRY {
-            books::touched(view, out, e, at)?;
             let (book, _) = books::parse_entry_key(&k)?;
             let place = view
                 .get(&item_at_key(book, ENTRIES, e))?
@@ -1131,37 +1126,14 @@ impl Deriver for EntityDelete {
                 .transpose()?
                 .map(|(p, _)| p);
             let index = books::entry_index(view, e)?;
-            books::entry_gone(view, out, e, &k)?;
             let flags = u64::from(place.is_some()) | (u64::from(index.is_some()) << 1);
             out.put(
                 deleted_key(book, e),
                 varints(&[flags, place.unwrap_or(0), index.map_or(0, f64::to_bits)]),
             );
         }
-        let p = key::id(key::HEAD, e);
-        for (vk, v) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
-            if matches!(Cur::parse(&v)?, Cur::Whole(_)) {
-                continue;
-            }
-            drop_head(view, out, e, &library::field_after(&vk, key::HEAD)?)?;
-        }
-        let ap = key::id(key::ITEM_AT, e);
-        for (ak, _) in view.scan(&ap, &key::prefix_end(&ap), usize::MAX)? {
-            out.del(ak);
-        }
-        let ip = key::id(key::ITEM, e);
-        for (ik, _) in view.scan(&ip, &key::prefix_end(&ip), usize::MAX)? {
-            out.del(ik);
-        }
-        let ek = key::id(key::ENTITY, e);
-        let host = view
-            .get(&ek)?
-            .ok_or_else(|| corrupt("an entity without its entry"))?;
-        let (made, _) = parse_host(&host)?;
+        let made = take_down(view, out, e, kind, &k, at)?;
         out.put(key::id(GONE, e), varints(&[made.pos, made.len, at.pos]));
-        out.del(ek);
-        out.del(entity_key_key(kind, &k));
-        version_gone(view, out, e, kind, &k, at)?;
         let mut local = BTreeMap::new();
         file(out, &mut local, e, None, Family::Entity, m.change(), at);
         Ok(())
@@ -1185,6 +1157,134 @@ impl Deriver for EntityDelete {
         }
         Ok(())
     }
+}
+
+fn take_down(
+    view: &View,
+    out: &mut Out,
+    e: u64,
+    kind: u64,
+    k: &[u8],
+    at: Loc,
+) -> Result<Loc, StoreError> {
+    super::searched::gone(view, out, e, kind, k)?;
+    super::book_stats::gone(view, out, e, kind, k)?;
+    super::tags::entity_gone(view, out, e)?;
+    super::local_import::entity_gone(view, out, e)?;
+    if kind == ENTRY {
+        books::touched(view, out, e, at)?;
+        books::entry_gone(view, out, e, k)?;
+    }
+    let p = key::id(key::HEAD, e);
+    for (vk, v) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
+        if matches!(Cur::parse(&v)?, Cur::Whole(_)) {
+            continue;
+        }
+        drop_head(view, out, e, &library::field_after(&vk, key::HEAD)?)?;
+    }
+    let ap = key::id(key::ITEM_AT, e);
+    for (ak, _) in view.scan(&ap, &key::prefix_end(&ap), usize::MAX)? {
+        out.del(ak);
+    }
+    let ip = key::id(key::ITEM, e);
+    for (ik, _) in view.scan(&ip, &key::prefix_end(&ip), usize::MAX)? {
+        out.del(ik);
+    }
+    let ek = key::id(key::ENTITY, e);
+    let host = view
+        .get(&ek)?
+        .ok_or_else(|| corrupt("an entity without its entry"))?;
+    let (made, _) = parse_host(&host)?;
+    out.del(ek);
+    out.del(entity_key_key(kind, k));
+    version_gone(view, out, e, kind, k, at)?;
+    Ok(made)
+}
+
+fn held_by_its_change(view: &View, l: Loc) -> Result<bool, StoreError> {
+    let (r, _) = view.record(l.pos)?;
+    Ok(family(&r) == Some(Family::Entity)
+        && change_loc(view, Meta::of(&r).change())?.is_some_and(|c| c.pos == l.pos))
+}
+
+pub fn erase(view: &View, out: &mut Out, e: u64, at: Loc) -> Result<bool, StoreError> {
+    let made = match entity_info(view, e)? {
+        Some((kind, k, _)) if library::history_kept(kind) => take_down(view, out, e, kind, &k, at)?,
+        Some(_) => return Ok(false),
+        None => {
+            let Some([pos, len, _]) = gone(view, e)? else {
+                return Ok(false);
+            };
+            let made = Loc { pos, len };
+            let (was, _) = view.record(made.pos)?;
+            if id(&was, 1) == ENTRY {
+                let (book, _) = books::parse_entry_key(bytes(&was, 2))?;
+                out.del(deleted_key(book, e));
+            }
+            out.del(key::id(GONE, e));
+            made
+        }
+    };
+    if !held_by_its_change(view, made)? {
+        dead(out, made);
+    }
+    let p = key::id(key::HEAD, e);
+    for (vk, v) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
+        if let Cur::Whole(l) = Cur::parse(&v)? {
+            dead(out, l);
+            out.del(vk);
+        }
+    }
+    let slots = slots(view, e)?;
+    if slots.is_empty() {
+        dead(out, at);
+        return Ok(true);
+    }
+    for slot in &slots {
+        out.put(keep_key(e, slot.as_ref()), Vec::new());
+    }
+    let upto = view
+        .get(&key::of(NEXT_CHANGE))?
+        .and_then(|b| max_value(&b))
+        .unwrap_or(0);
+    let f = match pending_forget(view, e)? {
+        Some(f) => {
+            dead(out, at);
+            Forgetting {
+                upto,
+                cursor: key::id(HIST, e),
+                ..f
+            }
+        }
+        None => Forgetting {
+            upto,
+            at,
+            marker: None,
+            cursor: key::id(HIST, e),
+        },
+    };
+    out.put(key::id(FORGET, e), f.bytes());
+    Ok(true)
+}
+
+pub fn erasing_at(view: &View, e: u64, pos: u64) -> Result<bool, StoreError> {
+    Ok(pending_forget(view, e)?.is_some_and(|f| f.at.pos == pos))
+}
+
+pub fn repoint_erasing(
+    view: &View,
+    out: &mut Out,
+    e: u64,
+    from: u64,
+    to: Loc,
+) -> Result<(), StoreError> {
+    if let Some(mut f) = pending_forget(view, e)?
+        && f.at.pos == from
+    {
+        f.at = to;
+        out.put(key::id(FORGET, e), f.bytes());
+    }
+    Ok(())
 }
 
 struct Restore;

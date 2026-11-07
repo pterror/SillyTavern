@@ -635,3 +635,221 @@ fn a_root_clear_removes_the_roots_changes_and_their_reverts_in_slices_and_resume
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }
+
+fn link_change(c: u64, at: Hang, author: u64, value: &[u8]) -> Record {
+    rec(
+        "stateChange",
+        vec![
+            Value::Id(c),
+            hang_value(at),
+            Value::Time(NOW + c as i64),
+            Value::UInt(author),
+            Value::Text(b"r".to_vec()),
+            Value::Absent,
+            Value::Field(FieldRef::Key(state::WORLD_INFO.to_vec())),
+            Value::Text(value.to_vec()),
+            Value::Absent,
+            Value::Id(1),
+        ],
+    )
+}
+
+fn unset(c: u64, at: Option<Hang>) -> Record {
+    rec(
+        "stateUnset",
+        vec![Value::Id(c), at.map_or(Value::Absent, hang_value)],
+    )
+}
+
+fn linking(s: &Store, book: u64) -> Vec<u64> {
+    let page = s
+        .derived(|v| state::chat_links_page(v, book, None, 1000))
+        .unwrap();
+    let Js::Obj(fields) = page else { panic!() };
+    let Js::Arr(list) = &fields[0].1 else { panic!() };
+    list.iter()
+        .map(|c| match c {
+            Js::Obj(f) => match f[0].1 {
+                Js::Big(id) => id,
+                _ => panic!(),
+            },
+            _ => panic!(),
+        })
+        .collect()
+}
+
+fn world_at(s: &Store, tree: u64, at: Option<u64>) -> Option<Vec<u8>> {
+    s.derived(|v| state::state_at(v, tree, at))
+        .unwrap()
+        .into_iter()
+        .find(|e| !e.variable && e.key == FieldRef::Key(state::WORLD_INFO.to_vec()))
+        .map(|e| e.json)
+}
+
+fn book(e: u64) -> Record {
+    rec(
+        "entityCreate",
+        vec![
+            Value::Id(e),
+            Value::UInt(super::books::BOOK),
+            Value::Text(format!("b{e}").into_bytes()),
+            Value::F64(0.0),
+        ],
+    )
+}
+
+#[test]
+fn an_unset_clears_a_changes_value_in_place_and_its_book_link_with_it() {
+    let dir = temp_dir("unset");
+    let s = open(&dir);
+    s.commit_wait(vec![
+        book(100),
+        book(101),
+        append(0, None, 1, 0),
+        append(1, Some(0), 1, 1),
+        link_change(0, Hang::Tree(1), state::AUTHOR_USER, b"\x01100"),
+        link_change(1, Hang::Message(1), state::AUTHOR_USER, b"\x01101 \"B\""),
+        link_change(2, Hang::Message(1), state::AUTHOR_USER | VARIABLE, b"\x01100"),
+    ])
+    .unwrap();
+    assert_eq!(linking(&s, 100), vec![0]);
+    assert_eq!(linking(&s, 101), vec![1]);
+    assert_eq!(world_at(&s, 1, Some(1)).as_deref(), Some(&b"\x01101 \"B\""[..]));
+    let refused = |r: Vec<Record>| matches!(s.commit_wait(r), Err(StoreError::Refused(_)));
+    assert!(refused(vec![unset(1, Some(Hang::Message(0)))]), "the hang is the change's");
+    assert!(refused(vec![unset(9, None)]), "no change 9");
+    let cleared = Record::new(kind_by_name("stateCleared").unwrap(), vec![
+        Value::Id(1),
+        hang_value(Hang::Message(1)),
+        Value::Time(0),
+        Value::UInt(0),
+        Value::Absent,
+        Value::Absent,
+        Value::Field(FieldRef::Key(state::WORLD_INFO.to_vec())),
+        Value::Absent,
+        Value::Absent,
+        Value::Absent,
+    ])
+    .unwrap();
+    assert!(refused(vec![cleared]), "stateCleared is the engine's");
+    s.commit_wait(vec![unset(1, Some(Hang::Message(1)))]).unwrap();
+    assert_eq!(linking(&s, 101), Vec::<u64>::new());
+    assert_eq!(world_at(&s, 1, Some(1)), None);
+    assert_eq!(world_at(&s, 1, Some(0)).as_deref(), Some(&b"\x01100"[..]));
+    assert!(refused(vec![unset(1, None)]), "a cleared change holds no value");
+    let active = s.derived(|v| super::chat_read::active_changes(v, 1)).unwrap();
+    let Js::Arr(rows) = active else { panic!() };
+    let row = rows
+        .iter()
+        .find(|r| matches!(r, Js::Obj(f) if f[0].1 == Js::Big(1)))
+        .unwrap();
+    let Js::Obj(f) = row else { panic!() };
+    let get = |n: &str| f.iter().find(|(k, _)| *k == n).unwrap().1.clone();
+    assert_eq!(get("value"), Js::Null);
+    assert_eq!(get("ref"), Js::Text(b"r".to_vec()));
+    assert_eq!(get("time"), Js::Num((NOW + 1) as f64));
+    s.commit_wait(vec![unset(0, None)]).unwrap();
+    assert_eq!(world_at(&s, 1, Some(1)), None);
+    assert_eq!(linking(&s, 100), Vec::<u64>::new());
+    s.commit_wait(vec![rec(
+        "stateRevert",
+        vec![
+            Value::Id(3),
+            Value::Id(0),
+            Value::Time(0),
+            Value::UInt(0),
+            Value::Absent,
+            Value::Absent,
+            Value::Absent,
+        ],
+    )])
+    .unwrap();
+    assert_eq!(world_at(&s, 1, None), None);
+    s.commit_wait(vec![
+        append(2, Some(0), 1, 2),
+        link_change(4, Hang::Message(2), state::AUTHOR_USER, b"\x01100"),
+    ])
+    .unwrap();
+    assert_eq!(linking(&s, 100), vec![4]);
+    s.commit_wait(vec![rec(
+        "messageDelete",
+        vec![Value::Id(2), Value::Absent, Value::Absent, Value::Time(NOW)],
+    )])
+    .unwrap();
+    assert_eq!(linking(&s, 100), Vec::<u64>::new());
+    for i in 0..600u64 {
+        s.commit_wait(vec![rec(
+            "jsonValue",
+            vec![
+                Value::Sel(1, 1),
+                Value::Field(FieldRef::Key(b"k".to_vec())),
+                Value::Text(format!("{i}").into_bytes()),
+                Value::Absent,
+                Value::Absent,
+            ],
+        )])
+        .unwrap();
+    }
+    for _ in 0..20 {
+        s.inner.ks.freeze_at(s.durable_end());
+        s.inner.ks.wait_flushed().unwrap();
+        s.wake_cleaner();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(s.stats().cleaned_files > 0, "{:?}", s.stats());
+    s.close();
+    drop(s);
+    let s = open(&dir);
+    assert_eq!(world_at(&s, 1, Some(1)), None);
+    s.derived(|v| {
+        let l = state::change_loc(v, 1)?.unwrap();
+        assert_eq!(v.record(l.pos)?.0.kind.name, "stateCleared");
+        Ok(())
+    })
+    .unwrap();
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_root_clear_drops_the_roots_book_links() {
+    let dir = temp_dir("clear-links");
+    let s = open(&dir);
+    let mut recs = vec![book(100), append(0, None, 1, 0)];
+    let n = (state::CLEAR_SLICE + 5) as u64;
+    for c in 0..n {
+        recs.push(link_change(c, Hang::Tree(1), state::AUTHOR_USER, b"\x01100"));
+    }
+    recs.push(link_change(n, Hang::Message(0), state::AUTHOR_USER, b"\x01100"));
+    s.commit_wait(recs).unwrap();
+    assert_eq!(linking(&s, 100).len() as u64, n + 1);
+    s.commit_wait(vec![unset(3, None)]).unwrap();
+    s.commit_wait(vec![rec("rootStateClear", vec![Value::Id(1)])])
+        .unwrap();
+    for _ in 0..1000 {
+        if !s.derived(state::any_clear_pending).unwrap() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(linking(&s, 100), vec![n]);
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_bulk_load_indexes_its_chats_book_links() {
+    let dir = temp_dir("bulk-links");
+    let s = open(&dir);
+    let mut l = s.loader().unwrap();
+    l.add(vec![
+        append(0, None, 1, 0),
+        link_change(0, Hang::Tree(1), state::AUTHOR_USER, b"\x01100"),
+        link_change(1, Hang::Message(0), state::AUTHOR_USER, b"\x01100 \"B\""),
+    ])
+    .unwrap();
+    l.finish().unwrap();
+    assert_eq!(linking(&s, 100), vec![0, 1]);
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}

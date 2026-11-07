@@ -443,7 +443,12 @@ impl Store {
         let moves = records.iter().any(|r| r.kind.name == "messageParent");
         let prunes = records
             .iter()
-            .any(|r| matches!(r.kind.name, "subtreeDelete" | "rootStateClear" | "histForget"));
+            .any(|r| {
+                matches!(
+                    r.kind.name,
+                    "subtreeDelete" | "rootStateClear" | "histForget" | "entityDelete"
+                )
+            });
         if merges || moves || prunes {
             let me = Arc::downgrade(&self.inner);
             let done: CommitDone = Box::new(move |r| {

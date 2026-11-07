@@ -19,8 +19,49 @@ pub const STATE_AT: u64 = 151;
 pub const REVERTED_BY: u64 = 152;
 pub const NEXT_CHANGE: u64 = 153;
 pub const ROOT_CLEAR: u64 = 155;
+pub const CHAT_BOOK: u64 = 193;
 
 pub const CLEAR_SLICE: usize = 256;
+
+pub const WORLD_INFO: &[u8] = b"world_info";
+pub const LINK_MARK: u8 = 0x01;
+
+pub fn linked_book(rec: &Record) -> Result<Option<u64>, StoreError> {
+    if id(rec, 3) & VARIABLE != 0 || *field(rec, 6) != FieldRef::Key(WORLD_INFO.to_vec()) {
+        return Ok(None);
+    }
+    let Value::Text(t) = &rec.values[7] else {
+        return Ok(None);
+    };
+    let Some(rest) = t.strip_prefix(&[LINK_MARK]) else {
+        return Ok(None);
+    };
+    let digits = rest.split(|c| *c == b' ').next().unwrap_or_default();
+    let canonical = !digits.is_empty()
+        && digits.iter().all(u8::is_ascii_digit)
+        && (digits.len() == 1 || digits[0] != b'0');
+    canonical
+        .then(|| std::str::from_utf8(digits).ok()?.parse::<u64>().ok())
+        .flatten()
+        .map(Some)
+        .ok_or_else(|| {
+            StoreError::Refused(
+                "a lorebook link in world_info is 0x01, then a book's id in decimal, then optionally a space and its name"
+                    .into(),
+            )
+        })
+}
+
+fn chat_book_key(book: u64, c: u64) -> Vec<u8> {
+    key::ids(CHAT_BOOK, book, c)
+}
+
+fn unlink(out: &mut Out, hang_value: &[u8], c: u64) -> Result<(), StoreError> {
+    if !hang_value.is_empty() {
+        out.del(chat_book_key(super::library::parse_uvarint(hang_value)?, c));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hang {
@@ -34,6 +75,19 @@ impl Hang {
             Value::Sel(1, m) => Hang::Message(m),
             Value::Sel(_, t) => Hang::Tree(t),
             _ => unreachable!("checked by Record::new"),
+        }
+    }
+
+    fn which(self) -> u64 {
+        match self {
+            Hang::Tree(_) => 0,
+            Hang::Message(_) => 1,
+        }
+    }
+
+    fn id(self) -> u64 {
+        match self {
+            Hang::Tree(t) | Hang::Message(t) => t,
         }
     }
 
@@ -110,14 +164,28 @@ impl Deriver for StateChange {
                 "a change on a tree's root can't be a reply's".into(),
             ));
         }
-        if let Hang::Message(m) = hang {
-            let (_, r) = require_message(view, m)?;
-            super::prune::refuse_doomed(view, super::kinds::id(&r, super::chat::APPEND_OWNER), m)?;
-            super::chat::shape_add(out, m, super::chat::SHAPE_EXTRA);
-        }
+        let tree = match hang {
+            Hang::Message(m) => {
+                let (_, r) = require_message(view, m)?;
+                let owner = super::kinds::id(&r, super::chat::APPEND_OWNER);
+                super::prune::refuse_doomed(view, owner, m)?;
+                super::chat::shape_add(out, m, super::chat::SHAPE_EXTRA);
+                owner
+            }
+            Hang::Tree(t) => t,
+        };
         sessions::check_actor(view, opt_id(rec, 8), opt_id(rec, 9))?;
         out.put(key::id(CHANGE, c), loc_bytes(at));
-        out.put(hang.key(c), Vec::new());
+        match linked_book(rec)? {
+            Some(b) => {
+                if !view.is_bulk() && !super::books::is_linkable(view, b)? {
+                    return Err(StoreError::Refused(format!("no book {b}")));
+                }
+                out.put(hang.key(c), super::library::uvarint(b));
+                out.put(chat_book_key(b, c), varints(&[tree, hang.which(), hang.id()]));
+            }
+            None => out.put(hang.key(c), Vec::new()),
+        }
         out.max(key::of(NEXT_CHANGE), c + 1);
         Ok(())
     }
@@ -152,7 +220,7 @@ impl Deriver for StateRevert {
         let is_state = match change_loc(view, target)? {
             Some(l) => matches!(
                 view.record(l.pos)?.0.kind.name,
-                "stateChange" | "stateRevert"
+                "stateChange" | "stateCleared" | "stateRevert"
             ),
             None => false,
         };
@@ -186,12 +254,139 @@ impl Deriver for StateRevert {
     }
 }
 
+const COPIED: [usize; 8] = [1, 2, 3, 4, 5, 6, 8, 9];
+const VALUE: usize = 7;
+
+fn changed_record(view: &View, c: u64) -> Result<(Loc, Record), StoreError> {
+    let no_value = || StoreError::Refused(format!("change {c} holds no value to unset"));
+    let l = change_loc(view, c)?.ok_or_else(no_value)?;
+    let (r, _) = view.record(l.pos)?;
+    if r.kind.name != "stateChange" || !matches!(r.values[VALUE], Value::Text(_)) {
+        return Err(no_value());
+    }
+    Ok((l, r))
+}
+
+pub struct StateUnset;
+
+impl Deriver for StateUnset {
+    fn prepares(&self) -> bool {
+        true
+    }
+
+    fn prepare(&self, rec: Record, view: &View) -> Result<Record, StoreError> {
+        let c = id(&rec, 0);
+        let (_, was) = changed_record(view, c)?;
+        let mut values = was.values.clone();
+        values[VALUE] = Value::Absent;
+        if !matches!(rec.values[1], Value::Absent) && rec.values[1] != was.values[1] {
+            return Err(StoreError::Refused(format!(
+                "change {c} hangs elsewhere"
+            )));
+        }
+        Record::new(
+            crate::log::format::kind_by_name("stateCleared").expect("a state kind"),
+            values,
+        )
+        .map_err(|e| StoreError::Refused(e.to_string()))
+    }
+
+    fn derive(&self, _: &Record, _: Loc, _: &View, _: &mut Out) -> Result<(), StoreError> {
+        Err(StoreError::Refused(
+            "stateUnset is logged as the stateCleared it makes".into(),
+        ))
+    }
+
+    fn is_live(&self, _: &Record, _: u64, _: &View) -> Result<bool, StoreError> {
+        Ok(false)
+    }
+
+    fn repoint(&self, _: &Record, _: u64, _: Loc, _: &View, _: &mut Out) -> Result<(), StoreError> {
+        Ok(())
+    }
+}
+
+pub struct StateCleared;
+
+impl Deriver for StateCleared {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let c = id(rec, 0);
+        let (l, was) = changed_record(view, c)?;
+        if COPIED.iter().any(|i| rec.values[*i] != was.values[*i])
+            || !matches!(rec.values[VALUE], Value::Absent)
+        {
+            return Err(StoreError::Refused(format!(
+                "a stateCleared is change {c} as it was, without its value"
+            )));
+        }
+        dead(out, l);
+        out.put(key::id(CHANGE, c), loc_bytes(at));
+        if let Some(b) = linked_book(&was)? {
+            out.put(Hang::of(rec).key(c), Vec::new());
+            out.del(chat_book_key(b, c));
+        }
+        Ok(())
+    }
+
+    fn partition(&self, rec: &Record) -> u64 {
+        id(rec, 0)
+    }
+
+    fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
+        live_change(view, id(rec, 0), pos)
+    }
+
+    fn repoint(
+        &self,
+        rec: &Record,
+        from: u64,
+        to: Loc,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        repoint_change(view, out, id(rec, 0), from, to)
+    }
+}
+
+pub fn chat_links_page(
+    view: &View,
+    book: u64,
+    after: Option<u64>,
+    limit: usize,
+) -> Result<super::chat_read::Js, StoreError> {
+    use super::chat_read::Js;
+    let prefix = key::id(CHAT_BOOK, book);
+    let start = match after {
+        Some(a) => chat_book_key(book, a + 1),
+        None => prefix.clone(),
+    };
+    let found = view.scan(&start, &key::prefix_end(&prefix), limit + 1)?;
+    let more = found.len() > limit;
+    let mut changes = Vec::new();
+    for (k, v) in found.into_iter().take(limit) {
+        let mut at = prefix.len();
+        let c = get_u64(&k, &mut at)
+            .ok_or_else(|| StoreError::Entry("a chat link key doesn't decode".into()))?;
+        let [tree, which, hang] = parse_varints::<3>(&v)?;
+        changes.push(Js::Obj(vec![
+            ("id", Js::Big(c)),
+            ("tree", Js::Big(tree)),
+            ("message", if which == 1 { Js::Big(hang) } else { Js::Null }),
+        ]));
+    }
+    Ok(Js::Obj(vec![
+        ("changes", Js::Arr(changes)),
+        ("more", Js::Bool(more)),
+    ]))
+}
+
 pub fn message_gone(view: &View, out: &mut Out, m: u64) -> Result<(), StoreError> {
     let p = Hang::Message(m).prefix();
-    for (k, _) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
+    for (k, v) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
         let mut at = p.len();
         let c = get_u64(&k, &mut at)
             .ok_or_else(|| StoreError::Entry("a state key doesn't decode".into()))?;
+        unlink(out, &v, c)?;
         change_gone(view, out, c)?;
         out.del(k);
     }
@@ -225,7 +420,7 @@ fn clearing(view: &View, c: u64) -> Result<bool, StoreError> {
         return Ok(false);
     };
     let (rec, _) = view.record(l.pos)?;
-    if rec.kind.name != "stateChange" {
+    if !matches!(rec.kind.name, "stateChange" | "stateCleared") {
         return Ok(false);
     }
     match Hang::of(&rec) {
@@ -288,7 +483,7 @@ pub fn clear_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
     let [upto, rp, rl] = parse_varints::<3>(&v)?;
     let p = Hang::Tree(tree).prefix();
     let mut left = false;
-    for (n, (k, _)) in view
+    for (n, (k, v)) in view
         .scan(&p, &key::prefix_end(&p), CLEAR_SLICE + 1)?
         .into_iter()
         .enumerate()
@@ -303,6 +498,7 @@ pub fn clear_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
             left = true;
             break;
         }
+        unlink(out, &v, c)?;
         change_gone(view, out, c)?;
         out.del(k);
     }
@@ -406,6 +602,8 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "stateChange" => &StateChange,
         "stateRevert" => &StateRevert,
         "rootStateClear" => &RootStateClear,
+        "stateUnset" => &StateUnset,
+        "stateCleared" => &StateCleared,
         _ => return None,
     })
 }

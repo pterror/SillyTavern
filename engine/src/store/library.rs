@@ -878,6 +878,9 @@ pub struct EntityDelete;
 impl Deriver for EntityDelete {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
         let e = id(rec, 0);
+        if super::history::erase(view, out, e, at)? {
+            return Ok(());
+        }
         let Some((kind, k, _)) = entity_info(view, e)? else {
             return Err(StoreError::Refused(format!("no entity {e}")));
         };
@@ -886,21 +889,26 @@ impl Deriver for EntityDelete {
                 "tag {e} goes with a tagMerge first"
             )));
         }
-        if kind == books::BOOK && !books::may_delete(view, e)? {
-            return Err(StoreError::Refused(format!(
-                "book {e} goes with a bookForward first"
-            )));
+        if kind == books::BOOK {
+            books::refuse_referenced(view, e)?;
         }
         dead(out, at);
         delete_entity(view, out, e, kind, &k, at)
     }
 
-    fn is_live(&self, _: &Record, _: u64, _: &View) -> Result<bool, StoreError> {
-        Ok(false)
+    fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
+        super::history::erasing_at(view, id(rec, 0), pos)
     }
 
-    fn repoint(&self, _: &Record, _: u64, _: Loc, _: &View, _: &mut Out) -> Result<(), StoreError> {
-        Ok(())
+    fn repoint(
+        &self,
+        rec: &Record,
+        from: u64,
+        to: Loc,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        super::history::repoint_erasing(view, out, id(rec, 0), from, to)
     }
 }
 
@@ -927,6 +935,9 @@ fn delete_entity(
             let fp = key::id(books::FREE, e);
             for (fk, _) in view.scan(&fp, &key::prefix_end(&fp), usize::MAX)? {
                 out.del(fk);
+            }
+            if kind == books::BOOK {
+                books::book_gone(view, out, e, k)?;
             }
         }
         _ => {}

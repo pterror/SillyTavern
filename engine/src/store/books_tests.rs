@@ -562,7 +562,7 @@ fn links_name_books_by_id_and_resolve_unresolved_names() {
     assert_eq!(world_page(&s, "none"), Vec::<u64>::new());
     assert_eq!(resolved(&s, 2), (2, "gone".into(), false));
     let refused = |r: Vec<Record>| matches!(s.commit_wait(r), Err(StoreError::Refused(_)));
-    assert!(refused(vec![delete(1)]), "a book goes only forwarded");
+    assert!(refused(vec![delete(1)]), "a linked book isn't deleted");
     assert!(
         refused(vec![forward(1, 2)]),
         "a defined book isn't forwarded"
@@ -1000,6 +1000,185 @@ fn entries_read_backward_before_a_place_and_items_by_id() {
         Js::Arr(vec![Js::Num(300.0), Js::Null]),
         "an item's place by its id"
     );
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+fn chat_link(c: u64, hang: Value, text: &[u8]) -> Record {
+    rec(
+        "stateChange",
+        vec![
+            Value::Id(c),
+            hang,
+            Value::Time(c as i64),
+            Value::UInt(super::state::AUTHOR_USER),
+            Value::Absent,
+            Value::Absent,
+            Value::Field(FieldRef::Key(super::state::WORLD_INFO.to_vec())),
+            Value::Text(text.to_vec()),
+            Value::Absent,
+            Value::Absent,
+        ],
+    )
+}
+
+fn chat_links(s: &Store, book: u64) -> Vec<(u64, u64, Option<u64>)> {
+    let page = read(s, |v| super::state::chat_links_page(v, book, None, 100));
+    let Js::Arr(list) = field(&page, "changes") else {
+        panic!()
+    };
+    list.iter()
+        .map(|c| match (field(c, "id"), field(c, "tree"), field(c, "message")) {
+            (Js::Big(id), Js::Big(t), Js::Null) => (*id, *t, None),
+            (Js::Big(id), Js::Big(t), Js::Big(m)) => (*id, *t, Some(*m)),
+            other => panic!("{other:?}"),
+        })
+        .collect()
+}
+
+fn unset(c: u64) -> Record {
+    rec("stateUnset", vec![Value::Id(c), Value::Absent])
+}
+
+#[test]
+fn a_book_is_deleted_only_once_nothing_links_it_and_takes_its_forwards_along() {
+    let dir = temp_dir("book-delete");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let mut r = vec![
+        rec(
+            "keyMap",
+            vec![
+                Value::Sel(super::chat::KEYED_USER, 1),
+                Value::Bytes(b"user-1".to_vec()),
+            ],
+        ),
+        defined(1, true),
+        create(1, BOOK, "lore"),
+        create(2, BOOK, "ghost"),
+        create(5, ENTRY, "1:0"),
+        place(1, 5, 10),
+        create(6, OWNED, "1:o"),
+    ];
+    r.extend(character(10));
+    r.extend(character(11));
+    r.extend(link(10, 1, 100, 1));
+    r.extend(link(11, 1, 100, 2));
+    r.push(rec(
+        "messageAppend",
+        vec![
+            Value::Id(40),
+            Value::Absent,
+            Value::Id(30),
+            Value::Absent,
+            Value::Absent,
+            Value::Time(0),
+            text("m"),
+            Value::UInt(0),
+            Value::Absent,
+            Value::Id(1),
+            Value::Absent,
+        ],
+    ));
+    r.push(chat_link(0, Value::Sel(0, 30), b"\x011"));
+    r.push(chat_link(1, Value::Sel(1, 40), b"\x012 \"Ghost\""));
+    s.commit_wait(r).unwrap();
+    s.commit_wait(vec![forward(2, 1), delete(2), update(1, BOOK, "ghost")])
+        .unwrap();
+    assert_eq!(chat_links(&s, 1), vec![(0, 30, None)]);
+    assert_eq!(chat_links(&s, 2), vec![(1, 30, Some(40))]);
+    let refused = |r: Vec<Record>| matches!(s.commit_wait(r), Err(StoreError::Refused(_)));
+    assert!(
+        refused(vec![chat_link(2, Value::Sel(0, 30), b"\x01")]),
+        "a link names a book's id"
+    );
+    assert!(
+        refused(vec![chat_link(2, Value::Sel(0, 30), b"\x0177")]),
+        "a link names a book"
+    );
+    assert!(refused(vec![delete(1)]), "a character links it");
+    assert!(
+        refused(vec![unlink(10, 1), delete(1)]),
+        "a character links its forwarded name"
+    );
+    assert!(
+        refused(vec![unlink(10, 1), unlink(11, 1), delete(1)]),
+        "chats link it"
+    );
+    assert!(
+        refused(vec![unlink(10, 1), unlink(11, 1), unset(0), unset(1), delete(1)]),
+        "it holds an entry"
+    );
+    assert!(
+        refused(vec![
+            unlink(10, 1),
+            unlink(11, 1),
+            unset(0),
+            unset(1),
+            delete(5),
+            delete(1)
+        ]),
+        "it holds its original book"
+    );
+    assert_eq!(world_page(&s, "ghost"), vec![10, 11]);
+    s.commit_wait(vec![
+        unlink(10, 1),
+        unlink(11, 1),
+        unset(0),
+        unset(1),
+        delete(5),
+        delete(6),
+        delete(1),
+    ])
+    .unwrap();
+    assert_eq!(listed(&s), Vec::<(u64, String)>::new());
+    assert_eq!(chat_links(&s, 1), Vec::new());
+    assert_eq!(chat_links(&s, 2), Vec::new());
+    read(&s, |v| {
+        assert_eq!(library::entity_info(v, 1)?, None);
+        assert_eq!(books::resolve(v, 2)?, 2);
+        assert_eq!(books::resolving_as(v, 1)?, vec![1]);
+        assert_eq!(super::state::state_at(v, 30, Some(40))?, Vec::new());
+        Ok(())
+    });
+    assert!(
+        refused(vec![chat_link(2, Value::Sel(0, 30), b"\x011")]),
+        "the book is gone"
+    );
+    assert!(
+        refused(vec![chat_link(2, Value::Sel(0, 30), b"\x012")]),
+        "its forward is gone"
+    );
+    assert!(refused(vec![unset(0)]), "a cleared change has no value to unset");
+    s.commit_wait(vec![defined(7, true), create(7, BOOK, "ghost")])
+        .unwrap();
+    assert_eq!(world_page(&s, "ghost"), Vec::<u64>::new());
+    assert_eq!(chat_links(&s, 7), Vec::new());
+    s.close();
+    drop(s);
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    assert_eq!(listed(&s), vec![(7, "ghost".into())]);
+    read(&s, |v| {
+        assert_eq!(super::state::state_at(v, 30, Some(40))?, Vec::new());
+        Ok(())
+    });
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn an_unforwarded_placeholder_is_deleted_once_unlinked() {
+    let dir = temp_dir("placeholder-delete");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let mut r = vec![create(2, BOOK, "ghost")];
+    r.extend(character(10));
+    r.extend(link(10, 1, 100, 2));
+    s.commit_wait(r).unwrap();
+    assert!(matches!(
+        s.commit_wait(vec![delete(2)]),
+        Err(StoreError::Refused(_))
+    ));
+    s.commit_wait(vec![unlink(10, 1), delete(2)]).unwrap();
+    assert_eq!(read(&s, |v| library::entity_info(v, 2)), None);
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }

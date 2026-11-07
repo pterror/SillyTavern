@@ -715,6 +715,29 @@ pub static KINDS: &[Kind] = &[
         internal: false,
     },
     Kind {
+        name: "stateUnset",
+        base: 1420,
+        slots: &[req("id", Ty::Id(Space::Change)), opt("at", Ty::Sel(HANG))],
+        internal: false,
+    },
+    Kind {
+        name: "stateCleared",
+        base: 1472,
+        slots: &[
+            req("id", Ty::Id(Space::Change)),
+            req("at", Ty::Sel(HANG)),
+            req("time", Ty::Time),
+            req("author", Ty::UInt),
+            opt("ref", Ty::Text),
+            opt("confidence", Ty::F64),
+            req("key", Ty::Field),
+            opt("value", Ty::Text),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
+        ],
+        internal: true,
+    },
+    Kind {
         name: "stateRevert",
         base: 119,
         slots: &[

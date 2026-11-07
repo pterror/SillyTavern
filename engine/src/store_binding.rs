@@ -2701,6 +2701,17 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                     .map(JsTree)
             })
         }
+        "chatLinks" => {
+            let (book, after, limit) = (
+                req_integer(a, "book")?,
+                opt_integer(a, "after")?,
+                req_integer(a, "limit")? as usize,
+            );
+            Box::new(move |s| {
+                s.chat_read(|v| crate::store::state::chat_links_page(v, book, after, limit))
+                    .map(JsTree)
+            })
+        }
         "resolving" => {
             let book = req_integer(a, "book")?;
             Box::new(move |s| s.chat_read(|v| b::resolving_page(v, book)).map(JsTree))

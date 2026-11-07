@@ -774,8 +774,61 @@ impl Deriver for BookForward {
     }
 }
 
-pub fn may_delete(view: &View, e: u64) -> Result<bool, StoreError> {
-    Ok(view.get(&key::id(FORWARD, e))?.is_some())
+pub fn is_linkable(view: &View, b: u64) -> Result<bool, StoreError> {
+    Ok(matches!(entity_info(view, b)?, Some((BOOK, _, _)))
+        || view.get(&key::id(FORWARD, b))?.is_some())
+}
+
+fn any_under(view: &View, prefix: &[u8]) -> Result<bool, StoreError> {
+    Ok(!view.scan(prefix, &key::prefix_end(prefix), 1)?.is_empty())
+}
+
+pub fn refuse_referenced(view: &View, e: u64) -> Result<(), StoreError> {
+    if view.get(&key::id(FORWARD, e))?.is_some() {
+        return Ok(());
+    }
+    let held = |what: &str| {
+        Err(StoreError::Refused(format!(
+            "book {e} still has {what}: remove them in the same commit before its entityDelete"
+        )))
+    };
+    for b in resolving_as(view, e)? {
+        if any_under(view, &key::id(LINKED, b))? {
+            return held("characters linking it");
+        }
+        if any_under(view, &key::id(super::state::CHAT_BOOK, b))? {
+            return held("chat changes linking it");
+        }
+    }
+    if any_under(view, &key::ids(key::ITEM, e, ENTRIES))? {
+        return held("entries");
+    }
+    if any_under(view, &key::id(super::history::DELETED, e))? {
+        return held("deleted entries");
+    }
+    if library::entity_by_key(view, OWNED, format!("{e}:o").as_bytes())?.is_some() {
+        return held("its original data");
+    }
+    Ok(())
+}
+
+pub fn book_gone(view: &View, out: &mut Out, e: u64, k: &[u8]) -> Result<(), StoreError> {
+    if view.get(&key::id(FORWARD, e))?.is_some() {
+        return Ok(());
+    }
+    if is_defined(view, e)? {
+        out.del(books_key(k));
+    }
+    for from in resolving_as(view, e)?.into_iter().skip(1) {
+        let fk = key::id(FORWARD, from);
+        if let Some(b) = view.get(&fk)? {
+            let (into, l) = parse_forward(&b)?;
+            dead(out, l);
+            out.del(fk);
+            out.del(key::ids(FORWARDED, into, from));
+        }
+    }
+    Ok(())
 }
 
 pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
