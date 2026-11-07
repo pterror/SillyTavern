@@ -218,7 +218,8 @@ order; each property comes from the highest active state that sets it, otherwise
 
 ### The trigger mark
 
-The words that brought an entry into the last reply are marked in the chat. The mark is a look set at the theme level,
+The words that brought an entry into a reply are marked in the chat, on every message, each from that reply's own
+activation record. The mark is a look set at the theme level,
 in the same editor, per state: **dotted** (the default), **dashed**, **large dots** or **none**, with color and opacity.
 "Only when pointing at the message" is none at rest and dotted when the message is pointed at. The mark is drawn outside
 the name's span, so no name look can cover it. Custom CSS can restyle it through its class.
@@ -245,7 +246,7 @@ clicking them (the field names are the app's, so these sentences are fixed wordi
 ## Screens
 
 - **In the chat** (`Main`, `PhoneChat`): names drawn in their looks and linked; trigger words marked. Pointing at a name
-  or a marked word shows its card (above) with what brought it up for the last reply. A word that brought up several entries shows all of them. Clicking opens the entry;
+  or a marked word shows its card (above) with what brought it up for that reply. A word that brought up several entries shows all of them. Clicking opens the entry;
   on a phone, a tap shows the card from the bottom and Open goes to the entry.
 - **The world's page** (`Front`, `World`, `Huge`, `PhoneWorld`): the world's picture, name and description, then the
   view tabs and the view bar (Columns, Rows, Inside grouped by, Order, Cards or Rows; Save and Discard when the view is
