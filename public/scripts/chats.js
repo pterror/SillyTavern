@@ -47,7 +47,6 @@ import {
     getStringHash,
     humanFileSize,
     saveBase64AsFile,
-    extractTextFromOffice,
     download,
     getFileText,
     getFileExtension,
@@ -86,12 +85,6 @@ const converters = {
     'text/html': extractTextFromHTML,
     'text/markdown': extractTextFromMarkdown,
     'application/epub+zip': extractTextFromEpub,
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': extractTextFromOffice,
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': extractTextFromOffice,
-    'application/vnd.openxmlformats-officedocument.presentationml.presentation': extractTextFromOffice,
-    'application/vnd.oasis.opendocument.text': extractTextFromOffice,
-    'application/vnd.oasis.opendocument.presentation': extractTextFromOffice,
-    'application/vnd.oasis.opendocument.spreadsheet': extractTextFromOffice,
 };
 
 function findConverterKey(type) {

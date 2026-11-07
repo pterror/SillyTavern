@@ -77,7 +77,6 @@ import { presetNameOf, samplerConfigOf, startItemizing } from '../../prompt-item
 import { answerSessionOnHeaders, chatContext } from '../../chat-request.js';
 import { storedForm } from '../../chat-engine.js';
 import { storeUserMessage, withStoredMessages } from '../../stored-messages.js';
-import { getEnabledServerTools, toOpenAIToolSchema } from '../../server-tools.js';
 import {
     TEXT_COMPLETION_MODELS,
     computeLogitBias,
@@ -2488,8 +2487,6 @@ router.post('/bias', async function (request, response) {
     }
 });
 
-const SERVER_TOOL_ROUND_LIMIT = 5;
-
 /**
  * @param {import('../../users.js').UserDirectoryList} directories
  * @param {object} params
@@ -2510,7 +2507,7 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
  * @param {object} [params.jsonSchema]
  * @param {string[]} [params.stealthClientToolNames]
  * @param {import('../../page-writes.js').QuietPrompt} [params.quiet]
- * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, anchorContent: object|null, activations: import('../../world-info/activation-record.js').ActivationRecord|null, name1: string, name2: string, enabledServerTools: import('../../server-tools.js').ServerToolRegistration[], enabledClientToolNames: Set<string>, enabledStealthClientToolNames: Set<string>, warnings: Array<{kind: string, key: string, message: string, entries?: string[]}>, tokenCountRows: import('../../token-count-store.js').PendingTokenRows, itemize: () => Promise<import('../../prompt-itemization.js').PromptItemization> }>}
+ * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, anchorContent: object|null, activations: import('../../world-info/activation-record.js').ActivationRecord|null, name1: string, name2: string, enabledClientToolNames: Set<string>, enabledStealthClientToolNames: Set<string>, warnings: Array<{kind: string, key: string, message: string, entries?: string[]}>, tokenCountRows: import('../../token-count-store.js').PendingTokenRows, itemize: () => Promise<import('../../prompt-itemization.js').PromptItemization> }>}
  */
 export async function buildRawActionChatCompletionRequest(directories, {
     characterAvatar, groupId, ownerId, chat, nodeId,
@@ -2582,19 +2579,12 @@ export async function buildRawActionChatCompletionRequest(directories, {
 
     const biasPresetEntries = settings.bias_preset_selected ? settings.bias_presets?.[settings.bias_preset_selected] : undefined;
     const useLogprobs = Boolean(powerUser.request_token_probabilities);
-    const serverToolCtx = { directories, ownerId, characterAvatar, groupId };
-    const enabledServerTools = await getEnabledServerTools(serverToolCtx);
-    const serverToolNames = new Set(enabledServerTools.map(tool => tool.name));
 
     const clientToolsByName = new Map();
     if (Array.isArray(clientToolSchemas)) {
         for (const entry of clientToolSchemas) {
             const name = entry?.function?.name;
             if (entry?.type !== 'function' || typeof name !== 'string' || !name || typeof entry.function.description !== 'string') {
-                continue;
-            }
-            if (serverToolNames.has(name)) {
-                console.warn(color.yellow(`Dropping client-advertised tool "${name}": a server-native tool with this name is already registered and takes priority.`));
                 continue;
             }
             if (!clientToolsByName.has(name)) {
@@ -2610,9 +2600,8 @@ export async function buildRawActionChatCompletionRequest(directories, {
             : [],
     );
 
-    const combinedToolSchemas = [...enabledServerTools.map(toOpenAIToolSchema), ...clientToolsByName.values()];
-    const toolsPayload = combinedToolSchemas.length > 0
-        ? { tools: combinedToolSchemas, tool_choice: 'auto' }
+    const toolsPayload = clientToolsByName.size > 0
+        ? { tools: [...clientToolsByName.values()], tool_choice: 'auto' }
         : undefined;
     /** @type {string[]} */
     const droppedBiasEntries = [];
@@ -2648,7 +2637,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
     });
 
     return {
-        params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledServerTools, enabledClientToolNames, enabledStealthClientToolNames, warnings, tokenCountRows, itemize,
+        params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledClientToolNames, enabledStealthClientToolNames, warnings, tokenCountRows, itemize,
         activations: orchestratorInput.activations,
         macroVariables: macroVariableChanges(orchestratorInput.macroContext.chatMetadata, orchestratorInput.macroContext.globalVariables, orchestratorInput.variablesBefore),
     };
@@ -2855,7 +2844,7 @@ async function forwardAndPersistCompactStream(fetchResponse, response, persist, 
  * @param {object} delta
  * @returns {void}
  */
-function applyServerToolCallDelta(target, delta) {
+function applyToolCallDelta(target, delta) {
     for (const key in delta) {
         if (!Object.prototype.hasOwnProperty.call(delta, key)) continue;
         if (key === '__proto__' || key === 'constructor') continue;
@@ -2883,7 +2872,7 @@ function applyServerToolCallDelta(target, delta) {
             if (typeof targetValue !== 'object' || targetValue === null || Array.isArray(targetValue)) {
                 target[key] = {};
             }
-            applyServerToolCallDelta(target[key], deltaValue);
+            applyToolCallDelta(target[key], deltaValue);
         } else {
             target[key] = deltaValue;
         }
@@ -2894,12 +2883,11 @@ function applyServerToolCallDelta(target, delta) {
  * @param {import('node-fetch').Response} fetchResponse
  * @param {import('express').Response} response
  * @param {object} persist
- * @param {object} pendingServerToolLoop
- * @param {(messages: object[]) => Promise<import('node-fetch').Response>} refetch
+ * @param {ToolCallHandOff} toolHandOff
  * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings]
  * @returns {Promise<void>}
  */
-async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, response, persist, pendingServerToolLoop, refetch, warnings = null) {
+async function forwardAndPersistCompactStreamWithToolCalls(fetchResponse, response, persist, toolHandOff, warnings = null) {
     if (!fetchResponse.ok || !fetchResponse.body) {
         return forwardFetchResponse(fetchResponse, response);
     }
@@ -2957,7 +2945,7 @@ async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, resp
                     if (toolCallsByIndex[toolCallIndex] === undefined) {
                         toolCallsByIndex[toolCallIndex] = {};
                     }
-                    applyServerToolCallDelta(toolCallsByIndex[toolCallIndex], toolCallDelta);
+                    applyToolCallDelta(toolCallsByIndex[toolCallIndex], toolCallDelta);
                     writer.write(encodeToolCallDeltaFrame(toolCallDelta));
                 }
             }
@@ -2982,46 +2970,19 @@ async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, resp
         return;
     }
 
-    const initialJson = { choices: [{ message: { role: 'assistant', content: text || null, tool_calls: toolCalls } }] };
-    const roundResult = await runServerToolRounds({
-        ...pendingServerToolLoop,
+    const handOff = await handOffToolCalls({
+        ...toolHandOff,
         leafNodeId: persist.anchorNodeId,
         isSwipe: persist.isSwipe,
-        initialJson,
-        refetch,
+        toolCalls,
     });
 
-    if (roundResult.ok === 'aborted') {
+    if (handOff.ok === 'aborted') {
         writer.write(encodeControlFrame({ tool_call_aborted: true }));
-        writer.end();
-        return;
-    }
-
-    if (roundResult.ok === 'pending') {
-        writer.write(encodeControlFrame({ tool_call_handoff: { node_id: roundResult.leafNodeId, pending_tool_calls: roundResult.pendingToolCalls } }));
-        writer.end();
-        return;
-    }
-
-    if (!roundResult.ok) {
-        writer.write(encodeControlFrame({ error: { message: roundResult.message } }));
-        writer.end();
-        return;
-    }
-
-    const finalText = roundResult.json?.choices?.[0]?.message?.content ?? '';
-    if (finalText) {
-        writer.write(encodeContent(finalText));
-    }
-
-    persist.anchorNodeId = roundResult.leafNodeId;
-    persist.isSwipe = false;
-    persist.isContinue = false;
-    if (finalText) {
-        noteReplyText(persist, finalText);
-        const persisted = await persistAssistantReply(persist, finalText);
-        const frame = encodeStoredReplyFrame(persisted, persist);
-        if (frame) writer.write(frame);
+    } else if (handOff.ok === 'pending') {
+        writer.write(encodeControlFrame({ tool_call_handoff: { node_id: handOff.leafNodeId, pending_tool_calls: handOff.pendingToolCalls } }));
+    } else {
+        writer.write(encodeControlFrame({ error: { message: handOff.message } }));
     }
     writer.end();
 }
@@ -3030,7 +2991,7 @@ async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, resp
  * @param {unknown} rawArguments
  * @returns {object}
  */
-function parseServerToolArguments(rawArguments) {
+function parseToolArguments(rawArguments) {
     if (rawArguments === '' || rawArguments === undefined || rawArguments === null) {
         return {};
     }
@@ -3046,23 +3007,6 @@ function parseServerToolArguments(rawArguments) {
 }
 
 /**
- * @param {object} params
- * @param {import('../../users.js').UserDirectoryList} params.directories
- * @param {string} params.ownerId
- * @param {import('../../chat-request.js').ChatContext} params.chat
- * @param {string} [params.characterAvatar]
- * @param {string} [params.groupId]
- * @param {import('../../server-tools.js').ServerToolRegistration[]} params.enabledTools
- * @param {Set<string>} params.clientToolNames
- * @param {any[]} [params.clientToolSchemas]
- * @param {Set<string>} [params.stealthToolNames]
- * @param {string} params.leafNodeId
- * @param {boolean} [params.isSwipe]
- * @param {any} params.initialJson
- * @param {(messages: object[]) => Promise<import('node-fetch').Response>} params.refetch
- * @returns {Promise< {ok: true, json: any, leafNodeId: string} | {ok: false, status: number, message: string} | {ok: 'pending', pendingToolCalls: {node_id: string, tool_call_id: string, name: string, arguments: object}[], leafNodeId: string} | {ok: 'aborted', leafNodeId: string} >}
- */
-/**
  * @param {import('../../users.js').UserDirectoryList} directories
  * @param {import('../../token-count-store.js').PendingTokenRows | null} rows
  */
@@ -3071,119 +3015,71 @@ function storeTokenCountRowsInBackground(directories, rows) {
     writeBack(directories, rows).catch(error => console.error('Failed to store token counts:', error));
 }
 
-async function runServerToolRounds({ directories, ownerId, chat, characterAvatar, groupId, enabledTools, clientToolNames, clientToolSchemas, stealthToolNames = new Set(), leafNodeId, isSwipe = false, initialJson, refetch }) {
-    const toolsByName = new Map(enabledTools.map(tool => [tool.name, tool]));
-    let json = initialJson;
-    let currentLeafId = leafNodeId;
+/**
+ * @typedef {object} ToolCallHandOff
+ * @property {import('../../chat-request.js').ChatContext} chat
+ * @property {Set<string>} clientToolNames
+ * @property {Set<string>} stealthToolNames
+ */
 
-    for (let round = 0; round < SERVER_TOOL_ROUND_LIMIT; round++) {
-        const toolCalls = json?.choices?.[0]?.message?.tool_calls;
-        if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
-            return { ok: true, json, leafNodeId: currentLeafId };
-        }
-
-        const unknownCall = toolCalls.find(toolCall => {
-            const name = toolCall?.function?.name;
-            return !toolsByName.has(name) && !clientToolNames.has(name);
-        });
-        if (unknownCall) {
-            return {
-                ok: false,
-                status: 422,
-                message: `The backend called a tool named "${unknownCall?.function?.name}" that is neither a registered server-native tool nor one of the tools this request's own "client_tools" advertised. Only tools registered via registerServerTool() or listed in "client_tools" can be advertised/executed for a raw-action request.`,
-            };
-        }
-
-        const hasStealthCall = toolCalls.some(toolCall => stealthToolNames.has(toolCall?.function?.name));
-        if (hasStealthCall) {
-            return { ok: 'aborted', leafNodeId: currentLeafId };
-        }
-
-        const invocations = [];
-        const pendingToolCalls = [];
-        for (const toolCall of toolCalls) {
-            const name = toolCall.function.name;
-            const rawArguments = toolCall.function.arguments;
-            const args = parseServerToolArguments(rawArguments);
-            const parameters = typeof rawArguments === 'string' ? rawArguments : JSON.stringify(args);
-            const tool = toolsByName.get(name);
-
-            if (!tool) {
-                invocations.push({ id: toolCall.id, name, parameters, result: null, error: null });
-                pendingToolCalls.push({ tool_call_id: toolCall.id, name, arguments: args });
-                continue;
-            }
-
-            let result;
-            let isError = false;
-            try {
-                const invokeResult = await tool.invoke(args, { directories, ownerId, characterAvatar, groupId });
-                result = typeof invokeResult === 'string' ? invokeResult : JSON.stringify(invokeResult);
-            } catch (error) {
-                isError = true;
-                result = error instanceof Error ? error.message : String(error);
-                console.error(`Server-native tool "${tool.name}" threw during a raw-action tool-call round:`, error);
-            }
-
-            invocations.push({ id: toolCall.id, name: tool.name, parameters, result, error: isError });
-        }
-
-        const toolNames = invocations.map(invocation => invocation.name).join(', ');
-        const toolTurnContent = {
-            name: 'System', is_system: true, is_user: false,
-            mes: `Tool calls: ${toolNames}`,
-            extra: { tool_invocations: invocations },
-            send_date: Date.now(),
+/**
+ * Stores the backend's tool calls as a tool turn whose results the page supplies with a `tool_result` request.
+ * @param {ToolCallHandOff & { leafNodeId: string, isSwipe: boolean, toolCalls: any[] }} params
+ * @returns {Promise<{ok: false, status: number, message: string} | {ok: 'pending', pendingToolCalls: {node_id: string, tool_call_id: string, name: string, arguments: object}[], leafNodeId: string} | {ok: 'aborted', leafNodeId: string}>}
+ */
+async function handOffToolCalls({ chat, clientToolNames, stealthToolNames, leafNodeId, isSwipe, toolCalls }) {
+    const unknownCall = toolCalls.find(toolCall => !clientToolNames.has(toolCall?.function?.name));
+    if (unknownCall) {
+        return {
+            ok: false,
+            status: 422,
+            message: `The backend called a tool named "${unknownCall?.function?.name}" that this request's "client_tools" didn't advertise.`,
         };
-
-        const claimsSiblingSlot = round === 0 && isSwipe;
-        const { chats } = chat.store;
-        let after = currentLeafId;
-        if (claimsSiblingSlot) {
-            const replaced = await chats.messageOf(chat.tree, currentLeafId);
-            if (!replaced) {
-                return { ok: false, status: 500, message: 'Failed to persist the tool invocation results onto the chat.' };
-            }
-            after = replaced.parent === null ? null : (await chats.externalIds([replaced.parent]))[0];
-        }
-        const appendResult = await chats.appendMessages({
-            tree: chat.tree, treeSpeaker: chat.treeSpeaker, after, contents: [toolTurnContent], actor: chat.session.actor(),
-        });
-        if (!appendResult.ok || !appendResult.node_ids?.length) {
-            console.error('Failed to persist tool invocation turn:', appendResult.reason);
-            return { ok: false, status: 500, message: 'Failed to persist the tool invocation results onto the chat.' };
-        }
-        currentLeafId = appendResult.node_ids[appendResult.node_ids.length - 1];
-
-        if (pendingToolCalls.length > 0) {
-            return {
-                ok: 'pending',
-                pendingToolCalls: pendingToolCalls.map(call => ({ ...call, node_id: currentLeafId })),
-                leafNodeId: currentLeafId,
-            };
-        }
-
-        const rebuilt = await buildRawActionChatCompletionRequest(directories, {
-            characterAvatar, groupId, ownerId, chat, nodeId: currentLeafId, type: 'normal', clientToolSchemas,
-        });
-
-        const fetchResponse = await refetch(rebuilt.params.messages);
-        storeTokenCountRowsInBackground(directories, rebuilt.tokenCountRows);
-        if (!fetchResponse.ok) {
-            const responseText = await fetchResponse.text().catch(() => '');
-            return {
-                ok: false,
-                status: 502,
-                message: `Backend request failed while resolving a server tool call: ${fetchResponse.statusText || responseText || 'Unknown error'}`,
-            };
-        }
-        json = await fetchResponse.json();
     }
 
+    if (toolCalls.some(toolCall => stealthToolNames.has(toolCall?.function?.name))) {
+        return { ok: 'aborted', leafNodeId };
+    }
+
+    const invocations = [];
+    const pendingToolCalls = [];
+    for (const toolCall of toolCalls) {
+        const name = toolCall.function.name;
+        const rawArguments = toolCall.function.arguments;
+        const args = parseToolArguments(rawArguments);
+        const parameters = typeof rawArguments === 'string' ? rawArguments : JSON.stringify(args);
+        invocations.push({ id: toolCall.id, name, parameters, result: null, error: null });
+        pendingToolCalls.push({ tool_call_id: toolCall.id, name, arguments: args });
+    }
+
+    const toolTurnContent = {
+        name: 'System', is_system: true, is_user: false,
+        mes: `Tool calls: ${invocations.map(invocation => invocation.name).join(', ')}`,
+        extra: { tool_invocations: invocations },
+        send_date: Date.now(),
+    };
+
+    const { chats } = chat.store;
+    let after = leafNodeId;
+    if (isSwipe) {
+        const replaced = await chats.messageOf(chat.tree, leafNodeId);
+        if (!replaced) {
+            return { ok: false, status: 500, message: 'Failed to persist the tool invocation results onto the chat.' };
+        }
+        after = replaced.parent === null ? null : (await chats.externalIds([replaced.parent]))[0];
+    }
+    const appendResult = await chats.appendMessages({
+        tree: chat.tree, treeSpeaker: chat.treeSpeaker, after, contents: [toolTurnContent], actor: chat.session.actor(),
+    });
+    if (!appendResult.ok || !appendResult.node_ids?.length) {
+        console.error('Failed to persist tool invocation turn:', appendResult.reason);
+        return { ok: false, status: 500, message: 'Failed to persist the tool invocation results onto the chat.' };
+    }
+    const toolTurnNodeId = appendResult.node_ids[appendResult.node_ids.length - 1];
     return {
-        ok: false,
-        status: 500,
-        message: `Exceeded the maximum of ${SERVER_TOOL_ROUND_LIMIT} server tool-call rounds without receiving a final plain-text reply from the backend.`,
+        ok: 'pending',
+        pendingToolCalls: pendingToolCalls.map(call => ({ ...call, node_id: toolTurnNodeId })),
+        leafNodeId: toolTurnNodeId,
     };
 }
 
@@ -3241,7 +3137,8 @@ async function resolvePendingToolResults(chat, nodeId, toolResults) {
 router.post('/generate', withGenerationStop(async function (request, response) {
     let pendingAssistantPersist = null;
 
-    let pendingServerToolLoop = null;
+    /** @type {ToolCallHandOff | null} */
+    let toolHandOff = null;
 
     /** @type {Array<{kind: string, key: string, message: string, entries?: string[]}>} */
     const warnings = [];
@@ -3342,13 +3239,11 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                         avatar: characterAvatar, groupId, name1: built.name1, name2: built.name2,
                     }),
                 };
-                if (built.enabledServerTools.length > 0 || built.enabledClientToolNames.size > 0) {
-                    pendingServerToolLoop = {
-                        directories, ownerId, chat, characterAvatar, groupId,
-                        enabledTools: built.enabledServerTools,
+                if (built.enabledClientToolNames.size > 0) {
+                    toolHandOff = {
+                        chat,
                         clientToolNames: built.enabledClientToolNames,
                         stealthToolNames: built.enabledStealthClientToolNames,
-                        clientToolSchemas,
                     };
                 }
             }
@@ -3804,12 +3699,8 @@ router.post('/generate', withGenerationStop(async function (request, response) {
         storeTokenCountRows();
 
         if (request.body.stream) {
-            if (pendingServerToolLoop) {
-                return await forwardAndPersistCompactStreamWithServerTools(
-                    fetchResponse, response, pendingAssistantPersist, pendingServerToolLoop,
-                    (messages) => fetch(endpointUrl, { ...config, body: JSON.stringify({ ...requestBody, stream: false, messages }) }),
-                    warnings,
-                );
+            if (toolHandOff) {
+                return await forwardAndPersistCompactStreamWithToolCalls(fetchResponse, response, pendingAssistantPersist, toolHandOff, warnings);
             }
 
             const streamedText = usesCompletionsEndpoint
@@ -3820,29 +3711,23 @@ router.post('/generate', withGenerationStop(async function (request, response) {
 
         if (fetchResponse.ok) {
             /** @type {any} */
-            let json = await fetchResponse.json();
+            const json = await fetchResponse.json();
 
-            if (pendingServerToolLoop && Array.isArray(json?.choices?.[0]?.message?.tool_calls) && json.choices[0].message.tool_calls.length > 0) {
-                const roundResult = await runServerToolRounds({
-                    ...pendingServerToolLoop,
+            const toolCalls = json?.choices?.[0]?.message?.tool_calls;
+            if (toolHandOff && Array.isArray(toolCalls) && toolCalls.length > 0) {
+                const handOff = await handOffToolCalls({
+                    ...toolHandOff,
                     leafNodeId: pendingAssistantPersist.anchorNodeId,
                     isSwipe: pendingAssistantPersist.isSwipe,
-                    initialJson: json,
-                    refetch: (messages) => fetch(endpointUrl, { ...config, body: JSON.stringify({ ...requestBody, messages }) }),
+                    toolCalls,
                 });
-                if (roundResult.ok === 'aborted') {
+                if (handOff.ok === 'aborted') {
                     return response.send(withStoredMessages({ aborted: true }, response));
                 }
-                if (roundResult.ok === 'pending') {
-                    return response.send(withStoredMessages({ pending_tool_calls: roundResult.pendingToolCalls }, response));
+                if (handOff.ok === 'pending') {
+                    return response.send(withStoredMessages({ pending_tool_calls: handOff.pendingToolCalls }, response));
                 }
-                if (!roundResult.ok) {
-                    return response.status(roundResult.status).send({ error: true, message: roundResult.message });
-                }
-                json = roundResult.json;
-                pendingAssistantPersist.anchorNodeId = roundResult.leafNodeId;
-                pendingAssistantPersist.isSwipe = false;
-                pendingAssistantPersist.isContinue = false;
+                return response.status(handOff.status).send({ error: true, message: handOff.message });
             }
 
             if (pendingAssistantPersist) {

@@ -10,14 +10,8 @@
 /docker/config
 /docker/extensions
 /docker/data
-/docker/plugins
 /docker/dist
 /public/scripts/extensions/third-party
-
-# --- Plugins (keep only package files) ---
-/plugins/*
-!/plugins/package.json
-!/plugins/package-lock.json
 
 # --- The Folders ---
 /backups

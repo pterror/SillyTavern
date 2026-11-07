@@ -351,13 +351,6 @@ whitelistImportDomains:
 ##     User-Agent: "Googlebot/2.1 (+http://www.google.com/bot.html)"
 requestOverrides: []
 
-# Git backend for plugin/extension repository operations.
-# - Use "auto" to prefer system git, falling back to the integrated backend
-# - Use "system" to force system backend
-# - Use "builtin" to force integrated backend
-git:
-  backend: auto
-
 # Additional model tokenizers can be downloaded on demand.
 # A tokenizer that isn't downloaded (disabled here, or the download failed) is not replaced by another
 # tokenizer: its token counts are estimated. A failed download is tried again after 60 seconds.
@@ -436,7 +429,3 @@ gemini:
   image:
     # Leave empty to use the API-default value.
     personGeneration: 'allow_adult'
-# -- SERVER PLUGIN CONFIGURATION --
-enableServerPlugins: false
-# Attempt to automatically update server plugins on startup
-enableServerPluginsAutoUpdate: true

@@ -22,7 +22,6 @@ import './fetch-patch.js';
 import { serverDirectory } from './server-directory.js';
 
 import { serverEvents, EVENT_NAMES } from './server-events.js';
-import { loadPlugins } from './plugin-loader.js';
 import {
     initUserStorage,
     getCookieSecret,
@@ -367,9 +366,6 @@ async function preSetupTasks() {
     await statsInit();
     __mark('statsInit');
 
-    const pluginsDirectory = path.join(serverDirectory, 'plugins');
-    const cleanupPlugins = await loadPlugins(app, pluginsDirectory);
-    __mark('loadPlugins');
     const consoleTitle = process.title;
 
     let isExiting = false;
@@ -377,9 +373,6 @@ async function preSetupTasks() {
         if (isExiting) return;
         isExiting = true;
         await statsOnExit();
-        if (typeof cleanupPlugins === 'function') {
-            await cleanupPlugins();
-        }
         diskCache.dispose();
         disposeLocalImportScan();
         await stopDroppedWatches();

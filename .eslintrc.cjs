@@ -26,7 +26,7 @@ module.exports = {
     },
     overrides: [
         {
-            files: ['src/**/*.js', './*.js', 'plugins/**/*.js', 'scripts/**/*.js', 'engine/**/*.js'],
+            files: ['src/**/*.js', './*.js', 'scripts/**/*.js', 'engine/**/*.js'],
             env: {
                 node: true,
                 es2024: true,
@@ -135,7 +135,6 @@ module.exports = {
         'src/tokenizers/**',
         'docker/**',
         'engine/target/**',
-        'plugins/**',
         '**/*.min.js',
     ],
     rules: {

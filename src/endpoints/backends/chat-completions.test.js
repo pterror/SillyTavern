@@ -66,7 +66,6 @@ if (canMockAi21Backend) {
 const { router, buildRawActionChatCompletionRequest } = await import('./chat-completions.js');
 const { writeAllSettings } = await import('../../settings-store.js');
 const { writeSecret, SECRET_KEYS } = await import('../secrets.js');
-const { registerServerTool, unregisterServerTool } = await import('../../server-tools.js');
 const { encodeTextByLocalTokenizerType, getTiktokenTokenizer } = await import('../tokenizers.js');
 const { tokenKeyHash, TOKEN_KEY_KINDS } = await import('../../token-count-store.js');
 const { resolveTokenizer, tokenizerIdentity } = await import('../../tokenizer-resolve.js');
@@ -988,19 +987,9 @@ async function run() {
         }
         return { rows, newest };
     }
-    async function clearLastUsed(identity) {
-        const store = user.store.chats.store;
-        for (const [table, hash] of written.get(identity)?.values() ?? []) {
-            const found = await cached(table, identity, hash);
-            if (!found) continue;
-            const key = { table, identity, hash: Buffer.from(hash, 'hex') };
-            await store.tokenCachePut([{ ...key, value: Buffer.concat([found.value, Buffer.from([0])]), replace: true }], 0, 0);
-            await store.tokenCachePut([{ ...key, value: found.value, replace: true }], 0, 0);
-        }
-    }
 
     let writeBackChats = 0;
-    async function setUpLlamaCppWriteBack(onChat, { tools = false } = {}) {
+    async function setUpLlamaCppWriteBack(onChat) {
         const n = ++writeBackChats;
         const modelPath = `/models/write-back-${n}.gguf`;
         const chat = `write-back-chat-${n}`;
@@ -1024,10 +1013,6 @@ async function run() {
         settings.oai_settings.custom_url = backend.url;
         settings.oai_settings.bias_preset_selected = 'Bias';
         settings.oai_settings.bias_presets = { Bias: [{ id: 'a', text: 'pear', value: -5 }] };
-        if (tools) {
-            settings.oai_settings.function_calling = true;
-            settings.oai_settings.custom_prompt_post_processing = '';
-        }
         writeAllSettings(directories, settings);
         return {
             backend,
@@ -1084,48 +1069,6 @@ async function run() {
         } finally {
             http.request = request;
             backend.server.close();
-            writeAllSettings(directories, buildSettingsFixture());
-        }
-    }
-
-    {
-        let chats = 0;
-        let whenSecondReceived = null;
-        let identityForCase = null;
-        registerServerTool({
-            id: 'test-tool:write_back_probe',
-            name: 'write_back_probe',
-            description: 'Probes the token tables.',
-            parameters: { type: 'object', properties: {} },
-            invoke: async () => {
-                await waitFor(async () => (await storedRowsUnder(identityForCase)).rows > 0);
-                await clearLastUsed(identityForCase);
-                return 'probed';
-            },
-        });
-        const { backend, identity, body } = await setUpLlamaCppWriteBack(async (_req, res) => {
-            chats++;
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            if (chats === 1) {
-                return res.end(JSON.stringify({ choices: [{ message: {
-                    role: 'assistant', content: null,
-                    tool_calls: [{ id: 'call_probe', type: 'function', function: { name: 'write_back_probe', arguments: '{}' } }],
-                } }] }));
-            }
-            whenSecondReceived = await storedRowsUnder(identityForCase);
-            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Probed.' } }] }));
-        }, { tools: true });
-        identityForCase = identity;
-        try {
-            const { status, data } = await postGenerate(buildTestApp(), body);
-            assert.equal(status, 200);
-            assert.equal(data.choices?.[0]?.message?.content, 'Probed.');
-            assert.equal(chats, 2, 'the tool round sent a second request');
-            assert.equal(whenSecondReceived.newest, 0, 'the rebuilt request\'s rows weren\'t marked used before its backend request');
-            await waitFor(async () => (await storedRowsUnder(identity)).newest > 0);
-        } finally {
-            backend.server.close();
-            unregisterServerTool('test-tool:write_back_probe');
             writeAllSettings(directories, buildSettingsFixture());
         }
     }
@@ -2817,286 +2760,11 @@ async function run() {
         assert.equal(data.choices?.[0]?.message?.content, 'No tools here.');
         assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
         assert.ok(capturedBody, 'the fake backend actually received a request');
-        assert.equal(capturedBody.tools, undefined, 'no `tools` field is sent when no server tools are registered - unchanged from before this chunk');
+        assert.equal(capturedBody.tools, undefined, 'no `tools` field is sent when no tools are advertised');
         assert.equal(capturedBody.tool_choice, undefined);
 
         const branchAfter = await loadBranch(user.store, { avatar: ownerId }, toolBranch);
-        assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'No tools here.', 'plain-text persistence, unaffected by the (empty) tool registry');
-    }
-
-    {
-        const toolBranch = 'tool-branch-happy-path';
-        await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
-            { chat_metadata: {} },
-            { name: 'Tester', is_user: true, mes: 'Hi Rex, happy-path branch.', send_date: 1, extra: {} },
-            { name: 'Rex', is_user: false, mes: 'Hello there, happy-path branch!', send_date: 2, extra: {} },
-        ]);
-        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, toolBranch);
-
-        let invokeArgs = null;
-        let invokeCtx = null;
-        registerServerTool({
-            id: 'test-tool:get_weather',
-            name: 'get_weather',
-            description: 'Gets the current weather for a city.',
-            parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
-            invoke: async (args, ctx) => {
-                invokeArgs = args;
-                invokeCtx = ctx;
-                return `Sunny in ${args.city}`;
-            },
-        });
-
-        const requestBodies = [];
-        let callCount = 0;
-        const fakeBackend = await startFakeBackend((_req, res, body) => {
-            callCount++;
-            requestBodies.push(JSON.parse(body));
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            if (callCount === 1) {
-                res.end(JSON.stringify({
-                    choices: [{
-                        message: {
-                            role: 'assistant', content: null,
-                            tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'get_weather', arguments: JSON.stringify({ city: 'Booktown' }) } }],
-                        },
-                    }],
-                }));
-            } else {
-                res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'It is sunny in Booktown.' } }] }));
-            }
-        });
-        pointBackendAtWithToolsEnabled(fakeBackend.url);
-
-        const app = buildTestApp();
-        let status, data;
-        try {
-            ({ status, data } = await postGenerate(app, {
-                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'What is the weather in Booktown?' }, stream: false,
-            }));
-        } finally {
-            fakeBackend.server.close();
-            unregisterServerTool('test-tool:get_weather');
-        }
-
-        assert.equal(status, 200, 'the (unchanged) final response is forwarded to the client');
-        assert.equal(data.choices?.[0]?.message?.content, 'It is sunny in Booktown.');
-        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
-        assert.equal(callCount, 2, 'backend was called twice: once producing tool_calls, once with the final plain-text reply');
-
-        assert.ok(Array.isArray(requestBodies[0].tools) && requestBodies[0].tools.length === 1, 'the FIRST request actually advertised the registered tool');
-        assert.equal(requestBodies[0].tools[0].function.name, 'get_weather');
-        assert.equal(requestBodies[0].tool_choice, 'auto');
-
-        assert.deepEqual(invokeArgs, { city: 'Booktown' }, 'invoke() was called with the parsed (not raw-string) arguments');
-        assert.ok(invokeCtx, 'invoke() received a ctx object');
-        assert.equal(invokeCtx.ownerId, ownerId, 'ctx carries ownerId');
-        assert.equal(invokeCtx.characterAvatar, avatar, 'ctx carries characterAvatar');
-        assert.ok(invokeCtx.directories, 'ctx carries directories');
-
-        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, toolBranch);
-        assert.equal(branchAfter.messages.length, 2 + 3, 'user message + tool-call/result turn + final assistant reply were all appended as three separate nodes');
-        const [userMsg, toolMsg, finalMsg] = branchAfter.messages.slice(-3);
-        assert.equal(userMsg.is_user, true);
-        assert.equal(userMsg.mes, 'What is the weather in Booktown?');
-        assert.equal(toolMsg.is_user, false);
-        assert.equal(toolMsg.is_system, true, 'the tool-call/result turn is a system entry, mirroring the client\'s own ToolManager.saveFunctionToolInvocations()');
-        assert.ok(Array.isArray(toolMsg.extra?.tool_invocations), 'tool_invocations persisted on extra, the exact shape populateChatHistory()/buildChatCompletionMessages() expect for replay');
-        assert.equal(toolMsg.extra.tool_invocations.length, 1);
-        assert.equal(toolMsg.extra.tool_invocations[0].id, 'call_1');
-        assert.equal(toolMsg.extra.tool_invocations[0].name, 'get_weather');
-        assert.equal(typeof toolMsg.extra.tool_invocations[0].parameters, 'string', 'parameters is stored as a JSON string, not a live object');
-        assert.deepEqual(JSON.parse(toolMsg.extra.tool_invocations[0].parameters), { city: 'Booktown' });
-        assert.equal(toolMsg.extra.tool_invocations[0].result, 'Sunny in Booktown');
-        assert.equal(toolMsg.extra.tool_invocations[0].error, false);
-        assert.equal(finalMsg.is_user, false);
-        assert.equal(finalMsg.mes, 'It is sunny in Booktown.');
-        assert.equal(finalMsg.name, 'Rex', 'the final reply uses name2, same as any other real assistant reply');
-
-        const secondRequestDump = JSON.stringify(requestBodies[1].messages);
-        assert.ok(secondRequestDump.includes('get_weather'), 'second request history includes the tool call by name');
-        assert.ok(secondRequestDump.includes('Sunny in Booktown'), 'second request history includes the tool result text');
-    }
-
-    {
-        const toolBranch = 'tool-branch-invoke-throws';
-        await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
-            { chat_metadata: {} },
-            { name: 'Tester', is_user: true, mes: 'Hi Rex, invoke-throws branch.', send_date: 1, extra: {} },
-            { name: 'Rex', is_user: false, mes: 'Hello there, invoke-throws branch!', send_date: 2, extra: {} },
-        ]);
-        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, toolBranch);
-
-        registerServerTool({
-            id: 'test-tool:always_throws',
-            name: 'always_throws',
-            description: 'A tool that always throws.',
-            parameters: { type: 'object', properties: {} },
-            invoke: async () => { throw new Error('boom'); },
-        });
-
-        let callCount = 0;
-        const requestBodies = [];
-        const fakeBackend = await startFakeBackend((_req, res, body) => {
-            callCount++;
-            requestBodies.push(JSON.parse(body));
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            if (callCount === 1) {
-                res.end(JSON.stringify({
-                    choices: [{
-                        message: {
-                            role: 'assistant', content: null,
-                            tool_calls: [{ id: 'call_err', type: 'function', function: { name: 'always_throws', arguments: '{}' } }],
-                        },
-                    }],
-                }));
-            } else {
-                res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Sorry, that failed.' } }] }));
-            }
-        });
-        pointBackendAtWithToolsEnabled(fakeBackend.url);
-
-        const app = buildTestApp();
-        let status, data;
-        try {
-            ({ status, data } = await postGenerate(app, {
-                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Try the broken tool.' }, stream: false,
-            }));
-        } finally {
-            fakeBackend.server.close();
-            unregisterServerTool('test-tool:always_throws');
-        }
-
-        assert.equal(status, 200, 'a thrown invoke() does not crash the request');
-        assert.equal(data.choices?.[0]?.message?.content, 'Sorry, that failed.');
-        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
-        assert.equal(callCount, 2, 'the loop continued to a second backend call after the tool error, instead of aborting');
-
-        const secondRequestDump = JSON.stringify(requestBodies[1].messages);
-        assert.ok(secondRequestDump.includes('boom'), 'the error text is visible to the backend in the follow-up request history');
-
-        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, toolBranch);
-        const toolMsg = branchAfter.messages[branchAfter.messages.length - 2];
-        assert.equal(toolMsg.extra.tool_invocations[0].error, true, 'the invocation is flagged as an error');
-        assert.equal(toolMsg.extra.tool_invocations[0].result, 'boom', 'the error message became the (string) result, so the model can see the failure');
-    }
-
-    {
-        const toolBranch = 'tool-branch-unrecognized';
-        await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
-            { chat_metadata: {} },
-            { name: 'Tester', is_user: true, mes: 'Hi Rex, unrecognized-tool branch.', send_date: 1, extra: {} },
-            { name: 'Rex', is_user: false, mes: 'Hello there, unrecognized-tool branch!', send_date: 2, extra: {} },
-        ]);
-        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, toolBranch);
-        const messageCountBefore = branchBefore.messages.length;
-
-        let knownToolInvoked = false;
-        registerServerTool({
-            id: 'test-tool:known_tool',
-            name: 'known_tool',
-            description: 'A real, registered tool - just not the one the fake backend calls.',
-            parameters: { type: 'object', properties: {} },
-            invoke: async () => { knownToolInvoked = true; return 'ok'; },
-        });
-
-        let callCount = 0;
-        const fakeBackend = await startFakeBackend((_req, res) => {
-            callCount++;
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({
-                choices: [{
-                    message: {
-                        role: 'assistant', content: null,
-                        tool_calls: [{ id: 'call_x', type: 'function', function: { name: 'totally_unregistered_tool', arguments: '{}' } }],
-                    },
-                }],
-            }));
-        });
-        pointBackendAtWithToolsEnabled(fakeBackend.url);
-
-        const app = buildTestApp();
-        let status, data;
-        try {
-            ({ status, data } = await postGenerate(app, {
-                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Call something weird.' }, stream: false,
-            }));
-        } finally {
-            fakeBackend.server.close();
-            unregisterServerTool('test-tool:known_tool');
-        }
-
-        assert.equal(callCount, 1, 'the loop does not proceed to a second backend call for an unrecognized tool name');
-        assert.equal(knownToolInvoked, false, 'the unrelated recognized tool is never invoked for a round that also names an unrecognized tool');
-        assert.ok(status >= 400 && status < 600, `expected a real error status, got ${status}`);
-        assert.equal(data.error, true, 'matches this route\'s existing {error: true, message} convention for build/dispatch failures');
-        assert.ok(typeof data.message === 'string' && data.message.includes('totally_unregistered_tool'), 'the error names the unrecognized tool');
-
-        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, toolBranch);
-        assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'only the user message was appended - no tool-call turn or assistant reply for an unrecognized-tool round');
-    }
-
-    {
-        const toolBranch = 'tool-branch-round-limit';
-        await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
-            { chat_metadata: {} },
-            { name: 'Tester', is_user: true, mes: 'Hi Rex, round-limit branch.', send_date: 1, extra: {} },
-            { name: 'Rex', is_user: false, mes: 'Hello there, round-limit branch!', send_date: 2, extra: {} },
-        ]);
-        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, toolBranch);
-        const messageCountBefore = branchBefore.messages.length;
-
-        registerServerTool({
-            id: 'test-tool:infinite',
-            name: 'infinite_tool',
-            description: 'A tool whose result always makes the (fake) backend ask to call it again.',
-            parameters: { type: 'object', properties: {} },
-            invoke: async () => 'called again',
-        });
-
-        const TEST_SANITY_BOUND = 20;
-        let callCount = 0;
-        const fakeBackend = await startFakeBackend((_req, res) => {
-            callCount++;
-            if (callCount > TEST_SANITY_BOUND) {
-                res.writeHead(500, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: 'test sanity bound exceeded - the server-side loop did not respect its own round limit' }));
-                return;
-            }
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({
-                choices: [{
-                    message: {
-                        role: 'assistant', content: null,
-                        tool_calls: [{ id: `call_${callCount}`, type: 'function', function: { name: 'infinite_tool', arguments: '{}' } }],
-                    },
-                }],
-            }));
-        });
-        pointBackendAtWithToolsEnabled(fakeBackend.url);
-
-        const app = buildTestApp();
-        let status, data;
-        try {
-            ({ status, data } = await postGenerate(app, {
-                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Keep going forever.' }, stream: false,
-            }));
-        } finally {
-            fakeBackend.server.close();
-            unregisterServerTool('test-tool:infinite');
-        }
-
-        assert.ok(callCount <= TEST_SANITY_BOUND, 'the loop terminated on its own well before the test\'s own hard sanity bound');
-        assert.ok(status >= 400 && status < 600, `expected a real error status once the round limit is exceeded, got ${status}`);
-        assert.equal(data.error, true);
-        assert.ok(typeof data.message === 'string' && /round/i.test(data.message), 'the error explains the round-limit failure');
-
-        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, toolBranch);
-        assert.ok(branchAfter.messages.length > messageCountBefore + 1, 'the tool-call turns persisted up to the limit remain on the tree even though the request errored');
+        assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'No tools here.', 'plain-text persistence');
     }
 
     {
@@ -3242,101 +2910,6 @@ async function run() {
     }
 
     {
-        const toolBranch = 'tool-branch-mixed-round';
-        await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
-            { chat_metadata: {} },
-            { name: 'Tester', is_user: true, mes: 'Hi Rex, mixed-round branch.', send_date: 1, extra: {} },
-            { name: 'Rex', is_user: false, mes: 'Hello there, mixed-round branch!', send_date: 2, extra: {} },
-        ]);
-        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, toolBranch);
-        const messageCountBefore = branchBefore.messages.length;
-
-        registerServerTool({
-            id: 'test-tool:server_side_lookup',
-            name: 'server_side_lookup',
-            description: 'A real server-native tool.',
-            parameters: { type: 'object', properties: {} },
-            invoke: async () => 'server-side result',
-        });
-        const clientTools = [{
-            type: 'function',
-            function: { name: 'client_side_prompt', description: 'A client-only tool (DOM access).', parameters: { type: 'object', properties: {} } },
-        }];
-
-        let callCount = 0;
-        const requestBodies = [];
-        const fakeBackend = await startFakeBackend((_req, res, body) => {
-            callCount++;
-            requestBodies.push(JSON.parse(body));
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            if (callCount === 1) {
-                res.end(JSON.stringify({
-                    choices: [{
-                        message: {
-                            role: 'assistant', content: null,
-                            tool_calls: [
-                                { id: 'call_server', type: 'function', function: { name: 'server_side_lookup', arguments: '{}' } },
-                                { id: 'call_client', type: 'function', function: { name: 'client_side_prompt', arguments: '{}' } },
-                            ],
-                        },
-                    }],
-                }));
-            } else {
-                res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Combined both results, thanks.' } }] }));
-            }
-        });
-        pointBackendAtWithToolsEnabled(fakeBackend.url);
-
-        const app = buildTestApp();
-        let status1, data1, status2, data2;
-        try {
-            ({ status: status1, data: data1 } = await postGenerate(app, {
-                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Do both things.' }, stream: false,
-                client_tools: clientTools,
-            }));
-
-            assert.equal(callCount, 1, 'the backend is only called once before the client-only call needs a hand-off');
-            assert.equal(status1, 200);
-            assert.equal(data1.pending_tool_calls.length, 1, 'only the client-only call is surfaced - the server-native one already executed');
-            assert.equal(data1.pending_tool_calls[0].tool_call_id, 'call_client');
-            const pendingNodeId = data1.pending_tool_calls[0].node_id;
-
-            const midBranch = await loadBranch(user.store, { avatar: ownerId }, toolBranch);
-            const midToolMsg = midBranch.messages[midBranch.messages.length - 1];
-            assert.equal(midToolMsg.node_id, pendingNodeId, 'single shared node for the whole mixed round');
-            assert.equal(midToolMsg.extra.tool_invocations.length, 2, 'both invocations (resolved server + pending client) live on the SAME node');
-            const serverInvocation = midToolMsg.extra.tool_invocations.find(i => i.id === 'call_server');
-            const clientInvocation = midToolMsg.extra.tool_invocations.find(i => i.id === 'call_client');
-            assert.equal(serverInvocation.result, 'server-side result', 'the server-native call already executed for real');
-            assert.equal(serverInvocation.error, false);
-            assert.equal(clientInvocation.result, null, 'the client-only call is still pending on this same node');
-
-            ({ status: status2, data: data2 } = await postGenerate(app, {
-                owner_id: ownerId, character_avatar: avatar, node_id: pendingNodeId, type: 'tool_result',
-                tool_results: [{ id: 'call_client', result: 'client-side result', error: false }],
-                client_tools: clientTools,
-            }));
-        } finally {
-            fakeBackend.server.close();
-            unregisterServerTool('test-tool:server_side_lookup');
-        }
-
-        assert.equal(callCount, 2, 'the loop resumed with a second real backend call once the mixed node was fully resolved');
-        assert.equal(status2, 200);
-        assert.equal(data2.choices?.[0]?.message?.content, 'Combined both results, thanks.');
-        assert.equal(typeof data2.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
-
-        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, toolBranch);
-        assert.equal(branchAfter.messages.length, messageCountBefore + 3, 'user message + the ONE mixed tool node (edited in place, not duplicated) + the final reply');
-        const [, toolMsg, finalMsg] = branchAfter.messages.slice(-3);
-        assert.equal(toolMsg.extra.tool_invocations.length, 2);
-        assert.equal(toolMsg.extra.tool_invocations.find(i => i.id === 'call_client').result, 'client-side result', 'the pending client invocation was filled in by the follow-up');
-        assert.equal(toolMsg.extra.tool_invocations.find(i => i.id === 'call_server').result, 'server-side result', 'the already-resolved server invocation is untouched by the edit');
-        assert.equal(finalMsg.mes, 'Combined both results, thanks.');
-    }
-
-    {
         const toolBranch = 'tool-branch-neither-known';
         await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
             { chat_metadata: {} },
@@ -3386,154 +2959,6 @@ async function run() {
 
         const branchAfter = await loadBranch(user.store, { avatar: ownerId }, toolBranch);
         assert.equal(branchAfter.messages.length, messageCountBefore + 1, 'only the user message was appended - no tool-call turn for a wholly-unrecognized round');
-    }
-
-    {
-        const toolBranch = 'tool-branch-name-collision';
-        await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
-            { chat_metadata: {} },
-            { name: 'Tester', is_user: true, mes: 'Hi Rex, name-collision branch.', send_date: 1, extra: {} },
-            { name: 'Rex', is_user: false, mes: 'Hello there, name-collision branch!', send_date: 2, extra: {} },
-        ]);
-        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, toolBranch);
-
-        let serverToolInvoked = false;
-        registerServerTool({
-            id: 'test-tool:shared_name',
-            name: 'shared_tool_name',
-            description: 'The REAL, operator-configured server tool.',
-            parameters: { type: 'object', properties: {} },
-            invoke: async () => { serverToolInvoked = true; return 'server tool won'; },
-        });
-        const clientTools = [{
-            type: 'function',
-            function: { name: 'shared_tool_name', description: 'An unprivileged client tool trying to shadow the server one.', parameters: { type: 'object', properties: {} } },
-        }];
-
-        let callCount = 0;
-        const requestBodies = [];
-        const fakeBackend = await startFakeBackend((_req, res, body) => {
-            callCount++;
-            requestBodies.push(JSON.parse(body));
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            if (callCount === 1) {
-                res.end(JSON.stringify({
-                    choices: [{
-                        message: {
-                            role: 'assistant', content: null,
-                            tool_calls: [{ id: 'call_shared', type: 'function', function: { name: 'shared_tool_name', arguments: '{}' } }],
-                        },
-                    }],
-                }));
-            } else {
-                res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Done.' } }] }));
-            }
-        });
-        pointBackendAtWithToolsEnabled(fakeBackend.url);
-
-        const app = buildTestApp();
-        let status, data;
-        try {
-            ({ status, data } = await postGenerate(app, {
-                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Trigger the shared name.' }, stream: false,
-                client_tools: clientTools,
-            }));
-        } finally {
-            fakeBackend.server.close();
-            unregisterServerTool('test-tool:shared_name');
-        }
-
-        assert.equal(requestBodies[0].tools.length, 1, 'only ONE tool named shared_tool_name is ever advertised - the colliding client schema was dropped, not sent twice');
-        assert.equal(requestBodies[0].tools[0].function.description, 'The REAL, operator-configured server tool.', 'the SERVER tool\'s schema won the collision, not the client\'s');
-        assert.equal(callCount, 2, 'the call resolved server-side (a second backend call happened), it was never treated as a client hand-off');
-        assert.equal(serverToolInvoked, true, 'the server-native tool actually executed for this name');
-        assert.equal(status, 200);
-        assert.equal(data.choices?.[0]?.message?.content, 'Done.');
-        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
-        assert.equal(data.pending_tool_calls, undefined, 'never a hand-off for a name the server tool registry owns');
-    }
-
-    {
-        const toolBranch = 'stream-tool-branch-server-native';
-        await saveBranch(user.store, { avatar: ownerId }, toolBranch, [
-            { chat_metadata: {} },
-            { name: 'Tester', is_user: true, mes: 'Hi Rex, streaming server-tool branch.', send_date: 1, extra: {} },
-            { name: 'Rex', is_user: false, mes: 'Hello there, streaming server-tool branch!', send_date: 2, extra: {} },
-        ]);
-        const branchBefore = await loadBranch(user.store, { avatar: ownerId }, toolBranch);
-
-        let invokeArgs = null;
-        registerServerTool({
-            id: 'test-tool:stream_get_weather',
-            name: 'get_weather',
-            description: 'Gets the current weather for a city.',
-            parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
-            invoke: async (args) => { invokeArgs = args; return `Sunny in ${args.city}`; },
-        });
-
-        let callCount = 0;
-        const requestBodies = [];
-        const fakeBackend = await startFakeBackend((_req, res, body) => {
-            callCount++;
-            requestBodies.push(JSON.parse(body));
-            if (callCount === 1) {
-                const deltaChunks = [
-                    { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_stream_1', type: 'function', function: { name: 'get_weather', arguments: '' } }] } }] },
-                    { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"ci' } }] } }] },
-                    { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'ty": "Bo' } }] } }] },
-                    { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'oktown"}' } }] } }] },
-                ];
-                const sseBody = deltaChunks.map(json => `data: ${JSON.stringify(json)}\n\n`).join('') + 'data: [DONE]\n\n';
-                res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-                res.end(sseBody);
-            } else {
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'It is sunny in Booktown, streamed.' } }] }));
-            }
-        });
-        pointBackendAtWithToolsEnabled(fakeBackend.url);
-
-        const app = buildTestApp();
-        let status, bodyBytes;
-        try {
-            ({ status, bodyBytes } = await postGenerateStream(app, {
-                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
-                type: 'normal', user_message: { is_user: true, name: 'User', mes: 'What is the weather in Booktown, streamed?' }, stream: true,
-            }));
-        } finally {
-            fakeBackend.server.close();
-            unregisterServerTool('test-tool:stream_get_weather');
-        }
-
-        assert.equal(status, 200);
-        assert.equal(callCount, 2, 'backend was called twice: once streaming tool_calls, once with the final plain-text reply');
-        assert.equal(requestBodies[1].stream, false, 'round 2+ is forced non-streaming regardless of the original request\'s own stream:true');
-        assert.deepEqual(invokeArgs, { city: 'Booktown' }, 'the split-across-chunks arguments string was reassembled correctly before parsing');
-
-        const decoded = decodeCompactToolStream(bodyBytes);
-        assert.deepEqual(decoded.toolCallDeltas, [
-            { index: 0, id: 'call_stream_1', type: 'function', function: { name: 'get_weather', arguments: '' } },
-            { index: 0, function: { arguments: '{"ci' } },
-            { index: 0, function: { arguments: 'ty": "Bo' } },
-            { index: 0, function: { arguments: 'oktown"}' } },
-        ], 'every real tool_calls delta from round 1 is forwarded to the client as its own 0x05 frame, in order');
-        assert.equal(decoded.content, 'It is sunny in Booktown, streamed.', 'the final round\'s content reaches the client as an ordinary compact content frame');
-        assert.equal(decoded.control, null, 'a plain final reply carries no control (0x08) trailer');
-        assert.ok(decoded.assistantNodeId, 'the assistant_node_id frame was sent as the final frame once the final reply was persisted');
-
-        const branchAfter = await waitFor(async () => {
-            const branch = await loadBranch(user.store, { avatar: ownerId }, toolBranch);
-            return branch.messages.length === branchBefore.messages.length + 3 ? branch : null;
-        });
-        const [userMsg, toolMsg, finalMsg] = branchAfter.messages.slice(-3);
-        assert.equal(userMsg.is_user, true);
-        assert.equal(toolMsg.is_system, true);
-        assert.equal(toolMsg.extra.tool_invocations[0].name, 'get_weather');
-        assert.equal(toolMsg.extra.tool_invocations[0].result, 'Sunny in Booktown');
-        assert.equal(finalMsg.mes, 'It is sunny in Booktown, streamed.');
-        assert.equal(finalMsg.name, 'Rex');
-        assert.equal(finalMsg.node_id, decoded.assistantNodeId, 'the node id sent to the client in the compact stream\'s assistant_node_id frame is the exact node the final reply actually landed on');
     }
 
     {
@@ -3776,13 +3201,10 @@ async function run() {
         const swipedAncestry = (await user.store.chats.load({ tree: await treeOf(user.store, { avatar: ownerId }), at: swipedNodeId })).messages;
         const parentNodeId = swipedAncestry[swipedAncestry.length - 2].node_id;
 
-        registerServerTool({
-            id: 'test-tool:swipe_get_weather',
-            name: 'get_weather',
-            description: 'Gets the current weather for a city.',
-            parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
-            invoke: async (args) => `Sunny in ${args.city}`,
-        });
+        const clientTools = [{
+            type: 'function',
+            function: { name: 'get_weather', description: 'Gets the current weather for a city.', parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] } },
+        }];
 
         let callCount = 0;
         const requestBodies = [];
@@ -3806,40 +3228,47 @@ async function run() {
         pointBackendAtWithToolsEnabled(fakeBackend.url);
 
         const app = buildTestApp();
-        let status, data;
+        let status1, data1, status2, data2;
         try {
-            ({ status, data } = await postGenerate(app, {
+            ({ status: status1, data: data1 } = await postGenerate(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: swipedNodeId,
-                type: 'swipe', is_swipe: true, stream: false,
+                type: 'swipe', is_swipe: true, stream: false, client_tools: clientTools,
+            }));
+            assert.equal(status1, 200);
+            assert.equal(data1.pending_tool_calls?.length, 1, 'the swipe\'s tool call is handed to the page');
+
+            ({ status: status2, data: data2 } = await postGenerate(app, {
+                owner_id: ownerId, character_avatar: avatar, node_id: data1.pending_tool_calls[0].node_id, type: 'tool_result',
+                tool_results: [{ id: 'call_swipe_1', result: 'Sunny in Swiptown', error: false }],
+                client_tools: clientTools,
             }));
         } finally {
             fakeBackend.server.close();
-            unregisterServerTool('test-tool:swipe_get_weather');
         }
 
-        assert.equal(status, 200, 'the swipe-with-tool-call request completes normally');
-        assert.equal(data.choices?.[0]?.message?.content, 'General Kenobi! (checked: sunny in Swiptown)');
-        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
+        assert.equal(status2, 200, 'the tool_result follow-up completes normally');
+        assert.equal(data2.choices?.[0]?.message?.content, 'General Kenobi! (checked: sunny in Swiptown)');
+        assert.equal(typeof data2.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back');
         assert.equal(callCount, 2, 'backend called twice: once producing the tool call, once with the final swipe text');
-        assert.ok(JSON.stringify(requestBodies[1].messages).includes('Sunny in Swiptown'), 'the second request\'s history really was re-resolved through the tool-call turn');
+        assert.ok(JSON.stringify(requestBodies[1].messages).includes('Sunny in Swiptown'), 'the second request\'s history goes through the tool-call turn');
 
         const alternatives = await user.store.chats.alternatives({ node_id: swipedNodeId });
-        assert.equal(alternatives.total, 2, 'the swiped message and the tool-call turn are real siblings under the same parent');
+        assert.equal(alternatives.total, 2, 'the swiped message and the tool-call turn are siblings under the same parent');
         const toolAlt = alternatives.alternatives.find(a => a.node_id !== swipedNodeId);
         assert.ok(toolAlt, 'a second alternative alongside the swiped message exists');
-        assert.ok(Array.isArray(toolAlt.extra?.tool_invocations), 'that second alternative IS the tool-call turn, not the final text');
+        assert.equal(toolAlt.node_id, data1.pending_tool_calls[0].node_id, 'that second alternative is the tool-call turn, not the final text');
         assert.equal(toolAlt.extra.tool_invocations[0].name, 'get_weather');
         assert.equal(toolAlt.extra.tool_invocations[0].result, 'Sunny in Swiptown');
 
-        assert.ok(alternatives.alternatives.some(a => a.node_id === swipedNodeId && a.mes === 'Hello there, swipe-with-tool branch!'), 'the swiped message\'s own original content is untouched');
+        assert.ok(alternatives.alternatives.some(a => a.node_id === swipedNodeId && a.mes === 'Hello there, swipe-with-tool branch!'), 'the swiped message\'s own content is untouched');
 
         const branchAfter = await loadBranch(user.store, { avatar: ownerId }, swipeToolBranch);
         const finalNodeId = branchAfter.branch.leaf_id;
-        assert.notEqual(finalNodeId, toolAlt.node_id, 'the final text is its own node, not stored on the tool-call turn itself');
+        assert.notEqual(finalNodeId, toolAlt.node_id, 'the final text is its own node, not stored on the tool-call turn');
         const finalAncestry = (await user.store.chats.load({ tree: await treeOf(user.store, { avatar: ownerId }), at: finalNodeId })).messages;
-        assert.equal(finalAncestry.length, swipedAncestry.length + 1, 'the final text sits exactly one level deeper than the swiped message\'s own depth - a child of the tool-call turn, which itself occupies the swiped message\'s sibling depth');
-        assert.equal(finalAncestry[finalAncestry.length - 2].node_id, toolAlt.node_id, 'the final text\'s real parent is the tool-call turn');
-        assert.equal(finalAncestry[finalAncestry.length - 3].node_id, parentNodeId, 'the tool-call turn\'s own parent is the SAME real parent the swiped message has - confirming the sibling relationship, not a nested-under-the-original-message one');
+        assert.equal(finalAncestry.length, swipedAncestry.length + 1, 'the final text is a child of the tool-call turn, which sits at the swiped message\'s depth');
+        assert.equal(finalAncestry[finalAncestry.length - 2].node_id, toolAlt.node_id, 'the final text\'s parent is the tool-call turn');
+        assert.equal(finalAncestry[finalAncestry.length - 3].node_id, parentNodeId, 'the tool-call turn\'s parent is the swiped message\'s parent');
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'General Kenobi! (checked: sunny in Swiptown)');
     }
 
@@ -3854,16 +3283,13 @@ async function run() {
         const continuedNodeId = branchBefore.branch.leaf_id;
         const messageCountBefore = branchBefore.messages.length;
 
-        registerServerTool({
-            id: 'test-tool:continue_get_weather',
-            name: 'get_weather',
-            description: 'Gets the current weather for a city.',
-            parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
-            invoke: async (args) => `Sunny in ${args.city}`,
-        });
+        const clientTools = [{
+            type: 'function',
+            function: { name: 'get_weather', description: 'Gets the current weather for a city.', parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] } },
+        }];
 
         let callCount = 0;
-        const fakeBackend = await startFakeBackend((_req, res, body) => {
+        const fakeBackend = await startFakeBackend((_req, res) => {
             callCount++;
             res.writeHead(200, { 'Content-Type': 'application/json' });
             if (callCount === 1) {
@@ -3876,7 +3302,6 @@ async function run() {
                     }],
                 }));
             } else {
-                void body;
                 res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: ' sunny, according to the tool.' } }] }));
             }
         });
@@ -3885,31 +3310,36 @@ async function run() {
         const app = buildTestApp();
         let status, data;
         try {
-            ({ status, data } = await postGenerate(app, {
+            const { data: pending } = await postGenerate(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: continuedNodeId,
-                type: 'continue', is_continue: true, stream: false,
+                type: 'continue', is_continue: true, stream: false, client_tools: clientTools,
+            });
+            assert.equal(pending.pending_tool_calls?.length, 1, 'the continue\'s tool call is handed to the page');
+            ({ status, data } = await postGenerate(app, {
+                owner_id: ownerId, character_avatar: avatar, node_id: pending.pending_tool_calls[0].node_id, type: 'tool_result',
+                tool_results: [{ id: 'call_continue_1', result: 'Sunny in Continuetown', error: false }],
+                client_tools: clientTools,
             }));
         } finally {
             fakeBackend.server.close();
-            unregisterServerTool('test-tool:continue_get_weather');
         }
 
         assert.equal(status, 200);
         assert.equal(data.choices?.[0]?.message?.content, ' sunny, according to the tool.');
-        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
+        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back');
         assert.equal(callCount, 2);
 
         const branchAfter = await loadBranch(user.store, { avatar: ownerId }, continueToolBranch);
-        assert.equal(branchAfter.messages.length, messageCountBefore + 2, 'two new nodes were appended (the tool-call turn and the final text) - continue-in-place across a real tool call degrades to append, it does not silently drop the tool-call record');
+        assert.equal(branchAfter.messages.length, messageCountBefore + 2, 'the tool-call turn and the final text were appended: a continue across a tool call becomes an append');
 
         const originalNode = (await user.store.chats.alternatives({ node_id: continuedNodeId })).alternatives.find(a => a.node_id === continuedNodeId);
-        assert.equal(originalNode.mes, 'The weather today is', 'the original message the user asked to continue is completely UNEDITED - it was never a valid edit target once a real tool call intervened');
+        assert.equal(originalNode.mes, 'The weather today is', 'the continued message is unedited');
 
         const [toolMsg, finalMsg] = branchAfter.messages.slice(-2);
-        assert.equal(toolMsg.is_system, true, 'the tool-call turn is a real child of the original message');
+        assert.equal(toolMsg.is_system, true, 'the tool-call turn is a child of the continued message');
         assert.equal(toolMsg.extra.tool_invocations[0].result, 'Sunny in Continuetown');
         assert.equal(finalMsg.is_user, false);
-        assert.equal(finalMsg.mes, 'sunny, according to the tool.', 'the final generated text is its own new node, holding just the newly generated text (cleaned up: trimmed) - not concatenated onto the original message\'s text, and not lost');
+        assert.equal(finalMsg.mes, 'sunny, according to the tool.', 'the final text is its own node, trimmed, not concatenated onto the continued message');
         assert.equal(finalMsg.name, 'Rex');
     }
 
@@ -3967,10 +3397,11 @@ async function run() {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(value));
         };
+        const unusedClientTools = [{ type: 'function', function: { name: 'stored_ref', description: 'Never called.', parameters: { type: 'object', properties: {} } } }];
         const cases = [
             { name: 'default block, non-streaming', stream: false, point: pointBackendAt, handler: jsonAnswer({ choices: [{ message: { role: 'assistant', content: 'Stored reply.' } }] }) },
             { name: 'default block, streaming', stream: true, point: pointBackendAt, handler: chatSse('Stored reply.') },
-            { name: 'default block with a server tool, streaming', stream: true, point: pointBackendAtWithToolsEnabled, handler: chatSse('Stored reply.'), tool: true },
+            { name: 'default block with a client tool, streaming', stream: true, point: pointBackendAtWithToolsEnabled, handler: chatSse('Stored reply.'), tool: true },
             { name: 'Claude, non-streaming', stream: false, point: pointClaudeBackendAt, handler: jsonAnswer({ content: [{ type: 'text', text: 'Stored reply.' }] }) },
             {
                 name: 'Claude, streaming', stream: true, point: pointClaudeBackendAt,
@@ -3984,12 +3415,6 @@ async function run() {
             const chatName = `cc-stored-ref-${name.replace(/\W+/g, '-')}`;
             const backend = await startFakeBackend(handler);
             point(backend.url);
-            if (tool) {
-                registerServerTool({
-                    id: 'test-tool:stored_ref', name: 'stored_ref', description: 'Never called.',
-                    parameters: { type: 'object', properties: {} }, invoke: async () => 'unused',
-                });
-            }
             try {
                 await saveBranch(user.store, { avatar: ownerId }, chatName, [
                     { chat_metadata: {} },
@@ -4000,6 +3425,7 @@ async function run() {
                 const body = {
                     owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
                     type: 'normal', user_message: { is_user: true, name: 'User', mes: `Question for ${chatName}?` }, user_message_ref: ref, stream,
+                    ...(tool ? { client_tools: unusedClientTools } : {}),
                 };
                 let stored;
                 if (stream) {
@@ -4023,7 +3449,6 @@ async function run() {
                 failures.push(name);
                 console.log(`  FAIL: ${name}: ${error.message}`);
             } finally {
-                if (tool) unregisterServerTool('test-tool:stored_ref');
                 backend.server.close();
                 writeAllSettings(directories, buildSettingsFixture());
             }
@@ -4037,6 +3462,7 @@ async function run() {
             res.writeHead(500, { 'Content-Type': 'text/plain' });
             res.end('backend exploded');
         };
+        const unusedClientTools = [{ type: 'function', function: { name: 'stored_error', description: 'Never called.', parameters: { type: 'object', properties: {} } } }];
         const passedOn = (answer) => {
             assert.equal(answer.status, 500, 'the backend\'s status is kept');
             assert.equal(answer.text, 'backend exploded', 'the backend\'s body is kept exactly');
@@ -4054,7 +3480,7 @@ async function run() {
                 expect: (answer, stored) => assert.deepEqual(JSON.parse(answer.text).stored, stored),
             },
             { name: 'default block, streaming, backend error passed on', stream: true, point: pointBackendAt, handler: backendError, expect: passedOn },
-            { name: 'default block with a server tool, streaming, backend error passed on', stream: true, point: pointBackendAtWithToolsEnabled, handler: backendError, expect: passedOn, tool: true },
+            { name: 'default block with a client tool, streaming, backend error passed on', stream: true, point: pointBackendAtWithToolsEnabled, handler: backendError, expect: passedOn, tool: true },
             {
                 name: 'Claude, non-streaming, backend error (500)', stream: false, point: pointClaudeBackendAt, handler: backendError,
                 expect: (answer, stored) => {
@@ -4068,12 +3494,6 @@ async function run() {
             const chatName = `cc-stored-error-${name.replace(/\W+/g, '-')}`;
             const backend = handler ? await startFakeBackend(handler) : null;
             point(backend ? backend.url : 'http://127.0.0.1:9');
-            if (tool) {
-                registerServerTool({
-                    id: 'test-tool:stored_error', name: 'stored_error', description: 'Never called.',
-                    parameters: { type: 'object', properties: {} }, invoke: async () => 'unused',
-                });
-            }
             const app = buildTestApp();
             const server = app.listen(0, '127.0.0.1');
             await new Promise(resolve => server.once('listening', resolve));
@@ -4090,6 +3510,7 @@ async function run() {
                     body: JSON.stringify({
                         owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
                         type: 'normal', user_message: { is_user: true, name: 'User', mes: `Question for ${chatName}?` }, user_message_ref: ref, stream,
+                        ...(tool ? { client_tools: unusedClientTools } : {}),
                     }),
                 });
                 const answer = { status: res.status, headers: res.headers, text: await res.text() };
@@ -4104,7 +3525,6 @@ async function run() {
                 failures.push(name);
                 console.log(`  FAIL: ${name}: ${error.message}`);
             } finally {
-                if (tool) unregisterServerTool('test-tool:stored_error');
                 backend?.server.close();
                 server.closeAllConnections?.();
                 await new Promise(resolve => server.close(resolve));

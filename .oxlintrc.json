@@ -12,7 +12,6 @@
         "cache/**",
         "src/tokenizers/**",
         "docker/**",
-        "plugins/**",
         "**/*.min.js"
     ],
     "rules": {

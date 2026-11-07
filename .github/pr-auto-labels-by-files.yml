@@ -7,7 +7,6 @@
     - "src/**"
     - "default/config.yaml"
     - "server.js"
-    - "plugins.js"
     - "recover.js"
     - "webpack.config.js"
     - "Start.bat"
