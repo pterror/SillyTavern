@@ -601,6 +601,40 @@ async function run() {
     }
 
     {
+        const sent = [];
+        const fakeBackend = await startFakeBackend((_req, res, body) => {
+            sent.push(JSON.parse(body));
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'A quiet answer.' } }] }));
+        });
+        const settings = buildSettingsFixture();
+        settings.oai_settings.custom_url = fakeBackend.url;
+        settings.world_info_settings = { world_info: { globalSelect: ['ReplyLore'] } };
+        settings.extension_settings = { note: { default: 'NOTE: the lantern flickers.', defaultInterval: 1, defaultPosition: 1, defaultDepth: 0 } };
+        writeAllSettings(directories, settings);
+        const chatName = 'skip-wian-chat';
+        await saveBranch(user.store, { avatar: ownerId }, chatName, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: 'Welcome in.', send_date: 1, extra: {} },
+            { name: 'User', is_user: true, mes: 'Where is the lantern?', send_date: 2, extra: {} },
+        ]);
+        const { branch } = await loadBranch(user.store, { avatar: ownerId }, chatName);
+        try {
+            const quiet = (/** @type {object} */ extra) => postGenerate(buildTestApp(), {
+                owner_id: ownerId, character_avatar: avatar, node_id: branch.leaf_id, type: 'quiet', quiet_prompt: 'Summarize.', stream: false, ...extra,
+            });
+            assert.equal((await quiet({})).status, 200);
+            assert.equal((await quiet({ skip_wian: true })).status, 200);
+            const [withBoth, without] = sent.map(body => JSON.stringify(body.messages));
+            assert.ok(withBoth.includes('The lantern never goes out.') && withBoth.includes('NOTE: the lantern flickers.'), withBoth);
+            assert.ok(!without.includes('The lantern never goes out.') && !without.includes('NOTE: the lantern flickers.'), 'skip_wian leaves out the lorebook entry and the author\'s note');
+        } finally {
+            fakeBackend.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+    }
+
+    {
         const requestedPaths = [];
         const fakeBackend = await startFakeBackend((req, res) => {
             requestedPaths.push((req.url ?? '').split('?')[0]);

@@ -46,3 +46,23 @@ test('the same over chat completion: max_tokens is the quiet prompt\'s, the sett
         await mock.close();
     }
 });
+
+test('a quiet prompt that skips world info and the author\'s note says so in its generation request, and forces the character\'s name', async ({ page }) => {
+    const llama = await startLlamaCpp();
+    try {
+        await testSetup.awaitST({ page });
+        await connectLlamaCpp(page, llama.url);
+        const avatar = await createCharacter(page, `QuietSkip-${Date.now()}`);
+        await openCharacter(page, avatar);
+        const sent = page.waitForRequest(request => request.url().endsWith('/api/generation/generate'));
+        await page.evaluate(async () => {
+            // @ts-ignore
+            await stTest.context().generateQuietPrompt({ quietPrompt: 'Say hi.', skipWIAN: true });
+        });
+        const body = JSON.parse((await sent).postData() ?? '{}');
+        expect(body.skip_wian).toBe(true);
+        expect(body.force_name2).toBe(true);
+    } finally {
+        await llama.close();
+    }
+});

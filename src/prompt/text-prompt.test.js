@@ -172,3 +172,15 @@ test('the itemization counts each part as built, post-history instructions among
     assert.deepEqual(itemized.parts.map(p => p.part), ['story_string', 'system_prompt', 'description', 'personality', 'scenario', 'examples', 'chat_history', 'injections', 'post_history']);
     assert.equal(itemized.parts.find(p => p.part === 'post_history')?.tokens, postHistory.length);
 });
+
+test('a turn that skips world info and the author\'s note leaves out every lorebook entry and the note', async () => {
+    const withLore = CASES['lore all positions + note in chat'];
+    assert.equal((await buildTextCompletionPrompt(input({ ...withLore, skipWorldInfoAndNote: true }))).combinedPrompt, EXPECTED.plain);
+});
+
+test('a turn that forces the character\'s name starts the reply line with it', async () => {
+    const forced = (await buildTextCompletionPrompt(input({ alwaysForceName2: false, forceName2Override: true }))).combinedPrompt;
+    const unforced = (await buildTextCompletionPrompt(input({ alwaysForceName2: false }))).combinedPrompt;
+    assert.ok(forced.endsWith('\nAria:'), forced);
+    assert.ok(!unforced.endsWith('Aria:'), unforced);
+});

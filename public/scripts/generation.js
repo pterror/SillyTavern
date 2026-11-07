@@ -565,7 +565,8 @@ export async function Generate(type, options = {}) {
  * @param {PendingSend[]} pendingSends
  * @returns {Promise<any>}
  */
-async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_avatar, signal, quietImage, quietName, jsonSchema = null, responseLength, depth = 0 } = {}, pendingSends = []) {
+async function generateOnce(type, options = {}, pendingSends = []) {
+    const { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_avatar, signal, quietImage, quietName, jsonSchema = null, responseLength, depth = 0 } = options;
     const metadataAtStart = changedMetadata();
     setGenerationProgress(0);
     generation_started = new Date();
@@ -604,7 +605,7 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
     chat_metadata.tainted = true;
 
     if (selected_group != null && !is_group_generating) {
-        return generateGroupWrapper(false, type, { quiet_prompt, force_avatar, signal: abortController.signal, quietImage, jsonSchema });
+        return generateGroupWrapper(false, type, { ...options, signal: abortController.signal });
     }
 
     if (online_status === 'no_connection') {
@@ -698,6 +699,8 @@ async function generateOnce(type, { automatic_trigger, force_name2, quiet_prompt
         client_tools: toolsHolder.tools,
         stealth_tool_names: stealthToolNames.length ? stealthToolNames : undefined,
         json_schema: jsonSchema ?? undefined,
+        skip_wian: skipWIAN === true ? true : undefined,
+        force_name2: force_name2 === true ? true : undefined,
         ...quietPromptRequest(quiet_prompt, quietToLoud, quietName, quietImage),
     };
 

@@ -408,13 +408,15 @@ router.post('/props', async function (request, response) {
  * @param {import('../../prompt/injections.js').PageInjections} [params.pageInjections]
  * @param {object} [params.userMessageExtra]
  * @param {import('../../page-writes.js').QuietPrompt} [params.quiet]
+ * @param {boolean} [params.skipWorldInfoAndNote] No lorebook entries and no author's note go in.
+ * @param {boolean} [params.forceName2] The reply's line starts with the character's name.
  * @param {boolean} [params.dryRun] Builds the prompt without changing anything a send would.
  * @returns {Promise<{ params: object, prompt: string, backend: {type: string, serverUrl: string, model: string|undefined}, stream: boolean, anchorNodeId: string|null, anchorContent: object|null, activations: import('../../world-info/activation-record.js').ActivationRecord|null, tokenizerIdentity: string|null, tokenCountRows: import('../../token-count-store.js').PendingTokenRows, name1: string, name2: string, warnings: object[], itemize: () => Promise<import('../../prompt-itemization.js').PromptItemization> }>}
  */
 export async function buildRawActionTextCompletionRequest(directories, {
     request, characterAvatar, groupId, chat, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra, pageFacts = {}, pageInjections = {},
-    tokenizerOptions = {}, quiet = {}, responseLength, dryRun = false,
+    tokenizerOptions = {}, quiet = {}, responseLength, dryRun = false, skipWorldInfoAndNote = false, forceName2 = false,
 } = {}) {
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
@@ -473,7 +475,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
 
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, chatContext: chat, nodeId,
-        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts, pageInjections,
+        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts, pageInjections, skipWorldInfoAndNote, forceName2,
         countTokens, encodeTokens, countPromptTokens, amountGen: responseLength, macroExtras: { ...textCompletionQuietInput(quiet), isDryRun: dryRun },
     });
 
@@ -544,14 +546,14 @@ export const generateTextCompletion = withGenerationStop(async function (request
             answerSessionOnHeaders(response, chat.session);
             const turn = await generateTurnOf(response, chat, request.body);
             if (!turn) return;
-            const { nodeId, userMessageText, userMessageExtra, quiet, responseLength, pageFacts, pageInjections } = turn;
+            const { nodeId, userMessageText, userMessageExtra, quiet, responseLength, pageFacts, pageInjections, skipWorldInfoAndNote, forceName2 } = turn;
 
             /** @type {Awaited<ReturnType<typeof buildRawActionTextCompletionRequest>>} */
             let built;
             try {
                 built = await buildRawActionTextCompletionRequest(directories, {
                     request, characterAvatar, groupId, chat, nodeId,
-                    type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, quiet, responseLength, pageFacts, pageInjections,
+                    type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, quiet, responseLength, pageFacts, pageInjections, skipWorldInfoAndNote, forceName2,
                 });
             } catch (error) {
                 console.error('Failed to build raw-action text completion request:', error);

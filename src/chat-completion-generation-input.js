@@ -238,6 +238,7 @@ async function resolveChatHistory(chat, { nodeId }) {
  * @param {import('./prompt/injections.js').PageInjections} [params.pageInjections]
  * @param {import('./llamacpp-props.js').LlamaCppPropsCheck} [params.llamaCppProps]
  * @param {import('./token-count-store.js').PendingTokenRows} [params.tokenCountRows]
+ * @param {boolean} [params.skipWorldInfoAndNote] No lorebook entries and no author's note go in.
  * @returns {Promise<import('./prompt/chat-prompt.js').ChatCompletionPromptInput & { worldInfoCandidates: WIEntry[], activations: import('./world-info/activation-record.js').ActivationRecord | null, tokenizerOutcome: import('./tokenizer-resolve.js').TokenizerOutcome, countedWith: () => object|null, tokenCountRows: import('./token-count-store.js').PendingTokenRows }>}
  */
 export async function resolveChatCompletionGenerationInput(directories, {
@@ -248,7 +249,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     model: modelOverride, modelList, characterId = PROMPT_ORDER_DUMMY_ID,
     countTokenAsyncFn: countTokenAsyncFnOverride, tokenHandler: tokenHandlerOverride,
     quietPrompt, quietImage, responseLength,
-    macroExtras = {}, llamaCppProps, tokenCountRows: tokenCountRowsParam, pageFacts = {}, pageInjections = {},
+    macroExtras = {}, llamaCppProps, tokenCountRows: tokenCountRowsParam, pageFacts = {}, pageInjections = {}, skipWorldInfoAndNote = false,
 } = {}) {
     void isImpersonate; void isContinue;
 
@@ -309,7 +310,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
 
     const WORLD_INFO_METADATA_KEY = 'world_info';
     const charFilename = avatar != null ? avatar.replace(/\.[^/.]+$/, '') : null;
-    let worldInfoCandidates = worldInfoCandidatesOverride;
+    let worldInfoCandidates = skipWorldInfoAndNote ? [] : worldInfoCandidatesOverride;
     if (worldInfoCandidates === undefined) {
         const characterExtraBooks = avatar != null ? await readExtraBooks(directories, avatar) : [];
         worldInfoCandidates = /** @type {WIEntry[]} */ (await resolveWorldInfoCandidates({
@@ -389,7 +390,8 @@ export async function resolveChatCompletionGenerationInput(directories, {
     /** @type {(text: string) => Promise<number>} */
     const countTokensForWorldInfo = async (text) => tokenHandler.countTokenAsyncFn([{ content: text }]);
     const noteSettings = extensionSettings.note ?? {};
-    const authorsNote = resolveAuthorsNote({ chatMetadata, noteSettings, chat: promptChat, avatar, hasCharacterOrGroup: Boolean(avatar) || Boolean(groupId) });
+    /** @type {ReturnType<typeof resolveAuthorsNote>} */
+    const authorsNote = skipWorldInfoAndNote ? { disabled: true } : resolveAuthorsNote({ chatMetadata, noteSettings, chat: promptChat, avatar, hasCharacterOrGroup: Boolean(avatar) || Boolean(groupId) });
     const scanInjects = [
         ['quiet', quietPrompt],
         ['note', authorsNote.disabled === false && authorsNote.scan ? authorsNote.value : ''],

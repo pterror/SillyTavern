@@ -166,6 +166,8 @@ async function resolveChatHistory(chat, { nodeId }) {
  * @param {object} [params.macroExtras]
  * @param {import('./macro-facts.js').PageMacroFacts} [params.pageFacts]
  * @param {import('./prompt/injections.js').PageInjections} [params.pageInjections]
+ * @param {boolean} [params.skipWorldInfoAndNote] No lorebook entries and no author's note go in.
+ * @param {boolean} [params.forceName2] The reply's line starts with the character's name.
  * @returns {Promise<import('./prompt/text-prompt.js').TextCompletionPromptInput>}
  */
 export async function resolveTextCompletionGenerationInput(directories, {
@@ -173,7 +175,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
     type, isImpersonate = false, isContinue = false, isSwipe = false,
     textareaText = '', chatMetadata: chatMetadataOverride, userMessageText, userMessageExtra,
     worldInfoCandidates: worldInfoCandidatesOverride, countTokens, encodeTokens, countPromptTokens, amountGen, macroExtras = {},
-    pageFacts = {}, pageInjections = {},
+    pageFacts = {}, pageInjections = {}, skipWorldInfoAndNote = false, forceName2 = false,
 } = {}) {
     if (typeof countTokens !== 'function') {
         throw new Error('resolveTextCompletionGenerationInput: countTokens is required (real tokenizer resolution is caller-owned - see module doc comment)');
@@ -228,7 +230,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
     const chat = sentMessage ? [...loadedChat, sentMessage] : loadedChat;
 
     const WORLD_INFO_METADATA_KEY = 'world_info';
-    let worldInfoCandidates = worldInfoCandidatesOverride;
+    let worldInfoCandidates = skipWorldInfoAndNote ? [] : worldInfoCandidatesOverride;
     if (worldInfoCandidates === undefined) {
         const characterExtraBooks = avatar != null ? await readExtraBooks(directories, avatar) : [];
         worldInfoCandidates = /** @type {import('./world-info/activation.js').WIEntry[]} */ (await resolveWorldInfoCandidates({
@@ -267,6 +269,8 @@ export async function resolveTextCompletionGenerationInput(directories, {
         variablesBefore: stateBefore,
         userPromptBias: powerUser.user_prompt_bias,
         alwaysForceName2: Boolean(powerUser.always_force_name2),
+        forceName2Override: forceName2,
+        skipWorldInfoAndNote,
 
         reasoningAddToPrompts: Boolean(reasoning.add_to_prompts ?? false),
         reasoningMaxAdditions: reasoning.max_additions ?? 1,

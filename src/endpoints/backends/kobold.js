@@ -40,13 +40,15 @@ export const router = express.Router();
  * @param {import('../../prompt/injections.js').PageInjections} [params.pageInjections]
  * @param {object} [params.userMessageExtra]
  * @param {object} [params.macroExtras]
+ * @param {boolean} [params.skipWorldInfoAndNote] No lorebook entries and no author's note go in.
+ * @param {boolean} [params.forceName2] The reply's line starts with the character's name.
  * @param {boolean} [params.dryRun] Builds the prompt without changing anything a send would.
  * @returns {Promise<{ params: object, prompt: string, anchorNodeId: string|null, anchorContent: object|null, activations: import('../../world-info/activation-record.js').ActivationRecord|null, tokenCountRows: import('../../token-count-store.js').PendingTokenRows, name1: string, name2: string, warnings: object[], itemize: () => Promise<import('../../prompt-itemization.js').PromptItemization> }>}
  */
 export async function buildRawActionKoboldRequest(directories, {
     request, characterAvatar, groupId, chat, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra, pageFacts = {}, pageInjections = {},
-    tokenizerOptions = {}, macroExtras = {}, responseLength, dryRun = false,
+    tokenizerOptions = {}, macroExtras = {}, responseLength, dryRun = false, skipWorldInfoAndNote = false, forceName2 = false,
 } = {}) {
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
@@ -97,7 +99,7 @@ export async function buildRawActionKoboldRequest(directories, {
 
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, mainApi: 'kobold', chatContext: chat, nodeId,
-        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts, pageInjections,
+        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts, pageInjections, skipWorldInfoAndNote, forceName2,
         countTokens, encodeTokens, amountGen: responseLength, macroExtras: { ...macroExtras, koboldFlags, isDryRun: dryRun },
     });
 
@@ -162,13 +164,13 @@ export const generateKobold = withGenerationStop(async function (request, respon
         answerSessionOnHeaders(response_generate, chat.session);
         const turn = await generateTurnOf(response_generate, chat, request.body);
         if (!turn) return;
-        const { nodeId, userMessageText, userMessageExtra, quiet, responseLength, pageFacts, pageInjections } = turn;
+        const { nodeId, userMessageText, userMessageExtra, quiet, responseLength, pageFacts, pageInjections, skipWorldInfoAndNote, forceName2 } = turn;
 
         let built;
         try {
             built = await buildRawActionKoboldRequest(directories, {
                 request, characterAvatar, groupId, chat, nodeId,
-                type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts, pageInjections, responseLength,
+                type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts, pageInjections, responseLength, skipWorldInfoAndNote, forceName2,
                 macroExtras: textCompletionQuietInput(quiet),
             });
         } catch (error) {

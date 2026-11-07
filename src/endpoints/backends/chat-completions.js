@@ -2445,13 +2445,14 @@ function chatCompletionConnection(settings, directories, macroContext, llamaCppP
  * @param {string[]} [params.stealthClientToolNames]
  * @param {import('../../page-writes.js').QuietPrompt} [params.quiet]
  * @param {number} [params.responseLength]
+ * @param {boolean} [params.skipWorldInfoAndNote] No lorebook entries and no author's note go in.
  * @param {boolean} [params.dryRun] Builds the prompt without changing anything a send would.
  * @returns {Promise<{ params: object, prompt: object[], promptManagerParts?: () => { parts: import('../../prompt/chat-prompt.js').PromptManagerPart[], overridden: string[] }, settings: object, anchorNodeId: string|null, anchorContent: object|null, activations: import('../../world-info/activation-record.js').ActivationRecord|null, name1: string, name2: string, enabledClientToolNames: Set<string>, enabledStealthClientToolNames: Set<string>, warnings: Array<{kind: string, key: string, message: string, entries?: string[]}>, tokenCountRows: import('../../token-count-store.js').PendingTokenRows, itemize: () => Promise<import('../../prompt-itemization.js').PromptItemization> }>}
  */
 export async function buildRawActionChatCompletionRequest(directories, {
     characterAvatar, groupId, chat, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra, pageFacts = {}, pageInjections = {},
-    clientToolSchemas, stealthClientToolNames, jsonSchema = null, quiet = {}, responseLength, dryRun = false,
+    clientToolSchemas, stealthClientToolNames, jsonSchema = null, quiet = {}, responseLength, dryRun = false, skipWorldInfoAndNote = false,
 } = {}) {
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
@@ -2494,7 +2495,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
     const orchestratorInput = await resolveChatCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, chatContext: chat, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts, pageInjections, llamaCppProps, tokenCountRows,
-        quietPrompt: quiet.quietPrompt, quietImage: quiet.quietImage, responseLength, dryRun,
+        quietPrompt: quiet.quietPrompt, quietImage: quiet.quietImage, responseLength, dryRun, skipWorldInfoAndNote,
         macroExtras: {
             imageInlining: mediaInliningEnabled, videoInlining: mediaInliningEnabled, audioInlining: mediaInliningEnabled,
         },
@@ -3094,7 +3095,7 @@ export const generateChatCompletion = withGenerationStop(async function (request
             answerSessionOnHeaders(response, chat.session);
             const turn = await generateTurnOf(response, chat, request.body);
             if (!turn) return;
-            const { nodeId, userMessageText, userMessageExtra, quiet, responseLength, pageFacts, pageInjections } = turn;
+            const { nodeId, userMessageText, userMessageExtra, quiet, responseLength, pageFacts, pageInjections, skipWorldInfoAndNote } = turn;
 
             const isToolResult = type === 'tool_result';
             if (isToolResult) {
@@ -3129,6 +3130,7 @@ export const generateChatCompletion = withGenerationStop(async function (request
                     jsonSchema,
                     quiet: isToolResult ? undefined : quiet,
                     responseLength: isToolResult ? undefined : responseLength,
+                    skipWorldInfoAndNote,
                 });
             } catch (error) {
                 console.error('Failed to build raw-action chat completion request:', error);

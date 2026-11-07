@@ -63,7 +63,8 @@ const DEPTH_ROLE_ORDER = { [extension_prompt_roles.ASSISTANT]: 0, [extension_pro
  * @property {string} [textareaText]
  * @property {string} [userPromptBias]
  * @property {boolean} [alwaysForceName2]
- * @property {boolean} [forceName2Override]
+ * @property {boolean} [forceName2Override] The reply's line starts with the character's name (non-instruct only).
+ * @property {boolean} [skipWorldInfoAndNote] No lorebook entries and no author's note go in.
  * @property {boolean} [reasoningAddToPrompts]
  * @property {number} [reasoningMaxAdditions]
  * @property {string} [reasoningPrefix]
@@ -203,7 +204,7 @@ export async function buildTextCompletionPrompt(input) {
         name1 = '', name2 = '',
         directories, avatar, groupId, preferCharacterPrompt = false, preferCharacterJailbreak = false,
         personaDescription, chatMetadata = {}, chat, sentMessage = null, textareaText = '', userPromptBias = '',
-        alwaysForceName2 = false, forceName2Override,
+        alwaysForceName2 = false, forceName2Override, skipWorldInfoAndNote = false,
         reasoningAddToPrompts = false, reasoningMaxAdditions = 999999, reasoningPrefix = '', reasoningSeparator = '', reasoningSuffix = '',
         tokenPadding = 0, countTokens, countPromptTokens = countTokens, encodeTokens, encodeTokensByType, novelTokenizerType, amountGen = 0, requestTokenProbabilities = false,
         chatGuidanceScale, groupchatIndividualChars = false, charaCfg, globalCfg, promptCombine = [], promptSeparator, promptInsertionDepth = 1, chatMetadataPrompts = {},
@@ -279,10 +280,11 @@ export async function buildTextCompletionPrompt(input) {
         chatMetadataPrompts, charaCfg, globalCfg, promptCombine, promptSeparator, promptInsertionDepth, macroContext,
     });
 
-    const authorsNote = resolveAuthorsNote({ chatMetadata, noteSettings, chat, avatar, hasCharacterOrGroup });
+    /** @type {ReturnType<typeof resolveAuthorsNote>} */
+    const authorsNote = skipWorldInfoAndNote ? { disabled: true } : resolveAuthorsNote({ chatMetadata, noteSettings, chat, avatar, hasCharacterOrGroup });
 
     const chatForWI = coreChat.map(x => worldInfoGlobals.world_info_include_names ? `${x.name}: ${x.mes}` : x.mes).reverse();
-    const decoratedCandidates = worldInfoCandidates.map(entry => {
+    const decoratedCandidates = (skipWorldInfoAndNote ? [] : worldInfoCandidates).map(entry => {
         const [decorators, content] = parseDecorators(entry.content || '');
         return { ...entry, decorators, content };
     });

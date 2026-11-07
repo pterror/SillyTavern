@@ -114,7 +114,7 @@ export function responseLengthOf(body) {
  * @param {import('express').Response} response
  * @param {import('./chat-request.js').ChatContext} chat
  * @param {any} body
- * @returns {Promise<{ nodeId: string|null|undefined, userMessageText: string|undefined, userMessageExtra: object, userMessage: Record<string, any>|null, quiet: QuietPrompt, responseLength: number|undefined, pageFacts: import('./macro-facts.js').PageMacroFacts, pageInjections: import('./prompt/injections.js').PageInjections }|null>}
+ * @returns {Promise<{ nodeId: string|null|undefined, userMessageText: string|undefined, userMessageExtra: object, userMessage: Record<string, any>|null, quiet: QuietPrompt, responseLength: number|undefined, pageFacts: import('./macro-facts.js').PageMacroFacts, pageInjections: import('./prompt/injections.js').PageInjections, skipWorldInfoAndNote: boolean, forceName2: boolean }|null>}
  */
 export async function generateTurnOf(response, chat, body) {
     const written = await applyPageWrites(response, chat, body);
@@ -129,6 +129,8 @@ export async function generateTurnOf(response, chat, body) {
         responseLength: responseLengthOf(body),
         pageFacts: readPageMacroFacts(body?.macro_facts),
         pageInjections: readPageInjections(body?.extension_prompts),
+        skipWorldInfoAndNote: body?.skip_wian === true,
+        forceName2: body?.force_name2 === true,
     };
 }
 
