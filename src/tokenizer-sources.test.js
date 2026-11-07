@@ -11,10 +11,6 @@ import { setConfigFilePath } from './util.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 
-if (typeof mock.module !== 'function') {
-    throw new Error('tokenizer-sources.test.js needs --experimental-test-module-mocks to stub node-fetch');
-}
-
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'st-tokenizer-sources-'));
 globalThis.DATA_ROOT = dataRoot;
 const cacheDir = path.join(dataRoot, '_cache');
@@ -24,13 +20,10 @@ const userRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'st-tokenizer-sources-use
 const requests = [];
 /** @type {Map<string, () => Response>} */
 const responses = new Map();
-mock.module('node-fetch', {
-    defaultExport: async (url, opts) => {
-        requests.push({ url: String(url), authorization: opts?.headers?.Authorization });
-        const respond = responses.get(String(url));
-        return respond ? respond() : new Response('not found', { status: 404, statusText: 'Not Found' });
-    },
-    namedExports: {},
+globalThis.fetch = /** @type {typeof fetch} */ (async (url, opts) => {
+    requests.push({ url: String(url), authorization: opts?.headers?.Authorization });
+    const respond = responses.get(String(url));
+    return respond ? respond() : new Response('not found', { status: 404, statusText: 'Not Found' });
 });
 
 const { TOKENIZER_SOURCES, findEntriesByRepo, getPinnedTokenizerFile, getSourceUrl, getTokenizerDisplayName, getTokenizerConfigHash, getTokenizerIdentity } = await import('./tokenizer-sources.js');

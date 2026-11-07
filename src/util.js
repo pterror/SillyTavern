@@ -1,6 +1,5 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import http2 from 'node:http2';
 import process from 'node:process';
 import { Readable } from 'node:stream';
 import { createRequire } from 'node:module';
@@ -803,8 +802,40 @@ export function getImages(directoryPath, sortBy = 'name', type = MEDIA_REQUEST_T
 }
 
 /**
+ * Reads a fetch() response body as text, calling `onText` with each piece in order.
+ * @param {ReadableStream<Uint8Array>} body
+ * @param {(text: string) => void} onText
+ * @returns {Promise<unknown>} The error that ended the body early (an abort included), or null when it ended.
+ */
+export async function forEachBodyText(body, onText) {
+    const decoder = new TextDecoder();
+    const reader = body.getReader();
+    let failure = null;
+    try {
+        for (;;) {
+            let read;
+            try {
+                read = await reader.read();
+            } catch (error) {
+                failure = error;
+                break;
+            }
+            if (read.done) break;
+            const text = decoder.decode(read.value, { stream: true });
+            if (text) onText(text);
+        }
+        const rest = decoder.decode();
+        if (rest) onText(rest);
+    } catch (error) {
+        reader.cancel(error).catch(() => {});
+        throw error;
+    }
+    return failure;
+}
+
+/**
  * Pipe a fetch() response to an Express.js Response, including status code.
- * @param {import('node-fetch').Response} from The Fetch API response to pipe from.
+ * @param {Response} from The Fetch API response to pipe from.
  * @param {import('express').Response} to The Express response to pipe to.
  * @returns {Promise<void>}
  */
@@ -840,76 +871,16 @@ export async function forwardFetchResponse(from, to) {
     }
 
     if (from.body && to.socket) {
-        from.body.pipe(to);
-
-        to.socket.on('close', function () {
-            if (from.body instanceof Readable) from.body.destroy(); // Close the remote stream
-
-            to.end(); // End the Express response
-        });
-
-        from.body.on('end', function () {
+        const body = Readable.fromWeb(/** @type {import('node:stream/web').ReadableStream} */ (from.body));
+        body.on('error', () => to.end());
+        to.socket.on('close', () => {
+            body.destroy();
             to.end();
         });
+        body.pipe(to);
     } else {
         to.end();
     }
-}
-
-/**
- * Makes an HTTP/2 request to the specified endpoint.
- *
- * @deprecated Use `node-fetch` if possible.
- * @param {string} endpoint URL to make the request to
- * @param {string} method HTTP method to use
- * @param {string} body Request body
- * @param {object} headers Request headers
- * @returns {Promise<string>} Response body
- */
-export function makeHttp2Request(endpoint, method, body, headers) {
-    return new Promise((resolve, reject) => {
-        try {
-            const url = new URL(endpoint);
-            const client = http2.connect(url.origin);
-
-            const req = client.request({
-                ':method': method,
-                ':path': url.pathname,
-                ...headers,
-            });
-            req.setEncoding('utf8');
-
-            req.on('response', (headers) => {
-                const status = Number(headers[':status']);
-
-                if (status < 200 || status >= 300) {
-                    reject(new Error(`Request failed with status ${status}`));
-                }
-
-                let data = '';
-
-                req.on('data', (chunk) => {
-                    data += chunk;
-                });
-
-                req.on('end', () => {
-                    resolve(data);
-                });
-            });
-
-            req.on('error', (err) => {
-                reject(err);
-            });
-
-            if (body) {
-                req.write(body);
-            }
-
-            req.end();
-        } catch (e) {
-            reject(e);
-        }
-    });
 }
 
 /**

@@ -12,10 +12,6 @@ import { setConfigFilePath } from './util.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 
-if (typeof mock.module !== 'function') {
-    throw new Error('openrouter-models.test.js needs --experimental-test-module-mocks to stub node-fetch');
-}
-
 const MODELS_URL = 'https://openrouter.ai/api/v1/models';
 
 const LISTED = [
@@ -29,15 +25,14 @@ const LISTED = [
 const requests = [];
 /** @type {() => Response} */
 let respond = () => new Response('not found', { status: 404, statusText: 'Not Found' });
-mock.module('node-fetch', {
-    defaultExport: async (url) => {
-        requests.push(String(url));
-        if (String(url) !== MODELS_URL) {
-            throw new Error(`unexpected request: ${url}`);
-        }
-        return respond();
-    },
-    namedExports: {},
+const realFetch = globalThis.fetch;
+globalThis.fetch = /** @type {typeof fetch} */ (async (url, options) => {
+    if (String(url).startsWith('http://127.0.0.1:')) return realFetch(url, options);
+    requests.push(String(url));
+    if (String(url) !== MODELS_URL) {
+        throw new Error(`unexpected request: ${url}`);
+    }
+    return respond();
 });
 
 const listReply = (data = LISTED) => () => new Response(JSON.stringify({ data }), { status: 200, headers: { 'Content-Type': 'application/json' } });

@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Buffer } from 'node:buffer';
 
-import fetch from 'node-fetch';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import { readSecret, SECRET_KEYS } from './endpoints/secrets.js';

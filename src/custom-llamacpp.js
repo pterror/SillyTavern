@@ -1,5 +1,3 @@
-import fetch from 'node-fetch';
-
 import { TEXTGEN_TYPES } from './constants.js';
 import { mergeObjectWithYaml, trimV1 } from './util.js';
 import { readUserSettings } from './settings-reads.js';

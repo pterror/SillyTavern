@@ -2,7 +2,6 @@
 import { createHmac } from 'node:crypto';
 import process from 'node:process';
 import express from 'express';
-import fetch from 'node-fetch';
 import urlJoin from 'url-join';
 
 import {
@@ -23,6 +22,7 @@ import {
     POLLINATIONS_ENDPOINT,
 } from '../../constants.js';
 import {
+    forEachBodyText,
     forwardFetchResponse,
     getConfigValue,
     tryParse,
@@ -1006,7 +1006,6 @@ async function sendMistralAIRequest(request, response, persist, warnings = null,
             },
             body: JSON.stringify(requestBody),
             signal: controller.signal,
-            timeout: 0,
         };
 
 
@@ -1131,7 +1130,6 @@ async function sendCohereRequest(request, response, persist, warnings = null, on
             },
             body: JSON.stringify(requestBody),
             signal: controller.signal,
-            timeout: 0,
         };
 
         const apiUrl = API_COHERE_V2 + '/chat';
@@ -2697,7 +2695,7 @@ function extractGenericReasoning(json) {
 }
 
 /**
- * @param {import('node-fetch').Response} fetchResponse
+ * @param {Response} fetchResponse
  * @param {import('express').Response} response
  * @param {object|null|undefined} persist
  * @param {(json: any) => string|undefined} extractText
@@ -2801,30 +2799,25 @@ async function forwardAndPersistCompactStream(fetchResponse, response, persist, 
     response.socket?.once('close', onSocketClose);
     onGenerationStopFlush(response, flushContentBuffer);
 
-    await new Promise((resolve) => {
-        fetchResponse.body.on('data', (chunk) => {
-            sseBuffer += chunk.toString('utf-8');
-            let idx;
-            while ((idx = sseBuffer.indexOf('\n')) !== -1) {
-                const rawLine = sseBuffer.slice(0, idx);
-                sseBuffer = sseBuffer.slice(idx + 1);
-                if (isGenerationStopped(response)) continue;
+    await forEachBodyText(fetchResponse.body, (text) => {
+        sseBuffer += text;
+        let idx;
+        while ((idx = sseBuffer.indexOf('\n')) !== -1) {
+            const rawLine = sseBuffer.slice(0, idx);
+            sseBuffer = sseBuffer.slice(idx + 1);
+            if (isGenerationStopped(response)) continue;
 
-                const trimmed = rawLine.trim();
-                if (!trimmed.startsWith('data:')) continue;
-                const payload = trimmed.slice(5).trim();
-                if (!payload || payload === '[DONE]') continue;
+            const trimmed = rawLine.trim();
+            if (!trimmed.startsWith('data:')) continue;
+            const payload = trimmed.slice(5).trim();
+            if (!payload || payload === '[DONE]') continue;
 
-                try {
-                    handleJson(JSON.parse(payload));
-                } catch (error) {
-                    console.warn('Failed to parse streamed SSE event while accumulating text for persistence:', error);
-                }
+            try {
+                handleJson(JSON.parse(payload));
+            } catch (error) {
+                console.warn('Failed to parse streamed SSE event while accumulating text for persistence:', error);
             }
-        });
-        fetchResponse.body.once('end', resolve);
-        fetchResponse.body.once('error', resolve);
-        fetchResponse.body.once('close', resolve);
+        }
     });
 
     flushContentBuffer();
@@ -2880,7 +2873,7 @@ function applyToolCallDelta(target, delta) {
 }
 
 /**
- * @param {import('node-fetch').Response} fetchResponse
+ * @param {Response} fetchResponse
  * @param {import('express').Response} response
  * @param {object} persist
  * @param {ToolCallHandOff} toolHandOff
@@ -2909,8 +2902,8 @@ async function forwardAndPersistCompactStreamWithToolCalls(fetchResponse, respon
     /** @type {any[]} */
     const toolCallsByIndex = [];
 
-    fetchResponse.body.on('data', (chunk) => {
-        buffer += chunk.toString('utf-8');
+    await forEachBodyText(fetchResponse.body, (chunk) => {
+        buffer += chunk;
         let idx;
         while ((idx = buffer.indexOf('\n')) !== -1) {
             const line = buffer.slice(0, idx).trim();
@@ -2951,13 +2944,6 @@ async function forwardAndPersistCompactStreamWithToolCalls(fetchResponse, respon
             }
         }
     });
-
-    const ended = new Promise((resolve) => {
-        fetchResponse.body.once('end', resolve);
-        fetchResponse.body.once('error', resolve);
-        fetchResponse.body.once('close', resolve);
-    });
-    await ended;
 
     const toolCalls = toolCallsByIndex.filter(Boolean);
     if (toolCalls.length === 0 || isGenerationStopped(response)) {
@@ -3682,7 +3668,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             excludeKeysByYaml(requestBody, request.body.custom_exclude_body);
         }
 
-        /** @type {import('node-fetch').RequestInit} */
+        /** @type {RequestInit} */
         const config = {
             method: 'post',
             headers: {
@@ -3759,9 +3745,10 @@ router.post('/generate', withGenerationStop(async function (request, response) {
         }
     } catch (error) {
         console.error('Generation failed', error);
-        const message = error.code === 'ECONNREFUSED'
-            ? `Connection refused: ${error.message}`
-            : error.message || 'Unknown error occurred';
+        const cause = error?.cause instanceof Error ? /** @type {Error & { code?: string }} */ (error.cause) : null;
+        const message = cause?.code === 'ECONNREFUSED'
+            ? `Connection refused: ${cause.message}`
+            : cause?.message || error.message || 'Unknown error occurred';
 
         if (!response.headersSent) {
             response.status(502).send({ error: { message, ...error } });

@@ -1,6 +1,5 @@
 import { Buffer } from 'node:buffer';
 import crypto from 'node:crypto';
-import fetch from 'node-fetch';
 
 import { readSecret, SECRET_KEYS } from './endpoints/secrets.js';
 

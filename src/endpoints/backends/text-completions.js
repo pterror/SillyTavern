@@ -1,4 +1,3 @@
-import fetch from 'node-fetch';
 import express from 'express';
 
 import {
@@ -11,7 +10,7 @@ import {
     FEATHERLESS_KEYS,
     OPENAI_KEYS,
 } from '../../constants.js';
-import { forwardFetchResponse, trimV1, getConfigValue, pickKeys } from '../../util.js';
+import { forEachBodyText, forwardFetchResponse, trimV1, getConfigValue, pickKeys } from '../../util.js';
 import { setAdditionalHeaders } from '../../additional-headers.js';
 import { createHash } from 'node:crypto';
 import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta, createBackpressureWriter, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, encodeContent, encodeStoredReplyFrame, encodeIndexFrame, encodeReasoningFrame, encodeProbabilitiesFrame, encodeControlFrame, writeStoredMessagesFrame } from './llamacpp-compact-stream.js';
@@ -51,7 +50,7 @@ export const router = express.Router();
  * once the stream ends (or the client disconnects early - whatever was generated so far is still a
  * real, if partial, reply, not nothing), writing the resulting `assistant_node_id` frame last, same
  * as `forwardAndPersistCompactStream()`.
- * @param {import('node-fetch').Response} jsonStream JSON stream
+ * @param {Response} jsonStream JSON stream
  * @param {import('express').Request} request Express request
  * @param {import('express').Response} response Express response
  * @param {object} [persist] `pendingAssistantPersist` - see above.
@@ -104,9 +103,13 @@ async function parseOllamaStream(jsonStream, request, response, persist, warning
             }
         };
 
-        jsonStream.body.on('data', (data) => {
+        request.socket.on('close', function () {
+            stopKeepalive();
+            writer = detachFromResponse(generationRecord);
+        });
+
+        await forEachBodyText(jsonStream.body, (chunk) => {
             if (isGenerationStopped(response)) return;
-            const chunk = data.toString();
             partialData += chunk;
             while (true) {
                 let json;
@@ -128,17 +131,7 @@ async function parseOllamaStream(jsonStream, request, response, persist, warning
             }
         });
 
-        request.socket.on('close', function () {
-            stopKeepalive();
-            writer = detachFromResponse(generationRecord);
-        });
-
-        jsonStream.body.on('end', () => {
-            finishPersist();
-        });
-        jsonStream.body.on('error', () => {
-            finishPersist();
-        });
+        finishPersist();
         await finished;
     } catch (error) {
         console.error('Error forwarding streaming response:', error);
@@ -151,7 +144,7 @@ async function parseOllamaStream(jsonStream, request, response, persist, warning
 }
 
 /**
- * @param {import('node-fetch').Response} fetchResponse
+ * @param {Response} fetchResponse
  * @param {import('express').Response} response
  * @param {object|null|undefined} persist
  * @param {(json: any) => string|undefined} extractText
@@ -268,19 +261,14 @@ export async function forwardAndPersistCompactStream(fetchResponse, response, pe
 
     onGenerationStopFlush(response, flushPendingContent);
 
-    await new Promise((resolve) => {
-        fetchResponse.body.on('data', (chunk) => {
-            sseBuffer += chunk.toString('utf-8');
-            let idx;
-            while ((idx = sseBuffer.indexOf('\n')) !== -1) {
-                const rawLine = sseBuffer.slice(0, idx);
-                sseBuffer = sseBuffer.slice(idx + 1);
-                processLine(rawLine);
-            }
-        });
-        fetchResponse.body.once('end', resolve);
-        fetchResponse.body.once('error', resolve);
-        fetchResponse.body.once('close', resolve);
+    await forEachBodyText(fetchResponse.body, (chunk) => {
+        sseBuffer += chunk;
+        let idx;
+        while ((idx = sseBuffer.indexOf('\n')) !== -1) {
+            const rawLine = sseBuffer.slice(0, idx);
+            sseBuffer = sseBuffer.slice(idx + 1);
+            processLine(rawLine);
+        }
     });
 
     if (sseBuffer) {
@@ -669,7 +657,6 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             body: JSON.stringify(request.body),
             headers: { 'Content-Type': 'application/json' },
             signal: controller.signal,
-            timeout: 0,
         };
 
         setAdditionalHeaders(request, args, baseUrl);
@@ -980,7 +967,6 @@ tabby.post('/download', async function (request, response) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(request.body),
-            timeout: 0,
         };
 
         setAdditionalHeaders(request, args, baseUrl);

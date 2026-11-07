@@ -17,20 +17,17 @@ const downloadRequests = [];
 /** @type {Map<string, Buffer>} */
 const downloadBodies = new Map();
 if (canMockDownloads) {
-    const realNodeFetch = (await import(path.join(__dirname, '..', '..', 'node_modules', 'node-fetch', 'src', 'index.js'))).default;
-    mock.module('node-fetch', {
-        defaultExport: async (url, opts) => {
-            if (String(url).startsWith('https://github.com/SillyTavern/SillyTavern-Tokenizers/')) {
-                downloadRequests.push(String(url));
-                const body = downloadBodies.get(String(url));
-                if (body) {
-                    return new Response(body, { status: 200 });
-                }
-                return new Response('unavailable', { status: 503, statusText: 'Service Unavailable' });
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = /** @type {typeof fetch} */ (async (url, opts) => {
+        if (String(url).startsWith('https://github.com/SillyTavern/SillyTavern-Tokenizers/')) {
+            downloadRequests.push(String(url));
+            const body = downloadBodies.get(String(url));
+            if (body) {
+                return new Response(body, { status: 200 });
             }
-            return realNodeFetch(url, opts);
-        },
-        namedExports: {},
+            return new Response('unavailable', { status: 503, statusText: 'Service Unavailable' });
+        }
+        return realFetch(url, opts);
     });
 } else {
     console.log('tokenizers.test.js: node:test mock.module() is unavailable (run with --experimental-test-module-mocks) - skipping the download-failure case, which needs it to stub the tokenizer download');

@@ -1,4 +1,3 @@
-import fetch from 'node-fetch';
 import { forwardFetchResponse } from '../util.js';
 
 /**
@@ -22,11 +21,12 @@ export default async function corsProxyMiddleware(req, res) {
             'x-forwarded-for', 'x-forwarded-protocol', 'x-forwarded-proto',
             'x-forwarded-host', 'x-real-ip', 'sec-fetch-mode',
             'sec-fetch-site', 'sec-fetch-dest',
+            'connection', 'keep-alive', 'transfer-encoding', 'upgrade', 'expect', 'te', 'content-length',
         ];
 
         headersToRemove.forEach(header => delete headers[header]);
 
-        // Force a set of encodings that node-fetch/undici can transparently decompress.
+        // Force a set of encodings that fetch() can transparently decompress.
         // Some origins (e.g. Cloudflare-fronted sites) will respond with zstd when a browser's
         // full Accept-Encoding list is forwarded as-is; undici does not decode zstd, so the raw
         // compressed bytes would otherwise be piped straight through to the client as garbage.

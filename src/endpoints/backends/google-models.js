@@ -1,5 +1,3 @@
-import fetch from 'node-fetch';
-
 const GOOGLE_MODELS_PAGE_SIZE = 1000;
 
 export class GoogleModelsHttpError extends Error {

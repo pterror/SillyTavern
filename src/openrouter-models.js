@@ -1,5 +1,3 @@
-import fetch from 'node-fetch';
-
 import { clearDownloadFailure, isDownloadBackedOff, recordDownloadFailure } from './tokenizer-sources.js';
 
 export const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';

@@ -1,6 +1,6 @@
 import { describe, test, expect } from '@jest/globals';
 import { EventEmitter } from 'node:events';
-import { Readable } from 'node:stream';
+import { ReadableStream } from 'node:stream/web';
 import path from 'node:path';
 
 import {
@@ -430,7 +430,7 @@ function fakeUpstream(sseEvents, rawChunkSize = 64) {
     for (let i = 0; i < sseBytes.length; i += rawChunkSize) {
         chunks.push(sseBytes.subarray(i, i + rawChunkSize));
     }
-    return { ok: true, body: Readable.from(chunks) };
+    return { ok: true, body: ReadableStream.from(chunks) };
 }
 
 describe('pipeLlamaCppCompactStream - integration over a fake upstream + fake response', () => {
@@ -497,7 +497,7 @@ describe('pipeLlamaCppCompactStream - integration over a fake upstream + fake re
 
 function fakeCompletionsUpstream(texts) {
     const sseText = texts.map(t => `data: ${JSON.stringify({ choices: [{ index: 0, text: t }] })}\n\n`).join('') + 'data: [DONE]\n\n';
-    return { ok: true, status: 200, statusText: 'OK', body: Readable.from([Buffer.from(sseText, 'utf-8')]) };
+    return { ok: true, status: 200, statusText: 'OK', body: ReadableStream.from([Buffer.from(sseText, 'utf-8')]) };
 }
 
 function decodeWrites(res) {

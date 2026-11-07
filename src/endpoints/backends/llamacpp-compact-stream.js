@@ -1,7 +1,6 @@
-import { StringDecoder } from 'node:string_decoder';
 import { EventEmitter } from 'node:events';
 
-import { forwardFetchResponse } from '../../util.js';
+import { forEachBodyText, forwardFetchResponse } from '../../util.js';
 import { persistAssistantReply, takeItemizationNotSaved, takeReplyNotSaved } from '../../assistant-reply-persist.js';
 import { noteReplyText } from '../../reply-reasoning.js';
 import { storedMessagesOf } from '../../stored-messages.js';
@@ -460,7 +459,7 @@ export function createBackpressureWriter(res) {
 }
 
 /**
- * @param {import('node-fetch').Response} upstreamResponse
+ * @param {Response} upstreamResponse
  * @param {import('express').Response} response
  * @param {object} [persist]
  * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings]
@@ -482,7 +481,6 @@ export async function pipeLlamaCppCompactStream(upstreamResponse, response, pers
         if (warnings?.length) {
             writer.write(encodeControlFrame({ warnings }));
         }
-        const decoder = new StringDecoder('utf8');
         let sseBuffer = '';
         let lastIndex = 0;
         let settled = false;
@@ -549,25 +547,21 @@ export async function pipeLlamaCppCompactStream(upstreamResponse, response, pers
             }
         }
 
-        upstreamResponse.body.on('data', (chunk) => {
-            sseBuffer += decoder.write(chunk);
-            processBuffer();
-        });
-
-        upstreamResponse.body.on('end', () => {
-            sseBuffer += decoder.end();
-            processBuffer();
-            finish();
-        });
-
-        upstreamResponse.body.on('error', (error) => {
-            if (!isGenerationStopped(response)) console.warn('llama.cpp compact stream upstream error:', error);
-            finish();
-        });
-
         response.socket?.on('close', () => {
             stopKeepalive();
             writer = detachFromResponse(generationRecord);
+        });
+
+        forEachBodyText(upstreamResponse.body, (chunk) => {
+            sseBuffer += chunk;
+            processBuffer();
+        }).then((error) => {
+            if (error && !isGenerationStopped(response)) console.warn('llama.cpp compact stream upstream error:', error);
+            processBuffer();
+            finish();
+        }, (error) => {
+            console.warn('llama.cpp compact stream failed:', error);
+            finish();
         });
     });
 }

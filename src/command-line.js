@@ -233,7 +233,7 @@ export class CommandLineParser {
             .option('requestProxyUrl', {
                 type: 'string',
                 default: null,
-                describe: 'Request proxy URL (HTTP or SOCKS protocols)',
+                describe: 'Request proxy URL (http, https or socks5)',
             })
             .option('requestProxyBypass', {
                 type: 'array',

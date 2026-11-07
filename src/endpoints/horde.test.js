@@ -17,16 +17,13 @@ const canMockHordeBackend = typeof mock.module === 'function';
 /** @type {string|null} */
 let hordeFakeBackendUrl = null;
 if (canMockHordeBackend) {
-    const realNodeFetch = (await import(path.join(__dirname, '..', '..', 'node_modules', 'node-fetch', 'src', 'index.js'))).default;
-    mock.module('node-fetch', {
-        defaultExport: async (url, opts) => {
-            const target = new URL(url);
-            if (hordeFakeBackendUrl && target.origin === 'https://aihorde.net') {
-                return realNodeFetch(new URL(target.pathname + target.search, hordeFakeBackendUrl), opts);
-            }
-            return realNodeFetch(url, opts);
-        },
-        namedExports: {},
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = /** @type {typeof fetch} */ (async (url, opts) => {
+        const target = new URL(url);
+        if (hordeFakeBackendUrl && target.origin === 'https://aihorde.net') {
+            return realFetch(new URL(target.pathname + target.search, hordeFakeBackendUrl), opts);
+        }
+        return realFetch(url, opts);
     });
 } else {
     console.log('horde.test.js: node:test mock.module() is unavailable (run with --experimental-test-module-mocks) - skipping all /generate-text route tests, which need it to redirect AI Horde\'s hardcoded coordinator host to a local fake backend');

@@ -97,7 +97,7 @@ cors:
 requestProxy:
   # If a proxy is enabled, all outgoing HTTP/HTTPS requests will be routed through it.
   enabled: false
-  # Proxy URL. Possible protocols: http, https, socks, socks5, socks4, pac
+  # Proxy URL. Possible protocols: http, https, socks5 (socks is the same as socks5)
   url: "socks5://username:password@example.com:1080"
   # Proxy bypass list. Requests to these hosts won't be routed through the proxy.
   bypass:

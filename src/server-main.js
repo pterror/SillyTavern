@@ -44,8 +44,7 @@ import basicAuthMiddleware from './middleware/basicAuth.js';
 import getWhitelistMiddleware from './middleware/whitelist.js';
 import accessLoggerMiddleware, { getAccessLogPath, migrateAccessLog } from './middleware/accessLogWriter.js';
 import multerMonkeyPatch from './middleware/multerMonkeyPatch.js';
-import initRequestProxy from './request-proxy.js';
-import initPrivateRequestFilter from './private-request-filter.js';
+import { initOutgoingRequests } from './outgoing-requests.js';
 import cacheBuster from './middleware/cacheBuster.js';
 import corsProxyMiddleware from './middleware/corsProxy.js';
 import hostWhitelistMiddleware from './middleware/hostWhitelist.js';
@@ -394,20 +393,19 @@ async function preSetupTasks() {
         exitProcess();
     });
 
-    // Add private request filter.
-    const requestFilterOptions = {
+    const privateRequestFilter = {
         listen: cliArgs.listen,
         enabled: !!getConfigValue('privateAddressWhitelist.enabled', false, 'boolean'),
         privateAddressWhitelist: getConfigValue('privateAddressWhitelist.allowedRanges', ['127.0.0.0/8', '::1/128']),
         logBlocked: !!getConfigValue('privateAddressWhitelist.log.blockedRequests', true, 'boolean'),
         logAllowed: !!getConfigValue('privateAddressWhitelist.log.allowedRequests', false, 'boolean'),
         allowUnresolvedHosts: !!getConfigValue('privateAddressWhitelist.allowUnresolvedHosts', false, 'boolean'),
-        enableKeepAlive: cliArgs.enableKeepAlive,
     };
-    initPrivateRequestFilter(requestFilterOptions);
-
-    // Add request proxy.
-    initRequestProxy({ enabled: cliArgs.requestProxyEnabled, url: cliArgs.requestProxyUrl, bypass: cliArgs.requestProxyBypass, enableKeepAlive: cliArgs.enableKeepAlive, privateRequestFilterEnabled: requestFilterOptions.enabled });
+    initOutgoingRequests({
+        enableKeepAlive: cliArgs.enableKeepAlive,
+        privateRequestFilter,
+        requestProxy: { enabled: cliArgs.requestProxyEnabled, url: cliArgs.requestProxyUrl, bypass: cliArgs.requestProxyBypass },
+    });
 
     servedUi = await serveUi({ dev: process.env.ST_UI_DEV === '1' });
     __mark('serveUi');

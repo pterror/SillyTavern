@@ -19,16 +19,13 @@ let modelsAnswer = { status: 200, body: [] };
 let metadataAnswer = { status: 200, body: {} };
 
 if (canMock) {
-    const realNodeFetch = (await import(path.join(__dirname, '..', '..', 'node_modules', 'node-fetch', 'src', 'index.js'))).default;
-    mock.module('node-fetch', {
-        defaultExport: async (url, opts) => {
-            const target = new URL(url);
-            if (fakeUrl && (target.origin === 'https://aihorde.net' || target.origin === 'https://raw.githubusercontent.com')) {
-                return realNodeFetch(new URL(`/${target.hostname}${target.pathname}`, fakeUrl), opts);
-            }
-            return realNodeFetch(url, opts);
-        },
-        namedExports: {},
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = /** @type {typeof fetch} */ (async (url, opts) => {
+        const target = new URL(url);
+        if (fakeUrl && (target.origin === 'https://aihorde.net' || target.origin === 'https://raw.githubusercontent.com')) {
+            return realFetch(new URL(`/${target.hostname}${target.pathname}`, fakeUrl), opts);
+        }
+        return realFetch(url, opts);
     });
 }
 

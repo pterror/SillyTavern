@@ -1,5 +1,3 @@
-import fetch from 'node-fetch';
-
 import { TEXTGEN_TYPES } from './constants.js';
 import { setAdditionalHeadersByType } from './additional-headers.js';
 import { trimV1 } from './util.js';

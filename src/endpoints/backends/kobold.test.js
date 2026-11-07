@@ -5,7 +5,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import express from 'express';
-import nodeFetch from 'node-fetch';
 
 import { write as writeCard } from '../../character-card-parser.js';
 import { setConfigFilePath } from '../../util.js';
@@ -402,7 +401,7 @@ async function run() {
         const branchBeforeDirect = await loadBranch(user.store, { avatar: ownerId }, directStreamBranch);
         const anchorNodeId = branchBeforeDirect.branch.leaf_id;
 
-        const fetchResponse = await nodeFetch(sseBackend.url);
+        const fetchResponse = await fetch(sseBackend.url);
         const chunks = [];
         const fakeExpressResponse = {
             statusCode: 200,
@@ -735,15 +734,15 @@ async function run() {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ results: [{ text: 'Two.' }] }));
         });
-        const request = http.request;
+        const realFetch = globalThis.fetch;
         let refused = 0;
-        http.request = function (url, ...rest) {
+        globalThis.fetch = /** @type {typeof fetch} */ (async (url, ...rest) => {
             if (String(url).endsWith('/v1/generate')) {
                 refused++;
-                throw new Error('refused before sending');
+                throw new TypeError('fetch failed', { cause: new Error('refused before sending') });
             }
-            return request.call(this, url, ...rest);
-        };
+            return realFetch(url, ...rest);
+        });
         try {
             const rowsBefore = await storedRows();
             const { data } = await postGenerate(buildTestApp(), body);
@@ -753,7 +752,7 @@ async function run() {
             await new Promise(resolve => setTimeout(resolve, 200));
             assert.equal(await storedRows(), rowsBefore, 'nothing stored');
         } finally {
-            http.request = request;
+            globalThis.fetch = realFetch;
             backend.server.close();
             writeAllSettings(directories, buildSettingsFixture());
         }

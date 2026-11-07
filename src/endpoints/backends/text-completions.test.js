@@ -17,16 +17,13 @@ const canMockOpenRouter = typeof mock.module === 'function';
 /** @type {string|null} */
 let openRouterFakeBackendUrl = null;
 if (canMockOpenRouter) {
-    const realNodeFetch = (await import(path.join(__dirname, '..', '..', '..', 'node_modules', 'node-fetch', 'src', 'index.js'))).default;
-    mock.module('node-fetch', {
-        defaultExport: async (url, opts) => {
-            const target = new URL(url);
-            if (openRouterFakeBackendUrl && target.origin === 'https://openrouter.ai') {
-                return realNodeFetch(new URL(target.pathname + target.search, openRouterFakeBackendUrl), opts);
-            }
-            return realNodeFetch(url, opts);
-        },
-        namedExports: {},
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = /** @type {typeof fetch} */ (async (url, opts) => {
+        const target = new URL(url);
+        if (openRouterFakeBackendUrl && target.origin === 'https://openrouter.ai') {
+            return realFetch(new URL(target.pathname + target.search, openRouterFakeBackendUrl), opts);
+        }
+        return realFetch(url, opts);
     });
 } else {
     console.log('text-completions.test.js: node:test mock.module() is unavailable (run with --experimental-test-module-mocks) - skipping the OpenRouter /generate cases, which need it to redirect OpenRouter\'s fixed host to a local backend');
@@ -2127,15 +2124,15 @@ async function run() {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ content: 'Yes.', choices: [{ text: 'Yes.' }] }));
         });
-        const request = http.request;
+        const realFetch = globalThis.fetch;
         let refused = 0;
-        http.request = function (url, ...rest) {
+        globalThis.fetch = /** @type {typeof fetch} */ (async (url, ...rest) => {
             if (String(url).endsWith('/completion')) {
                 refused++;
-                throw new Error('refused before sending');
+                throw new TypeError('fetch failed', { cause: new Error('refused before sending') });
             }
-            return request.call(this, url, ...rest);
-        };
+            return realFetch(url, ...rest);
+        });
         try {
             const { data } = await postGenerate(buildTestApp(), body);
             assert.equal(data.error, true, 'the generation failed');
@@ -2145,7 +2142,7 @@ async function run() {
             await new Promise(resolve => setTimeout(resolve, 200));
             assert.equal(await storedRowsUnder(identity), 0, 'nothing stored');
         } finally {
-            http.request = request;
+            globalThis.fetch = realFetch;
             backend.server.close();
             writeAllSettings(directories, buildSettingsFixture());
         }
