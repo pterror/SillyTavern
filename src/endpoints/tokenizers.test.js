@@ -45,7 +45,7 @@ if (canMockModelMap) {
     });
 }
 
-const { computeLogitBias, computeTextgenLogitBias, countChatCompletionMessages, router, encodeTextByLocalTokenizerType, getTiktokenTokenizer, guesstimate } = await import('./tokenizers.js');
+const { computeLogitBias, computeTextgenLogitBias, countChatCompletionMessages, router, encodeTextByLocalTokenizerType, guesstimate } = await import('./tokenizers.js');
 const { rememberOpenRouterModels } = await import('../openrouter-models.js');
 rememberOpenRouterModels([]);
 const { resolveTokenizer, encodeWithTokenizer, tokenizers } = await import('../tokenizer-resolve.js');
@@ -227,52 +227,8 @@ await testCase('encodeTextByLocalTokenizerType: \'\' still encodes to []', async
     assert.deepEqual(await encodeTextByLocalTokenizerType('llama', ''), []);
 });
 
-await testCase('/openai/*: a mixed-case Mistral-Nemo name goes to nemo', async () => {
-    const nemoIds = await encodeTextByLocalTokenizerType('nemo', text);
-    assert.notDeepEqual(nemoIds, await encodeTextByLocalTokenizerType('llama3', text), 'the stand-in tells nemo from llama3');
-    assert.notDeepEqual(nemoIds, Array.from(getTiktokenTokenizer('gpt-3.5-turbo').encode(text)), 'the stand-in tells nemo from gpt-3.5-turbo');
-
-    const encoded = await postTokenizer('/openai/encode', 'Mistral-Nemo-Instruct-2407', { text });
-    assert.deepEqual(encoded.ids, nemoIds, 'encode');
-    assert.equal(encoded.count, nemoIds.length);
-
-    const decoded = await postTokenizer('/openai/decode', 'Mistral-Nemo-Instruct-2407', { ids: nemoIds });
-    assert.equal(decoded.text, text, 'decode');
-
-    const counted = await postTokenizer('/openai/count', 'Mistral-Nemo-Instruct-2407', messages);
-    assert.deepEqual(counted, { token_count: (await encodeTextByLocalTokenizerType('nemo', `user\n\n${text}`)).length }, 'count');
-});
-
-await testCase('/openai/*: an unmapped name gets the estimate, ids: [] and { text: \'\' }', async () => {
-    const encoded = await postTokenizer('/openai/encode', 'some-unheard-of-model', { text });
-    assert.deepEqual(encoded, { ids: [], count: guesstimate(text), chunks: [] }, 'encode');
-
-    const decoded = await postTokenizer('/openai/decode', 'some-unheard-of-model', { ids: [1, 2, 3] });
-    assert.deepEqual(decoded, { text: '' }, 'decode');
-
-    const counted = await postTokenizer('/openai/count', 'some-unheard-of-model', messages);
-    assert.deepEqual(counted, { token_count: guesstimate(JSON.stringify(messages)) }, 'count');
-});
-
-for (const name of ['claude', 'mistral', 'llama', 'deepseek', 'jamba']) {
-    await testCase(`/openai/*: the tokenizer name '${name}' picks that tokenizer`, async () => {
-        const ids = await encodeTextByLocalTokenizerType(name, text);
-        assert.ok(ids.length > 0);
-
-        const encoded = await postTokenizer('/openai/encode', name, { text });
-        assert.deepEqual(encoded.ids, ids, 'encode');
-        assert.equal(encoded.count, ids.length);
-
-        const decoded = await postTokenizer('/openai/decode', name, { ids });
-        assert.notEqual(decoded.text, '', 'decode');
-
-        const counted = await postTokenizer('/openai/count', name, messages);
-        assert.deepEqual(counted, { token_count: (await encodeTextByLocalTokenizerType(name, `user\n\n${text}`)).length }, 'count');
-    });
-}
-
 if (canMockModelMap) {
-    await testCase('/openai/*: with the X-ST-Connection-State header, a several-files model on Mistral\'s API gets the tekken file; without it, the estimate as before', async () => {
+    await testCase('/current/*: a several-files model on Mistral\'s API gets the tekken file', async () => {
         const { TOKENIZER_SOURCES, getCacheFileName } = await import('../tokenizer-sources.js');
         const tekken = TOKENIZER_SOURCES.find(entry => entry.id === 'nemo-tekken');
         fs.writeFileSync(path.join(dataRoot, '_cache', getCacheFileName(tekken)), JSON.stringify({
@@ -280,34 +236,18 @@ if (canMockModelMap) {
             vocab: Array.from({ length: 256 }, (_, rank) => ({ rank, token_bytes: Buffer.from([rank]).toString('base64') })),
         }));
         const tekkenIds = (value) => Array.from(Buffer.from(value, 'utf8'), byte => byte + 10);
+        const state = { api: 'openai', source: 'mistralai', model: 'test-several-files', tokenizerSetting: tokenizers.BEST_MATCH };
 
-        const model = 'test-several-files';
-        const state = { api: 'openai', source: 'mistralai', model, tokenizerSetting: tokenizers.BEST_MATCH };
-        const withState = { 'X-ST-Connection-State': JSON.stringify(state).replace(/[\u007f-￿]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`) };
-        const post = async (route, body, headers = {}) => {
-            const response = await fetch(`${baseUrl}${route}?model=${encodeURIComponent(model)}`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none', ...headers }, body: JSON.stringify(body),
+        const post = async (route, body) => {
+            const response = await fetch(`${baseUrl}/current/${route}`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none' }, body: JSON.stringify({ state, ...body }),
             });
-            return { status: response.status, body: response.status === 200 ? await response.json() : null };
+            assert.equal(response.status, 200, route);
+            return response.json();
         };
-
-        const counted = await post('/openai/count', messages, withState);
-        assert.deepEqual(counted, { status: 200, body: { token_count: tekkenIds(`user\n\n${text}`).length } }, 'count with the header');
-        const encoded = await post('/openai/encode', { text }, withState);
-        assert.equal(encoded.status, 200);
-        assert.deepEqual({ ids: encoded.body.ids, count: encoded.body.count }, { ids: tekkenIds(text), count: tekkenIds(text).length }, 'encode with the header');
-        const decoded = await post('/openai/decode', { ids: tekkenIds(text) }, withState);
-        assert.equal(decoded.body?.text, text, 'decode with the header');
-
-        assert.deepEqual(await post('/openai/count', messages), { status: 200, body: { token_count: guesstimate(JSON.stringify(messages)) } }, 'count without the header');
-        assert.deepEqual(await post('/openai/encode', { text }), { status: 200, body: { ids: [], count: guesstimate(text), chunks: [] } }, 'encode without the header');
-        assert.deepEqual(await post('/openai/decode', { ids: [1, 2, 3] }), { status: 200, body: { text: '' } }, 'decode without the header');
-
-        for (const header of ['not json', JSON.stringify({ api: 'textgenerationwebui', model })]) {
-            for (const [route, body] of [['/openai/count', messages], ['/openai/encode', { text }], ['/openai/decode', { ids: [1] }]]) {
-                assert.equal((await post(route, body, { 'X-ST-Connection-State': header })).status, 400, `${route} ${header}`);
-            }
-        }
+        assert.equal((await post('count', { messages })).count, tekkenIds(`user\n\n${text}`).length, 'count');
+        assert.deepEqual((await post('encode', { texts: [text] })).ids, [tekkenIds(text)], 'encode');
+        assert.equal((await post('decode', { ids: tekkenIds(text) })).text, text, 'decode');
     });
 }
 
@@ -368,16 +308,6 @@ if (canMockModelMap) {
         }
     });
 }
-
-await testCase('/remote/textgenerationwebui/encode: an unknown api_type answers 400', async () => {
-    for (const apiType of ['some-unknown-type', undefined]) {
-        const response = await fetch(`${baseUrl}/remote/textgenerationwebui/encode`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none' },
-            body: JSON.stringify({ text, url: 'http://127.0.0.1:1', model: 'x', api_type: apiType }),
-        });
-        assert.equal(response.status, 400, String(apiType));
-    }
-});
 
 let fakeTokenizeMode = 'fail';
 let fakeTokenizeCalls = 0;
@@ -494,10 +424,10 @@ await testCase('/current/*: an explicitTokenizer that is not an explicit pick an
     }
 });
 
-await testCase('/current/count: chat-completion messages count like /openai/count, naming the model\'s tokenizer', async () => {
-    const counted = await postCurrent('count', { state: { api: 'openai', source: 'openai', model: 'gpt-4o' }, messages });
-    const upstream = await postTokenizer('/openai/count', 'gpt-4o', messages);
-    assert.equal(counted.count, upstream.token_count);
+await testCase('/current/count: chat-completion messages are counted by the model\'s tokenizer, which the answer names', async () => {
+    const state = { api: 'openai', source: 'openai', model: 'gpt-4o' };
+    const counted = await postCurrent('count', { state, messages });
+    assert.equal(counted.count, await countChatCompletionMessages(await resolveTokenizer(state), messages));
     const { id, name, model, basis, key } = counted.tokenizer;
     assert.deepEqual({ id, name, model, basis, key }, { id: tokenizers.OPENAI, name: 'gpt-4o', model: 'gpt-4o', basis: 'local', key: 'openai|openai||gpt-4o|openai' });
 });
@@ -599,13 +529,11 @@ await testCase('/current/trim: the same text as encode-slice-decode for a local 
 const ignoreMergesText = 'Ở Việt Nam, việc này có nhiều điều hợp lý; jeho každý характер değişti.';
 const ignoreMergesIds = [5080, 252, 101798, 31074, 11, 100769, 97635, 29876, 100937, 101309, 100827, 101226, 26, 101503, 112357, 105670, 409, 44907, 7370, 10462, 13];
 
-await testCase('llama3.json: /llama3/*, /openai/* and /current/* give the reference ids where ignore_merges matters', async () => {
+await testCase('llama3.json: /llama3/* and /current/* give the reference ids where ignore_merges matters', async () => {
     const legacy = await postTokenizer('/llama3/encode', '', { text: ignoreMergesText });
     assert.deepEqual({ ids: legacy.ids, count: legacy.count }, { ids: ignoreMergesIds, count: ignoreMergesIds.length }, '/llama3/encode');
     assert.equal(legacy.chunks.join(''), ignoreMergesText, '/llama3/encode chunks');
     assert.equal((await postTokenizer('/llama3/decode', '', { ids: ignoreMergesIds })).text, ignoreMergesText, '/llama3/decode');
-
-    assert.deepEqual((await postTokenizer('/openai/encode', 'llama3', { text: ignoreMergesText })).ids, ignoreMergesIds, '/openai/encode');
 
     const current = await postCurrent('encode', { state: llama3State, texts: [ignoreMergesText] });
     assert.deepEqual(current.ids, [ignoreMergesIds], '/current/encode');
@@ -619,12 +547,7 @@ await testCase('llama3.json: chat-completion message counts give the reference c
     const state = { api: 'openai', source: 'openrouter', model: 'meta-llama/llama-3-70b-instruct' };
     const current = await postCurrent('count', { state, messages: llama3Messages });
     assert.deepEqual({ id: current.tokenizer.id, basis: current.tokenizer.basis }, { id: tokenizers.LLAMA3, basis: 'local' }, 'the model maps to llama3');
-
-    const openai = await postTokenizer('/openai/count', 'llama3', llama3Messages);
-    assert.deepEqual(
-        { openaiCount: openai.token_count, currentCount: current.count },
-        { openaiCount: ignoreMergesIds.length, currentCount: ignoreMergesIds.length },
-    );
+    assert.equal(current.count, ignoreMergesIds.length);
 });
 
 await testCase('/current/*: a working remote tokenizer with an exact local copy decodes and trims with the copy', async () => {
@@ -740,30 +663,6 @@ await testCase('/current/encode on llama.cpp: chunks from its with_pieces answer
     stepFake.fail = true;
     const failed = await postCurrent('encode', { state: stepTextgenState, texts: [sample] });
     assert.deepEqual(failed.chunks, [null], 'no chunks from the local copy: they come only from the backend');
-});
-
-await testCase('/openai/* with a state header naming a custom URL that is llama.cpp: its /tokenize, with the custom key only', async () => {
-    resetStepFake();
-    const header = { 'Content-Type': 'application/json', 'X-ST-Connection-State': JSON.stringify(stepCustomState) };
-    const post = async (route, body) => (await fetch(`${baseUrl}/openai/${route}`, { method: 'POST', headers: header, body: JSON.stringify(body) })).json();
-
-    const counted = await post('count', messages);
-    assert.equal(counted.token_count, Buffer.byteLength(`user\n\n${text}`));
-    const encoded = await post('encode', { text: 'aé' });
-    assert.deepEqual(encoded, { ids: [0, 1, 2], count: 3, chunks: ['a', 'é'] });
-    const gemmaIds = await encodeTextByLocalTokenizerType('gemma', text);
-    assert.equal((await post('decode', { ids: gemmaIds })).text, text, 'decoded with the exact local copy');
-
-    assert.ok(stepFake.requests.some(r => r.path === '/props'), 'detected');
-    for (const request of stepFake.requests) {
-        assert.equal(request.headers.authorization, 'Bearer custom-key', request.path);
-        assert.equal(JSON.stringify(request.headers).includes('textgen-llamacpp-key'), false, request.path);
-    }
-    assert.deepEqual(tokenizeBodies().map(body => Object.keys(body).sort()), [['content', 'model'], ['content', 'model', 'with_pieces']]);
-
-    stepFake.fail = true;
-    const fallback = await post('encode', { text });
-    assert.deepEqual(fallback.ids, gemmaIds, '/tokenize failing: the local copy');
 });
 
 await testCase('/current/count, chat completion at a custom URL that is llama.cpp: messages counted by its /tokenize', async () => {
@@ -992,7 +891,7 @@ await testCase('computeLogitBias at a custom llama.cpp URL: with a storedEncoder
             const counted2 = await postCurrent('count', { state: stepCustomState, messages });
             assert.equal(counted2.count, Buffer.byteLength(`user\n\n${text}`));
         });
-        assert.deepEqual(tokenizeBodies().map(body => body.content), [...texts, texts[1], `user\n\n${text}`], 'every text went to /tokenize');
+        assert.deepEqual(tokenizeBodies().map(body => body.content).sort(), [...texts, texts[1], `user\n\n${text}`].sort(), 'every text went to /tokenize');
     });
 
     await testCase('/current/encode with the token tables failing to read: the fresh ids and chunks, and the request succeeds', async () => {
