@@ -25,11 +25,14 @@ There is no whole-library fetch, manifest or diff anywhere on this path. `/api/c
 
 ## What the page holds
 
-- **Characters:** only the ones it holds for use (the open character, group members, recently used
-  characters), in `charactersStore`/`characters`. `selectCharacterByAvatar()` holds a character it
+- **Characters:** only the ones it holds for use (the open character, group members), in
+  `charactersStore`/`characters`. "the client SHOULD hold every card (preferred) but it CAN'T past a certain scale"
+  (owner, 2026-09-26T04:35:28). `selectCharacterByAvatar()` holds a character it
   doesn't hold from the `/api/chats/open` answer (`with_character`), so opening one is one request.
   The list itself holds only the rendered page
   (`renderedPageEntities`); `getEntitiesList()` reads that page, not a library array.
+- **Chats:** an open chat's body loads whole, never lazily: "never lazy what the actual fuck" (owner,
+  2026-09-27T00:19:04).
 - **Shown rows:** an LRU cache of list rows the page has shown (`character-cache.js`), keyed by each
   row's content identity: a character's avatar, version (the log position of its last write) and tag
   hash; a group's id and its three digests. It is bounded by `ROW_CACHE_QUOTA_SHARE` of the quota

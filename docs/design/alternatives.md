@@ -24,8 +24,8 @@ One component, the same controls on the same rows wherever it's opened: the card
 default, delete from the card) on every card greeting, in either list; delete from the chat on every stored
 alternative.
 
-An item's id is its node id; a card greeting not stored in the chat is known by its text's hash (the same text twice
-by which it is), so it keeps its row, and an editor open on it, while other greetings move.
+An item's id is its node id. How a card greeting not stored in the chat is known is not decided; the code knows it by
+its text's hash (`hashGreetingText`, `public/script.js`).
 
 The tab looks at one target at a time. The server keeps the look per tab (target, tokenizer, search, the list last
 read) and answers three views: `alternatives.list` (the items), `alternatives.counts` (token counts by item id) and
@@ -35,7 +35,7 @@ read) and answers three views: `alternatives.list` (the items), `alternatives.co
 
 | Step | The page sends | The server does | It answers / pushes | Who holds what |
 |---|---|---|---|---|
-| open | `alternatives.open { target, tokenizer }` (`tokenizer`: the on-screen connection state the count routes already take) | keeps the tab's look; reads the target's alternatives | the three views: the list (items: id, place, text, name, role, date, node id, card position and hash; the current one; the card's list), the counts the count store has, no matches. A long list streams: the answer is NDJSON, its first line the list's rows around the current one (`complete: false`), the next the whole list (a view read in parts: each part newer than the one before, older than any read started after it) | server: the list, counts, the tab's look; page: the latest views, and the last whole list of each target this browser showed (IndexedDB, by target and the version the server gave it, the newest 16; shown at once when that target opens again, also after a reload, until the server's whole list is here) |
+| open | `alternatives.open { target, tokenizer }` (`tokenizer`: the on-screen connection state the count routes already take) | keeps the tab's look; reads the target's alternatives | the three views: the list (items: id, place, text, name, role, date, node id, card position and hash; the current one; the card's list), the counts the count store has, no matches. A long list streams (not decided): the answer is NDJSON, its first line the list's rows around the current one (`complete: false`), the next the whole list (a view read in parts: each part newer than the one before, older than any read started after it) | server: the list, counts, the tab's look; page: the latest views, and (not decided) the last whole list of each target this browser showed (IndexedDB, by target and the version the server gave it, the newest 16; shown at once when that target opens again, also after a reload, until the server's whole list is here) |
 | counts | nothing | counts the texts the store didn't have, once each, nearest the current one first, a few at a time, yielding between texts, through the token count store (stored for every later read) | the counts view: what the store has first, then each count as soon as it's done (a patch with only what's new; those done within 50 ms of each other in one), on the same answer or push | the count store |
 | changes elsewhere | — | a commit that adds, removes, edits or picks a message, or writes a card, pushes the tab's views (`changedFor`), read again | the views | the tree, the card |
 | search | `alternatives.search { query }` | parses it with the library and chat search's parser (`searchClauses`), matches every item's text with the engine's tokenizer (`textMatches`: the chat search's tokens and folding) | the matches view, in steps of 200 alternatives (the first sent at once, then as many as fit in 30 ms a part): what they found (the source ranges matched, by item id) and how many are checked, of how many (a patch each); a newer search stops the old one | server: the tab's query; page: the search box's text ("Searching… n of N checked" until done) |
@@ -48,11 +48,11 @@ read) and answers three views: `alternatives.list` (the items), `alternatives.co
 
 Rules checked:
 - The server owns the list, the counts, the query and the matches; the page renders the latest view and keeps
-  nothing else (an editor's typing until it's saved).
+  nothing else (an editor's typing until it's saved), as `CLAUDE.md`'s Architecture rules have it.
 - Nothing on the page counts tokens or matches text.
 - Opening shows the dialog at once: the client's last view of the same target, else the dialog with its list
   loading; nothing waits on a request per row (one view, counts pushed after).
-- Correctness never depends on timing: views carry versions, the newest wins whatever order they arrive in.
+- Views carry versions; the newest wins whatever order they arrive in.
 - Old chat code keeps what it owns (the chat's swipes and selecting one); this area doesn't reimplement it.
 
 ## Rendering
@@ -65,9 +65,11 @@ pipeline chat uses. Rows are formatted visible-first, then the rest in idle time
 text where a row isn't formatted yet; rows off screen skip layout and paint (`content-visibility: auto`). The list is
 one list: no pages, no windowing.
 
-Matches are highlighted in the rendered rows with `<mark class="match">`, coloured by `--match-color` (a theme
-variable; custom CSS can override it). The server says which source tokens matched; the page marks those tokens in
-the rendered text. (Exact positions in the rendered text need the one markdown parser, ED31.)
+Matches are highlighted in the rendered rows; how they're marked is not decided (the code uses `<mark
+class="match">`, coloured by the theme variable `--match-color`, `public/css/alternatives.css:2`). The server says
+which source tokens matched; the page marks those tokens in the rendered text. (Exact positions in the rendered text
+need the one markdown parser, ED31; not showdown: "depending on showdown at all is wrong", owner,
+2026-09-23T06:47:16.)
 
 ## Finding your place
 
@@ -80,14 +82,16 @@ the rendered text. (Exact positions in the rendered text need the one markdown p
 
 ## Opening it
 
-- The swipe counter on any message with more than one alternative, a tap or a click on every device (on a touch
-  screen the counter takes taps past its text). The counter shows on every such message (the "Swipe # for All
-  Messages" setting goes); user messages are included.
+- The swipe counter shows on every message, user messages included. On a message with one alternative, other than
+  the last message, it is dimmed (`public/style.css:1371-1373`): "idk, wdyt" (owner, 2026-11-01T14:58:04), then "maybe
+  it cold be dimmed though" (15:50:50). With more than one alternative, a tap or a click on it opens the list on
+  every device (on a touch screen the counter takes taps past its text).
 - The greetings button in character info.
 
 ## Adding an alternative
 
-The page never holds alternatives the server doesn't have. A swipe added to a message is stored when it's added:
+"we don't have chats AT ALL, instead we have 'ephemeral' greeting messages" (owner, 2026-09-25T14:35:33). The page
+never holds alternatives the server doesn't have. A swipe added to a message is stored when it's added:
 beside the stored message; at a first message shown from the card (no row of its own), as an opening of the chat
 beside the card's greetings (the greeting stays the card's: a stored copy of it would be a duplicate once the card's
 greeting is edited). A temporary chat (no character or group) keeps its swipes on the page.

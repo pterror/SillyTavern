@@ -48,7 +48,8 @@ The launcher's install step, per platform:
 ## Packages
 
 Per platform, the launcher in the platform's usual form; each fetches the current version on first run (or carries
-it, for offline installs):
+it, for offline installs). Which platforms: "up to you :) ideally all platforms (including mobile) + all relevant
+arches" (owner, 2026-10-03T09:04:50).
 
 | Platform | Form |
 |---|---|
@@ -72,22 +73,20 @@ native modules, prebuilt and tested on that platform.
   notice with what changed (the release notes); on the user's word it downloads the archive (resumable), checks its
   signature, unpacks it beside the current version, stops the server, switches, starts the new version, and checks
   it came up (a health check); if it didn't, it switches back by itself and says why.
-- **Rolling back**: from the tray or `st use`, any version still installed, with the data snapshot taken before
-  that version's migrations (below).
+- **Rolling back**: from the tray or `st use`, any version still installed.
 
 ## Changes to our own data formats
 
-While there are no users, our own formats change by hard cutover: a throwaway one-off run once on the existing data
-with the server stopped, then deleted; the server only ever knows the current format and holds no migration. Only
-importing from upstream is a supported path (permanent, in the import). A server-run migration registry was built and
-removed again (10-29) for this reason; what replaces it for users is decided when there are users, not before.
+"while there are no users, migrations should be hard cutovers" (owner, 2026-10-02T10:30:07); "remember we only
+support migrations from upstream" (owner, 2026-10-29T08:07:03). How our own formats change once there are users is not
+decided.
 
 ## Also
 
 - `start.sh` / `Start.bat` stay: git installs, their guides, Termux and headless setups, and third-party installers
   (SillyTavern Launcher, Pinokio, StabilityMatrix) call them. They become thin: in a launcher install they hand
   off to the launcher; in a plain checkout they run it as a version, as now (dependencies, the page and engine fetched
-  or built, then start), the server running pending migrations itself.
+  or built, then start).
 - The start script's probe for inotify: whether it's still needed is decided while building the archives (each
   native module either ships prebuilt or goes).
 - Remote access (`Remote-Link.cmd`) and the config file become launcher settings shown in the page.

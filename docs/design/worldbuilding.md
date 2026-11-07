@@ -10,10 +10,11 @@ A world is a lorebook: one book is one world. "World" is the word the UI uses.
 An entry has:
 
 - **text**: what it is, read by people and sent to the model.
-- **keys**: everything that brings it up. Each key is either a **name** of the entry or a **trigger**. Names are marked
-  in the entry's extension data and are always a subset of its keys; every other key is a trigger.
-- **title**: the author's memo for finding the entry (upstream's `comment`). It is never sent to the model and never
-  matched. It is shown as a name only when it equals one of the entry's names; otherwise it is shown as plain text.
+- **keys**: everything that brings it up. Each key is either a **name** of the entry or a **trigger**. How names are
+  stored is not decided.
+- **title**: upstream's `comment`, which upstream uses as the entry's title ("doesn't ST use it as the title", owner,
+  2026-11-03T06:27:20). It is never sent to the model and never matched. It is shown as a name only when it equals
+  one of the entry's names; otherwise it is shown as plain text.
 - **picture** (optional), and a **small picture** (optional) used beside the name where the look places one. The small
   picture defaults to the entry's picture; it can be a crop of it (a stored crop rectangle, the image untouched) or a
   different image. Images are stored by content hash.
@@ -101,8 +102,9 @@ it.
 
 Inside the overview and inside every cell of a board or grid, entries are grouped by the view's grouping relation:
 
-- An entry with members is a **region**, headed by the entry itself (picture, name in its look, opening text) and
-  holding its members' full-size cards. A member with members of its own is a region nested inside, headed the same
+- An entry with members is a **region**, headed by the entry itself and holding its members' cards. What a region's
+  head and an entry's card show is not decided: "there is zero fucking reason for lorebook ui to mirror character card
+  ui" (owner, 2026-11-03T04:21:19). A member with members of its own is a region nested inside, headed the same
   way.
 - A region shows its first members in that group's order, enough to show what the group is, then a **"+N more"** tile
   that opens the region's entry, which lists every member.
@@ -163,10 +165,11 @@ and cards. One editor, the **Look** screen, opens from any named thing.
 
 ### Storage
 
-A look is stored as CSS declarations on the name's own span, limited to what cannot reach outside it: no selectors, no
-`url()`, nothing that moves or sizes the span or touches anything else (no position, margins, display, size,
-`content`), animations only by the app's own names, and none of the forms the app's marks use (no background behind
-the name, no dotted or dashed strokes). Declarations outside those limits are not stored.
+A look is stored as CSS declarations on the name's own span, limited to what cannot reach outside it: no selectors,
+nothing that moves or sizes the span or touches anything else (no position, margins, display, size, `content`), and
+animations only by the app's own names. Declarations outside those limits are not stored. `url()` is allowed: banning
+it is "arbitrary and bad" (owner, 2026-11-03T06:39:38). Whether a look may use the forms the app's marks use is not
+decided.
 
 The visual editor covers the common effects (below). Anything else stays as CSS, visible and editable on the Look
 screen.
@@ -206,7 +209,7 @@ order; each property comes from the highest active state that sets it, otherwise
 - **Underline**: solid, double or wavy; color; thickness.
 - **Letters**: spacing, weight, italic, small capitals.
 - **Typeface**: a font the app ships, or one uploaded into the world. Uploaded fonts are stored by content hash like
-  images; the app writes the `@font-face` itself; the look names the font and never holds a URL. A look never sets size.
+  images; the app writes the `@font-face` itself; the look names the font. A look never sets size.
 - **Blur**: amount.
 - **Motion**: shimmer, breathe, flicker, drift or float, with speed. Every motion has a still frame, shown to readers
   whose device asks for reduced motion.
@@ -218,8 +221,7 @@ order; each property comes from the highest active state that sets it, otherwise
 The words that brought an entry into the last reply are marked in the chat. The mark is a look set at the theme level,
 in the same editor, per state: **dotted** (the default), **dashed**, **large dots** or **none**, with color and opacity.
 "Only when pointing at the message" is none at rest and dotted when the message is pointed at. The mark is drawn outside
-the name's span, so no name look can cover it, and no name look can use its forms, so none can imitate it. Custom CSS
-can restyle it through its class.
+the name's span, so no name look can cover it. Custom CSS can restyle it through its class.
 
 The marked spans come from each reply's activation record (below), drawn only where the stored text still matches.
 
@@ -243,8 +245,8 @@ clicking them (the field names are the app's, so these sentences are fixed wordi
 ## Screens
 
 - **In the chat** (`Main`, `PhoneChat`): names drawn in their looks and linked; trigger words marked. Pointing at a name
-  or a marked word shows a card: picture, name, how it relates to other entries, the opening of its text, and what
-  brought it up for the last reply. A word that brought up several entries shows all of them. Clicking opens the entry;
+  or a marked word shows a card (what it shows is not decided, as for regions above) with what brought it up for the
+  last reply. A word that brought up several entries shows all of them. Clicking opens the entry;
   on a phone, a tap shows the card from the bottom and Open goes to the entry.
 - **The world's page** (`Front`, `World`, `Huge`, `PhoneWorld`): the world's picture, name and description, then the
   view tabs and the view bar (Columns, Rows, Inside grouped by, Order, Cards or Rows; Save and Discard when the view is
@@ -277,9 +279,8 @@ clicking them (the field names are the app's, so these sentences are fixed wordi
 ## Compatibility and storage
 
 - Entries are stored per book in the engine (`engine/src/store/books.rs`), keyed by upstream `uid`, ordered by the
-  entry index (`displayIndex`). Every upstream field keeps its meaning and its behavior in activation; this tool only
-  presents them.
-- This tool's data on an entry (which keys are names, relations, the look, the small picture) lives in the entry's
+  entry index (`displayIndex`).
+- This tool's data on an entry (relations, the look, the small picture) lives in the entry's
   `extensions`. Card-book import keeps `extensions` (`src/world-info/candidate-resolution.js:65`) and export spreads it
   back (`src/character-card-normalize.js:241`), so it round-trips through card books. Card-book fields map as
   `convertCharacterBook` does: `keys`→`key`, `secondary_keys`→`keysecondary`, `comment`→`comment`,
@@ -292,7 +293,6 @@ clicking them (the field names are the app's, so these sentences are fixed wordi
   key matched, the entries that brought it in, its position, depth and role, and what was cut and why (budget, chance,
   inclusion group) (`src/world-info/activation-record.js`). The trigger mark and the hover card's "brought up by" read
   it.
-- `WORLD_INFO_ACTIVATED` keeps firing with what it carries (`public/scripts/world-info.js:1060`).
 
 ## Architecture
 
@@ -305,9 +305,7 @@ bookmarks, chats); worldbuilding is their composition plus what is specific to l
 - **Server**: one action per user action, answering with everything the page needs to draw its result; filters
   compile to index reads; a selection is a filter plus exceptions, so a bulk change is one action at any size; looks
   are resolved and sanitized into one stylesheet of per-thing classes. Activation reads keys exactly as before.
-- **Page**: built on the general component library (components, data sources, selection, focus, rendering) and
-  keybinds, both in their own repository; this app supplies adapters (its server index as a data source, its settings
-  cascade as state storage, its looks and themes as tokens). The page holds only what is on screen. One name renderer
+- **Page**: what it is built on is not decided. The page holds only what is on screen. One name renderer
   draws every name in the app, so a look applies everywhere at once.
 - When this lands, the old World Info drawer (`public/scripts/world-info.js`) and everything only it uses are removed
   in the same change.

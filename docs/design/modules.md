@@ -23,7 +23,7 @@ any other; it needs no extension point.
 | provider | makes sections from state | chat history, the card's fields, persona, examples |
 | condition type | decides whether an entry is active | keywords (world info scanning), generation type, chance, sticky / cooldown, similarity (vectors) |
 | book type | where entries come from, how they're edited | lorebooks, the card's book, the chat's notes |
-| input handler | handles a kind of input: a file type, or a URL pattern; and exports back to a file type | card files (PNG, JSON, CHARX, YAML), BYAF, upstream's preset / template / lorebook files, JSONL chats; the site downloaders in `src/endpoints/content-manager.js` |
+| input handler | handles a kind of input: a file type, or a URL pattern; and exports back to a file type | card files (PNG, JSON, CHARX, YAML), BYAF, upstream's preset / template / lorebook files, JSONL chats |
 | transform | rewrites text at a fixed point (the reply, the prompt, the display) | regex, the reply cleanups (whose defaults become its default rules) |
 | command | an action, with what it acts on and when it's available | menu items, buttons, quick replies, slash commands |
 | setting schema | what a setting is, its levels, where it shows | every panel's fields |
@@ -38,8 +38,7 @@ third-party, are removed, and a feature from one comes back only as a module.
 ## Capabilities
 
 A module gets only the abilities it's handed (object capabilities), never ambient access:
-- **network**: a fetch that reaches the hosts it declared and nothing else. A site turned off (the sites rule below) is
-  a capability no longer handed out, so the rule is enforced, not just declared;
+- **network**: a fetch that reaches the hosts it declared and nothing else;
 - **writes**: e.g. an import handler gets "create a character from this card", "store these files as its assets",
   "attach these books to it", and can't touch chats or settings; a transform gets the text it rewrites;
 - the same for every module (TTS: audio out plus its service's hosts).
@@ -58,7 +57,6 @@ sandboxed per-card scripting (EX2).
 |---|---|
 | character cards | one: PNG, JSON, CHARX, YAML (one spec, V2 / V3, in different containers) |
 | Backyard | BYAF |
-| importers | one per site: Chub, JannyAI (also takes janitorai.com links, looked up on the mirror), RisuRealm, Pygmalion, AICC, Perchance, a generic URL; more from the character library and STCardsBrowser inventories |
 | lorebooks | upstream's, Novel's, Agnai's lorebook files |
 
 Kept honest by: core's tests use toy modules, not the roleplay ones; CI starts the app with each module removed in
@@ -78,28 +76,22 @@ Two separate questions:
 | quick replies, connection profiles, token counts, attaching a file | not modules: commands, profiles, counts at the text, part of a message |
 | regex | core's transform point, with today's cleanups as its default rules |
 | vectors and the data bank, summarize, gallery, expressions, image generation, captioning, TTS, translate | removed with the extension system (`3500d3e9e`). The target: installed from a catalogue of official modules (a first-run page offers it), not shipped in every install |
-| importers (below) | ours, an extension |
 | the character library, and other modules | someone else's |
 
-## Importers
+## Importing from sites
 
-The importers package moves the site downloaders out of `src/endpoints/content-manager.js`, once input handlers and
-capabilities are specified; on by default, so the move isn't noticed. Each site module returns the card as the site
-has it (never flattened to V2), runs on the server (no public CORS relays), and gets fetch to its own hosts only.
-Update checks (is there a newer version, what changed) belong to the package, not to each site. Not ported: getting
-at definitions a creator hid. The character library is someone else's package that uses the importers.
+The site downloaders are in `src/endpoints/content-manager.js`. Whether they become modules, input handlers or an
+interface of their own is not decided: "idk if there should be an 'import source' interface" (owner,
+2026-10-27T03:26:06).
 
 ## Sites the app contacts
 
-Every module that reaches an outside site (import sources, the Hugging Face template fallback, Horde, the extension
-list) declares the hosts it may contact, so the app knows them all from the start.
-- Fetching public content is allowed without asking.
-- When a site can't be reached, the app says so once, with **Try later** (the links stay pending and are fetched next
-  time they're needed; later failures are silent, shown on the link) or **Don't contact this site** (off: nothing
-  contacts it; its links stay as plain links until it's turned on again, from one of them).
-- Settings search finds each site by its host, so it can be turned off before its first failure.
-- Sending the user's content (chats, cards, prompts) anywhere is never automatic: only through a connection the user
-  set up.
+Not decided. The owner on the rule proposed for it: "sounds arbitrary" (2026-10-27T02:13:42), "defer vs disable?" and
+"why" (02:21:41).
 
-A card's linked lorebooks follow this rule: imported with the card when the site is allowed, attached to the
-character as its books ("from Chub"), stored once by the site's id; kept as links otherwise.
+## A card's lorebooks
+
+- Embedded: "also ideally embedded lorebook (if present) should also stay as standalone embedded" (owner,
+  2026-09-12T14:14:35).
+- Linked: "objectively linked lbs should be separate otherwise they wouldn't be fucking linked" (owner,
+  2026-09-13T00:24:55).

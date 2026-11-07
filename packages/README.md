@@ -18,14 +18,11 @@ how new code is shaped.
   newer than the one before it and older than any read that starts after it.
 - **A copy kept across reloads is a view last seen**, by its version: shown until the server's answer is here, never
   instead of it (the alternatives list keeps lists seen in IndexedDB).
-- **Correctness never waits.** No timers, debounces or polls decide what the page shows.
 - **What a tab shows is server state** (its session, its current chat), so a view can depend on it and the server
   can push it when it changes.
 - **New code never imports old code.** Where an area needs something only old server code does (a chat's state, a
   file write), the area declares an interface for it and the server's wiring passes old code in. Old code may
   import new code; the arrow only points that way.
-- **Upstream's names stay.** Extensions import old paths (`/scripts/backgrounds.js`) and read old globals; those
-  paths become small stubs over the new code, kept for as long as extensions use them.
 
 ## Packages
 

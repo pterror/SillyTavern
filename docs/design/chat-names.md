@@ -1,13 +1,19 @@
 # Chat names (CH32)
 
-Every chat has a name, and its name is its chat id (upstream names a chat by its file name). No other form names a
-chat: `s<UUID>.<tree>` and `b<id>` are gone.
+Every chat has a name, and its name is its chat id. No other form names a chat: `s<UUID>.<tree>` and `b<id>` are
+gone.
+
+What a chat is, in the owner's words:
+- "a chat can obviovusly be uniquely defined by its last message (and *optionally* that message's child swipes)"
+  (2026-09-20T06:10:59).
+- "in ours there should. be. no. checkpoint vs chat" (2026-09-27T01:25:20).
+- Upstream's current chat: "doesn't fucking exist. bookmarks are what replaced them" (2026-10-03T09:23:57).
 
 ## Which chats, which names
 
 - **A bookmark**: its label. Every bookmark has one; a new one is given its suggestion when it has none.
 - **A session's conversation in a tree** (its own chat there: no current bookmark): `<character name> - <time>` in a
-  character's tree, `<time>` in a group's, as upstream names a new chat file and a new group chat. The time is
+  character's tree, `<time>` in a group's. The time is
   `humanizedDateTime(start)` (one definition, `public/scripts/humanized-date.js`, the server's clock and zone), and
   `start` is when the conversation began:
   - a session's: the session's own time, read from its UUID (a v7 UUID begins with its time);
@@ -44,8 +50,8 @@ conversations both).
 
 ## The cutover
 
-The existing store was converted once by a throwaway one-off (run with the server stopped, then deleted, as every
-change to our own formats is while there are no users): every unlabelled bookmark labelled, repeated labels in a
+The existing store was converted once, as a hard cutover ("while there are no users, migrations should be hard
+cutovers", owner, 2026-10-02T10:30:07): every unlabelled bookmark labelled, repeated labels in a
 scope made unique (the later ones by bookmark id get the next free name: a name ending in a chat's time a millisecond
 later, else " (2)", " (3)" …), every label written again so the name index holds it, old-form chat ids in extension
 settings moved to their names. The server only knows the current format.
@@ -55,4 +61,4 @@ settings moved to their names. The server only knows the current format.
 - A label the user types (saving a bookmark, renaming a chat) is refused when another chat of its scope has it.
 - A suggested one (a branch's `<name> - Branch #n`, a bookmark's `<name> - Bookmark #n` the dialog shows, an imported
   chat's file name, a save with `unique`) becomes the next free one.
-- A new chat (the new-chat routes) is named anew, `chatNameAt()` now, as upstream names a new chat file.
+- A new chat (the new-chat routes) is named anew, `chatNameAt()` now.

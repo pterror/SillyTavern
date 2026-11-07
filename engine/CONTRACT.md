@@ -5,6 +5,10 @@ record log, the derived keyspace and the derivation framework. SillyTavern's der
 history, chat, sessions) and the search index are users of the core: nothing in the core knows a card, a book or a
 chat. Where today's code doesn't keep that boundary, it is listed under known violations.
 
+The engine is our own. The owner allowed an existing one on conditions: "fine, use an existing engine without
+reintroducing write amplification" (2026-10-17T19:32:48), "and without degrading perf i any usecase" (19:33:17), "wasm
+build not required i guess but write amplification is still a concern" (20:36:23).
+
 Marks: **[verified]** read in the code or checked by a test or measurement on 2026-10-18; **[reasoned]** follows
 from the code but nothing checks it; **UNTESTED** a guarantee no test checks.
 
@@ -24,8 +28,12 @@ from the code but nothing checks it; **UNTESTED** a guarantee no test checks.
   unpublished layers) and emits entries. Target, not yet true: derive plus an associative combine of partial
   results, one implementation at every batch size, writes that don't read first. [reasoned]
 - **Reads.** Point gets, sorted multi-gets, forward and reverse limited scans (pages) over `[start, end)`, all
-  against a consistent snapshot of buffers and runs. [verified]
+  against a consistent snapshot of buffers and runs. [verified] A read is bounded by mechanism: "yes but by mechanism
+  not based on some arbitrary threshold" (owner, 2026-09-28T14:36:13). Totals: "fast approximate total IFF the perf
+  gains make it worth it. for any case where exact is still super fast, then prefer exact" (owner,
+  2026-09-28T02:44:58).
 - **Search** (`src/search/`) is a user of the core: its postings, term counts and block maxima are derived entries.
+  Word pairs: "sure, pairs for short fields are acceptable" (owner, 2026-10-27T05:45:22).
 
 ## API surface used by the SillyTavern layer
 
@@ -62,10 +70,12 @@ reads on top, which belong outside the core]
 | Model-based tests against a trivial reference model | Fixed scripts in places (`keyspace/tests.rs`, `store/tests.rs`, `library_tests.rs`, `tags_tests.rs`, `books_tests.rs`, `carriers_tests.rs`, `searched_tests.rs`, `state_tests.rs`); seeded random sequences in `keyspace::model_tests` and `history_tests::random_history_…`; `chat_tests` and `tags_tests` models take `ST_MODEL_SEED`. `ST_MODEL_SEEDS`/`ST_MODEL_BASE`/`ST_MODEL_STEPS` lengthen runs. | Random models for books, library and search; crashes (not only clean reopens) at random points. |
 | Fault injection | `crate::faults`: every log and run write, sync, directory sync, rename, removal and truncation passes a hook (compiled to nothing outside tests). `store::fault_tests` injects EIO, ENOSPC, torn writes and crashes at each operation of a workload (default 40 points × 2 seeds; `ST_FAULT_POINTS`, `ST_SIM_SEEDS`, `ST_FAULT_AT` for every point and replay), after a crash cutting unsynced bytes at a seeded point. Also truncation and corruption of log files (`log/tests.rs`), missing runs, a crash during bulk install. | A rename or a new file lost because its directory wasn't synced is not modelled; the bulk path's I/O (`write_staged`, `restamp`) has no hooks. |
 | Fuzzing every decoder | Seeded byte-mutation harnesses (no cargo-fuzz on this toolchain): `keyspace::fuzz_tests` (values and map/count encodings round-trip; blocks, also with the checksum recomputed over the damage, under every cursor; whole runs and footers), `log::tests::fuzz_damaged_log_files_never_panic_and_an_opened_log_reads_whole` (item-by-item scans decoding and stepping over, and opening). `ST_FUZZ_SECS` sets the length. | Coverage-guided fuzzing (cargo-fuzz needs nightly); the encodings decoded above `log::format` (chat and session values, JSON fields). |
-| Cost bounds as tests | Some: blocks per page, range estimate, reads per page of a commit's own entries. | Point gets, commit reads per record by kind, log record read cost, opening cost. |
 | Benchmarks tracked over time | `examples/` and `tests/` measurement programs (`commitsize`, `measure`, `edits`, `chat`, `library`, `search`), run by hand. | Recorded baselines on realistic data and a regression check. |
 | No known correctness bug ships | Not met until 50d22b76c: the scan bug was in production. | A rule enforced at review. |
 | Every fix with a deterministic regression test | 50d22b76c, 61748e3c2 and today's keyspace/store/log fixes each added one; simulation makes interleaving bugs replay by seed (the keyspace model fails 50d22b76c's bug at seed 1, step 56, every time). | Not yet a rule. |
+
+Enforced cost budgets are not part of the bar. To "It may need enforced cost budgets", the owner: "waste of quota"
+(2026-10-17T08:43:05); on cost-bound tests: "it's a bandaid, i don't see how it's acceptable" (2026-10-18T16:55:50).
 
 ## Known violations and open items
 

@@ -66,7 +66,10 @@ connection, bypass status check (one flag per API family, honoured for a source 
 
 ## 6. Hidden or dead
 
-- Advanced Mode hides ~40 settings, among them Enter to Send and Swipes.
+- Advanced Mode hides ~40 settings, among them Enter to Send and Swipes. The mode itself is the owner's: "vastly
+  simplify options with advanced mode toggle (defaulting to off)" (2026-09-11T16:42:44). Advanced Formatting shows
+  only with text completion and Advanced Mode both: "visibility conditional on text completion AND advanced mode"
+  (2026-09-12T01:54:28; `#advanced-formatting-button`, `public/index.html:2917`).
 - Dead: Lorebook Import Dialog (hidden, no reader). Near-dead: Relaxed API URLs (KoboldAI Classic only), image
   overswipe (one extension), STRICT_ESCAPING, Log prompts to console.
 - Appearance choices with no preview: avatar shape, chat style, media style, notification corner, drawer bar (two),
@@ -92,5 +95,29 @@ Five places, each about one thing the user does, everything derived from the con
 | **Behaviour**: how the app works for you | input and editing, chat display, the library, notifications, accessibility; account, extensions and maintenance | the rest of User Settings and its Advanced Mode split |
 
 Presets follow the places: a **generation preset** is a set of parameters; a **prompt preset** is a layout with
-books; a **profile** names a connection and the two presets. Levels (chat, character, user) apply to all of them
-as today. Settings search is the command palette over all five places, generated from the same data.
+books; a **profile** names a connection and the two presets. Settings search is the command palette over all five
+places, generated from the same data.
+
+## Levels: the level slider
+
+Each panel has one level range slider over default · preset · you · character · chat ("level. slider.", owner,
+2026-10-26T10:58:13):
+- The panel shows the settings resolved from the levels inside the range.
+- The top handle is where edits go.
+- Each field carries a stripe in the color of the level its value comes from: default none, preset green, you blue,
+  character orange, chat purple (Okabe–Ito), as theme variables. The slider's positions are labelled, so color is
+  never the only cue. Asked "ok what about colors" (10:58:56), the owner answered "sure" (10:59:32) to this scheme.
+
+Built in `packages/areas/settings/page/LevelSlider.tsx`. Where the code differs:
+- Levels: `default, preset, user, group, character` (`LEVELS`, `packages/areas/settings/protocol.ts:1639`;
+  `LEVEL_POSITIONS`, `src/settings-document.js:29`). There is no chat level, there is a group level between user and
+  character, and the label reads "User", not "You" (`LevelSlider.tsx:57`).
+- Edits: a write goes to the range's top level only for a bundled field; every other field is written at user level
+  whatever the top handle says (`routeOf`, `src/settings-document.js:246-255`). With the top handle on default the
+  page disables the fields (`packages/areas/settings/page/fields.tsx:61`) and the server refuses unset, reset, fit
+  and neutralize (`packages/areas/settings/server.ts:219-259`), but `settings.set` writes at user level (`:197-217`).
+- Panels: one slider exists, in AI Response Configuration (`#settings_levels`, `public/index.html:259`); no other
+  panel has one.
+- Stripes: only a value from group or character gets one, in `--SmartThemeQuoteColor`; preset and user values get
+  none, and a field with no value in the range is dimmed (`public/css/settings-panel.css:5-12`). No Okabe–Ito colors
+  and no per-level theme variables exist.

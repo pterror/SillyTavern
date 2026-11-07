@@ -7,8 +7,7 @@ the fixed positions in `extension_prompt_types`, `world_info_position` and `pers
 `settings-reorganization.md` for why.
 
 The server builds every prompt this way (`src/prompt/`). Until the screen for editing the tree exists, the layout and
-books are made for each request from the settings people have today, as described below, so nothing they've set
-changes what's sent except where this document says so.
+books are made for each request from the settings people have today, as described below.
 
 ## Sections
 
@@ -171,7 +170,9 @@ above replaced both.
 
 Generation parameters are stored as `{ parameter: value }`, where the parameter is its own id (`temperature`,
 `top_p`, `presence_penalty`). What the app knows about one (label, tip, range, step, default) is a table looked up by
-that id, as data. Each backend's adapter lists the parameters it takes and their wire names. A temperature exists
+that id, as data. Each backend's adapter lists the parameters it takes and their wire names.
+Adapters don't use the Vercel AI SDK: "no vercel ai sdk and just do things properly for fuck's sake" (owner,
+2026-09-14T17:30:02). A temperature exists
 once, whatever the backend; the panel shows what the current connection takes. Parameters a backend takes but the
 table doesn't know can be added per connection as `{ wire name: value }`.
 

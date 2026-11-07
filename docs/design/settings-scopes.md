@@ -17,6 +17,8 @@ One order for every setting, closest first:
 
 Bundles, overrides, resolution, edits, history and forgetting work at the new levels exactly as at the others.
 
+No level for guests or drafts: "multiplayer guests: no such thing", "drafts: tf" (owner, 2026-10-17T03:28:40).
+
 ## Which levels a setting may use
 
 Precedence never differs by kind; what a kind may do does (as VS Code restricts settings to scopes rather than
@@ -31,13 +33,16 @@ reordering them). Each row of `settings-mapping.tsv` gets a `levels` column.
 
 No chat or character can change a reader-bound setting, and output in a shared chat never depends on a device.
 
+The owner on deciding per setting what it's per: "what's per what: incorrect mental model" (2026-10-17T03:28:40).
+Whether that rules out this table is not decided.
+
 ## The order is a setting
 
 The order of the levels is itself a setting, resolved through the cascade like any other: the order above is its
 default; it can be stated at any level, and per setting the way any field is overridden. "On this phone, my
 settings win over chats" is a device-level statement of the order; "my preset over characters' presets" is a
-user-level statement of the order for presets. Resolving a field first resolves the order that applies to it
-(from the default order, so this doesn't recurse), then walks the levels in that order. Nothing else is added: the
+user-level statement of the order for presets. Resolving a field first resolves the order that applies to it, then
+walks the levels in that order; which order resolves the order itself is not decided. Nothing else is added: the
 order is shown, edited, kept in history and reset like every other value.
 
 ## Device
@@ -62,10 +67,8 @@ position does. The tab shows what it states ("this tab: preset X") with a reset.
 - The level picker gains "this tab" and "this device (name)" and hides levels a setting doesn't allow. An edit goes
   to the level supplying the value, so after one "this device only" later edits stay on the device.
 - movingUI: the user's desktop and mobile layouts stay the user-level value; a device or tab may name its own layout.
-- Compat: `assemble(user, {chat, session, device})` resolves what the tab sees; `power_user` and
-  `background_settings` show resolved values. Upstream writes go to the level supplying the value;
-  `chat_metadata.custom_background` (upstream's "lock background") is the chat's background statement. An import lands at user level; upstream's localStorage
-  language becomes a device-level statement. `AccountStorage` (navigation locks, page sizes) is per-browser UI
-  state, not settings, and stays in localStorage.
+  "movingui saved on device: data loss risk" (owner, 2026-10-17T03:28:40).
+- Import: an import lands at user level; upstream's `chat_metadata.custom_background` ("lock background") becomes the
+  chat's background statement; upstream's localStorage language becomes a device-level statement.
 - Cost: at most 6 levels, so O(levels) point reads per resolved slot; one localStorage read and one header per
   request; one small record per device. Nothing is O(devices) or O(sessions) on a request path.

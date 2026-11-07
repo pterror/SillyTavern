@@ -1,21 +1,22 @@
 # Backlog
 
-- The whole app's UX, from first principles: fewer settings, settings next to what they act on; one consistent UI (prior art: ~/git/lee-app, ~/git/cyoa, ~/git/pteraworld/src/games); too many affordances, gestures replace controls. Every area held to UX principles as a whole, not to a list; among them, no unnecessary mouse travel, clicks or steps, no clutter, nothing to memorise, no condescending wording. One area at a time, each to the owner, after worldbuilding.
-- Clipping stays optional; occlusion must be impossible for any overlay to miss (the typing indicator extension doesn't clip the chat).
-- Touch: swipe gestures and swipe menus; the swipe picker trigger is too small on phones; swiping to change the character management page doesn't work.
+- The whole app's UX, from first principles: fewer settings, settings next to what they act on; one consistent UI (prior art: ~/git/lee-app, ~/git/cyoa, ~/git/pteraworld/src/games); too many affordances. Every area held to UX principles as a whole, not to a list; among them, no unnecessary mouse travel, clicks or steps, no clutter, nothing to memorise, no condescending wording. One area at a time, each to the owner, after worldbuilding.
+- Clipping stays optional: what's behind a drawer is hidden only with a fully transparent background, and then as the user's choice ("it. fucking. shouldnt. without. a fucking. fully. transparent. background. and even then it should be user's choice", owner, 2026-10-25T10:02:51).
+- Touch: swipe gestures and swipe menus; the swipe picker trigger is too small on phones; swiping to change the character management page doesn't work. No long press: "long press is garbage ux" (owner, 2026-10-29T06:23:45). Left and right on the marking menu are previous and next: "left and right on the marking menu is fucking next/prev" (06:28:12).
 - Greeting and swipe alternatives: an edited greeting keeps its place; duplicates follow their origin; not getting lost among 10-100 edits; re-parenting. Jump to a swipe / show a greeting in the chat, in the modal and outside it.
 - Search: filter pills; keyboard use; `"a b c"` vs `name:"a b c"`; repeated searches cached (LRU).
-- Startup steps not needed, let alone in series; a service worker. Switching character sometimes takes very long.
+- Startup steps not needed, let alone in series; a service worker. Switching character sometimes takes very long. A reload's requests: "ideally every number >1 is explicitly carved out" (owner, 2026-09-16T18:04:12).
 - External media: replace `forbid_external_media` (`public/scripts/power-user.js:351`) and its per-chat allow (`public/scripts/chats.js:838-849`). Nothing external is fetched without the user's action, not even once on import (that still tracks, as email shows); shared content (cards, worlds, their looks' fonts and pictures) carries its own files by hash; anything else external waits in place and loads by a decision per source, remembered.
 - Tests simulating packet loss, slow connections, high latency.
+- The test suite's run time: "ideally it's <1min if not <15s" (owner, 2026-09-25T19:56:40).
 - `MacroValuesFromServer` "a character mention's card shows its creator's notes…": the hover card never opens (fails 8-9 of 10 alone, at c62c7316b and after).
-- Library pushes still only say that something changed, and the page pulls: a character or group change (`data: {}`) makes it read `/api/characters/changes` (and `/api/characters/batch` for a held one); `groups-changed`, `tags-changed` and `views-changed` re-read too; actions that change characters call `getCharacters()` after their own request (a fav toggle is four requests). The push carries what changed; an action's answer carries what it changed.
+- Library pushes still only say that something changed, and the page pulls: a character or group change (`data: {}`) makes it read `/api/characters/changes` (and `/api/characters/batch` for a held one); `groups-changed`, `tags-changed` and `views-changed` re-read too; actions that change characters call `getCharacters()` after their own request (a fav toggle is four requests). The push carries what changed; an action's answer carries what it changed. "reprinting the list is prohibitively expensive i.e. wrong" (owner, 2026-09-22T16:19:05).
 - A chat state push for another tab's change is dropped when it arrives before this tab has taken the place its own send or select moved it to (`takePushedState`, `public/scripts/metadata-store.js`), so the tab keeps the state without that change until the next push.
 - e2e flaky or failing at staging and after 6682bb45f: `SearchIndexUpdated`, `DrawerEditLock` (the same test every run), `ReasoningSurvivesRerender`, `AutoFixMarkdownGone`, `GenerationStop`, `TagRestoreKeepsAssignments`; server `chats-import`, `chats-save`, `chats-save-compat`.
 - Typing `/` into the chat box's editor shrinks `.cm-scroller` for ~100ms (32px to 29px; 1px at staging), so the send form shifts and the slash command list placed in that window overlaps the editor by 3px until the next placement; `ChatBoxLiveEditor` "the slash command suggestions show above the editor" fails 5 of 6 since boot got faster without extensions.
 - `RawActionSendRequestLog` UI cases time out on clicks (a URL autocomplete covers the connect button), more with 4+ workers: the e2e setup leaves state between tests or races the page.
 - The character list's creator-notes prefix is 0 (`LIST_CREATOR_NOTES_CHARS`, `public/scripts/hash-utils.js`) until the list cards get a maximum width or the owner gives a length.
-- Smaller thumbnails (75% webp or lower, 100-200px max), cached by the client, served at the image data's hash.
+- Smaller thumbnails (e.g. 75% WebP).
 - Tags on bookmarks, messages, greetings. Favourite tags, not a binary favourite (e-hentai's model as prior art). The tag manager is awkward and out of the way.
 - A {{char}} mention could bring in that character's definitions.
 - Guided Generations existing implies missing core functionality.
@@ -24,6 +25,7 @@
 - Page blur (switching app on a phone) closes character info.
 - An empty thinking block is not the same as no thinking block (gemma inference breaks otherwise).
 - The chat box and reasoning editors sit outside chat's text classes (`public/scripts/chat-live-editor.js:60`), so chat's rules (`.mes_text blockquote`, `.mes_reasoning em`, ...) don't reach them; only the quote color is copied, as a second list (`public/style.css:7343-7358`). Putting the class on them draws its box too (`.mes_reasoning`'s border and padding, `public/style.css:460-469`; `.mes_text`'s line height and weight, `:1581-1594`), and code finds the rendered block by that class (`public/scripts/reasoning.js:1264`). The owner's to decide how those two editors get chat's look.
+- The live editor is for the card fields ("i mean the card fields", owner, 2026-10-02T05:55:17); the code also uses it on message, reasoning and chat box edits (`public/scripts/chat-live-editor.js`).
 - Live editor: lists, code blocks, tables and rules aren't drawn as chat's elements; their elements bring layout (bullets, indentation, cells) that the written text already shows, so each needs a decision on what of chat's look the editor takes.
 - Live editor: the cursor sometimes goes onto the wrong line; Shift+Home sometimes selects to the start of the next line; the editor for messages sometimes scrolls; find and replace and its presets are bad.
 - Install as fast as possible without losing functionality; updating too.
@@ -39,7 +41,7 @@ Thin client and compat
 - Send's silent failure: a failed append only reaches the console.
 - Open a chat as one action: no writes on viewing, no page tokenizing, no 404 loop on never-chatted characters.
 - Lorebook actions per entry and per field; rename as one server action. Rename character plus group membership as actions.
-- Itemized prompts recorded by the server. Send, generate, select/swipe, bookmark/fork, delete/new chat each one action; `ensureOpeningRow` shouldn't be needed. Chat metadata per key. Token counts from the store.
+- Itemized prompts recorded by the server. Each reply's itemization stores its whole entry (`recordItemization`, `src/chat-engine.js:2025`); identical configs are stored once, by reference: "obviously compress identical configs by only storing a reference" (owner, 2026-09-12T05:44:04). Send, generate, select/swipe, bookmark/fork, delete/new chat each one action; `ensureOpeningRow` shouldn't be needed. Chat metadata per key. Token counts from the store.
 - The frontend still has `main_api`.
 - Persona per path ("'persona locked to chat' no longer makes sense"). Quiet prompt drop. Example messages server side and their UI (rendered, edited like a message, one turn at a time).
 - Upstream data import (chats, group chats, IDB itemizations through a chat-file → bookmark map). The chat import route drops each message's other versions.
@@ -59,15 +61,16 @@ Drawers / UI
 - jQuery UI tab leftovers (`#extensions_settings_tabs`, dead tab CSS).
 - iOS desktop with the bar on top: the chat stays full width and an open sidebar covers its edge.
 - Plain-language pass over all UI text.
-- Tree editing UI (insert, cut, delete, branch or in place); real deletion in the tree.
+- Tree editing UI (insert, cut, delete, branch or in place); real deletion in the tree. `/cut` comes in both variants ("the answer is both", owner, 2026-10-11T01:32:45); only cutting from this path, copying what's shared, exists (`cutFromPath`, `src/chat-engine.js:1514`).
+- Branch navigation goes; better bookmark navigation needs its own design: "yeah drop this branch nav bs. if we need better bookmark nav, that needs explicit design" (owner, 2026-09-25T16:55:25). `extra.branches` is still written (`src/chat-engine.js:2506`, `public/scripts/bookmarks.js:267-269`).
 - Group greeting selection: one swipeable turn of all members' greetings.
-- Greeting summaries / taglines (ccv2 extension, optionally autogenerated with a flag).
+- Greeting summaries / taglines ("think a tagline but for greetings", owner, 2026-09-19T22:37:17); where they're stored is not decided.
 - Renaming a character from a pen icon / double click on the name, not the dropdown.
 - Tooltips starting with "[character]"; long tags needing tooltips; favorite star clipping into the card border.
 - Next page should scroll to the top, previous page to the bottom (only when already at the edge).
 - Toasts with a details popup; copying could say so.
 - Batch management of most things (e.g. quick replies), toggles for quick reply visibility.
-- Arbitrary layout instead of movingUI: any action can be given a control (button, shortcut, gesture, placement).
+- Arbitrary layout instead of movingUI: any action can be given a control (button, shortcut, gesture, placement). movingUI: "remove now, keep saved stuff i just don't want it poisoning the codebase" (owner, 2026-10-25T06:18:39).
 - The client doesn't display generation errors (e.g. llama.cpp not running); the log spam around it.
 - Can't export from an arbitrary message.
 - Favoriting takes a while to update in the character list; reload force-restores the favorite pill.
@@ -76,6 +79,7 @@ Drawers / UI
 - Formatting bar on the chat input overlaps quick replies / guided generations.
 
 Editor
+- Unsaved edits: "dirty behavior needs design, not sure if we're mid design on it" (owner, 2026-09-25T14:49:05).
 - Cursor color; q quotes and blue color outside `.mes`; space reserved for the toolbar; beginning an edit scrolls to the middle; ul gaps.
 - Ctrl+I on italics turns them bold; undo/redo, Ctrl+Left/Right not like the browser; Shift+Delete clears the field.
 - Paste defaults to HTML (should be text); the paste options UI.
@@ -91,7 +95,7 @@ Lorebook / world
 - Per-branch lorebook entries; conditional entries (if...then); "scan depth cannot exceed 1000"; triggers and scan depth hidden on constant entries.
 
 State and other
-- State layers beyond layer 1 (time, meters, items, crafting, rollback, per-character histories, a composed turn pipeline, consistency agents); author's notes are the wrong model; multiplayer chats.
+- State layers beyond layer 1 (time, meters, items, crafting, rollback, per-character histories, a composed turn pipeline, consistency agents); author's notes are the wrong model; multiplayer chats ("mutex is a fine compromise", owner, 2026-09-29T05:10:21).
 - State values can be defined by rules over other state values, not only set by events (a schedule is one case: "evenings: in the Tankard", where the time is itself just a value the world defines); things move in time and space. Nothing about time or place is built into the state layer, worldbuilding views (which lay out any ordered value as an axis) or activation (which reads the same state).
 - Per-card scripted tools, sandboxed.
 - Mad libs / multiple-choice greetings, more generic.
@@ -102,16 +106,16 @@ State and other
 - Auto-install and management of llama.cpp / koboldcpp / ollama and models (optionally TTS and image gen).
 - Local import took 31 min for 1,171 cards.
 - /sysgen not using the selected request formatting.
-- Console noise: an ordinary action logs nothing on success.
+- Console noise: an ordinary action logs nothing on success ("specifically, single updates shouldn't log", owner, 2026-10-02T02:09:26).
 - A browser test reaches aihorde.net.
 
 ## From the owner's 11-06 review
 
-- The whole codebase: about 260k lines against the 30k goal, 480 test files, and the issues below share one cause, no coherent architecture under the upstream-derived page. A top-down rewrite: the architecture first (core and modules per `docs/design/modules.md`, the page shell on interact), then each area rebuilt into it, its old code deleted in the same change.
+- The whole codebase: about 260k lines against the 30k goal (not a hard budget: "it's not a fucking hard budget idiot", owner, 2026-10-31T00:29:17), 480 test files, and the issues below share one cause, no coherent architecture under the upstream-derived page. A top-down rewrite: the architecture first (core and modules, the page shell on interact; `docs/design/modules.md` is a proposal the owner answered with "let's just do it", 2026-10-31T02:08, and parts of it are marked not decided), then each area rebuilt into it, its old code deleted in the same change.
 - Opening a chat: `takeChatOpenAnswer` wires each part's answer by hand; a part that asks for something also takes its answer, so nothing is wired twice.
 - Character management: names have no line cap; the arrow buttons shift as the position numbers change width.
 - Messages: the edit bar is a separate UI with its own controls; buttons are small and inconsistently sized; the send buttons sit in a different element from the burger menu beside them. The WYSIWYG editor's UI needs a UX pass. `<details>` doesn't stop click-to-edit. CodeMirror shows comments as the HTML preview under the markup.
-- UI consistency: every piece (the greetings/alternatives modal most of all) is built its own way; one component library (interact) and one design system.
+- UI consistency: every piece (the greetings/alternatives modal most of all) is built its own way; one component library (interact) and one design system. The expanded editor is a modal, not a sidebar drawer: "bring the modal back, sidebar drawer is unacceptable" (owner, 2026-10-02T00:59:40).
 - Greetings:
   - The card editor's greeting view jumps back to the first greeting some time after a greeting save, likely when the save's request completes.
   - An in-chat greeting equal to a card greeting links back to it (the other direction of "go"), so editing the card's updates the chat, and an edit in the chat can be applied to the card.
@@ -121,7 +125,7 @@ State and other
 - Example messages: the input needs its redesign.
 - Slowness and frozen UI: favouriting freezes the UI thread; invalidating a search and opening a card stall it.
 - Trigger marks: shown for entries activated by any visible message, not only the latest reply. "Lorebook entries used for this reply" is redesigned with worldbuilding.
-- Group chats: characters answering one at a time is slow and awkward; the narrator approach makes it hard to see who speaks, with no pictures. A group chat model that's good at both.
+- Group chats: characters answering one at a time is slow and awkward; the narrator approach makes it hard to see who speaks, with no pictures. A group chat model that's good at both. "ideally need full unification of group chats with regular chats" (owner, 2026-09-15T15:16:27).
 - Message styling per thing, cascading (character, group, chat, user, device) through the same levels as settings and looks, in place of dialogue colorizing.
 - Lorebook names: trimmed on create but not on rename. Ordering global lorebooks needs a real order, not a leading-space hack.
 - Embedded lorebooks identical to their card's book still sit in the lorebook list; once confirmed identical, they're removed.
