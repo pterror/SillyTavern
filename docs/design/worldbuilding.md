@@ -104,7 +104,7 @@ Inside the overview and inside every cell of a board or grid, entries are groupe
 
 - An entry's **card** shows its name in its look, its small picture, its text, and its relations line. Text that
   doesn't fit stops at the last whole line, ending in an ellipsis; never a fade ("wait why fade", owner,
-  2026-11-03T04:18:04). How much text a card shows is not decided ("ok but how much would we show", 04:18:21). It doesn't follow the character card's layout ("there is zero
+  2026-11-03T04:18:04). How much text a card shows is whatever reads sensibly at its size. It doesn't follow the character card's layout ("there is zero
   fucking reason for lorebook ui to mirror character card ui", owner, 2026-11-03T04:21:19).
 - An entry with members is a **region**, headed by the entry's own card with its member count, and holding its
   members' cards. A member with members of its own is a region nested inside, headed the same way.
