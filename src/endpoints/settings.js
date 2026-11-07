@@ -23,6 +23,7 @@ import { requestStore, storeRoute, userStore } from '../user-stores.js';
 import { listBundles } from '../bundle-store.js';
 import { settingsDocumentOf } from '../settings-documents.js';
 import { openSettingsDocument } from '../settings-document.js';
+import { shownTextCounts } from '../shown-text-counts.js';
 
 const ENABLE_ACCOUNTS = !!getConfigValue('enableUserAccounts', false, 'boolean');
 const ENABLE_REQUEST_COMPRESSION = !!getConfigValue('performance.requestCompression.enabled', false, 'boolean');
@@ -247,6 +248,21 @@ function checkSettingsConflict(request, directories) {
     return { ok: currentHash === expectedHash };
 }
 
+/**
+ * The counts of the texts the page shows a count beside, as the saved settings make them.
+ * @param {import('express').Request} request
+ * @returns {Promise<{ shown_counts?: import('../shown-text-counts.js').ShownTextCounts }>}
+ */
+async function shownCountsOf(request) {
+    try {
+        const counts = await shownTextCounts(request.user.directories, savedIn(request)?.context ?? {});
+        return counts ? { shown_counts: counts } : {};
+    } catch (error) {
+        console.error('Could not count the shown texts:', error);
+        return {};
+    }
+}
+
 router.post('/save', async function (request, response) {
     try {
         const directories = request.user.directories;
@@ -268,7 +284,7 @@ router.post('/save', async function (request, response) {
         const stored = settingsSavedOver(request, directories);
         const keyHashes = {};
         seedKeyHashes(keyHashes, pageSettings(stored));
-        response.send({ result: 'ok', settingsHash: pageSettingsHash(stored), keyHashes });
+        response.send({ result: 'ok', settingsHash: pageSettingsHash(stored), keyHashes, ...await shownCountsOf(request) });
     } catch (err) {
         console.error(err);
         response.send(err);
@@ -331,7 +347,7 @@ router.post('/save-partial', async function (request, response) {
         for (const top of new Set(Object.keys(keys).map(key => key.split('.')[0]))) {
             if (Object.hasOwn(known, top)) seedKeyHashes(keyHashes, known[top], top);
         }
-        response.send({ result: 'ok', settingsHash: pageSettingsHash(stored), keyHashes });
+        response.send({ result: 'ok', settingsHash: pageSettingsHash(stored), keyHashes, ...await shownCountsOf(request) });
     } catch (err) {
         console.error(err);
         response.send(err);

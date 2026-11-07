@@ -24,8 +24,6 @@ import { charactersStore } from './character-store.js';
 import { characterRepository } from './character-repository.js';
 import { eventSource, event_types } from './events.js';
 import { power_user, personaStore, defaultPersonaRecord } from './power-user.js';
-import { getTokenCountWithAnswer } from './tokenizers.js';
-import { renderCountBasis } from './tokenizer-notices.js';
 import {
     PAGINATION_TEMPLATE,
     clearInfoBlock,
@@ -827,16 +825,6 @@ export async function convertCharactersToPersonas(avatarBatches, onProgress) {
     }
 }
 
-/**
- * Counts the number of tokens in a persona description.
- */
-const countPersonaDescriptionTokens = debounce(async () => {
-    const description = String($('#persona_description').val());
-    // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
-    const { count, answer } = await getTokenCountWithAnswer(description);
-    $('#persona_description_token_count').text(String(count));
-    renderCountBasis($('#persona_description_token_count'), answer);
-}, debounce_timeout.relaxed);
 
 /**
  * Updates the UI for the Persona Management page with the current persona values
@@ -887,7 +875,6 @@ export function setPersonaDescription() {
         .find(`option[value="${getPersonaDescriptionRole()}"]`)
         .prop('selected', String(true));
     $('#persona_lore_button').toggleClass('world_set', !!getPersonaDescriptionLorebook());
-    countPersonaDescriptionTokens();
 
     updatePersonaUIStates();
     updatePersonaConnectionsAvatarList();
@@ -1434,7 +1421,6 @@ async function deletePersona(avatarId, { silent = false } = {}) {
 
 async function onPersonaDescriptionInput() {
     const description = String($('#persona_description').val());
-    countPersonaDescriptionTokens();
 
     getOrCreatePersonaDescriptor();
     personaStore.update(user_avatar, { description });

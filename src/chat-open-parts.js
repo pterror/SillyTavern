@@ -5,10 +5,15 @@ import { openTokenizer } from './endpoints/tokenizers-current.js';
 import { withSafeMacrosFilled } from './endpoints/macros.js';
 import { personaImagesAnswer } from './endpoints/avatars.js';
 import { cardTokenTexts } from '../public/scripts/card-token-texts.js';
+import { shownTextCounts } from './shown-text-counts.js';
+import { settingsContextOf } from './settings-reads.js';
+import { metadata_keys } from './authors-note.js';
 
 /**
  * @typedef {object} OpenedChat
  * @property {string | null} avatar null for a group's chat
+ * @property {string | null} [groupId]
+ * @property {Record<string, any>} [metadata]
  * @property {string | null} at
  * @property {string} chatId
  * @property {() => Promise<Record<string, any> | null>} card
@@ -45,9 +50,18 @@ async function cardTokenCounts(request, opened, asked) {
     };
 }
 
+/**
+ * @param {import('express').Request} request
+ * @param {OpenedChat} opened
+ */
+function openedShownCounts(request, opened) {
+    return shownTextCounts(request.user.directories, settingsContextOf({ avatar: opened.avatar, groupId: opened.groupId }), { chatNote: String(opened.metadata?.[metadata_keys.prompt] ?? '') });
+}
+
 /** @type {Record<string, (request: import('express').Request, opened: OpenedChat, asked: any) => Promise<unknown>>} */
 const PARTS = {
     card_token_counts: cardTokenCounts,
+    shown_counts: openedShownCounts,
     personas: request => personaImagesAnswer(request),
 };
 

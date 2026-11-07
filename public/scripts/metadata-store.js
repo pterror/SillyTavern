@@ -8,6 +8,7 @@ import { debounce_timeout } from './constants.js';
 import { t } from './i18n.js';
 import { isStoredNodeId } from './node-identity.js';
 import { applyChanges, baselineAfter, baselineOf, metadataChanges, replaceInPlace, unsavedVariables } from './state-sync.js';
+import { takeShownCounts } from './shown-text-counts.js';
 
 /** @type {Map<string, string>} */
 let _metadataBaseline = new Map();
@@ -166,7 +167,7 @@ async function _postChatMetadata(owner) {
     const run = async () => {
         const changes = changedMetadata();
         if (!changes) return;
-        /** @returns {Promise<{ ok?: boolean, state?: ChatMetadata }>} */
+        /** @returns {Promise<{ ok?: boolean, state?: ChatMetadata, shown_counts?: import('./shown-text-counts.js').ShownTextCounts }>} */
         const postMetadata = async () => {
             const response = await fetch('/api/chats/metadata', {
                 method: 'POST',
@@ -185,6 +186,7 @@ async function _postChatMetadata(owner) {
             const result = await _retryOp(postMetadata);
             if (result.ok === false && result.state) metadataChangesNotSaved(result.state, changes);
             else noteMetadataChangesStored(changes);
+            takeShownCounts(result.shown_counts);
         } catch (error) {
             console.error('[saveMetadata] Failed to save metadata after retrying:', error);
             toastr.error(t`Could not save chat metadata. Check your connection and try again.`, t`Save failed`);

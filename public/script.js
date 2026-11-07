@@ -309,6 +309,7 @@ import {
     stampReplyNode, beginSwipeReply, isReplyGenerating,
 } from './scripts/generation.js';
 import { takeStoredReply } from './scripts/llamacpp-compact-stream.js';
+import { takeShownCounts } from './scripts/shown-text-counts.js';
 export {
     Generate,
     stopGeneration,
@@ -6379,6 +6380,7 @@ async function performSave({ full }) {
             if (partialSaveResponse.settingsHash != null) {
                 knownServerSettingsHash = partialSaveResponse.settingsHash;
             }
+            takeShownCounts(partialSaveResponse.shown_counts);
             await eventSource.emit(event_types.SETTINGS_UPDATED);
         } catch (error) {
             console.error('Error saving settings:', error);
@@ -6418,6 +6420,7 @@ async function performSave({ full }) {
             if (saveResponse.settingsHash != null) {
                 knownServerSettingsHash = saveResponse.settingsHash;
             }
+            takeShownCounts(saveResponse.shown_counts);
             await eventSource.emit(event_types.SETTINGS_UPDATED);
         } catch (error) {
             console.error('Error saving settings:', error);

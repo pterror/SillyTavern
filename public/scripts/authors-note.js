@@ -3,6 +3,7 @@ import {
     extension_prompt_roles,
     saveSettingsDebounced,
     getCurrentCharacter,
+    getCurrentChatId,
     getSelectionState,
 } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
@@ -10,10 +11,8 @@ import { eventSource, event_types } from './events.js';
 import { extension_settings } from './extension-settings.js';
 import { saveMetadataDebounced } from './metadata-store.js';
 import { selected_group } from './group-chats.js';
-import { getCharaFilename, debounce, delay } from './utils.js';
-import { getRememberedTokenizerAnswer, getTokenCountWithAnswer } from './tokenizers.js';
-import { renderCountBasis } from './tokenizer-notices.js';
-import { debounce_timeout } from './constants.js';
+import { getCharaFilename, delay } from './utils.js';
+import { takeOpenedShownCounts } from './shown-text-counts.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument } from './slash-commands/SlashCommandArgument.js';
@@ -123,24 +122,8 @@ function updateSettings() {
     showNoteCountdown();
 }
 
-/**
- * @param {string} selector
- * @param {string} value
- */
-async function setTokenCounter(selector, value) {
-    // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
-    const { count, answer } = await getTokenCountWithAnswer(value);
-    $(selector).text(count);
-    renderCountBasis($(selector), answer);
-}
-
-const setMainPromptTokenCounterDebounced = debounce((value) => setTokenCounter('#extension_floating_prompt_token_counter', value), debounce_timeout.relaxed);
-const setCharaPromptTokenCounterDebounced = debounce((value) => setTokenCounter('#extension_floating_chara_token_counter', value), debounce_timeout.relaxed);
-const setDefaultPromptTokenCounterDebounced = debounce((value) => setTokenCounter('#extension_floating_default_token_counter', value), debounce_timeout.relaxed);
-
 async function onExtensionFloatingPromptInput() {
     chat_metadata[metadata_keys.prompt] = $(this).val();
-    setMainPromptTokenCounterDebounced(chat_metadata[metadata_keys.prompt]);
     updateSettings();
     saveMetadataDebounced();
 }
@@ -220,7 +203,6 @@ function onExtensionFloatingCharaPromptInput() {
         prompt: tempPrompt,
     };
 
-    setCharaPromptTokenCounterDebounced(tempPrompt);
 
     let existingCharaNoteIndex;
     let existingCharaNote;
@@ -269,7 +251,6 @@ function onExtensionFloatingCharaCheckboxChanged() {
 
 function onExtensionFloatingDefaultInput() {
     extension_settings.note.default = $(this).val();
-    setDefaultPromptTokenCounterDebounced(extension_settings.note.default);
     updateSettings();
 }
 
@@ -390,31 +371,7 @@ async function onChatChanged() {
     // Disable the chara note if in a group
     $('#extension_floating_chara').prop('disabled', !!selected_group);
 
-    // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
-    const { count: tokenCounter1, answer: answer1 } = chat_metadata[metadata_keys.prompt] ? await getTokenCountWithAnswer(chat_metadata[metadata_keys.prompt]) : { count: 0, answer: getRememberedTokenizerAnswer() };
-    $('#extension_floating_prompt_token_counter').text(tokenCounter1);
-    renderCountBasis($('#extension_floating_prompt_token_counter'), answer1);
-
-    let tokenCounter2;
-    let answer2 = null;
-    let counted2 = false;
-    if (extension_settings.note.chara && getCurrentCharacter() !== undefined) {
-        const charaNote = extension_settings.note.chara.find((e) => e.name === getCharaFilename());
-
-        if (charaNote) {
-            // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
-            ({ count: tokenCounter2, answer: answer2 } = await getTokenCountWithAnswer(charaNote.prompt));
-            counted2 = true;
-        }
-    }
-
-    $('#extension_floating_chara_token_counter').text(tokenCounter2 || 0);
-    renderCountBasis($('#extension_floating_chara_token_counter'), counted2 ? answer2 : getRememberedTokenizerAnswer());
-
-    // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
-    const { count: tokenCounter3, answer: answer3 } = extension_settings.note.default ? await getTokenCountWithAnswer(extension_settings.note.default) : { count: 0, answer: getRememberedTokenizerAnswer() };
-    $('#extension_floating_default_token_counter').text(tokenCounter3);
-    renderCountBasis($('#extension_floating_default_token_counter'), answer3);
+    takeOpenedShownCounts(getCurrentChatId());
 }
 
 function onAllowWIScanCheckboxChanged() {

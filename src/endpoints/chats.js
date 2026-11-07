@@ -14,7 +14,7 @@ import {
 } from '../util.js';
 import { triggerAutoSave } from './settings.js';
 import { readAllSettings, writeSettingsKeys } from '../settings-store.js';
-import { readUserSettings } from '../settings-reads.js';
+import { readUserSettings, settingsContextOf } from '../settings-reads.js';
 import { cardToGreetingsModel } from '../greeting-list.js';
 import { applyPageWrites } from '../page-writes.js';
 import { storedMessagesOf } from '../stored-messages.js';
@@ -23,6 +23,8 @@ import { chatContext, chatNamePosition, compatChatIdOf, isOwnChat, openChatNamed
 import { groupObjects } from './groups.js';
 import { wholeCharacter } from './characters.js';
 import { chatOpenParts } from '../chat-open-parts.js';
+import { shownTextCounts } from '../shown-text-counts.js';
+import { metadata_keys } from '../authors-note.js';
 import { SESSION_GONE_HEADER, requireSessionHeader, sessionHeaderOf } from '../request-session.js';
 import { ui, uiUser } from '../ui-wiring.js';
 import { pageSettingsHash } from '../settings-hash.js';
@@ -782,7 +784,7 @@ async function openChatAnswer(request, response, body) {
         chat_metadata: { ...metadata },
         messages,
         stored_sends: await chats.storedSendKeys(chat.tree, body.send_keys),
-        parts: await chatOpenParts(request, { avatar, at: messages.at(-1)?.node_id ?? null, chatId, card: wholeCard }, body.parts),
+        parts: await chatOpenParts(request, { avatar, groupId: body.group_id ? String(body.group_id) : null, at: messages.at(-1)?.node_id ?? null, chatId, metadata, card: wholeCard }, body.parts),
     };
     if (body.group_id) {
         const groupId = String(body.group_id);
@@ -1274,7 +1276,14 @@ router.post('/metadata', validateAvatarUrlMiddleware, async function (request, r
             const there = await chats.stateAt({ tree: chat.tree, at, session: actor.session });
             return response.status(409).send({ ok: false, reason: merged.reason, state: there && 'state' in there ? there.state : {} });
         }
-        return response.send({ ok: true });
+        const noteChanged = Object.hasOwn(set, metadata_keys.prompt) || unset.includes(metadata_keys.prompt);
+        const counts = noteChanged
+            ? await shownTextCounts(request.user.directories, settingsContextOf({ avatar: body.avatar_url ?? null, groupId: body.group_id ?? null }), { chatNote: String(set[metadata_keys.prompt] ?? '') }).catch((error) => {
+                console.error('Could not count the author\'s note:', error);
+                return null;
+            })
+            : null;
+        return response.send({ ok: true, ...(counts ? { shown_counts: counts } : {}) });
     } catch (error) {
         console.error('Error saving chat metadata:', error);
         return response.status(500).send({ error: true });
