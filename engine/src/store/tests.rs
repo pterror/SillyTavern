@@ -1060,3 +1060,120 @@ fn a_layers_map_values_range_read_over_every_published_value_they_can_meet() {
     s.close();
     let _ = fs::remove_dir_all(&dir);
 }
+
+fn files_in(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    let mut out = BTreeMap::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        for e in fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                out.insert(p.clone(), Vec::new());
+                todo.push(p);
+            } else {
+                out.insert(p.clone(), fs::read(&p).unwrap());
+            }
+        }
+    }
+    out
+}
+
+fn assert_same_files(dir: &Path, before: &BTreeMap<PathBuf, Vec<u8>>) {
+    let now = files_in(dir);
+    let changed: Vec<_> = before
+        .keys()
+        .chain(now.keys())
+        .filter(|p| before.get(*p) != now.get(*p))
+        .collect();
+    assert!(changed.is_empty(), "a refused open changed {changed:?}");
+}
+
+const QUIET: StoreConfig = StoreConfig {
+    ks: KsConfig {
+        log_bytes: 1 << 40,
+        ..SMALL.ks
+    },
+    ..SMALL
+};
+
+fn quiet_pool() -> Arc<Pool> {
+    Pool::new(1 << 30, 64 << 10, 4, 1, 2, 2)
+}
+
+#[test]
+fn a_second_open_of_an_open_store_fails_and_leaves_the_first_untouched() {
+    let dir = temp_dir("locked");
+    let s = Store::open_in(&dir, QUIET, quiet_pool()).unwrap();
+    let mut model = Model::default();
+    workload(&s, &mut model, 0, 300);
+    let mut l = s.loader_in(Some(1 << 30)).unwrap();
+    l.add((1000..2000).map(|e| fav(e, true))).unwrap();
+    model.favs.extend((1000..2000).map(|e| (e, true)));
+    assert!(fs::read_dir(dir.join(bulk::LOAD_DIR)).unwrap().count() > 0);
+    let before = files_in(&dir);
+    for again in [
+        Store::open_in(&dir, QUIET, quiet_pool()),
+        Store::open_in(&dir.join("."), QUIET, quiet_pool()),
+    ] {
+        let e = again.err().unwrap();
+        assert!(
+            matches!(&e, StoreError::InUse(d) if d.starts_with(&dir)),
+            "{e}"
+        );
+        assert!(e.to_string().contains(&dir.display().to_string()), "{e}");
+    }
+    assert_same_files(&dir, &before);
+    l.finish().unwrap();
+    workload(&s, &mut model, 300, 100);
+    model.check(&s);
+    drop(s);
+    let s = Store::open_in(&dir, QUIET, quiet_pool()).unwrap();
+    model.check(&s);
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_bulk_load_holds_the_store_until_it_ends() {
+    let dir = temp_dir("load-holds");
+    let s = Store::open_in(&dir, QUIET, quiet_pool()).unwrap();
+    let l = s.loader().unwrap();
+    s.close();
+    let e = Store::open_in(&dir, QUIET, quiet_pool()).err().unwrap();
+    assert!(matches!(e, StoreError::InUse(_)), "{e}");
+    drop(l);
+    drop(s);
+    drop(Store::open_in(&dir, QUIET, quiet_pool()).unwrap());
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+const CHILD_OPENS: &str = "ST_ENGINE_TEST_OPEN";
+
+#[test]
+#[ignore = "run by another_process_cant_open_an_open_store"]
+fn open_in_child() {
+    let dir = PathBuf::from(std::env::var_os(CHILD_OPENS).unwrap());
+    let e = Store::open_in(&dir, QUIET, quiet_pool()).err().unwrap();
+    assert!(matches!(e, StoreError::InUse(_)), "{e}");
+}
+
+#[test]
+fn another_process_cant_open_an_open_store() {
+    let dir = temp_dir("locked-process");
+    let s = Store::open_in(&dir, QUIET, quiet_pool()).unwrap();
+    let mut model = Model::default();
+    workload(&s, &mut model, 0, 200);
+    let before = files_in(&dir);
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "store::tests::open_in_child", "--ignored"])
+        .env(CHILD_OPENS, &dir)
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success() && said.contains("1 passed"), "{said}");
+    assert_same_files(&dir, &before);
+    workload(&s, &mut model, 200, 50);
+    model.check(&s);
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}

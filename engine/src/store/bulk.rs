@@ -243,6 +243,7 @@ pub struct Loader {
     library_empty: bool,
     budget: Arc<Budget>,
     owners: HashMap<u64, u64>,
+    _lock: Arc<super::lock::DirLock>,
     #[cfg(test)]
     fail_at: u8,
 }
@@ -256,16 +257,20 @@ impl Store {
         let inner = &self.inner;
         inner.wait_ready()?;
         let dir = inner.dir.join(LOAD_DIR);
-        let first_file = {
+        let (first_file, lock) = {
             let mut p = inner.pipe.lock().unwrap();
             if inner.jobs.lock().unwrap().closed {
                 return Err(StoreError::Closed);
             }
+            let Some(lock) = inner.lock.lock().unwrap().clone() else {
+                return Err(StoreError::Closed);
+            };
             if p.loading.is_some() {
                 return Err(StoreError::Refused("a bulk load is already running".into()));
             }
             p.loading = Some(Loading::default());
-            p.open.layout.as_ref().map_or(p.cursor.file, |l| l.file) + 1
+            let first_file = p.open.layout.as_ref().map_or(p.cursor.file, |l| l.file) + 1;
+            (first_file, lock)
         };
         let start = || -> StoreResult<()> {
             let _ = fs::remove_dir_all(&dir);
@@ -329,6 +334,7 @@ impl Store {
             },
             budget,
             owners: HashMap::new(),
+            _lock: lock,
             #[cfg(test)]
             fail_at: 0,
         })

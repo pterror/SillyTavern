@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import process from 'node:process';
+import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { test, after } from 'node:test';
 
 import { loadEngine } from './load.js';
@@ -193,6 +196,25 @@ for (const [name, engine] of Object.entries(bindings)) {
         await after.close();
     });
 }
+
+test('native: a store open in one process refuses to open in another, which changes nothing', async () => {
+    const dir = path.join(tmp, 'native-other-process');
+    const store = await bindings.native.Store.open(dir);
+    await store.commit(samples);
+    const files = () => fs.readdirSync(dir, { recursive: true }).sort().map(f => [f, fs.statSync(path.join(dir, f)).isFile() ? fs.readFileSync(path.join(dir, f)) : null]);
+    const before = files();
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+        import { loadEngine } from ${JSON.stringify(pathToFileURL(path.join(import.meta.dirname, 'load.js')).href)};
+        try { loadEngine().binding.Store.openSync(process.argv[1]); } catch (e) { console.log(e.message); process.exit(0); }
+        process.exit(1);
+    `, dir], { encoding: 'utf8' });
+    assert.equal(child.status, 0, child.stderr);
+    assert.match(child.stdout, /is already open/);
+    assert.ok(child.stdout.includes(dir), child.stdout);
+    assert.deepEqual(files(), before);
+    assert.equal((await store.feed(0n, 100)).records.length, samples.length);
+    await store.close();
+});
 
 test('native and wasm write the same bytes', async () => {
     for (const name of Object.keys(bindings)) {

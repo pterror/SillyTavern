@@ -72,17 +72,22 @@ fn workload(dir: &Path, seed: u64, commits: usize) -> Run {
         states: vec![vec![(None, None); ENTITIES as usize]],
         acked: 0,
     };
-    crate::faults::catch_crash(|| drive(dir, seed, commits, &mut run));
+    let mut leaked = None;
+    crate::faults::catch_crash(|| drive(dir, seed, commits, &mut run, &mut leaked));
+    if let Some(inner) = leaked {
+        inner.lock.lock().unwrap().take();
+    }
     run
 }
 
-fn drive(dir: &Path, seed: u64, commits: usize, run: &mut Run) {
+fn drive(dir: &Path, seed: u64, commits: usize, run: &mut Run, leaked: &mut Option<Arc<Inner>>) {
     let pool = Pool::simulated(16 << 10, 64 << 10, 2, 2, seed);
     let mut rng = Rng(seed);
     let mut state = run.states[0].clone();
     let Ok(s) = Store::open_in(dir, SMALL, pool) else {
         return;
     };
+    *leaked = Some(s.inner.clone());
     let s = std::mem::ManuallyDrop::new(s);
     for i in 0..commits {
         let mut recs = Vec::new();

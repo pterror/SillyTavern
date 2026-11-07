@@ -12,6 +12,7 @@ pub mod library;
 pub mod library_read;
 pub mod library_search;
 pub mod local_import;
+pub mod lock;
 pub mod prune;
 pub mod references;
 pub mod searched;
@@ -93,6 +94,7 @@ pub enum StoreError {
     Replay(String),
     Failed(String),
     Closed,
+    InUse(std::path::PathBuf),
 }
 
 impl std::fmt::Display for StoreError {
@@ -108,6 +110,11 @@ impl std::fmt::Display for StoreError {
                 "the store stopped after a failed write ({why}); reopen it"
             ),
             StoreError::Closed => write!(f, "the store is closed"),
+            StoreError::InUse(dir) => write!(
+                f,
+                "the store in {} is already open, in another process or in this one",
+                dir.display()
+            ),
         }
     }
 }
@@ -309,6 +316,7 @@ struct Inner {
     carriers_held: AtomicBool,
     #[cfg(test)]
     folds_held: AtomicBool,
+    lock: Mutex<Option<Arc<lock::DirLock>>>,
 }
 
 #[derive(Default)]
@@ -329,6 +337,7 @@ impl Store {
     }
 
     pub fn open_in(dir: &Path, cfg: StoreConfig, pool: Arc<Pool>) -> StoreResult<Store> {
+        let held = lock::DirLock::take(dir)?;
         bulk::recover(dir, &cfg.log)?;
         let ks = Keyspace::open(&dir.join("runs"), cfg.ks, pool)?;
         let covered = ks.covered();
@@ -412,6 +421,7 @@ impl Store {
                 carriers_held: AtomicBool::new(false),
                 #[cfg(test)]
                 folds_held: AtomicBool::new(false),
+                lock: Mutex::new(Some(Arc::new(held))),
             }
         });
         ks.start(Box::new(StoreHooks(Arc::downgrade(&inner))))?;
@@ -1020,6 +1030,7 @@ impl Store {
             let _ = i.ks.wait_flushed();
         }
         i.ks.stop();
+        i.lock.lock().unwrap().take();
     }
 
     pub fn close(&self) {
