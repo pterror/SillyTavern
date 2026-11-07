@@ -114,6 +114,35 @@ test('another session\'s change to the chat a tab is at is pushed with the state
     }
 });
 
+test('deleting a lorebook the tab\'s chat links pushes the state without it, even when the tab set the link', async () => {
+    const stream = await openStream('?token=statetab0002&claim=1');
+    try {
+        expect(await frameArrives(stream.frames, f => f?.type === 'session')).toBe(true);
+        const session = stream.frames.find(f => f?.type === 'session').session;
+        const { chats, people, lib } = user.store;
+        const [tree] = await people.trees([{ avatar: 'Alice.png' }]);
+        const { storedForm } = await import('../src/chat-engine.js');
+        const made = await chats.appendMessages({
+            tree, treeSpeaker: null, after: null,
+            contents: [storedForm({ name: 'Alice', is_user: false, mes: 'Hi.', extra: {}, send_date: Date.now() })],
+            actor: { user: 'u', session },
+        });
+        const at = made.node_ids[0];
+        await lib.books.write('Doomed', { entries: {} });
+        const isState = (/** @type {any} */ f) => f?.type === 'state';
+        await chats.mergeMetadata({ tree, at, set: { world_info: 'Doomed' }, unset: [], actor: { user: 'u', session } });
+        expect(await frameArrives(stream.frames, isState, 1000)).toBe(false);
+        expect(await lib.books.delete('Doomed')).toEqual({ characters: [], trees: [tree] });
+        expect(await frameArrives(stream.frames, isState)).toBe(true);
+        const pushed = stream.frames.find(isState);
+        expect(pushed.tree).toEqual({ avatar: 'Alice.png' });
+        expect(pushed.at).toBe(at);
+        expect(pushed.state.world_info).toBeUndefined();
+    } finally {
+        stream.close();
+    }
+});
+
 test('a write that changes no character or group sends no library change', async () => {
     const stream = await openStream();
     try {

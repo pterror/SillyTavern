@@ -41,7 +41,7 @@ for (const handle of users) {
             found += page.copies.length;
             if (remove) {
                 for (const key of page.copies) {
-                    if (bookKey(key) === key && await lib.books.delete(key, { user: handle, session: null })) removed++;
+                    if (bookKey(key) === key && await lib.books.delete(key)) removed++;
                     else unremovable++;
                 }
             }

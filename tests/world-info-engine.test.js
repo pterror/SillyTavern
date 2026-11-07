@@ -306,7 +306,8 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             await books.write('D', data);
             await books.write('D2', /** @type {object} */ (await books.read('D')));
             await same('D2', json(data));
-            expect(await books.delete('D')).toBe(true);
+            expect(await books.delete('D')).toEqual({ characters: [], trees: [] });
+            expect(await books.delete('D')).toBeNull();
             expect(await books.read('D')).toBeNull();
             expect(await books.exists('D')).toBe(false);
             expect((await books.list()).map(b => b.file_id)).toEqual(['D2']);
@@ -358,7 +359,7 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             expect(scanned).toBe(6);
             expect(copies).toEqual(['Copy A', 'Copy B']);
 
-            for (const name of copies) expect(await books.delete(name)).toBe(true);
+            for (const name of copies) expect(await books.delete(name)).toEqual({ characters: [], trees: [] });
             expect((await books.cardCopyPage()).copies).toEqual([]);
             expect((await books.list()).map(b => b.file_id)).toEqual(['Odd', 'Plain 1', 'Plain 2', 'Plain 3']);
         });
@@ -366,7 +367,7 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
 
 
     describe('what only the engine has', () => {
-        test('a chat-bound lorebook follows its book', async () => {
+        test('a chat-bound lorebook follows its book\'s renames and goes with its delete', async () => {
             const { ChatEngine } = await import('../src/chat-engine.js');
             const { libraryPeople } = await import('../src/chat-people.js');
             await library.writeCard(directories, 'c.png', JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', data: { name: 'C', extensions: {} } }));
@@ -382,8 +383,11 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             const head = await library.store.chatRead('nextIds', {});
             await chats.mergeMetadata({ tree, at: null, set: { world_info: 'Lore 2' }, unset: [], actor });
             expect(await library.store.chatRead('nextIds', {})).toEqual(head);
-            await books.delete('Lore 2');
-            expect(await lorebook()).toBe('Lore 2');
+            expect(await books.delete('Lore 2')).toEqual({ characters: [], trees: [tree] });
+            expect(await lorebook()).toBeUndefined();
+            await books.write('Lore 2', { entries: {} });
+            expect(await lorebook()).toBeUndefined();
+            expect(await books.delete('Lore 2')).toEqual({ characters: [], trees: [] });
             await chats.mergeMetadata({ tree, at: null, set: { world_info: 'Ghost' }, unset: [], actor });
             expect(await lorebook()).toBe('Ghost');
             await books.write('Ghost', { entries: {} });
@@ -437,7 +441,7 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             expect(r()).toBeLessThan(1);
         }, 120_000);
 
-        test('links follow a rename, survive a delete and resolve when a book takes the name', async () => {
+        test('links follow a rename, go with a delete, and a new book of the name takes none of them', async () => {
             const card = (/** @type {string} */ world, name = 'A') => JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', data: { name, extensions: { world } } });
             const worldOf = async (/** @type {string} */ avatar) => /** @type {any} */ ((await library.cards([avatar]))[0]).data.extensions.world;
             const linked = async (/** @type {string} */ world) => (await library.query({ world, wantRows: false, wantHashes: true })).hashRows.map((/** @type {any} */ row) => row.id).sort();
@@ -467,13 +471,21 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             expect(await worldOf('b.png')).toBe('Ghost');
             expect(await linked('Ghost')).toEqual(['a.png', 'b.png']);
             await hashesCurrent();
-            expect(await books.delete('Ghost')).toBe(true);
-            expect(await worldOf('a.png')).toBe('Ghost');
-            expect(await linked('Ghost')).toEqual(['a.png', 'b.png']);
+            const deleted = await books.delete('Ghost');
+            expect(deleted?.trees).toEqual([]);
+            expect(deleted?.characters.sort()).toEqual((await library.ids(lib.TYPE.character, ['a.png', 'b.png'])).sort());
+            expect(await worldOf('a.png')).toBeUndefined();
+            expect(await worldOf('b.png')).toBeUndefined();
+            expect(await linked('Ghost')).toEqual([]);
             expect(await books.exists('Ghost')).toBe(false);
             await hashesCurrent();
             await books.write('Ghost', { entries: {} });
+            expect(await linked('Ghost')).toEqual([]);
+            expect(await worldOf('b.png')).toBeUndefined();
             expect(await books.rename('Ghost', 'Found')).toBe('ok');
+            expect(await worldOf('b.png')).toBeUndefined();
+            await library.writeCard(directories, 'a.png', card('Found'));
+            expect((await library.writeCard(directories, 'b.png', card('Found', 'B'))).records).toBeGreaterThan(0);
             expect(await worldOf('b.png')).toBe('Found');
             await hashesCurrent();
             expect((await library.writeCard(directories, 'b.png', card('Found', 'B'))).records).toBe(0);
@@ -542,11 +554,16 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             expect(await linked('C')).toEqual(['a.png', 'b.png']);
             await hashCurrent('a.png');
             expect(await books.rename('C2', 'C3')).toBe('ok');
-            expect(await books.delete('D')).toBe(true);
-            expect(await extras('a.png')).toEqual(['D']);
-            expect(await worldOf('b.png')).toBe('D');
-            expect(await library.charLore()).toEqual([{ name: 'a', extraBooks: ['D'] }, { name: 'b', extraBooks: ['C'] }]);
+            expect((await books.delete('D'))?.characters.length).toBe(2);
+            expect(await extras('a.png')).toEqual([]);
+            expect(await worldOf('a.png')).toBe('C');
+            expect(await worldOf('b.png')).toBe('C');
+            expect(await extras('b.png')).toEqual([]);
+            expect(await library.charLore()).toEqual([]);
+            await hashCurrent('a.png');
+            await hashCurrent('b.png');
             await books.write('D', { entries: {} });
+            expect(await linked('D')).toEqual([]);
             expect(await books.rename('D', 'C')).toBe('ok');
             expect(await worldOf('a.png')).toBe('C');
             expect(await extras('a.png')).toEqual([]);

@@ -1152,10 +1152,46 @@ export class LibraryEngine {
      */
     async identityRecord(e, world) {
         const values = e.link ? e.values : e.values.filter(v => v.field !== FIELD.world);
-        const card = await this.assembled({ ...e, values, link: { book: e.link?.book ?? 0n, version: e.link?.version ?? 0n, key: world } });
-        const hex = computeContentIdentityHash(card);
+        return this.identityHashRecord({ ...e, values, link: { book: e.link?.book ?? 0n, version: e.link?.version ?? 0n, key: world } });
+    }
+
+    /**
+     * @param {StoredEntity} e
+     * @returns {Promise<object | null>}
+     */
+    async identityHashRecord(e) {
+        const hex = computeContentIdentityHash(await this.assembled(e));
         if (e.hashes.find(h => h.which === HASH.identity)?.hash.toString('hex') === hex) return null;
         return { kind: 'cardHash', entity: e.id, which: HASH.identity, hash: Buffer.from(hex, 'hex') };
+    }
+
+    /**
+     * @param {bigint[]} ids
+     * @param {Set<bigint>} gone
+     * @returns {Promise<{ records: object[], changed: bigint[] }>}
+     */
+    async unlinkRecords(ids, gone) {
+        const records = [];
+        const changed = [];
+        for (let i = 0; i < ids.length; i += 256) {
+            for (const e of await this.entities(ids.slice(i, i + 256))) {
+                if (!e || e.type !== TYPE.character) continue;
+                const links = storedLinks(e);
+                const kept = links.filter(l => !gone.has(l.book));
+                if (kept.length === links.length) continue;
+                changed.push(e.id);
+                for (const l of links) if (gone.has(l.book)) records.push({ kind: 'itemDelete', entity: e.id, list: LIST.links, item: l.item });
+                if (!gone.has(links[0].book)) continue;
+                const values = e.values.filter(v => v.field !== FIELD.world);
+                if (values.length !== e.values.length) records.push({ kind: 'valueDelete', entity: e.id, field: FIELD.world });
+                const next = kept[0];
+                const key = next ? (await this.bookNames([next.book])).get(next.book) ?? null : null;
+                const link = next && key !== null ? { book: next.book, version: e.link?.version ?? 0n, key } : undefined;
+                const r = await this.identityHashRecord({ ...e, values, link });
+                if (r) records.push(r);
+            }
+        }
+        return { records, changed };
     }
 
     /**

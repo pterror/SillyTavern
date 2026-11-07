@@ -1836,7 +1836,7 @@ export class ChatEngine {
      * @returns {Promise<{ tree: bigint | null, at: string | null } | null>}
      */
     async stateChangePlace(record) {
-        if (record.kind !== 'stateChange') return { tree: null, at: null };
+        if (record.kind !== 'stateChange' && record.kind !== 'stateUnset') return { tree: null, at: null };
         if (record.message === undefined) return { tree: record.tree, at: null };
         const s = (await this.stored([record.message])).get(record.message);
         return s ? { tree: s.owner, at: this.externalId(s) } : null;

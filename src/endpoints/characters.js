@@ -2182,7 +2182,8 @@ router.get('/changes/stream', async function (request, response) {
 const SESSION_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TAB_TOKEN = /^[0-9A-Za-z_-]{8,64}$/;
 const ALTERNATIVE_CHANGES = new Set(['messageAppend', 'messageParent', 'subtreeDelete', 'textEdit', 'textValue', 'jsonValue', 'valueDelete', 'openingChoice', 'pointerMove', 'pointerRoot', 'historyStep', 'currentChat']);
-const CHAT_MOVES = new Set(['stateChange', 'pointerMove', 'pointerRoot', 'historyStep', 'currentChat']);
+const STATE_KINDS = new Set(['stateChange', 'stateUnset']);
+const CHAT_MOVES = new Set([...STATE_KINDS, 'pointerMove', 'pointerRoot', 'historyStep', 'currentChat']);
 const SESSION_KINDS = new Set(['pointerMove', 'pointerRoot', 'historyStep', 'sessionFork', 'messageAppend', 'currentChat']);
 
 /**
@@ -2228,7 +2229,7 @@ async function tabStreamSession(request, store, send) {
     let statePushed = null;
     let stateChain = Promise.resolve();
     const pushState = async (/** @type {any[]} */ records) => {
-        const changes = records.filter(r => r.kind === 'stateChange');
+        const changes = records.filter(r => STATE_KINDS.has(r.kind));
         if (!changes.length) return;
         sid ??= await chats.sessionId(session);
         const theirs = changes.filter(r => r.session !== sid);

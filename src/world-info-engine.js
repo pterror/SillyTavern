@@ -517,22 +517,53 @@ export class WorldInfoEngine {
 
     /**
      * @param {string} name
-     * @param {Actor | null} [actor]
-     * @returns {Promise<boolean>}
+     * @returns {Promise<{ characters: bigint[], trees: bigint[] } | null>}
      */
-    delete(name, actor = null) {
+    delete(name) {
         const key = bookKey(name);
         return this.lane([key], async () => {
             const found = await this.find(name);
-            if (!found?.defined) return false;
-            /** @type {object[]} */
-            const records = [];
-            const stamp = await this.stamper(actor, records);
-            pushAll(records, this.deleteRecords(await this.stored(found.id, true), stamp));
-            pushAll(records, await this.lib.identityRecords(await this.linkers(found.id), key, [key]));
+            if (!found?.defined) return null;
+            /** @type {bigint[]} */
+            const resolving = await this.store.worldRead('resolving', { book: found.id });
+            const { records, changed } = await this.lib.unlinkRecords([...new Set(await this.linkers(found.id))], new Set(resolving));
+            /** @type {Set<bigint>} */
+            const trees = new Set();
+            for (const book of resolving) {
+                let after;
+                for (;;) {
+                    const page = await this.store.worldRead('chatLinks', { book, after, limit: 1000 });
+                    for (const c of page.changes) {
+                        records.push({ kind: 'stateUnset', id: c.id, ...(c.message === null ? { tree: c.tree } : { message: c.message }) });
+                        trees.add(c.tree);
+                    }
+                    if (!page.more) break;
+                    after = page.changes[page.changes.length - 1].id;
+                }
+            }
+            const s = await this.stored(found.id, true);
+            pushAll(records, await this.eraseRecords(s));
             await this.store.commit(records);
-            return true;
+            return { characters: changed, trees: [...trees] };
         });
+    }
+
+    /**
+     * @param {StoredBook} s
+     * @returns {Promise<object[]>}
+     */
+    async eraseRecords(s) {
+        const records = [...s.entries.values()].map(x => ({ kind: 'entityDelete', entity: x.entity.id }));
+        let after;
+        for (;;) {
+            const page = await this.store.worldRead('deleted', { book: s.id, ...(after === undefined ? {} : { after }), limit: 1000 });
+            for (const d of page.entries) records.push({ kind: 'entityDelete', entity: d.id });
+            if (!page.more) break;
+            after = page.entries[page.entries.length - 1].id;
+        }
+        if (s.original) pushAll(records, await this.eraseRecords(s.original));
+        records.push({ kind: 'entityDelete', entity: s.id });
+        return records;
     }
 
     /**

@@ -139,7 +139,9 @@ describe('readWorldInfoFile (upstream\'s synchronous export)', () => {
 describe('worldinfo /delete', () => {
     test('deletes the book; a missing one fails', async () => {
         await saveBook({ name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha') } } });
-        expect((await postJson('/api/worldinfo/delete', { name: 'Book' })).status).toBe(200);
+        const res = await postJson('/api/worldinfo/delete', { name: 'Book' });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ok: true, characters_updated: [], chats_updated: [] });
         expect(await getBook('Book')).toEqual({ entries: {} });
         const errors = jest.spyOn(console, 'error').mockImplementation(() => {});
         try {
@@ -147,6 +149,36 @@ describe('worldinfo /delete', () => {
         } finally {
             errors.mockRestore();
         }
+    });
+});
+
+describe('worldinfo /delete unlinks', () => {
+    test('the characters and chats that link the book, and leaves no entry or deleted entry of it', async () => {
+        const store = await stores.userStore(directories, 'u');
+        const { lib, chats } = store;
+        await saveBook({ name: 'Linked', data: { entries: { 0: makeEntry(0, 'Alpha'), 1: makeEntry(1, 'Beta') } } });
+        const removed = await lib.books.apply('Linked', [{ uid: 1, base_hash: (await import('../public/scripts/hash-utils.js')).jsonHash(makeEntry(1, 'Beta')), data: null }], []);
+        expect(removed).toMatchObject({ deleted: ['1'] });
+        expect(/** @type {any} */ (await lib.books.deleted('Linked')).entries).toHaveLength(1);
+        const card = { spec: 'chara_card_v2', spec_version: '2.0', data: { name: 'Linker', extensions: { world: 'Linked' } } };
+        await lib.writeCard(directories, 'linker.png', JSON.stringify(card));
+        const [tree] = await lib.ids((await import('../src/library-codes.js')).TYPE.character, ['linker.png']);
+        await chats.mergeMetadata({ tree, at: null, set: { world_info: 'Linked' }, unset: [], actor: { user: 'u' } });
+        expect((await chats.metadata(tree, null)).world_info).toBe('Linked');
+        const book = await lib.books.find('Linked');
+
+        const res = await postJson('/api/worldinfo/delete', { name: 'Linked' });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ok: true, characters_updated: ['linker.png'], chats_updated: [{ avatar: 'linker.png' }] });
+
+        expect((await chats.metadata(tree, null)).world_info).toBeUndefined();
+        expect(/** @type {any} */ ((await lib.cards(['linker.png']))[0]).data.extensions.world).toBeUndefined();
+        expect(await lib.store.worldRead('linkers', { book: book?.id, limit: 10 })).toEqual({ ids: [], more: false });
+        expect(await lib.store.worldRead('chatLinks', { book: book?.id, limit: 10 })).toEqual({ changes: [], more: false });
+        await saveBook({ name: 'Linked', data: { entries: {} } });
+        expect(/** @type {any} */ (await lib.books.deleted('Linked')).entries).toEqual([]);
+        expect((await chats.metadata(tree, null)).world_info).toBeUndefined();
+        expect(/** @type {any} */ ((await lib.cards(['linker.png']))[0]).data.extensions.world).toBeUndefined();
     });
 });
 

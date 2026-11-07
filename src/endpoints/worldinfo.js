@@ -11,6 +11,7 @@ import { resolveCharacterWorldLink } from '../../public/scripts/character-world-
 import { engineStoreHere, requestStore, storeRoute, userStore } from '../user-stores.js';
 import { MAX_UID, bookExistsHere, readBookHere } from '../world-info-engine.js';
 import { bookKey } from '../world-info-keys.js';
+import { TYPE } from '../library-codes.js';
 import { sessionHeaderOf } from '../request-session.js';
 
 /**
@@ -161,11 +162,18 @@ router.post('/delete', storeRoute('deleting a World Info book', async (request, 
 
     const worldInfoName = request.body.name;
     const { lib } = await requestStore(request);
-    if (!(await lib.books.delete(worldInfoName, actorOf(request)))) {
+    const deleted = await lib.books.delete(worldInfoName);
+    if (!deleted) {
         throw new Error(`World info file ${sanitize(`${worldInfoName}.json`)} doesn't exist.`);
     }
 
-    return response.sendStatus(200);
+    const keysOf = (/** @type {bigint[]} */ ids) => (ids.length ? lib.store.libraryKeys(ids) : []);
+    const [characters, trees] = await Promise.all([keysOf(deleted.characters), keysOf(deleted.trees)]);
+    return response.send({
+        ok: true,
+        characters_updated: characters.filter(Boolean).map((/** @type {any} */ k) => k.key),
+        chats_updated: trees.filter(Boolean).map((/** @type {any} */ k) => (k.type === TYPE.group ? { group: k.key } : { avatar: k.key })),
+    });
 }));
 
 /**
