@@ -30,7 +30,7 @@ test.describe('sending a message', () => {
             await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText(`Mock reply 2 ${s}`, { timeout: 30000 });
             await page.waitForTimeout(2500);
             page.off('request', record);
-            expect(requests).toEqual(['POST /api/backends/text-completions/generate', 'POST /api/backends/text-completions/generate']);
+            expect(requests).toEqual(['POST /api/generation/generate', 'POST /api/generation/generate']);
 
             await page.reload();
             await testSetup.awaitST({ page });
@@ -57,7 +57,7 @@ test.describe('sending a message', () => {
                 await openCharacter(page, avatar);
                 await connectLlamaCpp(page, mock.url);
                 // @ts-ignore
-                await page.evaluate((streaming) => { stTest.context().textCompletionSettings.streaming = streaming; }, streaming);
+                await page.evaluate(async (streaming) => { stTest.context().textCompletionSettings.streaming = streaming; await (await import('/script.js')).saveSettings('textgenerationwebui_settings'); }, streaming);
                 await chatBox(page).fill(`Hello ${s}`);
                 await page.locator('#send_but').click();
                 await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText(`Mock reply 1 ${s}`, { timeout: 30000 });

@@ -20,8 +20,6 @@ import { importWorldInfo } from './world-info.js';
 import { getStringHash } from './hash-utils.js';
 import { compareIgnoreCaseAndAccents, equalsIgnoreCaseAndAccents, escapeRegex, isFalseBoolean, isTrueBoolean } from './util/string-args.js';
 
-export const shiftUpByOne = (e, i, a) => a[i] = e + 1;
-export const shiftDownByOne = (e, i, a) => a[i] = e - 1;
 
 /**
  * Pagination status string template.
@@ -550,22 +548,6 @@ export function delay(ms) {
     return new Promise((res) => setTimeout(res, ms));
 }
 
-/**
- * Formats a string using the specified arguments.
- * @param {string} format The format string.
- * @returns {string} The formatted string.
- * @example
- * stringFormat('Hello, {0}!', 'world'); // 'Hello, world!'
- */
-export function stringFormat(format) {
-    const args = Array.prototype.slice.call(arguments, 1);
-    return format.replace(/{(\d+)}/g, function (match, number) {
-        return typeof args[number] != 'undefined'
-            ? args[number]
-            : match;
-    });
-}
-
 export async function resetScrollHeight(element) {
     $(element).css('height', '0px');
     $(element).css('height', $(element).prop('scrollHeight') + 3 + 'px');
@@ -873,42 +855,6 @@ export function isDataURL(str) {
 }
 
 /**
- * Gets the size of an image from a data URL.
- * @param {string} dataUrl Image data URL
- * @returns {Promise<{ width: number, height: number }>} Image size
- */
-export function getImageSizeFromDataURL(dataUrl) {
-    const image = new Image();
-    image.src = dataUrl;
-    return new Promise((resolve, reject) => {
-        image.onload = function () {
-            resolve({ width: image.width, height: image.height });
-        };
-        image.onerror = function () {
-            reject(new Error('Failed to load image'));
-        };
-    });
-}
-
-/**
- * Gets the duration of a video from a data URL.
- * @param {string} dataUrl Video data URL
- * @returns {Promise<number>} Duration in seconds
- */
-export function getVideoDurationFromDataURL(dataUrl) {
-    const video = document.createElement('video');
-    video.src = dataUrl;
-    return new Promise((resolve, reject) => {
-        video.onloadedmetadata = function () {
-            resolve(video.duration);
-        };
-        video.onerror = function () {
-            reject(new Error('Failed to load video'));
-        };
-    });
-}
-
-/**
  * Calculates the thumbnail size for a media element while maintaining aspect ratio.
  * @param {number} width Media width
  * @param {number} height Media height
@@ -945,24 +891,6 @@ function calculateThumbnailSize(width, height, maxWidth, maxHeight) {
     }
 
     return { thumbnailWidth: Math.round(thumbnailWidth), thumbnailHeight: Math.round(thumbnailHeight) };
-}
-
-/**
- * Gets the duration of an audio from a data URL.
- * @param {string} dataUrl Audio data URL
- * @returns {Promise<number>} Duration in seconds
- */
-export function getAudioDurationFromDataURL(dataUrl) {
-    const audio = document.createElement('audio');
-    audio.src = dataUrl;
-    return new Promise((resolve, reject) => {
-        audio.onloadedmetadata = function () {
-            resolve(audio.duration);
-        };
-        audio.onerror = function () {
-            reject(new Error('Failed to load audio'));
-        };
-    });
 }
 
 /**
@@ -1427,7 +1355,7 @@ async function convertImageFile(inputFile, type = 'image/png') {
  * @param {string} [type='image/jpeg'] The type of the thumbnail.
  * @returns {Promise<string>} A promise that resolves to the thumbnail data URL.
  */
-export function createThumbnail(dataUrl, maxWidth = null, maxHeight = null, type = 'image/jpeg') {
+function createThumbnail(dataUrl, maxWidth = null, maxHeight = null, type = 'image/jpeg') {
     // Someone might pass in a base64 encoded string without the data URL prefix
     if (!dataUrl.includes('data:')) {
         dataUrl = `data:image/jpeg;base64,${dataUrl}`;

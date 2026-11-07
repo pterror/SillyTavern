@@ -847,17 +847,17 @@ export function getPersonaDescription() {
 }
 
 /** @returns {number} */
-export function getPersonaDescriptionPosition() {
+function getPersonaDescriptionPosition() {
     return personaStore.get(user_avatar)?.position ?? persona_description_positions.IN_PROMPT;
 }
 
 /** @returns {number} */
-export function getPersonaDescriptionDepth() {
+function getPersonaDescriptionDepth() {
     return personaStore.get(user_avatar)?.depth ?? DEFAULT_DEPTH;
 }
 
 /** @returns {number} */
-export function getPersonaDescriptionRole() {
+function getPersonaDescriptionRole() {
     return personaStore.get(user_avatar)?.role ?? DEFAULT_ROLE;
 }
 

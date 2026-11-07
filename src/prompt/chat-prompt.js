@@ -192,7 +192,7 @@ function shouldTrigger(prompt, generationType) {
 
 /**
  * @param {ChatCompletionPromptInput} input
- * @returns {Promise<{ chat: object[]|null, itemize: (() => Promise<ChatPromptItemization>)|null, canUseTools: boolean, canPerformToolCalls: boolean }>}
+ * @returns {Promise<{ chat: object[]|null, itemize: (() => Promise<ChatPromptItemization>)|null, promptManagerParts?: () => { parts: PromptManagerPart[], overridden: string[] }, canUseTools: boolean, canPerformToolCalls: boolean }>}
  */
 export async function buildChatCompletionPrompt({
     charDescription, charPersonality, scenario, worldInfoBeforeEntries = [], worldInfoAfterEntries = [], outletEntries = {}, bias, type,
@@ -257,10 +257,13 @@ export async function buildChatCompletionPrompt({
         if (index >= 0) collection[index] = merged;
         else collection.push(merged);
     }
+    /** @type {string[]} */
+    const overridden = [];
     for (const [identifier, override] of [['main', systemPromptOverride], ['jailbreak', jailbreakPromptOverride]]) {
         const index = collection.findIndex(p => p.identifier === identifier);
         if (!override || index < 0 || collection[index].forbid_overrides === true || disabled.has(identifier)) continue;
         collection[index] = { ...collection[index], content: prepare(override, collection[index].content) };
+        overridden.push(identifier);
     }
 
     const historyMessages = [...messages];
@@ -530,9 +533,59 @@ export async function buildChatCompletionPrompt({
     const counted = itemizedParts(sent);
     const total = sent.reduce((sum, item) => sum + item.message.getTokens(), 0);
     const itemize = async () => ({ ...counted, total });
+    const byId = new Map(sections.map(section => [section.id, section]));
+    const promptManagerParts = () => ({ parts: promptManagerPartsOf(sent, byId), overridden });
 
     const final = squashSystemMessages ? await squash(sent, tokenHandler) : sent.map(item => item.message);
-    return { chat: final.map(message => message.toWire()), itemize, canUseTools, canPerformToolCalls: resolvedCanPerformToolCalls };
+    return { chat: final.map(message => message.toWire()), itemize, promptManagerParts, canUseTools, canPerformToolCalls: resolvedCanPerformToolCalls };
+}
+
+/**
+ * @typedef {object} PromptManagerPart
+ * @property {string} identifier The prompt manager's entry the messages come from.
+ * @property {number} tokens
+ * @property {{ role: string, content: unknown, tokens: number }[]} messages
+ */
+
+/**
+ * The prompt as the prompt manager lists it: what each of its entries sent, in prompt order.
+ * @param {{ spec: import('./model.js').ChatSpec, message: Message }[]} sent
+ * @param {Map<string, Section>} byId
+ * @returns {PromptManagerPart[]}
+ */
+function promptManagerPartsOf(sent, byId) {
+    /** @type {Map<string, PromptManagerPart>} */
+    const parts = new Map();
+    for (const { spec, message } of sent) {
+        const identifier = promptManagerIdentifierOf(spec.section, byId);
+        let part = parts.get(identifier);
+        if (!part) {
+            part = { identifier, tokens: 0, messages: [] };
+            parts.set(identifier, part);
+        }
+        part.tokens += message.getTokens();
+        part.messages.push({ role: message.role, content: message.content, tokens: message.getTokens() });
+    }
+    return [...parts.values()];
+}
+
+/**
+ * @param {Section} section
+ * @param {Map<string, Section>} byId
+ * @returns {string}
+ */
+function promptManagerIdentifierOf(section, byId) {
+    /** @type {Section|undefined} */
+    let at = section;
+    while (at) {
+        const entry = /^pm:([^:]+)/.exec(at.id);
+        if (entry) return entry[1];
+        if (at.id === 'history') return 'chatHistory';
+        if (at.id === 'examples') return 'dialogueExamples';
+        if (at.id === 'main-slot') return 'main';
+        at = at.parent ? byId.get(at.parent) : undefined;
+    }
+    return section.id;
 }
 
 /**

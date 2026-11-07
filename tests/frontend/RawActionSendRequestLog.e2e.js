@@ -156,6 +156,20 @@ async function send(page, text, mesid) {
 
 const SETTLE_MS = 2500;
 
+/**
+ * Streaming is a stored setting the server reads, so it's saved, not only set on the page.
+ * @param {import('@playwright/test').Page} page
+ * @param {boolean} on
+ */
+async function setStreaming(page, on) {
+    await page.evaluate(async (on) => {
+        // @ts-ignore
+        stTest.context().textCompletionSettings.streaming = on;
+        const { saveSettings } = await import('/script.js');
+        await saveSettings('textgenerationwebui_settings');
+    }, on);
+}
+
 test.describe('raw-action send request log', () => {
     /** @type {Awaited<ReturnType<typeof startMockLlamaCpp>>} */
     let mock;
@@ -194,7 +208,7 @@ test.describe('raw-action send request log', () => {
         });
 
         for (const { text, browser: requests, mock: backend } of sends) {
-            const generate = requests.filter(r => r.url === '/api/backends/text-completions/generate');
+            const generate = requests.filter(r => r.url === '/api/generation/generate');
             expect(generate).toHaveLength(1);
             expect(generate[0].body.user_message.mes).toBe(text);
             expect(generate[0].body).not.toHaveProperty('prompt');
@@ -218,8 +232,7 @@ test.describe('raw-action send request log', () => {
             const avatar = await createCharacter(page, `RawActionUnreadable-${stamp}`, `Hello from the greeting ${stamp}.`);
             await openCharacter(page, avatar);
             await connectLlamaCpp(page, unreadable.url);
-            // @ts-ignore
-            await page.evaluate(() => { stTest.context().textCompletionSettings.streaming = false; });
+            await setStreaming(page, false);
             await page.waitForTimeout(SETTLE_MS);
 
             await chatBox(page).fill(`Unreadable question ${stamp}?`);
@@ -237,18 +250,20 @@ test.describe('raw-action send request log', () => {
             const avatar = await createCharacter(page, `RawActionTwice-${stamp}`, `Hello from the greeting ${stamp}.`);
             await openCharacter(page, avatar);
             await connectLlamaCpp(page, mock.url);
-            // @ts-ignore
-            await page.evaluate((on) => { stTest.context().textCompletionSettings.streaming = on; }, streaming);
+            await setStreaming(page, streaming);
             await page.waitForTimeout(SETTLE_MS);
 
-            const browser = recordApiRequests(page);
+            /** @type {boolean[]} */
+            const streamed = [];
+            page.on('response', (response) => {
+                if (new URL(response.url()).pathname === '/api/generation/generate') streamed.push(response.headers()['x-st-stream-format'] === 'compact-v1');
+            });
             const first = `First question ${stamp}?`;
             await send(page, first, 2);
             await send(page, `Second question ${stamp}?`, 4);
             await page.waitForTimeout(SETTLE_MS);
 
-            const generate = browser.filter(r => r.url === '/api/backends/text-completions/generate');
-            expect(generate.map(r => r.body.stream === true)).toEqual([streaming, streaming]);
+            expect(streamed).toEqual([streaming, streaming]);
 
             const stored = await page.evaluate(async (first) => {
                 // @ts-ignore
@@ -278,8 +293,7 @@ test.describe('raw-action send request log', () => {
                 const avatar = await createCharacter(page, `RawActionError-${stamp}`, `Hello from the greeting ${stamp}.`);
                 await openCharacter(page, avatar);
                 await connectLlamaCpp(page, failing.url);
-                // @ts-ignore
-                await page.evaluate((on) => { stTest.context().textCompletionSettings.streaming = on; }, streaming);
+                await setStreaming(page, streaming);
                 await page.waitForTimeout(SETTLE_MS);
 
                 const first = `First question ${stamp}?`;
@@ -314,100 +328,25 @@ test.describe('raw-action send request log', () => {
         });
     }
 
-    const senders = [
-        {
-            name: 'text completion, non-streaming (sendGenerationRequest, 200 error body)', url: '**/api/backends/text-completions/generate',
-            answer: stored => ({ status: 200, body: { error: true, status: 500, response: 'failed', stored } }),
-            call: async () => {
-                const { sendGenerationRequest } = await import('/script.js');
-                const { setMainApi } = await import('/scripts/generation-params.js');
-                setMainApi('textgenerationwebui');
-                return sendGenerationRequest('normal', { owner_id: 'x' });
-            },
-        },
-        {
-            name: 'kobold, non-streaming (sendGenerationRequest, 400)', url: '**/api/backends/kobold/generate',
-            answer: stored => ({ status: 400, body: { error: { message: 'failed' }, stored } }),
-            call: async () => {
-                const { sendGenerationRequest } = await import('/script.js');
-                const { setMainApi } = await import('/scripts/generation-params.js');
-                setMainApi('kobold');
-                return sendGenerationRequest('normal', { owner_id: 'x' });
-            },
-        },
-        {
-            name: 'NovelAI, non-streaming (sendGenerationRequest, 500)', url: '**/api/novelai/generate',
-            answer: stored => ({ status: 500, body: { error: { message: 'failed' }, stored } }),
-            call: async () => {
-                const { sendGenerationRequest } = await import('/script.js');
-                const { setMainApi } = await import('/scripts/generation-params.js');
-                setMainApi('novel');
-                return sendGenerationRequest('normal', { owner_id: 'x' });
-            },
-        },
-        {
-            name: 'NovelAI, non-streaming (sendGenerationRequest, 400 with a plain-text body)', url: '**/api/novelai/generate',
-            answer: () => ({ status: 400, text: 'Bad Request' }),
-            call: async () => {
-                const { sendGenerationRequest } = await import('/script.js');
-                const { setMainApi } = await import('/scripts/generation-params.js');
-                setMainApi('novel');
-                return sendGenerationRequest('normal', { owner_id: 'x' });
-            },
-        },
-        {
-            name: 'text completion, streaming (backend error passed on)', url: '**/api/backends/text-completions/generate',
-            answer: () => ({ status: 500, text: 'backend exploded' }),
-            call: async () => (await import('/scripts/textgen-settings.js')).generateTextGenWithStreaming({ owner_id: 'x' }, new AbortController().signal),
-        },
-        {
-            name: 'kobold, streaming (backend error passed on)', url: '**/api/backends/kobold/generate',
-            answer: () => ({ status: 500, text: 'backend exploded' }),
-            call: async () => (await import('/scripts/kai-settings.js')).generateKoboldWithStreaming({ owner_id: 'x' }, new AbortController().signal),
-        },
-        {
-            name: 'NovelAI, streaming (backend error passed on)', url: '**/api/novelai/generate',
-            answer: () => ({ status: 500, text: 'backend exploded' }),
-            call: async () => (await import('/scripts/nai-settings.js')).generateNovelWithStreaming({ owner_id: 'x' }, new AbortController().signal),
-        },
-        {
-            name: 'chat completion, non-streaming (sendOpenAIRequest, 200 error body)', url: '**/api/backends/chat-completions/generate',
-            answer: stored => ({ status: 200, body: { error: { message: 'failed' }, quota_error: false, stored } }),
-            call: async () => {
-                const { sendOpenAIRequest, oai_settings } = await import('/scripts/chat-completion-settings.js');
-                oai_settings.stream_openai = false;
-                return sendOpenAIRequest('normal', [], new AbortController().signal, { rawAction: { owner_id: 'x' } });
-            },
-        },
-        {
-            name: 'chat completion, streaming (backend error passed on)', url: '**/api/backends/chat-completions/generate',
-            answer: () => ({ status: 500, text: 'backend exploded' }),
-            call: async () => {
-                const { sendOpenAIRequest, oai_settings } = await import('/scripts/chat-completion-settings.js');
-                oai_settings.stream_openai = true;
-                return sendOpenAIRequest('normal', [], new AbortController().signal, { rawAction: { owner_id: 'x' } });
-            },
-        },
-        {
-            name: 'Horde (failed submit)', url: '**/api/horde/generate-text',
-            answer: stored => ({ status: 200, body: { error: { message: 'failed' }, stored } }),
-            before: async (page) => {
-                await page.route('**/api/horde/text-models', route => route.fulfill({ json: [{ name: 'stand-in-model', count: 1, performance: 1, queued: 0, eta: 0 }] }));
-            },
-            call: async () => {
-                const horde = await import('/scripts/horde.js');
-                await horde.getHordeModels(true);
-                horde.horde_settings.models = ['stand-in-model'];
-                return horde.generateHordeRawAction({ owner_id: 'x' }, new AbortController().signal, false);
-            },
-        },
+    const answers = [
+        { name: '200 with an error body', answer: stored => ({ status: 200, body: { error: true, status: 500, response: 'failed', stored } }) },
+        { name: '400', answer: stored => ({ status: 400, body: { error: { message: 'failed' }, stored } }) },
+        { name: '500', answer: stored => ({ status: 500, body: { error: { message: 'failed' }, stored } }) },
+        { name: '400 with a plain-text body', answer: () => ({ status: 400, text: 'Bad Request' }) },
+        { name: '500 from the backend, passed on', answer: () => ({ status: 500, text: 'backend exploded' }) },
     ];
+    const senders = answers.map(({ name, answer }) => ({
+        name: `a generation answered ${name}`, url: '**/api/generation/generate', answer,
+        call: async () => {
+            const { sendGeneration } = await import('/scripts/generation-request.js');
+            return sendGeneration({ character_avatar: 'x' }, new AbortController().signal);
+        },
+    }));
     for (const sender of senders) {
         test(`${sender.name}: the page takes on the stored user message from an error answer`, async ({ page }) => {
             const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
             const avatar = await createCharacter(page, `RawActionAdopt-${stamp}`, `Hello from the greeting ${stamp}.`);
             await openCharacter(page, avatar);
-            await sender.before?.(page);
 
             const ref = await page.evaluate(async () => {
                 const { sendMessageAsUser } = await import('/script.js');
@@ -453,8 +392,7 @@ test.describe('raw-action send request log', () => {
             const avatar = await createCharacter(page, `RawActionEarlySend-${stamp}`, `Hello from the greeting ${stamp}.`);
             await openCharacter(page, avatar);
             await connectLlamaCpp(page, slow.url);
-            // @ts-ignore
-            await page.evaluate(() => { stTest.context().textCompletionSettings.streaming = true; });
+            await setStreaming(page, true);
             await page.waitForTimeout(SETTLE_MS);
 
             await chatBox(page).fill(`First question ${stamp}?`);
@@ -515,8 +453,7 @@ test.describe('raw-action send request log', () => {
             const avatar = await createCharacter(page, `RawActionQueued-${stamp}`, `Hello from the greeting ${stamp}.`);
             await openCharacter(page, avatar);
             await connectLlamaCpp(page, mock.url);
-            // @ts-ignore
-            await page.evaluate(() => { stTest.context().textCompletionSettings.streaming = true; });
+            await setStreaming(page, true);
             await page.waitForTimeout(SETTLE_MS);
             await sendAndHoldGap(page, `First question ${stamp}?`);
 
@@ -552,8 +489,7 @@ test.describe('raw-action send request log', () => {
         const other = await createCharacter(page, `RawActionQueuedB-${stamp}`, `Hello from the other greeting ${stamp}.`);
         await openCharacter(page, avatar);
         await connectLlamaCpp(page, mock.url);
-        // @ts-ignore
-        await page.evaluate(() => { stTest.context().textCompletionSettings.streaming = true; });
+        await setStreaming(page, true);
         await page.waitForTimeout(SETTLE_MS);
         await sendAndHoldGap(page, `First question ${stamp}?`);
 
@@ -583,8 +519,7 @@ test.describe('raw-action send request log', () => {
             const avatar = await createCharacter(page, `RawActionEnterDuring-${stamp}`, `Hello from the greeting ${stamp}.`);
             await openCharacter(page, avatar);
             await connectLlamaCpp(page, slow.url);
-            // @ts-ignore
-            await page.evaluate(() => { stTest.context().textCompletionSettings.streaming = true; });
+            await setStreaming(page, true);
             await page.waitForTimeout(SETTLE_MS);
 
             await chatBox(page).fill(`First question ${stamp}?`);

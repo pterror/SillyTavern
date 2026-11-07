@@ -1,9 +1,7 @@
 import {
-    substituteParams,
     getSelectionState,
     saveSettingsDebounced,
     animation_duration,
-    getCurrentCharacter,
 } from '../script.js';
 import { chat_metadata } from './chat-state.js';
 import { eventSource, event_types } from './events.js';
@@ -364,12 +362,6 @@ export function initCfg() {
     });
 }
 
-const cfgType = {
-    chat: 0,
-    chara: 1,
-    global: 2,
-};
-
 const metadataKeys = {
     guidance_scale: 'cfg_guidance_scale',
     negative_prompt: 'cfg_negative_prompt',
@@ -380,100 +372,3 @@ const metadataKeys = {
     prompt_separator: 'cfg_prompt_separator',
 };
 
-export function getGuidanceScale() {
-    if (!extension_settings.cfg) {
-        console.warn('CFG extension is not enabled. Skipping CFG guidance.');
-        return;
-    }
-
-    const charaCfg = extension_settings.cfg.chara?.find((e) => e.name === getCharaFilename(getCurrentCharacter()?.avatar));
-    const chatGuidanceScale = chat_metadata[metadataKeys.guidance_scale];
-    const groupchatCharOverride = chat_metadata[metadataKeys.groupchat_individual_chars] ?? false;
-
-    if (chatGuidanceScale && chatGuidanceScale !== 1 && !groupchatCharOverride) {
-        return {
-            type: cfgType.chat,
-            value: chatGuidanceScale,
-        };
-    }
-
-    if ((!selected_group && charaCfg || groupchatCharOverride) && charaCfg?.guidance_scale !== 1) {
-        return {
-            type: cfgType.chara,
-            value: charaCfg.guidance_scale,
-        };
-    }
-
-    if (extension_settings.cfg.global && extension_settings.cfg.global?.guidance_scale !== 1) {
-        return {
-            type: cfgType.global,
-            value: extension_settings.cfg.global.guidance_scale,
-        };
-    }
-}
-
-/**
- * Gets the CFG prompt separator.
- * @returns {string} The CFG prompt separator
- */
-function getCustomSeparator() {
-    const defaultSeparator = '\n';
-
-    try {
-        if (chat_metadata[metadataKeys.prompt_separator]) {
-            return JSON.parse(chat_metadata[metadataKeys.prompt_separator]);
-        }
-
-        return defaultSeparator;
-    } catch {
-        console.warn('Invalid JSON detected for prompt separator. Using default separator.');
-        return defaultSeparator;
-    }
-}
-
-/**
- * Gets the CFG prompt based on the guidance scale.
- * @param {{type: number, value: number}} guidanceScale The CFG guidance scale
- * @param {boolean} isNegative Whether to get the negative prompt
- * @param {boolean} quiet Whether to suppress console output
- * @returns {{value: string, depth: number}} The CFG prompt and insertion depth
- */
-export function getCfgPrompt(guidanceScale, isNegative, quiet = false) {
-    let splitCfgPrompt = [];
-
-    const cfgPromptCombine = chat_metadata[metadataKeys.prompt_combine] ?? [];
-    if (guidanceScale.type === cfgType.chat || cfgPromptCombine.includes(cfgType.chat)) {
-        splitCfgPrompt.unshift(
-            substituteParams(
-                chat_metadata[isNegative ? metadataKeys.negative_prompt : metadataKeys.positive_prompt],
-            ),
-        );
-    }
-
-    const charaCfg = extension_settings.cfg.chara?.find((e) => e.name === getCharaFilename(getCurrentCharacter()?.avatar));
-    if (guidanceScale.type === cfgType.chara || cfgPromptCombine.includes(cfgType.chara)) {
-        splitCfgPrompt.unshift(
-            substituteParams(
-                isNegative ? charaCfg.negative_prompt : charaCfg.positive_prompt,
-            ),
-        );
-    }
-
-    if (guidanceScale.type === cfgType.global || cfgPromptCombine.includes(cfgType.global)) {
-        splitCfgPrompt.unshift(
-            substituteParams(
-                isNegative ? extension_settings.cfg.global.negative_prompt : extension_settings.cfg.global.positive_prompt,
-            ),
-        );
-    }
-
-    const customSeparator = getCustomSeparator();
-    const combinedCfgPrompt = splitCfgPrompt.filter((e) => e.length > 0).join(customSeparator);
-    const insertionDepth = chat_metadata[metadataKeys.prompt_insertion_depth] ?? 1;
-    !quiet && console.log(`Setting CFG with guidance scale: ${guidanceScale.value}, negatives: ${combinedCfgPrompt}`);
-
-    return {
-        value: combinedCfgPrompt,
-        depth: insertionDepth,
-    };
-}

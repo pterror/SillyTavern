@@ -8,6 +8,7 @@ import express from 'express';
 
 import { write as writeCard } from '../character-card-parser.js';
 import { setConfigFilePath } from '../util.js';
+import { streamAsSetting } from '../../tests/util/stream-as-setting.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
@@ -26,6 +27,7 @@ let hordeFakeBackendUrl = null;
 }
 
 const { router: hordeRouter, _setHordePollingConfigForTests } = await import('./horde.js');
+const { handleGenerationStop } = await import('../generation-stop.js');
 const { buildRawActionKoboldRequest } = await import('./backends/kobold.js');
 const { writeAllSettings } = await import('../settings-store.js');
 const { CompactStreamDecoder } = await import('../../public/scripts/llamacpp-compact-stream.js');
@@ -174,7 +176,9 @@ function buildTestApp() {
             next();
         }, next);
     });
+    app.use(streamAsSetting());
     app.use('/api/horde', hordeRouter);
+    app.post('/api/generation/generate/stop/:id', handleGenerationStop);
     return app;
 }
 
@@ -280,7 +284,7 @@ async function run() {
             assert.equal(res.status, 200);
             assert.equal(res.headers.get('X-ST-Stream-Format'), 'compact-v1', 'Horde is now shimmed onto the same wire format as every other backend');
             const generationId = res.headers.get('X-Generation-Id');
-            assert.equal(generationId, 'task-abc-123', 'Horde\'s own job id is reused as the X-Generation-Id');
+            assert.match(generationId ?? '', /^[0-9a-f-]{36}$/, 'the stream is named by its generation, which a stop and a resume name too');
 
             const decoder = new CompactStreamDecoder();
             let text = '';
@@ -420,18 +424,14 @@ async function run() {
             });
             assert.equal(res.status, 200);
             const generationId = res.headers.get('X-Generation-Id');
-            assert.equal(generationId, 'cancel-task-789');
 
             const reader = res.body.getReader();
             await waitFor(() => fakeCoordinator.calls.status >= 1);
 
-            const cancelRes = await fetch(`http://127.0.0.1:${port}/api/horde/cancel-task`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ taskId: generationId }),
-            });
-            assert.equal(cancelRes.status, 200);
-            assert.equal(fakeCoordinator.calls.delete, 1, 'the real DELETE cancel call reached the fake coordinator');
+            const stopRes = await fetch(`http://127.0.0.1:${port}/api/generation/generate/stop/${encodeURIComponent(generationId)}`, { method: 'POST' });
+            assert.equal(stopRes.status, 200);
+            await waitFor(() => fakeCoordinator.calls.delete === 1);
+            assert.equal(fakeCoordinator.calls.delete, 1, 'stopping the generation withdrew the job from the Horde');
 
             const decoder = new CompactStreamDecoder();
             let text = '';
@@ -485,7 +485,6 @@ async function run() {
                 signal: controller.signal,
             });
             const generationId = res.headers.get('X-Generation-Id');
-            assert.equal(generationId, 'disconnect-task-321');
 
             const reader = res.body.getReader();
             await reader.read();

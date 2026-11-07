@@ -6,7 +6,6 @@ import { is_send_press, substituteParams } from '../script.js';
 import { main_api } from './generation-params.js';
 import { event_types, eventSource } from './events.js';
 import { is_group_generating } from './group-chats.js';
-import { Message, MessageCollection, TokenHandler } from './chat-completion-settings.js';
 import { power_user } from './power-user.js';
 import { debounce, waitUntilCondition, escapeHtml, uuidv4 } from './utils.js';
 import { debounce_timeout } from './constants.js';
@@ -39,7 +38,7 @@ const DEFAULT_ORDER = 100;
 /**
  * @enum {number}
  */
-export const INJECTION_POSITION = {
+const INJECTION_POSITION = {
     RELATIVE: 0,
     ABSOLUTE: 1,
 };
@@ -363,19 +362,21 @@ class PromptManager {
         // Currently selected character
         this.activeCharacter = null;
 
-        // Message collection of the most recent chatcompletion
-        this.messages = null;
+        /** @type {Map<string, number>} Tokens each entry sent, in the prompt the server last built. */
+        this.counts = new Map();
 
-        // The current token handler instance
-        this.tokenHandler = null;
+        /** @type {Map<string, { role: string, content: unknown, tokens: number }[]>} The messages each entry sent. */
+        this.sentMessages = new Map();
 
-        // Token usage of last dry run
+        /** @type {object|null} The tokenizer the counts are from. */
+        this.countBasis = null;
+
         this.tokenUsage = 0;
 
         // Error state, contains error message.
         this.error = null;
 
-        /** Dry-run for generate, must return a promise  */
+        /** Asks the server for the prompt and shows it, must return a promise */
         this.tryGenerate = async () => { };
 
         /** Called to persist the configuration, must return a promise */
@@ -436,7 +437,6 @@ class PromptManager {
      */
     init(moduleConfiguration, serviceSettings) {
         this.configuration = Object.assign(this.configuration, moduleConfiguration);
-        this.tokenHandler = this.tokenHandler || new TokenHandler(() => { throw new Error('Token handler not set'); });
         this.serviceSettings = serviceSettings;
         this.containerElement = document.getElementById(this.configuration.containerIdentifier);
 
@@ -448,9 +448,8 @@ class PromptManager {
         this.handleToggle = (event) => {
             const promptID = event.target.closest('.' + this.configuration.prefix + 'prompt_manager_prompt').dataset.pmIdentifier;
             const promptOrderEntry = this.getPromptOrderEntry(this.activeCharacter, promptID);
-            const counts = this.tokenHandler.getCounts();
 
-            counts[promptID] = null;
+            this.counts.delete(promptID);
             promptOrderEntry.enabled = !promptOrderEntry.enabled;
             this.render();
             this.saveServiceSettings();
@@ -475,10 +474,9 @@ class PromptManager {
             this.clearInspectForm();
 
             const promptID = event.target.closest('.' + this.configuration.prefix + 'prompt_manager_prompt').dataset.pmIdentifier;
-            if (true === this.messages.hasItemWithIdentifier(promptID)) {
-                const messages = this.messages.getItemByIdentifier(promptID);
-
-                this.loadMessagesIntoInspectForm(messages);
+            const messages = this.sentMessages.get(promptID);
+            if (messages) {
+                this.loadMessagesIntoInspectForm(promptID, messages);
 
                 this.showPopup('inspect');
             }
@@ -949,10 +947,6 @@ class PromptManager {
             let prompt = this.getPromptById(update.identifier);
             if (prompt) Object.assign(prompt, update);
         });
-    }
-
-    getTokenHandler() {
-        return this.tokenHandler;
     }
 
     isPromptDisabledForActiveCharacter(identifier) {
@@ -1453,18 +1447,16 @@ class PromptManager {
     }
 
     /**
-     * Loads a given prompt into the inspect form
-     * @param {MessageCollection} messages - Prompt object with properties 'name', 'role', 'content', and 'system_prompt'
+     * Shows what an entry sent in the inspect form.
+     * @param {string} identifier
+     * @param {{ role: string, content: unknown, tokens: number }[]} messages
      */
-    loadMessagesIntoInspectForm(messages) {
-        if (!messages) return;
-
+    loadMessagesIntoInspectForm(identifier, messages) {
         const createInlineDrawer = (message) => {
-            const truncatedTitle = message.content.length > 32 ? message.content.slice(0, 32) + '...' : message.content;
-            const title = message.identifier || truncatedTitle;
+            const title = identifier;
             const role = message.role;
-            const content = message.content || 'No Content';
-            const tokens = message.getTokens();
+            const content = (typeof message.content === 'string' ? message.content : JSON.stringify(message.content)) || 'No Content';
+            const tokens = message.tokens;
 
             let drawerHTML = `
         <div class="inline-drawer ${this.configuration.prefix}prompt_manager_prompt">
@@ -1483,11 +1475,9 @@ class PromptManager {
 
         const messageList = document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_inspect_list');
 
-        const messagesCollection = messages instanceof Message ? [messages] : messages.getCollection();
+        if (0 === messages.length) messageList.innerHTML = '<span>This marker does not contain any prompts.</span>';
 
-        if (0 === messagesCollection.length) messageList.innerHTML = '<span>This marker does not contain any prompts.</span>';
-
-        messagesCollection.forEach(message => {
+        messages.forEach(message => {
             messageList.append(createInlineDrawer(message));
         });
     }
@@ -1584,42 +1574,22 @@ class PromptManager {
     }
 
     /**
-     * Setter for messages property
-     *
-     * @param {import('./chat-completion-settings.js').MessageCollection} messages
+     * Takes the prompt the server built: what each entry sent and its count.
+     * @param {import('./generation.js').BuiltPrompt|null} built
+     * @param {string|null} [error] Why it couldn't be built.
      */
-    setMessages(messages) {
-        this.messages = messages;
-    }
-
-    /**
-     * Set and process a finished chat completion object
-     *
-     * @param {import('./chat-completion-settings.js').ChatCompletion} chatCompletion
-     */
-    setChatCompletion(chatCompletion) {
-        const messages = chatCompletion.getMessages();
-
-        this.setMessages(messages);
-        this.populateTokenCounts(messages);
-        this.overriddenPrompts = chatCompletion.getOverriddenPrompts();
-    }
-
-    /**
-     * Populates the token handler
-     *
-     * @param {import('./chat-completion-settings.js').MessageCollection} messages
-     */
-    populateTokenCounts(messages) {
-        this.tokenHandler.resetCounts();
-        const counts = this.tokenHandler.getCounts();
-        messages.getCollection().forEach(message => {
-            counts[message.identifier] = message.getTokens();
-        });
-
-        this.tokenUsage = this.tokenHandler.getTotal();
-
-        this.log('Updated token usage with ' + this.tokenUsage);
+    setBuiltPrompt(built, error = null) {
+        this.error = error;
+        this.counts = new Map();
+        this.sentMessages = new Map();
+        const manager = built?.prompt_manager;
+        for (const part of manager?.parts ?? []) {
+            this.counts.set(part.identifier, part.tokens);
+            this.sentMessages.set(part.identifier, part.messages);
+        }
+        this.overriddenPrompts = manager?.overridden ?? [];
+        this.tokenUsage = built?.itemization?.total ?? 0;
+        this.countBasis = built?.itemization?.tokenizer ?? null;
     }
 
     /**
@@ -1699,7 +1669,7 @@ class PromptManager {
             const enabledClass = listEntry.enabled ? '' : `${prefix}prompt_manager_prompt_disabled`;
             const draggableClass = `${prefix}prompt_manager_prompt_draggable`;
             const markerClass = prompt.marker ? `${prefix}prompt_manager_marker` : '';
-            const tokens = this.tokenHandler?.getCounts()[prompt.identifier] ?? 0;
+            const tokens = this.counts.get(prompt.identifier) ?? 0;
 
             // Warn the user if the chat history goes below certain token thresholds.
             let warningClass = '';
@@ -1796,7 +1766,7 @@ class PromptManager {
 
         promptManagerList.insertAdjacentHTML('beforeend', listItemHtml);
 
-        const tokenizerAnswer = getRememberedTokenizerAnswer();
+        const tokenizerAnswer = this.countBasis ?? getRememberedTokenizerAnswer();
         promptManagerList.querySelectorAll('.prompt_manager_prompt_tokens[data-pm-tokens]:not([data-pm-tokens="-"])').forEach(el => {
             renderCountBasis(el, tokenizerAnswer);
         });
@@ -2037,5 +2007,4 @@ class PromptManager {
 export {
     PromptManager,
     registerPromptManagerMigration,
-    Prompt,
 };

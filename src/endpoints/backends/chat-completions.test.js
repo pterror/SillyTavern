@@ -11,6 +11,7 @@ import '../../fetch-patch.js';
 import { Jimp, JimpMime } from '../../jimp.js';
 import { setConfigFilePath } from '../../util.js';
 import { CompactStreamDecoder } from '../../../public/scripts/llamacpp-compact-stream.js';
+import { streamAsSetting } from '../../../tests/util/stream-as-setting.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
@@ -232,13 +233,6 @@ async function run() {
     assert.deepEqual([quietLast?.role, quietLast?.content], ['system', 'Summarize the scene in one line.'], 'the quiet prompt is the last message, from the system');
 
     await assert.rejects(
-        () => buildRawActionChatCompletionRequest(directories, {
-            characterAvatar: avatar, nodeId: mainLeafId,
-        }),
-        /owner_id is required/,
-    );
-
-    await assert.rejects(
         async () => buildRawActionChatCompletionRequest(directories, {
             characterAvatar: 'NoSuchCharacter.png', ownerId, chat: await chatOf(avatar, mainLeafId), nodeId: mainLeafId,
         }),
@@ -317,6 +311,7 @@ async function run() {
                 next();
             }, next);
         });
+        app.use(streamAsSetting());
         app.use('/', router);
         return app;
     }
@@ -3280,59 +3275,32 @@ async function run() {
             function: { name: 'get_weather', description: 'Gets the current weather for a city.', parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] } },
         }];
 
-        let callCount = 0;
-        const fakeBackend = await startFakeBackend((_req, res) => {
-            callCount++;
+        /** @type {any[]} */
+        const sent = [];
+        const fakeBackend = await startFakeBackend((req, res, body) => {
+            sent.push(JSON.parse(body || '{}'));
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            if (callCount === 1) {
-                res.end(JSON.stringify({
-                    choices: [{
-                        message: {
-                            role: 'assistant', content: null,
-                            tool_calls: [{ id: 'call_continue_1', type: 'function', function: { name: 'get_weather', arguments: JSON.stringify({ city: 'Continuetown' }) } }],
-                        },
-                    }],
-                }));
-            } else {
-                res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: ' sunny, according to the tool.' } }] }));
-            }
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: ' sunny.' } }] }));
         });
         pointBackendAtWithToolsEnabled(fakeBackend.url);
 
         const app = buildTestApp();
         let status, data;
         try {
-            const { data: pending } = await postGenerate(app, {
+            ({ status, data } = await postGenerate(app, {
                 owner_id: ownerId, character_avatar: avatar, node_id: continuedNodeId,
                 type: 'continue', is_continue: true, stream: false, client_tools: clientTools,
-            });
-            assert.equal(pending.pending_tool_calls?.length, 1, 'the continue\'s tool call is handed to the page');
-            ({ status, data } = await postGenerate(app, {
-                owner_id: ownerId, character_avatar: avatar, node_id: pending.pending_tool_calls[0].node_id, type: 'tool_result',
-                tool_results: [{ id: 'call_continue_1', result: 'Sunny in Continuetown', error: false }],
-                client_tools: clientTools,
             }));
         } finally {
             fakeBackend.server.close();
         }
 
         assert.equal(status, 200);
-        assert.equal(data.choices?.[0]?.message?.content, ' sunny, according to the tool.');
-        assert.equal(typeof data.assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back');
-        assert.equal(callCount, 2);
-
+        assert.equal(sent.length, 1);
+        assert.equal(sent[0].tools, undefined, 'a continue offers the backend no tools');
+        assert.equal(data.pending_tool_calls, undefined);
         const branchAfter = await loadBranch(user.store, { avatar: ownerId }, continueToolBranch);
-        assert.equal(branchAfter.messages.length, messageCountBefore + 2, 'the tool-call turn and the final text were appended: a continue across a tool call becomes an append');
-
-        const originalNode = (await user.store.chats.alternatives({ node_id: continuedNodeId })).alternatives.find(a => a.node_id === continuedNodeId);
-        assert.equal(originalNode.mes, 'The weather today is', 'the continued message is unedited');
-
-        const [toolMsg, finalMsg] = branchAfter.messages.slice(-2);
-        assert.equal(toolMsg.is_system, true, 'the tool-call turn is a child of the continued message');
-        assert.equal(toolMsg.extra.tool_invocations[0].result, 'Sunny in Continuetown');
-        assert.equal(finalMsg.is_user, false);
-        assert.equal(finalMsg.mes, 'sunny, according to the tool.', 'the final text is its own node, trimmed, not concatenated onto the continued message');
-        assert.equal(finalMsg.name, 'Rex');
+        assert.equal(branchAfter.messages.length, messageCountBefore, 'the continue went onto the continued message');
     }
 
     {

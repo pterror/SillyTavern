@@ -10,6 +10,7 @@ import express from 'express';
 import { write as writeCard } from '../../character-card-parser.js';
 import '../../fetch-patch.js';
 import { setConfigFilePath } from '../../util.js';
+import { streamAsSetting } from '../../../tests/util/stream-as-setting.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
@@ -125,6 +126,7 @@ async function startApp(router) {
         req.user = { directories, profile: { handle: req.get('X-Test-User') ?? 'u' } };
         next();
     });
+    app.use(streamAsSetting());
     app.use('/api/generation', generationRouter);
     app.use('/', router);
     const server = app.listen(0, '127.0.0.1');

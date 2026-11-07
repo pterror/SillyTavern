@@ -177,12 +177,13 @@ router.post('/status', async function (req, res) {
  * @param {import('../macro-facts.js').PageMacroFacts} [params.pageFacts]
  * @param {import('../prompt/injections.js').PageInjections} [params.pageInjections]
  * @param {object} [params.userMessageExtra]
- * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, activations: import('../world-info/activation-record.js').ActivationRecord|null, tokenCountRows: import('../token-count-store.js').PendingTokenRows, name1: string, name2: string, warnings: object[], itemize: () => Promise<import('../prompt-itemization.js').PromptItemization> }>}
+ * @param {boolean} [params.dryRun] Builds the prompt without changing anything a send would.
+ * @returns {Promise<{ params: object, prompt: string, anchorNodeId: string|null, anchorContent: object|null, activations: import('../world-info/activation-record.js').ActivationRecord|null, tokenCountRows: import('../token-count-store.js').PendingTokenRows, name1: string, name2: string, warnings: object[], itemize: () => Promise<import('../prompt-itemization.js').PromptItemization> }>}
  */
 export async function buildRawActionNovelRequest(directories, {
     request, characterAvatar, groupId, chat, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra, pageFacts = {}, pageInjections = {},
-    tokenizerOptions = {}, quiet = {}, responseLength,
+    tokenizerOptions = {}, quiet = {}, responseLength, dryRun = false,
 } = {}) {
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
@@ -231,7 +232,7 @@ export async function buildRawActionNovelRequest(directories, {
         avatar: characterAvatar, groupId, mainApi: 'novel', chatContext: chat, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts, pageInjections,
         countTokens, encodeTokens, amountGen: responseLength,
-        macroExtras: { encodeTokensByType, novelTokenizerType, ...textCompletionQuietInput(quiet) },
+        macroExtras: { encodeTokensByType, novelTokenizerType, ...textCompletionQuietInput(quiet), isDryRun: dryRun },
     });
 
     if (nodeId === null) {
@@ -249,7 +250,9 @@ export async function buildRawActionNovelRequest(directories, {
     const anchorContent = orchestratorInput.chat.length > 0 ? orchestratorInput.chat[orchestratorInput.chat.length - 1] : null;
 
     return {
-        params: assembled.generate_data, anchorNodeId, anchorContent, activations: assembled.activations, tokenCountRows: storedCounter.pending,
+        params: { ...assembled.generate_data, streaming: Boolean(naiSettings.streaming_novel) && type !== 'quiet' },
+        prompt: assembled.combinedPrompt,
+        anchorNodeId, anchorContent, activations: assembled.activations, tokenCountRows: storedCounter.pending,
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
         warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
         macroVariables: macroVariableChanges(orchestratorInput.chatMetadata, orchestratorInput.macroFacts.globalVariables, orchestratorInput.variablesBefore),
@@ -257,7 +260,10 @@ export async function buildRawActionNovelRequest(directories, {
     };
 }
 
-router.post('/generate', withGenerationStop(async function (req, res) {
+/**
+ * A NovelAI generation: from a turn of a stored chat (the page names it), or from a prompt the request carries.
+ */
+export const generateNovel = withGenerationStop(async function (req, res) {
     if (!req.body) return res.sendStatus(400);
 
     let pendingAssistantPersist = null;
@@ -469,4 +475,6 @@ router.post('/generate', withGenerationStop(async function (req, res) {
     } catch (error) {
         return res.send({ error: true });
     }
-}));
+});
+
+router.post('/generate', generateNovel);

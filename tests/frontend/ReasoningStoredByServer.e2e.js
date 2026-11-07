@@ -170,7 +170,7 @@ for (const streaming of [true, false]) {
                 await connectLlamaCpp(page, mock.url);
                 await setReasoningFormat(page, format);
                 // @ts-ignore
-                await page.evaluate((streaming) => { stTest.context().textCompletionSettings.streaming = streaming; }, streaming);
+                await page.evaluate(async (streaming) => { stTest.context().textCompletionSettings.streaming = streaming; await (await import('/script.js')).saveSettings('textgenerationwebui_settings'); }, streaming);
                 await page.waitForTimeout(2500);
 
                 await chatBox(page).fill(`How far is it ${stamp}?`);

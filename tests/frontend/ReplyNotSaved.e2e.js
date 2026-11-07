@@ -132,15 +132,16 @@ for (const streaming of [true, false]) {
             const avatar = await createCharacter(page, `NotSaved-${stamp}`);
             await openCharacter(page, avatar);
             await connectLlamaCpp(page, mock.url);
-            await page.evaluate((streaming) => {
+            await page.evaluate(async (streaming) => {
                 // @ts-ignore
                 stTest.context().textCompletionSettings.streaming = streaming;
+                await (await import('/script.js')).saveSettings('textgenerationwebui_settings');
             }, streaming);
             await page.waitForTimeout(2500);
 
             let realNodeId = null;
             let generationId = null;
-            await page.route('**/api/backends/text-completions/generate', async (route) => {
+            await page.route('**/api/generation/generate', async (route) => {
                 const response = await route.fetch();
                 generationId = response.headers()['x-generation-id'];
                 if (streaming) {

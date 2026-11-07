@@ -249,9 +249,7 @@ function setPromptEntryCallback(args, targetState) {
 
     identifiersList.forEach(promptID => {
         const promptOrderEntry = promptManager.getPromptOrderEntry(promptManager.activeCharacter, promptID);
-        const counts = promptManager.tokenHandler.getCounts();
-
-        counts[promptID] = null;
+        promptManager.counts.delete(promptID);
         promptOrderEntry.enabled = getPromptOrderEntryState(promptOrderEntry);
     });
 

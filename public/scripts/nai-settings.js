@@ -11,15 +11,12 @@ import { getRequestHeaders } from './request-headers.js';
 import { power_user } from './power-user.js';
 import { newUi, newUiStarted } from './new-ui-page.js';
 import { getEntryTokenIds, getTokenizerBestMatch, registerEntryTextSource, showDroppedEntries, tokenizers } from './tokenizers.js';
-import { CompactStreamDecoder } from './llamacpp-compact-stream.js';
 import {
     getSortableDelay,
     onlyUnique,
 } from './utils.js';
 import { buildLogitBiasListResult, createNewLogitBiasEntry, displayLogitBias, getLogitBiasEntryTexts } from './logit-bias.js';
 import { SECRET_KEYS, secret_state, writeSecret } from './secrets.js';
-import { showTokenizerWarnings } from './tokenizer-notices.js';
-import { reportStoredHeader } from './stored-report.js';
 
 const default_preamble = '[ Style: chat, complex, sensory, visceral ]';
 const default_order = [1, 5, 0, 2, 3, 4];
@@ -691,74 +688,6 @@ export function adjustNovelInstructionPrompt(prompt) {
         return `{ ${stripedPrompt} }`;
     }
     return stripedPrompt;
-}
-
-function tryParseStreamingError(response, decoded) {
-    try {
-        const data = JSON.parse(decoded);
-
-        if (!data) {
-            return;
-        }
-
-        if (data.message || data.error) {
-            toastr.error(data.message || data.error?.message || response.statusText, 'NovelAI API');
-            throw new Error(data);
-        }
-    } catch {
-        // No JSON. Do nothing.
-    }
-}
-
-export async function generateNovelWithStreaming(generate_data, signal) {
-    generate_data.streaming = nai_settings.streaming_novel;
-
-    const response = await fetch('/api/novelai/generate', {
-        headers: getRequestHeaders(),
-        body: JSON.stringify(generate_data),
-        method: 'POST',
-        signal: signal,
-    });
-    reportStoredHeader(response);
-    if (!response.ok) {
-        tryParseStreamingError(response, await response.text());
-        throw new Error(`Got response status ${response.status}`);
-    }
-
-    const reader = response.body.getReader();
-    return async function* streamData() {
-        const decoder = new CompactStreamDecoder();
-        let text = '';
-        let logprobs = null;
-        let pendingProbabilities = null;
-        const state = {};
-        while (true) {
-            const { done, value } = await reader.read();
-            const events = done ? decoder.flush() : decoder.push(value);
-
-            for (const event of events) {
-                if ('probabilities' in event) {
-                    pendingProbabilities = event.probabilities;
-                } else if ('content' in event) {
-                    text += event.content;
-                    logprobs = parseNovelAILogprobs(pendingProbabilities);
-                    pendingProbabilities = null;
-                } else if ('assistantNodeId' in event) {
-                    state.assistantNodeId = event.assistantNodeId;
-                } else if ('control' in event && event.control?.stored) {
-                    state.stored = event.control.stored;
-                } else if ('control' in event && event.control?.warnings) {
-                    showTokenizerWarnings(event.control.warnings);
-                }
-            }
-
-            if (events.length) {
-                yield { text, swipes: [], logprobs, toolCalls: [], state };
-            }
-
-            if (done) return;
-        }
-    };
 }
 
 /**

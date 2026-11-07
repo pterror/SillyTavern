@@ -10,6 +10,9 @@ import express from 'express';
 import { write as writeCard } from '../../character-card-parser.js';
 import '../../fetch-patch.js';
 import { setConfigFilePath } from '../../util.js';
+import { streamAsSetting } from '../../../tests/util/stream-as-setting.js';
+import { handleGenerationStop } from '../../generation-stop.js';
+import { handleGenerationResume } from './llamacpp-compact-stream.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
@@ -130,6 +133,9 @@ function startApp(router) {
         req.user = { directories, profile: { handle: req.get('X-Test-User') ?? 'u' } };
         next();
     });
+    app.use(streamAsSetting());
+    app.post('/generate/stop/:id', handleGenerationStop);
+    app.get('/generate/resume/:id', handleGenerationResume);
     app.use('/', router);
     const server = app.listen(0, '127.0.0.1');
     return new Promise(resolve => server.once('listening', () => resolve({ server, base: `http://127.0.0.1:${server.address().port}` })));

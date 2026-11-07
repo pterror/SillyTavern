@@ -10,9 +10,7 @@ import { main_api } from '../../generation-params.js';
 import { power_user } from '../../power-user.js';
 import { formatInstructModeExamples } from '../../instruct-mode.js';
 import { isMobile } from '../../RossAscends-mods.js';
-import { extension_settings } from '../../extension-settings.js';
 import { localVariables, globalVariables } from '../../variables.js';
-import { createVariableScope } from '../../variable-store.js';
 import { inject_ids } from '../../constants.js';
 import { textgenerationwebui_banned_in_macros } from '../../textgen-settings.js';
 import { eventSource, event_types } from '../../events.js';
@@ -32,31 +30,6 @@ eventSource.on(event_types.CHAT_CHANGED, () => {
 });
 
 let scratchVariables = /** @type {{ local: import('./MacroEnv.types.js').MacroVariableScope, global: import('./MacroEnv.types.js').MacroVariableScope } | null} */ (null);
-
-/**
- * @returns {{ local: import('./MacroEnv.types.js').MacroVariableScope, global: import('./MacroEnv.types.js').MacroVariableScope }}
- */
-export function variablesCopy() {
-    const local = structuredClone(chat_metadata.variables ?? {});
-    const global = structuredClone(extension_settings.variables?.global ?? {});
-    return { local: createVariableScope(() => local), global: createVariableScope(() => global) };
-}
-
-/**
- * @template T
- * @param {ReturnType<typeof variablesCopy>} variables
- * @param {() => T} fn
- * @returns {T}
- */
-export function withScratchVariables(variables, fn) {
-    const before = scratchVariables;
-    scratchVariables = variables;
-    try {
-        return fn();
-    } finally {
-        scratchVariables = before;
-    }
-}
 
 /**
  * @param {string} raw

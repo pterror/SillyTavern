@@ -53,7 +53,7 @@ export const chat_completion_sources = {
     WORKERS_AI: 'workers_ai',
     MINIMAX: 'minimax',
 };
-export const character_names_behavior = {
+const character_names_behavior = {
     NONE: -1,
     DEFAULT: 0,
     COMPLETION: 1,
@@ -96,7 +96,7 @@ export const verbosity_levels = {
     medium: 'medium',
     high: 'high',
 };
-export const tool_reasoning_modes = {
+const tool_reasoning_modes = {
     DISABLED: 'disabled',
     SINCE_LAST_USER: 'since_last_user',
     ACTIVE_CHAIN: 'active_chain',

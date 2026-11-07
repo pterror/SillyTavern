@@ -12,7 +12,6 @@ import {
 } from '../script.js';
 import { max_context } from './generation-params.js';
 import { getRequestHeaders } from './request-headers.js';
-import { beginServerGeneration } from './generation-stop.js';
 import { deriveTemplatesFromChatTemplate } from './chat-templates.js';
 import { t } from './i18n.js';
 import { autoSelectInstructPreset, selectContextPreset, selectInstructPreset } from './instruct-mode.js';
@@ -22,15 +21,12 @@ import { power_user, registerDebugFunction } from './power-user.js';
 import { SERVER_OWNED, newUi, newUiStarted } from './new-ui-page.js';
 import { importBrowserSamplerSelect } from './samplerSelect.js';
 import { SECRET_KEYS, writeSecret } from './secrets.js';
-import { CompactStreamDecoder, ResumableCompactStreamReader } from './llamacpp-compact-stream.js';
 import { loadAphroditeModels, loadDreamGenModels, loadFeatherlessModels, loadGenericModels, loadInfermaticAIModels, loadLlamaCppModels, loadMancerModels, loadOllamaModels, loadOpenRouterModels, loadTabbyModels, loadTogetherAIModels, loadVllmModels, updateOpenRouterProvidersWarning } from './textgen-models.js';
 import { TOKENIZER_SUPPORTED_KEY, getEntryTokenIds, registerEntryTextSource, showDroppedEntries } from './tokenizers.js';
 import { AbortReason } from './util/AbortReason.js';
 import { getSortableDelay, onlyUnique, arraysEqual, isObject } from './utils.js';
 import { setting_names } from './textgen-setting-names.js';
 import { textgen_connection_defaults, textgen_types } from './textgen-connection-defaults.js';
-import { showTokenizerWarnings } from './tokenizer-notices.js';
-import { reportStoredHeader } from './stored-report.js';
 
 const {
     GENERIC,
@@ -1050,99 +1046,6 @@ function setSettingByName(setting, value, trigger) {
 }
 
 /**
- * Sends a streaming request for textgenerationwebui.
- * @param {object} generate_data
- * @param {AbortSignal} signal
- * @returns {Promise<(function(): AsyncGenerator<{swipes: [], text: string, toolCalls: [], logprobs: {token: string, topLogprobs: Candidate[]}|null}, void, *>)|*>}
- * @throws {Error} - If the response status is not OK, or from within the generator
- */
-export async function generateTextGenWithStreaming(generate_data, signal) {
-    generate_data.stream = true;
-
-    const response = await fetch('/api/backends/text-completions/generate', {
-        headers: {
-            ...getRequestHeaders(),
-            'X-Generation-Id': beginServerGeneration('/api/backends/text-completions', { stream: true }),
-        },
-        body: JSON.stringify(generate_data),
-        method: 'POST',
-        signal: signal,
-    });
-
-    reportStoredHeader(response);
-    if (!response.ok) {
-        tryParseStreamingError(response, await response.text());
-        const status = `Got response status ${response.status}`;
-        toastr.error(status, 'Text Completion API');
-        throw new Error(status);
-    }
-
-    if (response.headers.get('X-ST-Stream-Format') === 'compact-v1') {
-        return async function* streamData() {
-            const reader = new ResumableCompactStreamReader(response, '/api/backends/text-completions/generate/resume', getRequestHeaders);
-            const decoder = new CompactStreamDecoder();
-            let text = '';
-            /** @type {import('./logprobs.js').TokenLogprobs | null} */
-            let logprobs = null;
-            const swipes = [];
-            const toolCalls = [];
-            const state = { reasoning: '' };
-            let currentIndex = 0;
-            /** @type {any} */
-            let pendingProbabilities = null;
-
-            /** @param {{content: string}} event */
-            function* applyContent(event) {
-                if (currentIndex > 0) {
-                    const swipeIndex = currentIndex - 1;
-                    swipes[swipeIndex] = (swipes[swipeIndex] || '') + event.content;
-                    pendingProbabilities = null;
-                } else {
-                    text += event.content;
-                    logprobs = pendingProbabilities ? parseTextgenLogprobs(event.content, pendingProbabilities) : null;
-                    pendingProbabilities = null;
-                }
-                yield { text, swipes, logprobs, toolCalls, state };
-            }
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                if (!value || value.length === 0) continue;
-
-                for (const event of decoder.push(value)) {
-                    if ('index' in event) {
-                        currentIndex = event.index;
-                    } else if ('probabilities' in event) {
-                        pendingProbabilities = event.probabilities;
-                    } else if ('content' in event) {
-                        yield* applyContent(event);
-                    } else if ('reasoning' in event) {
-                        state.reasoning += event.reasoning;
-                        yield { text, swipes, logprobs, toolCalls, state };
-                    } else if ('assistantNodeId' in event) {
-                        state.assistantNodeId = event.assistantNodeId;
-                        yield { text, swipes, logprobs, toolCalls, state };
-                    } else if ('control' in event && event.control?.stored) {
-                        state.stored = event.control.stored;
-                        yield { text, swipes, logprobs, toolCalls, state };
-                    } else if ('control' in event && event.control?.warnings) {
-                        showTokenizerWarnings(event.control.warnings);
-                    }
-                }
-            }
-
-            for (const event of decoder.flush()) {
-                yield* applyContent(event);
-            }
-        };
-    }
-
-    tryParseStreamingError(response, await response.text());
-    throw new Error('Expected X-ST-Stream-Format: compact-v1 - every streaming response from this route uses the compact binary protocol.');
-}
-
-/**
  * parseTextgenLogprobs converts a logprobs object returned from a textgen API
  * for a single token into a TokenLogprobs object used by the Token
  * Probabilities feature.
@@ -1218,32 +1121,6 @@ export function parseTabbyLogprobs(data) {
 
     const topLogprobs = data?.choices?.[0]?.logprobs?.top_logprobs?.map(x => ({ top_logprobs: [x] }));
     return tokens?.map((token, index) => parseTextgenLogprobs(token, topLogprobs[index])) || null;
-}
-
-/**
- * Parses errors in streaming responses and displays them in toastr.
- * @param {Response} response - Response from the server.
- * @param {string} decoded - Decoded response body.
- * @returns {void} Nothing.
- * @throws {Error} If the response contains an error message, throws Error with the message.
- */
-function tryParseStreamingError(response, decoded) {
-    let data = {};
-
-    try {
-        data = JSON.parse(decoded);
-    } catch {
-        // No JSON. Do nothing.
-    }
-
-    const message = data?.error?.message || data?.message || data?.detail
-        || (typeof data?.error === 'string' ? data.error : undefined)
-        || (data?.error === true && typeof data?.response === 'string' ? data.response : undefined);
-
-    if (typeof message === 'string' && message) {
-        toastr.error(message, 'Text Completion API');
-        throw new Error(message);
-    }
 }
 
 /**

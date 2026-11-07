@@ -94,9 +94,10 @@ async function connectLlamaCpp(page, url, streaming) {
     // @ts-ignore
     await expect.poll(() => page.evaluate(() => stTest.context().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
     await page.locator('#API-status-top').click();
-    await page.evaluate((streaming) => {
+    await page.evaluate(async (streaming) => {
         // @ts-ignore
         stTest.context().textCompletionSettings.streaming = streaming;
+        await (await import('/script.js')).saveSettings('textgenerationwebui_settings');
     }, streaming);
     await page.waitForTimeout(2500);
 }

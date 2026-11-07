@@ -85,8 +85,8 @@ import {
 import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../../vertex-ai-auth.js';
 import { getCookieSecret } from '../../users.js';
 import { fetchGoogleModels, GoogleModelsHttpError } from './google-models.js';
-import { encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeStoredReplyFrame, encodeToolCallDeltaFrame, encodeControlFrame, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, writeStoredMessagesFrame } from './llamacpp-compact-stream.js';
-import { withGenerationStop, generationIdFor, isGenerationStopped, onGenerationStopFlush, stoppableController, handleGenerationStop } from '../../generation-stop.js';
+import { encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeStoredReplyFrame, encodeToolCallDeltaFrame, encodeControlFrame, createGenerationRecord, createResumableWriter, detachFromResponse, writeStoredMessagesFrame } from './llamacpp-compact-stream.js';
+import { withGenerationStop, generationIdFor, isGenerationStopped, onGenerationStopFlush, stoppableController } from '../../generation-stop.js';
 import { macroVariableChanges, storeMacroVariables } from '../../macro-facts.js';
 import { fetchOutgoing } from '../../outgoing-fetch.js';
 
@@ -2465,7 +2465,6 @@ router.post('/bias', async function (request, response) {
  * @param {object} params
  * @param {string} [params.characterAvatar]
  * @param {string} [params.groupId]
- * @param {string} params.ownerId
  * @param {import('../../chat-request.js').ChatContext} params.chat
  * @param {string|null} params.nodeId
  * @param {string} [params.type]
@@ -2480,16 +2479,15 @@ router.post('/bias', async function (request, response) {
  * @param {object} [params.jsonSchema]
  * @param {string[]} [params.stealthClientToolNames]
  * @param {import('../../page-writes.js').QuietPrompt} [params.quiet]
- * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, anchorContent: object|null, activations: import('../../world-info/activation-record.js').ActivationRecord|null, name1: string, name2: string, enabledClientToolNames: Set<string>, enabledStealthClientToolNames: Set<string>, warnings: Array<{kind: string, key: string, message: string, entries?: string[]}>, tokenCountRows: import('../../token-count-store.js').PendingTokenRows, itemize: () => Promise<import('../../prompt-itemization.js').PromptItemization> }>}
+ * @param {number} [params.responseLength]
+ * @param {boolean} [params.dryRun] Builds the prompt without changing anything a send would.
+ * @returns {Promise<{ params: object, prompt: object[], promptManagerParts?: () => { parts: import('../../prompt/chat-prompt.js').PromptManagerPart[], overridden: string[] }, settings: object, anchorNodeId: string|null, anchorContent: object|null, activations: import('../../world-info/activation-record.js').ActivationRecord|null, name1: string, name2: string, enabledClientToolNames: Set<string>, enabledStealthClientToolNames: Set<string>, warnings: Array<{kind: string, key: string, message: string, entries?: string[]}>, tokenCountRows: import('../../token-count-store.js').PendingTokenRows, itemize: () => Promise<import('../../prompt-itemization.js').PromptItemization> }>}
  */
 export async function buildRawActionChatCompletionRequest(directories, {
-    characterAvatar, groupId, ownerId, chat, nodeId,
+    characterAvatar, groupId, chat, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra, pageFacts = {}, pageInjections = {},
-    clientToolSchemas, stealthClientToolNames, jsonSchema = null, quiet = {}, responseLength,
+    clientToolSchemas, stealthClientToolNames, jsonSchema = null, quiet = {}, responseLength, dryRun = false,
 } = {}) {
-    if (!ownerId) {
-        throw new Error('owner_id is required');
-    }
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
     }
@@ -2531,7 +2529,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
     const orchestratorInput = await resolveChatCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, chatContext: chat, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts, pageInjections, llamaCppProps, tokenCountRows,
-        quietPrompt: quiet.quietPrompt, quietImage: quiet.quietImage, responseLength,
+        quietPrompt: quiet.quietPrompt, quietImage: quiet.quietImage, responseLength, dryRun,
         macroExtras: {
             imageInlining: mediaInliningEnabled, videoInlining: mediaInliningEnabled, audioInlining: mediaInliningEnabled,
         },
@@ -2548,13 +2546,13 @@ export async function buildRawActionChatCompletionRequest(directories, {
         throw new Error('Cannot continue/swipe an empty chat.');
     }
 
-    const { chat: messages, itemize: itemizeParts } = await buildChatCompletionPrompt(orchestratorInput);
+    const { chat: messages, itemize: itemizeParts, promptManagerParts, canPerformToolCalls: toolCallsAllowed } = await buildChatCompletionPrompt(orchestratorInput);
 
     const biasPresetEntries = settings.bias_preset_selected ? settings.bias_presets?.[settings.bias_preset_selected] : undefined;
     const useLogprobs = Boolean(powerUser.request_token_probabilities);
 
     const clientToolsByName = new Map();
-    if (Array.isArray(clientToolSchemas)) {
+    if (toolCallsAllowed && Array.isArray(clientToolSchemas)) {
         for (const entry of clientToolSchemas) {
             const name = entry?.function?.name;
             if (entry?.type !== 'function' || typeof name !== 'string' || !name || typeof entry.function.description !== 'string') {
@@ -2610,7 +2608,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
     });
 
     return {
-        params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledClientToolNames, enabledStealthClientToolNames, warnings, tokenCountRows, itemize,
+        params: generate_data, prompt: messages, promptManagerParts, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledClientToolNames, enabledStealthClientToolNames, warnings, tokenCountRows, itemize,
         activations: orchestratorInput.activations,
         macroVariables: macroVariableChanges(orchestratorInput.macroContext.chatMetadata, orchestratorInput.macroContext.globalVariables, orchestratorInput.variablesBefore),
     };
@@ -3095,7 +3093,10 @@ async function resolvePendingToolResults(chat, nodeId, toolResults) {
     return { ok: true };
 }
 
-router.post('/generate', withGenerationStop(async function (request, response) {
+/**
+ * A chat completion generation: from a turn of a stored chat (the page names it), or from a prompt the request carries.
+ */
+export const generateChatCompletion = withGenerationStop(async function (request, response) {
     let pendingAssistantPersist = null;
 
     /** @type {ToolCallHandOff | null} */
@@ -3113,7 +3114,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
 
         if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
             const {
-                character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
+                character_avatar: characterAvatar, group_id: groupId,
                 type = 'normal',
                 client_tools: clientToolSchemas,
                 stealth_tool_names: stealthClientToolNames,
@@ -3152,7 +3153,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             let built;
             try {
                 built = await buildRawActionChatCompletionRequest(directories, {
-                    characterAvatar, groupId, ownerId, chat, nodeId,
+                    characterAvatar, groupId, chat, nodeId,
                     type: isToolResult ? 'normal' : type, isImpersonate, isContinue, isSwipe,
                     userMessageText: isToolResult ? undefined : userMessageText,
                     userMessageExtra: isToolResult ? undefined : userMessageExtra,
@@ -3209,8 +3210,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 }
             }
 
-            const stream = !!request.body.stream;
-            request.body = { ...built.params, stream, chat_completion_source: built.settings.chat_completion_source };
+            request.body = { ...built.params, stream: !isToolResult && Boolean(built.params.stream), chat_completion_source: built.settings.chat_completion_source };
         }
 
         const postProcessingType = request.body.custom_prompt_post_processing;
@@ -3728,7 +3728,6 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             response.end();
         }
     }
-}));
+});
 
-router.get('/generate/resume/:id', handleGenerationResume);
-router.post('/generate/stop/:id', handleGenerationStop);
+router.post('/generate', generateChatCompletion);

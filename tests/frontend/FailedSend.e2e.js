@@ -88,9 +88,10 @@ async function connectLlamaCpp(page, url) {
     // @ts-ignore
     await expect.poll(() => page.evaluate(() => stTest.context().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
     await page.locator('#API-status-top').click();
-    await page.evaluate(() => {
+    await page.evaluate(async () => {
         // @ts-ignore
         stTest.context().textCompletionSettings.streaming = false;
+        await (await import('/script.js')).saveSettings('textgenerationwebui_settings');
     });
     await page.waitForTimeout(2500);
 }
@@ -134,7 +135,7 @@ test.describe('a send the server did not store', () => {
         await openCharacter(page, avatar);
         await connectLlamaCpp(page, mock.url);
 
-        await page.route('**/api/backends/text-completions/generate', route => route.abort('connectionreset'));
+        await page.route('**/api/generation/generate', route => route.abort('connectionreset'));
         await page.route('**/api/chats/message/append', route => route.abort('connectionreset'));
         const text = `When do we leave ${stamp}?`;
         await chatBox(page).fill(text);
@@ -143,7 +144,7 @@ test.describe('a send the server did not store', () => {
         await expect(notice(page, 'Message not saved')).toBeVisible({ timeout: 15000 });
         await expect(page.locator('#chat .mes.failed_send')).toHaveCount(1);
         await expect(page.locator('#chat .mes.failed_send .mes_text')).toContainText(text);
-        await page.unroute('**/api/backends/text-completions/generate');
+        await page.unroute('**/api/generation/generate');
         await page.unroute('**/api/chats/message/append');
         await chatBox(page).fill('And then?');
         await page.locator('#send_but').click();
@@ -174,7 +175,7 @@ test.describe('a send the server did not store', () => {
         await openCharacter(page, avatar);
         await connectLlamaCpp(page, mock.url);
 
-        await page.route('**/api/backends/text-completions/generate', async (route) => {
+        await page.route('**/api/generation/generate', async (route) => {
             await route.fetch();
             await route.abort('connectionreset');
         });
@@ -183,7 +184,7 @@ test.describe('a send the server did not store', () => {
         await chatBox(page).fill(text);
         await page.locator('#send_but').click();
         expect((await appended).ok()).toBe(true);
-        await page.unroute('**/api/backends/text-completions/generate');
+        await page.unroute('**/api/generation/generate');
         await expect(page.locator('#chat .mes.failed_send')).toHaveCount(0);
         await expect(notice(page, 'Message not saved')).toHaveCount(0);
 
@@ -198,20 +199,20 @@ test.describe('a send the server did not store', () => {
         await openCharacter(page, avatar);
         await connectLlamaCpp(page, mock.url);
 
-        await page.route('**/api/backends/text-completions/generate', () => new Promise(() => {}));
+        await page.route('**/api/generation/generate', () => new Promise(() => {}));
         const lost = `Lost in flight ${stamp}`;
         await chatBox(page).fill(lost);
         await page.locator('#send_but').click();
         await expect(page.locator('#chat .mes .mes_text', { hasText: lost })).toHaveCount(1);
         await reopen(page, avatar);
-        await page.unroute('**/api/backends/text-completions/generate');
+        await page.unroute('**/api/generation/generate');
         await expect(page.locator('#chat .mes.failed_send .mes_text')).toContainText(lost);
         await expect(notice(page, 'Message not saved')).toBeVisible();
         await notice(page, 'Message not saved').getByRole('button', { name: 'Save it again' }).click();
         await expect(page.locator('#chat .mes.failed_send')).toHaveCount(0);
         await connectLlamaCpp(page, mock.url);
 
-        await page.route('**/api/backends/text-completions/generate', async (route) => {
+        await page.route('**/api/generation/generate', async (route) => {
             await route.fetch();
             await new Promise(() => {});
         });
@@ -225,7 +226,7 @@ test.describe('a send the server did not store', () => {
             return (await response.json()).messages.some(m => m.mes === stored);
         }, { avatar, stored }), { timeout: 15000 }).toBe(true);
         await reopen(page, avatar);
-        await page.unroute('**/api/backends/text-completions/generate');
+        await page.unroute('**/api/generation/generate');
         await expect(page.locator('#chat .mes .mes_text', { hasText: stored })).toHaveCount(1);
         await expect(page.locator('#chat .mes.failed_send')).toHaveCount(0);
         await expect(notice(page, 'Message not saved')).toHaveCount(0);
@@ -239,13 +240,13 @@ test.describe('a send the server did not store', () => {
         await openCharacter(page, avatar);
         await connectLlamaCpp(page, mock.url);
 
-        await page.route('**/api/backends/text-completions/generate', route => route.abort('connectionreset'));
+        await page.route('**/api/generation/generate', route => route.abort('connectionreset'));
         await page.route('**/api/chats/message/append', route => route.abort('connectionreset'));
         const text = `Late message ${stamp}`;
         await chatBox(page).fill(text);
         await page.locator('#send_but').click();
         await expect(notice(page, 'Message not saved')).toBeVisible({ timeout: 15000 });
-        await page.unroute('**/api/backends/text-completions/generate');
+        await page.unroute('**/api/generation/generate');
         await page.unroute('**/api/chats/message/append');
 
         const greetingNode = await page.evaluate(async (avatar) => {

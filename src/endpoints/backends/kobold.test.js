@@ -8,6 +8,7 @@ import express from 'express';
 
 import { write as writeCard } from '../../character-card-parser.js';
 import { setConfigFilePath } from '../../util.js';
+import { streamAsSetting } from '../../../tests/util/stream-as-setting.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
@@ -116,11 +117,24 @@ const fakeTokenizerOptions = {
     encodeLocal: async (_key, text) => Array.from(String(text ?? '')).map(ch => ch.codePointAt(0)),
 };
 
+/** What a KoboldCpp that streams, and takes nothing newer, answers when asked its versions. */
+const VERSIONS = {
+    '/v1/info/version': { result: '1.0.0' },
+    '/extra/version': { result: '1.30' },
+    '/v1/model': { result: 'koboldcpp/test-model' },
+};
+
 async function startFakeBackend(handler) {
     const server = http.createServer((req, res) => {
         let body = '';
         req.on('data', chunk => { body += chunk; });
-        req.on('end', () => handler(req, res, body));
+        req.on('end', () => {
+            if (Object.hasOwn(VERSIONS, req.url ?? '')) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify(VERSIONS[req.url]));
+            }
+            return handler(req, res, body);
+        });
     });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     return { server, url: `http://127.0.0.1:${server.address().port}` };
@@ -137,6 +151,7 @@ function buildTestApp() {
             next();
         }, next);
     });
+    app.use(streamAsSetting());
     app.use('/', router);
     return app;
 }
@@ -242,7 +257,7 @@ async function run() {
         assert.equal(typeof built.params.prompt, 'string');
         assert.ok(built.params.prompt.includes('Hello there, traveler.'));
         assert.ok(built.params.prompt.includes('What happens next, Rex?'));
-        assert.equal(built.params.streaming, false, 'streaming is unconditionally false for a raw-action-built request - see this file\'s own top-of-file doc comment on why (koboldFlags always defaults to {}, with no way to override it from buildRawActionKoboldRequest()\'s own params)');
+        assert.equal(built.params.streaming, false, 'a Kobold whose versions can\'t be read is not streamed from');
     }
 
     await assert.rejects(

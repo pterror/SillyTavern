@@ -13,7 +13,7 @@ import {
 import { forEachBodyText, forwardFetchResponse, trimV1, getConfigValue, pickKeys } from '../../util.js';
 import { setAdditionalHeaders } from '../../additional-headers.js';
 import { createHash } from 'node:crypto';
-import { pipeLlamaCppCompactStream, createBackpressureWriter, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, encodeContent, encodeStoredReplyFrame, encodeIndexFrame, encodeReasoningFrame, encodeProbabilitiesFrame, encodeControlFrame, writeStoredMessagesFrame } from './llamacpp-compact-stream.js';
+import { pipeLlamaCppCompactStream, createBackpressureWriter, createGenerationRecord, createResumableWriter, detachFromResponse, encodeContent, encodeStoredReplyFrame, encodeIndexFrame, encodeReasoningFrame, encodeProbabilitiesFrame, encodeControlFrame, writeStoredMessagesFrame } from './llamacpp-compact-stream.js';
 import { resolveTextGenBackend } from '../../textgen-backend-resolve.js';
 import { readSettingsFor, settingsContextOf } from '../../settings-reads.js';
 import { resolveTokenizer, createTokenizerOutcome, sendTokenizerWarnings, tokenizerAnswer, tokenizerIdentity } from '../../tokenizer-resolve.js';
@@ -32,7 +32,7 @@ import { attachStoredReply, persistAssistantReply, replyTextAsPageShows, unreada
 import { noteReplyReasoning, noteReplyText, readReplyFinishSettings } from '../../reply-reasoning.js';
 import { answerSessionOnHeaders, chatContext } from '../../chat-request.js';
 import { logBackendFailure } from '../../backend-unreachable.js';
-import { withGenerationStop, generationIdFor, isGenerationStopped, onGenerationStop, onGenerationStopFlush, stoppableController, handleGenerationStop } from '../../generation-stop.js';
+import { withGenerationStop, generationIdFor, isGenerationStopped, onGenerationStop, onGenerationStopFlush, stoppableController } from '../../generation-stop.js';
 import { macroVariableChanges, storeMacroVariables } from '../../macro-facts.js';
 import { fetchOutgoing } from '../../outgoing-fetch.js';
 
@@ -408,12 +408,13 @@ router.post('/props', async function (request, response) {
  * @param {import('../../prompt/injections.js').PageInjections} [params.pageInjections]
  * @param {object} [params.userMessageExtra]
  * @param {import('../../page-writes.js').QuietPrompt} [params.quiet]
- * @returns {Promise<{ params: object, backend: {type: string, serverUrl: string, model: string|undefined}, anchorNodeId: string|null, anchorContent: object|null, activations: import('../../world-info/activation-record.js').ActivationRecord|null, tokenizerIdentity: string|null, tokenCountRows: import('../../token-count-store.js').PendingTokenRows, name1: string, name2: string, warnings: object[], itemize: () => Promise<import('../../prompt-itemization.js').PromptItemization> }>}
+ * @param {boolean} [params.dryRun] Builds the prompt without changing anything a send would.
+ * @returns {Promise<{ params: object, prompt: string, backend: {type: string, serverUrl: string, model: string|undefined}, stream: boolean, anchorNodeId: string|null, anchorContent: object|null, activations: import('../../world-info/activation-record.js').ActivationRecord|null, tokenizerIdentity: string|null, tokenCountRows: import('../../token-count-store.js').PendingTokenRows, name1: string, name2: string, warnings: object[], itemize: () => Promise<import('../../prompt-itemization.js').PromptItemization> }>}
  */
 export async function buildRawActionTextCompletionRequest(directories, {
     request, characterAvatar, groupId, chat, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra, pageFacts = {}, pageInjections = {},
-    tokenizerOptions = {}, quiet = {}, responseLength,
+    tokenizerOptions = {}, quiet = {}, responseLength, dryRun = false,
 } = {}) {
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
@@ -449,7 +450,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
         anchorNodeId = nodeId;
     }
 
-    const { power_user: powerUser = {} } = readSettingsFor(directories, settingsContext, ['power_user']);
+    const { power_user: powerUser = {}, textgenerationwebui_settings: textgenSettings = {} } = readSettingsFor(directories, settingsContext, ['power_user', 'textgenerationwebui_settings']);
     const tokenizerState = {
         api: 'textgenerationwebui', type: backend.type, url: backend.serverUrl, model: backend.model ?? '',
         tokenizerSetting: powerUser.tokenizer,
@@ -473,7 +474,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, chatContext: chat, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts, pageInjections,
-        countTokens, encodeTokens, countPromptTokens, amountGen: responseLength, macroExtras: textCompletionQuietInput(quiet),
+        countTokens, encodeTokens, countPromptTokens, amountGen: responseLength, macroExtras: { ...textCompletionQuietInput(quiet), isDryRun: dryRun },
     });
 
     if (nodeId === null) {
@@ -492,7 +493,8 @@ export async function buildRawActionTextCompletionRequest(directories, {
     const anchorContent = orchestratorInput.chat.length > 0 ? orchestratorInput.chat[orchestratorInput.chat.length - 1] : null;
 
     return {
-        params: assembled.generate_data, backend, anchorNodeId, anchorContent, activations: assembled.activations, tokenizerIdentity: identity,
+        params: assembled.generate_data, prompt: assembled.combinedPrompt, backend, anchorNodeId, anchorContent, activations: assembled.activations, tokenizerIdentity: identity,
+        stream: Boolean(textgenSettings.streaming) && type !== 'quiet',
         macroVariables: macroVariableChanges(orchestratorInput.chatMetadata, orchestratorInput.macroFacts.globalVariables, orchestratorInput.variablesBefore),
         model: backend.model
             ?? (llamaCppProps.props ? llamaCppPropsModelName(llamaCppProps.props) : undefined)
@@ -504,7 +506,10 @@ export async function buildRawActionTextCompletionRequest(directories, {
     };
 }
 
-router.post('/generate', withGenerationStop(async function (request, response) {
+/**
+ * A text completion generation: from a turn of a stored chat (the page names it), or from a prompt the request carries.
+ */
+export const generateTextCompletion = withGenerationStop(async function (request, response) {
     if (!request.body) return response.sendStatus(400);
 
     let pendingAssistantPersist = null;
@@ -586,8 +591,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 chat.session.actor();
             }
 
-            const stream = !!request.body.stream;
-            request.body = { ...built.params, stream, api_type: built.backend.type, api_server: built.backend.serverUrl };
+            request.body = { ...built.params, stream: built.stream, api_type: built.backend.type, api_server: built.backend.serverUrl };
         }
 
         if (!request.body.api_type) {
@@ -787,11 +791,10 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             ? response.send(value)
             : response.end();
     }
-}));
+});
 
-router.get('/generate/resume/:id', handleGenerationResume);
+router.post('/generate', generateTextCompletion);
 
-router.post('/generate/stop/:id', handleGenerationStop);
 
 const ollama = express.Router();
 

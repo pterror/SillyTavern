@@ -13,11 +13,9 @@ import { onSavedViewsChanged } from './scripts/saved-views.js';
 export { entitiesFilter };
 import { userStatsHandler, initStats } from './scripts/stats.js';
 import {
-    generateKoboldWithStreaming,
     kai_settings,
     loadKoboldSettings,
     getKoboldGenerationData,
-    kai_flags,
     koboldai_settings,
     koboldai_setting_names,
     initKoboldSettings,
@@ -26,7 +24,6 @@ import {
 import {
     textgenerationwebui_settings as textgen_settings,
     loadTextGenSettings,
-    generateTextGenWithStreaming,
     getTextGenGenerationData,
     textgen_types,
     parseTextgenLogprobs,
@@ -107,7 +104,6 @@ import {
 } from './scripts/chat-completion-settings.js';
 
 import {
-    generateNovelWithStreaming,
     getNovelGenerationData,
     getKayraMaxContextTokens,
     loadNovelSettings,
@@ -128,7 +124,6 @@ import {
     horde_settings,
     loadHordeSettings,
     generateHorde,
-    generateHordeRawAction,
     getStatusHorde,
     getHordeModels,
     initHorde,
@@ -170,7 +165,7 @@ import {
 import { getAtPath, seedKeyHashes, setAtPath, settingsWithoutCharLore, normalizeFav } from './scripts/hash-utils.js';
 import { countedCardFieldValue, isCountedCardField } from './scripts/card-token-texts.js';
 import { chatOpenAsks, takeChatOpenParts } from './scripts/chat-open-parts.js';
-import { debounce_timeout, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE, UNSET_VALUE } from './scripts/constants.js';
+import { debounce_timeout, MEDIA_DISPLAY, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE, UNSET_VALUE } from './scripts/constants.js';
 
 import { extension_settings } from './scripts/extension-settings.js';
 import { executeSlashCommandsOnChatInput, initDefaultSlashCommands, initSlashCommandAutoComplete, isExecutingCommandsFromChatInput, pauseScriptExecution, stopScriptExecution } from './scripts/slash-commands.js';
@@ -191,7 +186,7 @@ import {
 } from './scripts/tags.js';
 import { checkOpenRouterAuth, initSecrets, readSecretState } from './scripts/secrets.js';
 import { reloadMarkedProcessor } from './scripts/marked-processor.js';
-import { NOTE_MODULE_NAME, initAuthorsNote, metadata_keys, shouldWIAddPrompt } from './scripts/authors-note.js';
+import { initAuthorsNote } from './scripts/authors-note.js';
 import { registerPromptManagerMigration } from './scripts/PromptManager.js';
 import { initLogprobs, saveLogprobsForActiveMessage } from './scripts/logprobs.js';
 import { openRightMenu, closeRightMenu } from './scripts/right-menu-state.js';
@@ -215,9 +210,6 @@ import {
     DEFAULT_DEPTH as PERSONA_DEFAULT_DEPTH,
     DEFAULT_ROLE as PERSONA_DEFAULT_ROLE,
     getPersonaDescription,
-    getPersonaDescriptionPosition,
-    getPersonaDescriptionDepth,
-    getPersonaDescriptionRole,
     personaAvatar,
     personaCrop,
     personaThumbnail,
@@ -264,7 +256,7 @@ import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMess
 import { event_types, eventSource } from './scripts/events.js';
 import { token, setToken, getRequestHeaders } from './scripts/request-headers.js';
 import { observeSessionAnswers, onChangeStream, prepareTabSession } from './scripts/tab-session.js';
-import { beginServerGeneration, endServerGeneration, takeStopResult } from './scripts/generation-stop.js';
+import { onStoppedReply } from './scripts/generation-request.js';
 import { chat, chat_metadata, setChatMetadata } from './scripts/chat-state.js';
 import { active_character, active_group, name1, default_user_name, setActiveCharacter, setActiveGroup, setActiveCharacterAndGroupFromSettings, setName1Raw } from './scripts/app-selection-state.js';
 import { amount_gen, max_context, main_api, setAmountGen, setMaxContext, setMainApi } from './scripts/generation-params.js';
@@ -276,7 +268,6 @@ import { SimpleMutex } from './scripts/util/SimpleMutex.js';
 import { AudioPlayer } from './scripts/audio-player.js';
 import { MacroEnvBuilder } from './scripts/macros/engine/MacroEnvBuilder.js';
 import { messageFormatting } from './scripts/message-formatting.js';
-import { reportStoredHeader } from './scripts/stored-report.js';
 export { messageFormatting };
 import {
     updateMessage,
@@ -321,7 +312,7 @@ export { saveMetadata };
 import { switchToNode, switchToAlternativePath } from './scripts/node-navigation.js';
 export { switchToNode };
 import {
-    Generate, stopGeneration,
+    Generate, buildPrompt, stopGeneration,
     streamingProcessor, abortController, setAbortController, kobold_horde_model, generation_started,
     _messageSnapshots, _snapshotMessages, markStoredAs, isAsStored, forgetStored, finishStreamedReplyPersistence, applyStoredReply,
     stampReplyNode, beginSwipeReply, isReplyGenerating,
@@ -972,7 +963,6 @@ export const extension_prompt_roles = {
     ASSISTANT: 2,
 };
 
-export const MAX_INJECTION_DEPTH = 10000;
 
 async function getClientVersion() {
     try {
@@ -1051,8 +1041,8 @@ function flushDraftSave() {
 const saveDraftDebounced = debounce(flushDraftSave, debounce_timeout.standard);
 
 export const talkativeness_default = 0.5;
-export const depth_prompt_depth_default = 4;
-export const depth_prompt_role_default = 'system';
+const depth_prompt_depth_default = 4;
+const depth_prompt_role_default = 'system';
 export const per_page_default = 50;
 
 /**
@@ -3016,34 +3006,22 @@ export function getStoppingStrings(isImpersonate, isContinue, api = main_api) {
  * @returns {Promise<string>} Generated text. If using structured output, will contain a serialized JSON object.
  */
 export async function generateQuietPrompt({ quietPrompt = '', quietToLoud = false, skipWIAN = false, quietImage = null, quietName = null, responseLength = null, forceAvatar = null, jsonSchema = null, removeReasoning = true, trimToSentence = false } = {}) {
-    const responseLengthCustomized = typeof responseLength === 'number' && responseLength > 0;
-    let eventHook = () => { };
-    try {
-        /** @type {GenerateOptions} */
-        const generateOptions = {
-            quiet_prompt: quietPrompt ?? '',
-            quietToLoud: quietToLoud ?? false,
-            skipWIAN: skipWIAN ?? false,
-            force_name2: true,
-            quietImage: quietImage ?? null,
-            quietName: quietName ?? null,
-            force_avatar: forceAvatar,
-            jsonSchema: jsonSchema ?? null,
-        };
-        if (responseLengthCustomized) {
-            TempResponseLength.save(main_api, responseLength);
-            eventHook = TempResponseLength.setupEventHook(main_api);
-        }
-        let result = await Generate('quiet', generateOptions);
-        result = trimToSentence ? trimToEndSentence(result) : result;
-        result = removeReasoning ? removeReasoningFromString(result) : result;
-        return result;
-    } finally {
-        if (responseLengthCustomized && TempResponseLength.isCustomized()) {
-            TempResponseLength.restore(main_api);
-            TempResponseLength.removeEventHook(main_api, eventHook);
-        }
-    }
+    /** @type {GenerateOptions} */
+    const generateOptions = {
+        quiet_prompt: quietPrompt ?? '',
+        quietToLoud: quietToLoud ?? false,
+        skipWIAN: skipWIAN ?? false,
+        force_name2: true,
+        quietImage: quietImage ?? null,
+        quietName: quietName ?? null,
+        force_avatar: forceAvatar,
+        jsonSchema: jsonSchema ?? null,
+        responseLength: typeof responseLength === 'number' && responseLength > 0 ? responseLength : undefined,
+    };
+    let result = await Generate('quiet', generateOptions);
+    result = trimToSentence ? trimToEndSentence(result) : result;
+    result = removeReasoning ? removeReasoningFromString(result) : result;
+    return result;
 }
 
 /**
@@ -3127,112 +3105,6 @@ function cleanGroupMessage(getMessage) {
         }
     }
     return getMessage;
-}
-
-export function addPersonaDescriptionExtensionPrompt() {
-    const INJECT_TAG = inject_ids.PERSONA_DESCRIPTION;
-    setExtensionPrompt(INJECT_TAG, '', extension_prompt_types.IN_PROMPT, 0);
-
-    const personaDescription = getPersonaDescription();
-    const personaDescriptionPosition = getPersonaDescriptionPosition();
-
-    if (!personaDescription || personaDescriptionPosition === persona_description_positions.NONE) {
-        return;
-    }
-
-    const promptPositions = [persona_description_positions.BOTTOM_AN, persona_description_positions.TOP_AN];
-
-    if (promptPositions.includes(personaDescriptionPosition) && shouldWIAddPrompt) {
-        const originalAN = extension_prompts[NOTE_MODULE_NAME].value;
-        const ANWithDesc = personaDescriptionPosition === persona_description_positions.TOP_AN
-            ? `${personaDescription}\n${originalAN}`
-            : `${originalAN}\n${personaDescription}`;
-
-        setExtensionPrompt(NOTE_MODULE_NAME, ANWithDesc, chat_metadata[metadata_keys.position], chat_metadata[metadata_keys.depth], extension_settings.note.allowWIScan, chat_metadata[metadata_keys.role]);
-    }
-
-    if (personaDescriptionPosition === persona_description_positions.AT_DEPTH) {
-        setExtensionPrompt(INJECT_TAG, personaDescription, extension_prompt_types.IN_CHAT, getPersonaDescriptionDepth(), true, getPersonaDescriptionRole());
-    }
-}
-
-/**
- * Wrapper to fetch extension prompts by module name
- * @param {string} moduleName Module name
- * @returns {Promise<string>} Extension prompt
- */
-export async function getExtensionPromptByName(moduleName) {
-    if (!moduleName) {
-        return '';
-    }
-
-    const prompt = extension_prompts[moduleName];
-
-    if (!prompt) {
-        return '';
-    }
-
-    const hasFilter = typeof prompt.filter === 'function';
-
-    if (hasFilter && !await prompt.filter()) {
-        return '';
-    }
-
-    return substituteParams(prompt.value);
-}
-
-/**
- * Gets the maximum depth of extension prompts.
- * @returns {number} Maximum depth of extension prompts
- */
-export function getExtensionPromptMaxDepth() {
-    return MAX_INJECTION_DEPTH;
-    /*
-    const prompts = Object.values(extension_prompts);
-    const maxDepth = Math.max(...prompts.map(x => x.depth ?? 0));
-    // Clamp to 1 <= depth <= MAX_INJECTION_DEPTH
-    return Math.max(Math.min(maxDepth, MAX_INJECTION_DEPTH), 1);
-    */
-}
-
-/**
- * Returns the extension prompt for the given position, depth, and role.
- * If multiple prompts are found, they are joined with a separator.
- * @param {number} [position] Position of the prompt
- * @param {number} [depth] Depth of the prompt
- * @param {string} [separator] Separator for joining multiple prompts
- * @param {number} [role] Role of the prompt
- * @param {boolean} [wrap] Wrap start and end with a separator
- * @returns {Promise<string>} Extension prompt
- */
-export async function getExtensionPrompt(position = extension_prompt_types.IN_PROMPT, depth = undefined, separator = '\n', role = undefined, wrap = true) {
-    const filterByFunction = async (prompt) => {
-        const hasFilter = typeof prompt.filter === 'function';
-        if (hasFilter && !await prompt.filter()) {
-            return false;
-        }
-        return true;
-    };
-    const promptPromises = Object.keys(extension_prompts)
-        .sort()
-        .map((x) => extension_prompts[x])
-        .filter(x => x.position == position && x.value)
-        .filter(x => depth === undefined || x.depth === undefined || x.depth === depth)
-        .filter(x => role === undefined || x.role === undefined || x.role === role)
-        .filter(filterByFunction);
-    const prompts = await Promise.all(promptPromises);
-
-    let values = prompts.map(x => x.value.trim()).join(separator);
-    if (wrap && values.length && !values.startsWith(separator)) {
-        values = separator + values;
-    }
-    if (wrap && values.length && !values.endsWith(separator)) {
-        values = values + separator;
-    }
-    if (values.length) {
-        values = substituteParams(values);
-    }
-    return values;
 }
 
 /**
@@ -3374,32 +3246,6 @@ export function getCharacterCardFieldsLazy({ avatar = undefined } = {}) {
 }
 
 /**
- * Returns the character card fields for the current character.
- * @param {Object} [options={}]
- * @param {string} [options.avatar] Optional character avatar, as for {@link getCharacterCardFieldsLazy}
- * @returns {CharacterCardFields} Character card fields
- */
-export function getCharacterCardFields({ avatar = undefined } = {}) {
-    const lazy = getCharacterCardFieldsLazy({ avatar });
-
-    // Resolve all lazy fields into a plain object
-    return {
-        system: lazy.system,
-        mesExamples: lazy.mesExamples,
-        description: lazy.description,
-        personality: lazy.personality,
-        persona: lazy.persona,
-        scenario: lazy.scenario,
-        jailbreak: lazy.jailbreak,
-        version: lazy.version,
-        charDepthPrompt: lazy.charDepthPrompt,
-        creatorNotes: lazy.creatorNotes,
-        firstMessage: lazy.firstMessage,
-        alternateGreetings: lazy.alternateGreetings,
-    };
-}
-
-/**
  * Parses an examples string.
  * @param {string} examplesStr
  * @returns {string[]} Examples array with block heading
@@ -3418,17 +3264,6 @@ export function parseMesExamples(examplesStr, isInstruct) {
     const splitExamples = examplesStr.split(/<START>/gi).slice(1).map(block => `${blockHeading}${block.trim()}\n`);
 
     return splitExamples;
-}
-
-export function isStreamingEnabled() {
-    return (
-        (main_api == 'openai' &&
-            oai_settings.stream_openai &&
-            !(oai_settings.chat_completion_source == chat_completion_sources.OPENAI && ['o1-2024-12-17', 'o1'].includes(oai_settings.openai_model))
-        )
-        || (main_api == 'kobold' && kai_settings.streaming_kobold && kai_flags.can_use_streaming)
-        || (main_api == 'novel' && nai_settings.streaming_novel)
-        || (main_api == 'textgenerationwebui' && textgen_settings.streaming));
 }
 
 export function showStopButton() {
@@ -3451,8 +3286,10 @@ export class StreamingProcessor {
      * @param {Date} timeStarted Date when generation was started
      * @param {string} continueMessage Previous message if the type is 'continue'
      * @param {PromptReasoning} promptReasoning Prompt reasoning instance
+     * @param {string} api The kind of connection the reply comes from
      */
-    constructor(type, forceName2, timeStarted, continueMessage, promptReasoning) {
+    constructor(type, forceName2, timeStarted, continueMessage, promptReasoning, api) {
+        this.api = api;
         this.result = '';
         this.messageId = -1;
         /** @type {HTMLElement} */
@@ -3561,6 +3398,7 @@ export class StreamingProcessor {
                     isContinue: false,
                     displayIncompleteSentences: true,
                     stoppingStrings: this.stoppingStrings,
+                    api: this.api,
                 });
             }
         }
@@ -3571,6 +3409,7 @@ export class StreamingProcessor {
             isContinue: isContinue,
             displayIncompleteSentences: !isFinal,
             stoppingStrings: this.stoppingStrings,
+            api: this.api,
         });
 
         const charsToBalance = ['*', '"', '```', '~~~'];
@@ -3786,7 +3625,7 @@ export class StreamingProcessor {
         // when streaming, we cache the result of getStoppingStrings instead of calling it once per token.
         const isImpersonate = this.type == 'impersonate';
         const isContinue = this.type == 'continue';
-        this.stoppingStrings = getStoppingStrings(isImpersonate, isContinue, main_api);
+        this.stoppingStrings = getStoppingStrings(isImpersonate, isContinue, this.api);
 
         const interval = new Stopwatch(1000 / power_user.streaming_fps).interval;
         let lastDraw = Date.now();
@@ -4219,8 +4058,7 @@ export function removeLastMessage() {
  */
 
 /**
- * Assembles the full prompt that would be sent for the next generation, without sending it - a dry run of
- * Generate() that captures whichever combine-prompt event fires for the active backend, then displays it.
+ * Shows the prompt the next reply would be sent with, as the server builds it.
  */
 async function previewFullPrompt() {
     if (is_send_press) {
@@ -4233,96 +4071,24 @@ async function previewFullPrompt() {
         return;
     }
 
-    let captured = null;
-    const onChatCompletionReady = (data) => { if (data.dryRun) captured = { chatCompletion: data.chat }; };
-    const onCombinePrompts = (data) => { if (data.dryRun) captured = { textCompletion: data.prompt }; };
-
-    eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, onChatCompletionReady);
-    eventSource.on(event_types.GENERATE_AFTER_COMBINE_PROMPTS, onCombinePrompts);
-
+    let built;
     try {
-        await Generate('normal', {}, true);
-
-        if (!captured) {
-            toastr.error(t`Could not assemble the prompt.`);
-            return;
-        }
-
-        const text = captured.chatCompletion
-            ? captured.chatCompletion.map(m => `${m.role}:\n${m.content}`).join('\n\n')
-            : captured.textCompletion;
-
-        const pre = $('<pre class="justifyLeft" style="white-space: pre-wrap; word-break: break-word;"></pre>').text(text);
-        await callGenericPopup(pre, POPUP_TYPE.TEXT, '', { wide: true, large: true, allowVerticalScrolling: true });
-    } finally {
-        eventSource.removeListener(event_types.CHAT_COMPLETION_PROMPT_READY, onChatCompletionReady);
-        eventSource.removeListener(event_types.GENERATE_AFTER_COMBINE_PROMPTS, onCombinePrompts);
+        built = await buildPrompt('normal');
+    } catch (error) {
+        toastr.error(String(error?.message ?? error), t`Could not assemble the prompt.`);
+        return;
     }
-}
-
-/**
- * @param {object[]} messages
- * @param {boolean} isContinue
- * @returns {Promise<number[]>}
- */
-export async function doChatInject(messages, isContinue) {
-    const injectedMessages = [];
-    let totalInsertedMessages = 0;
-    messages.reverse();
-
-    const maxDepth = getExtensionPromptMaxDepth();
-    for (let i = 0; i <= maxDepth; i++) {
-        const roles = [extension_prompt_roles.SYSTEM, extension_prompt_roles.USER, extension_prompt_roles.ASSISTANT];
-        const names = {
-            [extension_prompt_roles.SYSTEM]: '',
-            [extension_prompt_roles.USER]: name1,
-            [extension_prompt_roles.ASSISTANT]: name2,
-        };
-        const roleMessages = [];
-        const separator = '\n';
-        const wrap = false;
-
-        for (const role of roles) {
-            const extensionPrompt = String(await getExtensionPrompt(extension_prompt_types.IN_CHAT, i, separator, role, wrap)).trimStart();
-            const isNarrator = role === extension_prompt_roles.SYSTEM;
-            const isUser = role === extension_prompt_roles.USER;
-            const name = names[role];
-
-            if (extensionPrompt) {
-                roleMessages.push({
-                    name: name,
-                    is_user: isUser,
-                    mes: extensionPrompt,
-                    extra: {
-                        type: isNarrator ? system_message_types.NARRATOR : null,
-                    },
-                });
-            }
-        }
-
-        if (roleMessages.length) {
-            const depth = isContinue && i === 0 ? 1 : i;
-            const injectIdx = Math.min(depth + totalInsertedMessages, messages.length);
-            messages.splice(injectIdx, 0, ...roleMessages);
-            totalInsertedMessages += roleMessages.length;
-            injectedMessages.push(...roleMessages);
-        }
+    if (!built) {
+        toastr.error(t`Could not assemble the prompt.`);
+        return;
     }
 
-    const injectedIndices = injectedMessages.map(msg => messages.indexOf(msg));
-    messages.reverse();
-    return injectedIndices;
-}
+    const text = Array.isArray(built.prompt)
+        ? built.prompt.map(m => `${m.role}:\n${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`).join('\n\n')
+        : built.prompt;
 
-export function flushWIInjections() {
-    const depthPrefix = inject_ids.CUSTOM_WI_DEPTH;
-    const outletPrefix = inject_ids.CUSTOM_WI_OUTLET('');
-
-    for (const key of Object.keys(extension_prompts)) {
-        if (key.startsWith(depthPrefix) || key.startsWith(outletPrefix)) {
-            delete extension_prompts[key];
-        }
-    }
+    const pre = $('<pre class="justifyLeft" style="white-space: pre-wrap; word-break: break-word;"></pre>').text(text);
+    await callGenericPopup(pre, POPUP_TYPE.TEXT, '', { wide: true, large: true, allowVerticalScrolling: true });
 }
 
 /**
@@ -4337,16 +4103,16 @@ export function unblockGeneration(type) {
     activateSendButtons();
     setGenerationProgress(0);
     flushEphemeralStoppingStrings();
-    flushWIInjections();
 }
 
 /**
  * Determines if the message should be auto-continued.
  * @param {string} messageChunk Current message chunk
  * @param {boolean} isImpersonate Is the user impersonation
+ * @param {string} api The kind of connection the message came from
  * @returns {boolean} Whether the message should be auto-continued
  */
-export function shouldAutoContinue(messageChunk, isImpersonate) {
+export function shouldAutoContinue(messageChunk, isImpersonate, api) {
     if (!power_user.auto_continue.enabled) {
         return false;
     }
@@ -4371,7 +4137,7 @@ export function shouldAutoContinue(messageChunk, isImpersonate) {
         return false;
     }
 
-    if (main_api === 'openai' && !power_user.auto_continue.allow_chat_completions) {
+    if (api === 'openai' && !power_user.auto_continue.allow_chat_completions) {
         return false;
     }
 
@@ -4402,13 +4168,14 @@ export function shouldAutoContinue(messageChunk, isImpersonate) {
  * Triggers auto-continue if the message meets the criteria.
  * @param {string} messageChunk Current message chunk
  * @param {boolean} isImpersonate Is the user impersonation
+ * @param {string} api The kind of connection the message came from
  */
-export function triggerAutoContinue(messageChunk, isImpersonate) {
+export function triggerAutoContinue(messageChunk, isImpersonate, api) {
     if (selected_group) {
         return;
     }
 
-    if (shouldAutoContinue(messageChunk, isImpersonate)) {
+    if (shouldAutoContinue(messageChunk, isImpersonate, api)) {
         $('#option_continue').trigger('click');
     }
 }
@@ -4445,33 +4212,6 @@ export function getBiasStrings(textareaText, type) {
     promptBias = substituteParams(promptBias);
 
     return { messageBias, promptBias, isUserPromptBias };
-}
-
-/**
- * @param {Object} chatItem Message history item.
- * @param {boolean} isInstruct Whether instruct mode is enabled.
- * @param {boolean|number} forceOutputSequence Whether to force the first/last output sequence for instruct mode.
- */
-export function formatMessageHistoryItem(chatItem, isInstruct, forceOutputSequence) {
-    const isNarratorType = chatItem?.extra?.type === system_message_types.NARRATOR;
-    const characterName = chatItem?.name ? chatItem.name : name2;
-    const itemName = chatItem.is_user ? chatItem.name : characterName;
-    const shouldPrependName = !isNarratorType;
-
-    // If this symbol flag is set, completely ignore the message.
-    // This can be used to hide messages without affecting the number of messages in the chat.
-    if (chatItem.extra?.[IGNORE_SYMBOL]) {
-        return '';
-    }
-
-    // Don't include a name if it's empty
-    let textResult = chatItem?.name && shouldPrependName ? `${itemName}: ${chatItem.mes}\n` : `${chatItem.mes}\n`;
-
-    if (isInstruct) {
-        textResult = formatInstructModeChat(itemName, chatItem.mes, chatItem.is_user, isNarratorType, chatItem.force_avatar, name1, name2, forceOutputSequence);
-    }
-
-    return textResult;
 }
 
 /**
@@ -4628,10 +4368,6 @@ export function responseLengthFor(api) {
     return 0;
 }
 
-export function requestedResponseLength() {
-    return TempResponseLength.length ?? undefined;
-}
-
 /**
  * Gets the maximum usable prompt size for the current API.
  * @param {number|null} overrideResponseLength Optional override for the response length.
@@ -4643,20 +4379,6 @@ export function getMaxPromptTokens(overrideResponseLength = null) {
     }
 
     return getMaxContextTokens() - (overrideResponseLength || getMaxResponseTokens());
-}
-
-export function addChatsPreamble(mesSendString) {
-    return main_api === 'novel'
-        ? substituteParams(nai_settings.preamble) + '\n' + mesSendString
-        : mesSendString;
-}
-
-export function addChatsSeparator(mesSendString) {
-    if (power_user.context.chat_start) {
-        return substituteParams(power_user.context.chat_start + '\n') + mesSendString;
-    } else {
-        return mesSendString;
-    }
 }
 
 /**
@@ -4713,26 +4435,6 @@ export async function duplicateCharacter({ avatar = null, silent = false } = {})
     return data.path;
 }
 
-export function setInContextMessages(msgInContextCount, type) {
-    chatElement.find('.mes').removeClass('lastInContext');
-
-    if (type === 'swipe' || type === 'regenerate' || type === 'continue') {
-        msgInContextCount++;
-    }
-
-    const lastMessageBlock = chatElement.find('.mes:not([is_system="true"]), .mes.toolCall').eq(-msgInContextCount);
-    lastMessageBlock.addClass('lastInContext');
-
-    if (lastMessageBlock.length === 0) {
-        const firstMessageId = getFirstDisplayedMessageId();
-        chatElement.find(`.mes[mesid="${firstMessageId}"]`).addClass('lastInContext');
-    }
-
-    // Update last id to chat. No metadata save on purpose, gets hopefully saved via another call
-    const lastMessageId = Math.max(0, chat.length - msgInContextCount);
-    chat_metadata.lastInContextMessageId = lastMessageId;
-}
-
 /**
  * @typedef {object} AdditionalRequestOptions
  * @property {JsonSchema} [jsonSchema]
@@ -4740,11 +4442,11 @@ export function setInContextMessages(msgInContextCount, type) {
 
 /**
  * @param {object} initialData
- * @param {object} rawAction
+ * @param {{ character_avatar: string, group_id?: string }} owner
  * @returns {Promise<object>}
  * @throws {Error}
  */
-export async function resolveClientToolHandoffLoop(initialData, rawAction) {
+export async function resolveClientToolHandoffLoop(initialData, owner) {
     let data = initialData;
 
     for (let round = 0; round < ToolManager.RECURSE_LIMIT && Array.isArray(data?.pending_tool_calls) && data.pending_tool_calls.length; round++) {
@@ -4783,13 +4485,12 @@ export async function resolveClientToolHandoffLoop(initialData, rawAction) {
             .map(tool => tool?.function?.name)
             .filter(name => typeof name === 'string' && ToolManager.isStealthTool(name));
 
-        const response = await fetch('/api/backends/chat-completions/generate', {
+        const response = await fetch('/api/generation/generate', {
             method: 'POST',
             headers: getRequestHeaders(),
             body: JSON.stringify({
-                character_avatar: rawAction.character_avatar,
-                group_id: rawAction.group_id,
-                owner_id: rawAction.owner_id,
+                character_avatar: owner.character_avatar,
+                group_id: owner.group_id,
                 node_id: nodeId,
                 type: 'tool_result',
                 tool_results,
@@ -4816,89 +4517,6 @@ export async function resolveClientToolHandoffLoop(initialData, rawAction) {
 }
 
 /**
- * Sends a non-streaming request to the API.
- * @param {string} type Generation type
- * @param {object} data Generation data
- * @param {AdditionalRequestOptions} [options] Additional options for the generation request
- * @returns {Promise<object>} Response data from the API
- * @throws {Error|object}
- */
-export async function sendGenerationRequest(type, data, options = {}) {
-    if (main_api === 'openai') {
-        return await sendOpenAIRequest(type, data.prompt, abortController.signal, { ...options, rawAction: data.rawAction });
-    }
-
-    if (main_api === 'koboldhorde') {
-        if (data.owner_id) {
-            return await generateHordeRawAction(data, abortController.signal, true);
-        }
-        return await generateHorde(data.prompt, data, abortController.signal, true);
-    }
-
-    const generationId = main_api === 'textgenerationwebui' ? beginServerGeneration('/api/backends/text-completions') : null;
-    try {
-        const response = await fetch(getGenerateUrl(main_api), {
-            method: 'POST',
-            headers: { ...getRequestHeaders(), ...(generationId ? { 'X-Generation-Id': generationId } : {}) },
-            cache: 'no-cache',
-            body: JSON.stringify(data),
-            signal: abortController.signal,
-        });
-
-        reportStoredHeader(response);
-        if (!response.ok) {
-            const error = await response.json();
-            adoptStored(error?.stored);
-            throw error;
-        }
-
-        const answer = await response.json();
-        adoptStored(answer?.stored);
-        return answer;
-    } catch (error) {
-        if (generationId) takeInStoppedReply(generationId);
-        throw error;
-    } finally {
-        if (generationId) endServerGeneration(generationId);
-    }
-}
-
-/**
- * @param {string} generationId
- */
-export function takeInStoppedReply(generationId) {
-    takeStopResult(generationId)?.then(stop => {
-        if (stop && isStoredNodeId(stop.node_id)) void reloadCurrentChat();
-    });
-}
-
-/**
- * Sends a streaming request to the API.
- * @param {string} type Generation type
- * @param {object} data Generation data
- * @param {AdditionalRequestOptions} [options] Additional options for the generation request
- * @returns {Promise<any>} Streaming generator
- */
-export async function sendStreamingRequest(type, data, options = {}) {
-    if (abortController?.signal?.aborted) {
-        throw new Error('Generation was aborted.');
-    }
-
-    switch (main_api) {
-        case 'openai':
-            return await sendOpenAIRequest(type, data.prompt, streamingProcessor.abortController.signal, { ...options, rawAction: data.rawAction });
-        case 'textgenerationwebui':
-            return await generateTextGenWithStreaming(data, streamingProcessor.abortController.signal);
-        case 'novel':
-            return await generateNovelWithStreaming(data, streamingProcessor.abortController.signal);
-        case 'kobold':
-            return await generateKoboldWithStreaming(data, streamingProcessor.abortController.signal);
-        default:
-            throw new Error('Streaming is enabled, but the current API does not support streaming.');
-    }
-}
-
-/**
  * Gets the generation endpoint URL for the specified API.
  * @param {string} api API name
  * @returns {string} Generation URL
@@ -4919,8 +4537,17 @@ function getGenerateUrl(api) {
     }
 }
 
-export function extractTitleFromData(data) {
-    if (main_api == 'koboldhorde') {
+onStoppedReply(stop => {
+    if (stop && isStoredNodeId(stop.node_id)) void reloadCurrentChat();
+});
+
+/**
+ * @param {any} data
+ * @param {string} api The kind of connection the reply came from
+ * @returns {string|undefined}
+ */
+export function extractTitleFromData(data, api) {
+    if (api == 'koboldhorde') {
         return data.workerName;
     }
 
@@ -4933,12 +4560,13 @@ export function extractTitleFromData(data) {
  * to the currently active message.
  * @param {object} data - response data containing all tokens/logprobs
  * @param {string} continueFrom - for 'continue' generations, the prompt
+ * @param {string} api The kind of connection the reply came from
  *  */
-export function parseAndSaveLogprobs(data, continueFrom) {
+export function parseAndSaveLogprobs(data, continueFrom, api) {
     /** @type {import('./scripts/logprobs.js').TokenLogprobs[] | null} */
     let logprobs = null;
 
-    switch (main_api) {
+    switch (api) {
         case 'novel':
             // parser only handles one token/logprob pair at a time
             logprobs = data.logprobs?.map(parseNovelAILogprobs) || null;
@@ -5071,9 +4699,10 @@ export function extractJsonFromData(data, { mainApi = null, chatCompletionSource
  * Extracts multiswipe swipes from the response data.
  * @param {Object} data Response data
  * @param {string} type Type of generation
+ * @param {string} api The kind of connection the reply came from
  * @returns {string[]} Array of extra swipes
  */
-export function extractMultiSwipes(data, type) {
+export function extractMultiSwipes(data, type, api) {
     const swipes = [];
 
     if (!data) {
@@ -5084,7 +4713,7 @@ export function extractMultiSwipes(data, type) {
         return swipes;
     }
 
-    if (main_api === 'textgenerationwebui' && textgen_settings.type === textgen_types.LLAMACPP) {
+    if (api === 'textgenerationwebui' && textgen_settings.type === textgen_types.LLAMACPP) {
         if (!Array.isArray(data)) {
             return swipes;
         }
@@ -5100,7 +4729,7 @@ export function extractMultiSwipes(data, type) {
         }
     }
 
-    if (main_api === 'openai' || (main_api === 'textgenerationwebui' && [textgen_types.MANCER, textgen_types.VLLM, textgen_types.APHRODITE, textgen_types.TABBY, textgen_types.INFERMATICAI].includes(textgen_settings.type))) {
+    if (api === 'openai' || (api === 'textgenerationwebui' && [textgen_types.MANCER, textgen_types.VLLM, textgen_types.APHRODITE, textgen_types.TABBY, textgen_types.INFERMATICAI].includes(textgen_settings.type))) {
         if (!Array.isArray(data.choices)) {
             return swipes;
         }
@@ -5122,6 +4751,7 @@ export function extractMultiSwipes(data, type) {
         isImpersonate: false,
         isContinue: false,
         displayIncompleteSentences: false,
+        api,
     }));
 
     return cleanedSwipes;
@@ -5138,15 +4768,11 @@ export function extractMultiSwipes(data, type) {
  * @param {boolean} [options.includeUserPromptBias] Whether to permit prepending the user prompt bias at the beginning.
  * @param {boolean} [options.trimNames] Whether to allow trimming "{{char}}:" or "{{user}}:" from the beginning.
  * @param {boolean} [options.trimWrongNames] Whether to allow deleting responses prefixed by the incorrect name, depending on isImpersonate
+ * @param {string} [options.api] The kind of connection the message came from
  *
  * @returns {string} The formatted message
  */
-export function cleanUpMessage({ getMessage, isImpersonate, isContinue, displayIncompleteSentences = false, stoppingStrings = null, includeUserPromptBias = true, trimNames = true, trimWrongNames = true } = {}) {
-    if (arguments.length > 0 && typeof arguments[0] !== 'object') {
-        console.trace('cleanUpMessage called with positional arguments. Please use an object instead.');
-        [getMessage, isImpersonate, isContinue, displayIncompleteSentences, stoppingStrings, includeUserPromptBias, trimNames, trimWrongNames] = arguments;
-    }
-
+export function cleanUpMessage({ getMessage, isImpersonate, isContinue, displayIncompleteSentences = false, stoppingStrings = null, includeUserPromptBias = true, trimNames = true, trimWrongNames = true, api = main_api } = {}) {
     if (!getMessage) {
         return '';
     }
@@ -5165,7 +4791,7 @@ export function cleanUpMessage({ getMessage, isImpersonate, isContinue, displayI
     // Allow for caching of stopping strings. getStoppingStrings is an expensive function, especially with macros
     // enabled, so for streaming, we call it once and then pass it into each cleanUpMessage call.
     if (!stoppingStrings) {
-        stoppingStrings = getStoppingStrings(isImpersonate, isContinue, main_api);
+        stoppingStrings = getStoppingStrings(isImpersonate, isContinue, api);
     }
 
     for (const stoppingString of stoppingStrings) {
@@ -5217,7 +4843,7 @@ export function cleanUpMessage({ getMessage, isImpersonate, isContinue, displayI
     if (getMessage.indexOf('<|endoftext|>') != -1) {
         getMessage = getMessage.substring(0, getMessage.indexOf('<|endoftext|>'));
     }
-    const isInstruct = power_user.instruct.enabled && main_api !== 'openai';
+    const isInstruct = power_user.instruct.enabled && api !== 'openai';
     const isNotEmpty = (str) => str && str.trim() !== '';
     if (isInstruct && power_user.instruct.stop_sequence) {
         if (getMessage.indexOf(power_user.instruct.stop_sequence) != -1) {
@@ -8115,42 +7741,6 @@ export function setExtensionPrompt(key, value, position, depth, scan = false, ro
 }
 
 /**
- * Gets a enum value of the extension prompt role by its name.
- * @param {string} roleName The name of the extension prompt role.
- * @returns {number} The role id of the extension prompt.
- */
-export function getExtensionPromptRoleByName(roleName) {
-    // If the role is already a valid number, return it
-    if (typeof roleName === 'number' && Object.values(extension_prompt_roles).includes(roleName)) {
-        return roleName;
-    }
-
-    switch (roleName) {
-        case 'system':
-            return extension_prompt_roles.SYSTEM;
-        case 'user':
-            return extension_prompt_roles.USER;
-        case 'assistant':
-            return extension_prompt_roles.ASSISTANT;
-    }
-
-    // Skill issue?
-    return extension_prompt_roles.SYSTEM;
-}
-
-/**
- * Removes all char A/N prompt injections from the chat.
- * To clean up when switching from groups to solo and vice versa.
- */
-export function removeDepthPrompts() {
-    for (const key of Object.keys(extension_prompts)) {
-        if (key.startsWith(inject_ids.DEPTH_PROMPT)) {
-            delete extension_prompts[key];
-        }
-    }
-}
-
-/**
  * Adds or updates the metadata for the currently active chat.
  * @param {Object} newValues An object with collection of new values to be added into the metadata.
  * @param {boolean} reset Should a metadata be reset by this call.
@@ -9760,7 +9350,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
         if (mesId === Number(this_edit_mes_id)) {
             closeMessageEditor();
         }
-        if (isStreamingEnabled() && streamingProcessor) {
+        if (streamingProcessor) {
             streamingProcessor.onStopStreaming();
         }
 

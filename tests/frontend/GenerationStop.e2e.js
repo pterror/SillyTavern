@@ -127,7 +127,7 @@ test.describe('stopping a generation', () => {
             await openCharacter(page, avatar);
             await connectLlamaCpp(page, mock.url);
             // @ts-ignore
-            await page.evaluate(() => { stTest.context().textCompletionSettings.streaming = true; });
+            await page.evaluate(async () => { stTest.context().textCompletionSettings.streaming = true; await (await import('/script.js')).saveSettings('textgenerationwebui_settings'); });
             await page.waitForTimeout(2500);
 
             const stopRequests = [];
@@ -194,7 +194,7 @@ test.describe('stopping a generation', () => {
             });
 
             let serverAnswered = false;
-            await page.route('**/api/backends/text-completions/generate', async (route) => {
+            await page.route('**/api/generation/generate', async (route) => {
                 const response = await route.fetch();
                 serverAnswered = true;
                 await new Promise(resolve => setTimeout(resolve, 5000));
@@ -229,7 +229,7 @@ test.describe('streaming display', () => {
             await openCharacter(page, avatar);
             await connectLlamaCpp(page, mock.url);
             // @ts-ignore
-            await page.evaluate(() => { stTest.context().textCompletionSettings.streaming = true; });
+            await page.evaluate(async () => { stTest.context().textCompletionSettings.streaming = true; await (await import('/script.js')).saveSettings('textgenerationwebui_settings'); });
             await page.waitForTimeout(2500);
 
             await chatBox(page).fill(`Say one thing ${stamp}.`);

@@ -4,19 +4,14 @@ import {
     setGenerationProgress,
     setOnlineStatus,
 } from '../script.js';
-import { amount_gen, main_api, max_context } from './generation-params.js';
+import { amount_gen, max_context } from './generation-params.js';
 import { getRequestHeaders } from './request-headers.js';
 import { SECRET_KEYS, writeSecret } from './secrets.js';
 import { isMobile } from './RossAscends-mods.js';
 import { autoSelectInstructPreset } from './instruct-mode.js';
 import { t } from './i18n.js';
-import { kai_settings } from './kai-settings.js';
 import { CompactStreamDecoder, ResumableCompactStreamReader } from './llamacpp-compact-stream.js';
 import { reportStored, reportStoredHeader } from './stored-report.js';
-
-export {
-    MIN_LENGTH,
-};
 
 let models = [];
 
@@ -26,8 +21,6 @@ export let horde_settings = {
     auto_adjust_context_length: false,
     trusted_workers_only: false,
 };
-
-const MIN_LENGTH = 16;
 
 async function getWorkers(force) {
     const response = await fetch('/api/horde/text-workers', {
@@ -106,7 +99,7 @@ function validateHordeModel() {
     return selectedModels;
 }
 
-export async function adjustHordeGenerationParams(max_context_length, max_length) {
+async function adjustHordeGenerationParams(max_context_length, max_length) {
     const workers = await getWorkers(false);
     let maxContextLength = max_context_length;
     let maxLength = max_length;
@@ -256,32 +249,6 @@ export async function generateHorde(prompt, params, signal, reportProgress) {
     return await consumeHordeStream(response, signal, reportProgress);
 }
 
-/**
- * @param {object} rawAction
- * @param {AbortSignal} signal
- * @param {boolean} reportProgress
- * @returns {Promise<{text: string, workerName?: string, assistant_node_id?: string, warnings?: import('./tokenizer-notices.js').TokenizerWarning[]}>}
- */
-export async function generateHordeRawAction(rawAction, signal, reportProgress) {
-    validateHordeModel();
-
-    const payload = {
-        ...rawAction,
-        trusted_workers: horde_settings.trusted_workers_only,
-        models: horde_settings.models,
-    };
-
-    const response = await startHordeStream(payload, signal);
-    const result = await consumeHordeStream(response, signal, reportProgress);
-
-    return {
-        text: result.text,
-        workerName: result.workerName,
-        ...(result.assistantNodeId ? { assistant_node_id: result.assistantNodeId } : {}),
-        ...(result.warnings ? { warnings: result.warnings } : {}),
-    };
-}
-
 export async function getHordeModels(force) {
     const sortByPerformance = (a, b) => b.performance - a.performance;
     const sortByWhitelisted = (a, b) => b.is_whitelisted - a.is_whitelisted;
@@ -355,15 +322,6 @@ function hordeModelTextString(model) {
 
 function hordeModelQueueStateString(model) {
     return `ETA: ${model.eta}s, Speed: ${model.performance}, Queue: ${model.queued}, Workers: ${model.count}`;
-}
-
-export function isHordeGenerationNotAllowed() {
-    if (main_api == 'koboldhorde' && kai_settings.preset_settings == 'gui') {
-        toastr.error(t`GUI Settings preset is not supported for Horde. Please select another preset.`);
-        return true;
-    }
-
-    return false;
 }
 
 function getHordeModelTemplate(option) {

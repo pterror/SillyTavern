@@ -150,7 +150,7 @@ async function chatWithOneReply(page, mock, stamp, streaming, beforeSend) {
     await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1);
     await connectLlamaCpp(page, mock.url);
     // @ts-ignore
-    await page.evaluate((streaming) => { stTest.context().textCompletionSettings.streaming = streaming; }, streaming);
+    await page.evaluate(async (streaming) => { stTest.context().textCompletionSettings.streaming = streaming; await (await import('/script.js')).saveSettings('textgenerationwebui_settings'); }, streaming);
     await page.waitForTimeout(2500);
     if (beforeSend) await beforeSend(page);
     await chatBox(page).fill(`Question ${stamp}`);

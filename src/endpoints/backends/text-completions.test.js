@@ -8,6 +8,7 @@ import express from 'express';
 
 import { write as writeCard } from '../../character-card-parser.js';
 import { setConfigFilePath } from '../../util.js';
+import { streamAsSetting } from '../../../tests/util/stream-as-setting.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
@@ -287,6 +288,7 @@ async function run() {
                 next();
             }, next);
         });
+        app.use(streamAsSetting());
         app.use('/', router);
         return app;
     }

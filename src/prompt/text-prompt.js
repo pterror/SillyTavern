@@ -183,10 +183,22 @@ function storyStringTemplate({ template, position, instructPreset, isInstruct, c
 /**
  * @param {TextCompletionPromptInput} input
  */
+/**
+ * NovelAI takes an instruction in braces.
+ * @param {string} text
+ * @param {boolean} braced
+ * @returns {string}
+ */
+function novelInstruction(text, braced) {
+    if (!braced) return text;
+    const stripped = text.replace(/[[\]]/g, '').trim();
+    return stripped.includes('{ ') ? stripped : `{ ${stripped} }`;
+}
+
 export async function buildTextCompletionPrompt(input) {
     const {
         type, isImpersonate = false, isContinue = false, isSwipe = false, isGroup = false, isDryRun = false,
-        canUseTools = false, quiet_prompt, quietToLoud = false, quietName,
+        canUseTools = false, quiet_prompt: quietPromptAsGiven, quietToLoud = false, quietName,
         generationTrigger = GENERATION_TYPE_TRIGGERS.includes(type) ? type : 'normal',
         name1 = '', name2 = '',
         directories, avatar, groupId, preferCharacterPrompt = false, preferCharacterJailbreak = false,
@@ -236,6 +248,7 @@ export async function buildTextCompletionPrompt(input) {
         },
     };
     const substitute = (/** @type {string} */ text) => substituteParams(text, macroContext);
+    const quiet_prompt = quietPromptAsGiven ? novelInstruction(substitute(quietPromptAsGiven), mainApi === 'novel' && !quietToLoud) : quietPromptAsGiven;
 
     let coreChat = buildCoreChat(chat, { canUseTools, isSwipe });
     const scannedMessages = coreChat.map(m => ({ nodeId: m === sentMessage ? null : (m.node_id ?? ''), text: m.mes ?? '' })).reverse();

@@ -58,11 +58,61 @@ export function clearRemoteTokenizationMemory() {
 }
 
 /**
+ * @param {string|undefined} version
+ * @param {string} minimum
+ */
+function atLeast(version, minimum) {
+    return (version || '0.0.0').localeCompare(minimum, undefined, { numeric: true, sensitivity: 'base' }) > -1;
+}
+
+/**
+ * What a KoboldAI server's versions say it takes.
+ * @param {{ koboldUnitedVersion?: string, koboldCppVersion?: string }} versions
+ * @returns {import('./kobold-generation-data.js').KoboldGenerationFlags}
+ */
+export function koboldFlagsOf({ koboldUnitedVersion, koboldCppVersion }) {
+    return {
+        can_use_stop_sequence: atLeast(koboldUnitedVersion, '1.2.2'),
+        can_use_default_badwordsids: atLeast(koboldUnitedVersion, '1.2.4'),
+        can_use_streaming: atLeast(koboldCppVersion, '1.30'),
+        can_use_mirostat: atLeast(koboldCppVersion, '1.35'),
+        can_use_grammar: atLeast(koboldCppVersion, '1.44'),
+        can_use_min_p: atLeast(koboldCppVersion, '1.48'),
+    };
+}
+
+/** @type {Map<string, import('./kobold-generation-data.js').KoboldGenerationFlags>} */
+const koboldFlags = new Map();
+
+/**
+ * @param {string} apiServer
+ * @param {import('./kobold-generation-data.js').KoboldGenerationFlags} flags
+ */
+export function rememberKoboldFlags(apiServer, flags) {
+    koboldFlags.set(cleanStatusUrl('kobold', apiServer), flags);
+}
+
+/**
+ * What the KoboldAI server at this address takes: from its last status check, or asked now.
+ * @param {string} apiServer
+ * @returns {Promise<import('./kobold-generation-data.js').KoboldGenerationFlags>}
+ */
+export async function koboldFlagsFor(apiServer) {
+    const url = cleanStatusUrl('kobold', apiServer);
+    const known = koboldFlags.get(url);
+    if (known) return known;
+    const status = await fetchKoboldStatus(url);
+    const flags = koboldFlagsOf(status);
+    if (status.model !== 'no_connection') koboldFlags.set(url, flags);
+    return flags;
+}
+
+/**
  * @param {string|undefined} koboldCppVersion
  * @returns {boolean}
  */
 export function koboldCanUseTokenization(koboldCppVersion) {
-    return (koboldCppVersion || '0.0.0').localeCompare(MIN_TOKENIZATION_KCPPVERSION, undefined, { numeric: true, sensitivity: 'base' }) > -1;
+    return atLeast(koboldCppVersion, MIN_TOKENIZATION_KCPPVERSION);
 }
 
 /**

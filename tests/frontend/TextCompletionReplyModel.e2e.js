@@ -59,7 +59,7 @@ for (const type of ['koboldcpp', 'generic']) {
             await expect.poll(() => page.evaluate(() => stTest.context().onlineStatus), { timeout: 15000 }).toBe(MODEL);
             await page.locator('#API-status-top').click();
             // @ts-ignore
-            await page.evaluate(() => { stTest.context().textCompletionSettings.streaming = false; });
+            await page.evaluate(async () => { stTest.context().textCompletionSettings.streaming = false; await (await import('/script.js')).saveSettings('textgenerationwebui_settings'); });
             await page.waitForTimeout(2500);
 
             await chatBox(page).fill(`Question ${stamp}`);

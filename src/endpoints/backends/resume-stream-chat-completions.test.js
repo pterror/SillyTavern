@@ -9,6 +9,9 @@ import express from 'express';
 import { write as writeCard } from '../../character-card-parser.js';
 import '../../fetch-patch.js';
 import { setConfigFilePath } from '../../util.js';
+import { streamAsSetting } from '../../../tests/util/stream-as-setting.js';
+import { handleGenerationStop } from '../../generation-stop.js';
+import { handleGenerationResume } from './llamacpp-compact-stream.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
@@ -162,6 +165,9 @@ function buildTestApp() {
         req.user = { directories, profile: { handle: 'u' } };
         next();
     });
+    app.use(streamAsSetting());
+    app.post('/generate/stop/:id', handleGenerationStop);
+    app.get('/generate/resume/:id', handleGenerationResume);
     app.use('/', router);
     return app;
 }

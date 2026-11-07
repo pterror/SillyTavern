@@ -11,15 +11,12 @@ import {
 import { getRequestHeaders } from './request-headers.js';
 import { t } from './i18n.js';
 import { autoSelectInstructPreset } from './instruct-mode.js';
-import { CompactStreamDecoder } from './llamacpp-compact-stream.js';
 
 import {
     power_user,
 } from './power-user.js';
 import { getSortableDelay, versionCompare } from './utils.js';
 import { main_api } from './generation-params.js';
-import { showTokenizerWarnings } from './tokenizer-notices.js';
-import { reportStoredHeader } from './stored-report.js';
 
 export let koboldai_settings;
 export let koboldai_setting_names;
@@ -52,7 +49,7 @@ export const kai_settings = {
  * Stable KoboldAI rejects any payload key not in this whitelist.
  * @typedef {Object.<string, boolean>} kai_flags
  */
-export const kai_flags = {
+const kai_flags = {
     can_use_tokenization: false,
     can_use_stop_sequence: false,
     can_use_streaming: false,
@@ -190,66 +187,6 @@ export function getKoboldGenerationData(finalPrompt, settings, maxLength, maxCon
         api_server: kai_settings.api_server,
     };
     return generate_data;
-}
-
-function tryParseStreamingError(response, decoded) {
-    try {
-        const data = JSON.parse(decoded);
-
-        if (!data) {
-            return;
-        }
-
-        if (data.error) {
-            toastr.error(data.error.message || response.statusText, 'KoboldAI API');
-            throw new Error(data);
-        }
-    } catch {
-        // No JSON. Do nothing.
-    }
-}
-
-export async function generateKoboldWithStreaming(generate_data, signal) {
-    const response = await fetch('/api/backends/kobold/generate', {
-        headers: getRequestHeaders(),
-        body: JSON.stringify(generate_data),
-        method: 'POST',
-        signal: signal,
-    });
-    reportStoredHeader(response);
-    if (!response.ok) {
-        tryParseStreamingError(response, await response.text());
-        throw new Error(`Got response status ${response.status}`);
-    }
-
-    const reader = response.body.getReader();
-    return async function* streamData() {
-        const decoder = new CompactStreamDecoder();
-        let text = '';
-        const state = {};
-        while (true) {
-            const { done, value } = await reader.read();
-            const events = done ? decoder.flush() : decoder.push(value);
-
-            for (const event of events) {
-                if ('content' in event) {
-                    text += event.content;
-                } else if ('assistantNodeId' in event) {
-                    state.assistantNodeId = event.assistantNodeId;
-                } else if ('control' in event && event.control?.stored) {
-                    state.stored = event.control.stored;
-                } else if ('control' in event && event.control?.warnings) {
-                    showTokenizerWarnings(event.control.warnings);
-                }
-            }
-
-            if (events.length) {
-                yield { text, swipes: [], toolCalls: [], state };
-            }
-
-            if (done) return;
-        }
-    };
 }
 
 const sliders = [

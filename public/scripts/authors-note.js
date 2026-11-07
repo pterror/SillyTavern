@@ -1,12 +1,9 @@
 import {
-    MAX_INJECTION_DEPTH,
     animation_duration,
     extension_prompt_roles,
-    extension_prompt_types,
     saveSettingsDebounced,
     getCurrentCharacter,
     getSelectionState,
-    setExtensionPrompt,
 } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { eventSource, event_types } from './events.js';
@@ -16,19 +13,15 @@ import { selected_group } from './group-chats.js';
 import { getCharaFilename, debounce, delay } from './utils.js';
 import { getRememberedTokenizerAnswer, getTokenCountWithAnswer } from './tokenizers.js';
 import { renderCountBasis } from './tokenizer-notices.js';
-import { debounce_timeout, inject_ids } from './constants.js';
+import { debounce_timeout } from './constants.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument } from './slash-commands/SlashCommandArgument.js';
-export { MODULE_NAME as NOTE_MODULE_NAME };
 import { t } from './i18n.js';
 import { macros, MacroCategory } from './macros/macro-system.js';
 
-const MODULE_NAME = inject_ids.AUTHORS_NOTE;
 
-export var shouldWIAddPrompt = false;
-
-export const metadata_keys = {
+const metadata_keys = {
     prompt: 'note_prompt',
     interval: 'note_interval',
     depth: 'note_depth',
@@ -127,7 +120,7 @@ function setNoteRoleCommand(_, text) {
 function updateSettings() {
     saveSettingsDebounced('extension_settings');
     loadSettings();
-    setFloatingPrompt();
+    showNoteCountdown();
 }
 
 /**
@@ -333,61 +326,19 @@ function loadSettings() {
     $(`input[name="extension_default_position"][value="${extension_settings.note.defaultPosition}"]`).prop('checked', true);
 }
 
-export function setFloatingPrompt() {
-    if (!selected_group && getCurrentCharacter() === undefined) {
-        shouldWIAddPrompt = false;
-        return;
-    }
-
-    // take the count of messages
-    let lastMessageNumber = chat.length ? chat.filter(m => m.is_user).length : 0;
-
-    // interval 1 should be inserted no matter what
-    if (chat_metadata[metadata_keys.interval] === 1) {
-        lastMessageNumber = 1;
-    }
-
-    if (lastMessageNumber <= 0 || chat_metadata[metadata_keys.interval] <= 0) {
-        setExtensionPrompt(MODULE_NAME, '', extension_prompt_types.NONE, MAX_INJECTION_DEPTH);
+/**
+ * Shows how many messages until the note is sent again.
+ */
+function showNoteCountdown() {
+    if (!selected_group && getCurrentCharacter() === undefined) return;
+    const interval = chat_metadata[metadata_keys.interval];
+    const sent = interval === 1 ? 1 : chat.filter(m => m.is_user).length;
+    if (sent <= 0 || interval <= 0) {
         $('#extension_floating_counter').text('(disabled)');
-        shouldWIAddPrompt = false;
         return;
     }
-
-    const messagesTillInsertion = lastMessageNumber >= chat_metadata[metadata_keys.interval]
-        ? (lastMessageNumber % chat_metadata[metadata_keys.interval])
-        : (chat_metadata[metadata_keys.interval] - lastMessageNumber);
-    const shouldAddPrompt = messagesTillInsertion == 0;
-    shouldWIAddPrompt = shouldAddPrompt;
-
-    let prompt = shouldAddPrompt ? $('#extension_floating_prompt').val() : '';
-    if (shouldAddPrompt && extension_settings.note.chara && getCurrentCharacter() !== undefined) {
-        const charaNote = extension_settings.note.chara.find((e) => e.name === getCharaFilename());
-
-        // Only replace with the chara note if the user checked the box
-        if (charaNote && charaNote.useChara) {
-            switch (charaNote.position) {
-                case chara_note_position.before:
-                    prompt = charaNote.prompt + '\n' + prompt;
-                    break;
-                case chara_note_position.after:
-                    prompt = prompt + '\n' + charaNote.prompt;
-                    break;
-                default:
-                    prompt = charaNote.prompt;
-                    break;
-            }
-        }
-    }
-    setExtensionPrompt(
-        MODULE_NAME,
-        String(prompt),
-        chat_metadata[metadata_keys.position],
-        chat_metadata[metadata_keys.depth],
-        extension_settings.note.allowWIScan,
-        chat_metadata[metadata_keys.role],
-    );
-    $('#extension_floating_counter').text(shouldAddPrompt ? '0' : messagesTillInsertion);
+    const messagesTillInsertion = sent >= interval ? (sent % interval) : (interval - sent);
+    $('#extension_floating_counter').text(messagesTillInsertion === 0 ? '0' : messagesTillInsertion);
 }
 
 function onANMenuItemClick() {
@@ -434,7 +385,7 @@ function onANMenuItemClick() {
 
 async function onChatChanged() {
     loadSettings();
-    setFloatingPrompt();
+    showNoteCountdown();
 
     // Disable the chara note if in a group
     $('#extension_floating_chara').prop('disabled', !!selected_group);

@@ -2022,7 +2022,7 @@ function getTagKey() {
  * @param {object|number|string} entityOrKey An entity with id property (character, group, tag), or directly an id or tag key.
  * @returns {string|undefined} The tag key that can be found.
  */
-export function getTagKeyForEntity(entityOrKey) {
+function getTagKeyForEntity(entityOrKey) {
     let x = entityOrKey;
 
     // If it's an object and has an 'id' property, we take this for further processing

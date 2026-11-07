@@ -1,7 +1,7 @@
 import { getRequestHeaders } from './request-headers.js';
 
-/** @type {Map<string, {base: string}>} */
-const active = new Map();
+/** @type {Set<string>} */
+const active = new Set();
 /** @type {Map<string, Promise<StopResult|null>>} */
 const stops = new Map();
 /** @type {string|null} */
@@ -24,15 +24,20 @@ function newId() {
 }
 
 /**
- * @param {string} base
- * @param {{stream?: boolean}} [options]
  * @returns {string}
  */
-export function beginServerGeneration(base, { stream = false } = {}) {
+export function beginServerGeneration() {
     const id = newId();
-    active.set(id, { base });
-    if (stream) streamId = id;
+    active.add(id);
     return id;
+}
+
+/**
+ * The generation's reply comes as a stream: its stop result is taken when the stream ends.
+ * @param {string} id
+ */
+export function streamServerGeneration(id) {
+    streamId = id;
 }
 
 /**
@@ -43,9 +48,9 @@ export function endServerGeneration(id) {
 }
 
 export function stopServerGenerations() {
-    for (const [id, { base }] of active) {
+    for (const id of active) {
         active.delete(id);
-        stops.set(id, fetch(`${base}/generate/stop/${encodeURIComponent(id)}`, {
+        stops.set(id, fetch(`/api/generation/generate/stop/${encodeURIComponent(id)}`, {
             method: 'POST',
             headers: getRequestHeaders(),
             keepalive: true,

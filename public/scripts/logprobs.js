@@ -4,7 +4,6 @@ import {
     Generate,
     getGeneratingApi,
     is_send_press,
-    isStreamingEnabled,
     substituteParamsExtended,
     updateMessage,
 } from '../script.js';
@@ -77,16 +76,13 @@ function renderAlternativeTokensView() {
     renderTopLogprobs();
 
     const { messageLogprobs, continueFrom } = getActiveMessageLogprobData() || {};
-    const usingSmoothStreaming = isStreamingEnabled() && power_user.smooth_streaming;
-    if (!messageLogprobs?.length || usingSmoothStreaming) {
+    if (!messageLogprobs?.length) {
         const emptyState = $('<div></div>');
         const noTokensMsg = !power_user.request_token_probabilities
             ? '<span>Enable <b>Request token probabilities</b> in the User Settings menu to use this feature.</span>'
-            : usingSmoothStreaming
-                ? t`Token probabilities are not available when using Smooth Streaming.`
-                : is_send_press
-                    ? t`Generation in progress...`
-                    : t`No token probabilities available for the current message.`;
+            : is_send_press
+                ? t`Generation in progress...`
+                : t`No token probabilities available for the current message.`;
         emptyState.html(noTokensMsg);
         emptyState.addClass('logprobs_empty_state');
         view.append(emptyState);

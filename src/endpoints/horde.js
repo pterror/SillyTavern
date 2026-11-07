@@ -8,7 +8,8 @@ import { persistAssistantReply } from '../assistant-reply-persist.js';
 import { readReplyFinishSettings } from '../reply-reasoning.js';
 import { startItemizing } from '../prompt-itemization.js';
 import { answerSessionOnHeaders, chatContext } from '../chat-request.js';
-import { withGenerationStop } from '../generation-stop.js';
+import { generationIdFor, onGenerationStop, withGenerationStop } from '../generation-stop.js';
+import { readSettingsFor, settingsContextOf } from '../settings-reads.js';
 import {
     createGenerationRecord, createResumableWriter, createBackpressureWriter, detachFromResponse,
     encodeContent, encodeStoredReplyFrame, encodeControlFrame, handleGenerationResume, KEEPALIVE_INTERVAL_MS, writeStoredMessagesFrame,
@@ -186,25 +187,22 @@ router.post('/status', async (_, response) => {
     }
 });
 
-router.post('/cancel-task', async (request, response) => {
+/**
+ * Stops polling a Horde job and withdraws it from the Horde.
+ * @param {string} jobId
+ * @param {string} agent
+ */
+async function cancelHordeJob(jobId, agent) {
+    activeHordePolls.get(jobId)?.cancel();
     try {
-        const taskId = request.body.taskId;
-        activeHordePolls.get(taskId)?.cancel();
-        const agent = await getClientAgent();
-        const fetchResult = await fetchOutgoing(`https://aihorde.net/api/v2/generate/text/status/${taskId}`, {
+        await fetchOutgoing(`https://aihorde.net/api/v2/generate/text/status/${jobId}`, {
             method: 'DELETE',
-            headers: {
-                'Client-Agent': agent,
-            },
+            headers: { 'Client-Agent': agent },
         });
-
-        const data = await fetchResult.json();
-        return response.send(data);
     } catch (error) {
-        console.error(error);
-        response.sendStatus(500);
+        console.error(`Failed to withdraw Horde task ${jobId}:`, error);
     }
-});
+}
 
 /**
  * @param {import('express').Request} request
@@ -214,7 +212,7 @@ router.post('/cancel-task', async (request, response) => {
 async function buildRawActionHordePayload(request, response) {
     const {
         character_avatar: characterAvatar, group_id: groupId,
-        type = 'normal', trusted_workers: trustedWorkers = false, models,
+        type = 'normal',
     } = request.body;
     const isImpersonate = type === 'impersonate';
     const isContinue = type === 'continue';
@@ -265,8 +263,12 @@ async function buildRawActionHordePayload(request, response) {
     params.frmtrmspch = false;
     params.frmttriminc = false;
 
+    const { horde_settings: hordeSettings = {} } = readSettingsFor(directories, settingsContextOf({ avatar: characterAvatar, groupId, chat, nodeId }), ['horde_settings']);
     return {
-        body: { prompt, params, trusted_workers: !!trustedWorkers, models: Array.isArray(models) ? models : [] },
+        body: {
+            prompt, params, trusted_workers: Boolean(hordeSettings.trusted_workers_only),
+            models: Array.isArray(hordeSettings.models) ? hordeSettings.models : [],
+        },
         rawActionPersist,
     };
 }
@@ -296,10 +298,11 @@ async function fetchHordeJobStatus(jobId, agent) {
  * @returns {Promise<void>}
  */
 async function streamHordeGeneration({ response, jobId, agent, rawActionPersist, warnings = null }) {
+    const generationId = generationIdFor(response);
     response.setHeader('X-ST-Stream-Format', 'compact-v1');
-    response.setHeader('X-Generation-Id', jobId);
+    response.setHeader('X-Generation-Id', generationId);
 
-    const generationRecord = createGenerationRecord(jobId);
+    const generationRecord = createGenerationRecord(generationId);
     const { writer: initialWriter, stopKeepalive } = createResumableWriter(createBackpressureWriter(response), generationRecord, HORDE_KEEPALIVE_INTERVAL_MS);
     let writer = initialWriter;
     writeStoredMessagesFrame(writer, response);
@@ -308,6 +311,7 @@ async function streamHordeGeneration({ response, jobId, agent, rawActionPersist,
     }
 
     const pollState = registerHordePoll(jobId);
+    onGenerationStop(response, () => cancelHordeJob(jobId, agent));
 
     const onSocketClose = () => {
         stopKeepalive();
@@ -385,7 +389,10 @@ async function streamHordeGeneration({ response, jobId, agent, rawActionPersist,
 
 router.get('/generate/resume/:id', handleGenerationResume);
 
-router.post('/generate-text', withGenerationStop(async (request, response) => {
+/**
+ * An AI Horde generation: from a turn of a stored chat (the page names it), or from a prompt the request carries.
+ */
+export const generateHorde = withGenerationStop(async (request, response) => {
     let rawActionPersist = null;
     /** @type {Array<{kind: string, key: string, message: string, entries?: string[]}>} */
     const warnings = [];
@@ -436,7 +443,9 @@ router.post('/generate-text', withGenerationStop(async (request, response) => {
     }
 
     return streamHordeGeneration({ response, jobId: submitData.id, agent, rawActionPersist, warnings });
-}));
+});
+
+router.post('/generate-text', generateHorde);
 
 router.post('/user-info', async (request, response) => {
     const api_key_horde = readSecret(request.user.directories, SECRET_KEYS.HORDE);

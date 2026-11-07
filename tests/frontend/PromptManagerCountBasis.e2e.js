@@ -32,6 +32,10 @@ async function answerUnknownTokenizer(page) {
         }
         return route.fulfill({ json: { count: 7, tokenizer } });
     });
+    await page.route('**/api/generation/prompt', async (route) => {
+        const answer = await (await route.fetch()).json();
+        return route.fulfill({ json: { ...answer, itemization: { ...answer.itemization, tokenizer } } });
+    });
 }
 
 /**

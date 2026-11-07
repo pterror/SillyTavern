@@ -2,8 +2,7 @@
 
 import { extension_prompt_types, name2, online_status, saveSettingsDebounced, substituteParams } from '../script.js';
 import { name1 } from './app-selection-state.js';
-import { selected_group } from './group-chats.js';
-import { parseExampleIntoIndividual } from './chat-completion-settings.js';
+import { getGroupNames, selected_group } from './group-chats.js';
 import {
     power_user,
     context_presets,
@@ -380,7 +379,7 @@ export function getInstructStoppingSequences({ customInstruct = null, useStopStr
     return result;
 }
 
-export const force_output_sequence = {
+const force_output_sequence = {
     FIRST: 1,
     LAST: 2,
 };
@@ -579,6 +578,60 @@ export function formatInstructModeExamples(mesExamplesArray, name1, name2) {
         return mesExamplesArray.map(x => x.replace(/<START>\n/i, blockHeading));
     }
     return formattedExamples;
+}
+
+/**
+ * @param {string} messageExampleString
+ * @param {boolean} appendNamesForGroup
+ * @returns {{ role: string, content: string, name: string }[]}
+ */
+function parseExampleIntoIndividual(messageExampleString, appendNamesForGroup = true) {
+    const groupBotNames = getGroupNames().map(name => `${name}:`);
+
+    let result = [];
+    let tmp = messageExampleString.split('\n');
+    let cur_msg_lines = [];
+    let in_user = false;
+    let in_bot = false;
+    let botName = name2;
+
+    function add_msg(name, role, system_name) {
+        let parsed_msg = cur_msg_lines.join('\n').replace(name + ':', '').trim();
+
+        if (appendNamesForGroup && selected_group && ['example_user', 'example_assistant'].includes(system_name)) {
+            parsed_msg = `${name}: ${parsed_msg}`;
+        }
+
+        result.push({ 'role': role, 'content': parsed_msg, 'name': system_name });
+        cur_msg_lines = [];
+    }
+    for (let i = 1; i < tmp.length; i++) {
+        let cur_str = tmp[i];
+        if (cur_str.startsWith(name1 + ':')) {
+            in_user = true;
+            if (in_bot) {
+                add_msg(botName, 'system', 'example_assistant');
+            }
+            in_bot = false;
+        } else if (cur_str.startsWith(name2 + ':') || groupBotNames.some(n => cur_str.startsWith(n))) {
+            if (!cur_str.startsWith(name2 + ':') && groupBotNames.length) {
+                botName = cur_str.split(':')[0];
+            }
+
+            in_bot = true;
+            if (in_user) {
+                add_msg(name1, 'system', 'example_user');
+            }
+            in_user = false;
+        }
+        cur_msg_lines.push(cur_str);
+    }
+    if (in_user) {
+        add_msg(name1, 'system', 'example_user');
+    } else if (in_bot) {
+        add_msg(botName, 'system', 'example_assistant');
+    }
+    return result;
 }
 
 /**

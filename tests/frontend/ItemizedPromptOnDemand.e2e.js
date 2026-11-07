@@ -171,16 +171,17 @@ for (const streaming of [true, false]) {
                 return avatar;
             }, `Generated-${stamp}`);
             await connectLlamaCpp(page, mock.url);
-            await page.evaluate((streaming) => {
+            await page.evaluate(async (streaming) => {
                 // @ts-ignore
                 stTest.context().textCompletionSettings.streaming = streaming;
+                await (await import('/script.js')).saveSettings('textgenerationwebui_settings');
             }, streaming);
             await page.waitForTimeout(2500);
 
             /** @type {any} */
             let sentItemization = null;
             page.on('request', (request) => {
-                if (new URL(request.url()).pathname === '/api/backends/text-completions/generate') {
+                if (new URL(request.url()).pathname === '/api/generation/generate') {
                     sentItemization = JSON.parse(request.postData() ?? '{}').itemization ?? null;
                 }
             });

@@ -417,45 +417,6 @@ function embedMessageFile(messageId, messageBlock) {
 }
 
 /**
- * @param {ChatMessage} message Message object
- * @param {string} messageText Message text
- * @returns {Promise<string>} Message text with file content appended.
- */
-export async function appendFileContent(message, messageText) {
-    if (!message || !message.extra || typeof message.extra !== 'object') {
-        return messageText;
-    }
-    const extra = { ...message.extra };
-    const commit = () => {
-        const mesId = chat.indexOf(message);
-        if (mesId >= 0) {
-            updateIn(mesId, ['extra'], extra);
-        } else {
-            message.extra = extra;
-        }
-    };
-
-    if (extra.fileLength >= 0) {
-        delete extra.fileLength;
-    }
-    if (Array.isArray(extra.files) && extra.files.length > 0) {
-        const fileTexts = [];
-        for (const file of extra.files) {
-            const fileText = file.text || (await getFileAttachment(file.url));
-            if (fileText) {
-                fileTexts.push(fileText);
-            }
-        }
-        const mergedFileTexts = fileTexts.join('\n\n') + '\n\n';
-        extra.fileLength = mergedFileTexts.length;
-        commit();
-        return mergedFileTexts + messageText;
-    }
-    commit();
-    return messageText;
-}
-
-/**
  * @param {string} text
  * @returns {string} Encoded message text
  * @copyright https://github.com/kwaroran/risuAI

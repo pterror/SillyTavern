@@ -8,6 +8,7 @@ import express from 'express';
 
 import { write as writeCard } from '../character-card-parser.js';
 import { setConfigFilePath } from '../util.js';
+import { streamAsSetting } from '../../tests/util/stream-as-setting.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
@@ -157,6 +158,7 @@ function buildTestApp() {
             next();
         }, next);
     });
+    app.use(streamAsSetting());
     app.use('/', router);
     return app;
 }
@@ -245,7 +247,7 @@ async function run() {
         assert.equal(typeof built.params.input, 'string');
         assert.ok(built.params.input.includes('Hello there, traveler.'));
         assert.ok(built.params.input.includes('What happens next, Rex?'));
-        assert.equal(built.params.streaming, undefined, 'createNovelGenerationData()\'s own returned object has NO `streaming` field at all - CONFIRMED by reading its full return statement in src/novel-generation-data.js - so req.body.streaming after the raw-action body replacement is always undefined/falsy, regardless of what the client originally sent');
+        assert.equal(built.params.streaming, false, 'the reply streams as the stored setting says, and it says not to');
     }
 
     await assert.rejects(
@@ -461,15 +463,10 @@ async function run() {
     {
         let sawStreamRequest = false;
         const fakeBackend = await startFakeBackend((req, res) => {
-            if (req.url === '/ai/generate-stream') {
-                sawStreamRequest = true;
-                res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-                res.end('data: ' + JSON.stringify({ token: 'should not be reached' }) + '\n\n');
-                return;
-            }
-            assert.equal(req.url, '/ai/generate', 'the request lands on the non-streaming endpoint, proving raw-action streaming is unreachable as shipped');
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ output: 'Non-streamed despite stream:true.' }));
+            assert.equal(req.url, '/ai/generate-stream', 'with streaming stored on, the request lands on the streaming endpoint');
+            sawStreamRequest = true;
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            res.end('data: ' + JSON.stringify({ token: 'Streamed as stored.' }) + '\n\n');
         });
         pointNovelBackendAt(fakeBackend.url);
 
@@ -480,22 +477,42 @@ async function run() {
         ]);
         const streamNodeId = (await loadBranch(user.store, { avatar: ownerId }, streamBranch)).branch.leaf_id;
 
-        const app = buildTestApp();
-        const { status, data } = await postGenerate(app, {
-            owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
-            type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Try to stream, Rex.' }, stream: true,
-        });
+        const server = buildTestApp().listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        let bytes;
+        let status;
+        let format;
+        try {
+            const res = await fetch(`http://127.0.0.1:${server.address().port}/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    owner_id: ownerId, character_avatar: avatar, node_id: streamNodeId,
+                    type: 'normal', user_message: { is_user: true, name: 'User', mes: 'Try to stream, Rex.' }, stream: true,
+                }),
+            });
+            status = res.status;
+            format = res.headers.get('X-ST-Stream-Format');
+            bytes = Buffer.from(await res.arrayBuffer());
+        } finally {
+            server.closeAllConnections?.();
+            await new Promise(resolve => server.close(resolve));
+        }
         fakeBackend.server.close();
         pointNovelBackendAt(null);
 
         assert.equal(status, 200);
-        assert.equal(sawStreamRequest, false, '/ai/generate-stream was never actually requested - built.params has no streaming field at all for raw-action requests');
-        assert.equal(data.output, 'Non-streamed despite stream:true.');
-        assert.equal(typeof data.assistant_node_id, 'string', 'this is still a raw-action request (real owner_id/character_avatar), so the reply is persisted and its node_id echoed back');
+        assert.equal(sawStreamRequest, true);
+        assert.equal(format, 'compact-v1', 'the page gets the reply as it comes');
+        const decoded = decodeCompactStream(bytes);
+        assert.equal(decoded.text, 'Streamed as stored.');
+        assert.equal(typeof decoded.assistantNodeId, 'string', 'the streamed reply is stored, and its node named in the stream');
 
-        const branchAfter = await loadBranch(user.store, { avatar: ownerId }, streamBranch);
-        const [, assistantMsg] = branchAfter.messages.slice(-2);
-        assert.equal(assistantMsg.mes, 'Non-streamed despite stream:true.', 'persistence still worked correctly via the (only reachable) non-streaming path');
+        const branchAfter = await waitFor(async () => {
+            const branch = await loadBranch(user.store, { avatar: ownerId }, streamBranch);
+            return branch.messages.length === 3 ? branch : null;
+        });
+        assert.equal(branchAfter.messages[2].mes, 'Streamed as stored.');
 
         const sseChunks = ['Rex ', 'streams ', 'a ', 'reply.'];
         const sseLogprobs = { chosen: [['Rex', -0.1]] };

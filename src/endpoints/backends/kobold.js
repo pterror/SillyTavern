@@ -5,7 +5,7 @@ import { getOverrideHeaders, setAdditionalHeaders } from '../../additional-heade
 import { readSettingsFor, settingsContextOf } from '../../settings-reads.js';
 import { resolveTokenizer, createTokenizerOutcome, sendTokenizerWarnings, tokenizerAnswer, tokenizerIdentity } from '../../tokenizer-resolve.js';
 import { createStoredCounter, writeBack } from '../../token-count-store.js';
-import { fetchKoboldStatus, koboldCanUseTokenization, lookupBackendModel, rememberRemoteTokenization } from '../../backend-status.js';
+import { fetchKoboldStatus, koboldCanUseTokenization, koboldFlagsFor, koboldFlagsOf, lookupBackendModel, rememberKoboldFlags, rememberRemoteTokenization } from '../../backend-status.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { buildTextCompletionPrompt } from '../../prompt/text-prompt.js';
 import { startItemizing } from '../../prompt-itemization.js';
@@ -40,12 +40,13 @@ export const router = express.Router();
  * @param {import('../../prompt/injections.js').PageInjections} [params.pageInjections]
  * @param {object} [params.userMessageExtra]
  * @param {object} [params.macroExtras]
- * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, activations: import('../../world-info/activation-record.js').ActivationRecord|null, tokenCountRows: import('../../token-count-store.js').PendingTokenRows, name1: string, name2: string, warnings: object[], itemize: () => Promise<import('../../prompt-itemization.js').PromptItemization> }>}
+ * @param {boolean} [params.dryRun] Builds the prompt without changing anything a send would.
+ * @returns {Promise<{ params: object, prompt: string, anchorNodeId: string|null, anchorContent: object|null, activations: import('../../world-info/activation-record.js').ActivationRecord|null, tokenCountRows: import('../../token-count-store.js').PendingTokenRows, name1: string, name2: string, warnings: object[], itemize: () => Promise<import('../../prompt-itemization.js').PromptItemization> }>}
  */
 export async function buildRawActionKoboldRequest(directories, {
     request, characterAvatar, groupId, chat, nodeId,
     type = 'normal', isImpersonate = false, isContinue = false, isSwipe = false, userMessageText, userMessageExtra, pageFacts = {}, pageInjections = {},
-    tokenizerOptions = {}, macroExtras = {}, responseLength,
+    tokenizerOptions = {}, macroExtras = {}, responseLength, dryRun = false,
 } = {}) {
     if (!characterAvatar && !groupId) {
         throw new Error('character_avatar or group_id is required');
@@ -85,6 +86,7 @@ export async function buildRawActionKoboldRequest(directories, {
     const tokenizerState = macroExtras.isHorde
         ? { api: 'koboldhorde', hordeModels: Array.isArray(hordeSettings.models) ? hordeSettings.models : [], tokenizerSetting: powerUser.tokenizer }
         : { api: 'kobold', url, model: '', tokenizerSetting: powerUser.tokenizer };
+    const koboldFlags = macroExtras.isHorde ? {} : await koboldFlagsFor(url);
     const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories });
     const identity = await tokenizerIdentity(resolvedTokenizer);
     const tokenizerOutcome = createTokenizerOutcome();
@@ -96,7 +98,7 @@ export async function buildRawActionKoboldRequest(directories, {
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, mainApi: 'kobold', chatContext: chat, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, pageFacts, pageInjections,
-        countTokens, encodeTokens, amountGen: responseLength, macroExtras,
+        countTokens, encodeTokens, amountGen: responseLength, macroExtras: { ...macroExtras, koboldFlags, isDryRun: dryRun },
     });
 
     if (nodeId === null) {
@@ -114,7 +116,7 @@ export async function buildRawActionKoboldRequest(directories, {
     const anchorContent = orchestratorInput.chat.length > 0 ? orchestratorInput.chat[orchestratorInput.chat.length - 1] : null;
 
     return {
-        params: assembled.generate_data, anchorNodeId, anchorContent, activations: assembled.activations, tokenCountRows: storedCounter.pending,
+        params: assembled.generate_data, prompt: assembled.combinedPrompt, anchorNodeId, anchorContent, activations: assembled.activations, tokenCountRows: storedCounter.pending,
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
         warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
         macroVariables: macroVariableChanges(orchestratorInput.chatMetadata, orchestratorInput.macroFacts.globalVariables, orchestratorInput.variablesBefore),
@@ -122,7 +124,10 @@ export async function buildRawActionKoboldRequest(directories, {
     };
 }
 
-router.post('/generate', withGenerationStop(async function (request, response_generate) {
+/**
+ * A KoboldAI generation: from a turn of a stored chat (the page names it), or from a prompt the request carries.
+ */
+export const generateKobold = withGenerationStop(async function (request, response_generate) {
     if (!request.body) return response_generate.sendStatus(400);
 
     let pendingAssistantPersist = null;
@@ -143,8 +148,7 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
     if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
         const {
             character_avatar: characterAvatar, group_id: groupId,
-            type = 'normal', streaming: streamingRequested = false,
-            can_abort: canAbortRequested = false,
+            type = 'normal',
         } = request.body;
         const isImpersonate = type === 'impersonate';
         const isContinue = type === 'continue';
@@ -203,7 +207,7 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
             chat.session.actor();
         }
 
-        request.body = { ...built.params, streaming: !!streamingRequested, can_abort: !!canAbortRequested };
+        request.body = built.params;
     }
 
     if (request.body.api_server.indexOf('localhost') != -1) {
@@ -341,7 +345,9 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
 
     console.error('Max retries exceeded. Giving up.');
     return response_generate.send({ error: true });
-}));
+});
+
+router.post('/generate', generateKobold);
 
 router.post('/status', async function (request, response) {
     if (!request.body) return response.sendStatus(400);
@@ -358,6 +364,7 @@ router.post('/status', async function (request, response) {
 
     const result = await fetchKoboldStatus(api_server);
     rememberRemoteTokenization('kobold', undefined, api_server, koboldCanUseTokenization(result.koboldCppVersion));
+    if (result.model !== 'no_connection') rememberKoboldFlags(api_server, koboldFlagsOf(result));
 
     response.send(result);
 });

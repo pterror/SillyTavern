@@ -70,9 +70,7 @@ import {
     setExternalAbortController,
     baseChatReplace,
     createLazyFields,
-    depth_prompt_depth_default,
     animation_duration,
-    depth_prompt_role_default,
     shouldAutoContinue,
     chatElement,
     ensureMessageMediaIsArray,
@@ -620,52 +618,6 @@ export function findGroupMemberId(arg, full = false) {
             index: index,
         };
     }
-}
-
-/**
- * Gets depth prompts for group members.
- * @param {string} groupId Group ID
- * @param {string} characterAvatar Avatar of the current character
- * @returns {{depth: number, text: string, role: string}[]} Array of depth prompts
- */
-export function getGroupDepthPrompts(groupId, characterAvatar) {
-    if (!groupId) {
-        return [];
-    }
-
-    const group = groupsStore.get(groupId);
-
-    if (!group || !Array.isArray(group.members) || !group.members.length) {
-        return [];
-    }
-
-    if (group.generation_mode === group_generation_mode.SWAP) {
-        return [];
-    }
-
-    const depthPrompts = [];
-
-    for (const member of group.members) {
-        const character = charactersStore.get(member);
-
-        if (!character) {
-            continue;
-        }
-
-        if (group.disabled_members.includes(member) && characterAvatar !== member) {
-            continue;
-        }
-
-        const depthPromptText = baseChatReplace(character.data?.extensions?.depth_prompt?.prompt?.trim(), null, character.name) || '';
-        const depthPromptDepth = character.data?.extensions?.depth_prompt?.depth ?? depth_prompt_depth_default;
-        const depthPromptRole = character.data?.extensions?.depth_prompt?.role ?? depth_prompt_role_default;
-
-        if (depthPromptText) {
-            depthPrompts.push({ text: depthPromptText, depth: depthPromptDepth, role: depthPromptRole });
-        }
-    }
-
-    return depthPrompts;
 }
 
 /**
