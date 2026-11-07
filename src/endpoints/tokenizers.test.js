@@ -125,7 +125,7 @@ const mistral = { encode: (text) => encodeWithTokenizer(mistralResolved, text) }
 }
 
 {
-    const remote = await resolveTokenizer({ api: 'textgenerationwebui', type: 'vllm', model: 'x' });
+    const remote = await resolveTokenizer({ api: 'textgenerationwebui', type: 'vllm', url: 'http://127.0.0.1:9', model: 'x' });
     assert.equal(remote.kind, 'remote');
     assert.equal(remote.localCopy, null);
     const encode = (text) => encodeWithTokenizer(remote, text, { encodeTextgenRemote: async () => ({ error: true }) });
