@@ -9,6 +9,7 @@ import express from 'express';
 import { write as writeCard } from '../../character-card-parser.js';
 import { setConfigFilePath } from '../../util.js';
 import { streamAsSetting } from '../../../tests/util/stream-as-setting.js';
+import { routerWithGenerate } from '../../../tests/util/router-with-generate.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
@@ -26,7 +27,8 @@ let openRouterFakeBackendUrl = null;
     });
 }
 
-const { router, buildRawActionTextCompletionRequest } = await import('./text-completions.js');
+const { router: textCompletionsRouter, generateTextCompletion, buildRawActionTextCompletionRequest } = await import('./text-completions.js');
+const router = routerWithGenerate(textCompletionsRouter, generateTextCompletion);
 const { writeAllSettings } = await import('../../settings-store.js');
 const { importWorldInfoFromRaw } = await import('../worldinfo.js');
 const { writeSecret, deleteSecret, SECRET_KEYS } = await import('../secrets.js');

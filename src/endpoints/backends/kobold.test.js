@@ -9,11 +9,13 @@ import express from 'express';
 import { write as writeCard } from '../../character-card-parser.js';
 import { setConfigFilePath } from '../../util.js';
 import { streamAsSetting } from '../../../tests/util/stream-as-setting.js';
+import { routerWithGenerate } from '../../../tests/util/router-with-generate.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 
-const { router, buildRawActionKoboldRequest } = await import('./kobold.js');
+const { router: koboldRouter, generateKobold, buildRawActionKoboldRequest } = await import('./kobold.js');
+const router = routerWithGenerate(koboldRouter, generateKobold);
 const { forwardAndPersistCompactStream } = await import('./text-completions.js');
 const { CompactStreamDecoder } = await import('../../../public/scripts/llamacpp-compact-stream.js');
 const { writeAllSettings } = await import('../../settings-store.js');

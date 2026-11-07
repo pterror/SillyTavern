@@ -102,15 +102,6 @@ export const navigation_option = {
 };
 
 /**
- * Determines if a value is an object.
- * @param {any} item The item to check.
- * @returns {boolean} True if the item is an object, false otherwise.
- */
-export function isObject(item) {
-    return (item && typeof item === 'object' && !Array.isArray(item));
-}
-
-/**
  * Ensures that the provided object is a plain object.
  * @param {object} obj Object to ensure is a plain object
  * @return {object} A plain object, or an empty object if the input is not an object.

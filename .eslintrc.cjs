@@ -6,6 +6,17 @@ const noPageDomWatching = [
     },
 ];
 
+const pageGeneration = [
+    {
+        selector: "Literal[value=/api.(backends.[a-z-]+.generate|novelai.generate|horde.generate-text)/]",
+        message: 'The page sends a generation as one action to /api/generation (generate, prompt or raw): the server knows the connection and makes the prompt.',
+    },
+    {
+        selector: "TemplateElement[value.raw=/api.(backends.[a-z-]+.generate|novelai.generate|horde.generate-text)/]",
+        message: 'The page sends a generation as one action to /api/generation (generate, prompt or raw): the server knows the connection and makes the prompt.',
+    },
+];
+
 const noPageTokenCounting = [
     {
         selector: `CallExpression[callee.name=/^(${pageTokenCounters})$/]`,
@@ -124,6 +135,7 @@ module.exports = {
                     },
                     ...noPageTokenCounting,
                     ...noPageDomWatching,
+                    ...pageGeneration,
                 ],
             },
         },

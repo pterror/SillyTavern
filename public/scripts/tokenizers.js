@@ -230,8 +230,6 @@ const countCache = new Map();
 /** @type {Map<string, number[]|null>} */
 const idCache = new Map();
 
-/** @type {Map<string, () => string[]>} */
-const entryTextSources = new Map();
 
 /** @type {Set<() => void>} */
 const tokenizerChangeListeners = new Set();
@@ -370,9 +368,6 @@ function rememberTokenizer(stateKey, tokenizer) {
         tokenizerChangeListeners.forEach(listener => listener());
     }
     rememberedTokenizer = { stateKey, tokenizer };
-    if (changed) {
-        queueMicrotask(prefetchEntryTokenIdsDebounced);
-    }
     return true;
 }
 
@@ -490,108 +485,11 @@ async function refreshCurrentTokenizer() {
 const refreshCurrentTokenizerDebounced = debounce(refreshCurrentTokenizer);
 
 /**
- * @param {CurrentTokenizer} tokenizer
- * @param {string} text
- * @returns {string}
- */
-function idCacheKey(tokenizer, text) {
-    return `${tokenizer.key}|${tokenizer.id}|${text}`;
-}
-
-/**
- * @param {string} stateKey
- * @param {string[]} texts
- * @param {any} data
- * @returns {(number[]|null)[]|null}
- */
-function applyEncodeResponse(stateKey, texts, data) {
-    const ids = Array.isArray(data?.ids) ? data.ids : null;
-    const tokenizer = ids && data.tokenizer ? data.tokenizer : null;
-    if (tokenizer && rememberTokenizer(stateKey, tokenizer) && tokenizer.basis !== 'failed') {
-        texts.forEach((text, i) => idCache.set(idCacheKey(tokenizer, text), Array.isArray(ids[i]) ? ids[i] : null));
-    }
-    return ids;
-}
-
-/**
- * @param {string} api
- * @param {() => string[]} getTexts
- */
-export function registerEntryTextSource(api, getTexts) {
-    entryTextSources.set(api, getTexts);
-}
-
-/**
- * @returns {Promise<void>}
- */
-async function prefetchEntryTokenIds() {
-    const getTexts = entryTextSources.get(main_api);
-    const state = getTokenizerState();
-    if (!getTexts || !state) {
-        return;
-    }
-    const tokenizer = getRememberedTokenizer();
-    const texts = [...new Set(getTexts())].filter(text => !tokenizer || !idCache.has(idCacheKey(tokenizer, text)));
-    if (texts.length === 0) {
-        return;
-    }
-    const stateKey = JSON.stringify(state);
-    applyEncodeResponse(stateKey, texts, await postCurrent('encode', { state, texts }, true));
-}
-
-export const prefetchEntryTokenIdsDebounced = debounce(prefetchEntryTokenIds);
-
-/**
- * @param {string[]} texts
- * @param {string} [api]
- * @returns {{ ids: Map<string, number[]|null>, tokenizer: CurrentTokenizer|null }}
- */
-export function getEntryTokenIds(texts, api = main_api) {
-    const ids = new Map();
-    const tokenizer = api === main_api ? getRememberedTokenizer() : null;
-    const missing = [];
-    for (const text of new Set(texts)) {
-        const key = tokenizer ? idCacheKey(tokenizer, text) : null;
-        if (key && idCache.has(key)) {
-            ids.set(text, idCache.get(key));
-        } else {
-            missing.push(text);
-        }
-    }
-
-    const state = getTokenizerState(api);
-    if (missing.length === 0 || !state) {
-        missing.forEach(text => ids.set(text, null));
-        return { ids, tokenizer };
-    }
-
-    const data = postCurrent('encode', { state, texts: missing }, false);
-    const answered = applyEncodeResponse(JSON.stringify(state), missing, data);
-    missing.forEach((text, i) => ids.set(text, Array.isArray(answered?.[i]) ? answered[i] : null));
-    return { ids, tokenizer: answered ? data.tokenizer : tokenizer };
-}
-
-/**
- * @param {() => void} listener
- */
-export function onTokenizerChange(listener) {
-    tokenizerChangeListeners.add(listener);
-}
-
-/**
  * @param {string} [api]
  * @returns {string}
  */
 export function getTokenizerStateHeader(api = main_api) {
     return JSON.stringify(getTokenizerState(api)).replace(/[\u007f-\uffff]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
-}
-
-/**
- * @param {string} [api]
- * @returns {CurrentTokenizer|null}
- */
-export function getTokenizerAnswer(api = main_api) {
-    return api === main_api ? getCurrentTokenizerSync() : askTokenizerSync(getTokenizerState(api));
 }
 
 export function showTrimEstimateWarning() {
@@ -605,25 +503,6 @@ export function showTrimEstimateWarning() {
         return;
     }
     showTokenizerWarnings([{ kind: 'trim-estimate', key: tokenizer.key, message }]);
-}
-
-/**
- * @param {CurrentTokenizer|null} tokenizer
- * @param {string[]} entries
- */
-export function showDroppedEntries(tokenizer, entries) {
-    if (entries.length === 0) {
-        return;
-    }
-    const templates = tokenizer?.messages?.dropped;
-    const template = entries.length === 1 ? templates?.one : templates?.many;
-    if (typeof template !== 'string') {
-        console.warn('Left out entries that need token ids:', entries);
-        return;
-    }
-    const values = { count: String(entries.length), entries: entries.join(', ') };
-    const message = template.replace(/\{(count|entries)\}/g, (_, name) => values[name]);
-    showTokenizerWarnings([{ kind: 'dropped', key: tokenizer.key, message, entries }]);
 }
 
 /**
@@ -1265,7 +1144,6 @@ export async function initTokenizers() {
     }
     $(document).on('change', '#main_api, #textgen_type, #model_novel_select, #horde_model, #tokenizer', refreshCurrentTokenizer);
     $(document).on('input', [...Object.values(SERVER_INPUTS), '#custom_api_url_text'].join(', '), refreshCurrentTokenizerDebounced);
-    $(document).on('input change', '#banned_tokens_textgenerationwebui, #global_banned_tokens_textgenerationwebui, #send_banned_tokens_textgenerationwebui, #nai_banned_tokens', prefetchEntryTokenIdsDebounced);
 
     void removeStoredTokenCache();
     void refreshCurrentTokenizer();

@@ -64,7 +64,6 @@ import { writeBack } from '../../token-count-store.js';
 import { readSettingsFor, settingsContextOf } from '../../settings-reads.js';
 import { resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
 import { resolveTokenizer, sendTokenizerWarnings, createTokenizerOutcome } from '../../tokenizer-resolve.js';
-import { readConnectionStateHeader } from '../../connection-state-header.js';
 import { fetchOpenRouterModels, rememberOpenRouterModels } from '../../openrouter-models.js';
 import { buildChatCompletionPrompt } from '../../prompt/chat-prompt.js';
 import { generateTurnOf } from '../../page-writes.js';
@@ -79,8 +78,6 @@ import { storedForm } from '../../chat-engine.js';
 import { storeUserMessage, withStoredMessages } from '../../stored-messages.js';
 import {
     TEXT_COMPLETION_MODELS,
-    computeLogitBias,
-    computeUpstreamLogitBias,
 } from '../tokenizers.js';
 import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../../vertex-ai-auth.js';
 import { getCookieSecret } from '../../users.js';
@@ -2429,38 +2426,6 @@ function chatCompletionConnection(settings, directories, macroContext, llamaCppP
 }
 
 /**
- * @param {any} value
- * @returns {string}
- */
-function toAsciiJson(value) {
-    return JSON.stringify(value).replace(/[\u007f-\uffff]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
-}
-
-router.post('/bias', async function (request, response) {
-    if (!request.body || !Array.isArray(request.body))
-        return response.sendStatus(400);
-
-    const state = readConnectionStateHeader(request);
-    if (state === null) {
-        return response.sendStatus(400);
-    }
-
-    try {
-        if (state) {
-            const dropped = [];
-            const result = await computeLogitBias(request.body, state.model ?? '', dropped, state.source, { url: state.url, directories: request.user.directories });
-            response.set('X-ST-Tokenizer-Dropped', toAsciiJson(dropped));
-            return response.send(result);
-        }
-        const result = await computeUpstreamLogitBias(request.body, String(request.query.model || ''));
-        return response.send(result);
-    } catch (error) {
-        console.error(error);
-        return response.send({});
-    }
-});
-
-/**
  * @param {import('../../users.js').UserDirectoryList} directories
  * @param {object} params
  * @param {string} [params.characterAvatar]
@@ -3730,4 +3695,3 @@ export const generateChatCompletion = withGenerationStop(async function (request
     }
 });
 
-router.post('/generate', generateChatCompletion);

@@ -15,7 +15,6 @@ import { userStatsHandler, initStats } from './scripts/stats.js';
 import {
     kai_settings,
     loadKoboldSettings,
-    getKoboldGenerationData,
     koboldai_settings,
     koboldai_setting_names,
     initKoboldSettings,
@@ -24,7 +23,6 @@ import {
 import {
     textgenerationwebui_settings as textgen_settings,
     loadTextGenSettings,
-    getTextGenGenerationData,
     textgen_types,
     parseTextgenLogprobs,
     parseTabbyLogprobs,
@@ -91,7 +89,6 @@ import {
 
 import {
     setupChatCompletionPromptManager,
-    sendOpenAIRequest,
     loadOpenAISettings,
     oai_settings,
     chat_completion_sources,
@@ -104,11 +101,9 @@ import {
 } from './scripts/chat-completion-settings.js';
 
 import {
-    getNovelGenerationData,
     getKayraMaxContextTokens,
     loadNovelSettings,
     nai_settings,
-    adjustNovelInstructionPrompt,
     parseNovelAILogprobs,
     novelai_settings,
     novelai_setting_names,
@@ -123,7 +118,6 @@ import {
 import {
     horde_settings,
     loadHordeSettings,
-    generateHorde,
     getStatusHorde,
     getHordeModels,
     initHorde,
@@ -192,9 +186,6 @@ import { initLogprobs, saveLogprobsForActiveMessage } from './scripts/logprobs.j
 import { openRightMenu, closeRightMenu } from './scripts/right-menu-state.js';
 import { initCfg } from './scripts/cfg-scale.js';
 import {
-    formatInstructModeChat,
-    formatInstructModePrompt,
-    formatInstructModeStoryString,
     getInstructStoppingSequences,
 } from './scripts/instruct-mode.js';
 import { initLocales, t } from './scripts/i18n.js';
@@ -256,7 +247,7 @@ import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMess
 import { event_types, eventSource } from './scripts/events.js';
 import { token, setToken, getRequestHeaders } from './scripts/request-headers.js';
 import { observeSessionAnswers, onChangeStream, prepareTabSession } from './scripts/tab-session.js';
-import { onStoppedReply } from './scripts/generation-request.js';
+import { onStoppedReply, sendGeneration, wholeReplyOf } from './scripts/generation-request.js';
 import { chat, chat_metadata, setChatMetadata } from './scripts/chat-state.js';
 import { active_character, active_group, name1, default_user_name, setActiveCharacter, setActiveGroup, setActiveCharacterAndGroupFromSettings, setName1Raw } from './scripts/app-selection-state.js';
 import { amount_gen, max_context, main_api, setAmountGen, setMaxContext, setMainApi } from './scripts/generation-params.js';
@@ -266,7 +257,7 @@ import { applyStreamFadeIn } from './scripts/util/stream-fadein.js';
 import { initDomHandlers } from './scripts/dom-handlers.js';
 import { SimpleMutex } from './scripts/util/SimpleMutex.js';
 import { AudioPlayer } from './scripts/audio-player.js';
-import { MacroEnvBuilder } from './scripts/macros/engine/MacroEnvBuilder.js';
+import { MacroEnvBuilder, pageMacroFacts } from './scripts/macros/engine/MacroEnvBuilder.js';
 import { messageFormatting } from './scripts/message-formatting.js';
 export { messageFormatting };
 import {
@@ -2946,7 +2937,7 @@ export function substituteParams(content, options = {}) {
  * @param {string} [api] Optional API name to get API-specific stopping sequences for
  * @returns {string[]} Array of stopping strings
  */
-export function getStoppingStrings(isImpersonate, isContinue, api = main_api) {
+function getStoppingStrings(isImpersonate, isContinue, api = main_api) {
     // Only custom stop strings apply to Chat Completion
     if (api === 'openai') {
         return getCustomStoppingStrings();
@@ -3709,76 +3700,8 @@ export class StreamingProcessor {
 }
 
 /**
- * Constructs a prompt to be used for either Text Completion or Chat Completion. Input is format-agnostic.
- * @param {string | object[]} prompt Input prompt. Can be a string or an array of chat-style messages, i.e. [{role: '', content: ''}, ...]
- * @param {string} api API to use.
- * @param {boolean} instructOverride true to override instruct mode, false to use the default value
- * @param {boolean} quietToLoud true to generate a message in system mode, false to generate a message in character mode
- * @param {string} [systemPrompt] System prompt to use.
- * @param {string} [prefill] Prefill for the prompt.
- * @returns {string | object[]} Prompt ready for use in generation. If using TC, this will be a string. If using CC, this will be an array of chat-style messages.
- */
-function createRawPrompt(prompt, api, instructOverride, quietToLoud, systemPrompt, prefill) {
-    const isInstruct = power_user.instruct.enabled && api !== 'openai' && api !== 'novel' && !instructOverride;
-
-    // If the prompt was given as a string, convert to a message-style object assuming user role
-    if (typeof prompt === 'string') {
-        const message = { role: 'user', content: prompt.trim() };
-        prompt = [message];
-    } else {  // checks for message-style object
-        if (prompt.length === 0 && !systemPrompt) throw Error('No messages provided');
-    }
-
-    // Substitute the prefill if provided
-    prefill = substituteParams(prefill ?? '');
-
-    // Format each message in the prompt, accounting for the provided roles
-    for (const message of prompt) {
-        let name = '';
-        if (message.role === 'user') name = message.name ?? name1;
-        if (message.role === 'assistant') name = message.name ?? name2;
-        if (message.role === 'system') name = message.name ?? '';
-        const prefix = isInstruct || api === 'openai' ? '' : (name ? `${name}: ` : '');
-        message.content = prefix + substituteParams(message.content ?? '');
-        if (isInstruct) {  // instruct formatting for text completion
-            const isUser = message.role === 'user';
-            const isNarrator = message.role === 'system';
-            message.content = formatInstructModeChat(name, message.content, isUser, isNarrator, '', name1, name2, false);
-        }
-    }
-
-    // prepend system prompt, if provided
-    if (systemPrompt) {
-        systemPrompt = substituteParams(systemPrompt);
-        systemPrompt = isInstruct ? formatInstructModeStoryString(systemPrompt) : systemPrompt.trim();
-        if (isInstruct && systemPrompt.length > 0 && !systemPrompt.endsWith('\n')) {
-            if (power_user.instruct.wrap && !power_user.instruct.story_string_suffix) {
-                systemPrompt += '\n';
-            }
-        }
-        prompt.unshift({ role: 'system', content: systemPrompt });
-    }
-
-    // with Chat Completion, the prefill is an additional assistant message at the end.
-    if (api === 'openai' && prefill) {
-        prompt.push({ role: 'assistant', content: prefill });
-    }
-
-    // if text completion, convert to text prompt by concatenating all message contents and adding the prefill as a promptBias.
-    if (api !== 'openai') {
-        const joiner = isInstruct ? '' : '\n';
-        prompt = prompt.map(message => message.content).join(joiner);
-        prompt = api === 'novel' ? adjustNovelInstructionPrompt(prompt) : prompt;
-        prompt = prompt + (isInstruct ? formatInstructModePrompt(name2, false, prefill, name1, name2, true, quietToLoud) : `\n${prefill}`);  // add last line
-    }
-
-    return prompt;
-}
-
-/**
  * @typedef {object} GenerateRawParams
  * @prop {string | object[]} [prompt] Prompt to generate a message from. Can be a string or an array of chat-style messages, i.e. [{role: '', content: ''}, ...]
- * @prop {string} [api] API to use. Main API is used if not specified.
  * @prop {boolean} [instructOverride] true to override instruct mode, false to use the default value
  * @prop {boolean} [quietToLoud] true to generate a message in system mode, false to generate a message in character mode
  * @prop {string} [systemPrompt] System prompt to use.
@@ -3789,232 +3712,54 @@ function createRawPrompt(prompt, api, instructOverride, quietToLoud, systemPromp
  */
 
 /**
- * Generates a raw data object using the provided prompt.
- * This used to be part of `generateRaw`, but separating it out allows extensions to access other data such as reasoning message.
- * @param {GenerateRawParams} params Parameters for generating a message
- * @returns {Promise<object | string>} Raw API response data, or a JSON string extracted from the response when `jsonSchema` is provided.
- */
-async function generateRawData({ prompt = '', api = null, instructOverride = false, quietToLoud = false, systemPrompt = '', responseLength = null, prefill = '', jsonSchema = null } = {}) {
-    if (!api) {
-        api = main_api;
-    }
-
-    const abortController = new AbortController();
-    const responseLengthCustomized = typeof responseLength === 'number' && responseLength > 0;
-    let eventHook = () => { };
-
-    // construct final prompt from the input. Can either be a string or an array of chat-style messages.
-    prompt = createRawPrompt(prompt, api, instructOverride, quietToLoud, systemPrompt, prefill);
-
-    // Allow extensions to stop generation before it happens
-    const eventAbortController = new AbortController();
-    const abortHook = () => {
-        abortController.abort(new Error('Cancelled by stop event'));
-        eventAbortController.abort(new Error('Cancelled by extension'));
-    };
-    eventSource.on(event_types.GENERATION_STOPPED, abortHook);
-
-    try {
-        if (responseLengthCustomized) {
-            TempResponseLength.save(api, responseLength);
-        }
-        /** @type {object|any[]} */
-        let generateData = {};
-
-        // Allow extensions to modify the prompt before generation
-        // 1. for text completion
-        if (typeof prompt === 'string') {
-            const eventData = { prompt: prompt, dryRun: false };
-            await eventSource.emit(event_types.GENERATE_AFTER_COMBINE_PROMPTS, eventData);
-            prompt = eventData.prompt;
-        }
-        // 2. for chat completion
-        if (Array.isArray(prompt)) {
-            const eventData = { chat: prompt, dryRun: false };
-            await eventSource.emit(event_types.CHAT_COMPLETION_PROMPT_READY, eventData);
-            prompt = eventData.chat;
-        }
-
-        // Check if the generation was aborted during the event
-        eventAbortController.signal.throwIfAborted();
-
-        switch (api) {
-            case 'kobold':
-            case 'koboldhorde':
-                if (kai_settings.preset_settings === 'gui') {
-                    generateData = { prompt: prompt, gui_settings: true, max_length: responseLengthFor(api), max_context_length: max_context, api_server: kai_settings.api_server };
-                } else {
-                    const isHorde = api === 'koboldhorde';
-                    const koboldSettings = koboldai_settings[koboldai_setting_names[kai_settings.preset_settings]];
-                    generateData = getKoboldGenerationData(prompt.toString(), koboldSettings, responseLengthFor(api), max_context, isHorde, 'quiet');
-                }
-                TempResponseLength.restore(api);
-                break;
-            case 'novel': {
-                const novelSettings = novelai_settings[novelai_setting_names[nai_settings.preset_settings_novel]];
-                generateData = getNovelGenerationData(prompt, novelSettings, responseLengthFor(api), false, false, null, 'quiet');
-                TempResponseLength.restore(api);
-                break;
-            }
-            case 'textgenerationwebui':
-                generateData = await getTextGenGenerationData(prompt, responseLengthFor(api), false, false, null, 'quiet');
-                TempResponseLength.restore(api);
-                break;
-            case 'openai': {
-                generateData = prompt;  // generateData is just the chat message object
-                eventHook = TempResponseLength.setupEventHook(api);
-            } break;
-        }
-
-        let data = {};
-
-        if (api === 'koboldhorde') {
-            data = await generateHorde(prompt.toString(), generateData, abortController.signal, false);
-        } else if (api === 'openai') {
-            data = await sendOpenAIRequest('quiet', generateData, abortController.signal, { jsonSchema });
-        } else {
-            const generateUrl = getGenerateUrl(api);
-            const response = await fetch(generateUrl, {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                cache: 'no-cache',
-                body: JSON.stringify(generateData),
-                signal: abortController.signal,
-            });
-
-            if (!response.ok) {
-                throw await response.json();
-            }
-
-            data = await response.json();
-        }
-
-        // should only happen for text completions
-        // other frontend paths do not return data if calling the backend fails,
-        // they throw things instead
-        if (data.error) {
-            throw new Error(data.response);
-        }
-
-        if (jsonSchema) {
-            return extractJsonFromData(data, { mainApi: api, returnInvalidJson: jsonSchema.returnInvalid });
-        }
-
-        return data;
-    } finally {
-        eventSource.removeListener(event_types.GENERATION_STOPPED, abortHook);
-        if (responseLengthCustomized && TempResponseLength.isCustomized()) {
-            TempResponseLength.restore(api);
-            TempResponseLength.removeEventHook(api, eventHook);
-        }
-    }
-}
-
-/**
- * Generates a message using the provided prompt.
- * If the prompt is an array of chat-style messages and not using chat completion, it will be converted to a text prompt.
+ * Generates a reply to the given prompt instead of to the chat: the server makes the prompt for its connection and sends it.
  * @param {GenerateRawParams} params Parameters for generating a message
  * @returns {Promise<string>} Generated output: a cleaned-up message string when `jsonSchema` is not provided, or an extracted JSON string conforming to `jsonSchema` when it is.
  */
-export async function generateRaw({ prompt = '', api = null, instructOverride = false, quietToLoud = false, systemPrompt = '', responseLength = null, trimNames = true, prefill = '', jsonSchema = null } = {}) {
-    if (arguments.length > 0 && typeof arguments[0] !== 'object') {
-        console.trace('generateRaw called with positional arguments. Please use an object instead.');
-        [prompt, api, instructOverride, quietToLoud, systemPrompt, responseLength, trimNames, prefill, jsonSchema] = arguments;
-    }
+export async function generateRaw({ prompt = '', instructOverride = false, quietToLoud = false, systemPrompt = '', responseLength = null, trimNames = true, prefill = '', jsonSchema = null } = {}) {
+    const avatar = getCurrentCharacter()?.avatar;
+    if (typeof avatar !== 'string' || avatar === '') throw new Error(t`Open a chat to generate in.`);
+    const nodeId = [...chat].reverse().find(message => isStoredNodeId(message?.node_id))?.node_id ?? null;
 
-    const data = await generateRawData({ prompt, api, instructOverride, quietToLoud, systemPrompt, responseLength, prefill, jsonSchema });
+    const stopController = new AbortController();
+    const stop = () => stopController.abort(new Error('Cancelled by stop event'));
+    eventSource.on(event_types.GENERATION_STOPPED, stop);
+    try {
+        const answer = await sendGeneration({
+            character_avatar: avatar,
+            group_id: selected_group != null ? String(selected_group) : undefined,
+            node_id: nodeId,
+            prompt, system_prompt: systemPrompt, prefill,
+            instruct: !instructOverride,
+            quiet_to_loud: quietToLoud,
+            response_length: typeof responseLength === 'number' && responseLength > 0 ? responseLength : undefined,
+            json_schema: jsonSchema ?? undefined,
+            macro_facts: pageMacroFacts(),
+        }, stopController.signal, '/api/generation/raw');
+        const data = answer.stream ? await wholeReplyOf(answer.stream) : answer.data;
 
-    // JSON string (matching the provided schema) will already be extracted.
-    if (jsonSchema) {
-        return data;
-    }
-
-    // format result, exclude user prompt bias
-    const message = cleanUpMessage({
-        getMessage: extractMessageFromData(data, api),
-        isImpersonate: false,
-        isContinue: false,
-        displayIncompleteSentences: true,
-        includeUserPromptBias: false,
-        trimNames: trimNames,
-        trimWrongNames: trimNames,
-    });
-
-    if (!message) {
-        throw new Error('No message generated');
-    }
-
-    return message;
-}
-
-class TempResponseLength {
-    /** @type {number | null} */
-    static #length = null;
-
-    static isCustomized() {
-        return this.#length !== null;
-    }
-
-    /**
-     * Asks for this response length.
-     * @param {string} _api API identifier
-     * @param {number} responseLength New response length
-     */
-    static save(_api, responseLength) {
-        this.#length = responseLength;
-    }
-
-    /**
-     * Back to the setting's.
-     * @param {string|null} [_api] API identifier
-     * @returns {void}
-     */
-    static restore(_api) {
-        this.#length = null;
-    }
-
-    static get length() {
-        return this.#length;
-    }
-
-    /**
-     * Sets up an event hook to restore the original response length when the event is emitted.
-     * @param {string} api API identifier
-     * @returns {function(): void} Event hook function
-     */
-    static setupEventHook(api) {
-        const eventHook = () => {
-            if (this.isCustomized()) {
-                this.restore(api);
-            }
-        };
-
-        switch (api) {
-            case 'openai':
-                eventSource.once(event_types.CHAT_COMPLETION_SETTINGS_READY, eventHook);
-                break;
-            default:
-                eventSource.once(event_types.GENERATE_AFTER_DATA, eventHook);
-                break;
+        if (jsonSchema) {
+            return extractJsonFromData(data, { mainApi: answer.connection, returnInvalidJson: jsonSchema.returnInvalid });
         }
 
-        return eventHook;
-    }
+        const message = cleanUpMessage({
+            getMessage: extractMessageFromData(data, answer.connection),
+            isImpersonate: false,
+            isContinue: false,
+            displayIncompleteSentences: true,
+            includeUserPromptBias: false,
+            trimNames: trimNames,
+            trimWrongNames: trimNames,
+            api: answer.connection,
+        });
 
-    /**
-     * Removes the event hook for the specified API.
-     * @param {string} api API identifier
-     * @param {function(): void} eventHook Previously set up event hook
-     */
-    static removeEventHook(api, eventHook) {
-        switch (api) {
-            case 'openai':
-                eventSource.removeListener(event_types.CHAT_COMPLETION_SETTINGS_READY, eventHook);
-                break;
-            default:
-                eventSource.removeListener(event_types.GENERATE_AFTER_DATA, eventHook);
-                break;
+        if (!message) {
+            throw new Error('No message generated');
         }
+
+        return message;
+    } finally {
+        eventSource.removeListener(event_types.GENERATION_STOPPED, stop);
     }
 }
 
@@ -4357,8 +4102,7 @@ export function getMaxResponseTokens() {
  * @param {string} api
  * @returns {number}
  */
-export function responseLengthFor(api) {
-    if (TempResponseLength.length !== null) return TempResponseLength.length;
+function responseLengthFor(api) {
     if (api == 'kobold' || api == 'koboldhorde' || api == 'textgenerationwebui' || api == 'novel') {
         return amount_gen;
     }
@@ -4514,27 +4258,6 @@ export async function resolveClientToolHandoffLoop(initialData, owner) {
     }
 
     return data;
-}
-
-/**
- * Gets the generation endpoint URL for the specified API.
- * @param {string} api API name
- * @returns {string} Generation URL
- * @throws {Error} If the API is unknown
- */
-function getGenerateUrl(api) {
-    switch (api) {
-        case 'kobold':
-            return '/api/backends/kobold/generate';
-        case 'koboldhorde':
-            return '/api/backends/koboldhorde/generate';
-        case 'textgenerationwebui':
-            return '/api/backends/text-completions/generate';
-        case 'novel':
-            return '/api/novelai/generate';
-        default:
-            throw new Error(`Unknown API: ${api}`);
-    }
 }
 
 onStoppedReply(stop => {

@@ -1,6 +1,5 @@
 import {
     abortStatusCheck,
-    getStoppingStrings,
     resultCheckStatus,
     saveSettingsDebounced,
     saveSettings,
@@ -8,19 +7,15 @@ import {
     startStatusLoading,
 } from '../script.js';
 import { getRequestHeaders } from './request-headers.js';
-import { power_user } from './power-user.js';
 import { newUi, newUiStarted } from './new-ui-page.js';
-import { getEntryTokenIds, getTokenizerBestMatch, registerEntryTextSource, showDroppedEntries, tokenizers } from './tokenizers.js';
 import {
     getSortableDelay,
-    onlyUnique,
 } from './utils.js';
-import { buildLogitBiasListResult, createNewLogitBiasEntry, displayLogitBias, getLogitBiasEntryTexts } from './logit-bias.js';
+import { createNewLogitBiasEntry, displayLogitBias } from './logit-bias.js';
 import { SECRET_KEYS, secret_state, writeSecret } from './secrets.js';
 
 const default_preamble = '[ Style: chat, complex, sensory, visceral ]';
 const default_order = [1, 5, 0, 2, 3, 4];
-const maximum_output_length = 150;
 const default_presets = {
     'clio-v1': 'Talker-Chat-Clio',
     'kayra-v1': 'Carefree-Kayra',
@@ -96,19 +91,6 @@ export function getKayraMaxContextTokens() {
     }
 
     return null;
-}
-
-function getNovelMaxResponseTokens() {
-    switch (novel_data?.tier) {
-        case 1:
-            return 150;
-        case 2:
-            return 150;
-        case 3:
-            return 250;
-    }
-
-    return maximum_output_length;
 }
 
 export function convertNovelPreset(data) {
@@ -409,220 +391,6 @@ const sliders = [
     },
 ];
 
-/**
- * @param {string} trimmed
- * @returns {string[]|null}
- */
-function getBadWordEncodeTexts(trimmed) {
-    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-        return [trimmed.slice(1, -1)];
-    }
-    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-        return null;
-    }
-    return getBadWordPermutations(trimmed);
-}
-
-/**
- * @param {string} banned_tokens
- * @returns {string[]}
- */
-function getBadWordTexts(banned_tokens) {
-    return String(banned_tokens ?? '').split('\n')
-        .map(token => token.trim())
-        .filter(trimmed => trimmed.length > 0)
-        .flatMap(trimmed => getBadWordEncodeTexts(trimmed) ?? []);
-}
-
-/**
- * @param {string} banned_tokens
- * @param {(text: string) => number[]|null} getIds
- * @param {string[]} dropped
- * @returns {number[][]}
- */
-function getBadWordIds(banned_tokens, getIds, dropped) {
-    const result = [];
-    const sequence = String(banned_tokens ?? '').split('\n');
-
-    for (let token of sequence) {
-        const trimmed = token.trim();
-
-        if (trimmed.length === 0) {
-            continue;
-        }
-
-        const texts = getBadWordEncodeTexts(trimmed);
-        if (texts === null) {
-            try {
-                const tokens = JSON.parse(trimmed);
-
-                if (Array.isArray(tokens) && tokens.every(t => Number.isInteger(t))) {
-                    result.push(tokens);
-                } else {
-                    throw new Error('Not an array of integers');
-                }
-            } catch (err) {
-                console.log(`Failed to parse bad word token list: ${trimmed}`, err);
-            }
-            continue;
-        }
-
-        const ids = texts.map(getIds);
-        if (ids.includes(null)) {
-            dropped.push(trimmed);
-            continue;
-        }
-        result.push(...ids);
-    }
-
-    console.debug(`Bad words ids for "${banned_tokens}"`, result);
-    return result;
-}
-
-function getBadWordPermutations(text) {
-    const result = [];
-
-    result.push(text);
-    result.push(` ${text}`);
-    result.push(text[0].toUpperCase() + text.slice(1));
-    result.push(` ${text[0].toUpperCase() + text.slice(1)}`);
-    result.push(text[0].toLowerCase() + text.slice(1));
-    result.push(` ${text[0].toLowerCase() + text.slice(1)}`);
-    result.push(text.toUpperCase());
-    result.push(` ${text.toUpperCase()}`);
-    result.push(text.toLowerCase());
-    result.push(` ${text.toLowerCase()}`);
-
-    return result.filter(onlyUnique);
-}
-
-export function getNovelGenerationData(finalPrompt, settings, maxLength, isImpersonate, isContinue, _cfgValues, type) {
-    console.debug('NovelAI generation data for', type);
-    const isKayra = nai_settings.model_novel.includes('kayra');
-    const isErato = nai_settings.model_novel.includes('erato');
-
-    const stoppingStrings = getStoppingStrings(isImpersonate, isContinue);
-
-    // Llama 3 tokenizer, huh?
-    if (isErato) {
-        const additionalStopStrings = [];
-        for (const stoppingString of stoppingStrings) {
-            if (stoppingString.startsWith('\n')) {
-                additionalStopStrings.push('.' + stoppingString);
-                additionalStopStrings.push('!' + stoppingString);
-                additionalStopStrings.push('?' + stoppingString);
-                additionalStopStrings.push('*' + stoppingString);
-                additionalStopStrings.push('"' + stoppingString);
-                additionalStopStrings.push('_' + stoppingString);
-                additionalStopStrings.push('...' + stoppingString);
-                additionalStopStrings.push('."' + stoppingString);
-                additionalStopStrings.push('?"' + stoppingString);
-                additionalStopStrings.push('!"' + stoppingString);
-                additionalStopStrings.push('.*' + stoppingString);
-                additionalStopStrings.push(')' + stoppingString);
-            }
-        }
-        stoppingStrings.push(...additionalStopStrings);
-    }
-
-    const MAX_STOP_SEQUENCES = 1024;
-    const sentStoppingStrings = stoppingStrings.slice(0, MAX_STOP_SEQUENCES);
-    const hasBias = Array.isArray(nai_settings.logit_bias) && nai_settings.logit_bias.length > 0;
-    const entryTexts = [
-        ...sentStoppingStrings,
-        ...getBadWordTexts(nai_settings.banned_tokens),
-        ...(hasBias ? getLogitBiasEntryTexts(nai_settings.logit_bias) : []),
-    ];
-    const entryIds = entryTexts.length > 0 ? getEntryTokenIds(entryTexts, 'novel') : null;
-    /** @param {string} text */
-    const getIds = text => entryIds?.ids.get(text) ?? null;
-    const hasTokenizer = () => (entryIds?.tokenizer?.id ?? getTokenizerBestMatch('novel')) !== tokenizers.NONE;
-    const dropped = [];
-
-    const stopSequences = [];
-    for (const stoppingString of sentStoppingStrings) {
-        const ids = getIds(stoppingString);
-        if (ids === null) {
-            dropped.push(stoppingString);
-            continue;
-        }
-        stopSequences.push(ids);
-    }
-    const stopDropped = dropped.length;
-
-    const badWordIds = getBadWordIds(nai_settings.banned_tokens, getIds, dropped);
-    const badWordsDropped = dropped.length - stopDropped;
-
-    const prefix = selectPrefix(nai_settings.prefix, finalPrompt);
-
-    const logitBias = hasBias ? calculateLogitBias(getIds, dropped) : [];
-
-    showDroppedEntries(entryIds?.tokenizer ?? null, dropped);
-
-    if (power_user.console_log_prompts) {
-        console.log(finalPrompt);
-    }
-
-
-    if (isErato) {
-        finalPrompt = '<|startoftext|><|reserved_special_token81|>' + finalPrompt;
-    }
-
-    const adjustedMaxLength = (isKayra || isErato) ? getNovelMaxResponseTokens() : maximum_output_length;
-
-    return {
-        'input': finalPrompt,
-        'model': nai_settings.model_novel,
-        'use_string': true,
-        'temperature': Number(nai_settings.temperature),
-        'max_length': maxLength < adjustedMaxLength ? maxLength : adjustedMaxLength,
-        'min_length': Number(nai_settings.min_length),
-        'tail_free_sampling': Number(nai_settings.tail_free_sampling),
-        'repetition_penalty': Number(nai_settings.repetition_penalty),
-        'repetition_penalty_range': Number(nai_settings.repetition_penalty_range),
-        'repetition_penalty_slope': Number(nai_settings.repetition_penalty_slope),
-        'repetition_penalty_frequency': Number(nai_settings.repetition_penalty_frequency),
-        'repetition_penalty_presence': Number(nai_settings.repetition_penalty_presence),
-        'top_a': Number(nai_settings.top_a),
-        'top_p': Number(nai_settings.top_p),
-        'top_k': Number(nai_settings.top_k),
-        'min_p': Number(nai_settings.min_p),
-        'math1_temp': Number(nai_settings.math1_temp),
-        'math1_quad': Number(nai_settings.math1_quad),
-        'math1_quad_entropy_scale': Number(nai_settings.math1_quad_entropy_scale),
-        'typical_p': Number(nai_settings.typical_p),
-        'mirostat_lr': Number(nai_settings.mirostat_lr),
-        'mirostat_tau': Number(nai_settings.mirostat_tau),
-        'phrase_rep_pen': nai_settings.phrase_rep_pen,
-        'stop_sequences': stopSequences.length === 0 && (stopDropped > 0 || !hasTokenizer()) ? undefined : stopSequences,
-        'bad_words_ids': badWordIds.length === 0 && (badWordsDropped > 0 || !hasTokenizer()) ? undefined : badWordIds,
-        'logit_bias_exp': logitBias,
-        'generate_until_sentence': true,
-        'use_cache': false,
-        'return_full_text': false,
-        'prefix': prefix,
-        'order': nai_settings.order || settings.order || default_order,
-        'num_logprobs': power_user.request_token_probabilities ? 10 : undefined,
-    };
-}
-
-function selectPrefix(selected_prefix, finalPrompt) {
-    let useInstruct = false;
-    const clio = nai_settings.model_novel.includes('clio');
-    const kayra = nai_settings.model_novel.includes('kayra');
-    const erato = nai_settings.model_novel.includes('erato');
-    const isNewModel = clio || kayra || erato;
-
-    if (isNewModel) {
-        // NovelAI claims they scan backwards 1000 characters (not tokens!) to look for instruct brackets. That's really short.
-        const tail = finalPrompt.slice(-1500);
-        useInstruct = tail.includes('}');
-        return useInstruct ? 'special_instruct' : selected_prefix;
-    }
-
-    return 'vanilla';
-}
-
 function sortItemsByOrder(orderArray) {
     console.debug('Preset samplers order: ' + orderArray);
     const $draggableItems = $('#novel_order');
@@ -655,39 +423,6 @@ function saveSamplingOrder() {
     nai_settings.order = order;
     console.log('Samplers reordered:', nai_settings.order);
     saveSettingsDebounced('nai_settings');
-}
-
-/**
- * @param {(text: string) => number[]|null} getIds Token ids for an entry's text; null leaves it out.
- * @param {string[]} dropped Receives the text of each entry left out.
- * @returns {object[]}
- */
-function calculateLogitBias(getIds, dropped) {
-    const biasPreset = nai_settings.logit_bias;
-
-    if (!Array.isArray(biasPreset) || biasPreset.length === 0) {
-        return [];
-    }
-
-    function getBiasObject(bias, sequence) {
-        return {
-            bias: bias,
-            ensure_sequence_finish: false,
-            generate_once: false,
-            sequence: sequence,
-        };
-    }
-
-    const result = buildLogitBiasListResult(biasPreset, getIds, getBiasObject, dropped);
-    return result;
-}
-
-export function adjustNovelInstructionPrompt(prompt) {
-    const stripedPrompt = prompt.replace(/[[\]]/g, '').trim();
-    if (!stripedPrompt.includes('{ ')) {
-        return `{ ${stripedPrompt} }`;
-    }
-    return stripedPrompt;
 }
 
 /**
@@ -768,8 +503,6 @@ async function getStatusNovel() {
 }
 
 export function initNovelAISettings() {
-    registerEntryTextSource('novel', () => [...getBadWordTexts(nai_settings.banned_tokens), ...getLogitBiasEntryTexts(nai_settings.logit_bias)]);
-
     sliders.forEach(slider => {
         $(document).on('input', slider.sliderId, function () {
             const value = $(this).val();

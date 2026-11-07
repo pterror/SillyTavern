@@ -11,11 +11,13 @@ import { setConfigFilePath } from '../../util.js';
 import { streamAsSetting } from '../../../tests/util/stream-as-setting.js';
 import { handleGenerationStop } from '../../generation-stop.js';
 import { handleGenerationResume } from './llamacpp-compact-stream.js';
+import { routerWithGenerate } from '../../../tests/util/router-with-generate.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 
-const { router } = await import('./text-completions.js');
+const { router: textCompletionsRouter, generateTextCompletion } = await import('./text-completions.js');
+const router = routerWithGenerate(textCompletionsRouter, generateTextCompletion);
 const { writeAllSettings } = await import('../../settings-store.js');
 const { CompactStreamDecoder } = await import('../../../public/scripts/llamacpp-compact-stream.js');
 const { newSessionKey } = await import('../../chat-engine.js');

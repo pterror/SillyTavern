@@ -124,13 +124,14 @@ function streamOf(response, connection) {
  * the reply as a stream when it streams it, or whole.
  * @param {object} body The action: whose chat, where in it, what kind of turn, and what the page holds that the server doesn't.
  * @param {AbortSignal} signal
+ * @param {string} [url] The raw generation's route, for a reply to given text instead of to the chat.
  * @returns {Promise<GenerationAnswer>}
  */
-export async function sendGeneration(body, signal) {
+export async function sendGeneration(body, signal, url = GENERATE_URL) {
     const generationId = beginServerGeneration();
     let response;
     try {
-        response = await fetch(GENERATE_URL, {
+        response = await fetch(url, {
             method: 'POST',
             headers: { ...getRequestHeaders(), 'X-Generation-Id': generationId },
             cache: 'no-cache',

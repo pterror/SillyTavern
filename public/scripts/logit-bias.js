@@ -1,8 +1,6 @@
 import { saveSettingsDebounced } from '../script.js';
-import { getEntryTokenIds, getTextTokens, prefetchEntryTokenIdsDebounced, showDroppedEntries, tokenizers } from './tokenizers.js';
 import { getSortableDelay, uuidv4 } from './utils.js';
 
-export const BIAS_CACHE = new Map();
 
 /**
  * Displays the logit bias list in the specified container.
@@ -48,8 +46,6 @@ export function displayLogitBias(logitBias, containerSelector, settingsKey = 'oa
             saveSettingsDebounced(settingsKey);
         },
     });
-
-    prefetchEntryTokenIdsDebounced();
 }
 
 /**
@@ -61,7 +57,6 @@ export function displayLogitBias(logitBias, containerSelector, settingsKey = 'oa
 export function createNewLogitBiasEntry(logitBias, containerSelector, settingsKey = 'oai_settings') {
     const entry = { id: uuidv4(), text: '', value: 0 };
     logitBias.push(entry);
-    prefetchEntryTokenIdsDebounced();
     createLogitBiasListItem(entry, logitBias, containerSelector, settingsKey);
     saveSettingsDebounced(settingsKey);
 }
@@ -79,12 +74,10 @@ function createLogitBiasListItem(entry, logitBias, containerSelector, settingsKe
     template.data('id', id);
     template.find('.logit_bias_text').val(entry.text).on('input', function () {
         entry.text = $(this).val();
-        prefetchEntryTokenIdsDebounced();
         saveSettingsDebounced(settingsKey);
     });
     template.find('.logit_bias_value').val(entry.value).on('input', function () {
         entry.value = Number($(this).val());
-        prefetchEntryTokenIdsDebounced();
         saveSettingsDebounced(settingsKey);
     });
     template.find('.logit_bias_remove').on('click', function () {
@@ -93,106 +86,8 @@ function createLogitBiasListItem(entry, logitBias, containerSelector, settingsKe
         if (index > -1) {
             logitBias.splice(index, 1);
         }
-        prefetchEntryTokenIdsDebounced();
         saveSettingsDebounced(settingsKey);
     });
     $(containerSelector).find('.logit_bias_list').prepend(template);
 }
 
-/**
- * The text an entry encodes: `{verbatim}` without its braces, plain text with a leading space.
- * @param {string} text The entry's trimmed text.
- * @returns {string|null} null for raw token ids.
- */
-function getEntryEncodeText(text) {
-    if (text.startsWith('{') && text.endsWith('}')) {
-        return text.slice(1, -1);
-    }
-    if (text.startsWith('[') && text.endsWith(']')) {
-        return null;
-    }
-    return ` ${text}`;
-}
-
-/**
- * The texts a bias preset's entries encode.
- * @param {object[]} biasPreset Bias preset
- * @returns {string[]}
- */
-export function getLogitBiasEntryTexts(biasPreset) {
-    const texts = [];
-    for (const entry of Array.isArray(biasPreset) ? biasPreset : []) {
-        const text = entry?.text?.length > 0 ? entry.text.trim() : '';
-        const encodeText = text.length > 0 ? getEntryEncodeText(text) : null;
-        if (encodeText !== null) {
-            texts.push(encodeText);
-        }
-    }
-    return texts;
-}
-
-/**
- * Builds the logit bias list with the given token ids.
- * @param {object[]} biasPreset Bias preset
- * @param {(text: string) => number[]|null} getIds Token ids for an entry's text; null leaves the entry out.
- * @param {(bias: number, sequence: number[]) => object} getBiasObject Transformer function to create bias object
- * @param {string[]} [dropped] Receives the text of each entry left out.
- * @returns {object[]} Array of logit bias objects
- */
-export function buildLogitBiasListResult(biasPreset, getIds, getBiasObject, dropped = undefined) {
-    const result = [];
-
-    for (const entry of biasPreset) {
-        if (entry.text?.length > 0) {
-            const text = entry.text.trim();
-
-            // Skip empty lines
-            if (text.length === 0) {
-                continue;
-            }
-
-            const encodeText = getEntryEncodeText(text);
-            if (encodeText === null) {
-                // Raw token ids, JSON serialized
-                try {
-                    const tokens = JSON.parse(text);
-
-                    if (Array.isArray(tokens) && tokens.every(t => Number.isInteger(t))) {
-                        result.push(getBiasObject(entry.value, tokens));
-                    } else {
-                        throw new Error('Not an array of integers');
-                    }
-                } catch (err) {
-                    console.log(`Failed to parse logit bias token list: ${text}`, err);
-                }
-                continue;
-            }
-
-            const tokens = getIds(encodeText);
-            if (tokens === null) {
-                dropped?.push(text);
-                continue;
-            }
-            result.push(getBiasObject(entry.value, tokens));
-        }
-    }
-    return result;
-}
-
-/**
- * @param {object[]} biasPreset
- * @param {number} tokenizerType
- * @param {(bias: number, sequence: number[]) => object} getBiasObject
- * @returns {object[]}
- */
-export function getLogitBiasListResult(biasPreset, tokenizerType, getBiasObject) {
-    if (tokenizerType === tokenizers.API_CURRENT || tokenizerType === tokenizers.BEST_MATCH) {
-        const { ids, tokenizer } = getEntryTokenIds(getLogitBiasEntryTexts(biasPreset));
-        const dropped = [];
-        const result = buildLogitBiasListResult(biasPreset, text => ids.get(text) ?? null, getBiasObject, dropped);
-        showDroppedEntries(tokenizer, dropped);
-        return result;
-    }
-    // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
-    return buildLogitBiasListResult(biasPreset, text => getTextTokens(tokenizerType, text), getBiasObject);
-}

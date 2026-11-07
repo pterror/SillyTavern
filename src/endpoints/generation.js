@@ -7,7 +7,9 @@ import { buildRawActionTextCompletionRequest, generateTextCompletion } from './b
 import { buildRawActionKoboldRequest, generateKobold } from './backends/kobold.js';
 import { handleGenerationResume } from './backends/llamacpp-compact-stream.js';
 import { buildRawActionNovelRequest, generateNovel } from './novelai.js';
-import { generateHorde } from './horde.js';
+import { generateHorde, hordeJobOf } from './horde.js';
+import { previewContext } from './macros.js';
+import { rawPrompt } from '../raw-prompt.js';
 import { chatContext } from '../chat-request.js';
 import { readPageMacroFacts } from '../macro-facts.js';
 import { readPageInjections } from '../page-injections.js';
@@ -130,4 +132,49 @@ router.post('/store/:id', async function (request, response) {
         return response.status(404).json(result);
     }
     return response.json(result);
+});
+
+router.post('/raw', async function (request, response) {
+    const target = generationTarget(request, response);
+    if (!target) return;
+    const { avatar, groupId, api } = target;
+    const body = request.body;
+    const directories = request.user.directories;
+    try {
+        const chat = await chatContext(request, { avatar, group: groupId });
+        if (!chat) return response.status(404).send({ error: { message: groupId ? `Group not found: ${groupId}` : `Character not found: ${avatar}` } });
+        const nodeId = typeof body.node_id === 'string' && body.node_id !== '' ? body.node_id : null;
+        const responseLength = Number.isInteger(body.response_length) && body.response_length > 0 ? body.response_length : undefined;
+        const built = await PROMPT_BUILDERS[api](directories, {
+            request, characterAvatar: avatar ?? undefined, groupId: groupId ?? undefined, chat, nodeId, type: 'quiet',
+            pageFacts: readPageMacroFacts(body.macro_facts), responseLength, jsonSchema: body.json_schema ?? null, dryRun: true,
+        });
+        const macroContext = await previewContext(request, { avatar_url: avatar ?? undefined, group_id: groupId ?? undefined, at: nodeId, macro_facts: body.macro_facts });
+        const { power_user: powerUser = {}, horde_settings: hordeSettings = {} } = readSettingsFor(directories, settingsContextOf({ avatar, groupId }), ['power_user', 'horde_settings']);
+        const prompt = rawPrompt(api, {
+            prompt: typeof body.prompt === 'string' || Array.isArray(body.prompt) ? body.prompt : '',
+            systemPrompt: typeof body.system_prompt === 'string' ? body.system_prompt : '',
+            prefill: typeof body.prefill === 'string' ? body.prefill : '',
+            instruct: body.instruct !== false,
+            quietToLoud: body.quiet_to_loud === true,
+        }, { macroContext, powerUser });
+        /** @type {Record<string, any>} */
+        const params = built.params;
+        if (api === 'openai') {
+            request.body = { ...params, messages: prompt, stream: false, chat_completion_source: /** @type {any} */ (built).settings.chat_completion_source };
+        } else if (api === 'textgenerationwebui') {
+            const backend = /** @type {any} */ (built).backend;
+            request.body = { ...params, prompt, stream: false, api_type: backend.type, api_server: backend.serverUrl };
+        } else if (api === 'novel') {
+            request.body = { ...params, input: prompt, streaming: false };
+        } else if (api === 'koboldhorde') {
+            request.body = hordeJobOf(String(prompt), params, hordeSettings);
+        } else {
+            request.body = { ...params, prompt, streaming: false };
+        }
+        return GENERATORS[api](request, response);
+    } catch (error) {
+        console.error('Could not make the raw generation:', error);
+        return response.status(400).send({ error: { message: error?.message ?? 'Could not make the generation' } });
+    }
 });

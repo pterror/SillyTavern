@@ -347,7 +347,6 @@ export const generateKobold = withGenerationStop(async function (request, respon
     return response_generate.send({ error: true });
 });
 
-router.post('/generate', generateKobold);
 
 router.post('/status', async function (request, response) {
     if (!request.body) return response.sendStatus(400);

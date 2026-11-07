@@ -82,7 +82,7 @@ const openrouter_middleout_types = {
     ON: 'on',
     OFF: 'off',
 };
-export const reasoning_effort_types = {
+const reasoning_effort_types = {
     auto: 'auto',
     low: 'low',
     medium: 'medium',
@@ -90,7 +90,7 @@ export const reasoning_effort_types = {
     min: 'min',
     max: 'max',
 };
-export const verbosity_levels = {
+const verbosity_levels = {
     auto: 'auto',
     low: 'low',
     medium: 'medium',

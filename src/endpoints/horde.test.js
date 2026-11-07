@@ -9,6 +9,7 @@ import express from 'express';
 import { write as writeCard } from '../character-card-parser.js';
 import { setConfigFilePath } from '../util.js';
 import { streamAsSetting } from '../../tests/util/stream-as-setting.js';
+import { routerWithGenerate } from '../../tests/util/router-with-generate.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
@@ -26,8 +27,10 @@ let hordeFakeBackendUrl = null;
     });
 }
 
-const { router: hordeRouter, _setHordePollingConfigForTests } = await import('./horde.js');
+const { router: hordeRoutes, generateHorde, _setHordePollingConfigForTests } = await import('./horde.js');
+const hordeRouter = routerWithGenerate(hordeRoutes, generateHorde, '/generate-text');
 const { handleGenerationStop } = await import('../generation-stop.js');
+const { handleGenerationResume } = await import('./backends/llamacpp-compact-stream.js');
 const { buildRawActionKoboldRequest } = await import('./backends/kobold.js');
 const { writeAllSettings } = await import('../settings-store.js');
 const { CompactStreamDecoder } = await import('../../public/scripts/llamacpp-compact-stream.js');
@@ -179,6 +182,7 @@ function buildTestApp() {
     app.use(streamAsSetting());
     app.use('/api/horde', hordeRouter);
     app.post('/api/generation/generate/stop/:id', handleGenerationStop);
+    app.get('/api/generation/generate/resume/:id', handleGenerationResume);
     return app;
 }
 
@@ -498,7 +502,7 @@ async function run() {
             const [, assistantMsg] = branchAfter.messages.slice(-2);
             assert.equal(assistantMsg.mes, 'Still here after you left.', 'the poll loop kept running server-side after the client disconnected, and persisted the real final reply');
 
-            const resumeRes = await fetch(`http://127.0.0.1:${port}/api/horde/generate/resume/${encodeURIComponent(generationId)}?from=0`);
+            const resumeRes = await fetch(`http://127.0.0.1:${port}/api/generation/generate/resume/${encodeURIComponent(generationId)}?from=0`);
             assert.equal(resumeRes.status, 200);
             const decoder = new CompactStreamDecoder();
             let text = '';

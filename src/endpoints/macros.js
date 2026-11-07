@@ -37,7 +37,7 @@ function modelOf(directories, settingsContext, mainApi, oaiSettings) {
  * @param {Record<string, any>} [body]
  * @returns {Promise<import('../macro-substitution.js').SubstituteParamsContext>}
  */
-async function previewContext(request, body = request.body ?? {}) {
+export async function previewContext(request, body = request.body ?? {}) {
     const { directories } = request.user;
     const avatar = typeof body.avatar_url === 'string' && body.avatar_url !== '' ? body.avatar_url : null;
     const groupId = typeof body.group_id === 'string' && body.group_id !== '' ? body.group_id : null;

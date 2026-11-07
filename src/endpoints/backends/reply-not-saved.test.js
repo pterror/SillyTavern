@@ -11,12 +11,15 @@ import { write as writeCard } from '../../character-card-parser.js';
 import '../../fetch-patch.js';
 import { setConfigFilePath } from '../../util.js';
 import { streamAsSetting } from '../../../tests/util/stream-as-setting.js';
+import { routerWithGenerate } from '../../../tests/util/router-with-generate.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 
-const { router: textRouter } = await import('./text-completions.js');
-const { router: chatRouter } = await import('./chat-completions.js');
+const { router: textCompletionsRouter, generateTextCompletion } = await import('./text-completions.js');
+const { router: chatCompletionsRouter, generateChatCompletion } = await import('./chat-completions.js');
+const textRouter = routerWithGenerate(textCompletionsRouter, generateTextCompletion);
+const chatRouter = routerWithGenerate(chatCompletionsRouter, generateChatCompletion);
 const { router: generationRouter } = await import('../generation.js');
 const { writeAllSettings } = await import('../../settings-store.js');
 const { CompactStreamDecoder } = await import('../../../public/scripts/llamacpp-compact-stream.js');

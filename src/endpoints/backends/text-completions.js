@@ -793,8 +793,6 @@ export const generateTextCompletion = withGenerationStop(async function (request
     }
 });
 
-router.post('/generate', generateTextCompletion);
-
 
 const ollama = express.Router();
 

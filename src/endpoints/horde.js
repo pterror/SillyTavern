@@ -11,8 +11,15 @@ import { answerSessionOnHeaders, chatContext } from '../chat-request.js';
 import { generationIdFor, onGenerationStop, withGenerationStop } from '../generation-stop.js';
 import { readSettingsFor, settingsContextOf } from '../settings-reads.js';
 import {
-    createGenerationRecord, createResumableWriter, createBackpressureWriter, detachFromResponse,
-    encodeContent, encodeStoredReplyFrame, encodeControlFrame, handleGenerationResume, KEEPALIVE_INTERVAL_MS, writeStoredMessagesFrame,
+    createGenerationRecord,
+    createResumableWriter,
+    createBackpressureWriter,
+    detachFromResponse,
+    encodeContent,
+    encodeStoredReplyFrame,
+    encodeControlFrame,
+    KEEPALIVE_INTERVAL_MS,
+    writeStoredMessagesFrame,
 } from './backends/llamacpp-compact-stream.js';
 import { fetchOutgoing } from '../outgoing-fetch.js';
 
@@ -253,8 +260,18 @@ async function buildRawActionHordePayload(request, response) {
         }
         : null;
 
-    const { prompt } = built.params;
-    const params = { ...built.params };
+    const { horde_settings: hordeSettings = {} } = readSettingsFor(directories, settingsContextOf({ avatar: characterAvatar, groupId, chat, nodeId }), ['horde_settings']);
+    return { body: hordeJobOf(built.params.prompt, built.params, hordeSettings), rawActionPersist };
+}
+
+/**
+ * The job the Horde is sent: the prompt, the Kobold parameters it takes, and which workers may take it.
+ * @param {string} prompt
+ * @param {Record<string, any>} koboldParams
+ * @param {Record<string, any>} hordeSettings
+ */
+export function hordeJobOf(prompt, koboldParams, hordeSettings) {
+    const params = { ...koboldParams };
     delete params.prompt;
     delete params.api_server;
     params.n = 1;
@@ -262,14 +279,9 @@ async function buildRawActionHordePayload(request, response) {
     params.frmtrmblln = false;
     params.frmtrmspch = false;
     params.frmttriminc = false;
-
-    const { horde_settings: hordeSettings = {} } = readSettingsFor(directories, settingsContextOf({ avatar: characterAvatar, groupId, chat, nodeId }), ['horde_settings']);
     return {
-        body: {
-            prompt, params, trusted_workers: Boolean(hordeSettings.trusted_workers_only),
-            models: Array.isArray(hordeSettings.models) ? hordeSettings.models : [],
-        },
-        rawActionPersist,
+        prompt, params, trusted_workers: Boolean(hordeSettings.trusted_workers_only),
+        models: Array.isArray(hordeSettings.models) ? hordeSettings.models : [],
     };
 }
 
@@ -387,7 +399,6 @@ async function streamHordeGeneration({ response, jobId, agent, rawActionPersist,
     }
 }
 
-router.get('/generate/resume/:id', handleGenerationResume);
 
 /**
  * An AI Horde generation: from a turn of a stored chat (the page names it), or from a prompt the request carries.
@@ -445,7 +456,6 @@ export const generateHorde = withGenerationStop(async (request, response) => {
     return streamHordeGeneration({ response, jobId: submitData.id, agent, rawActionPersist, warnings });
 });
 
-router.post('/generate-text', generateHorde);
 
 router.post('/user-info', async (request, response) => {
     const api_key_horde = readSecret(request.user.directories, SECRET_KEYS.HORDE);

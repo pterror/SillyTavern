@@ -9,6 +9,7 @@ import express from 'express';
 import { write as writeCard } from '../character-card-parser.js';
 import { setConfigFilePath } from '../util.js';
 import { streamAsSetting } from '../../tests/util/stream-as-setting.js';
+import { routerWithGenerate } from '../../tests/util/router-with-generate.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
@@ -26,7 +27,8 @@ let novelFakeBackendUrl = null;
     });
 }
 
-const { router, buildRawActionNovelRequest } = await import('./novelai.js');
+const { router: novelRouter, generateNovel, buildRawActionNovelRequest } = await import('./novelai.js');
+const router = routerWithGenerate(novelRouter, generateNovel);
 const { writeAllSettings } = await import('../settings-store.js');
 const { writeSecret, SECRET_KEYS } = await import('./secrets.js');
 const { forwardAndPersistCompactStream } = await import('./backends/text-completions.js');

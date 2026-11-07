@@ -12,6 +12,7 @@ import { Jimp, JimpMime } from '../../jimp.js';
 import { setConfigFilePath } from '../../util.js';
 import { CompactStreamDecoder } from '../../../public/scripts/llamacpp-compact-stream.js';
 import { streamAsSetting } from '../../../tests/util/stream-as-setting.js';
+import { routerWithGenerate } from '../../../tests/util/router-with-generate.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
@@ -60,7 +61,8 @@ const tokenizerDownloadRequests = [];
     });
 }
 
-const { router, buildRawActionChatCompletionRequest } = await import('./chat-completions.js');
+const { router: chatCompletionsRouter, generateChatCompletion, buildRawActionChatCompletionRequest } = await import('./chat-completions.js');
+const router = routerWithGenerate(chatCompletionsRouter, generateChatCompletion);
 const { writeAllSettings } = await import('../../settings-store.js');
 const { writeSecret, SECRET_KEYS } = await import('../secrets.js');
 const { encodeTextByLocalTokenizerType, getTiktokenTokenizer } = await import('../tokenizers.js');
@@ -858,29 +860,8 @@ async function run() {
         });
         const sendRequests = requests.slice();
 
-        const server = app.listen(0, '127.0.0.1');
-        await new Promise(resolve => server.once('listening', resolve));
-        let biasWithMacroHeaders;
-        let biasWithPlainHeaders;
-        try {
-            const postBias = () => fetch(`http://127.0.0.1:${server.address().port}/bias`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-ST-Connection-State': JSON.stringify({ api: 'openai', source: 'custom', url: fakeLlamaCpp.url, model: 'some-unheard-of-model' }) },
-                body: JSON.stringify([{ text: 'hi', value: 3 }]),
-            });
-            const requestsBefore = requests.length;
-            const macroReply = await postBias();
-            biasWithMacroHeaders = { body: await macroReply.json(), dropped: JSON.parse(macroReply.headers.get('x-st-tokenizer-dropped') ?? 'null'), asked: requests.length - requestsBefore };
-            settings.oai_settings.custom_include_headers = 'X-User: plain';
-            writeAllSettings(directories, settings);
-            const plainReply = await postBias();
-            biasWithPlainHeaders = { body: await plainReply.json(), dropped: JSON.parse(plainReply.headers.get('x-st-tokenizer-dropped') ?? 'null') };
-        } finally {
-            server.closeAllConnections?.();
-            await new Promise(resolve => server.close(resolve));
-            fakeLlamaCpp.server.close();
-            writeAllSettings(directories, buildSettingsFixture());
-        }
+        fakeLlamaCpp.server.close();
+        writeAllSettings(directories, buildSettingsFixture());
 
         assert.equal(sent.status, 200);
         const tokenizes = sendRequests.filter(r => r.path === '/tokenize');
@@ -897,9 +878,6 @@ async function run() {
         const generation = sendRequests.find(r => r.path === '/chat/completions');
         assert.deepEqual(generation.body.logit_bias, { 1104: -5, 1105: -5 }, 'the bias ids came from /tokenize');
         assert.equal(sent.data.warnings, undefined, 'nothing was dropped or estimated');
-
-        assert.deepEqual(biasWithMacroHeaders, { body: {}, dropped: ['hi'], asked: 0 }, '/bias, saved headers with a macro: nothing asked, the map (unmapped model)');
-        assert.deepEqual(biasWithPlainHeaders, { body: { 1104: 3, 1105: 3 }, dropped: [] }, '/bias, plain saved headers: /tokenize ids');
     }
 
     {

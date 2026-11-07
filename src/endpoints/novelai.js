@@ -477,4 +477,3 @@ export const generateNovel = withGenerationStop(async function (req, res) {
     }
 });
 
-router.post('/generate', generateNovel);
