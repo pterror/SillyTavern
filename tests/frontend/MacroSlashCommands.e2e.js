@@ -93,12 +93,9 @@ test.describe('MacroSlashCommands', () => {
                 const { SlashCommandScope } = await import('./scripts/slash-commands/SlashCommandScope.js');
 
 
-                // Create a custom scope with a macro
                 const customScope = new SlashCommandScope(null);
-                customScope.setMacro('uno::dos::tres', 'CUSTOM_VALUE');
-                customScope.setMacro('uno::dos::quatro', 'SHOULD_NOT_BE_USED');
-                customScope.setMacro('uno::dos::*', 'WILDCARD_VALUE');
-                return (await executeSlashCommandsWithOptions('/pass {{uno::dos::tres}}', { scope: customScope })).pipe;
+                customScope.setMacro('custom', 'CUSTOM_VALUE');
+                return (await executeSlashCommandsWithOptions('/pass {{custom}}', { scope: customScope })).pipe;
             });
 
             expect(output).toBe('CUSTOM_VALUE');

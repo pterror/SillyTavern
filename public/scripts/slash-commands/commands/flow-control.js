@@ -858,7 +858,6 @@ export function registerFlowControlCommands() {
         helpString: `
         <div>
             ${t`Runs a closure from a scoped variable, or a Quick Reply with the specified name from a currently active preset or from another preset.`}
-            ${t`Named arguments can be referenced in a QR with <code>{{arg::key}}</code>.`}
         </div>
     `,
     }));

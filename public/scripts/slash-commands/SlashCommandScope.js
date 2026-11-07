@@ -9,9 +9,8 @@ export class SlashCommandScope {
     }
     // @ts-ignore
     /** @type {object.<string, string|SlashCommandClosure>} */ variables = {};
-    // @ts-ignore
-    /** @type {object.<string, string|SlashCommandClosure>} */ macros = {};
-    /** @type {{key:string, value:string|SlashCommandClosure}[]} */
+    /** @type {Record<string, string|number>} */ macros = {};
+    /** @type {{key:string, value:string|number}[]} */
     get macroList() {
         return [...Object.keys(this.macros).map(key => ({ key, value: this.macros[key] })), ...(this.parent?.macroList ?? [])];
     }
@@ -39,10 +38,12 @@ export class SlashCommandScope {
     }
 
 
-    setMacro(key, value, overwrite = true) {
-        if (overwrite || !this.macroList.find(it => it.key == key)) {
-            this.macros[key] = value;
-        }
+    /**
+     * @param {string} key
+     * @param {string|number} value
+     */
+    setMacro(key, value) {
+        this.macros[key] = value;
     }
 
 

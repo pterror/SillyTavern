@@ -2942,7 +2942,6 @@
     "named arguments": "命名参数",
     "scoped variable or qr label": "作用域变量或 QR 标签",
     "Runs a closure from a scoped variable, or a Quick Reply with the specified name from a currently active preset or from another preset.": "运行来自作用域变量的闭包，或来自当前活动预设或另一个预设的具有指定名称的快捷回复。",
-    "Named arguments can be referenced in a QR with <code>{{arg::key}}</code>.": "命名参数可以在 QR 中用 <code>{{arg::key}}</code> 引用。",
     "show message author names": "显示消息作者名称",
     "include hidden messages": "包含隐藏消息",
     "filter messages by role": "按身份过滤消息",
