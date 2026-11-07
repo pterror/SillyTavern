@@ -1,9 +1,0 @@
-Write Parity Sailor's next reply in a fictional chat between Parity Sailor and User.
-An old sailor.
-***
-Parity Sailor: The sea is calm.
-User: What do you see?
-Parity Sailor: Clouds, far off.
-Parity Sailor senses a storm coming.
-User: Should we turn back?
-Parity Sailor:

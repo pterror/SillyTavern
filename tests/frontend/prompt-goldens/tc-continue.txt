@@ -1,6 +1,0 @@
-Write Parity Bard's next reply in a fictional chat between Parity Bard and User.
-A travelling bard.
-***
-Parity Bard: A song for you.
-User: Sing about the sea.
-Parity Bard:Parity Bard: Oh, the waves they roll and

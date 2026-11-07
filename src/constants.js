@@ -1,3 +1,4 @@
+import { chat_completion_sources } from '../public/scripts/chat-completion-defaults.js';
 import { textgen_types } from '../public/scripts/textgen-connection-defaults.js';
 
 export const PUBLIC_DIRECTORIES = {
@@ -179,34 +180,7 @@ export const VERTEX_SAFETY = [
     },
 ];
 
-export const CHAT_COMPLETION_SOURCES = {
-    OPENAI: 'openai',
-    CLAUDE: 'claude',
-    OPENROUTER: 'openrouter',
-    AI21: 'ai21',
-    MAKERSUITE: 'makersuite',
-    VERTEXAI: 'vertexai',
-    MISTRALAI: 'mistralai',
-    CUSTOM: 'custom',
-    COHERE: 'cohere',
-    PERPLEXITY: 'perplexity',
-    GROQ: 'groq',
-    CHUTES: 'chutes',
-    ELECTRONHUB: 'electronhub',
-    NANOGPT: 'nanogpt',
-    DEEPSEEK: 'deepseek',
-    AIMLAPI: 'aimlapi',
-    XAI: 'xai',
-    POLLINATIONS: 'pollinations',
-    MOONSHOT: 'moonshot',
-    FIREWORKS: 'fireworks',
-    COMETAPI: 'cometapi',
-    AZURE_OPENAI: 'azure_openai',
-    ZAI: 'zai',
-    SILICONFLOW: 'siliconflow',
-    MINIMAX: 'minimax',
-    WORKERS_AI: 'workers_ai',
-};
+export const CHAT_COMPLETION_SOURCES = chat_completion_sources;
 
 /**
  * Path to multer file uploads under the data root.

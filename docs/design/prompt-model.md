@@ -180,10 +180,8 @@ table doesn't know can be added per connection as `{ wire name: value }`.
 - Server: one builder (`src/prompt/model.js`: resolve active entries, place them, apply the budget, render; the
   text and chat layouts in `src/prompt/text-prompt.js` and `src/prompt/chat-prompt.js`; upstream-positioned entries in
   `src/prompt/injections.js`) instead of `assembleTextCompletionPrompt`, `prepareOpenAIMessages` (with
-  `preparePromptsForChatCompletion` and `populateChatCompletion`) and the injection table. Prompt parity tests
-  (`tests/frontend/PromptParity.e2e.js`) pin upstream's output for imported presets where the prompt fits the
-  budget; over the budget the rule above is tested on its own, and the differences from upstream are listed in
-  `tests/frontend/prompt-parity-known.js`.
+  `preparePromptsForChatCompletion` and `populateChatCompletion`) and the injection table. No test pins upstream's
+  output.
 - Import: upstream presets, templates, lorebooks and notes convert into layouts, books and entries; export goes back
   to upstream's formats (lossy where upstream can't say it, listed).
 - To check while building: where lore scanning reads injected text from (the page scans extension prompts, the server

@@ -1,7 +1,0 @@
-Write Parity Tailor's next reply in a fictional chat between Parity Tailor and User.
-A tailor.
-User is a tall knight.
-***
-Parity Tailor: Measurements, please.
-User: I need a cloak.
-Parity Tailor:
