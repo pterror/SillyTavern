@@ -275,7 +275,7 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
         });
     });
 
-    test('watcher-triggered processFile() and the periodic scan agree on dedup (no double-import across the two trigger paths)', async () => {
+    test('watcher-triggered processFile() and the start scan agree on dedup (no double-import across the two trigger paths)', async () => {
         writeJsonCharacterFile(sourceDir, 'ghost.json');
 
         const state = buildState();
@@ -607,9 +607,7 @@ describe('initializeLocalImportScan / disposeLocalImportScan (config wiring)', (
         sourceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-local-import-scan-boot-watched-'));
         delete process.env.SILLYTAVERN_LOCALIMPORT_ENABLED;
         delete process.env.SILLYTAVERN_LOCALIMPORT_DIRECTORIES;
-        delete process.env.SILLYTAVERN_LOCALIMPORT_SCANINTERVALMS;
         delete process.env.SILLYTAVERN_LOCALIMPORT_WATCHENABLED;
-        process.env.SILLYTAVERN_LOCALIMPORT_SCANINTERVALMS = String(24 * 60 * 60 * 1000);
         process.env.SILLYTAVERN_LOCALIMPORT_WATCHENABLED = 'false';
     });
 
@@ -620,7 +618,6 @@ describe('initializeLocalImportScan / disposeLocalImportScan (config wiring)', (
         fs.rmSync(sourceDir, { recursive: true, force: true });
         delete process.env.SILLYTAVERN_LOCALIMPORT_ENABLED;
         delete process.env.SILLYTAVERN_LOCALIMPORT_DIRECTORIES;
-        delete process.env.SILLYTAVERN_LOCALIMPORT_SCANINTERVALMS;
         delete process.env.SILLYTAVERN_LOCALIMPORT_WATCHENABLED;
     });
 
@@ -734,10 +731,9 @@ describe('initializeLocalImportScan / disposeLocalImportScan (config wiring)', (
         expect(files.length).toBe(2);
     });
 
-    test('scanIntervalMs paces the NEXT pass after the previous one completes, not on a fixed wall-clock rate (self-pacing, not setInterval)', async () => {
+    test('after the start pass nothing scans again: a file dropped in with no watcher is imported at the next start', async () => {
         process.env.SILLYTAVERN_LOCALIMPORT_ENABLED = 'true';
         process.env.SILLYTAVERN_LOCALIMPORT_DIRECTORIES = JSON.stringify([sourceDir]);
-        process.env.SILLYTAVERN_LOCALIMPORT_SCANINTERVALMS = '1000';
 
         jest.useFakeTimers();
         try {
@@ -746,14 +742,16 @@ describe('initializeLocalImportScan / disposeLocalImportScan (config wiring)', (
             expect((await userCharacters()).length).toBe(0);
 
             writeJsonCharacterFile(sourceDir, 'ghost.json');
-            await jest.advanceTimersByTimeAsync(500);
-            expect((await userCharacters()).length).toBe(0);
-
-            await jest.advanceTimersByTimeAsync(600);
+            await jest.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
             await localImportScan.waitForCurrentScanPass();
-            expect((await userCharacters()).length).toBe(1);
+            expect((await userCharacters()).length).toBe(0);
+            expect(jest.getTimerCount()).toBe(0);
         } finally {
             jest.useRealTimers();
         }
+
+        await localImportScan.initializeLocalImportScan();
+        await localImportScan.waitForCurrentScanPass();
+        expect((await userCharacters()).length).toBe(1);
     });
 });

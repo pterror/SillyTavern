@@ -6,6 +6,7 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import { downloadChubLorebook, isLinkedLorebookFetchAllowed } from './endpoints/content-manager.js';
 import { importWorldInfoFromRaw } from './endpoints/worldinfo.js';
+import { userStore } from './user-stores.js';
 
 /**
  * Gets the path to the sprites folder for the provided character name
@@ -116,41 +117,27 @@ export function importRisuSprites(directories, data, avatarFileName = null) {
 }
 
 /**
+ * Imports the lorebooks a Chub card links to and adds them to the character's additional books. Runs after the
+ * character is written, so there is always a character to link them to.
  * @param {import('./users.js').UserDirectoryList} directories
- * @param {object} data
- * @returns {void}
+ * @param {string} avatar The written character.
+ * @param {any} card The character's card.
+ * @returns {Promise<string[]>} The character's additional books after, or [] when none was imported.
  */
-export function importChubRelatedLorebooks(directories, data) {
-    try {
-        if (!isLinkedLorebookFetchAllowed(directories)) {
-            return;
+export async function importChubRelatedLorebooks(directories, avatar, card) {
+    if (!isLinkedLorebookFetchAllowed(directories)) return [];
+    /** @type {string[]} */
+    const paths = (card?.data?.extensions?.chub?.related_lorebooks ?? []).map((/** @type {any} */ entry) => entry?.path).filter(Boolean);
+    /** @type {string[]} */
+    const names = [];
+    for (const lorebookPath of paths) {
+        try {
+            const result = await downloadChubLorebook(lorebookPath);
+            if (result) names.push(await importWorldInfoFromRaw(directories, result.fileName, result.buffer.toString('utf8')));
+        } catch (error) {
+            console.error(`Failed to import related Chub lorebook "${lorebookPath}"`, error);
         }
-
-        const chubExt = data?.data?.extensions?.chub;
-        if (!chubExt) {
-            return;
-        }
-
-        /** @type {string[]} */
-        const relatedLorebookPaths = (chubExt.related_lorebooks ?? [])
-            .map(entry => entry?.path)
-            .filter(Boolean);
-
-        if (relatedLorebookPaths.length === 0) {
-            return;
-        }
-
-        (async () => {
-            for (const lorebookPath of relatedLorebookPaths) {
-                try {
-                    const result = await downloadChubLorebook(lorebookPath);
-                    await importWorldInfoFromRaw(directories, result.fileName, result.buffer.toString('utf8'));
-                } catch (error) {
-                    console.error(`Failed to import related Chub lorebook "${lorebookPath}"`, error);
-                }
-            }
-        })();
-    } catch (error) {
-        console.error(error);
     }
+    if (names.length === 0) return [];
+    return (await (await userStore(directories)).lib.extraLinks(avatar, 'add', names)) ?? [];
 }

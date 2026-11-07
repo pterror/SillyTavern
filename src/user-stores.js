@@ -55,11 +55,7 @@ export async function oldFormatLine(directories) {
  * @returns {string | null}
  */
 function oldFormatLineHere(directories) {
-    if (fs.existsSync(path.join(directories.root, STORE_DIR))) {
-        const thumbnails = NAMED_THUMBNAILS.filter(d => fs.existsSync(path.join(directories.root, d)));
-        if (!thumbnails.length) return null;
-        return `${directories.root} keeps thumbnails by file name (${thumbnails.join(', ')}): stop the server and run node src/migrations/image-entities.js --apply`;
-    }
+    if (fs.existsSync(path.join(directories.root, STORE_DIR))) return null;
     const old = [OLD_LIBRARY, OLD_CHATS].filter(f => fs.existsSync(path.join(directories.root, f)));
     if (!old.length) return null;
     return `${directories.root} holds data in the format before the engine (${old.join(', ')}) and no ${STORE_DIR}/: this version can't open it`;

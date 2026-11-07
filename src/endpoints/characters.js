@@ -447,7 +447,6 @@ export async function characterObjects(request, avatars, { shallow }) {
         character.avatar_ref = avatarRefString(TYPE.character, e.key);
         character.json_data = json;
         character.date_added = e.added;
-        character.create_date = character.create_date || new Date(e.added).toISOString();
         character.chat_size = stats.get(e.id)?.chat_size ?? 0;
         character.date_last_chat = stats.get(e.id)?.date_last_chat ?? 0;
         character.data_size = e.dataSize ?? calculateDataSize(character.data);
@@ -646,7 +645,6 @@ export function buildJsonImportData(rawText, directories, avatarFileName = null)
 
     if (jsonData.spec !== undefined) {
         importRisuSprites(directories, jsonData, avatarFileName);
-        importChubRelatedLorebooks(directories, jsonData);
         const rawName = jsonData.data?.name || jsonData.name;
         if (jsonData.data?.name) {
             jsonData.data.name = sanitize(jsonData.data.name);
@@ -746,7 +744,6 @@ export function buildPngImportData(rawText, directories, avatarFileName = null) 
 
     if (jsonData.spec !== undefined) {
         importRisuSprites(directories, jsonData, avatarFileName);
-        importChubRelatedLorebooks(directories, jsonData);
         jsonData = readFromV2(jsonData);
         jsonData.create_date = new Date().toISOString();
         omitInstallLocalFields(jsonData);
@@ -2500,8 +2497,9 @@ router.post('/import', async function (request, response) {
         }
 
         const [character] = await characterObjects(request, [`${fileName}.png`], { shallow: false });
+        const extraBooks = await importChubRelatedLorebooks(request.user.directories, `${fileName}.png`, character);
 
-        response.send({ file_name: fileName, character, tagDefinitions });
+        response.send({ file_name: fileName, character, tagDefinitions, ...(extraBooks.length ? { extra_books: extraBooks } : {}) });
     } catch (err) {
         const error = importFailure(importName, err);
         console.error(error);

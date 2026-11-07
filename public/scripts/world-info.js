@@ -7524,7 +7524,7 @@ export async function charUpdatePrimaryWorld(name) {
  * @param {string} characterKey - The key of the character to add auxiliary world books to
  * @param {string|string[]} nameOrNames - The name or names of the auxiliary world books to add
  */
-export async function charUpdateAddAuxWorld(characterKey, nameOrNames) {
+async function charUpdateAddAuxWorld(characterKey, nameOrNames) {
     const fileName = getCharaFilename(characterKey);
     await updateAuxBooks(fileName, 'add', Array.isArray(nameOrNames) ? nameOrNames : [nameOrNames]);
 }
@@ -7604,17 +7604,7 @@ export async function sendAuxBooksOp(fileName, op, books) {
             return false;
         }
         const { extraBooks } = await response.json();
-
-        const charLore = world_info.charLore ?? [];
-        const idx = charLore.findIndex(e => e.name === fileName);
-        if (extraBooks.length === 0) {
-            if (idx !== -1) charLore.splice(idx, 1);
-        } else if (idx === -1) {
-            charLore.push({ name: fileName, extraBooks });
-        } else {
-            charLore[idx] = { ...charLore[idx], extraBooks };
-        }
-        Object.assign(world_info, { charLore });
+        takeAuxBooks(fileName, extraBooks);
         return true;
     } catch (error) {
         Object.assign(world_info, { charLore: previousCharLore });
@@ -7622,6 +7612,24 @@ export async function sendAuxBooksOp(fileName, op, books) {
         toastr.error(t`Failed to update additional lorebooks`);
         return false;
     }
+}
+
+/**
+ * Holds a character's additional books as the server answered them.
+ * @param {string} fileName The character's file name, without its extension.
+ * @param {string[]} extraBooks
+ */
+export function takeAuxBooks(fileName, extraBooks) {
+    const charLore = world_info.charLore ?? [];
+    const idx = charLore.findIndex(e => e.name === fileName);
+    if (extraBooks.length === 0) {
+        if (idx !== -1) charLore.splice(idx, 1);
+    } else if (idx === -1) {
+        charLore.push({ name: fileName, extraBooks });
+    } else {
+        charLore[idx] = { ...charLore[idx], extraBooks };
+    }
+    Object.assign(world_info, { charLore });
 }
 
 export function initWorldInfo() {

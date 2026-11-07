@@ -6,7 +6,7 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import { DEFAULT_AVATAR_PATH } from './constants.js';
 import { copyCharacterFile } from './local-import-copy.js';
 import extract from 'png-chunks-extract';
-import { computeAnimatedHashFromChunks, computeAvatarIdentityHashFromChunks, stripCardData } from './character-card-parser.js';
+import { computeAnimatedHashFromChunks, computeAvatarIdentityHashFromChunks } from './character-card-parser.js';
 import { TYPE } from './library-engine.js';
 
 const LANE = -1;
@@ -33,13 +33,13 @@ export async function avatarPathOf(lib, directories, avatar) {
 }
 
 /**
+ * A character's image as it is stored: the bytes as they were given, never rewritten, with the hashes of its chunks.
  * @param {Buffer} image
  * @returns {{ image: Buffer, avatarIdentityHash: string, animatedHash: string | null }}
  */
 export function avatarImage(image) {
-    const stripped = stripCardData(image);
-    const chunks = extract(new Uint8Array(stripped));
-    return { image: stripped, avatarIdentityHash: computeAvatarIdentityHashFromChunks(chunks), animatedHash: computeAnimatedHashFromChunks(chunks) };
+    const chunks = extract(new Uint8Array(image));
+    return { image, avatarIdentityHash: computeAvatarIdentityHashFromChunks(chunks), animatedHash: computeAnimatedHashFromChunks(chunks) };
 }
 
 /**

@@ -8,7 +8,6 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import { tryParse } from '../util.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
-import { stripCardData } from '../character-card-parser.js';
 import { requestStore } from '../user-stores.js';
 import { avatarPathOf } from '../character-avatars.js';
 import { TYPE } from '../library-codes.js';
@@ -89,7 +88,7 @@ router.post('/from-character', getFileNameValidationFunction('overwrite_name'), 
     if (cardPath === null) return response.sendStatus(404);
 
     try {
-        const image = stripCardData(await fs.promises.readFile(cardPath));
+        const image = await fs.promises.readFile(cardPath);
         const crop = cropOf(await lib.entity(TYPE.character, avatar));
         const filename = sanitize(overwriteName);
         cacheBuster.bust(request, response);

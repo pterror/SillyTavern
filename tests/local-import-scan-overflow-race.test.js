@@ -64,11 +64,9 @@ describe('local-import-scan: watcher-overflow signal during an in-flight periodi
         capturedOnOverflow = null;
         delete process.env.SILLYTAVERN_LOCALIMPORT_ENABLED;
         delete process.env.SILLYTAVERN_LOCALIMPORT_DIRECTORIES;
-        delete process.env.SILLYTAVERN_LOCALIMPORT_SCANINTERVALMS;
         delete process.env.SILLYTAVERN_LOCALIMPORT_WATCHENABLED;
         process.env.SILLYTAVERN_LOCALIMPORT_ENABLED = 'true';
         process.env.SILLYTAVERN_LOCALIMPORT_DIRECTORIES = JSON.stringify([sourceDir]);
-        process.env.SILLYTAVERN_LOCALIMPORT_SCANINTERVALMS = '1000';
         process.env.SILLYTAVERN_LOCALIMPORT_WATCHENABLED = 'true';
     });
 
@@ -80,44 +78,40 @@ describe('local-import-scan: watcher-overflow signal during an in-flight periodi
         }
         delete process.env.SILLYTAVERN_LOCALIMPORT_ENABLED;
         delete process.env.SILLYTAVERN_LOCALIMPORT_DIRECTORIES;
-        delete process.env.SILLYTAVERN_LOCALIMPORT_SCANINTERVALMS;
         delete process.env.SILLYTAVERN_LOCALIMPORT_WATCHENABLED;
     });
 
-    test('an overflow signal arriving while a normally-scheduled pass is still running does not start a second, overlapping pass', async () => {
-        jest.useFakeTimers({ doNotFake: ['setImmediate'] });
+    test('an overflow signal arriving while a pass is running starts no overlapping pass, and one more pass after it', async () => {
         const settle = async () => { for (let i = 0; i < 50; i++) await new Promise(resolve => setImmediate(resolve)); };
         const realOpendir = fs.promises.opendir.bind(fs.promises);
         let opendirCallCount = 0;
         /** @type {() => void} */
-        let releaseSecondCall = () => {};
+        let releaseFirstCall = () => {};
         const opendirSpy = jest.spyOn(fs.promises, 'opendir').mockImplementation(async (...args) => {
             opendirCallCount++;
-            if (opendirCallCount === 2) {
-                await new Promise(resolve => { releaseSecondCall = resolve; });
+            if (opendirCallCount === 1) {
+                await new Promise(resolve => { releaseFirstCall = resolve; });
             }
             return realOpendir(...args);
         });
 
         try {
             await localImportScan.initializeLocalImportScan();
-            await localImportScan.waitForCurrentScanPass();
+            for (let i = 0; i < 500 && opendirCallCount === 0; i++) await new Promise(resolve => setTimeout(resolve, 10));
+            expect(opendirCallCount).toBe(1);
             expect(typeof capturedOnOverflow).toBe('function');
 
-            await jest.advanceTimersByTimeAsync(1000);
-            await settle();
-            expect(opendirCallCount).toBe(2);
-
+            capturedOnOverflow();
             capturedOnOverflow();
             await settle();
+            expect(opendirCallCount).toBe(1);
 
+            releaseFirstCall();
+            await localImportScan.waitForCurrentScanPass();
             expect(opendirCallCount).toBe(2);
         } finally {
-            releaseSecondCall();
+            releaseFirstCall();
             opendirSpy.mockRestore();
-            jest.useRealTimers();
         }
-
-        await localImportScan.waitForCurrentScanPass();
     });
 });

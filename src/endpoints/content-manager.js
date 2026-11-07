@@ -13,10 +13,9 @@ import { serverDirectory } from '../server-directory.js';
 import { Jimp, JimpMime } from '../jimp.js';
 import { DEFAULT_AVATAR_PATH } from '../constants.js';
 import { importWorldInfoFromRaw } from './worldinfo.js';
-import { sessionHeaderOf } from '../request-session.js';
 import { userStore } from '../user-stores.js';
 import { TYPE } from '../library-codes.js';
-import { avatarImage, writeWithAvatar } from '../character-avatars.js';
+import { avatarImage, linkWithAvatar } from '../character-avatars.js';
 import { writeBackground, writePersonaImage } from '../image-entities.js';
 import { readUserSettings } from '../settings-reads.js';
 import { fetchOutgoing } from '../outgoing-fetch.js';
@@ -190,9 +189,9 @@ async function seedContent(contentIndex, contentLogPath, resolveTarget, forceCat
 
         if (isCharacter) {
             const sourceData = await parse(contentPath, 'png');
-            const image = avatarImage(await fs.promises.readFile(contentPath));
-            const seed = () => writeWithAvatar(lib, directories, basePath, image, () => lib.writeCard(directories, basePath, sourceData, {
-                avatarIdentityHash: image.avatarIdentityHash, animatedHash: image.animatedHash,
+            const { avatarIdentityHash, animatedHash } = avatarImage(await fs.promises.readFile(contentPath));
+            const seed = () => linkWithAvatar(lib, directories, basePath, contentPath, () => lib.writeCard(directories, basePath, sourceData, {
+                avatarIdentityHash, animatedHash,
             }));
             try {
                 await seed();
@@ -1163,39 +1162,9 @@ router.post('/importURL', async (request, response) => {
         if (result.fileType) response.set('Content-Type', result.fileType);
         response.set('Content-Disposition', `attachment; filename="${encodeURI(result.fileName)}"`);
         response.set('X-Custom-Content-Type', type);
-        if (Array.isArray(result.relatedLorebookPaths) && result.relatedLorebookPaths.length > 0 && isLinkedLorebookFetchAllowed(request.user.directories)) {
-            response.set('X-Related-Lorebook-Paths', result.relatedLorebookPaths.map(encodeURIComponent).join(','));
-        }
         return response.send(result.buffer);
     } catch (error) {
         return sendImportFailure(response, 500, url, error);
-    }
-});
-
-router.post('/importChubLorebookByPath', async (request, response) => {
-    const path = request.body.path;
-    if (typeof path !== 'string' || !path.startsWith('lorebooks/')) {
-        return response.sendStatus(400);
-    }
-
-    if (!isLinkedLorebookFetchAllowed(request.user.directories)) {
-        return response.sendStatus(403);
-    }
-
-    try {
-        const result = await downloadChubLorebook(path);
-        if (!result) {
-            return response.sendStatus(404);
-        }
-
-        const desiredName = typeof request.body.name === 'string' && request.body.name.trim()
-            ? request.body.name.trim()
-            : result.fileName;
-        const worldName = await importWorldInfoFromRaw(request.user.directories, desiredName, result.buffer.toString('utf8'), { user: request.user.profile.handle, session: sessionHeaderOf(request) ?? null });
-        return response.send({ name: worldName });
-    } catch (error) {
-        console.error('Importing Chub linked lorebook failed', error);
-        return response.sendStatus(500);
     }
 });
 
@@ -1247,9 +1216,6 @@ router.post('/importUUID', async (request, response) => {
         if (result.fileType) response.set('Content-Type', result.fileType);
         response.set('Content-Disposition', `attachment; filename="${result.fileName}"`);
         response.set('X-Custom-Content-Type', uuidType);
-        if (Array.isArray(result.relatedLorebookPaths) && result.relatedLorebookPaths.length > 0 && isLinkedLorebookFetchAllowed(request.user.directories)) {
-            response.set('X-Related-Lorebook-Paths', result.relatedLorebookPaths.map(encodeURIComponent).join(','));
-        }
         return response.send(result.buffer);
     } catch (error) {
         return sendImportFailure(response, 500, uuid, error);

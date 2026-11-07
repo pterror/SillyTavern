@@ -5,7 +5,7 @@ import { parentPort } from 'node:worker_threads';
 import extract from 'png-chunks-extract';
 
 import { classifyJsonCandidate, computeCandidateContentIdentityHash, computeContentIdentityHashFromRawText } from './local-import-classify.js';
-import { readFromChunks, computeAnimatedHashFromChunks, computeAvatarIdentityHashFromChunks, computeAvatarIdentityHashFromImageBuffer, computeDefaultAvatarIdentityHash, stripCardData } from './character-card-parser.js';
+import { readFromChunks, computeAnimatedHashFromChunks, computeAvatarIdentityHashFromChunks, computeAvatarIdentityHashFromImageBuffer, computeDefaultAvatarIdentityHash } from './character-card-parser.js';
 import { DEFAULT_AVATAR_PATH } from './constants.js';
 
 /** @type {Map<number, { sourcePath: string, sourceBuffer: Buffer, chunks: Array<{name: string, data: Uint8Array}> | null, format: string }>} */
@@ -83,7 +83,7 @@ async function finishWrite(msg, pending) {
         return;
     }
     try {
-        const image = stripCardData(fs.readFileSync(DEFAULT_AVATAR_PATH));
+        const image = fs.readFileSync(DEFAULT_AVATAR_PATH);
         const avatarIdentityHash = computeAvatarIdentityHashFromImageBuffer(image);
         parentPort.postMessage({ id, phase: 'done', ok: true, outcome: 'write', image, avatarIdentityHash });
     } catch (err) {

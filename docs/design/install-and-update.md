@@ -2,9 +2,8 @@
 
 Today: Node and git required; `git clone`, then `start.sh` runs `npm install`, rebuilds native modules (a C/C++
 toolchain and Python), builds or fetches the page (`scripts/build-ui.mjs --ensure`), and fetches the engine by
-source hash from a GitHub release (`engine/fetch.js`), building it with cargo between releases (Rust). Data
-migrations are one-offs run by hand with the server stopped (`src/migrations/`), the server refusing until they
-are. Updating is `git pull` and the same script.
+source hash from a GitHub release (`engine/fetch.js`), building it with cargo between releases (Rust). There are
+no data migrations: the only one is importing upstream's data. Updating is `git pull` and the same script.
 
 ## The goal
 

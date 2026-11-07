@@ -18,6 +18,7 @@ import { attachLinuxDirectoryWatch, isWindowsOverflowSignal } from './watch-over
 import { detectFormat } from './local-import-classify.js';
 import { LocalImportWorkerPool, resolveWorkerPoolSize } from './local-import-worker-pool.js';
 import { importFailure } from './character-import-error.js';
+import { importChubRelatedLorebooks } from './card-import-extras.js';
 
 
 const WATCH_DEBOUNCE_MS = 300;
@@ -45,72 +46,18 @@ export function touchLastSeenMtime(state, filename, mtimeMs) {
  * @property {fs.FSWatcher | { close: () => void } | null} watcher
  * @property {boolean} [watcherStarting]
  * @property {Map<string, NodeJS.Timeout>} watchTimers
- * @property {{ close: () => void } | null} overflowWatch
- * @property {Map<string, () => void>} pendingHeartbeats
  * @property {Map<string, Promise<void>>} [hashLocks]
  * @property {Map<string, Promise<void>>} [inFlightFiles]
  * @property {ProgressLog | null} [scanProgress]
  */
 
-/**
- * @returns {boolean}
- */
-function allOverflowConfirmed() {
-    return scanStates.length > 0 && scanStates.every(state => state.overflowWatch !== null);
-}
-
-const HEARTBEAT_INTERVAL_MS = getConfigValue('localImport.watcherHeartbeatIntervalMs', 60 * 1000, 'number');
-
-const HEARTBEAT_GRACE_MS = getConfigValue('localImport.watcherHeartbeatGraceMs', 15 * 1000, 'number');
-
-/**
- * @param {DirectoryScanState} state
- * @returns {Promise<boolean>}
- */
-async function checkWatcherHeartbeat(state) {
-    if (!state.watcher) return false;
-
-    const filename = `.st-heartbeat-${crypto.randomUUID()}.heartbeat`;
-    const sentinelPath = path.join(state.sourceDir, filename);
-
-    const observed = await new Promise((resolve) => {
-        const timer = setTimeout(() => {
-            state.pendingHeartbeats.delete(filename);
-            resolve(false);
-        }, HEARTBEAT_GRACE_MS);
-        timer.unref?.();
-
-        state.pendingHeartbeats.set(filename, () => {
-            clearTimeout(timer);
-            resolve(true);
-        });
-
-        fsPromises.writeFile(sentinelPath, '').catch(() => {
-            clearTimeout(timer);
-            state.pendingHeartbeats.delete(filename);
-            resolve(false);
-        });
-    });
-
-    await fsPromises.unlink(sentinelPath).catch((err) => {
-        if (err.code !== 'ENOENT') {
-            console.debug(`[local-import] Failed to remove heartbeat sentinel ${sentinelPath}:`, err.message);
-        }
-    });
-
-    return observed;
-}
-
 /** @type {DirectoryScanState[]} */
 let scanStates = [];
-/** @type {NodeJS.Timeout | null} */
-let scanTimeout = null;
 /** @type {import('./users.js').UserDirectoryList | null} */
 let capturedUserDirectories = null;
-/** @type {number | null} */
-let capturedScanIntervalMs = null;
 let disposed = false;
 let passInFlight = false;
+let rescanQueued = false;
 /** @type {Promise<void> | null} */
 let currentPassPromise = null;
 /** @type {LocalImportWorkerPool | null} */
@@ -419,6 +366,9 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     }
                     importedCharacterId = `${pngName}.png`;
                     state.scanProgress?.add();
+                    importChubRelatedLorebooks(directories, importedCharacterId, JSON.parse(data)).catch(err => {
+                        console.error(`[local-import] Importing the lorebooks ${sourcePath} links to failed:`, err);
+                    });
                     if (tagImportSetting !== 2) {
                         try {
                             await lib.tags.seedCardTags(`${pngName}.png`);
@@ -526,19 +476,12 @@ export async function scanDirectory(state, directories) {
  * @param {string} filename
  */
 function handleWatchEvent(state, directories, filename) {
-    if (state.pendingHeartbeats.has(filename)) {
-        const resolveHeartbeat = state.pendingHeartbeats.get(filename);
-        state.pendingHeartbeats.delete(filename);
-        resolveHeartbeat();
-        return;
-    }
-
     const existingTimer = state.watchTimers.get(filename);
     if (existingTimer) clearTimeout(existingTimer);
     state.watchTimers.set(filename, setTimeout(() => {
         state.watchTimers.delete(filename);
         processFile(state, filename, directories, readTagImportSetting(directories)).catch(err => {
-            console.error(`[local-import] Watcher-triggered import failed for ${filename} (the periodic scan will retry it):`, err.message);
+            console.error(`[local-import] Watcher-triggered import failed for ${filename} (it is tried again when it changes, or at the next start):`, err.message);
         });
     }, WATCH_DEBOUNCE_MS));
 }
@@ -559,7 +502,6 @@ async function startWatcherFor(state, directories) {
             });
             if (handle) {
                 state.watcher = handle;
-                state.overflowWatch = { close: () => {} };
                 return;
             }
         }
@@ -573,10 +515,10 @@ async function startWatcherFor(state, directories) {
             handleWatchEvent(state, directories, filename);
         });
         state.watcher.on('error', (err) => {
-            console.error(`[local-import] Directory watcher error for ${state.sourceDir} (the periodic scan remains the source of truth):`, err.message);
+            console.error(`[local-import] Directory watcher error for ${state.sourceDir}; files added from now on are imported at the next start:`, err.message);
         });
     } catch (err) {
-        console.error(`[local-import] Failed to start directory watcher for ${state.sourceDir} (the periodic scan remains the source of truth):`, err.message);
+        console.error(`[local-import] Failed to start directory watcher for ${state.sourceDir}; files added from now on are imported at the next start:`, err.message);
     } finally {
         state.watcherStarting = false;
     }
@@ -590,32 +532,33 @@ function stopWatcherFor(state) {
         state.watcher.close();
         state.watcher = null;
     }
-    if (state.overflowWatch) {
-        state.overflowWatch.close();
-        state.overflowWatch = null;
-    }
     for (const timer of state.watchTimers.values()) clearTimeout(timer);
     state.watchTimers.clear();
 }
 
 /**
+ * Scans every configured directory: once at start, for what changed while the server was down, and again when a
+ * watcher reports it lost events. A request while a pass runs makes one more pass after it.
  * @param {import('./users.js').UserDirectoryList} userDirectories
- * @param {number} scanIntervalMs
  * @returns {Promise<void>}
  */
-async function runScanCycle(userDirectories, scanIntervalMs) {
-    if (passInFlight) return;
+async function runPass(userDirectories) {
+    if (passInFlight) {
+        rescanQueued = true;
+        return;
+    }
     passInFlight = true;
-
     capturedUserDirectories = userDirectories;
-    capturedScanIntervalMs = scanIntervalMs;
 
     const pass = (async () => {
-        for (const state of scanStates) {
-            await scanDirectory(state, userDirectories).catch(err => {
-                console.error(`[local-import] Periodic scan failed for ${state.sourceDir}:`, err);
-            });
-        }
+        do {
+            rescanQueued = false;
+            for (const state of scanStates) {
+                await scanDirectory(state, userDirectories).catch(err => {
+                    console.error(`[local-import] Scan failed for ${state.sourceDir}:`, err);
+                });
+            }
+        } while (rescanQueued && !disposed);
     })();
     currentPassPromise = pass;
     try {
@@ -623,50 +566,6 @@ async function runScanCycle(userDirectories, scanIntervalMs) {
     } finally {
         passInFlight = false;
     }
-
-    if (disposed) return;
-    scheduleNext(userDirectories, scanIntervalMs);
-}
-
-/**
- * @param {import('./users.js').UserDirectoryList} userDirectories
- * @param {number} scanIntervalMs
- */
-function scheduleNext(userDirectories, scanIntervalMs) {
-    if (disposed) return;
-
-    if (allOverflowConfirmed()) {
-        scanTimeout = setTimeout(() => {
-            runHeartbeatCheck(userDirectories, scanIntervalMs);
-        }, HEARTBEAT_INTERVAL_MS);
-    } else {
-        scanTimeout = setTimeout(() => {
-            runScanCycle(userDirectories, scanIntervalMs);
-        }, scanIntervalMs);
-    }
-    scanTimeout.unref?.();
-}
-
-/**
- * @param {import('./users.js').UserDirectoryList} userDirectories
- * @param {number} scanIntervalMs
- */
-async function runHeartbeatCheck(userDirectories, scanIntervalMs) {
-    if (disposed) return;
-
-    const results = await Promise.all(scanStates.map(state => checkWatcherHeartbeat(state)));
-
-    if (disposed) return;
-
-    if (results.every(Boolean) && allOverflowConfirmed()) {
-        scheduleNext(userDirectories, scanIntervalMs);
-        return;
-    }
-
-    console.error('[local-import] Watcher heartbeat check missed its grace window (or overflow confirmation was lost) - falling back to a full reconcile pass to be safe.');
-    runScanCycle(userDirectories, scanIntervalMs).catch(err => {
-        console.error('[local-import] Heartbeat-triggered fallback scan cycle crashed unexpectedly:', err);
-    });
 }
 
 /**
@@ -677,12 +576,8 @@ export async function waitForCurrentScanPass() {
 }
 
 function triggerImmediateRescan() {
-    if (passInFlight || !capturedUserDirectories || capturedScanIntervalMs === null) return;
-    if (scanTimeout) {
-        clearTimeout(scanTimeout);
-        scanTimeout = null;
-    }
-    runScanCycle(capturedUserDirectories, capturedScanIntervalMs).catch(err => {
+    if (disposed || !capturedUserDirectories) return;
+    runPass(capturedUserDirectories).catch(err => {
         console.error('[local-import] Overflow-triggered scan cycle crashed unexpectedly:', err);
     });
 }
@@ -696,7 +591,6 @@ export async function initializeLocalImportScan() {
 
     const enabled = getConfigValue('localImport.enabled', true, 'boolean');
     const directories = getConfigValue('localImport.directories', [], null);
-    const scanIntervalMs = getConfigValue('localImport.scanIntervalMs', 60 * 1000, 'number');
     const watchEnabled = getConfigValue('localImport.watchEnabled', true, 'boolean');
 
     if (!enabled || !Array.isArray(directories) || directories.length === 0) {
@@ -710,8 +604,6 @@ export async function initializeLocalImportScan() {
         lastSeenMtimeMs: new Map(),
         watcher: null,
         watchTimers: new Map(),
-        overflowWatch: null,
-        pendingHeartbeats: new Map(),
     }));
 
     for (const state of scanStates) {
@@ -724,7 +616,8 @@ export async function initializeLocalImportScan() {
 
     ensureWorkerPool();
 
-    runScanCycle(userDirectories, scanIntervalMs).catch(err => {
+    capturedUserDirectories = userDirectories;
+    runPass(userDirectories).catch(err => {
         console.error('[local-import] Scan cycle crashed unexpectedly:', err);
     });
 }
@@ -737,12 +630,8 @@ export function disposeLocalImportScan() {
     scanStates = [];
     currentPassPromise = null;
     capturedUserDirectories = null;
-    capturedScanIntervalMs = null;
     passInFlight = false;
-    if (scanTimeout) {
-        clearTimeout(scanTimeout);
-        scanTimeout = null;
-    }
+    rescanQueued = false;
     if (workerPool) {
         const poolToDispose = workerPool;
         workerPool = null;

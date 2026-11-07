@@ -57,6 +57,18 @@ module.exports = {
             },
         },
         {
+            files: ['src/**/*.js'],
+            excludedFiles: ['**/*.test.js', 'src/character-card-parser.js', 'src/image-identity.js'],
+            rules: {
+                'no-restricted-imports': ['error', {
+                    patterns: [{
+                        group: ['**/png/encode.js', 'png-chunk-text'],
+                        message: 'Nothing writes to a PNG: a character\'s image is stored as it came. Only a card export builds one, in memory (character-card-parser.js write()).',
+                    }],
+                }],
+            },
+        },
+        {
             files: ['*.cjs'],
             parserOptions: {
                 sourceType: 'commonjs',

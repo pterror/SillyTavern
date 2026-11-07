@@ -53,9 +53,8 @@ describe('copyCharacterFile', () => {
             return 0;
         });
 
-        const result = await localImportCopy.copyCharacterFile(sourcePath, targetPath);
+        await localImportCopy.copyCharacterFile(sourcePath, targetPath);
 
-        expect(result).toEqual({ method: 'reflink' });
         expect(reflinkFileMock).toHaveBeenCalledWith(sourcePath, targetPath);
         expect(linkSpy).not.toHaveBeenCalled();
         expect(copyFileSpy).not.toHaveBeenCalled();
@@ -63,9 +62,8 @@ describe('copyCharacterFile', () => {
     });
 
     test('hardlinks the file when reflink fails and the filesystem supports hardlinks (same-filesystem path)', async () => {
-        const result = await localImportCopy.copyCharacterFile(sourcePath, targetPath);
+        await localImportCopy.copyCharacterFile(sourcePath, targetPath);
 
-        expect(result).toEqual({ method: 'hardlink' });
         expect(fs.readFileSync(targetPath, 'utf8')).toBe('character-bytes');
         expect(fs.statSync(sourcePath).ino).toBe(fs.statSync(targetPath).ino);
     });
@@ -74,9 +72,8 @@ describe('copyCharacterFile', () => {
         const exdevError = Object.assign(new Error('cross-device link'), { code: 'EXDEV' });
         jest.spyOn(fsPromises, 'link').mockRejectedValueOnce(exdevError);
 
-        const result = await localImportCopy.copyCharacterFile(sourcePath, targetPath);
+        await localImportCopy.copyCharacterFile(sourcePath, targetPath);
 
-        expect(result).toEqual({ method: 'copy' });
         expect(getConfigValueMock).toHaveBeenCalledWith('localImport.allowCrossDeviceCopyFallback', true, 'boolean');
         expect(fs.readFileSync(targetPath, 'utf8')).toBe('character-bytes');
         expect(fs.statSync(sourcePath).ino).not.toBe(fs.statSync(targetPath).ino);

@@ -16,7 +16,7 @@ import { SlashCommandClosure } from './slash-commands/SlashCommandClosure.js';
 import { getTagsList } from './tags.js';
 import { groupsStore, selected_group } from './group-chats.js';
 import { getCurrentLocale, t } from './i18n.js';
-import { importWorldInfo, updateWorldInfoList, charUpdateAddAuxWorld } from './world-info.js';
+import { importWorldInfo } from './world-info.js';
 import { getStringHash } from './hash-utils.js';
 import { compareIgnoreCaseAndAccents, equalsIgnoreCaseAndAccents, escapeRegex, isFalseBoolean, isTrueBoolean } from './util/string-args.js';
 
@@ -2443,7 +2443,6 @@ export async function importFromExternalUrl(url, { preserveFileName = null } = {
         return;
     }
 
-    const relatedLorebookPathsHeader = request.headers.get('X-Related-Lorebook-Paths');
     const data = await request.blob();
     const customContentType = request.headers.get('X-Custom-Content-Type');
     let fileName = request.headers.get('Content-Disposition').split('filename=')[1].replace(/"/g, '');
@@ -2456,15 +2455,9 @@ export async function importFromExternalUrl(url, { preserveFileName = null } = {
     }
 
     switch (customContentType) {
-        case 'character': {
-            const avatarFileNames = await processDroppedFiles([file], extraData, { sourceUrls: new Map([[file, url]]) });
-            const lastAvatar = avatarFileNames?.[avatarFileNames.length - 1];
-            if (lastAvatar && relatedLorebookPathsHeader) {
-                const paths = relatedLorebookPathsHeader.split(',').filter(Boolean).map(decodeURIComponent);
-                await importChubLinkedLorebooks(lastAvatar, paths);
-            }
+        case 'character':
+            await processDroppedFiles([file], extraData, { sourceUrls: new Map([[file, url]]) });
             break;
-        }
         case 'lorebook':
             await importWorldInfo(file);
             break;
@@ -2473,39 +2466,6 @@ export async function importFromExternalUrl(url, { preserveFileName = null } = {
             console.error('Unknown content type', customContentType);
             break;
     }
-}
-
-/**
- * @param {string} characterAvatar
- * @param {string[]} relatedLorebookPaths
- */
-async function importChubLinkedLorebooks(characterAvatar, relatedLorebookPaths) {
-    const importedNames = [];
-    for (const path of relatedLorebookPaths) {
-        try {
-            const request = await fetch('/api/content/importChubLorebookByPath', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ path }),
-            });
-            if (!request.ok) {
-                console.warn('Failed to import Chub linked lorebook', path, request.status);
-                continue;
-            }
-            const { name } = await request.json();
-            if (name) importedNames.push(name);
-        } catch (error) {
-            console.warn('Failed to import Chub linked lorebook', path, error);
-        }
-    }
-
-    if (importedNames.length === 0) {
-        return;
-    }
-
-    await updateWorldInfoList();
-    await charUpdateAddAuxWorld(characterAvatar, importedNames);
-    toastr.success(t`Imported ${importedNames.length} linked lorebook(s)`);
 }
 
 /**

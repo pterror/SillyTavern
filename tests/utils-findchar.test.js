@@ -81,8 +81,6 @@ jest.unstable_mockModule('../public/scripts/i18n.js', () => ({
 
 jest.unstable_mockModule('../public/scripts/world-info.js', () => ({
     importWorldInfo: jest.fn(),
-    updateWorldInfoList: jest.fn(),
-    charUpdateAddAuxWorld: jest.fn(),
 }));
 
 jest.unstable_mockModule('../public/scripts/hash-utils.js', () => ({

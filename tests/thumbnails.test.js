@@ -415,51 +415,16 @@ describe('a message\'s avatar', () => {
     });
 });
 
-describe('the cutover', () => {
-    test('gives every image its entity and hash, then drops the thumbnails kept by file name; the store refuses to open before', async () => {
-        const stores = await import('../src/user-stores.js');
-        fs.writeFileSync(path.join(user.directories.characters, 'Old.png'), png);
-        await user.store.lib.writeCard(user.directories, 'Old.png', JSON.stringify({ name: 'Old', data: { name: 'Old', extensions: {} } }));
-        fs.writeFileSync(path.join(user.directories.backgrounds, 'room.png'), png);
-        fs.writeFileSync(path.join(user.directories.avatars, 'me.png'), png);
-        const moving = await realApng(10, 10, [[1, 2, 3], [4, 5, 6]]);
-        fs.writeFileSync(path.join(user.directories.characters, 'Moving.png'), moving);
-        await user.store.lib.writeCard(user.directories, 'Moving.png', JSON.stringify({ name: 'Moving', data: { name: 'Moving', extensions: {} } }), { avatarIdentityHash: identity.stillHash(moving) });
-        fs.mkdirSync(path.join(user.directories.userImages, 'Old'), { recursive: true });
-        fs.writeFileSync(path.join(user.directories.userImages, 'Old', 'chat-bg.png'), png);
-        for (const d of stores.NAMED_THUMBNAILS) fs.mkdirSync(path.join(user.root, d), { recursive: true });
-        await stores.closeUserStores();
-        await expect(stores.userStore(user.directories, 'u')).rejects.toThrow(/image-entities\.js --apply/);
-
-        const { runMigration } = await import('../src/migrations/image-entities.js');
-        const engine = (await import('../engine/load.js')).loadEngine().binding;
-        const lines = [];
-        const run = (/** @type {boolean} */ apply) => runMigration({ dataRoot: user.dataRoot, handle: 'u', apply, engine: async () => engine, probeServer: async () => ({ running: false, lines: [] }), log: l => lines.push(l), warn: l => lines.push(l) });
-        expect(await run(false)).toBe(0);
-        expect(stores.NAMED_THUMBNAILS.every(d => fs.existsSync(path.join(user.root, d)))).toBe(true);
-        expect(await run(true)).toBe(0);
-        expect(stores.NAMED_THUMBNAILS.some(d => fs.existsSync(path.join(user.root, d)))).toBe(false);
-
-        user.store = await stores.userStore(user.directories, 'u');
-        const old = await user.store.lib.entity(codes.TYPE.character, 'Old.png');
-        expect(urls.thumbnailsOf(old, 'avatar').thumbnail).toBe(urls.stillUrl(identity.stillHash(png), 'avatar'));
-        const movingEntity = await user.store.lib.entity(codes.TYPE.character, 'Moving.png');
-        expect(urls.thumbnailsOf(movingEntity, 'avatar').thumbnail).toBe(urls.animatedUrl(/** @type {string} */ (identity.animatedHash(moving)), 'avatar'));
-        expect((await user.store.lib.ids(codes.TYPE.userImage, ['user/images/Old/chat-bg.png']))[0]).not.toBeNull();
-        expect((await user.store.lib.ids(codes.TYPE.background, ['room.png']))[0]).not.toBeNull();
-        expect((await user.store.lib.ids(codes.TYPE.personaImage, ['me.png']))[0]).not.toBeNull();
-        expect(await run(true)).toBe(0);
-    });
-});
-
 describe('a crop', () => {
     test('is kept with the image: the card holds the image byte for byte and the rectangle in its data, and the thumbnail is framed by it', async () => {
         const image = await solidPng(10, 120, 200, 400, 600);
         const crop = { x: 100, y: 150, width: 200, height: 300 };
         const avatar = await createCharacter('Framed', image, crop);
         const exported = Buffer.from(await (await post('/api/characters/export', { format: 'png', avatar_url: avatar })).arrayBuffer());
-        const { stripCardData, parse } = await import('../src/character-card-parser.js');
-        expect(stripCardData(exported).equals(stripCardData(image))).toBe(true);
+        const { parse } = await import('../src/character-card-parser.js');
+        const { default: extract } = await import('png-chunks-extract');
+        const imageChunks = (/** @type {Buffer} */ png) => extract(new Uint8Array(png)).filter(c => c.name !== 'tEXt');
+        expect(imageChunks(exported)).toEqual(imageChunks(image));
         const file = path.join(os.tmpdir(), `st-export-${Date.now()}.png`);
         fs.writeFileSync(file, exported);
         try {

@@ -50,6 +50,8 @@ import {
     charUpdatePrimaryWorld,
     charSetAuxWorlds,
     sendAuxBooksOp,
+    takeAuxBooks,
+    updateWorldInfoList,
 } from './scripts/world-info.js';
 import { character_world_link } from './scripts/character-world-link.js';
 import { holdGroup } from './scripts/group-store.js';
@@ -10120,6 +10122,11 @@ async function importCharacter(file, { preserveFileName = '', sourceUrl = '' } =
 
         if (data.file_name !== undefined) {
             const avatarFileName = `${data.file_name}.png`;
+            if (Array.isArray(data.extra_books)) {
+                takeAuxBooks(data.file_name, data.extra_books);
+                await updateWorldInfoList();
+                toastr.success(t`Imported the lorebooks this character links to`);
+            }
 
             $('#character_search_bar').val('').trigger('input');
 
