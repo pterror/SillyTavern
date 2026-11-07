@@ -80,6 +80,16 @@ fn is_defined(view: &View, book: u64) -> Result<bool, StoreError> {
     Ok(whole_json(view, book, &FieldRef::Code(DEFINED))?.is_some())
 }
 
+pub fn defined(view: &View, book: u64) -> Result<bool, StoreError> {
+    is_defined(view, book)
+}
+
+pub fn defined_by_key(view: &View, k: &[u8]) -> Result<Option<u64>, StoreError> {
+    view.get(&books_key(k))?
+        .map(|b| library::parse_uvarint(&b))
+        .transpose()
+}
+
 fn books_key(k: &[u8]) -> Vec<u8> {
     let mut out = key::of(BOOKS);
     put_bytes(&mut out, k);
@@ -102,6 +112,11 @@ pub fn field_written(
     if on {
         out.put(books_key(&k), uvarint(e));
     } else {
+        if super::choices::is_chosen(view, e)? {
+            return Err(StoreError::Refused(format!(
+                "book {e} is chosen in settings: unchoose it before it stops being defined"
+            )));
+        }
         out.del(books_key(&k));
     }
     Ok(())
@@ -799,6 +814,9 @@ pub fn refuse_referenced(view: &View, e: u64) -> Result<(), StoreError> {
         if any_under(view, &key::id(super::state::CHAT_BOOK, b))? {
             return held("chat changes linking it");
         }
+    }
+    if super::choices::is_chosen(view, e)? {
+        return held("settings choosing it");
     }
     if any_under(view, &key::ids(key::ITEM, e, ENTRIES))? {
         return held("entries");

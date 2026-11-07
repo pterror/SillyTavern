@@ -2712,6 +2712,24 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                     .map(JsTree)
             })
         }
+        "choosers" => {
+            let (book, after, limit) = (
+                req_integer(a, "book")?,
+                opt_integer(a, "after")?,
+                req_integer(a, "limit")? as usize,
+            );
+            Box::new(move |s| {
+                s.chat_read(|v| crate::store::choices::choosers_page(v, book, after, limit))
+                    .map(JsTree)
+            })
+        }
+        "choices" => {
+            let holders = integers(a, "holders")?;
+            Box::new(move |s| {
+                s.chat_read(|v| crate::store::choices::choices(v, &holders))
+                    .map(JsTree)
+            })
+        }
         "resolving" => {
             let book = req_integer(a, "book")?;
             Box::new(move |s| s.chat_read(|v| b::resolving_page(v, book)).map(JsTree))

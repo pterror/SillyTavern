@@ -738,6 +738,36 @@ pub static KINDS: &[Kind] = &[
         internal: true,
     },
     Kind {
+        name: "bookChoose",
+        base: 1600,
+        slots: &[
+            req("holder", Ty::Id(Space::Entity)),
+            req("slot", Ty::UInt),
+            req("keys", Ty::Text),
+        ],
+        internal: false,
+    },
+    Kind {
+        name: "bookUnchoose",
+        base: 1601,
+        slots: &[
+            req("holder", Ty::Id(Space::Entity)),
+            req("slot", Ty::UInt),
+            req("book", Ty::Id(Space::Entity)),
+        ],
+        internal: false,
+    },
+    Kind {
+        name: "bookRefs",
+        base: 1602,
+        slots: &[
+            req("holder", Ty::Id(Space::Entity)),
+            req("slot", Ty::UInt),
+            req("books", Ty::Text),
+        ],
+        internal: true,
+    },
+    Kind {
         name: "stateRevert",
         base: 119,
         slots: &[

@@ -1407,7 +1407,8 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
                 .or_else(|| super::books::deriver(other))
                 .or_else(|| super::chat::deriver(other))
                 .or_else(|| super::state::deriver(other))
-                .or_else(|| super::history::deriver(other));
+                .or_else(|| super::history::deriver(other))
+                .or_else(|| super::choices::deriver(other));
         }
     })
 }

@@ -5,6 +5,7 @@ pub mod carriers;
 pub mod chat;
 pub mod chat_read;
 pub mod chat_search;
+pub mod choices;
 pub mod derive;
 pub mod history;
 pub mod kinds;
@@ -1919,6 +1920,8 @@ mod books_tests;
 mod carriers_tests;
 #[cfg(test)]
 mod chat_tests;
+#[cfg(test)]
+mod choices_tests;
 #[cfg(test)]
 mod fault_tests;
 #[cfg(test)]

@@ -1171,6 +1171,7 @@ fn take_down(
     super::book_stats::gone(view, out, e, kind, k)?;
     super::tags::entity_gone(view, out, e)?;
     super::local_import::entity_gone(view, out, e)?;
+    super::choices::holder_gone(view, out, e)?;
     if kind == ENTRY {
         books::touched(view, out, e, at)?;
         books::entry_gone(view, out, e, k)?;
