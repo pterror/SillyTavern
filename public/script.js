@@ -35,7 +35,6 @@ import {
     getWorldInfoSettings,
     setWorldInfoSettings,
     world_names,
-    importEmbeddedWorldInfo,
     openEmbeddedLoreEditor,
     checkEmbeddedWorld,
     setWorldInfoButtonClass,
@@ -713,7 +712,7 @@ export function saveCharacterField(avatar, formId, value, baseline = undefined) 
  * @param {string} formId
  * @param {string} value
  */
-export function saveCharacterFieldDebounced(avatar, formId, value) {
+function saveCharacterFieldDebounced(avatar, formId, value) {
     if (!avatar) return;
     const key = characterFieldSaveKey(avatar, formId);
     const pending = pendingCharacterFieldSaves.get(key);
@@ -11361,9 +11360,6 @@ jQuery(async function () {
                     break;
                 case 'set_chat_character_settings':
                     await setCharacterSettingsOverrides();
-                    break;
-                case 'import_character_info':
-                    await importEmbeddedWorldInfo();
                     break;
                 case 'edit_embedded_lore':
                     await openEmbeddedLoreEditor();

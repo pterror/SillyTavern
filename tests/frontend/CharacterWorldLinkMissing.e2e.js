@@ -105,11 +105,18 @@ test.describe('a link to a lorebook that doesn\'t exist', () => {
             await expect(globe).toHaveAttribute('title', /** @type {string} */ (ownTitle));
             await expect.poll(() => globeColor(page)).toBe('active');
 
-            await deleteBookFile(page, missingName);
-            await page.evaluate(async () => {
-                const { updateWorldInfoList } = await import('./scripts/world-info.js');
-                await updateWorldInfoList();
-            });
+            await page.evaluate(async (missingName) => {
+                const { deleteWorldInfo } = await import('./scripts/world-info.js');
+                await deleteWorldInfo(missingName);
+            }, missingName);
+            await expect(globe).not.toHaveClass(/\bwarning\b/);
+            await expect(globe).not.toHaveClass(/\bworld_set\b/);
+            await expect(globe).toHaveAttribute('title', /** @type {string} */ (ownTitle));
+
+            await page.evaluate(async (missingName) => {
+                const { charUpdatePrimaryWorld } = await import('./scripts/world-info.js');
+                await charUpdatePrimaryWorld(missingName);
+            }, missingName);
             await expect(globe).toHaveClass(/\bwarning\b/);
             await expect(globe).not.toHaveClass(/\bworld_set\b/);
             await expect(globe).toHaveAttribute('title', `Linked lorebook "${missingName}" not found`);
@@ -287,9 +294,15 @@ test.describe('a link to a lorebook that doesn\'t exist', () => {
                 await deleteWorldInfo(bookName);
                 return create_save.world;
             }, bookName);
-            expect(linkAfterDelete).toBe(bookName);
-            await expect(globe).toHaveClass(/\bwarning\b/);
+            expect(linkAfterDelete).toBe('');
+            await expect(globe).not.toHaveClass(/\bwarning\b/);
             await expect(globe).not.toHaveClass(/\bworld_set\b/);
+
+            await page.evaluate(async (bookName) => {
+                const { charUpdatePrimaryWorld } = await import('./scripts/world-info.js');
+                await charUpdatePrimaryWorld(bookName);
+            }, bookName);
+            await expect(globe).toHaveClass(/\bwarning\b/);
             await expect(globe).toHaveAttribute('title', `Linked lorebook "${bookName}" not found`);
 
             await page.locator('#rm_button_back').click();

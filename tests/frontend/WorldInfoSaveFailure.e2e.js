@@ -130,77 +130,6 @@ async function clickWithInput(page, selector, answer, errorCount) {
 test.describe('a failed World Info write', () => {
     test.beforeEach(testSetup.awaitST);
 
-    test('Import Card Lore neither links the card nor reports success when the book is not written', async ({ page }) => {
-        const name = `WISaveFailureImport-${Date.now()}`;
-        const bookName = `${name} Book`;
-
-        const linkRequests = [];
-        page.on('request', request => {
-            if (request.url().endsWith('/api/characters/merge-attributes') && (request.postData() ?? '').includes('"world"')) {
-                linkRequests.push(request.postData());
-            }
-        });
-
-        const avatar = await createCharacterWithEmbeddedBook(page, name, bookName);
-
-        try {
-            await recordReports(page);
-            await page.route(BOOK_WRITE, route => route.fulfill({ status: 500, body: 'Internal Server Error' }));
-
-            const failed = await page.evaluate(async ({ avatar, bookName }) => {
-                const { importEmbeddedWorldInfo, world_names, worldInfoCache } = await import('./scripts/world-info.js');
-                const { flushCharacterFieldSaves } = await import('./script.js');
-                const { charactersStore } = await import('./scripts/character-store.js');
-                await importEmbeddedWorldInfo(true);
-                await flushCharacterFieldSaves();
-                return {
-                    characterWorldField: String($('#character_world').val() ?? ''),
-                    storedWorld: charactersStore.get(avatar)?.data?.extensions?.world ?? '',
-                    listed: world_names.includes(bookName),
-                    cached: worldInfoCache.has(bookName),
-                    globeOn: $('#set_character_world').hasClass('world_set'),
-                };
-            }, { avatar, bookName });
-
-            const failedReports = await readReports(page);
-            expect(failedReports.error).toHaveLength(1);
-            expect(failedReports.error[0]).toContain(`'${bookName}' was not saved.`);
-            expect(failedReports.success).toEqual([]);
-            expect(failed.characterWorldField).not.toBe(bookName);
-            expect(failed.storedWorld).not.toBe(bookName);
-            expect(failed.listed).toBe(false);
-            expect(failed.cached).toBe(false);
-            expect(failed.globeOn).toBe(false);
-            expect(linkRequests).toEqual([]);
-            expect(await serverBookNames(page)).not.toContain(bookName);
-
-            await page.unroute(BOOK_WRITE);
-            const imported = await page.evaluate(async ({ avatar }) => {
-                const { importEmbeddedWorldInfo } = await import('./scripts/world-info.js');
-                const { flushCharacterFieldSaves } = await import('./script.js');
-                const { charactersStore } = await import('./scripts/character-store.js');
-                await importEmbeddedWorldInfo(true);
-                await flushCharacterFieldSaves();
-                return { storedWorld: charactersStore.get(avatar)?.data?.extensions?.world ?? '' };
-            }, { avatar });
-
-            const importedReports = await readReports(page);
-            expect(importedReports.error).toHaveLength(1);
-            expect(importedReports.success).toHaveLength(1);
-            expect(imported.storedWorld).toBe(bookName);
-            expect(await serverBookNames(page)).toContain(bookName);
-        } finally {
-            await page.unroute(BOOK_WRITE);
-            await page.evaluate(async ({ bookName }) => {
-                const { deleteWorldInfo, world_names } = await import('./scripts/world-info.js');
-                if (world_names.includes(bookName)) {
-                    await deleteWorldInfo(bookName);
-                }
-            }, { bookName });
-            await deleteCharacter(page, avatar);
-        }
-    });
-
     test('a rename the server refuses keeps the old book', async ({ page }) => {
         const oldName = `WISaveFailureRenameOld-${Date.now()}`;
         const newName = `WISaveFailureRenameNew-${Date.now()}`;
@@ -453,11 +382,10 @@ test.describe('a failed World Info write', () => {
             await clickWithInput(page, '#world_popup_name_button', reserved, 1);
             await clickWithInput(page, '#world_duplicate', reserved, 2);
             const after = await page.evaluate(async ({ avatar, reserved, oldName }) => {
-                const { createNewWorldInfo, importEmbeddedWorldInfo, world_names } = await import('./scripts/world-info.js');
+                const { createNewWorldInfo, world_names } = await import('./scripts/world-info.js');
                 const { flushCharacterFieldSaves } = await import('./script.js');
                 const { charactersStore } = await import('./scripts/character-store.js');
                 const created = await createNewWorldInfo(reserved, { interactive: true });
-                await importEmbeddedWorldInfo(true);
                 await flushCharacterFieldSaves();
                 const character = charactersStore.get(avatar);
                 return {
@@ -470,7 +398,7 @@ test.describe('a failed World Info write', () => {
             }, { avatar, reserved, oldName });
 
             const reports = await readReports(page);
-            expect(reports.error).toHaveLength(4);
+            expect(reports.error).toHaveLength(3);
             for (const error of reports.error) {
                 expect(error).toContain(`'${reserved}' was not saved. That name is reserved for embedded lorebooks.`);
             }

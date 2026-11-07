@@ -1,6 +1,6 @@
 import { Fuse } from '../lib.js';
 
-import { takeServerSettings, saveSettingsDebounced, substituteParams, getCurrentCharacter, saveCharacterField, saveCharacterFieldDebounced, characterFieldBaseline, menu_type, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, select_selected_character } from '../script.js';
+import { takeServerSettings, saveSettingsDebounced, substituteParams, getCurrentCharacter, saveCharacterField, characterFieldBaseline, menu_type, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, select_selected_character } from '../script.js';
 import { getOneCharacter } from './character-list.js';
 import { name1 } from './app-selection-state.js';
 import { chat, chat_metadata } from './chat-state.js';
@@ -2152,12 +2152,6 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
             return;
         }
 
-        const linking = (world_info.charLore ?? []).filter(e => e.extraBooks?.includes(name)).map(e => e.name);
-        for (const fileName of linking) {
-            await sendAuxBooksOp(fileName, 'remove', [name]);
-        }
-
-        // Selected world_info automatically refreshes
         await deleteWorldInfo(name);
     });
 
@@ -2285,7 +2279,6 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
 
     $('#world_popup_name_button').off('click').on('click', async () => {
         if (name === EMBEDDED_WORLD_NAME) {
-            toastr.info(t`Use "Import Card Lore" first to give the embedded lorebook its own file and a name.`);
             return;
         }
         await renameWorldInfo(name, data);
@@ -4866,7 +4859,7 @@ async function renameWorldInfo(name, data) {
 
     await updateWorldInfoList();
     if (linkedTotal > 0 && (!relinkCharacters || result.characters_failed?.length)) {
-        await warnCharactersStillLinked(oldName, '', { renamedTo: newName });
+        await warnCharactersStillLinked(oldName, newName);
     }
 
     const selectedIndex = world_names.indexOf(newName);
@@ -4882,20 +4875,10 @@ async function renameWorldInfo(name, data) {
  */
 function takeRenamedBookLinks(oldName, newName, result) {
     const rename = (/** @type {string} */ value) => value === oldName ? newName : value;
-    if (selected_world_info.includes(oldName)) {
-        selected_world_info.splice(0, selected_world_info.length, ...normalizeArray(selected_world_info.map(rename)));
-    }
     for (const charLore of world_info.charLore ?? []) {
         if (charLore.extraBooks?.includes(oldName)) charLore.extraBooks = normalizeArray(charLore.extraBooks.map(rename));
     }
-    for (const [avatar, persona] of Object.entries(personaStore.getAll())) {
-        if (persona?.lorebook === oldName) personaStore.update(avatar, { lorebook: newName });
-    }
-    if (getPersonaDescriptionLorebook() === newName) {
-        getOrCreatePersonaDescriptor();
-        setPersonaDescription();
-    }
-    takeServerSettings(result.settings ?? {}, result.settings_hash);
+    takeBookChoices(result);
 
     if (menu_type == 'create') {
         if (create_save.world === oldName) {
@@ -4910,47 +4893,50 @@ function takeRenamedBookLinks(oldName, newName, result) {
 }
 
 /**
+ * @param {{ settings?: Record<string, any>, settings_hash?: number }} result
+ */
+function takeBookChoices(result) {
+    const settings = result.settings ?? {};
+    const globalSelect = settings.world_info_settings?.world_info?.globalSelect;
+    if (Array.isArray(globalSelect)) {
+        selected_world_info.splice(0, selected_world_info.length, ...globalSelect);
+    }
+    const personas = settings['power_user.persona_data'];
+    if (personas && typeof personas === 'object') {
+        for (const [avatar, persona] of Object.entries(personas)) {
+            const lorebook = String(persona?.lorebook ?? '');
+            if (personaStore.has(avatar) && personaStore.get(avatar)?.lorebook !== lorebook) personaStore.update(avatar, { lorebook });
+        }
+        setPersonaDescription();
+    }
+    takeServerSettings(settings, result.settings_hash);
+}
+
+/**
  * Deletes a world info with the given name
  *
  * @param {string} worldInfoName - The name of the world info to delete
  * @returns {Promise<boolean>} A promise that resolves to true if the world info was successfully deleted, false otherwise
  */
 export async function deleteWorldInfo(worldInfoName) {
-    const { deleted, unlinkedAvatar } = await removeWorldInfo(worldInfoName);
-    if (deleted) {
-        await warnCharactersStillLinked(worldInfoName, unlinkedAvatar);
-    }
-    return deleted;
-}
-
-/**
- * @param {string} worldInfoName
- * @returns {Promise<{ deleted: boolean, unlinkedAvatar: string }>}
- */
-async function removeWorldInfo(worldInfoName) {
     let held = null;
     let deleted = false;
     const bookId = await readBookId(worldInfoName);
     try {
         held = await holdWorldSavesUntilSettled(worldInfoName);
-        deleted = await deleteWorldInfoFile(worldInfoName);
+        deleted = Boolean(await deleteWorldInfoFile(worldInfoName));
     } finally {
         if (!deleted) {
             resumeWorldSaves(worldInfoName, held);
         }
     }
-    if (!deleted) {
-        return { deleted: false, unlinkedAvatar: '' };
-    }
-    bookIds.delete(worldInfoName);
-    if (bookId) forgetBookDrafts(bookId);
-    const { unlinkedAvatar } = unlinkWorldInfo(worldInfoName);
-    return { deleted: true, unlinkedAvatar };
+    if (deleted && bookId) forgetBookDrafts(bookId);
+    return deleted;
 }
 
 /**
  * @param {string} worldInfoName
- * @returns {Promise<boolean>}
+ * @returns {Promise<{ characters_updated: string[], chats_updated: object[], settings: Record<string, any>, settings_hash?: number } | null>}
  */
 async function deleteWorldInfoFile(worldInfoName) {
     const response = await fetch('/api/worldinfo/delete', {
@@ -4960,57 +4946,48 @@ async function deleteWorldInfoFile(worldInfoName) {
     });
 
     if (!response.ok) {
-        return false;
+        return null;
     }
+    const result = await response.json();
 
-    if (worldInfoCache.has(worldInfoName)) {
-        worldInfoCache.delete(worldInfoName);
+    worldInfoCache.delete(worldInfoName);
+    bookIds.delete(worldInfoName);
+    for (const charLore of world_info.charLore ?? []) {
+        if (charLore.extraBooks?.includes(worldInfoName)) charLore.extraBooks = charLore.extraBooks.filter((/** @type {string} */ e) => e !== worldInfoName);
     }
-
+    takeBookChoices(result);
     await updateWorldInfoList();
     $('#world_editor_select').trigger('change');
-    return true;
+    clearCreateDraftLink(worldInfoName);
+
+    const updated = result.characters_updated ?? [];
+    for (const avatar of updated) {
+        await getOneCharacter(avatar);
+    }
+    const editorAvatar = String($('#avatar_url_pole').val() ?? '');
+    if (menu_type != 'create' && updated.includes(editorAvatar)) {
+        $('#character_world').val(charactersStore.get(editorAvatar)?.data?.extensions?.world ?? '');
+        setWorldInfoButtonClass(editorAvatar);
+    }
+    if (updated.includes(getCurrentCharacter()?.avatar)) {
+        select_selected_character(getCurrentCharacter().avatar, { switchMenu: false });
+    }
+    return result;
 }
 
 /**
  * @param {string} worldInfoName
- * @param {{ keepOpenCharacterLink?: boolean }} [options]
- * @returns {{ unlinkedAvatar: string, unlinked: string[] }}
  */
-function unlinkWorldInfo(worldInfoName, { keepOpenCharacterLink = false } = {}) {
-    /** @type {string[]} */
-    const unlinked = [];
-
-    const existingWorldIndex = selected_world_info.findIndex((e) => e === worldInfoName);
-    if (existingWorldIndex !== -1) {
-        selected_world_info.splice(existingWorldIndex, 1);
-        saveSettingsDebounced('world_info_settings');
-        unlinked.push(t`the global lorebook selection`);
-    }
-
-    let unlinkedAvatar = '';
-    if (!keepOpenCharacterLink && $('#character_world').val() === worldInfoName) {
+function clearCreateDraftLink(worldInfoName) {
+    if (menu_type != 'create') return;
+    if (create_save.world === worldInfoName) {
+        create_save.world = '';
         $('#character_world').val('');
-        if (menu_type != 'create') {
-            setWorldInfoButtonClass(undefined, false);
-            unlinkedAvatar = String($('#avatar_url_pole').val());
-            saveCharacterFieldDebounced(unlinkedAvatar, '#character_world', '');
-            const name = escapeHtml(String(charactersStore.get(unlinkedAvatar)?.name ?? unlinkedAvatar));
-            unlinked.push(t`the primary lorebook of ${name}`);
-        } else {
-            unlinked.push(t`the primary lorebook of the character being created`);
-        }
+        updateCharacterWorldButton();
     }
-
-    if (getPersonaDescriptionLorebook() === worldInfoName) {
-        getOrCreatePersonaDescriptor();
-        personaStore.update(user_avatar, { lorebook: '' });
-        $('#persona_lore_button').toggleClass('world_set', false);
-        saveSettingsDebounced('power_user.persona_data');
-        unlinked.push(t`the current persona's lorebook`);
+    if (Array.isArray(create_save.extra_books) && create_save.extra_books.includes(worldInfoName)) {
+        create_save.extra_books = create_save.extra_books.filter((e) => e !== worldInfoName);
     }
-
-    return { unlinkedAvatar, unlinked };
 }
 
 /**
@@ -5024,7 +5001,7 @@ function unlinkWorldInfo(worldInfoName, { keepOpenCharacterLink = false } = {}) 
  * @returns {OverwrittenWorldInfo}
  */
 function deleteOverwrittenWorldInfo(worldInfoName) {
-    const removal = flushWorldSaves(worldInfoName).then(() => deleteWorldInfoFile(worldInfoName));
+    const removal = flushWorldSaves(worldInfoName).then(async () => Boolean(await deleteWorldInfoFile(worldInfoName)));
     return { name: worldInfoName, removal };
 }
 
@@ -5133,41 +5110,30 @@ async function warnIfOverwrittenWorldInfoGone(overwritten) {
     if (listed && world_names.includes(overwritten.name)) {
         return;
     }
-    let unlinkedAvatar = '';
     if (listed) {
-        let unlinked;
-        ({ unlinkedAvatar, unlinked } = unlinkWorldInfo(overwritten.name));
-        if (unlinked.length) {
-            const escapedName = escapeHtml(overwritten.name);
-            toastr.warning(t`Overwritten lorebook ${escapedName} no longer exists, so it was removed from:` + `<br />${unlinked.join('<br />')}`, t`World Info`, { escapeHtml: false });
-        }
+        const escapedName = escapeHtml(overwritten.name);
+        toastr.warning(t`Overwritten lorebook ${escapedName} no longer exists.`, t`World Info`, { escapeHtml: false });
     }
-    await warnCharactersStillLinked(overwritten.name, unlinkedAvatar);
 }
 
 const STILL_LINKED_NAMED_LIMIT = 20;
 
 /**
- * @param {string} worldInfoName
- * @param {string} unlinkedAvatar
- * @param {{ renamedTo?: string }} [options]
+ * @param {string} oldName
+ * @param {string} newName
  * @returns {Promise<void>}
  */
-async function warnCharactersStillLinked(worldInfoName, unlinkedAvatar, { renamedTo } = {}) {
+async function warnCharactersStillLinked(oldName, newName) {
     const title = t`World Info`;
-    const escapedName = escapeHtml(worldInfoName);
-    const escapedNewName = renamedTo ? escapeHtml(renamedTo) : '';
-    const filter = unlinkedAvatar ? { world: worldInfoName, excludeIds: [unlinkedAvatar] } : { world: worldInfoName };
+    const escapedName = escapeHtml(oldName);
+    const escapedNewName = escapeHtml(newName);
 
     let result;
     try {
-        result = await characterRepository.query(filter, { field: 'name', order: 'asc' }, 1, STILL_LINKED_NAMED_LIMIT, ['rows', 'total']);
+        result = await characterRepository.query({ world: oldName }, { field: 'name', order: 'asc' }, 1, STILL_LINKED_NAMED_LIMIT, ['rows', 'total']);
     } catch (error) {
-        console.error(`Could not look up the characters whose primary lorebook is the deleted ${worldInfoName}`, error);
-        const failure = renamedTo
-            ? t`Renamed lorebook ${escapedName} to ${escapedNewName}, but could not check which characters still have ${escapedName} as their primary lorebook.`
-            : t`Deleted lorebook ${escapedName}, but could not check which other characters still have it as their primary lorebook.`;
-        toastr.warning(failure, title, { escapeHtml: false });
+        console.error(`Could not look up the characters whose primary lorebook is the renamed ${oldName}`, error);
+        toastr.warning(t`Renamed lorebook ${escapedName} to ${escapedNewName}, but could not check which characters still have ${escapedName} as their primary lorebook.`, title, { escapeHtml: false });
         return;
     }
 
@@ -5179,10 +5145,7 @@ async function warnCharactersStillLinked(worldInfoName, unlinkedAvatar, { rename
     }
 
     const rest = total - names.length;
-    const heading = renamedTo
-        ? t`Renamed lorebook ${escapedName} to ${escapedNewName}, but ${total} character(s) still have ${escapedName} as their primary lorebook:`
-        : t`Deleted lorebook ${escapedName} is still the primary lorebook of ${total} other character(s):`;
-    const message = heading
+    const message = t`Renamed lorebook ${escapedName} to ${escapedNewName}, but ${total} character(s) still have ${escapedName} as their primary lorebook:`
         + `<br />${names.join(', ')}`
         + (rest > 0 ? `<br />${t`and ${rest} more.`}` : '');
     toastr.warning(message, title, { escapeHtml: false });
@@ -5980,7 +5943,7 @@ export function getCharacterWorldLink(character) {
  * @returns {boolean}
  */
 export function checkEmbeddedWorld(avatar) {
-    $('#import_character_info, #edit_embedded_lore').hide();
+    $('#edit_embedded_lore').hide();
 
     if (avatar === undefined) {
         return false;
@@ -5989,65 +5952,11 @@ export function checkEmbeddedWorld(avatar) {
     const character = charactersStore.get(avatar);
 
     if (character?.data?.character_book) {
-        $('#import_character_info, #edit_embedded_lore').data('avatar', character?.avatar ?? null).show();
+        $('#edit_embedded_lore').data('avatar', character?.avatar ?? null).show();
         return true;
     }
 
     return false;
-}
-
-export async function importEmbeddedWorldInfo(skipPopup = false) {
-    const avatar = $('#import_character_info').data('avatar');
-
-    if (avatar === undefined || avatar === null) {
-        return;
-    }
-
-    const character = charactersStore.get(avatar);
-
-    if (!character) {
-        return;
-    }
-
-    const hasEmbed = checkEmbeddedWorld(avatar);
-
-    if (!hasEmbed) {
-        return;
-    }
-
-    const bookName = character.data?.character_book?.name || `${character.name}'s Lorebook`;
-
-    if (refuseEmbeddedWorldName(bookName)) {
-        return;
-    }
-
-    if (!skipPopup) {
-        const confirmation = await Popup.show.confirm(t`Are you sure you want to import '${bookName}'?`, world_names.includes(bookName) ? t`It will overwrite the World/Lorebook with the same name.` : '');
-        if (!confirmation) {
-            return;
-        }
-    }
-
-    const convertedBook = convertCharacterBook(character.data.character_book);
-
-    if (!await saveWorldInfo(bookName, convertedBook, true)) {
-        return;
-    }
-    await updateWorldInfoList();
-    $('#character_world').val(bookName);
-    saveCharacterFieldDebounced(avatar, '#character_world', bookName);
-
-    toastr.success(t`The world '${bookName}' has been imported and linked to the character successfully.`, t`World/Lorebook imported`);
-
-    const newIndex = world_names.indexOf(bookName);
-    if (newIndex >= 0) {
-        //show&draw the WI panel before..
-        $('#WIDrawerIcon').trigger('click');
-        //..auto-opening the new imported WI
-        $('#world_editor_select').val(newIndex).trigger('change');
-    }
-
-    setWorldInfoButtonClass(avatar, true);
 }
 
 function onWorldInfoChange(args, text) {
@@ -6694,11 +6603,8 @@ export function initWorldInfo() {
         const character = charactersStore.get(avatar);
 
         const worldName = character?.data?.extensions?.world;
-        const hasEmbed = checkEmbeddedWorld(avatar);
         if (worldName && world_names.includes(worldName) && !event.shiftKey && !event.altKey) {
             openWorldInfoEditor(worldName);
-        } else if (hasEmbed && !event.shiftKey && !event.altKey) {
-            await importEmbeddedWorldInfo();
         } else {
             openSetWorldMenu();
         }

@@ -143,12 +143,12 @@ function recordStillLinkedQueries(page, worldName) {
 
 const QUIET_MS = 2500;
 
-const stillLinkedToast = (page, worldName) => page.locator('#toast-container .toast-warning .toast-message', { hasText: `Deleted lorebook ${worldName} is still the primary lorebook of` });
+const anyWarning = (page) => page.locator('#toast-container .toast-warning .toast-message');
 
-test.describe('deleting a lorebook other characters still link to', () => {
+test.describe('deleting a lorebook characters link to', () => {
     test.beforeEach(testSetup.awaitST);
 
-    test('leaves the other characters linked and names the first 20, counting the rest', async ({ page }) => {
+    test('unlinks it from every character, the open one included, and warns of nothing', async ({ page }) => {
         const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
         const worldName = `WI_DELETE_LINKED_${s}`;
         const names = Array.from({ length: 22 }, (_, i) => `WIDeleteLinked-${s}-${String(i).padStart(2, '0')}`);
@@ -165,42 +165,17 @@ test.describe('deleting a lorebook other characters still link to', () => {
             }, avatars[0]);
             await expect(page.locator('#avatar_url_pole')).toHaveValue(avatars[0], { timeout: 10000 });
             await expect(page.locator('#character_world')).toHaveValue(worldName);
+            const lookups = recordStillLinkedQueries(page, worldName);
 
             expect(await deleteWorld(page, worldName)).toBe(true);
 
-            const toast = stillLinkedToast(page, worldName);
-            await expect(toast).toHaveCount(1);
-            const text = await toast.innerText();
-            expect(text).toContain(`Deleted lorebook ${worldName} is still the primary lorebook of 21 other character(s):`);
-            expect(text).toContain(names.slice(1, 21).join(', '));
-            expect(text).not.toContain(names[0]);
-            expect(text).not.toContain(names[21]);
-            expect(text).toContain('and 1 more.');
-
-            expect(await storedWorld(page, avatars[1])).toBe(worldName);
-            expect(await storedWorld(page, avatars[21])).toBe(worldName);
-
-            await page.evaluate(async () => {
-                const { flushCharacterFieldSaves } = await import('/script.js');
-                await flushCharacterFieldSaves();
-            });
-            expect(await storedWorld(page, avatars[0])).toBe('');
-        } finally {
-            await deleteWorld(page, worldName);
-            await deleteCharacters(page, avatars);
-        }
-    });
-
-    test('shows no warning when no other character links to it', async ({ page }) => {
-        const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-        const worldName = `WI_DELETE_UNLINKED_${s}`;
-
-        await createWorld(page, worldName);
-        const avatars = await createCharacters(page, [`WIDeleteUnlinked-${s}`], '');
-        try {
-            expect(await deleteWorld(page, worldName)).toBe(true);
-            await expect(stillLinkedToast(page, worldName)).toHaveCount(0);
-            await expect(page.locator('#toast-container .toast-warning .toast-message', { hasText: 'could not check which other characters' })).toHaveCount(0);
+            await expect(page.locator('#character_world')).toHaveValue('');
+            await expect(page.locator('#set_character_world')).not.toHaveClass(/world_set/);
+            for (const avatar of [avatars[0], avatars[1], avatars[21]]) {
+                expect(await storedWorld(page, avatar)).toBe('');
+            }
+            expect(lookups).toEqual([]);
+            await expect(anyWarning(page)).toHaveCount(0);
         } finally {
             await deleteWorld(page, worldName);
             await deleteCharacters(page, avatars);
@@ -227,7 +202,7 @@ test.describe('deleting a lorebook other characters still link to', () => {
                 expect(deletes).toBe(0);
                 expect(await worldExists(page, worldName)).toBe(true);
                 expect(lookups).toEqual([]);
-                await expect(stillLinkedToast(page, worldName)).toHaveCount(0);
+                await expect(anyWarning(page)).toHaveCount(0);
                 expect(await storedWorld(page, avatars[0])).toBe(worldName);
                 expect(await storedWorld(page, avatars[1])).toBe(worldName);
             } finally {
@@ -237,7 +212,7 @@ test.describe('deleting a lorebook other characters still link to', () => {
         });
     }
 
-    test('warns when the write after an overwrite fails and the book is gone', async ({ page }) => {
+    test('a write after an overwrite that fails leaves the old book deleted and unlinked', async ({ page }) => {
         const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
         const worldName = `WI_OVERWRITE_FAILED_${s}`;
         const newName = worldName.toLowerCase();
@@ -246,6 +221,7 @@ test.describe('deleting a lorebook other characters still link to', () => {
         await createWorld(page, worldName);
         const avatars = await createCharacters(page, names, worldName);
         try {
+            const lookups = recordStillLinkedQueries(page, worldName);
             await page.route(BOOK_WRITE, route => route.fulfill({ status: 500, body: 'synthetic write failure' }));
             try {
                 await overwriteWorld(page, 'create', newName);
@@ -255,12 +231,9 @@ test.describe('deleting a lorebook other characters still link to', () => {
 
             expect(await worldExists(page, worldName)).toBe(false);
             expect(await worldExists(page, newName)).toBe(false);
-            const toast = stillLinkedToast(page, worldName);
-            await expect(toast).toHaveCount(1);
-            const text = await toast.innerText();
-            expect(text).toContain(`Deleted lorebook ${worldName} is still the primary lorebook of 2 other character(s):`);
-            expect(text).toContain(names.join(', '));
-            expect(text).not.toContain('more.');
+            expect(await storedWorld(page, avatars[0])).toBe('');
+            expect(await storedWorld(page, avatars[1])).toBe('');
+            expect(lookups).toEqual([]);
         } finally {
             await deleteWorld(page, worldName);
             await deleteWorld(page, newName);

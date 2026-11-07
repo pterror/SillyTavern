@@ -141,7 +141,9 @@ async function linkOpenCharacterAndGlobal(page, avatar, worldName) {
     await expect(page.locator('#character_world')).toHaveValue(worldName);
     await page.evaluate(async (worldName) => {
         const { selected_world_info } = await import('./scripts/world-info.js');
+        const { saveSettings } = await import('./script.js');
         selected_world_info.push(worldName);
+        await saveSettings('world_info_settings');
     }, worldName);
 }
 
@@ -229,7 +231,7 @@ test.describe('overwriting a lorebook', () => {
         });
     }
 
-    test('lists every link it removes when no book has the name after the write', async ({ page }) => {
+    test('says the book is gone and shows it unlinked everywhere when no book has the name after the write', async ({ page }) => {
         const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
         const worldName = `WI_OVERWRITE_GONE_${s}`;
         const characterName = `WIOverwriteGone-${s}`;
@@ -250,9 +252,6 @@ test.describe('overwriting a lorebook', () => {
             expect(await serverWorld(page, worldName.toLowerCase())).toBeNull();
             const toast = removedToast(page, worldName);
             await expect(toast).toHaveCount(1);
-            const text = await toast.innerText();
-            expect(text).toContain('the global lorebook selection');
-            expect(text).toContain(`the primary lorebook of ${characterName}`);
 
             await expect(page.locator('#character_world')).toHaveValue('');
             expect(await globallySelected(page, worldName)).toBe(false);
