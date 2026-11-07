@@ -182,6 +182,45 @@ describe('worldinfo /delete unlinks', () => {
     });
 });
 
+describe('overwriting a book', () => {
+    test('under a name of another case replaces its contents on the same book, and every character and chat link stays', async () => {
+        const store = await stores.userStore(directories, 'u');
+        const { lib, chats } = store;
+        await saveBook({ name: 'Overwritten', data: { entries: { 0: makeEntry(0, 'Old') } } });
+        const card = { spec: 'chara_card_v2', spec_version: '2.0', data: { name: 'Keeper', extensions: { world: 'Overwritten' } } };
+        await lib.writeCard(directories, 'keeper.png', JSON.stringify(card));
+        const [tree] = await lib.ids((await import('../src/library-codes.js')).TYPE.character, ['keeper.png']);
+        await chats.mergeMetadata({ tree, at: null, set: { world_info: 'Overwritten' }, unset: [], actor: { user: 'u' } });
+        const before = await lib.books.find('Overwritten');
+
+        const res = await postJson('/api/worldinfo/create', { name: 'overwritten', replaces: 'Overwritten', data: { entries: { 0: makeEntry(0, 'New') } } });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ok: true, name: 'overwritten', characters_updated: ['keeper.png'], settings: {} });
+
+        const after = await lib.books.find('overwritten');
+        expect(after?.id).toBe(before?.id);
+        expect(await lib.books.exists('Overwritten')).toBe(false);
+        expect(Object.values((await getBook('overwritten')).entries).map((/** @type {any} */ e) => e.content)).toEqual(['New']);
+        expect(/** @type {any} */ ((await lib.cards(['keeper.png']))[0]).data.extensions.world).toBe('overwritten');
+        expect(await lib.store.worldRead('linkers', { book: after?.id, limit: 10 })).toMatchObject({ ids: [tree] });
+        expect((await lib.store.worldRead('chatLinks', { book: after?.id, limit: 10 })).changes).toHaveLength(1);
+    });
+
+    test('under the same name replaces its contents on the same book; a missing book or a taken name is refused', async () => {
+        const { lib } = await stores.userStore(directories, 'u');
+        await saveBook({ name: 'Same', data: { entries: { 0: makeEntry(0, 'Old') } } });
+        const before = await lib.books.find('Same');
+        const res = await postJson('/api/worldinfo/create', { name: 'Same', replaces: 'Same', data: { entries: { 0: makeEntry(0, 'New') } } });
+        expect(await res.json()).toEqual({ ok: true, name: 'Same', characters_updated: [], settings: {} });
+        expect((await lib.books.find('Same'))?.id).toBe(before?.id);
+        expect(Object.values((await getBook('Same')).entries).map((/** @type {any} */ e) => e.content)).toEqual(['New']);
+
+        expect((await postJson('/api/worldinfo/create', { name: 'x', replaces: 'No Such Book', data: { entries: {} } })).status).toBe(404);
+        await saveBook({ name: 'Taken', data: { entries: {} } });
+        expect((await postJson('/api/worldinfo/create', { name: 'Taken', replaces: 'Same', data: { entries: {} } })).status).toBe(409);
+    });
+});
+
 describe('worldinfo /import', () => {
     test('stores the book, and /get reads back what was imported', async () => {
         const book = { entries: { 0: makeEntry(0, 'Imported content') }, name: 'Cool Book', extensions: { foo: 'bar' } };

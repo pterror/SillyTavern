@@ -233,6 +233,31 @@ export async function importWorldInfoFromRaw(directories, desiredName, fileConte
     return written === 'card copy' ? null : worldName;
 }
 
+/**
+ * @param {any} request
+ * @param {any} response
+ * @param {string} existingName
+ * @param {string} name
+ * @param {Record<string, unknown>} data
+ */
+async function sendReplaced(request, response, existingName, name, data) {
+    const { lib } = await requestStore(request);
+    const { replaced, settings } = await withBookChoices(request, async () => {
+        const result = await lib.books.replace(existingName, name, data, actorOf(request));
+        return { replaced: result, choosers: typeof result === 'object' && result.renamed ? await lib.books.choosers(result.book) : [] };
+    });
+    if (replaced === 'card copy') return response.status(400).send({ error: CARD_COPY });
+    if (replaced === 'missing') return response.status(404).send({ error: `Lorebook '${existingName}' not found` });
+    if (replaced === 'taken') return response.status(409).send({ error: `World Info file '${name}' already exists` });
+    const keys = replaced.moved.length ? await lib.store.libraryKeys(replaced.moved) : [];
+    return response.send({
+        ok: true,
+        name: bookKey(name),
+        characters_updated: keys.filter(Boolean).map((/** @type {any} */ k) => k.key),
+        ...settingsAnswer(request, settings),
+    });
+}
+
 router.post('/import', storeRoute('importing a World Info book', async (request, response) => {
     if (!request.file) return response.sendStatus(400);
 
@@ -246,6 +271,18 @@ router.post('/import', storeRoute('importing a World Info book', async (request,
         const pathToUpload = path.join(request.file.destination, request.file.filename);
         fileContents = fs.readFileSync(pathToUpload, 'utf8');
         fs.unlinkSync(pathToUpload);
+    }
+
+    const replaces = request.body.replaces;
+    if (typeof replaces === 'string' && replaces !== '') {
+        let data;
+        try {
+            data = JSON.parse(fileContents);
+        } catch {
+            return response.status(400).send('Is not a valid world info file');
+        }
+        if (!isPlainObject(data) || !('entries' in data)) return response.status(400).send('File must contain a world info entries list');
+        return sendReplaced(request, response, replaces, path.parse(filename).name, data);
     }
 
     try {
@@ -264,6 +301,14 @@ router.post('/create', storeRoute('creating a World Info book', async (request, 
     }
     if (data !== undefined && (!isPlainObject(data) || typeof data.entries !== 'object' || data.entries === null)) {
         return response.status(400).send({ error: 'data must be a World Info object with entries' });
+    }
+
+    const { replaces } = request.body ?? {};
+    if (replaces !== undefined) {
+        if (typeof replaces !== 'string' || !replaces || typeof name !== 'string' || !name.trim()) {
+            return response.status(400).send({ error: 'replaces and name must be names' });
+        }
+        return sendReplaced(request, response, replaces, name.trim(), data ?? { entries: {} });
     }
 
     const { lib } = await requestStore(request);

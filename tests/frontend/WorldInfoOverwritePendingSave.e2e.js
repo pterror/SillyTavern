@@ -108,9 +108,7 @@ function recordRequests(page, how, worldName, newName) {
     const events = [];
     page.on('request', (request) => {
         const pathname = new URL(request.url()).pathname;
-        if (pathname === '/api/worldinfo/delete') {
-            events.push('delete sent');
-        } else if (pathname === '/api/worldinfo/import') {
+        if (pathname === '/api/worldinfo/import') {
             events.push('new book sent');
         } else if (BOOK_WRITE.test(pathname)) {
             const body = JSON.parse(request.postData() ?? '{}');
@@ -128,7 +126,7 @@ test.describe('overwriting a lorebook with a save of it pending', () => {
     test.beforeEach(testSetup.awaitST);
 
     for (const how of /** @type {const} */ (['create', 'import'])) {
-        test(`${how}: a save pending before the overwrite is written before the deletion, and never after the new book`, async ({ page }) => {
+        test(`${how}: a save pending before the overwrite is written before it, and never after the new contents`, async ({ page }) => {
             const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
             const worldName = `WI_OVERWRITE_PENDING_${how.toUpperCase()}_${s}`;
             const newName = worldName.toLowerCase();
@@ -141,7 +139,7 @@ test.describe('overwriting a lorebook with a save of it pending', () => {
                 // eslint-disable-next-line playwright/no-wait-for-timeout
                 await page.waitForTimeout(AFTER_DEBOUNCE_MS);
 
-                expect(events).toEqual(['old save sent', 'delete sent', 'new book sent']);
+                expect(events).toEqual(['old save sent', 'new book sent']);
                 const book = await serverWorld(page, newName);
                 expect(book).not.toBeNull();
                 expect(Object.keys(book.entries ?? {})).toEqual([]);
@@ -152,7 +150,7 @@ test.describe('overwriting a lorebook with a save of it pending', () => {
             }
         });
 
-        test(`${how}: a save made while the deletion is under way is dropped with a warning`, async ({ page }) => {
+        test(`${how}: a save made while the overwrite is under way is dropped with a warning`, async ({ page }) => {
             const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
             const worldName = `WI_OVERWRITE_DURING_${how.toUpperCase()}_${s}`;
             const newName = worldName.toLowerCase();
@@ -160,29 +158,30 @@ test.describe('overwriting a lorebook with a save of it pending', () => {
             await createWorldWithEntry(page, worldName);
             try {
                 const events = recordRequests(page, how, worldName, newName);
-                let releaseDelete = () => {};
-                const deleteReleased = new Promise(resolve => { releaseDelete = () => resolve(undefined); });
-                let deleteSeen = () => {};
-                const deleteArrived = new Promise(resolve => { deleteSeen = () => resolve(undefined); });
-                await page.route('**/api/worldinfo/delete', async (route) => {
-                    deleteSeen();
-                    await deleteReleased;
+                const overwritePath = `**/api/worldinfo/${how}`;
+                let releaseWrite = () => {};
+                const writeReleased = new Promise(resolve => { releaseWrite = () => resolve(undefined); });
+                let writeSeen = () => {};
+                const writeArrived = new Promise(resolve => { writeSeen = () => resolve(undefined); });
+                await page.route(overwritePath, async (route) => {
+                    writeSeen();
+                    await writeReleased;
                     await route.continue();
                 });
                 try {
                     const overwrite = overwriteWorld(page, how, newName);
-                    await deleteArrived;
+                    await writeArrived;
                     await saveOldBookDebounced(page, worldName);
-                    releaseDelete();
+                    releaseWrite();
                     expect(await overwrite).toBeTruthy();
                 } finally {
-                    releaseDelete();
-                    await page.unroute('**/api/worldinfo/delete');
+                    releaseWrite();
+                    await page.unroute(overwritePath);
                 }
                 // eslint-disable-next-line playwright/no-wait-for-timeout
                 await page.waitForTimeout(AFTER_DEBOUNCE_MS);
 
-                expect(events).toEqual(['delete sent', 'new book sent']);
+                expect(events).toEqual(['new book sent']);
                 const book = await serverWorld(page, newName);
                 expect(book).not.toBeNull();
                 expect(Object.keys(book.entries ?? {})).toEqual([]);

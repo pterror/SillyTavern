@@ -117,6 +117,16 @@ describe('the settings choose lorebooks by id', () => {
         expect(none.settings_hash).toBeUndefined();
     });
 
+    test('an overwrite under a name of another case keeps the book chosen where it was, under the new name', async () => {
+        await writeBook('Kept Choice');
+        await writeBook('Beside');
+        await chooseBooks(['Kept Choice', 'Beside'], { 'p.png': 'Kept Choice', 'q.png': 'Beside' });
+        const result = await (await postJson('/api/worldinfo/create', { name: 'kept choice', replaces: 'Kept Choice', data: { entries: {} } })).json();
+        expect(chosen()).toEqual({ globalSelect: ['kept choice', 'Beside'], lorebooks: { 'p.png': 'kept choice', 'q.png': 'Beside' } });
+        expect(result.settings).toEqual(settingsStore.readSettingsAtPaths(directories, ['world_info_settings', 'power_user.persona_data']));
+        expect(result.settings_hash).toBe(settingsHash.pageSettingsHash(settingsStore.readAllSettings(directories)));
+    });
+
     test('a delete unchooses the book in the same commit, answers the settings it changed, and a save over that hash goes in', async () => {
         await writeBook('Gone');
         await writeBook('Stays');

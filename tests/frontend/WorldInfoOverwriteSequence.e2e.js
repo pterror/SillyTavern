@@ -1,8 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-const BOOK_WRITE = /\/api\/worldinfo\/(entries\/apply|create)$/;
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -159,106 +157,69 @@ async function globallySelected(page, worldName) {
     }, worldName);
 }
 
-const WRITE_PATH = { create: BOOK_WRITE, import: /\/api\/worldinfo\/import$/ };
-
-const removedToast = (page, worldName) => page.locator('#toast-container .toast-warning .toast-message', { hasText: `Overwritten lorebook ${worldName} no longer exists` });
+const WRITE_PATH = { create: /\/api\/worldinfo\/create$/, import: /\/api\/worldinfo\/import$/ };
 
 test.describe('overwriting a lorebook', () => {
     test.beforeEach(testSetup.awaitST);
 
     for (const how of /** @type {const} */ (['create', 'import'])) {
-        test(`${how}: writes the new book only after the old one's deletion is done`, async ({ page }) => {
+        test(`${how}: under a name of another case replaces the same book in one request, and its links follow the new name`, async ({ page }) => {
             const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-            const worldName = `WI_OVERWRITE_SEQ_${how.toUpperCase()}_${s}`;
+            const worldName = `WI_OVERWRITE_${how.toUpperCase()}_${s}`;
             const newName = worldName.toLowerCase();
+            const characterName = `WIOverwrite-${how}-${s}`;
 
             await createWorldWithEntry(page, worldName);
+            const avatar = await createCharacter(page, characterName, worldName);
             try {
+                await linkOpenCharacterAndGlobal(page, avatar, worldName);
                 /** @type {string[]} */
-                const events = [];
-                await page.route('**/api/worldinfo/delete', async (route) => {
-                    events.push('delete sent');
-                    const response = await route.fetch();
-                    await new Promise(resolve => setTimeout(resolve, 1500));
-                    events.push('delete done');
-                    await route.fulfill({ response });
-                });
+                const requests = [];
                 page.on('request', (request) => {
-                    if (WRITE_PATH[how].test(new URL(request.url()).pathname)) events.push('write sent');
+                    const pathname = new URL(request.url()).pathname;
+                    if (pathname === '/api/worldinfo/delete') requests.push('delete');
+                    else if (WRITE_PATH[how].test(pathname)) requests.push('write');
                 });
-                try {
-                    expect(await overwriteWorld(page, how, newName)).toBeTruthy();
-                } finally {
-                    await page.unroute('**/api/worldinfo/delete');
-                }
 
-                expect(events).toEqual(['delete sent', 'delete done', 'write sent']);
+                expect(await overwriteWorld(page, how, newName)).toBeTruthy();
 
+                expect(requests).toEqual(['write']);
                 const book = await serverWorld(page, newName);
-                expect(book).not.toBeNull();
-                expect(Object.keys(book.entries ?? {})).toEqual([]);
+                expect(Object.keys(book?.entries ?? {})).toEqual([]);
                 expect(await serverWorld(page, worldName)).toBeNull();
+                expect(await storedWorld(page, avatar)).toBe(newName);
+                await expect(page.locator('#character_world')).toHaveValue(newName);
+                expect(await globallySelected(page, newName)).toBe(true);
+                expect(await globallySelected(page, worldName)).toBe(false);
             } finally {
-                await deleteWorld(page, worldName);
                 await deleteWorld(page, newName);
+                await deleteWorld(page, worldName);
+                await deleteCharacter(page, avatar);
             }
         });
 
-        test(`${how}: writes nothing if the deletion request fails outright`, async ({ page }) => {
+        test(`${how}: a write the server refuses leaves the book as it was, still linked`, async ({ page }) => {
             const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-            const worldName = `WI_OVERWRITE_ABORT_${how.toUpperCase()}_${s}`;
+            const worldName = `WI_OVERWRITE_REFUSED_${how.toUpperCase()}_${s}`;
+            const avatar = await createCharacter(page, `WIOverwriteRefused-${how}-${s}`, worldName);
 
             await createWorldWithEntry(page, worldName);
             try {
-                let writes = 0;
-                page.on('request', (request) => {
-                    if (WRITE_PATH[how].test(new URL(request.url()).pathname)) writes++;
-                });
-                await page.route('**/api/worldinfo/delete', route => route.abort('failed'));
+                await page.route(WRITE_PATH[how], route => route.fulfill({ status: 500, body: 'synthetic write failure' }));
                 try {
-                    expect(await overwriteWorld(page, how, worldName.toLowerCase())).toBe(false);
+                    expect(await overwriteWorld(page, how, worldName.toLowerCase())).toBeFalsy();
                 } finally {
-                    await page.unroute('**/api/worldinfo/delete');
+                    await page.unroute(WRITE_PATH[how]);
                 }
 
-                expect(writes).toBe(0);
-                await expect(page.locator('#toast-container .toast-error .toast-message', { hasText: `Could not delete the existing lorebook ${worldName}, so nothing was written.` })).toHaveCount(1);
                 const book = await serverWorld(page, worldName);
                 expect(Object.keys(book?.entries ?? {}).length).toBe(1);
+                expect(await serverWorld(page, worldName.toLowerCase())).toBeNull();
+                expect(await storedWorld(page, avatar)).toBe(worldName);
             } finally {
                 await deleteWorld(page, worldName);
+                await deleteCharacter(page, avatar);
             }
         });
     }
-
-    test('says the book is gone and shows it unlinked everywhere when no book has the name after the write', async ({ page }) => {
-        const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-        const worldName = `WI_OVERWRITE_GONE_${s}`;
-        const characterName = `WIOverwriteGone-${s}`;
-
-        await createWorldWithEntry(page, worldName);
-        const avatar = await createCharacter(page, characterName, worldName);
-        try {
-            await linkOpenCharacterAndGlobal(page, avatar, worldName);
-
-            await page.route(BOOK_WRITE, route => route.fulfill({ status: 500, body: 'synthetic write failure' }));
-            try {
-                expect(await overwriteWorld(page, 'create', worldName.toLowerCase())).toBe(false);
-            } finally {
-                await page.unroute(BOOK_WRITE);
-            }
-
-            expect(await serverWorld(page, worldName)).toBeNull();
-            expect(await serverWorld(page, worldName.toLowerCase())).toBeNull();
-            const toast = removedToast(page, worldName);
-            await expect(toast).toHaveCount(1);
-
-            await expect(page.locator('#character_world')).toHaveValue('');
-            expect(await globallySelected(page, worldName)).toBe(false);
-            expect(await storedWorld(page, avatar)).toBe('');
-        } finally {
-            await deleteWorld(page, worldName);
-            await deleteCharacter(page, avatar);
-        }
-    });
 });

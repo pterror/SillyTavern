@@ -599,33 +599,78 @@ export class WorldInfoEngine {
             if (from === to) return 'ok';
             const there = await this.find(newName);
             if (there?.defined) return 'taken';
-            const [entity] = await this.lib.entities([found.id]);
-            const update = { kind: 'entityUpdate', entity: found.id, type: TYPE.book, key: to, added: entity?.added ?? 0 };
-            const records = there
-                ? [{ kind: 'bookForward', from: there.id, into: found.id }, { kind: 'entityDelete', entity: there.id }, update]
-                : [update];
-            const own = await this.linkers(found.id);
-            if (!relink && own.length) {
-                const kept = this.lib.nextId++;
-                records.push({ kind: 'entityCreate', entity: kept, type: TYPE.book, key: from, added: Date.now() });
-                const resolving = new Set(await this.store.worldRead('resolving', { book: found.id }));
-                for (let i = 0; i < own.length; i += 256) {
-                    const linkers = await this.lib.entities(own.slice(i, i + 256), { fields: [], lists: [LINKS] });
-                    for (const e of linkers) {
-                        if (!e) continue;
-                        const links = storedLinks(e).filter(l => resolving.has(l.book));
-                        links.forEach((l, n) => records.push(n === 0
-                            ? { kind: 'textValue', entity: e.id, field: itemField(LINKS, l.item), text: String(kept) }
-                            : { kind: 'itemDelete', entity: e.id, list: LINKS, item: l.item }));
-                    }
-                }
-            }
-            const linkers = [...(relink ? own : []), ...(there ? await this.linkers(there.id) : [])];
-            pushAll(records, await this.lib.identityRecords(linkers, to, relink ? [from, to] : [to]));
+            const { records, own } = await this.renameRecords(found.id, there, from, to, relink);
             await this.store.commit(records);
             if (moved && relink) pushAll(moved, own);
             return 'ok';
         });
+    }
+
+    /**
+     * @param {string} existingName
+     * @param {string} name
+     * @param {Record<string, unknown>} data
+     * @param {Actor | null} [actor]
+     * @returns {Promise<{ book: bigint, renamed: boolean, moved: bigint[] } | 'missing' | 'taken' | 'card copy'>}
+     */
+    replace(existingName, name, data, actor = null) {
+        if (isCardBookCopy(data)) return Promise.resolve('card copy');
+        const [from, to] = [bookKey(existingName), bookKey(name)];
+        return this.lane([from, to], async () => {
+            const found = await this.find(existingName);
+            if (!found?.defined) return 'missing';
+            /** @type {object[]} */
+            const records = [];
+            /** @type {bigint[]} */
+            let moved = [];
+            if (from !== to) {
+                const there = await this.find(name);
+                if (there?.defined) return 'taken';
+                const renamed = await this.renameRecords(found.id, there, from, to, true);
+                pushAll(records, renamed.records);
+                moved = renamed.own;
+            }
+            /** @type {object[]} */
+            const keyed = [];
+            pushAll(records, await this.bookRecords(found.id, await this.stored(found.id, true), data, { world: true }, await this.stamper(actor, keyed)));
+            if (records.length > 0) await this.store.commit([...keyed, ...records]);
+            return { book: found.id, renamed: from !== to, moved };
+        });
+    }
+
+    /**
+     * @param {bigint} id
+     * @param {{ id: bigint } | null} there
+     * @param {string} from
+     * @param {string} to
+     * @param {boolean} relink
+     * @returns {Promise<{ records: object[], own: bigint[] }>}
+     */
+    async renameRecords(id, there, from, to, relink) {
+        const [entity] = await this.lib.entities([id]);
+        const update = { kind: 'entityUpdate', entity: id, type: TYPE.book, key: to, added: entity?.added ?? 0 };
+        const records = there
+            ? [{ kind: 'bookForward', from: there.id, into: id }, { kind: 'entityDelete', entity: there.id }, update]
+            : [update];
+        const own = await this.linkers(id);
+        if (!relink && own.length) {
+            const kept = this.lib.nextId++;
+            records.push({ kind: 'entityCreate', entity: kept, type: TYPE.book, key: from, added: Date.now() });
+            const resolving = new Set(await this.store.worldRead('resolving', { book: id }));
+            for (let i = 0; i < own.length; i += 256) {
+                const linkers = await this.lib.entities(own.slice(i, i + 256), { fields: [], lists: [LINKS] });
+                for (const e of linkers) {
+                    if (!e) continue;
+                    const links = storedLinks(e).filter(l => resolving.has(l.book));
+                    links.forEach((l, n) => records.push(n === 0
+                        ? { kind: 'textValue', entity: e.id, field: itemField(LINKS, l.item), text: String(kept) }
+                        : { kind: 'itemDelete', entity: e.id, list: LINKS, item: l.item }));
+                }
+            }
+        }
+        const linkers = [...(relink ? own : []), ...(there ? await this.linkers(there.id) : [])];
+        pushAll(records, await this.lib.identityRecords(linkers, to, relink ? [from, to] : [to]));
+        return { records, own };
     }
 
     /**

@@ -4826,6 +4826,25 @@ async function renameWorldInfo(name, data) {
     worldInfoCache.delete(oldName);
     worldInfoCache.set(newName, cached);
     bookVersions.set(newName, versionOf(cached));
+    await takeRenamedBook(oldName, newName, result);
+
+    await updateWorldInfoList();
+    if (linkedTotal > 0 && (!relinkCharacters || result.characters_failed?.length)) {
+        await warnCharactersStillLinked(oldName, newName);
+    }
+
+    const selectedIndex = world_names.indexOf(newName);
+    if (selectedIndex !== -1) {
+        $('#world_editor_select').val(selectedIndex).trigger('change');
+    }
+}
+
+/**
+ * @param {string} oldName
+ * @param {string} newName
+ * @param {{ characters_updated?: string[], characters_failed?: string[], settings?: Record<string, any>, settings_hash?: number }} result
+ */
+async function takeRenamedBook(oldName, newName, result) {
     const renamedId = bookIds.get(oldName);
     bookIds.delete(oldName);
     if (renamedId) bookIds.set(newName, renamedId);
@@ -4855,16 +4874,6 @@ async function renameWorldInfo(name, data) {
             select_selected_character(avatar, { switchMenu: false });
             setWorldInfoButtonClass(avatar, true);
         }
-    }
-
-    await updateWorldInfoList();
-    if (linkedTotal > 0 && (!relinkCharacters || result.characters_failed?.length)) {
-        await warnCharactersStillLinked(oldName, newName);
-    }
-
-    const selectedIndex = world_names.indexOf(newName);
-    if (selectedIndex !== -1) {
-        $('#world_editor_select').val(selectedIndex).trigger('change');
     }
 }
 
@@ -4991,27 +5000,36 @@ function clearCreateDraftLink(worldInfoName) {
 }
 
 /**
- * @typedef {object} OverwrittenWorldInfo
- * @property {string} name
- * @property {Promise<boolean>} removal
+ * @param {string} existingName
+ * @param {string} actionName
+ * @param {() => Promise<Response>} send
+ * @returns {Promise<string|null>}
  */
-
-/**
- * @param {string} worldInfoName
- * @returns {OverwrittenWorldInfo}
- */
-function deleteOverwrittenWorldInfo(worldInfoName) {
-    const removal = flushWorldSaves(worldInfoName).then(async () => Boolean(await deleteWorldInfoFile(worldInfoName)));
-    return { name: worldInfoName, removal };
-}
-
-/**
- * @param {string} worldInfoName
- * @returns {OverwrittenWorldInfo}
- */
-function replaceOverwrittenWorldInfo(worldInfoName) {
-    const removal = flushWorldSaves(worldInfoName).then(() => true);
-    return { name: worldInfoName, removal };
+async function overwriteWorldInfo(existingName, actionName, send) {
+    await flushWorldSaves(existingName);
+    let response;
+    try {
+        response = await send();
+    } catch (error) {
+        console.error(`Could not overwrite the lorebook ${existingName}`, error);
+        response = null;
+    }
+    await dropWorldSavesAfterOverwrite(existingName, actionName);
+    worldInfoCache.delete(existingName);
+    bookVersions.delete(existingName);
+    if (!response?.ok) {
+        showWorldInfoSaveFailed(existingName, null, null, response ?? undefined);
+        return null;
+    }
+    const result = await response.json();
+    const name = String(result.name);
+    if (name !== existingName) {
+        await takeRenamedBook(existingName, name, result);
+    } else {
+        takeBookChoices(result);
+    }
+    await updateWorldInfoList();
+    return name;
 }
 
 /**
@@ -5054,66 +5072,6 @@ async function dropWorldSavesAfterOverwrite(name, actionName) {
         toastr.warning(t`Changes to lorebook ${escapedName} made while it was being overwritten were not saved.`, `World Info ${actionName}`, { escapeHtml: false });
     }
     await worldWritesSettled(name);
-}
-
-/**
- * @param {string} worldInfoName
- */
-function forgetReplacedWorldInfo(worldInfoName) {
-    worldInfoCache.delete(worldInfoName);
-    if (String($('#world_editor_select').find(':selected').text()) === worldInfoName) {
-        $('#world_editor_select').trigger('change');
-    }
-}
-
-/**
- * @param {OverwrittenWorldInfo|undefined} overwritten
- * @param {string} actionName
- * @returns {Promise<boolean>}
- */
-async function overwrittenWorldInfoRemoved(overwritten, actionName) {
-    if (!overwritten) {
-        return true;
-    }
-    let removed;
-    try {
-        removed = await overwritten.removal;
-    } catch (error) {
-        console.error(`Could not delete the overwritten lorebook ${overwritten.name}`, error);
-        const escapedName = escapeHtml(overwritten.name);
-        toastr.error(t`Could not delete the existing lorebook ${escapedName}, so nothing was written.`, `World Info ${actionName}`, { escapeHtml: false });
-        await warnIfOverwrittenWorldInfoGone(overwritten);
-        return false;
-    }
-    if (removed) {
-        await dropWorldSavesAfterOverwrite(overwritten.name, actionName);
-    } else {
-        await flushWorldSaves(overwritten.name);
-    }
-    return true;
-}
-
-/**
- * @param {OverwrittenWorldInfo|undefined} overwritten
- * @returns {Promise<void>}
- */
-async function warnIfOverwrittenWorldInfoGone(overwritten) {
-    if (!overwritten) {
-        return;
-    }
-    let listed = false;
-    try {
-        listed = await updateWorldInfoList();
-    } catch (error) {
-        console.error('Could not reload the lorebook list after an overwrite', error);
-    }
-    if (listed && world_names.includes(overwritten.name)) {
-        return;
-    }
-    if (listed) {
-        const escapedName = escapeHtml(overwritten.name);
-        toastr.warning(t`Overwritten lorebook ${escapedName} no longer exists.`, t`World Info`, { escapeHtml: false });
-    }
 }
 
 const STILL_LINKED_NAMED_LIMIT = 20;
@@ -5200,36 +5158,38 @@ export async function createNewWorldInfo(worldName, { interactive = false } = {}
 
     const sanitizedWorldName = await getSanitizedFilename(worldName);
 
-    /** @type {OverwrittenWorldInfo|undefined} */
-    let overwritten;
-    let replacesExisting = false;
-    const deleteAction = (existingName) => {
-        replacesExisting = existingName === worldName;
-        overwritten = replacesExisting ? replaceOverwrittenWorldInfo(existingName) : deleteOverwrittenWorldInfo(existingName);
+    /** @type {string|null} */
+    let existing = null;
+    const deleteAction = (/** @type {string} */ existingName) => {
+        existing = existingName;
     };
     const allowed = await checkOverwriteExistingData('World Info', world_names, sanitizedWorldName, { interactive: interactive, actionName: 'Create', deleteAction });
     if (!allowed) {
         return false;
     }
-    if (!await overwrittenWorldInfoRemoved(overwritten, 'Create')) {
-        return false;
-    }
 
-    let written = false;
-    try {
-        written = await saveWorldInfo(worldName, worldInfoTemplate, true);
-        if (!written) {
+    let shownName = worldName;
+    if (existing !== null) {
+        const replaces = existing;
+        const name = await overwriteWorldInfo(replaces, 'Create', () => fetch('/api/worldinfo/create', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ name: worldName, replaces, data: worldInfoTemplate }),
+        }));
+        if (name === null) {
+            await updateWorldInfoList();
+            $('#world_editor_select').trigger('change');
+            return false;
+        }
+        shownName = name;
+    } else {
+        if (!await saveWorldInfo(worldName, worldInfoTemplate, true)) {
             return false;
         }
         await updateWorldInfoList();
-    } finally {
-        if (replacesExisting && !written) {
-            forgetReplacedWorldInfo(worldName);
-        }
-        await warnIfOverwrittenWorldInfoGone(replacesExisting ? undefined : overwritten);
     }
 
-    const selectedIndex = world_names.indexOf(worldName);
+    const selectedIndex = world_names.indexOf(shownName);
     if (selectedIndex !== -1) {
         $('#world_editor_select').val(selectedIndex).trigger('change');
     } else {
@@ -6094,44 +6054,47 @@ export async function importWorldInfo(file, { interactive = true } = {}) {
 
     const worldName = file.name.substr(0, file.name.lastIndexOf('.'));
     const sanitizedWorldName = await getSanitizedFilename(worldName);
-    /** @type {OverwrittenWorldInfo|undefined} */
-    let overwritten;
-    let replacesExisting = false;
-    const deleteAction = (existingName) => {
-        replacesExisting = existingName === worldName && worldName === sanitizedWorldName;
-        overwritten = replacesExisting ? replaceOverwrittenWorldInfo(existingName) : deleteOverwrittenWorldInfo(existingName);
+    /** @type {string|null} */
+    let existing = null;
+    const deleteAction = (/** @type {string} */ existingName) => {
+        existing = existingName;
     };
     const allowed = await checkOverwriteExistingData('World Info', world_names, sanitizedWorldName, { interactive, actionName: 'Import', deleteAction });
     if (!allowed) {
         return false;
     }
-    if (!await overwrittenWorldInfoRemoved(overwritten, 'Import')) {
-        return false;
+    const send = () => fetch('/api/worldinfo/import', {
+        method: 'POST',
+        headers: getRequestHeaders({ omitContentType: true }),
+        body: formData,
+        cache: 'no-cache',
+    });
+
+    if (existing !== null) {
+        formData.append('replaces', existing);
+        const name = await overwriteWorldInfo(existing, 'Import', send);
+        if (name === null) {
+            await updateWorldInfoList();
+            $('#world_editor_select').trigger('change');
+            return;
+        }
+        if (interactive) {
+            const newIndex = world_names.indexOf(name);
+            if (newIndex >= 0) {
+                $('#world_editor_select').val(newIndex).trigger('change');
+            }
+        } else if (String($('#world_editor_select').find(':selected').text()) === name) {
+            $('#world_editor_select').trigger('change');
+        }
+        toastr.success(t`World Info "${name}" imported successfully!`);
+        return name;
     }
 
     try {
-        let result;
-        try {
-            result = await fetch('/api/worldinfo/import', {
-                method: 'POST',
-                headers: getRequestHeaders({ omitContentType: true }),
-                body: formData,
-                cache: 'no-cache',
-            });
-        } catch (error) {
-            if (replacesExisting) {
-                await dropWorldSavesAfterOverwrite(worldName, 'Import');
-                forgetReplacedWorldInfo(worldName);
-            }
-            throw error;
-        }
+        const result = await send();
 
         if (!result.ok) {
             throw new Error(`Failed to import world info: ${result.statusText}`);
-        }
-        if (replacesExisting) {
-            await dropWorldSavesAfterOverwrite(worldName, 'Import');
-            forgetReplacedWorldInfo(worldName);
         }
 
         const data = await result.json();
@@ -6152,8 +6115,6 @@ export async function importWorldInfo(file, { interactive = true } = {}) {
     } catch (error) {
         console.error('Error importing world info:', error);
         toastr.error(t`Failed to import World Info`);
-    } finally {
-        await warnIfOverwrittenWorldInfoGone(replacesExisting ? undefined : overwritten);
     }
 }
 

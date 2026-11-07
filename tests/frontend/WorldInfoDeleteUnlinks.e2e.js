@@ -1,8 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
-const BOOK_WRITE = /\/api\/worldinfo\/(entries\/apply|create)$/;
-
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
@@ -211,33 +209,4 @@ test.describe('deleting a lorebook characters link to', () => {
             }
         });
     }
-
-    test('a write after an overwrite that fails leaves the old book deleted and unlinked', async ({ page }) => {
-        const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-        const worldName = `WI_OVERWRITE_FAILED_${s}`;
-        const newName = worldName.toLowerCase();
-        const names = [`WIOverwriteFailed-${s}-00`, `WIOverwriteFailed-${s}-01`];
-
-        await createWorld(page, worldName);
-        const avatars = await createCharacters(page, names, worldName);
-        try {
-            const lookups = recordStillLinkedQueries(page, worldName);
-            await page.route(BOOK_WRITE, route => route.fulfill({ status: 500, body: 'synthetic write failure' }));
-            try {
-                await overwriteWorld(page, 'create', newName);
-            } finally {
-                await page.unroute(BOOK_WRITE);
-            }
-
-            expect(await worldExists(page, worldName)).toBe(false);
-            expect(await worldExists(page, newName)).toBe(false);
-            expect(await storedWorld(page, avatars[0])).toBe('');
-            expect(await storedWorld(page, avatars[1])).toBe('');
-            expect(lookups).toEqual([]);
-        } finally {
-            await deleteWorld(page, worldName);
-            await deleteWorld(page, newName);
-            await deleteCharacters(page, avatars);
-        }
-    });
 });
