@@ -46,7 +46,7 @@ after(async () => {
 });
 
 async function post(route, body) {
-    const res = await fetch(`${base}/api/itemized-prompts/${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const res = await fetch(`${base}/api/itemized-prompts/${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none' }, body: JSON.stringify(body) });
     return { status: res.status, body: await res.json().catch(() => null) };
 }
 

@@ -43,7 +43,7 @@ async function postJson(urlPath, body, headers = {}) {
     try {
         const res = await fetch(`http://127.0.0.1:${server.address().port}${urlPath}`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...headers },
+            headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none', ...headers },
             body: JSON.stringify(body),
         });
         const text = await res.text();

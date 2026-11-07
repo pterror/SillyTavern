@@ -35,7 +35,7 @@ globalThis.fetch = /** @type {typeof fetch} */ (async (url, options) => {
     return respond();
 });
 
-const listReply = (data = LISTED) => () => new Response(JSON.stringify({ data }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+const listReply = (data = LISTED) => () => new Response(JSON.stringify({ data }), { status: 200, headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none' } });
 
 const {
     fetchOpenRouterModels, forgetOpenRouterModels, lookupOpenRouterHuggingFaceId, rememberOpenRouterModels,
@@ -169,7 +169,7 @@ async function postStatus(router, body) {
         const { port } = /** @type {import('node:net').AddressInfo} */ (server.address());
         const reply = await fetch(`http://127.0.0.1:${port}/status`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none' },
             body: JSON.stringify(body),
         });
         assert.equal(reply.status, 200);

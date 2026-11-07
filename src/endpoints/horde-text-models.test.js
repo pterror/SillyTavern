@@ -53,7 +53,7 @@ after(() => {
 async function textModels() {
     const response = await fetch(`${base}/api/horde/text-models`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none' },
         body: JSON.stringify({ force: true }),
     });
     return { status: response.status, body: await response.json() };

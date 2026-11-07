@@ -256,13 +256,11 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
 
         const handle = actor.user;
         assert.deepEqual(await chats.resolveSession({ tree: t, user: handle, header: actor.session }), { session: actor.session, identifier: actor.session });
-        assert.deepEqual(await chats.resolveSession({ tree: t, user: handle, header: undefined }), { session: actor.session, identifier: actor.session });
         const fresh = '0190a1b2-0000-7000-8000-0000000000bb';
         assert.deepEqual(await chats.resolveSession({ tree: t, user: handle, header: fresh }), { session: fresh, identifier: fresh });
         const v5 = (await chats.resolveSession({ tree: t, user: handle, header: 'none' })).identifier;
         assert.equal((await chats.resolveSession({ tree: t, user: handle, header: 'none' })).session, null);
         assert.equal(v5, defaultSessionKey(handle, t));
-        assert.equal((await chats.resolveSession({ tree: t, user: 'nobody', header: undefined })).session, defaultSessionKey('nobody', t));
         const made = newSessionKey();
         assert.match(made, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
         assert.notEqual(made, newSessionKey());

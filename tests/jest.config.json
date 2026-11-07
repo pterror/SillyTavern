@@ -19,5 +19,8 @@
         "cjs",
         "json",
         "ts"
+    ],
+    "setupFiles": [
+        "<rootDir>/util/session-header.js"
     ]
 }

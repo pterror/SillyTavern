@@ -56,7 +56,7 @@ await new Promise(resolve => server.once('listening', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
 
 async function open(body, tab) {
-    const res = await fetch(`${base}/api/chats/open`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(tab ? { [SESSION_HEADER]: tab } : {}) }, body: JSON.stringify(body) });
+    const res = await fetch(`${base}/api/chats/open`, { method: 'POST', headers: { 'Content-Type': 'application/json', [SESSION_HEADER]: tab ?? 'none' }, body: JSON.stringify(body) });
     return { status: res.status, body: await res.json().catch(() => null) };
 }
 
@@ -142,7 +142,7 @@ test('with no current chat and no bookmark, a character opens on the choices las
     const opened = await open({ avatar_url: 'Ivy.png' });
     assert.deepEqual(opened.body.messages.map(m => m.mes), ['Hey.', 'Hi Ivy']);
     const tree = await treeOf(user.store, { avatar: 'Ivy.png' });
-    const session = await user.store.chats.resolveSession({ tree, user: 'u', header: undefined });
+    const session = await user.store.chats.resolveSession({ tree, user: 'u', header: 'none' });
     assert.equal(opened.body.chat, await user.store.chats.conversationName(session.session, session.identifier, tree));
     assert.match(opened.body.chat, /^Ivy - \d{4}-/);
 
@@ -199,7 +199,7 @@ test('unknown owners are 404', async () => {
  * @param {object} [body]
  */
 async function answerOf(route, method, body) {
-    const res = await fetch(`${base}${route}`, { method, headers: { 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    const res = await fetch(`${base}${route}`, { method, headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none' }, ...(body ? { body: JSON.stringify(body) } : {}) });
     assert.equal(res.status, 200, route);
     return res.json();
 }

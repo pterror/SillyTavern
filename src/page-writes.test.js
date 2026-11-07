@@ -203,7 +203,7 @@ async function generateServer(reply) {
          * @param {Record<string, string>} [headers]
          */
         post: (body, headers = {}) => fetch(`http://127.0.0.1:${server.address().port}/generate`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body),
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none', ...headers }, body: JSON.stringify(body),
         }),
         close: () => {
             server.close();

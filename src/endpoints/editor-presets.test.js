@@ -31,7 +31,7 @@ async function post(app, urlPath, body) {
     await new Promise(resolve => server.once('listening', resolve));
     try {
         const res = await fetch(`http://127.0.0.1:${server.address().port}/api/editor-presets${urlPath}`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none' }, body: JSON.stringify(body),
         });
         return { status: res.status, data: await res.json().catch(() => ({})) };
     } finally {

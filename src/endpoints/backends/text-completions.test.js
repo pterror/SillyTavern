@@ -283,7 +283,7 @@ async function run() {
             req.user = { directories, profile: { handle: 'u' } };
             if (req.get(SESSION_HEADER)) return next();
             sessionAt(user.store, req.body?.node_id).then(session => {
-                if (session) req.headers[SESSION_HEADER.toLowerCase()] = session;
+                req.headers[SESSION_HEADER.toLowerCase()] = session ?? 'none';
                 next();
             }, next);
         });

@@ -11,7 +11,7 @@ chat: `s<UUID>.<tree>` and `b<id>` are gone.
   `humanizedDateTime(start)` (one definition, `public/scripts/humanized-date.js`, the server's clock and zone), and
   `start` is when the conversation began:
   - a session's: the session's own time, read from its UUID (a v7 UUID begins with its time);
-  - a caller with no session (a deterministic v5 UUID): the character's or group's creation date.
+  - a tab with no session yet (its requests say `X-ST-Session: none`; a deterministic v5 UUID): the character's or group's creation date. A request without the header is refused.
 
 ## Scopes
 

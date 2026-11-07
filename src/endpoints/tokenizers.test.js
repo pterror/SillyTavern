@@ -192,7 +192,7 @@ await new Promise(resolve => server.once('listening', resolve));
 const baseUrl = `http://127.0.0.1:${/** @type {import('node:net').AddressInfo} */ (server.address()).port}/api/tokenizers`;
 async function postTokenizer(route, model, body) {
     const response = await fetch(`${baseUrl}${route}?model=${encodeURIComponent(model)}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none' }, body: JSON.stringify(body),
     });
     assert.equal(response.status, 200);
     return response.json();
@@ -211,7 +211,7 @@ await testCase('/current/count: a corrupt llama.model is a failed tokenizer, not
     };
     try {
         const response = await fetch(`${baseUrl}/current/count`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none' },
             body: JSON.stringify({ state: { api: 'textgenerationwebui', type: 'generic', url: 'http://127.0.0.1:1', model: 'x', tokenizerSetting: tokenizers.LLAMA }, texts: [text] }),
         });
         assert.equal(response.status, 200);
@@ -286,7 +286,7 @@ if (canMockModelMap) {
         const withState = { 'X-ST-Connection-State': JSON.stringify(state).replace(/[\u007f-￿]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`) };
         const post = async (route, body, headers = {}) => {
             const response = await fetch(`${baseUrl}${route}?model=${encodeURIComponent(model)}`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body),
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none', ...headers }, body: JSON.stringify(body),
             });
             return { status: response.status, body: response.status === 200 ? await response.json() : null };
         };
@@ -342,7 +342,7 @@ if (canMockModelMap) {
     await testCase('/command-r/encode: a failed download answers the estimate, not 0 tokens', async () => {
         downloadRequests.length = 0;
         const response = await fetch(`${baseUrl}/command-r/encode`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none' }, body: JSON.stringify({ text }),
         });
         assert.equal(response.status, 200);
         assert.deepEqual(await response.json(), { ids: [], count: guesstimate(text), chunks: [] });
@@ -372,7 +372,7 @@ if (canMockModelMap) {
 await testCase('/remote/textgenerationwebui/encode: an unknown api_type answers 400', async () => {
     for (const apiType of ['some-unknown-type', undefined]) {
         const response = await fetch(`${baseUrl}/remote/textgenerationwebui/encode`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none' },
             body: JSON.stringify({ text, url: 'http://127.0.0.1:1', model: 'x', api_type: apiType }),
         });
         assert.equal(response.status, 400, String(apiType));
@@ -394,7 +394,7 @@ const fakeUrl = `http://127.0.0.1:${/** @type {import('node:net').AddressInfo} *
 
 async function postCurrent(route, body) {
     const response = await fetch(`${baseUrl}/current/${route}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none' }, body: JSON.stringify(body),
     });
     assert.equal(response.status, 200, route);
     return response.json();
@@ -487,7 +487,7 @@ await testCase('/current/*: an explicitTokenizer that is not an explicit pick an
     const state = { api: 'openai', source: 'openai', model: 'gpt-4o' };
     for (const explicitTokenizer of [tokenizers.API_CURRENT, tokenizers.BEST_MATCH, 12345, 'qwen3', 1000.5]) {
         const response = await fetch(`${baseUrl}/current/encode`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none' },
             body: JSON.stringify({ state, texts: [text], explicitTokenizer }),
         });
         assert.equal(response.status, 400, String(explicitTokenizer));
@@ -666,7 +666,7 @@ await testCase('/current/*: a working remote tokenizer with no local copy decode
 await testCase('/current/*: a request without state answers 400', async () => {
     for (const route of ['count', 'encode', 'decode', 'trim', 'tokenizer']) {
         const response = await fetch(`${baseUrl}/current/${route}`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ texts: [text] }),
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none' }, body: JSON.stringify({ texts: [text] }),
         });
         assert.equal(response.status, 400, route);
     }

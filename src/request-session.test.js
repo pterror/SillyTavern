@@ -6,7 +6,7 @@ import { after, test } from 'node:test';
 
 import { loadEngine } from '../engine/load.js';
 import { ChatEngine, defaultSessionKey } from './chat-engine.js';
-import { requestSession, SESSION_GONE_HEADER, SESSION_MOVED_HEADER } from './request-session.js';
+import { requestSession, SessionHeaderMissing, SESSION_GONE_HEADER, SESSION_MOVED_HEADER } from './request-session.js';
 import { fakeOwners } from './chat-test-people.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'request-session-test-'));
@@ -31,12 +31,8 @@ for (const kind of ['native', 'wasm']) {
         try {
             const chats = await ChatEngine.open(store, people);
 
-            const third = await requestSession(chats, request(undefined), tree);
-            assert.equal(third.identifier, defaultSessionKey('u', tree));
-            assert.deepEqual(third.actor(), { user: 'u', session: defaultSessionKey('u', tree) });
+            await assert.rejects(requestSession(chats, request(undefined), tree), SessionHeaderMissing);
             let res = response();
-            third.answer(res, { moved: true });
-            assert.deepEqual(res.headers, {});
 
             const fresh = await requestSession(chats, request('none'), tree);
             assert.deepEqual(fresh.reader(), { user: 'u', session: null });

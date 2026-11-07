@@ -378,20 +378,10 @@ export class ChatEngine {
      * @param {object} p
      * @param {bigint} p.tree
      * @param {string} p.user
-     * @param {string | null | undefined} p.header
+     * @param {string} p.header The request's session header: a session, or 'none'.
      * @returns {Promise<{ session: string | null, identifier: string, gone?: true }>}
      */
     async resolveSession({ tree, user, header }) {
-        if (header === undefined || header === null) {
-            const [uid] = await this.store.chatRead('ids', { space: SPACE.user, keys: [user] });
-            const last = uid === null ? null : await this.store.chatRead('userInTree', { user: uid, tree });
-            if (last !== null && last.session !== null) {
-                const [s] = await this.store.chatRead('sessions', { ids: [last.session] });
-                if (s) return { session: s.key, identifier: s.key };
-            }
-            const v5 = defaultSessionKey(user, tree);
-            return { session: v5, identifier: v5 };
-        }
         if (header === 'none') return { session: null, identifier: defaultSessionKey(user, tree) };
         const [state] = await this.store.chatRead('keyStates', { space: SPACE.session, keys: [header] });
         if (state === 'gone') return { session: null, identifier: defaultSessionKey(user, tree), gone: true };

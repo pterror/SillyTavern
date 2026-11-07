@@ -262,8 +262,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual(await chats.rememberUserPosition({ tree: t, at: end, user: a.user }), { ok: true });
         assert.equal(await chats.landingOf(t, { user: a.user, session: null }), end);
         assert.equal(await chats.pointer(a.session), null);
-        const v5 = (await chats.resolveSession({ tree: t, user: a.user, header: 'none' })).identifier;
-        assert.deepEqual(await chats.resolveSession({ tree: t, user: a.user, header: undefined }), { session: v5, identifier: v5 });
         assert.deepEqual(await chats.rememberUserPosition({ tree: t, at: 'no-such-message', user: a.user }), { ok: false, reason: 'unknown node' });
         await chats.goTo({ tree: t, node_id: imported.node_ids[0], actor: b });
         assert.equal(await chats.landingOf(t, { user: a.user, session: null }), imported.node_ids[0]);

@@ -13,9 +13,17 @@ export function sessionHeaderOf(req) {
     return value === undefined || value === '' ? undefined : value;
 }
 
+/** A request that doesn't say which session it is from: every caller sends X-ST-Session ('none' when it has none). */
+export class SessionHeaderMissing extends Error {
+    constructor() {
+        super(`The request has no ${SESSION_HEADER} header`);
+        this.status = 400;
+    }
+}
+
 export class RequestSession {
     /**
-     * @param {string | undefined} header
+     * @param {string} header
      * @param {string} user
      * @param {{ session: string | null, identifier: string, gone?: true }} resolved
      */
@@ -51,7 +59,6 @@ export class RequestSession {
      * @param {{ moved?: boolean }} [o]
      */
     answer(res, { moved = false } = {}) {
-        if (this.header === undefined) return;
         if (this.resolved.gone) res.setHeader(SESSION_GONE_HEADER, '1');
         const session = this.made ?? (moved ? this.resolved.session : null);
         if (session) res.setHeader(SESSION_MOVED_HEADER, session);
@@ -65,6 +72,7 @@ export class RequestSession {
  */
 export async function requestSession(chats, req, tree) {
     const header = sessionHeaderOf(req);
+    if (header === undefined) throw new SessionHeaderMissing();
     const user = req.user.profile.handle;
     return new RequestSession(header, user, await chats.resolveSession({ tree, user, header }));
 }

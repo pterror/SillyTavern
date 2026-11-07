@@ -463,7 +463,7 @@ await check('textgen /status on OOBA remembers encode support; resolving then pr
     try {
         const res = await fetch(`http://127.0.0.1:${st.address().port}/status`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none' },
             body: JSON.stringify({ api_server: ooba.url.replace('127.0.0.1', 'localhost') + '/v1', api_type: TEXTGEN_TYPES.OOBA }),
         });
         assert.equal(res.status, 200);
@@ -537,7 +537,7 @@ await check('kobold /status remembers can_use_tokenization from the /extra/versi
     try {
         const res = await fetch(`http://127.0.0.1:${st.address().port}/status`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none' },
             body: JSON.stringify({ api_server: `${kcpp.url}/api` }),
         });
         assert.equal(res.status, 200);
@@ -1427,7 +1427,7 @@ await check('chat completion, custom URL: the answer is remembered per URL; /sta
         const llamaCpp = await startFakeLlamaCpp();
         const statusUrl = `http://127.0.0.1:${st.address().port}/status`;
         await fetch(statusUrl, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none' },
             body: JSON.stringify({ chat_completion_source: 'custom', custom_url: llamaCpp.url, custom_include_headers: 'X-Status: substituted' }),
         });
         for (let i = 0; i < 50 && customLlamaCpp.recallLlamaCppDetection(llamaCpp.url) === undefined; i++) {

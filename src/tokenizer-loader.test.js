@@ -220,10 +220,10 @@ await testCase('a failing import(\'tokenizers\') fails the hf-json load, and the
         const text = 'The quick brown fox jumps over the lazy dog.';
         const state = { api: 'textgenerationwebui', type: 'generic', url: 'http://127.0.0.1:1', model: 'x', tokenizerSetting: tokenizers.LLAMA3 };
         const counted = await (await fetch(baseUrl + '/current/count', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state, texts: [text] }),
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none' }, body: JSON.stringify({ state, texts: [text] }),
         })).json();
         const encoded = await (await fetch(baseUrl + '/llama3/encode', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none' }, body: JSON.stringify({ text }),
         })).json();
         server.close();
         console.log(JSON.stringify({
