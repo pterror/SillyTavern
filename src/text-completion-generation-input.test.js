@@ -226,7 +226,7 @@ async function run() {
 
     const branchName = newSessionKey();
     const chatContext = await chatContextOf(user.store, { avatar }, branchName);
-    await seedMessages(user.store, { avatar }, null, [
+    const seeded = await seedMessages(user.store, { avatar }, null, [
         { name: 'Rex', is_user: false, mes: 'Hello there, traveler.', send_date: 1, extra: {} },
         { name: 'Tester', is_user: true, mes: 'Hi Rex, nice to meet you.', send_date: 2, extra: {} },
         { name: 'Rex', is_user: false, mes: 'Likewise!', send_date: 3, extra: {} },
@@ -235,7 +235,7 @@ async function run() {
     const { countTokens, encodeTokens } = makeFakeTokenizers();
 
     const input = await resolveTextCompletionGenerationInput(directories, {
-        avatar, chatContext, branchName,
+        avatar, chatContext, nodeId: seeded.at(-1),
         type: 'normal', isImpersonate: false, isContinue: false, isSwipe: false,
         textareaText: 'What happens next?',
         countTokens, encodeTokens,
@@ -269,12 +269,12 @@ async function run() {
     assert.ok(input.worldInfoCandidates[0].hash, 'resolved candidates carry the real getStringHash() hash');
 
     const overriddenWI = await resolveTextCompletionGenerationInput(directories, {
-        avatar, chatContext, branchName, countTokens, encodeTokens, worldInfoCandidates: [],
+        avatar, chatContext, nodeId: seeded.at(-1), countTokens, encodeTokens, worldInfoCandidates: [],
     });
     assert.deepEqual(overriddenWI.worldInfoCandidates, [], 'an explicit worldInfoCandidates override bypasses auto-resolution');
 
     const withUserMessage = await resolveTextCompletionGenerationInput(directories, {
-        avatar, chatContext, branchName, countTokens, encodeTokens,
+        avatar, chatContext, nodeId: seeded.at(-1), countTokens, encodeTokens,
         userMessageText: 'What happens next, Rex?',
     });
     assert.equal(withUserMessage.chat.length, 4, 'userMessageText appends one new message onto the real loaded history');
@@ -287,7 +287,7 @@ async function run() {
 
     fs.writeFileSync(path.join(directories.files, 'notes.txt'), 'The tower key is hidden under the loose stone.');
     const withUserMessageExtra = await resolveTextCompletionGenerationInput(directories, {
-        avatar, chatContext, branchName, countTokens, encodeTokens,
+        avatar, chatContext, nodeId: seeded.at(-1), countTokens, encodeTokens,
         userMessageText: 'Check my notes.',
         userMessageExtra: { files: [{ url: '/user/files/notes.txt', size: 42, name: 'notes.txt', created: 1700000000000 }] },
     });
@@ -317,18 +317,18 @@ async function run() {
     assert.ok(input.chat[0].node_id, 'real tree node ids are present, not fabricated');
 
     const overridden = await resolveTextCompletionGenerationInput(directories, {
-        avatar, chatContext, branchName, countTokens, encodeTokens,
+        avatar, chatContext, nodeId: seeded.at(-1), countTokens, encodeTokens,
         macroExtras: { quiet_prompt: 'Summarize the scene.', isDryRun: true },
     });
     assert.equal(overridden.quiet_prompt, 'Summarize the scene.', 'macroExtras is shallow-merged over the resolved object');
     assert.equal(overridden.isDryRun, true);
 
     await assert.rejects(
-        () => resolveTextCompletionGenerationInput(directories, { avatar, chatContext, branchName, encodeTokens }),
+        () => resolveTextCompletionGenerationInput(directories, { avatar, chatContext, nodeId: seeded.at(-1), encodeTokens }),
         /countTokens is required/,
     );
     await assert.rejects(
-        () => resolveTextCompletionGenerationInput(directories, { avatar, chatContext, branchName, countTokens }),
+        () => resolveTextCompletionGenerationInput(directories, { avatar, chatContext, nodeId: seeded.at(-1), countTokens }),
         /encodeTokens is required/,
     );
 
@@ -351,7 +351,7 @@ async function run() {
     );
 
     const koboldInput = await resolveTextCompletionGenerationInput(directories, {
-        avatar, chatContext, branchName, mainApi: 'kobold', countTokens, encodeTokens,
+        avatar, chatContext, nodeId: seeded.at(-1), mainApi: 'kobold', countTokens, encodeTokens,
     });
     assert.equal(koboldInput.mainApi, 'kobold');
     assert.equal(koboldInput.settings.temp, 0.65, 'settings resolves from the real top-level kai_settings, not textgenerationwebui_settings');
@@ -365,7 +365,7 @@ async function run() {
     assert.equal(koboldResult.generate_data.max_new_tokens, undefined, 'textgen-only field must not leak into the kobold payload');
 
     const novelInput = await resolveTextCompletionGenerationInput(directories, {
-        avatar, chatContext, branchName, mainApi: 'novel', countTokens, encodeTokens,
+        avatar, chatContext, nodeId: seeded.at(-1), mainApi: 'novel', countTokens, encodeTokens,
         macroExtras: { encodeTokensByType: (_tokenizerType, text) => encodeTokens(text), novelTokenizerType: tokenizers.NERD },
     });
     assert.equal(novelInput.mainApi, 'novel');
@@ -377,7 +377,7 @@ async function run() {
     assert.equal(novelResult.generate_data.max_new_tokens, undefined, 'textgen-only field must not leak into the novel payload');
 
     await assert.rejects(
-        () => resolveTextCompletionGenerationInput(directories, { avatar, chatContext, branchName, mainApi: 'koboldhorde', countTokens, encodeTokens }),
+        () => resolveTextCompletionGenerationInput(directories, { avatar, chatContext, nodeId: seeded.at(-1), mainApi: 'koboldhorde', countTokens, encodeTokens }),
         /unsupported mainApi/,
     );
 

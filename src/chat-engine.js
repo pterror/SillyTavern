@@ -1325,41 +1325,6 @@ export class ChatEngine {
     }
 
     /**
-     * @param {object} p
-     * @param {bigint} p.tree
-     * @param {string} p.upper
-     * @param {string} p.lower
-     * @param {Actor} p.actor
-     */
-    swapAdjacent({ tree, upper, lower, actor }) {
-        return this.serialized(tree, async () => {
-            const records = [];
-            const { user, session } = await this.actorIds(actor, records);
-            const [u, l] = await this.messageIds([upper, lower]);
-            const stored = await this.stored([u, l].filter(x => x !== null));
-            const su = u === null ? undefined : stored.get(u);
-            const sl = l === null ? undefined : stored.get(l);
-            if (!su || !sl || su.owner !== tree || sl.owner !== tree) return { ok: false, reason: 'unknown node' };
-            if (sl.parent !== u) return { ok: false, reason: 'not adjacent' };
-            if (su.parent === null) return { ok: false, reason: 'not on default path' };
-            const child = await this.followedReply(tree, /** @type {bigint} */ (l), session, user);
-            const actorPart = { user, ...(session === null ? {} : { session }) };
-            records.push({ kind: 'messageParent', message: l, parent: su.parent, ...actorPart });
-            records.push({ kind: 'messageParent', message: u, parent: l, ...actorPart });
-            if (child !== null) records.push({ kind: 'messageParent', message: child, parent: u, ...actorPart });
-            if (session !== null) {
-                records.push(...this.moveTo(session, user, su.parent, /** @type {bigint} */ (l)));
-                records.push(...this.moveTo(session, user, l, /** @type {bigint} */ (u)));
-                if (child !== null) records.push(...this.moveTo(session, user, u, child));
-            }
-            await this.claimConversation(records, tree, actor, { user, session });
-            await this.store.commit(records);
-            return { ok: true };
-        });
-    }
-
-
-    /**
      * @param {bigint} tree
      * @param {bigint[]} roots
      * @param {bigint[]} keep

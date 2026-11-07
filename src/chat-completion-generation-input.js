@@ -201,10 +201,10 @@ function isTextOnlyMessage(message) {
 
 /**
  * @param {import('./chat-request.js').ChatContext | undefined} chat
- * @param {{ branchName?: string, nodeId?: string | null }} at
+ * @param {{ nodeId?: string | null }} at
  */
-async function resolveChatHistory(chat, { branchName, nodeId }) {
-    return loadChatHistory(chat, { branchName, nodeId });
+async function resolveChatHistory(chat, { nodeId }) {
+    return loadChatHistory(chat, { nodeId });
 }
 
 /**
@@ -213,7 +213,6 @@ async function resolveChatHistory(chat, { branchName, nodeId }) {
  * @param {string} [params.avatar]
  * @param {string} [params.groupId]
  * @param {import('./chat-request.js').ChatContext} [params.chatContext]
- * @param {string} [params.branchName]
  * @param {string|null} [params.nodeId]
  * @param {string} [params.type]
  * @param {boolean} [params.isImpersonate]
@@ -242,7 +241,7 @@ async function resolveChatHistory(chat, { branchName, nodeId }) {
  * @returns {Promise<import('./prompt/chat-prompt.js').ChatCompletionPromptInput & { worldInfoCandidates: WIEntry[], activations: import('./world-info/activation-record.js').ActivationRecord | null, tokenizerOutcome: import('./tokenizer-resolve.js').TokenizerOutcome, countedWith: () => object|null, tokenCountRows: import('./token-count-store.js').PendingTokenRows }>}
  */
 export async function resolveChatCompletionGenerationInput(directories, {
-    avatar, groupId, chatContext, branchName, nodeId,
+    avatar, groupId, chatContext, nodeId,
     type, isImpersonate = false, isContinue = false, isSwipe = false, dryRun,
     cyclePrompt = '', textareaText = '', chatMetadata: chatMetadataOverride, userMessageText, userMessageExtra,
     worldInfoCandidates: worldInfoCandidatesOverride,
@@ -272,7 +271,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     const isGroup = Boolean(groupId);
 
     const { chat: loadedChat, metadata: loadedChatMetadata, resolvedNodeId, ambiguous: chatResolutionAmbiguous } =
-        await resolveChatHistory(chatContext, { branchName, nodeId });
+        await resolveChatHistory(chatContext, { nodeId });
     const chatMetadata = chatMetadataOverride ?? loadedChatMetadata;
     const stateBefore = variablesBefore(chatMetadata, extensionSettings.variables?.global ?? {});
 

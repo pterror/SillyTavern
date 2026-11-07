@@ -342,7 +342,7 @@ export async function ensureOpeningRow(mesId = 0) {
                 headers: getRequestHeaders(),
                 body: JSON.stringify(inGroup
                     ? { group_id: selected_group, ...request }
-                    : { avatar_url: getCurrentCharacter()?.avatar, ...request, activate: true }),
+                    : { avatar_url: getCurrentCharacter()?.avatar, ...request }),
             });
             const answer = response.ok ? await response.json().catch(() => null) : null;
             adoptStored(answer?.stored);

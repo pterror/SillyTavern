@@ -89,17 +89,16 @@ async function rootIsCurrent(chat) {
 
 /**
  * @param {ChatContext | null | undefined} chat
- * @param {{ branchName?: string, nodeId?: string | null }} at
+ * @param {{ nodeId?: string | null }} at
  * @returns {Promise<{ chat: any[], metadata: Record<string, any>, resolvedNodeId: string | null, ambiguous?: true }>}
  */
-export async function loadChatHistory(chat, { branchName, nodeId }) {
+export async function loadChatHistory(chat, { nodeId }) {
     const none = { chat: [], metadata: {}, resolvedNodeId: null };
     if (!chat) return none;
     const { chats } = chat.store;
     /** @type {string | null | undefined} */
     let at;
-    if (branchName != null) at = await chatNamePosition(chat, branchName);
-    if (at === undefined && nodeId != null) {
+    if (nodeId != null) {
         if (!await chats.messageOf(chat.tree, nodeId)) return none;
         at = nodeId;
     }

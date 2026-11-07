@@ -40,6 +40,16 @@ async function ctxOf(owner, name) {
     return chatContextOf(user.store, owner, session);
 }
 
+/**
+ * The chat context of a named branch and its last message, as the page sends a generation: at the message it's on.
+ * @param {{ avatar?: string, group?: string }} owner
+ * @param {string} name
+ */
+async function atBranch(owner, name) {
+    const { branch } = await loadBranch(user.store, owner, name);
+    return { chatContext: await chatContextOf(user.store, owner, branch.session), nodeId: branch.leaf_id };
+}
+
 async function writeLorebook(name, entries) {
     const entriesObj = {};
     for (const entry of entries) {
@@ -162,7 +172,7 @@ async function gemmaModelCountsWithGemma() {
         { name: 'Gem', is_user: false, mes: 'Hi.', send_date: 1, extra: {} },
     ]);
 
-    const input = await resolveChatCompletionGenerationInput(directories, { avatar, chatContext: await ctxOf({ avatar }, 'gem-chat'), branchName: 'gem-chat' });
+    const input = await resolveChatCompletionGenerationInput(directories, { avatar, ...await atBranch({ avatar }, 'gem-chat') });
 
     const message = { role: 'user', content: 'Antidisestablishmentarianism, naïveté and 東京 split differently.' };
     const gemmaCount = (await encodeTextByLocalTokenizerType('gemma', `${message.role}\n\n${message.content}`)).length;
@@ -220,7 +230,7 @@ async function storedCountsSkipTextOnlyMessages() {
         const generate = async () => {
             stub.tokenizeBodies.length = 0;
             const input = await resolveChatCompletionGenerationInput(directories, {
-                avatar, chatContext: await ctxOf({ avatar }, 'stow-chat'), branchName: 'stow-chat', type: 'normal',
+                avatar, ...await atBranch({ avatar }, 'stow-chat'), type: 'normal',
                 llamaCppProps: createLlamaCppPropsCheck({ reuse: false }),
             });
             const prepared = await buildChatCompletionPrompt({ ...input, canUseToolsOverride: true });
@@ -279,7 +289,7 @@ async function run() {
     ]);
 
     const input = await resolveChatCompletionGenerationInput(directories, {
-        avatar, chatContext: await ctxOf({ avatar }, branchName), branchName,
+        avatar, ...await atBranch({ avatar }, branchName),
         type: 'normal',
     });
 
@@ -340,7 +350,7 @@ async function run() {
     assert.ok(!input.worldInfoAfter.includes(WI_DEPTH_TEST_CONTENT), 'the @Depth entry content is NOT duplicated into worldInfoAfter');
 
     const overriddenWI = await resolveChatCompletionGenerationInput(directories, {
-        avatar, chatContext: await ctxOf({ avatar }, branchName), branchName, worldInfoCandidates: [],
+        avatar, ...await atBranch({ avatar }, branchName), worldInfoCandidates: [],
     });
     assert.deepEqual(overriddenWI.worldInfoCandidates, [], 'an explicit worldInfoCandidates override bypasses auto-resolution');
 
@@ -353,7 +363,7 @@ async function run() {
     assert.ok(!('is_user' in input.messages[0]), 'messages are NOT left in the tree-DB native {is_user, mes} shape');
 
     const withUserMessage = await resolveChatCompletionGenerationInput(directories, {
-        avatar, chatContext: await ctxOf({ avatar }, branchName), branchName,
+        avatar, ...await atBranch({ avatar }, branchName),
         userMessageText: 'What happens next, Rex?',
     });
     assert.equal(withUserMessage.messages.length, 4, 'userMessageText appends one new message onto the real loaded history');
@@ -368,7 +378,7 @@ async function run() {
     })();
     const dataUrl = `data:image/jpeg;base64,${jpegBuffer.toString('base64')}`;
     const withUserMessageExtra = await resolveChatCompletionGenerationInput(directories, {
-        avatar, chatContext: await ctxOf({ avatar }, branchName), branchName,
+        avatar, ...await atBranch({ avatar }, branchName),
         userMessageText: 'Look at this.',
         userMessageExtra: { media: [{ url: dataUrl, type: 'image', source: 'upload' }], media_index: 0 },
         macroExtras: { imageInlining: true },
@@ -384,7 +394,7 @@ async function run() {
 
     fs.writeFileSync(path.join(directories.files, 'notes.txt'), 'The tower key is hidden under the loose stone.');
     const withFileExtra = await resolveChatCompletionGenerationInput(directories, {
-        avatar, chatContext: await ctxOf({ avatar }, branchName), branchName,
+        avatar, ...await atBranch({ avatar }, branchName),
         userMessageText: 'Check my notes.',
         userMessageExtra: {
             files: [
@@ -418,7 +428,7 @@ async function run() {
     assert.equal(input.bias, '');
 
     const overridden = await resolveChatCompletionGenerationInput(directories, {
-        avatar, chatContext: await ctxOf({ avatar }, branchName), branchName,
+        avatar, ...await atBranch({ avatar }, branchName),
         macroExtras: { quietPrompt: 'Summarize the scene.', bias: '+happy' },
     });
     assert.equal(overridden.quietPrompt, 'Summarize the scene.', 'macroExtras is shallow-merged over the resolved object');
@@ -451,7 +461,7 @@ async function run() {
     biasFixture.power_user.user_prompt_bias = 'always speak in riddles';
     writeAllSettings(directories, biasFixture);
     const withBias = await resolveChatCompletionGenerationInput(directories, {
-        avatar, chatContext: await ctxOf({ avatar }, branchName), branchName,
+        avatar, ...await atBranch({ avatar }, branchName),
         type: 'normal',
     });
     assert.equal(
@@ -460,7 +470,7 @@ async function run() {
     );
 
     const withBiasContinue = await resolveChatCompletionGenerationInput(directories, {
-        avatar, chatContext: await ctxOf({ avatar }, branchName), branchName,
+        avatar, ...await atBranch({ avatar }, branchName),
         type: 'continue',
     });
     assert.equal(withBiasContinue.bias, '', 'type: \'continue\' short-circuits getBiasStrings() to an empty bias, per its own real behavior');
@@ -506,7 +516,7 @@ async function run() {
         ]);
 
         const groupInput = await resolveChatCompletionGenerationInput(directories, {
-            avatar: nova, groupId, chatContext: await ctxOf({ group: groupId }, groupChatId), branchName: groupChatId,
+            avatar: nova, groupId, ...await atBranch({ group: groupId }, groupChatId),
             type: 'normal',
         });
 
@@ -569,7 +579,7 @@ async function run() {
             Object.assign(settings.world_info_settings, worldInfoFlags);
             writeAllSettings(directories, settings);
             const resolved = await resolveChatCompletionGenerationInput(directories, {
-                avatar, chatContext: await ctxOf({ avatar }, branchName), branchName, type: 'normal', dryRun: true,
+                avatar, ...await atBranch({ avatar }, branchName), type: 'normal', dryRun: true,
             });
             return resolved.worldInfoBefore;
         };

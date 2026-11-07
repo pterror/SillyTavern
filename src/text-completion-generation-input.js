@@ -136,10 +136,10 @@ export function promptTokenBudget(mainApi, maxContext, maxResponse, novelModel =
 
 /**
  * @param {import('./chat-request.js').ChatContext | undefined} chat
- * @param {{ branchName?: string, nodeId?: string | null }} at
+ * @param {{ nodeId?: string | null }} at
  */
-async function resolveChatHistory(chat, { branchName, nodeId }) {
-    return loadChatHistory(chat, { branchName, nodeId });
+async function resolveChatHistory(chat, { nodeId }) {
+    return loadChatHistory(chat, { nodeId });
 }
 
 /**
@@ -149,7 +149,6 @@ async function resolveChatHistory(chat, { branchName, nodeId }) {
  * @param {string} [params.groupId]
  * @param {string} [params.mainApi]
  * @param {import('./chat-request.js').ChatContext} [params.chatContext]
- * @param {string} [params.branchName]
  * @param {string|null} [params.nodeId]
  * @param {string} [params.type]
  * @param {boolean} [params.isImpersonate]
@@ -170,7 +169,7 @@ async function resolveChatHistory(chat, { branchName, nodeId }) {
  * @returns {Promise<import('./prompt/text-prompt.js').TextCompletionPromptInput>}
  */
 export async function resolveTextCompletionGenerationInput(directories, {
-    avatar, groupId, mainApi = 'textgenerationwebui', chatContext, branchName, nodeId,
+    avatar, groupId, mainApi = 'textgenerationwebui', chatContext, nodeId,
     type, isImpersonate = false, isContinue = false, isSwipe = false,
     textareaText = '', chatMetadata: chatMetadataOverride, userMessageText, userMessageExtra,
     worldInfoCandidates: worldInfoCandidatesOverride, countTokens, encodeTokens, countPromptTokens, amountGen, macroExtras = {},
@@ -216,7 +215,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
     const hasCharacterOrGroup = Boolean(avatar) || Boolean(groupId);
 
     const { chat: loadedChat, metadata: loadedChatMetadata, resolvedNodeId, ambiguous: chatResolutionAmbiguous } =
-        await resolveChatHistory(chatContext, { branchName, nodeId });
+        await resolveChatHistory(chatContext, { nodeId });
     const chatMetadata = chatMetadataOverride ?? loadedChatMetadata;
     const stateBefore = variablesBefore(chatMetadata, extensionSettings.variables?.global ?? {});
 

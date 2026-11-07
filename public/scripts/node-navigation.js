@@ -40,7 +40,7 @@ export async function switchToAlternativePath(mesId, swipeId, { redraw = true } 
             const response = await fetch('/api/chats/message/select', {
                 method: 'POST',
                 headers: getRequestHeaders(),
-                body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId, activate: true, chat_name: getCurrentChatId() }),
+                body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId, chat_name: getCurrentChatId() }),
             });
             if (!response.ok) {
                 console.warn(`[switchToAlternativePath] HTTP ${response.status} selecting ${targetNodeId}`);
@@ -89,7 +89,7 @@ async function _persistNodeSelection(targetNodeId) {
         const response = await fetch('/api/chats/message/select', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId, activate: true }),
+            body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId }),
         });
         if (response.ok) {
             _setCurrentTarget(getCurrentChatId() ?? '', null);
@@ -127,7 +127,7 @@ export async function switchToNode(targetNodeId) {
         const response = await fetch('/api/chats/message/select', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId, activate: true, chat_name: getCurrentChatId(), with_ancestry: true }),
+            body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId, chat_name: getCurrentChatId(), with_ancestry: true }),
         });
         if (!response.ok) {
             return false;

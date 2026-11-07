@@ -1589,11 +1589,6 @@ export async function deleteCharacterChatByName(avatar, fileName) {
         return;
     }
 
-    const data = await response.json().catch(() => null);
-    if (data && typeof data.activeChat === 'string') {
-        character.chat = data.activeChat;
-    }
-
     await eventSource.emit(event_types.CHAT_DELETED, fileName);
 }
 

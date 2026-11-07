@@ -142,9 +142,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await tree.degraftMessage(directories, owner, og2.node_id);
         assert.equal((await tree.deleteAlternative(directories, owner, og2.node_id)).ok, true);
         await compare('after a cut');
-        await tree.swapAdjacent(directories, owner, ob, old2.node_ids[0]);
-        assert.deepEqual(await chats.swapAdjacent({ tree: t, upper: nb, lower: new2.node_ids[0], actor }), { ok: true });
-        await compare('after a swap');
         await tree.labelNode(directories, old1.node_ids[0], 'Saved here', { ownerId: owner });
         await chats.createBookmark({ tree: t, node_id: new1.node_ids[0], name: 'Saved here', actor });
         await compare('after a bookmark on the path');
