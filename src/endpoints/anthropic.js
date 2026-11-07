@@ -1,6 +1,7 @@
 import express from 'express';
 
 import { readSecret, SECRET_KEYS } from './secrets.js';
+import { fetchOutgoing } from '../outgoing-fetch.js';
 
 export const router = express.Router();
 
@@ -32,7 +33,7 @@ router.post('/caption-image', async (request, response) => {
 
         console.debug('Multimodal captioning request', body);
 
-        const result = await fetch(url, {
+        const result = await fetchOutgoing(url, {
             body: JSON.stringify(body),
             method: 'POST',
             headers: {

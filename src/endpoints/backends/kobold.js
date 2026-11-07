@@ -21,6 +21,7 @@ import { answerSessionOnHeaders, chatContext } from '../../chat-request.js';
 import { withGenerationStop } from '../../generation-stop.js';
 import { forwardAndPersistCompactStream } from './text-completions.js';
 import { macroVariableChanges, storeMacroVariables } from '../../macro-facts.js';
+import { fetchOutgoing } from '../../outgoing-fetch.js';
 
 export const router = express.Router();
 
@@ -218,7 +219,7 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
         if (request.body.can_abort && !response_generate.writableEnded) {
             try {
                 // send abort signal to koboldcpp
-                const abortResponse = await fetch(`${request.body.api_server}/extra/abort`, {
+                const abortResponse = await fetchOutgoing(`${request.body.api_server}/extra/abort`, {
                     method: 'POST',
                 });
 
@@ -289,7 +290,7 @@ router.post('/generate', withGenerationStop(async function (request, response_ge
     for (let i = 0; i < MAX_RETRIES; i++) {
         try {
             const url = request.body.streaming ? `${request.body.api_server}/extra/generate/stream` : `${request.body.api_server}/v1/generate`;
-            const response = await fetch(url, { method: 'POST', ...args });
+            const response = await fetchOutgoing(url, { method: 'POST', ...args });
             storeTokenCountRows();
 
             if (request.body.streaming) {
@@ -388,7 +389,7 @@ router.post('/transcribe-audio', async function (request, response) {
         const url = new URL(server);
         url.pathname = '/api/extra/transcribe';
 
-        const result = await fetch(url, {
+        const result = await fetchOutgoing(url, {
             method: 'POST',
             headers: {
                 ...headers,
@@ -429,7 +430,7 @@ router.post('/embed', async function (request, response) {
         const embeddingsUrl = new URL(server);
         embeddingsUrl.pathname = '/api/extra/embeddings';
 
-        const embeddingsResult = await fetch(embeddingsUrl, {
+        const embeddingsResult = await fetchOutgoing(embeddingsUrl, {
             method: 'POST',
             headers: {
                 ...headers,

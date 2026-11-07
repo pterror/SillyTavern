@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 import crypto from 'node:crypto';
 
 import { readSecret, SECRET_KEYS } from './endpoints/secrets.js';
+import { fetchOutgoing } from './outgoing-fetch.js';
 
 /**
  * The Authorization header for a Vertex AI request, by its auth mode.
@@ -86,7 +87,7 @@ async function generateJWTToken(serviceAccount) {
 }
 
 async function getAccessToken(jwtToken) {
-    const response = await fetch('https://oauth2.googleapis.com/token', {
+    const response = await fetchOutgoing('https://oauth2.googleapis.com/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({

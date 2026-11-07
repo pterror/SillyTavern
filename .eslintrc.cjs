@@ -40,6 +40,16 @@ module.exports = {
             },
         },
         {
+            files: ['src/**/*.js', 'engine/**/*.js'],
+            excludedFiles: ['**/*.test.js'],
+            rules: {
+                'no-restricted-globals': ['error', {
+                    name: 'fetch',
+                    message: 'Use fetchOutgoing() (src/outgoing-fetch.js): it says why a request failed instead of "fetch failed".',
+                }],
+            },
+        },
+        {
             files: ['*.cjs'],
             parserOptions: {
                 sourceType: 'commonjs',

@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mock } from 'node:test';
 
 import express from 'express';
 
@@ -16,7 +15,6 @@ import { CompactStreamDecoder } from '../../../public/scripts/llamacpp-compact-s
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 
-const canMockAi21Backend = typeof mock.module === 'function';
 /** @type {string|null} */
 let ai21FakeBackendUrl = null;
 /** @type {string|null} */
@@ -31,7 +29,7 @@ let minimaxFakeBackendUrl = null;
 let electronhubFakeBackendUrl = null;
 /** @type {string[]} */
 const tokenizerDownloadRequests = [];
-if (canMockAi21Backend) {
+{
     const realFetch = globalThis.fetch;
     globalThis.fetch = /** @type {typeof fetch} */ (async (url, opts) => {
         if (String(url).startsWith('https://github.com/SillyTavern/SillyTavern-Tokenizers/')) {
@@ -728,7 +726,7 @@ async function run() {
         assert.deepEqual(backendBodies.map(body => body.logit_bias), [{ 11: 2, 12: 2 }], 'raw-id entries still go through');
     }
 
-    if (canMockAi21Backend) {
+    {
         const backendBodies = [];
         const fakeBackend = await startFakeBackend((_req, res, body) => {
             backendBodies.push(JSON.parse(body));
@@ -766,8 +764,6 @@ async function run() {
         }, dropped('Mistral-Nemo-Instruct-2407')], 'raw-action: the estimate trim and the dropped entry are reported');
         assert.deepEqual(backendBodies.map(body => body.logit_bias), [{ 11: 2, 12: 2 }], 'raw-id entries still go through');
         assert.equal(tokenizerDownloadRequests.filter(url => url.endsWith('/nemo.json.gz')).length, 1, 'one download request');
-    } else {
-        console.log('chat-completions.test.js: skipping the downloadable-tokenizer failure case - run with `node --experimental-test-module-mocks`, which it needs to stub the download');
     }
 
     {
@@ -2034,9 +2030,7 @@ async function run() {
         assert.equal(assistantMsg.name, 'Rex');
     }
 
-    if (!canMockAi21Backend) {
-        console.log('chat-completions.test.js: skipping sendAI21Request/sendCohereRequest/sendAimlapiRequest persistence tests - run with `node --experimental-test-module-mocks` to include them (see the canMockAi21Backend comment near the top of this file)');
-    } else {
+    {
         {
             const ai21Branch = 'ai21-plain-chat';
             await saveBranch(user.store, { avatar: ownerId }, ai21Branch, [

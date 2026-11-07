@@ -2,6 +2,7 @@ import { TEXTGEN_TYPES } from './constants.js';
 import { setAdditionalHeadersByType } from './additional-headers.js';
 import { trimV1 } from './util.js';
 import { logBackendFailure } from './backend-unreachable.js';
+import { fetchOutgoing } from './outgoing-fetch.js';
 
 export const PROPS_REUSE_MS = 5000;
 
@@ -51,7 +52,7 @@ export async function fetchLlamaCppProps(backend) {
         url += `?model=${encodeURIComponent(backend.model)}`;
     }
     try {
-        const reply = await fetch(url, { method: 'GET', headers: backend.headers });
+        const reply = await fetchOutgoing(url, { method: 'GET', headers: backend.headers });
         if (!reply.ok) {
             console.warn(`llama.cpp /props at ${backend.url} answered ${reply.status}`);
             return null;

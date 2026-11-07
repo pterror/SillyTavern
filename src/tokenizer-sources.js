@@ -7,6 +7,7 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import { readSecret, SECRET_KEYS } from './endpoints/secrets.js';
 import { getConfigValue } from './util.js';
+import { fetchOutgoing } from './outgoing-fetch.js';
 
 /** @typedef {'hf-json' | 'sentencepiece' | 'tekken' | 'tiktoken'} TokenizerFileFormat */
 
@@ -3157,7 +3158,7 @@ async function downloadSource(entry, source, hfToken) {
     if (source.gated) {
         headers.Authorization = `Bearer ${hfToken}`;
     }
-    const response = await fetch(getSourceUrl(source), { headers });
+    const response = await fetchOutgoing(getSourceUrl(source), { headers });
     if (!response.ok) {
         throw new Error(`${response.status} ${response.statusText}`);
     }

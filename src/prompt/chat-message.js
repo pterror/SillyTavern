@@ -4,6 +4,7 @@ import { imageSize } from 'image-size';
 import mime from 'mime-types';
 import { Jimp, JimpMime } from '../jimp.js';
 import { ResizeStrategy } from '@jimp/plugin-resize';
+import { fetchOutgoing } from '../outgoing-fetch.js';
 
 /**
  * @callback CountTokenAsyncFn
@@ -77,7 +78,7 @@ async function resolveAttachmentDataUrl(input, { directories } = {}) {
     }
     if (/^https?:\/\//i.test(input)) {
         try {
-            const response = await fetch(input, { method: 'GET' });
+            const response = await fetchOutgoing(input, { method: 'GET' });
             if (!response.ok) {
                 throw new Error(`Failed to fetch attachment: ${response.status}`);
             }

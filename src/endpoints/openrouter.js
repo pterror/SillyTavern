@@ -2,6 +2,7 @@ import express from 'express';
 import mime from 'mime-types';
 import { readSecret, SECRET_KEYS } from './secrets.js';
 import { OPENROUTER_HEADERS } from '../constants.js';
+import { fetchOutgoing } from '../outgoing-fetch.js';
 
 export const router = express.Router();
 const API_OPENROUTER = 'https://openrouter.ai/api/v1';
@@ -9,7 +10,7 @@ const API_OPENROUTER = 'https://openrouter.ai/api/v1';
 router.post('/models/providers', async (req, res) => {
     try {
         const { model } = req.body;
-        const response = await fetch(`${API_OPENROUTER}/models/${model}/endpoints`, {
+        const response = await fetchOutgoing(`${API_OPENROUTER}/models/${model}/endpoints`, {
             method: 'GET',
             headers: {
                 'Accept': 'application/json',
@@ -41,7 +42,7 @@ router.post('/models/providers', async (req, res) => {
  * @returns {Promise<any[]>} Filtered and/or mapped models
  */
 async function fetchModelsByModality(endpoint, inputModality, outputModality, mapFn = null) {
-    const response = await fetch(`${API_OPENROUTER}${endpoint}?output_modalities=${encodeURIComponent(outputModality)}`, {
+    const response = await fetchOutgoing(`${API_OPENROUTER}${endpoint}?output_modalities=${encodeURIComponent(outputModality)}`, {
         method: 'GET',
         headers: { 'Accept': 'application/json' },
     });
@@ -108,7 +109,7 @@ router.post('/credits', async (req, res) => {
             return res.sendStatus(400);
         }
 
-        const response = await fetch(`${API_OPENROUTER}/credits`, {
+        const response = await fetchOutgoing(`${API_OPENROUTER}/credits`, {
             method: 'GET',
             headers: {
                 'Accept': 'application/json',
@@ -151,7 +152,7 @@ router.post('/image/generate', async (req, res) => {
             return res.status(400).json({ error: 'Model and prompt are required' });
         }
 
-        const response = await fetch(`${API_OPENROUTER}/chat/completions`, {
+        const response = await fetchOutgoing(`${API_OPENROUTER}/chat/completions`, {
             method: 'POST',
             headers: {
                 ...OPENROUTER_HEADERS,

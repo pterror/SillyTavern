@@ -14,6 +14,7 @@ import {
     createGenerationRecord, createResumableWriter, createBackpressureWriter, detachFromResponse,
     encodeContent, encodeStoredReplyFrame, encodeControlFrame, handleGenerationResume, KEEPALIVE_INTERVAL_MS, writeStoredMessagesFrame,
 } from './backends/llamacpp-compact-stream.js';
+import { fetchOutgoing } from '../outgoing-fetch.js';
 
 const ANONYMOUS_KEY = '0000000000';
 const HORDE_TEXT_MODEL_METADATA_URL = 'https://raw.githubusercontent.com/db0/AI-Horde-text-model-reference/main/db.json';
@@ -92,7 +93,7 @@ router.post('/text-workers', async (request, response) => {
         }
 
         const agent = await getClientAgent();
-        const fetchResult = await fetch('https://aihorde.net/api/v2/workers?type=text', {
+        const fetchResult = await fetchOutgoing('https://aihorde.net/api/v2/workers?type=text', {
             headers: {
                 'Client-Agent': agent,
             },
@@ -107,7 +108,7 @@ router.post('/text-workers', async (request, response) => {
 });
 
 async function getHordeTextModelMetadata() {
-    const response = await fetch(HORDE_TEXT_MODEL_METADATA_URL);
+    const response = await fetchOutgoing(HORDE_TEXT_MODEL_METADATA_URL);
     return await response.json();
 }
 
@@ -129,7 +130,7 @@ router.post('/text-models', async (request, response) => {
         }
 
         const agent = await getClientAgent();
-        const fetchResult = await fetch('https://aihorde.net/api/v2/status/models?type=text', {
+        const fetchResult = await fetchOutgoing('https://aihorde.net/api/v2/status/models?type=text', {
             headers: {
                 'Client-Agent': agent,
             },
@@ -167,7 +168,7 @@ router.post('/text-models', async (request, response) => {
 router.post('/status', async (_, response) => {
     try {
         const agent = await getClientAgent();
-        const fetchResult = await fetch('https://aihorde.net/api/v2/status/heartbeat', {
+        const fetchResult = await fetchOutgoing('https://aihorde.net/api/v2/status/heartbeat', {
             headers: {
                 'Client-Agent': agent,
             },
@@ -185,7 +186,7 @@ router.post('/cancel-task', async (request, response) => {
         const taskId = request.body.taskId;
         activeHordePolls.get(taskId)?.cancel();
         const agent = await getClientAgent();
-        const fetchResult = await fetch(`https://aihorde.net/api/v2/generate/text/status/${taskId}`, {
+        const fetchResult = await fetchOutgoing(`https://aihorde.net/api/v2/generate/text/status/${taskId}`, {
             method: 'DELETE',
             headers: {
                 'Client-Agent': agent,
@@ -271,7 +272,7 @@ async function buildRawActionHordePayload(request, response) {
  * @returns {Promise<any>}
  */
 async function fetchHordeJobStatus(jobId, agent) {
-    const fetchResult = await fetch(`https://aihorde.net/api/v2/generate/text/status/${jobId}`, {
+    const fetchResult = await fetchOutgoing(`https://aihorde.net/api/v2/generate/text/status/${jobId}`, {
         headers: { 'Client-Agent': agent },
     });
     if (!fetchResult.ok) {
@@ -402,7 +403,7 @@ router.post('/generate-text', withGenerationStop(async (request, response) => {
 
     let submitData;
     try {
-        const result = await fetch(url, {
+        const result = await fetchOutgoing(url, {
             method: 'POST',
             body: JSON.stringify(request.body),
             headers: {

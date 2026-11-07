@@ -34,6 +34,7 @@ import { answerSessionOnHeaders, chatContext } from '../../chat-request.js';
 import { logBackendFailure } from '../../backend-unreachable.js';
 import { withGenerationStop, generationIdFor, isGenerationStopped, onGenerationStop, onGenerationStopFlush, stoppableController, handleGenerationStop } from '../../generation-stop.js';
 import { macroVariableChanges, storeMacroVariables } from '../../macro-facts.js';
+import { fetchOutgoing } from '../../outgoing-fetch.js';
 
 export const router = express.Router();
 
@@ -301,7 +302,7 @@ async function abortKoboldCppRequest(request, url) {
         };
 
         setAdditionalHeaders(request, args, url);
-        const abortResponse = await fetch(`${url}/api/extra/abort`, args);
+        const abortResponse = await fetchOutgoing(`${url}/api/extra/abort`, args);
 
         if (!abortResponse.ok) {
             console.error('Error sending abort request to Kobold:', abortResponse.status, abortResponse.statusText);
@@ -370,7 +371,7 @@ router.post('/props', async function (request, response) {
         if (apiType === TEXTGEN_TYPES.LLAMACPP && request.body.model) {
             propsUrl += `?model=${encodeURIComponent(request.body.model)}`;
         }
-        const propsReply = await fetch(propsUrl, args);
+        const propsReply = await fetchOutgoing(propsUrl, args);
 
         if (!propsReply.ok) {
             return response.sendStatus(400);
@@ -727,11 +728,11 @@ router.post('/generate', withGenerationStop(async function (request, response) {
         }
 
         if (request.body.api_type === TEXTGEN_TYPES.OLLAMA && request.body.stream) {
-            const stream = await fetch(url, args);
+            const stream = await fetchOutgoing(url, args);
             storeTokenCountRows();
             await parseOllamaStream(stream, request, response, pendingAssistantPersist, warnings);
         } else if (request.body.stream) {
-            const completionsStream = await fetch(url, args);
+            const completionsStream = await fetchOutgoing(url, args);
             storeTokenCountRows();
             if (request.body.api_type === TEXTGEN_TYPES.LLAMACPP) {
                 await pipeLlamaCppCompactStream(completionsStream, response, pendingAssistantPersist, warnings);
@@ -741,7 +742,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 await forwardAndPersistCompactStream(completionsStream, response, pendingAssistantPersist, json => json?.choices?.[0]?.text, null, warnings);
             }
         } else {
-            const completionsReply = await fetch(url, args);
+            const completionsReply = await fetchOutgoing(url, args);
             storeTokenCountRows();
 
             if (completionsReply.ok) {
@@ -812,7 +813,7 @@ ollama.post('/download', async function (request, response) {
         const url = String(request.body.api_server).replace(/\/$/, '');
         console.debug('Pulling Ollama model:', name);
 
-        const fetchResponse = await fetch(`${url}/api/pull`, {
+        const fetchResponse = await fetchOutgoing(`${url}/api/pull`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -843,7 +844,7 @@ ollama.post('/caption-image', async function (request, response) {
         console.debug('Ollama caption request:', request.body);
         const baseUrl = trimV1(request.body.server_url);
 
-        const fetchResponse = await fetch(`${baseUrl}/api/generate`, {
+        const fetchResponse = await fetchOutgoing(`${baseUrl}/api/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -889,7 +890,7 @@ llamacpp.post('/props', async function (request, response) {
         console.debug('LlamaCpp props request:', request.body);
         const baseUrl = trimV1(request.body.server_url);
 
-        const fetchResponse = await fetch(`${baseUrl}/props`, {
+        const fetchResponse = await fetchOutgoing(`${baseUrl}/props`, {
             method: 'GET',
         });
 
@@ -922,7 +923,7 @@ llamacpp.post('/slots', async function (request, response) {
 
         let fetchResponse;
         if (request.body.action === 'info') {
-            fetchResponse = await fetch(`${baseUrl}/slots`, {
+            fetchResponse = await fetchOutgoing(`${baseUrl}/slots`, {
                 method: 'GET',
             });
         } else {
@@ -933,7 +934,7 @@ llamacpp.post('/slots', async function (request, response) {
                 return response.sendStatus(400);
             }
 
-            fetchResponse = await fetch(`${baseUrl}/slots/${request.body.id_slot}?action=${request.body.action}`, {
+            fetchResponse = await fetchOutgoing(`${baseUrl}/slots/${request.body.id_slot}?action=${request.body.action}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -972,7 +973,7 @@ tabby.post('/download', async function (request, response) {
         setAdditionalHeaders(request, args, baseUrl);
 
         // Check key permissions
-        const permissionResponse = await fetch(`${baseUrl}/v1/auth/permission`, {
+        const permissionResponse = await fetchOutgoing(`${baseUrl}/v1/auth/permission`, {
             headers: args.headers,
         });
 
@@ -988,7 +989,7 @@ tabby.post('/download', async function (request, response) {
             return response.status(500).send({ error: true });
         }
 
-        const fetchResponse = await fetch(`${baseUrl}/v1/download`, args);
+        const fetchResponse = await fetchOutgoing(`${baseUrl}/v1/download`, args);
 
         if (!fetchResponse.ok) {
             console.error('Download error:', fetchResponse.status, fetchResponse.statusText);

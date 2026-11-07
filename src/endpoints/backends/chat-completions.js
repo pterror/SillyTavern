@@ -88,6 +88,7 @@ import { fetchGoogleModels, GoogleModelsHttpError } from './google-models.js';
 import { encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeStoredReplyFrame, encodeToolCallDeltaFrame, encodeControlFrame, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, writeStoredMessagesFrame } from './llamacpp-compact-stream.js';
 import { withGenerationStop, generationIdFor, isGenerationStopped, onGenerationStopFlush, stoppableController, handleGenerationStop } from '../../generation-stop.js';
 import { macroVariableChanges, storeMacroVariables } from '../../macro-facts.js';
+import { fetchOutgoing } from '../../outgoing-fetch.js';
 
 const API_OPENAI = 'https://api.openai.com/v1';
 const API_CLAUDE = 'https://api.anthropic.com/v1';
@@ -419,7 +420,7 @@ async function sendClaudeRequest(request, response, persist, warnings = null, on
         }
 
 
-        const generateResponse = await fetch(apiUrl + '/messages', {
+        const generateResponse = await fetchOutgoing(apiUrl + '/messages', {
             method: 'POST',
             signal: controller.signal,
             body: JSON.stringify(requestBody),
@@ -762,7 +763,7 @@ async function sendMakerSuiteRequest(request, response, persist, warnings = null
             url = `${apiUrl.toString().replace(/\/$/, '')}/${apiVersion}/models/${model}:${responseType}?key=${apiKey}${stream ? '&alt=sse' : ''}`;
         }
 
-        const generateResponse = await fetch(url, {
+        const generateResponse = await fetchOutgoing(url, {
             body: JSON.stringify(body),
             method: 'POST',
             headers: headers,
@@ -901,7 +902,7 @@ async function sendAI21Request(request, response, persist, warnings = null, onDi
 
 
     try {
-        const generateResponse = await fetch(API_AI21 + '/chat/completions', options);
+        const generateResponse = await fetchOutgoing(API_AI21 + '/chat/completions', options);
         onDispatched?.();
         if (request.body.stream) {
             await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content, null, warnings);
@@ -1009,7 +1010,7 @@ async function sendMistralAIRequest(request, response, persist, warnings = null,
         };
 
 
-        const generateResponse = await fetch(apiUrl + '/chat/completions', config);
+        const generateResponse = await fetchOutgoing(apiUrl + '/chat/completions', config);
         onDispatched?.();
         if (request.body.stream) {
             await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content,
@@ -1135,14 +1136,14 @@ async function sendCohereRequest(request, response, persist, warnings = null, on
         const apiUrl = API_COHERE_V2 + '/chat';
 
         if (request.body.stream) {
-            const stream = await fetch(apiUrl, config);
+            const stream = await fetchOutgoing(apiUrl, config);
             onDispatched?.();
             await forwardAndPersistCompactStream(stream, response, persist, json =>
                 (typeof json?.delta === 'object' && typeof json?.delta?.message === 'object' && ['content-delta', 'tool-plan-delta'].includes(json?.type))
                     ? (json.delta.message.content?.text ?? '')
                     : undefined, null, warnings);
         } else {
-            const generateResponse = await fetch(apiUrl, config);
+            const generateResponse = await fetchOutgoing(apiUrl, config);
             onDispatched?.();
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1277,7 +1278,7 @@ async function sendDeepSeekRequest(request, response, persist, warnings = null, 
         };
 
 
-        const generateResponse = await fetch(apiUrl + '/chat/completions', config);
+        const generateResponse = await fetchOutgoing(apiUrl + '/chat/completions', config);
         onDispatched?.();
 
         if (request.body.stream) {
@@ -1405,7 +1406,7 @@ async function sendXaiRequest(request, response, persist, warnings = null, onDis
         };
 
 
-        const generateResponse = await fetch(apiUrl + '/chat/completions', config);
+        const generateResponse = await fetchOutgoing(apiUrl + '/chat/completions', config);
         onDispatched?.();
 
         if (request.body.stream) {
@@ -1531,7 +1532,7 @@ async function sendAimlapiRequest(request, response, persist, warnings = null, o
         };
 
 
-        const generateResponse = await fetch(apiUrl + '/chat/completions', config);
+        const generateResponse = await fetchOutgoing(apiUrl + '/chat/completions', config);
         onDispatched?.();
 
         if (request.body.stream) {
@@ -1664,7 +1665,7 @@ async function sendElectronHubRequest(request, response, persist, warnings = nul
         };
 
 
-        const generateResponse = await fetch(apiUrl + '/chat/completions', config);
+        const generateResponse = await fetchOutgoing(apiUrl + '/chat/completions', config);
         onDispatched?.();
 
         if (request.body.stream) {
@@ -1788,7 +1789,7 @@ async function sendChutesRequest(request, response, persist, warnings = null, on
         };
 
 
-        const generateResponse = await fetch(apiUrl + '/chat/completions', config);
+        const generateResponse = await fetchOutgoing(apiUrl + '/chat/completions', config);
         onDispatched?.();
 
         if (request.body.stream) {
@@ -1893,7 +1894,7 @@ async function sendMinimaxRequest(request, response, persist, warnings = null, o
         };
 
 
-        const generateResponse = await fetch(apiUrl + '/chat/completions', config);
+        const generateResponse = await fetchOutgoing(apiUrl + '/chat/completions', config);
         onDispatched?.();
 
         if (request.body.stream) {
@@ -2009,7 +2010,7 @@ async function sendAzureOpenAIRequest(request, response, persist, warnings = nul
     };
 
     try {
-        const fetchResponse = await fetch(endpointUrl, config);
+        const fetchResponse = await fetchOutgoing(endpointUrl, config);
         onDispatched?.();
 
         if (request.body.stream) {
@@ -2122,7 +2123,7 @@ router.post('/status', async function (request, statusResponse) {
             const modelsUrl = 'https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless%3Dtrue&pageSize=200';
 
             try {
-                const response = await fetch(modelsUrl, {
+                const response = await fetchOutgoing(modelsUrl, {
                     method: 'GET',
                     headers: {
                         'Authorization': 'Bearer ' + apiKey,
@@ -2225,7 +2226,7 @@ router.post('/status', async function (request, statusResponse) {
 
             try {
                 // ---- A) GET /models: fast sanity check for endpoint + api key + api version ----
-                const apiConfigTest = await fetch(modelsUrl, {
+                const apiConfigTest = await fetchOutgoing(modelsUrl, {
                     method: 'GET',
                     headers: { 'api-key': apiKey, 'Accept': 'application/json' },
                 });
@@ -2249,7 +2250,7 @@ router.post('/status', async function (request, statusResponse) {
                     max_completion_tokens: 5,
                 };
 
-                const modelRequest = await fetch(chatUrl, {
+                const modelRequest = await fetchOutgoing(chatUrl, {
                     method: 'POST',
                     headers: { 'api-key': apiKey, 'Content-Type': 'application/json', 'Accept': 'application/json' },
                     body: JSON.stringify(modelPayload),
@@ -2303,7 +2304,7 @@ router.post('/status', async function (request, statusResponse) {
                 modelsUrl.searchParams.set('task', 'Text Generation');
                 modelsUrl.searchParams.set('per_page', '1000');
 
-                const response = await fetch(modelsUrl, {
+                const response = await fetchOutgoing(modelsUrl, {
                     method: 'GET',
                     headers: {
                         'Authorization': 'Bearer ' + apiKey,
@@ -2341,7 +2342,7 @@ router.post('/status', async function (request, statusResponse) {
         Object.keys(queryParams).forEach(key => {
             modelsUrl.searchParams.append(key, queryParams[key]);
         });
-        const response = await fetch(modelsUrl, {
+        const response = await fetchOutgoing(modelsUrl, {
             method: 'GET',
             headers: {
                 'Authorization': 'Bearer ' + apiKey,
@@ -3681,7 +3682,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
         };
 
 
-        const fetchResponse = await fetch(endpointUrl, config);
+        const fetchResponse = await fetchOutgoing(endpointUrl, config);
         storeTokenCountRows();
 
         if (request.body.stream) {
@@ -3745,10 +3746,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
         }
     } catch (error) {
         console.error('Generation failed', error);
-        const cause = error?.cause instanceof Error ? /** @type {Error & { code?: string }} */ (error.cause) : null;
-        const message = cause?.code === 'ECONNREFUSED'
-            ? `Connection refused: ${cause.message}`
-            : cause?.message || error.message || 'Unknown error occurred';
+        const message = error.message || 'Unknown error occurred';
 
         if (!response.headersSent) {
             response.status(502).send({ error: { message, ...error } });
@@ -3762,7 +3760,7 @@ const multimodalModels = express.Router();
 
 multimodalModels.post('/pollinations', async (_req, res) => {
     try {
-        const response = await fetch('https://gen.pollinations.ai/models');
+        const response = await fetchOutgoing('https://gen.pollinations.ai/models');
 
         if (!response.ok) {
             return res.json([]);
@@ -3788,7 +3786,7 @@ multimodalModels.post('/pollinations', async (_req, res) => {
 
 multimodalModels.post('/aimlapi', async (_req, res) => {
     try {
-        const response = await fetch('https://api.aimlapi.com/v1/models');
+        const response = await fetchOutgoing('https://api.aimlapi.com/v1/models');
 
         if (!response.ok) {
             return res.json([]);
@@ -3811,7 +3809,7 @@ multimodalModels.post('/aimlapi', async (_req, res) => {
 
 multimodalModels.post('/nanogpt', async (_req, res) => {
     try {
-        const response = await fetch('https://nano-gpt.com/api/v1/models?detailed=true');
+        const response = await fetchOutgoing('https://nano-gpt.com/api/v1/models?detailed=true');
 
         if (!response.ok) {
             return res.json([]);
@@ -3834,7 +3832,7 @@ multimodalModels.post('/nanogpt', async (_req, res) => {
 
 multimodalModels.post('/electronhub', async (_req, res) => {
     try {
-        const response = await fetch('https://api.electronhub.ai/v1/models');
+        const response = await fetchOutgoing('https://api.electronhub.ai/v1/models');
 
         if (!response.ok) {
             return res.json([]);
@@ -3858,7 +3856,7 @@ multimodalModels.post('/chutes', async (req, res) => {
             return res.json([]);
         }
 
-        const response = await fetch('https://llm.chutes.ai/v1/models', {
+        const response = await fetchOutgoing('https://llm.chutes.ai/v1/models', {
             headers: {
                 'Authorization': `Bearer ${key}`,
             },
@@ -3889,7 +3887,7 @@ multimodalModels.post('/mistral', async (req, res) => {
             return res.json([]);
         }
 
-        const response = await fetch('https://api.mistral.ai/v1/models', {
+        const response = await fetchOutgoing('https://api.mistral.ai/v1/models', {
             headers: {
                 'Authorization': `Bearer ${key}`,
             },
@@ -3918,7 +3916,7 @@ multimodalModels.post('/xai', async (req, res) => {
         }
 
         // xAI's /models endpoint doesn't return modality info, so we must use /language-models instead
-        const response = await fetch('https://api.x.ai/v1/language-models', {
+        const response = await fetchOutgoing('https://api.x.ai/v1/language-models', {
             headers: {
                 'Authorization': `Bearer ${key}`,
             },
@@ -3950,7 +3948,7 @@ multimodalModels.post('/moonshot', async (req, res) => {
             return res.json([]);
         }
 
-        const response = await fetch('https://api.moonshot.ai/v1/models', {
+        const response = await fetchOutgoing('https://api.moonshot.ai/v1/models', {
             headers: {
                 'Authorization': `Bearer ${key}`,
             },
@@ -3981,7 +3979,7 @@ multimodalModels.post('/workers_ai', async (req, res) => {
         }
 
         const apiUrl = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/models/search?task=Text+Generation&per_page=1000`;
-        const response = await fetch(apiUrl, {
+        const response = await fetchOutgoing(apiUrl, {
             method: 'GET',
             headers: { 'Authorization': 'Bearer ' + key },
         });

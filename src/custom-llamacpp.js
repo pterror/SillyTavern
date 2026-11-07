@@ -4,6 +4,7 @@ import { readUserSettings } from './settings-reads.js';
 import { readSecret, SECRET_KEYS } from './endpoints/secrets.js';
 import { fetchTextgenStatus, knownModelName } from './backend-status.js';
 import { logBackendFailure } from './backend-unreachable.js';
+import { fetchOutgoing } from './outgoing-fetch.js';
 
 export const MAX_REMEMBERED_LLAMACPP_URLS = 100;
 
@@ -32,7 +33,7 @@ export function isLlamaCppProps(data) {
  */
 export async function probeLlamaCpp(url, headers) {
     try {
-        const reply = await fetch(`${trimV1(url)}/props`, { method: 'GET', headers });
+        const reply = await fetchOutgoing(`${trimV1(url)}/props`, { method: 'GET', headers });
         if (!reply.ok) {
             return false;
         }

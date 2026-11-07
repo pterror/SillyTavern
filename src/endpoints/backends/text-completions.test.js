@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mock } from 'node:test';
 
 import express from 'express';
 
@@ -13,10 +12,9 @@ import { setConfigFilePath } from '../../util.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 
-const canMockOpenRouter = typeof mock.module === 'function';
 /** @type {string|null} */
 let openRouterFakeBackendUrl = null;
-if (canMockOpenRouter) {
+{
     const realFetch = globalThis.fetch;
     globalThis.fetch = /** @type {typeof fetch} */ (async (url, opts) => {
         const target = new URL(url);
@@ -25,8 +23,6 @@ if (canMockOpenRouter) {
         }
         return realFetch(url, opts);
     });
-} else {
-    console.log('text-completions.test.js: node:test mock.module() is unavailable (run with --experimental-test-module-mocks) - skipping the OpenRouter /generate cases, which need it to redirect OpenRouter\'s fixed host to a local backend');
 }
 
 const { router, buildRawActionTextCompletionRequest } = await import('./text-completions.js');
@@ -536,7 +532,7 @@ async function run() {
         }
     });
 
-    if (canMockOpenRouter) {
+    {
         await nonStreamReplyCase('text-completion OpenRouter, non-streaming: `choices[0].message.content` reply stored, assistant_node_id in the answer', async () => {
             const backend = await startFakeBackend((req, res) => {
                 const json = (value) => {

@@ -18,6 +18,7 @@ import { answerSessionOnHeaders, chatContext } from '../chat-request.js';
 import { withGenerationStop } from '../generation-stop.js';
 import { forwardAndPersistCompactStream } from './backends/text-completions.js';
 import { macroVariableChanges, storeMacroVariables } from '../macro-facts.js';
+import { fetchOutgoing } from '../outgoing-fetch.js';
 
 const API_NOVELAI = 'https://api.novelai.net';
 const TEXT_NOVELAI = 'https://text.novelai.net';
@@ -136,7 +137,7 @@ router.post('/status', async function (req, res) {
     }
 
     try {
-        const response = await fetch(IMAGE_NOVELAI + '/user/subscription', {
+        const response = await fetchOutgoing(IMAGE_NOVELAI + '/user/subscription', {
             method: 'GET',
             headers: {
                 'Content-Type': 'application/json',
@@ -425,7 +426,7 @@ router.post('/generate', withGenerationStop(async function (req, res) {
     try {
         const baseURL = (req.body.model.includes('kayra') || req.body.model.includes('erato')) ? TEXT_NOVELAI : API_NOVELAI;
         const url = req.body.streaming ? `${baseURL}/ai/generate-stream` : `${baseURL}/ai/generate`;
-        const response = await fetch(url, { method: 'POST', ...args });
+        const response = await fetchOutgoing(url, { method: 'POST', ...args });
         if (tokenCountRows) {
             const rows = tokenCountRows;
             Promise.resolve(pendingAssistantPersist?.itemization).catch(() => {})

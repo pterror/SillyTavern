@@ -11,12 +11,12 @@ import { setConfigFilePath } from '../util.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
-const canMockDownloads = typeof mock.module === 'function';
+const canMockModelMap = typeof mock.module === 'function';
 /** @type {string[]} */
 const downloadRequests = [];
 /** @type {Map<string, Buffer>} */
 const downloadBodies = new Map();
-if (canMockDownloads) {
+{
     const realFetch = globalThis.fetch;
     globalThis.fetch = /** @type {typeof fetch} */ (async (url, opts) => {
         if (String(url).startsWith('https://github.com/SillyTavern/SillyTavern-Tokenizers/')) {
@@ -29,14 +29,12 @@ if (canMockDownloads) {
         }
         return realFetch(url, opts);
     });
-} else {
-    console.log('tokenizers.test.js: node:test mock.module() is unavailable (run with --experimental-test-module-mocks) - skipping the download-failure case, which needs it to stub the tokenizer download');
 }
 
 const testModels = {
     'test-several-files': { byBackend: { vendorApis: { mistralai: { source: 'nemo-tekken' } } } },
 };
-if (canMockDownloads) {
+if (canMockModelMap) {
     const modelMapUrl = pathToFileURL(path.join(__dirname, '..', 'tokenizer-model-map.js')).href;
     const realModelMap = await import(modelMapUrl);
     mock.module(modelMapUrl, {
@@ -273,7 +271,7 @@ for (const name of ['claude', 'mistral', 'llama', 'deepseek', 'jamba']) {
     });
 }
 
-if (canMockDownloads) {
+if (canMockModelMap) {
     await testCase('/openai/*: with the X-ST-Connection-State header, a several-files model on Mistral\'s API gets the tekken file; without it, the estimate as before', async () => {
         const { TOKENIZER_SOURCES, getCacheFileName } = await import('../tokenizer-sources.js');
         const tekken = TOKENIZER_SOURCES.find(entry => entry.id === 'nemo-tekken');
@@ -313,7 +311,7 @@ if (canMockDownloads) {
     });
 }
 
-if (canMockDownloads) {
+{
     await testCase('qwen2 download failure: no llama3.json load, a throw, and no new request for 60 s', async () => {
         const readPaths = [];
         const realReadFile = fs.promises.readFile;

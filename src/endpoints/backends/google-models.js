@@ -1,3 +1,5 @@
+import { fetchOutgoing } from '../../outgoing-fetch.js';
+
 const GOOGLE_MODELS_PAGE_SIZE = 1000;
 
 export class GoogleModelsHttpError extends Error {
@@ -31,7 +33,7 @@ export class GoogleModelsResponseError extends Error {
  * @param {typeof fetch} [fetchImpl] Fetch implementation
  * @returns {Promise<object[]>} Models that support content generation
  */
-export async function fetchGoogleModels(modelsUrl, fetchImpl = fetch) {
+export async function fetchGoogleModels(modelsUrl, fetchImpl = fetchOutgoing) {
     const requestUrl = new URL(modelsUrl);
     requestUrl.searchParams.set('pageSize', String(GOOGLE_MODELS_PAGE_SIZE));
     requestUrl.searchParams.delete('pageToken');

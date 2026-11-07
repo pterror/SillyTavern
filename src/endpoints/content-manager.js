@@ -19,6 +19,7 @@ import { TYPE } from '../library-codes.js';
 import { avatarImage, writeWithAvatar } from '../character-avatars.js';
 import { writeBackground, writePersonaImage } from '../image-entities.js';
 import { readUserSettings } from '../settings-reads.js';
+import { fetchOutgoing } from '../outgoing-fetch.js';
 
 const contentDirectory = path.join(serverDirectory, 'default/content');
 const scaffoldDirectory = path.join(serverDirectory, 'default/scaffold');
@@ -472,7 +473,7 @@ export function isLinkedLorebookFetchAllowed(directories) {
 
 export async function downloadChubLorebook(id) {
     const [lorebooks, creatorName, projectName] = id.split('/');
-    const result = await fetch(`https://api.chub.ai/api/${lorebooks}/${creatorName}/${projectName}`, {
+    const result = await fetchOutgoing(`https://api.chub.ai/api/${lorebooks}/${creatorName}/${projectName}`, {
         method: 'GET',
         headers: { 'Accept': 'application/json', 'User-Agent': USER_AGENT },
     });
@@ -492,7 +493,7 @@ export async function downloadChubLorebook(id) {
     }
 
     const downloadUrl = `https://api.chub.ai/api/v4/projects/${projectId}/repository/files/raw%252Fsillytavern_raw.json/raw`;
-    const downloadResult = await fetch(downloadUrl, {
+    const downloadResult = await fetchOutgoing(downloadUrl, {
         method: 'GET',
         headers: { 'Accept': 'application/json', 'User-Agent': USER_AGENT },
     });
@@ -513,7 +514,7 @@ export async function downloadChubLorebook(id) {
 
 async function downloadChubCharacter(id) {
     const [creatorName, projectName] = id.split('/');
-    const result = await fetch(`https://api.chub.ai/api/characters/${creatorName}/${projectName}?full=true`, {
+    const result = await fetchOutgoing(`https://api.chub.ai/api/characters/${creatorName}/${projectName}?full=true`, {
         method: 'GET',
         headers: { 'Accept': 'application/json', 'User-Agent': USER_AGENT },
     });
@@ -565,7 +566,7 @@ async function downloadChubCharacter(id) {
     const imageUrl = metadata.node?.max_res_url;
 
     if (imageUrl) {
-        const downloadResult = await fetch(imageUrl);
+        const downloadResult = await fetchOutgoing(imageUrl);
         if (downloadResult.ok) {
             imageBuffer = Buffer.from(await downloadResult.arrayBuffer());
         }
@@ -584,7 +585,7 @@ async function downloadChubCharacter(id) {
  * @returns {Promise<{buffer: Buffer, fileName: string, fileType: string}>}
  */
 async function downloadPygmalionCharacter(id) {
-    const result = await fetch(`https://server.pygmalion.chat/api/export/character/${id}/v2`);
+    const result = await fetchOutgoing(`https://server.pygmalion.chat/api/export/character/${id}/v2`);
 
     if (!result.ok) {
         const text = await result.text();
@@ -609,7 +610,7 @@ async function downloadPygmalionCharacter(id) {
             throw new Error('Failed to download avatar');
         }
 
-        const avatarResult = await fetch(avatarUrl);
+        const avatarResult = await fetchOutgoing(avatarUrl);
         const avatarBuffer = Buffer.from(await avatarResult.arrayBuffer());
 
         const cardBuffer = write(avatarBuffer, JSON.stringify(characterData));
@@ -676,7 +677,7 @@ async function downloadJannyCharacter(uuid) {
     // This endpoint is being guarded behind Bot Fight Mode of Cloudflare
     // So hosted ST on Azure/AWS/GCP/Collab might get blocked by IP
     // Should work normally on self-host PC/Android
-    const result = await fetch('https://api.jannyai.com/api/v1/download', {
+    const result = await fetchOutgoing('https://api.jannyai.com/api/v1/download', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -688,7 +689,7 @@ async function downloadJannyCharacter(uuid) {
         /** @type {any} */
         const downloadResult = await result.json();
         if (downloadResult.status === 'ok') {
-            const imageResult = await fetch(downloadResult.downloadUrl);
+            const imageResult = await fetchOutgoing(downloadResult.downloadUrl);
             const buffer = Buffer.from(await imageResult.arrayBuffer());
             const fileName = `${sanitize(uuid)}.png`;
             const fileType = imageResult.headers.get('content-type');
@@ -708,7 +709,7 @@ async function downloadJannyCharacter(uuid) {
 async function downloadAICCCharacter(id) {
     const apiURL = `https://aicharactercards.com/wp-json/pngapi/v1/image/${id}`;
     try {
-        const response = await fetch(apiURL);
+        const response = await fetchOutgoing(apiURL);
         if (!response.ok) {
             throw new Error(`Failed to download character: ${response.statusText}`);
         }
@@ -762,7 +763,7 @@ function parseAICC(url) {
  */
 async function downloadGenericPng(url) {
     try {
-        const result = await fetch(url);
+        const result = await fetchOutgoing(url);
 
         if (result.ok) {
             const buffer = Buffer.from(await result.arrayBuffer());
@@ -819,7 +820,7 @@ export function parseRisuUrl(url) {
  * @returns {Promise<{buffer: Buffer, fileName: string, fileType: string}>}
  */
 async function downloadRisuCharacter(uuid) {
-    const result = await fetch(`https://realm.risuai.net/api/v1/download/png-v3/${uuid}?non_commercial=true`);
+    const result = await fetchOutgoing(`https://realm.risuai.net/api/v1/download/png-v3/${uuid}?non_commercial=true`);
 
     if (!result.ok) {
         const text = await result.text();
@@ -881,7 +882,7 @@ async function downloadPerchanceCharacter(slug) {
     try {
         const charURL = `${perchanceBaseURL}/${slug}`;
         console.log('Downloading Perchance character from URL:', charURL);
-        const result = await fetch(charURL, {
+        const result = await fetchOutgoing(charURL, {
             headers: { 'Content-Type': 'application/json', 'User-Agent': USER_AGENT },
         });
 
@@ -1000,7 +1001,7 @@ async function fetchPerchanceAvatar(avatarUrl, isAvatarBase64) {
 
     // Fetch avatar from URL
     console.log('Fetching Perchance avatar from URL:', avatarUrl);
-    const avatarResponse = await fetch(avatarUrl, { headers: { 'User-Agent': USER_AGENT } });
+    const avatarResponse = await fetchOutgoing(avatarUrl, { headers: { 'User-Agent': USER_AGENT } });
 
     if (avatarResponse.ok) {
         const avatarContentType = avatarResponse.headers.get('content-type');

@@ -1,4 +1,5 @@
 import { clearDownloadFailure, isDownloadBackedOff, recordDownloadFailure } from './tokenizer-sources.js';
+import { fetchOutgoing } from './outgoing-fetch.js';
 
 export const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
 
@@ -8,7 +9,7 @@ export const OPENROUTER_MODELS_MAX_AGE_MS = 60 * 60 * 1000;
  * @returns {Promise<any[]|null>}
  */
 export async function fetchOpenRouterModels() {
-    const response = await fetch(OPENROUTER_MODELS_URL, {
+    const response = await fetchOutgoing(OPENROUTER_MODELS_URL, {
         method: 'GET',
         headers: { 'Accept': 'application/json' },
         signal: AbortSignal.timeout(5000),

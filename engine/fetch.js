@@ -5,6 +5,7 @@ import process from 'node:process';
 import { DIST_DIR, sourceKey } from './source-hash.js';
 import { currentPlatform, nativeFileName, wasmFileName } from './platform.js';
 import { buildEngine } from './build.js';
+import { fetchOutgoing } from '../src/outgoing-fetch.js';
 
 export const RELEASE_BASE = 'https://github.com/pterror/SillyTavern/releases/download';
 
@@ -15,7 +16,7 @@ export class EngineFetchError extends Error {}
  * @returns {Promise<Buffer|null>}
  */
 async function download(url) {
-    const response = await fetch(url);
+    const response = await fetchOutgoing(url);
     if (response.status === 404) return null;
     if (!response.ok) throw new EngineFetchError(`${url}: HTTP ${response.status}`);
     return Buffer.from(await response.arrayBuffer());

@@ -1,5 +1,6 @@
 import express from 'express';
 import { readSecret, SECRET_KEYS } from './secrets.js';
+import { fetchOutgoing } from '../outgoing-fetch.js';
 
 export const router = express.Router();
 const API_NANOGPT = 'https://nano-gpt.com/api';
@@ -48,8 +49,8 @@ router.post('/credits', async (req, res) => {
 
         // Fetch both Pay-As-You-Go balance and subscription usage at the same time.
         const [balanceReq, subReq] = await Promise.allSettled([
-            fetch(`${API_NANOGPT}/check-balance`, { method: 'POST', headers }),
-            fetch(`${API_NANOGPT}/subscription/v1/usage`, { method: 'GET', headers }),
+            fetchOutgoing(`${API_NANOGPT}/check-balance`, { method: 'POST', headers }),
+            fetchOutgoing(`${API_NANOGPT}/subscription/v1/usage`, { method: 'GET', headers }),
         ]);
 
         if (balanceReq.status !== 'fulfilled' || !balanceReq.value.ok) {
@@ -109,7 +110,7 @@ router.post('/models/providers', async (req, res) => {
         }
 
         const encodedModel = encodeURIComponent(model);
-        const response = await fetch(`${API_NANOGPT}/models/${encodedModel}/providers`, {
+        const response = await fetchOutgoing(`${API_NANOGPT}/models/${encodedModel}/providers`, {
             method: 'GET',
             headers: {
                 'Accept': 'application/json',

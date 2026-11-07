@@ -9,6 +9,7 @@ import { llamaCppPropsModelName, textgenLlamaCppBackend } from './llamacpp-props
 import { TOKENIZER_NAMES, describeMapEntry, describeTokenizerId, localResolution, estimateResolution, resolveChatCompletionTokenizer, selectBackendResult, selectModelResult } from './tokenizer-map-resolution.js';
 import { findTokenizerSource } from './tokenizer-sources.js';
 import { loadRegistryTokenizer } from './tokenizer-loader.js';
+import { fetchOutgoing } from './outgoing-fetch.js';
 
 export { tokenizers };
 
@@ -169,7 +170,7 @@ export async function encodeWithTokenizerType(tokenizerType, text, options = {})
         koboldBaseUrl,
         encodeLocal = encodeTextByLocalTokenizerType,
         encodeTextgenRemote = encodeViaTextgenAPI,
-        fetchImpl = fetch,
+        fetchImpl = fetchOutgoing,
     } = options;
 
     if (tokenizerType === tokenizers.NONE) {

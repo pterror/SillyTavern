@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mock } from 'node:test';
 
 import express from 'express';
 
@@ -13,10 +12,9 @@ import { setConfigFilePath } from '../util.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
-const canMockNovelBackend = typeof mock.module === 'function';
 /** @type {string|null} */
 let novelFakeBackendUrl = null;
-if (canMockNovelBackend) {
+{
     const realFetch = globalThis.fetch;
     globalThis.fetch = /** @type {typeof fetch} */ (async (url, opts) => {
         const target = new URL(url);
@@ -25,8 +23,6 @@ if (canMockNovelBackend) {
         }
         return realFetch(url, opts);
     });
-} else {
-    console.log('novelai.test.js: node:test mock.module() is unavailable (run with --experimental-test-module-mocks) - skipping all raw-action /generate route tests, which need it to redirect NovelAI\'s hardcoded API host to a local fake backend');
 }
 
 const { router, buildRawActionNovelRequest } = await import('./novelai.js');
@@ -425,11 +421,6 @@ async function run() {
         }
     }
 
-    if (!canMockNovelBackend) {
-        console.log('novelai.test.js: skipping all route-level /generate tests (a)-(e) - run with `node --experimental-test-module-mocks` to include them (see the canMockNovelBackend comment near the top of this file)');
-        console.log('novelai.test.js: assembly/validation assertions passed (route-level tests skipped)');
-        return;
-    }
 
     {
         const fakeBackend = await startFakeBackend((req, res) => {

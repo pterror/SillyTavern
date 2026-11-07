@@ -2,6 +2,7 @@ import { TEXTGEN_TYPES } from './constants.js';
 import { setAdditionalHeadersByType } from './additional-headers.js';
 import { trimV1 } from './util.js';
 import { logBackendFailure } from './backend-unreachable.js';
+import { fetchOutgoing } from './outgoing-fetch.js';
 
 /** @type {Map<string, boolean>} */
 const remoteTokenization = new Map();
@@ -107,7 +108,7 @@ export async function fetchTextgenStatus(baseUrl, apiType, args) {
             break;
     }
 
-    const modelsReply = await fetch(url, args);
+    const modelsReply = await fetchOutgoing(url, args);
     const isPossiblyLmStudio = modelsReply.headers.get('x-powered-by') === 'Express';
 
     if (!modelsReply.ok) {
@@ -142,7 +143,7 @@ export async function fetchTextgenStatus(baseUrl, apiType, args) {
     if (apiType === TEXTGEN_TYPES.OOBA && !isPossiblyLmStudio) {
         try {
             const modelInfoUrl = baseUrl + '/v1/internal/model/info';
-            const modelInfoReply = await fetch(modelInfoUrl, args);
+            const modelInfoReply = await fetchOutgoing(modelInfoUrl, args);
 
             if (modelInfoReply.ok) {
                 /** @type {any} */
@@ -158,7 +159,7 @@ export async function fetchTextgenStatus(baseUrl, apiType, args) {
     } else if (apiType === TEXTGEN_TYPES.TABBY) {
         try {
             const modelInfoUrl = baseUrl + '/v1/model';
-            const modelInfoReply = await fetch(modelInfoUrl, args);
+            const modelInfoReply = await fetchOutgoing(modelInfoUrl, args);
 
             if (modelInfoReply.ok) {
                 /** @type {any} */
@@ -182,7 +183,7 @@ export async function fetchTextgenStatus(baseUrl, apiType, args) {
  * @param {any} fallback
  */
 function fetchKoboldJson(url, fallback) {
-    return fetch(url).then(response => {
+    return fetchOutgoing(url).then(response => {
         if (!response.ok) throw new Error(`Kobold API error: ${response.status, response.statusText}`);
         return response.json();
     }).catch(() => fallback);

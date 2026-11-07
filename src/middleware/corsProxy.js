@@ -1,4 +1,5 @@
 import { forwardFetchResponse } from '../util.js';
+import { fetchOutgoing } from '../outgoing-fetch.js';
 
 /**
  * Middleware to proxy requests to a different domain
@@ -34,7 +35,7 @@ export default async function corsProxyMiddleware(req, res) {
 
         const bodyMethods = ['POST', 'PUT', 'PATCH'];
 
-        const response = await fetch(url, {
+        const response = await fetchOutgoing(url, {
             method: req.method,
             headers: headers,
             body: bodyMethods.includes(req.method) ? JSON.stringify(req.body) : undefined,

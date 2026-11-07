@@ -5,6 +5,7 @@ import { after, before, test } from 'node:test';
 import { getGlobalDispatcher, setGlobalDispatcher } from 'undici';
 
 import { initOutgoingRequests } from './outgoing-requests.js';
+import { fetchOutgoing } from './outgoing-fetch.js';
 
 const original = getGlobalDispatcher();
 /** @type {http.Server} */
@@ -77,4 +78,19 @@ test('with the filter off, a private address is reached', async () => {
     });
     const response = await fetch(`http://127.0.0.1:${port}/`);
     assert.equal(await response.text(), 'reached');
+});
+
+test('fetchOutgoing() says why a request failed', async () => {
+    filterOn();
+    const blocked = await fetchOutgoing(`http://127.0.0.1:${port}/`).then(() => null, (/** @type {Error} */ e) => e);
+    assert.match(String(blocked?.message), /^Blocked request to private IP address: 127\.0\.0\.1$/);
+
+    filterOn({ privateAddressWhitelist: ['127.0.0.0/8'] });
+    const closed = http.createServer();
+    await new Promise(resolve => closed.listen(0, '127.0.0.1', () => resolve(undefined)));
+    const closedPort = /** @type {import('node:net').AddressInfo} */ (closed.address()).port;
+    await new Promise(resolve => closed.close(() => resolve(undefined)));
+    const refused = await fetchOutgoing(`http://127.0.0.1:${closedPort}/`).then(() => null, (/** @type {Error & { code?: string }} */ e) => e);
+    assert.match(String(refused?.message), /^Connection refused: /);
+    assert.equal(refused?.code, 'ECONNREFUSED');
 });

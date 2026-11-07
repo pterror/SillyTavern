@@ -11,14 +11,13 @@ import { setConfigFilePath } from '../util.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
-const canMock = typeof mock.module === 'function';
 let fakeUrl = null;
 /** @type {{ status: number, body: any }} */
 let modelsAnswer = { status: 200, body: [] };
 /** @type {{ status: number, body: any }} */
 let metadataAnswer = { status: 200, body: {} };
 
-if (canMock) {
+{
     const realFetch = globalThis.fetch;
     globalThis.fetch = /** @type {typeof fetch} */ (async (url, opts) => {
         const target = new URL(url);
@@ -60,7 +59,7 @@ async function textModels() {
     return { status: response.status, body: await response.json() };
 }
 
-test('an error object from Horde is a failed fetch naming what Horde said, not a TypeError', { skip: !canMock }, async () => {
+test('an error object from Horde is a failed fetch naming what Horde said, not a TypeError', async () => {
     modelsAnswer = { status: 429, body: { message: 'Too many requests from this client agent' } };
     metadataAnswer = { status: 200, body: {} };
     const warnings = [];
@@ -80,7 +79,7 @@ test('an error object from Horde is a failed fetch naming what Horde said, not a
     }
 });
 
-test('a 200 answer that is not a list is also a failed fetch, and it is not cached', { skip: !canMock }, async () => {
+test('a 200 answer that is not a list is also a failed fetch, and it is not cached', async () => {
     modelsAnswer = { status: 200, body: { message: 'maintenance' } };
     const warn = mock.method(console, 'warn', () => {});
     try {
@@ -99,7 +98,7 @@ test('a 200 answer that is not a list is also a failed fetch, and it is not cach
     assert.equal(ok.body[0].name, 'koboldcpp/Model-A');
 });
 
-test('a list with metadata that is not an object still answers the models', { skip: !canMock }, async () => {
+test('a list with metadata that is not an object still answers the models', async () => {
     modelsAnswer = { status: 200, body: [{ name: 'Model-B', performance: 2 }] };
     metadataAnswer = { status: 200, body: ['not', 'an', 'object'] };
     const warn = mock.method(console, 'warn', () => {});

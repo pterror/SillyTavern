@@ -21,6 +21,7 @@ import { DOWNLOAD_RETRY_MS, isDownloadBackedOff, recordDownloadFailure, clearDow
 import { loadRegistryTokenizer, loadTokenizerFile, loadTokenizerFunctions } from '../tokenizer-loader.js';
 import { getConfigValue, isValidUrl, trimV1 } from '../util.js';
 import { unreachableCode, warnBackendUnreachable } from '../backend-unreachable.js';
+import { fetchOutgoing } from '../outgoing-fetch.js';
 
 /**
  * @typedef { (req: import('express').Request, res: import('express').Response) => Promise<any> } TokenizationHandler
@@ -135,7 +136,7 @@ export async function getPathToTokenizer(model) {
 
         try {
             console.info('Downloading tokenizer model:', model);
-            const response = await fetch(model);
+            const response = await fetchOutgoing(model);
             if (!response.ok) {
                 throw new Error(`Failed to fetch the model: ${response.status} ${response.statusText}`);
             }
@@ -868,7 +869,7 @@ export async function encodeViaKoboldAPI(baseUrl, text) {
         let url = String(baseUrl).replace(/\/$/, '');
         url += '/extra/tokencount';
 
-        const result = await fetch(url, args);
+        const result = await fetchOutgoing(url, args);
 
         if (!result.ok) {
             console.warn(`API returned error: ${result.status} ${result.statusText}`);
@@ -1545,7 +1546,7 @@ export async function encodeViaTextgenAPI(request, text, baseUrl, model, apiType
                 return { error: true };
         }
 
-        const result = await fetch(url, args);
+        const result = await fetchOutgoing(url, args);
 
         if (!result.ok) {
             console.warn(`API returned error: ${result.status} ${result.statusText}`);

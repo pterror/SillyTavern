@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mock } from 'node:test';
 
 import express from 'express';
 
@@ -13,10 +12,9 @@ import { setConfigFilePath } from '../util.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
-const canMockHordeBackend = typeof mock.module === 'function';
 /** @type {string|null} */
 let hordeFakeBackendUrl = null;
-if (canMockHordeBackend) {
+{
     const realFetch = globalThis.fetch;
     globalThis.fetch = /** @type {typeof fetch} */ (async (url, opts) => {
         const target = new URL(url);
@@ -25,8 +23,6 @@ if (canMockHordeBackend) {
         }
         return realFetch(url, opts);
     });
-} else {
-    console.log('horde.test.js: node:test mock.module() is unavailable (run with --experimental-test-module-mocks) - skipping all /generate-text route tests, which need it to redirect AI Horde\'s hardcoded coordinator host to a local fake backend');
 }
 
 const { router: hordeRouter, _setHordePollingConfigForTests } = await import('./horde.js');
@@ -254,11 +250,6 @@ async function run() {
         }
     }
 
-    if (!canMockHordeBackend) {
-        console.log('horde.test.js: skipping all route-level /generate-text tests - run with `node --experimental-test-module-mocks` to include them (see the canMockHordeBackend comment near the top of this file)');
-        console.log('horde.test.js: tokenizer assertions passed (route-level tests skipped)');
-        return;
-    }
 
     {
         const fakeCoordinator = await startFakeHordeCoordinator({
