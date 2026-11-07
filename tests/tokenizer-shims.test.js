@@ -28,6 +28,9 @@ function defaultRespond(url, body) {
     if (url === '/api/tokenizers/current/tokenizer') {
         return { tokenizer: answer() };
     }
+    if (url === '/api/tokenizers/count') {
+        return { counts: body.texts.map(text => text.length), tokenizer: answer() };
+    }
     if (url === '/api/tokenizers/current/count') {
         if (body.messages) {
             return { count: 7, tokenizer: answer({ id: tokenizerIds.OPENAI, name: 'gpt-4o', model: 'gpt-4o', key: 'openai|nanogpt||gpt-4o|openai' }) };
@@ -45,6 +48,17 @@ function defaultRespond(url, body) {
     }
     return { ids: [3], count: 1, token_count: 1, text: '' };
 }
+
+global.fetch = jest.fn(async (url, options = {}) => {
+    const body = options.body ? JSON.parse(options.body) : undefined;
+    requests.push({ url: String(url), async: true, body, headers: options.headers });
+    try {
+        const answered = respond(String(url), body);
+        return { ok: true, json: async () => answered };
+    } catch {
+        return { ok: false, json: async () => ({}) };
+    }
+});
 
 global.jQuery = {
     ajax: jest.fn((options) => {
@@ -152,87 +166,7 @@ const textgenState = {
     api: 'textgenerationwebui', type: 'llamacpp', url: 'http://127.0.0.1:8080', model: '', tokenizerSetting: tokenizerIds.BEST_MATCH,
 };
 
-describe('counts ask /current/count with the on-screen state', () => {
-    test('getTokenCountsAsyncBatch posts every text in one request, with state and no tokenizer', async () => {
-        const counts = await tokenizersModule.getTokenCountsAsyncBatch(['ab', '', 'cde'], 1);
-        expect(counts).toEqual([3, 0, 4]);
-        expect(requests.map(r => r.url)).toEqual(['/api/tokenizers/current/count']);
-        expect(requests[0].body).toEqual({ state: textgenState, texts: ['ab', 'cde'], padding: 1 });
-    });
 
-    test('getTokenCountAsync posts to /current/count', async () => {
-        expect(await tokenizersModule.getTokenCountAsync('abcd')).toBe(4);
-        expect(requests).toEqual([{ url: '/api/tokenizers/current/count', async: true, body: { state: textgenState, texts: ['abcd'], padding: 0 } }]);
-    });
-
-    test('getTokenCount returns a number synchronously', () => {
-        expect(tokenizersModule.getTokenCount('abcdef', 2)).toBe(8);
-        expect(requests).toEqual([{ url: '/api/tokenizers/current/count', async: false, body: { state: textgenState, texts: ['abcdef'], padding: 2 } }]);
-    });
-
-    test('a failed count request gives the estimate plus padding, uncached', async () => {
-        respond = () => { throw new Error('offline'); };
-        const text = 'x'.repeat(67);
-        expect(await tokenizersModule.getTokenCountAsync(text, 3)).toBe(Math.ceil(67 / 3.35) + 3);
-        expect(tokenizersModule.getTokenCount(text, 3)).toBe(Math.ceil(67 / 3.35) + 3);
-        respond = defaultRespond;
-        expect(await tokenizersModule.getTokenCountAsync(text, 3)).toBe(70);
-    });
-
-    test('a chat-completion count posts messages with chat-completion state', async () => {
-        await useApi('openai');
-        expect(await tokenizersModule.getTokenCountAsync('hello')).toBe(7);
-        expect(requests[0].url).toBe('/api/tokenizers/current/count');
-        expect(requests[0].body).toEqual({
-            state: { api: 'openai', source: 'nanogpt', model: 'claude-sonnet-4', tokenizerSetting: tokenizerIds.BEST_MATCH },
-            messages: [{ content: 'hello' }],
-        });
-    });
-
-    test('the chat-completion shadow-prompt count stays the local estimate', async () => {
-        await useApi('openai');
-        expect(await tokenizersModule.getTokenCountAsync('abcdefg', 64)).toBe(Math.ceil(7 / 3.35) + 64);
-        expect(requests).toEqual([]);
-    });
-
-    test('a chat-completion HTTP error still rejects getTokenCountAsync', async () => {
-        await useApi('openai');
-        respond = () => { throw new Error('500'); };
-        await expect(tokenizersModule.getTokenCountAsync('hello')).rejects.toThrow('500');
-    });
-});
-
-describe('count cache', () => {
-    test('a repeated count is served from the cache', async () => {
-        await tokenizersModule.getTokenCountAsync('abc');
-        await tokenizersModule.getTokenCountAsync('abc');
-        expect(requests.length).toBe(1);
-    });
-
-    test('a count response naming a new tokenizer empties the cache', async () => {
-        await tokenizersModule.getTokenCountAsync('abc');
-        respond = (url, body) => ({ counts: body.texts.map(() => 1), tokenizer: answer({ id: tokenizerIds.API_TEXTGENERATIONWEBUI, key: 'other' }) });
-        await tokenizersModule.getTokenCountAsync('zz');
-        respond = defaultRespond;
-        await tokenizersModule.getTokenCountAsync('abc');
-        expect(requests.map(r => r.body.texts)).toEqual([['abc'], ['zz'], ['abc']]);
-    });
-
-    test('a count with basis failed is not cached', async () => {
-        respond = (url, body) => ({ counts: body.texts.map(() => 9), tokenizer: answer({ basis: 'failed' }) });
-        await tokenizersModule.getTokenCountAsync('abc');
-        await tokenizersModule.getTokenCountAsync('abc');
-        expect(requests.length).toBe(2);
-    });
-
-    test('CHAT_CHANGED empties the cache', async () => {
-        await tokenizersModule.initTokenizers();
-        await tokenizersModule.getTokenCountAsync('abc');
-        eventHandlers.get('chat_id_changed').forEach(handler => handler());
-        await tokenizersModule.getTokenCountAsync('abc');
-        expect(requests.filter(r => r.url.endsWith('/count')).length).toBe(2);
-    });
-});
 
 describe('tokenizer shims', () => {
     test('getTextTokens with a local id posts to that tokenizer\'s route', () => {
@@ -436,138 +370,30 @@ describe('the token counter encode asks /current/encode', () => {
     });
 });
 
-describe('count batches name their tokenizer', () => {
-    test('a textgen batch makes one /current/count request and names the response\'s tokenizer', async () => {
-        expect(await tokenizersModule.getTokenCountsWithTokenizer(['ab', 'c'])).toEqual({
-            counts: [2, 1],
-            tokenizer: { tokenizerName: 'Gemma / Gemini', tokenizerKey: 'gemma', tokenizerId: tokenizerIds.GEMMA },
-            answer: answer(),
-        });
-        expect(requests.map(r => r.url)).toEqual(['/api/tokenizers/current/count']);
+describe('counting is one action the server answers', () => {
+    test('countWithConnection posts the texts alone, and gives the counts and the tokenizer they are in', async () => {
+        const counted = await tokenizersModule.countWithConnection(['abc', 'hello']);
+        expect(requests).toEqual([expect.objectContaining({ url: '/api/tokenizers/count', body: { texts: ['abc', 'hello'] } })]);
+        expect(counted).toEqual({ counts: [3, 5], tokenizer: answer() });
     });
 
-    test('the name is the response\'s, not the remembered one', async () => {
-        tokenizersModule.getTokenizerBestMatch();
-        respond = (url, body) => ({ counts: body.texts.map(text => text.length), tokenizer: answer({ id: tokenizerIds.LLAMA3, name: 'Llama 3', key: 'k3' }) });
-        const { tokenizer } = await tokenizersModule.getTokenCountsWithTokenizer(['ab']);
-        expect(tokenizer).toEqual({ tokenizerName: 'Llama 3', tokenizerKey: 'llama3', tokenizerId: tokenizerIds.LLAMA3 });
+    test('a failed count gives estimates and no tokenizer', async () => {
+        respond = () => { throw new Error('down'); };
+        const counted = await tokenizersModule.countWithConnection(['abcdefg']);
+        expect(counted.tokenizer).toBeNull();
+        expect(counted.counts).toEqual([expect.any(Number)]);
     });
 
-    test('an all-cached batch makes no request and names the same tokenizer', async () => {
-        const first = await tokenizersModule.getTokenCountsWithTokenizer(['ab']);
-        const second = await tokenizersModule.getTokenCountsWithTokenizer(['ab']);
-        expect(requests.length).toBe(1);
-        expect(second.tokenizer).toEqual(first.tokenizer);
-    });
-
-    test('a failed request gives the estimate and names None', async () => {
-        respond = () => { throw new Error('offline'); };
-        expect(await tokenizersModule.getTokenCountsWithTokenizer(['ab'])).toEqual({
-            counts: [tokenizersModule.guesstimate('ab')],
-            tokenizer: { tokenizerName: 'None / Estimated', tokenizerKey: 'none', tokenizerId: tokenizerIds.NONE },
-            answer: null,
-        });
-    });
-
-    test('a chat-completion batch names the chat-completion tokenizer model', async () => {
-        await useApi('openai');
-        expect(await tokenizersModule.getTokenCountsWithTokenizer(['ab'])).toEqual({
-            counts: [7],
-            tokenizer: { tokenizerName: 'gpt-4o', tokenizerKey: 'openai', tokenizerId: tokenizerIds.OPENAI },
-            answer: answer({ id: tokenizerIds.OPENAI, name: 'gpt-4o', model: 'gpt-4o', key: 'openai|nanogpt||gpt-4o|openai' }),
-        });
-    });
-});
-
-describe('counts give the answer they came from', () => {
-    test('a batch gives the response\'s own answer', async () => {
-        tokenizersModule.getTokenizerBestMatch();
-        const own = answer({ id: tokenizerIds.LLAMA3, name: 'Llama 3', key: 'k3', basis: 'unknown' });
-        respond = (url, body) => ({ counts: body.texts.map(text => text.length), tokenizer: own });
-        expect((await tokenizersModule.getTokenCountsWithTokenizer(['ab'])).answer).toEqual(own);
-    });
-
-    test('a batch whose request failed gives a null answer', async () => {
-        tokenizersModule.getTokenizerBestMatch();
-        respond = () => { throw new Error('offline'); };
-        expect((await tokenizersModule.getTokenCountsWithTokenizer(['ab'])).answer).toBeNull();
-    });
-
-    test('an all-cached batch gives the remembered answer', async () => {
-        await tokenizersModule.getTokenCountsWithTokenizer(['ab']);
-        const second = await tokenizersModule.getTokenCountsWithTokenizer(['ab']);
-        expect(requests.length).toBe(1);
-        expect(second.answer).toEqual(answer());
-    });
-
-    test('a chat-completion batch gives the remembered answer after its counts', async () => {
-        await useApi('openai');
-        expect((await tokenizersModule.getTokenCountsWithTokenizer(['ab'])).answer).toEqual(tokenizersModule.getRememberedTokenizerAnswer());
-        expect(tokenizersModule.getRememberedTokenizerAnswer()?.key).toBe('openai|nanogpt||gpt-4o|openai');
-    });
-
-    test('getTokenCountWithAnswer gives the response\'s own answer and getTokenCountAsync\'s count', async () => {
-        tokenizersModule.getTokenizerBestMatch();
-        const own = answer({ basis: 'unknown', key: 'k-own' });
-        respond = (url, body) => url.endsWith('/count')
-            ? { counts: body.texts.map(text => text.length + body.padding), tokenizer: own }
-            : defaultRespond(url, body);
-        expect(await tokenizersModule.getTokenCountWithAnswer('abcd', 2)).toEqual({ count: 6, answer: own });
-        expect(await tokenizersModule.getTokenCountAsync('abcd', 2)).toBe(6);
-    });
-
-    test('getTokenCountWithAnswer gives a null answer when the request failed, with the same estimate', async () => {
-        tokenizersModule.getTokenizerBestMatch();
-        respond = (url, body) => { if (url.endsWith('/count')) throw new Error('offline'); return defaultRespond(url, body); };
-        const text = 'x'.repeat(67);
-        expect(await tokenizersModule.getTokenCountWithAnswer(text, 3)).toEqual({ count: await tokenizersModule.getTokenCountAsync(text, 3), answer: null });
-    });
-
-    test('getTokenCountWithAnswer on an empty string counts 0 with the remembered answer, asking nothing', async () => {
-        tokenizersModule.getTokenizerBestMatch();
-        requests = [];
-        expect(await tokenizersModule.getTokenCountWithAnswer('')).toEqual({ count: 0, answer: answer() });
+    test('a message count the server answered an action with is shown without asking', async () => {
+        tokenizersModule.takeMessageCount('Two days on foot.', 6, answer());
+        expect(await tokenizersModule.getMessageTokenCounts(['Two days on foot.'])).toEqual([6]);
         expect(requests).toEqual([]);
     });
 
-    test('getTokenCountWithAnswer on chat completion counts like getTokenCountAsync, rough estimate and reject included', async () => {
-        await useApi('openai');
-        expect(await tokenizersModule.getTokenCountWithAnswer('hello')).toEqual({ count: await tokenizersModule.getTokenCountAsync('hello'), answer: tokenizersModule.getRememberedTokenizerAnswer() });
-        expect(tokenizersModule.getRememberedTokenizerAnswer()).not.toBeNull();
-        expect((await tokenizersModule.getTokenCountWithAnswer('abcdefg', 64)).count).toBe(await tokenizersModule.getTokenCountAsync('abcdefg', 64));
-        respond = () => { throw new Error('500'); };
-        await expect(tokenizersModule.getTokenCountWithAnswer('other')).rejects.toThrow('500');
-    });
-});
-
-describe('llama.cpp counts the prompt as a generation sends it', () => {
-    test('getPromptTokenCountAsync posts promptStart: true, cached apart from the same text\'s single-field count', async () => {
-        expect(await tokenizersModule.getPromptTokenCountAsync('abcd', 2)).toBe(6);
-        expect(requests).toEqual([{ url: '/api/tokenizers/current/count', async: true, body: { state: textgenState, texts: ['abcd'], padding: 2, promptStart: true } }]);
-        await tokenizersModule.getPromptTokenCountAsync('abcd', 2);
-        expect(requests.length).toBe(1);
-        await tokenizersModule.getTokenCountAsync('abcd', 2);
-        expect(requests.length).toBe(2);
-        expect(requests[1].body).toEqual({ state: textgenState, texts: ['abcd'], padding: 2 });
-    });
-
-    test('getPromptTokenCountAsync on chat completion is getTokenCountAsync', async () => {
-        await useApi('openai');
-        expect(await tokenizersModule.getPromptTokenCountAsync('abcdefg', 64)).toBe(Math.ceil(7 / 3.35) + 64);
-        expect(requests).toEqual([]);
-    });
-
-    test('a chat-completion custom source\'s state carries its URL, which the server may find is llama.cpp', async () => {
-        const saved = { ...settings.oai };
-        Object.assign(settings.oai, { chat_completion_source: 'custom', custom_url: 'http://127.0.0.1:8081/v1' });
-        try {
-            await useApi('openai');
-            await tokenizersModule.getTokenCountAsync('hello');
-            expect(requests[0].body.state).toEqual({ api: 'openai', source: 'custom', url: 'http://127.0.0.1:8081/v1', model: 'claude-sonnet-4', tokenizerSetting: tokenizerIds.BEST_MATCH });
-            expect(JSON.parse(tokenizersModule.getTokenizerStateHeader()).url).toBe('http://127.0.0.1:8081/v1');
-        } finally {
-            for (const key of Object.keys(settings.oai)) delete settings.oai[key];
-            Object.assign(settings.oai, saved);
-        }
+    test('the messages it doesn\'t know are counted in one request, then known', async () => {
+        expect(await tokenizersModule.getMessageTokenCounts(['ab', '', 'abcd'])).toEqual([2, 0, 4]);
+        expect(requests.map(r => r.body)).toEqual([{ texts: ['ab', 'abcd'] }]);
+        expect(await tokenizersModule.getMessageTokenCounts(['ab', 'abcd'])).toEqual([2, 4]);
+        expect(requests).toHaveLength(1);
     });
 });

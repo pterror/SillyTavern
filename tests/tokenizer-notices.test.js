@@ -370,34 +370,6 @@ describe('renderCountBasis', () => {
 });
 
 describe('notices from counts', () => {
-    test('two estimate count responses toast once; a model change toasts again', async () => {
-        await useApi('textgenerationwebui');
-        respond = respondWith('failed');
-        await tokenizersModule.getTokenCountAsync('abc');
-        await tokenizersModule.getTokenCountAsync('abc');
-        expect(requests.filter(r => r.url === '/api/tokenizers/current/count')).toHaveLength(2);
-        expect(globalThis.toastr.warning).toHaveBeenCalledTimes(1);
-
-        settings.textgen.llamacpp_model = 'm2';
-        await tokenizersModule.getTokenCountAsync('abc');
-        expect(globalThis.toastr.warning).toHaveBeenCalledTimes(2);
-        expect(globalThis.toastr.warning.mock.calls[1][0]).toContain('|m2|');
-    });
-
-    test('the sync count, encode and trim responses show their warnings too', async () => {
-        await useApi('textgenerationwebui');
-        respond = respondWith('fallback');
-        tokenizersModule.getTokenCount('abc');
-        expect(globalThis.toastr.warning).toHaveBeenCalledTimes(1);
-
-        globalThis.sessionStorage = makeStorage();
-        tokenizersModule.encodeCurrentTokens('abc');
-        expect(globalThis.toastr.warning).toHaveBeenCalledTimes(2);
-
-        globalThis.sessionStorage = makeStorage();
-        await tokenizersModule.trimCurrentTokens('abc', 1, 'start');
-        expect(globalThis.toastr.warning).toHaveBeenCalledTimes(3);
-    });
 
     test('decode responses show no warning', async () => {
         await useApi('textgenerationwebui');
@@ -406,69 +378,10 @@ describe('notices from counts', () => {
         expect(globalThis.toastr.warning).not.toHaveBeenCalled();
     });
 
-    test('chat completion\'s sync and async message counts show their warnings', async () => {
-        await useApi('openai');
-        respond = respondWith('failed');
-        await tokenizersModule.countTokensOpenAIAsync({ content: 'abc' });
-        expect(globalThis.toastr.warning).toHaveBeenCalledTimes(1);
-
-        globalThis.sessionStorage = makeStorage();
-        tokenizersModule.countTokensOpenAI({ content: 'abc' });
-        expect(globalThis.toastr.warning).toHaveBeenCalledTimes(2);
-    });
-
-    test('a notice that throws doesn\'t make a count throw or reject', async () => {
-        await useApi('textgenerationwebui');
-        respond = respondWith('failed');
-        globalThis.toastr = { warning: jest.fn(() => { throw new Error('toastr broke'); }) };
-        await expect(tokenizersModule.getTokenCountAsync('abc')).resolves.toBe(3);
-        expect(() => tokenizersModule.getTokenCount('abcd')).not.toThrow();
-        await useApi('openai');
-        await expect(tokenizersModule.countTokensOpenAIAsync({ content: 'abc' })).resolves.toBe(5);
-    });
 });
 
-describe('getRememberedTokenizerAnswer', () => {
-    test('gives the remembered answer for the current state without asking the server', async () => {
-        await useApi('textgenerationwebui');
-        expect(tokenizersModule.getRememberedTokenizerAnswer()).toBeNull();
-        expect(requests).toEqual([]);
-
-        respond = respondWith('unknown');
-        await tokenizersModule.getTokenCountAsync('abc');
-        const before = requests.length;
-        expect(tokenizersModule.getRememberedTokenizerAnswer()).toEqual(answer('unknown'));
-        expect(requests).toHaveLength(before);
-
-        settings.textgen.llamacpp_model = 'm2';
-        expect(tokenizersModule.getRememberedTokenizerAnswer()).toBeNull();
-        expect(requests).toHaveLength(before);
-    });
-});
 
 describe('trim on browser-built sends', () => {
-    test('a send that counted with basis failed shows one trim-estimate warning', async () => {
-        await useApi('textgenerationwebui');
-        respond = respondWith('failed');
-        await tokenizersModule.getTokenCountAsync('abc');
-        await tokenizersModule.getTokenCountAsync('abcd');
-        globalThis.toastr.warning.mockClear();
-
-        tokenizersModule.showTrimEstimateWarning();
-        expect(globalThis.toastr.warning).toHaveBeenCalledTimes(1);
-        expect(globalThis.toastr.warning).toHaveBeenCalledWith(trimEstimate);
-
-        tokenizersModule.showTrimEstimateWarning();
-        expect(globalThis.toastr.warning).toHaveBeenCalledTimes(2);
-    });
-
-    test('a send that counted with basis unknown shows none', async () => {
-        await useApi('textgenerationwebui');
-        respond = respondWith('unknown');
-        await tokenizersModule.getTokenCountAsync('abc');
-        tokenizersModule.showTrimEstimateWarning();
-        expect(globalThis.toastr.warning).not.toHaveBeenCalled();
-    });
 
     test('no remembered answer shows none and asks nothing', async () => {
         await useApi('textgenerationwebui');

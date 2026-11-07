@@ -9,7 +9,7 @@ import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '
 import { SlashCommandClosure } from '../SlashCommandClosure.js';
 import { commonEnumProviders, enumIcons } from '../SlashCommandCommonEnumsProvider.js';
 import { SlashCommandEnumValue, enumTypes } from '../SlashCommandEnumValue.js';
-import { getTokenCountAsync, trimCurrentTokens } from '../../tokenizers.js';
+import { countWithConnection, trimCurrentTokens } from '../../tokenizers.js';
 import { findCharAsync, isFalseBoolean, isTrueBoolean } from '../../utils.js';
 import { resolveVariable } from '../../variables.js';
 
@@ -343,8 +343,8 @@ export function registerGenerationCommands() {
         name: 'tokens',
         callback: async (_, text) => {
             if (text instanceof SlashCommandClosure || Array.isArray(text)) throw new Error(t`Unnamed argument cannot be a closure for command /tokens`);
-            // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
-            return String(await getTokenCountAsync(text));
+            const { counts: [count] } = await countWithConnection([String(text ?? '')]);
+            return String(count ?? 0);
         },
         returns: t`number of tokens`,
         unnamedArgumentList: [

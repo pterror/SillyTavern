@@ -64,7 +64,7 @@ test('the drawn messages\' counts come in one request and are not stored', async
     /** @type {any[]} */
     const countRequests = [];
     page.on('request', (request) => {
-        if (new URL(request.url()).pathname === '/api/tokenizers/current/count') countRequests.push(request.postDataJSON());
+        if (new URL(request.url()).pathname === '/api/tokenizers/count') countRequests.push(request.postDataJSON());
     });
     await page.evaluate(async (avatar) => {
         const { selectCharacterByAvatar } = await import('/script.js');
@@ -81,9 +81,9 @@ test('the drawn messages\' counts come in one request and are not stored', async
         // @ts-ignore
         return stTest.context().chat.map(m => typeof m.extra?.token_count === 'number' && m.extra.token_count > 0);
     })).toEqual([true, true, true]);
-    const counts = countRequests.filter(body => Array.isArray(body.texts) || Array.isArray(body.messages_each));
-    expect(counts).toHaveLength(1);
-    expect((counts[0].texts ?? counts[0].messages_each).length).toBe(3);
+    expect(countRequests).toHaveLength(1);
+    expect(countRequests[0].texts).toHaveLength(3);
+    expect(Object.keys(countRequests[0])).toEqual(['texts']);
     await expect(page.locator('#chat .mes[mesid="1"] .tokenCounterDisplay')).not.toHaveText('999t');
 
     const stored = await page.evaluate(async (avatar) => {

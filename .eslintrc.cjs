@@ -1,4 +1,4 @@
-const pageTokenCounters = 'getTokenCountAsync|getPromptTokenCountAsync|getTokenCount|getTokenCountWithAnswer|countTokensOpenAI|countTokensOpenAIAsync|getTextTokens';
+const pageTokenCounters = 'getTokenCountAsync|getPromptTokenCountAsync|getTokenCount|getTokenCountWithAnswer|getTokenCountsAsyncBatch|getTokenCountsWithTokenizer|countTokensOpenAI|countTokensOpenAIAsync|getTextTokens';
 const noPageDomWatching = [
     {
         selector: "NewExpression[callee.name='MutationObserver']",
@@ -20,11 +20,11 @@ const pageGeneration = [
 const noPageTokenCounting = [
     {
         selector: `CallExpression[callee.name=/^(${pageTokenCounters})$/]`,
-        message: 'The page does not count tokens: the server sends counts with what they belong to (messages, alternatives, prompts); text only the page has goes in one batched request (getTokenCountsAsyncBatch). Calls left from before that are marked with an eslint-disable comment.',
+        message: 'The page does not count tokens: a count comes in the answer of the action that changes its text (a save, a reply, a chat\'s opening); /tokens and the message counters ask countWithConnection.',
     },
     {
         selector: `CallExpression[callee.property.name=/^(${pageTokenCounters})$/]`,
-        message: 'The page does not count tokens: the server sends counts with what they belong to (messages, alternatives, prompts); text only the page has goes in one batched request (getTokenCountsAsyncBatch). Calls left from before that are marked with an eslint-disable comment.',
+        message: 'The page does not count tokens: a count comes in the answer of the action that changes its text (a save, a reply, a chat\'s opening); /tokens and the message counters ask countWithConnection.',
     },
 ];
 
@@ -137,12 +137,6 @@ module.exports = {
                     ...noPageDomWatching,
                     ...pageGeneration,
                 ],
-            },
-        },
-        {
-            files: ['public/scripts/tokenizers.js'],
-            rules: {
-                'no-restricted-syntax': 'off',
             },
         },
         {

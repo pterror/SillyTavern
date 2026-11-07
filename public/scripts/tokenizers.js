@@ -9,6 +9,7 @@ import { kai_settings } from './kai-settings.js';
 import { SERVER_INPUTS, textgen_types, textgenerationwebui_settings as textgen_settings, getTextGenServer, getTextGenModel } from './textgen-settings.js';
 import { horde_settings } from './horde.js';
 import { showTokenizerWarnings } from './tokenizer-notices.js';
+import { getRequestHeaders } from './request-headers.js';
 
 const BYTES_PER_TOKEN = 3.35;
 export const TOKENIZER_SUPPORTED_KEY = 'tokenizationSupported';
@@ -239,7 +240,7 @@ const tokenizerChangeListeners = new Set();
  * @param {string} str String to tokenize.
  * @returns {number} Token count.
  */
-export function guesstimate(str) {
+function guesstimate(str) {
     const byteLength = textEncoder.encode(str).length;
     return Math.ceil(byteLength / BYTES_PER_TOKEN);
 }
@@ -479,7 +480,7 @@ const refreshCurrentTokenizerDebounced = debounce(refreshCurrentTokenizer);
  * @param {string} [api]
  * @returns {string}
  */
-export function getTokenizerStateHeader(api = main_api) {
+function getTokenizerStateHeader(api = main_api) {
     return JSON.stringify(getTokenizerState(api)).replace(/[\u007f-\uffff]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
@@ -555,102 +556,60 @@ export function getTokenizerBestMatch(forApi) {
 }
 
 /**
- * @param {string[]} strings
- * @param {number} padding
- * @param {boolean} async
- * @param {boolean} [promptStart]
- * @param {boolean} [recount]
- * @returns {{ counts: number[], tokenizer: CurrentTokenizer|null }|Promise<{ counts: number[], tokenizer: CurrentTokenizer|null }>}
+ * Texts counted by the server as the chosen connection counts them: the one action whose answer is a count.
+ * @param {string[]} texts
+ * @param {{ recount?: boolean }} [options]
+ * @returns {Promise<{ counts: number[], tokenizer: CurrentTokenizer|null }>}
  */
-function countTexts(strings, padding, async, promptStart = false, recount = false) {
-    const cacheSuffix = promptStart ? '^' : '';
-    const results = new Array(strings.length).fill(0);
-    const tokenizer = getRememberedTokenizer();
-    /** @type {number[]} */
-    const pending = [];
-
-    for (let i = 0; i < strings.length; i++) {
-        const str = strings[i];
-        if (typeof str !== 'string' || !str.length) {
-            continue;
-        }
-        const cached = tokenizer && !recount ? countCache.get(`${tokenizer.key}-${getStringHash(str)}+${padding}${cacheSuffix}`) : undefined;
-        if (typeof cached === 'number') {
-            results[i] = cached;
-        } else {
-            pending.push(i);
-        }
-    }
-
-    if (pending.length === 0) {
-        const done = { counts: results, tokenizer };
-        return async ? Promise.resolve(done) : done;
-    }
-
-    const state = getTokenizerState();
-    const stateKey = JSON.stringify(state);
-    const apply = (data) => {
-        const counts = Array.isArray(data?.counts) ? data.counts : null;
-        const answered = counts && data.tokenizer ? data.tokenizer : null;
-        const store = !!answered && rememberTokenizer(stateKey, answered) && answered.basis !== 'failed';
-        pending.forEach((i, j) => {
-            const count = counts ? Number(counts[j]) : NaN;
-            if (isNaN(count)) {
-                results[i] = guesstimate(strings[i]) + padding;
-                return;
-            }
-            results[i] = count;
-            if (store) {
-                countCache.set(`${answered.key}-${getStringHash(strings[i])}+${padding}${cacheSuffix}`, count);
-            }
+export async function countWithConnection(texts, { recount = false } = {}) {
+    try {
+        const response = await fetch('/api/tokenizers/count', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ texts, ...(recount ? { recount } : {}) }),
         });
-        return { counts: results, tokenizer: answered };
-    };
-    const body = { state, texts: pending.map(i => strings[i]), padding, ...(promptStart ? { promptStart } : {}), ...(recount ? { recount } : {}) };
-    return async ? postCurrent('count', body, true).then(apply) : apply(postCurrent('count', body, false));
-}
-
-/**
- * @param {string[]} strings
- * @param {number} [padding=0]
- * @returns {Promise<number[]>}
- */
-export async function getTokenCountsAsyncBatch(strings, padding = 0) {
-    if (isOpenAiApi()) {
-        return Promise.all(strings.map(str => getTokenCountAsync(str, padding)));
+        const answer = response.ok ? await response.json() : null;
+        showResponseWarnings(answer);
+        const counts = Array.isArray(answer?.counts) ? answer.counts.map(Number) : texts.map(text => guesstimate(text));
+        const tokenizer = answer?.tokenizer ?? null;
+        if (tokenizer) rememberTokenizer(JSON.stringify(getTokenizerState()), tokenizer);
+        return { counts, tokenizer };
+    } catch (error) {
+        console.error('Could not count the texts:', error);
+        return { counts: texts.map(text => guesstimate(text)), tokenizer: null };
     }
-    const { counts } = await countTexts(strings, padding, true);
-    return counts;
 }
 
 /**
+ * @param {CurrentTokenizer} tokenizer
+ * @param {string} text
+ */
+function messageCountKey(tokenizer, text) {
+    return `${tokenizer.key}-${getStringHash(text)}`;
+}
+
+/**
+ * The shown messages' counts, those the server answered an action with taken without asking again.
  * @param {string[]} texts
  * @param {{ recount?: boolean }} [options]
  * @returns {Promise<number[]>}
  */
 export async function getMessageTokenCounts(texts, { recount = false } = {}) {
-    if (!isOpenAiApi()) {
-        const { counts } = await countTexts(texts, 0, true, false, recount);
-        return counts;
-    }
-    const { state, stateKey, tokenizer } = getMessageCountContext();
+    const tokenizer = getRememberedTokenizer();
     const results = new Array(texts.length).fill(0);
     /** @type {number[]} */
     const pending = [];
     texts.forEach((text, i) => {
         if (typeof text !== 'string' || !text.length) return;
-        const cached = tokenizer && !recount ? countCache.get(`${tokenizer.key}-${getStringHash(JSON.stringify({ content: text }))}`) : undefined;
-        if (typeof cached === 'number') {
-            results[i] = cached;
-        } else {
-            pending.push(i);
-        }
+        const cached = tokenizer && !recount ? countCache.get(messageCountKey(tokenizer, text)) : undefined;
+        if (typeof cached === 'number') results[i] = cached;
+        else pending.push(i);
     });
     if (pending.length === 0) return results;
-    const data = await postCurrent('count', { state, messages_each: pending.map(i => ({ content: texts[i] })), ...(recount ? { recount } : {}) }, true);
-    const counts = Array.isArray(data?.counts) ? data.counts : null;
+    const { counts, tokenizer: answered } = await countWithConnection(pending.map(i => texts[i]), { recount });
     pending.forEach((i, j) => {
-        results[i] = applyMessageCount(stateKey, { content: texts[i] }, counts ? { count: counts[j], tokenizer: data.tokenizer } : null);
+        results[i] = counts[j];
+        if (answered && answered.basis !== 'failed') countCache.set(messageCountKey(answered, texts[i]), counts[j]);
     });
     return results;
 }
@@ -664,130 +623,7 @@ export async function getMessageTokenCounts(texts, { recount = false } = {}) {
 export function takeMessageCount(text, count, tokenizer) {
     if (!tokenizer || typeof tokenizer !== 'object' || typeof tokenizer.key !== 'string' || tokenizer.basis === 'failed') return;
     if (!rememberTokenizer(JSON.stringify(getTokenizerState()), tokenizer)) return;
-    countCache.set(isOpenAiApi() ? `${tokenizer.key}-${getStringHash(JSON.stringify({ content: text }))}` : `${tokenizer.key}-${getStringHash(text)}+0`, count);
-}
-
-/**
- * Same as getTokenCountsAsyncBatch(), and also names the tokenizer these counts came from.
- * @param {string[]} strings Strings to tokenize, in order
- * @param {number} [padding=0] Padding tokens added to each non-empty result
- * @returns {Promise<{ counts: number[], tokenizer: Tokenizer, answer: CurrentTokenizer|null }>} Token counts, same
- * order/length as `strings`, their tokenizer, and the server's answer they came from: the response's own, the
- * remembered one when every count was cached, or null when the request failed.
- */
-export async function getTokenCountsWithTokenizer(strings, padding = 0) {
-    if (isOpenAiApi()) {
-        const counts = await Promise.all(strings.map(str => getTokenCountAsync(str, padding)));
-        const answer = getRememberedTokenizer();
-        return { counts, tokenizer: toFriendlyTokenizer('openai', answer), answer };
-    }
-    const { counts, tokenizer } = await countTexts(strings, padding, true);
-    return { counts, tokenizer: toFriendlyTokenizer(main_api, tokenizer), answer: tokenizer };
-}
-
-/**
- * Same count as getTokenCountAsync(str, padding), with the server's answer it came from: the
- * response's own, the remembered one when no request was made, or null when the request failed.
- * @param {string} str String to tokenize
- * @param {number | undefined} padding Optional padding tokens. Defaults to 0.
- * @returns {Promise<{ count: number, answer: CurrentTokenizer|null }>}
- */
-export async function getTokenCountWithAnswer(str, padding = undefined) {
-    if (typeof str !== 'string' || !str?.length) {
-        return { count: 0, answer: getRememberedTokenizer() };
-    }
-
-    if (isOpenAiApi()) {
-        if (padding === power_user.token_padding) {
-            return { count: guesstimate(str) + padding, answer: getRememberedTokenizer() };
-        }
-        const count = await counterWrapperOpenAIAsync(str);
-        return { count, answer: getRememberedTokenizer() };
-    }
-
-    const { counts: [count], tokenizer } = await countTexts([str], padding ?? 0, true);
-    return { count, answer: tokenizer };
-}
-
-/**
- * Gets the token count for a string using the current model tokenizer.
- * @param {string} str String to tokenize
- * @param {number | undefined} padding Optional padding tokens. Defaults to 0.
- * @returns {Promise<number>} Token count.
- */
-export async function getTokenCountAsync(str, padding = undefined) {
-    if (typeof str !== 'string' || !str?.length) {
-        return 0;
-    }
-
-    if (isOpenAiApi()) {
-        if (padding === power_user.token_padding) {
-            // For main "shadow" prompt building
-            return guesstimate(str) + padding;
-        }
-        return counterWrapperOpenAIAsync(str);
-    }
-
-    const { counts: [count] } = await countTexts([str], padding ?? 0, true);
-    return count;
-}
-
-/**
- * @param {string} str
- * @param {number | undefined} padding
- * @returns {Promise<number>}
- */
-export async function getPromptTokenCountAsync(str, padding = undefined) {
-    if (typeof str !== 'string' || !str?.length || isOpenAiApi()) {
-        return getTokenCountAsync(str, padding);
-    }
-    const { counts: [count] } = await countTexts([str], padding ?? 0, true, true);
-    return count;
-}
-
-/**
- * Gets the token count for a string using the current model tokenizer.
- * @param {string} str String to tokenize
- * @param {number | undefined} padding Optional padding tokens. Defaults to 0.
- * @returns {number} Token count.
- * @deprecated Use getTokenCountAsync instead.
- */
-export function getTokenCount(str, padding = undefined) {
-    if (typeof str !== 'string' || !str?.length) {
-        return 0;
-    }
-
-    if (isOpenAiApi()) {
-        if (padding === power_user.token_padding) {
-            // For main "shadow" prompt building
-            return guesstimate(str) + padding;
-        }
-        return counterWrapperOpenAI(str);
-    }
-
-    const { counts: [count] } = /** @type {{ counts: number[] }} */ (countTexts([str], padding ?? 0, false));
-    return count;
-}
-
-/**
- * Gets the token count for a string using the OpenAI tokenizer.
- * @param {string} text Text to tokenize.
- * @returns {number} Token count.
- * @deprecated Use counterWrapperOpenAIAsync instead.
- */
-function counterWrapperOpenAI(text) {
-    const message = { content: text };
-    return countTokensOpenAI(message, true);
-}
-
-/**
- * Gets the token count for a string using the OpenAI tokenizer.
- * @param {string} text Text to tokenize.
- * @returns {Promise<number>} Token count.
- */
-function counterWrapperOpenAIAsync(text) {
-    const message = { content: text };
-    return countTokensOpenAIAsync(message, true);
+    countCache.set(messageCountKey(tokenizer, text), count);
 }
 
 /**
@@ -796,102 +632,6 @@ function counterWrapperOpenAIAsync(text) {
 export function getTokenizerModel() {
     const tokenizer = isOpenAiApi() ? getCurrentTokenizerSync() : askTokenizerSync(getTokenizerState('openai'));
     return tokenizer?.model ?? getChatCompletionModel() ?? '';
-}
-
-/**
- * @param {string} stateKey
- * @param {object} message
- * @param {any} data
- * @returns {number}
- */
-function applyMessageCount(stateKey, message, data) {
-    const count = Number(data?.count);
-    if (isNaN(count)) {
-        return guesstimate(JSON.stringify(message));
-    }
-    const tokenizer = data.tokenizer;
-    if (rememberTokenizer(stateKey, tokenizer) && tokenizer.basis !== 'failed') {
-        countCache.set(`${tokenizer.key}-${getStringHash(JSON.stringify(message))}`, count);
-    }
-    return count;
-}
-
-/**
- * @returns {{ state: object, stateKey: string, tokenizer: CurrentTokenizer|null }}
- */
-function getMessageCountContext() {
-    const state = getTokenizerState('openai');
-    return { state, stateKey: JSON.stringify(state), tokenizer: isOpenAiApi() ? getRememberedTokenizer() : null };
-}
-
-/**
- * @param {any[] | Object} messages
- * @deprecated Use countTokensOpenAIAsync instead.
- */
-export function countTokensOpenAI(messages, full = false) {
-    const { state, stateKey, tokenizer } = getMessageCountContext();
-
-    if (!Array.isArray(messages)) {
-        messages = [messages];
-    }
-
-    let token_count = 0;
-
-    for (const message of messages) {
-        const cacheKey = tokenizer ? `${tokenizer.key}-${getStringHash(JSON.stringify(message))}` : '';
-        const cachedCount = (cacheKey ? countCache.get(cacheKey) : undefined);
-
-        if (typeof cachedCount === 'number') {
-            token_count += cachedCount;
-        } else {
-            token_count += applyMessageCount(stateKey, message, postCurrent('count', { state, messages: [message] }, false));
-        }
-    }
-
-    if (!full) token_count -= 2;
-
-    return token_count;
-}
-
-/**
- * Returns the token count for a message using the chat-completion tokenizer the server resolves.
- * Rejects when the count request fails, as upstream does.
- * @param {object[]|object} messages
- * @param {boolean} full
- * @returns {Promise<number>} Token count.
- */
-export async function countTokensOpenAIAsync(messages, full = false) {
-    const { state, stateKey, tokenizer } = getMessageCountContext();
-
-    if (!Array.isArray(messages)) {
-        messages = [messages];
-    }
-
-    let token_count = 0;
-
-    for (const message of messages) {
-        const cacheKey = tokenizer ? `${tokenizer.key}-${getStringHash(JSON.stringify(message))}` : '';
-        const cachedCount = (cacheKey ? countCache.get(cacheKey) : undefined);
-
-        if (typeof cachedCount === 'number') {
-            token_count += cachedCount;
-        } else {
-            const data = await jQuery.ajax({
-                async: true,
-                type: 'POST',
-                url: '/api/tokenizers/current/count',
-                data: JSON.stringify({ state, messages: [message] }),
-                dataType: 'json',
-                contentType: 'application/json',
-            });
-            showResponseWarnings(data);
-            token_count += applyMessageCount(stateKey, message, data);
-        }
-    }
-
-    if (!full) token_count -= 2;
-
-    return token_count;
 }
 
 /**

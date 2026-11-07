@@ -9,6 +9,7 @@ import { localResolution } from '../tokenizer-map-resolution.js';
 import { readTokenizerState } from '../connection-state-header.js';
 import { createLlamaCppPropsCheck } from '../llamacpp-props.js';
 import { createStoredCounter, writeBack } from '../token-count-store.js';
+import { countWithConnection } from '../connection-counts.js';
 
 export const router = express.Router();
 
@@ -168,6 +169,18 @@ router.post('/current/count', currentTokenizerRoute(
         return { counts };
     },
 ));
+
+router.post('/count', async function (request, response) {
+    const texts = readTexts(request.body ?? {});
+    if (!texts) return response.sendStatus(400);
+    try {
+        const counted = await countWithConnection(request.user.directories, {}, texts, { recount: request.body?.recount === true });
+        return counted ? response.send(counted) : response.status(400).send({ error: 'No connection is chosen to count with.' });
+    } catch (error) {
+        console.error(error);
+        return response.sendStatus(500);
+    }
+});
 
 router.post('/current/encode', currentTokenizerRoute(
     (body) => {
