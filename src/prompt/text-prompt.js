@@ -12,12 +12,8 @@ import { userStore } from '../user-stores.js';
 import { bucketActivatedEntries } from '../world-info/result-bucketing.js';
 import { appendFileAttachments } from '../file-attachment-inline.js';
 import { resolveAuthorsNote } from '../authors-note.js';
-import { getStoppingStrings } from '../stopping-strings.js';
-import { getCustomTokenBans, calculateLogitBias } from '../token-bans-and-bias.js';
-import { createTextGenGenerationData } from '../textgen-generation-data.js';
-import { createKoboldGenerationData } from '../kobold-generation-data.js';
-import { createNovelGenerationData } from '../novel-generation-data.js';
 import { substituteParams, baseChatReplace } from '../macro-substitution.js';
+import { createTextCompletionParameters } from '../text-completion-parameters.js';
 import { formatInstructModeExampleBlocks } from '../instruct-mode-examples.js';
 import { formatInstructModeStoryString, force_output_sequence } from '../instruct-template-format.js';
 import { inject_ids, persona_description_defaults, persona_description_positions } from '../../public/scripts/constants.js';
@@ -499,41 +495,16 @@ export async function buildTextCompletionPrompt(input) {
 
     const combinedPrompt = finish(rendered.text);
 
-    const stoppingStringsParams = {
-        namesAsStopStrings, name1, name2, chat, isGroup, groupMemberNames,
-        singleLine, instructPreset, contextSettings, customStoppingStringsRaw, customStoppingStringsMacro,
-        ephemeralStoppingStrings, macroContext,
-    };
-    const stoppingStrings = getStoppingStrings({ ...stoppingStringsParams, isImpersonate, isContinue, api: mainApi });
-    const isTextgen = mainApi !== 'kobold' && mainApi !== 'novel';
-
-    /** @type {string[]} */
-    const droppedEntries = [];
-    const { banned_tokens: bannedTokens, banned_strings: bannedStrings } = await getCustomTokenBans({
-        bannedTokensRaw, globalBannedTokensRaw, sendBannedTokens, bannedWordsFromMacros: bannedWordsSink,
-        encode: isTextgen ? encodeTokens : () => null, macroContext,
-        dropped: isTextgen ? droppedEntries : undefined,
+    const { generate_data, droppedEntries, stoppingStrings, bannedTokens, bannedStrings, logitBias } = await createTextCompletionParameters({
+        mainApi, settings, model, amountGen, maxContext: input.maxContext ?? input.thisMaxContext, thisMaxContext: input.thisMaxContext,
+        requestTokenProbabilities, consoleLogPrompts, apiServer, isInstruct, instructPreset, contextSettings,
+        namesAsStopStrings, singleLine, customStoppingStringsRaw, customStoppingStringsMacro,
+        bannedTokensRaw, globalBannedTokensRaw, sendBannedTokens, logitBiasEntries,
+    }, {
+        prompt: combinedPrompt, type, isImpersonate, isContinue, name1, name2, chat, isGroup, groupMemberNames, ephemeralStoppingStrings,
+        bannedWordsSink, cfgValues: { guidanceScale: cfgGuidanceScale, negativePrompt: negativePrompt?.value }, thisMaxContext, macroContext,
+        encodeTokens, encodeTokensByType, novelTokenizerType, koboldFlags, isHorde, novelDataTier, presetOrder,
     });
-    const logitBias = isTextgen ? await calculateLogitBias({ logitBiasEntries, encode: encodeTokens, dropped: droppedEntries }) : {};
-
-    const cfgValues = { guidanceScale: cfgGuidanceScale, negativePrompt: negativePrompt?.value };
-    let generate_data;
-    if (mainApi === 'kobold') {
-        generate_data = createKoboldGenerationData({
-            finalPrompt: combinedPrompt, settings, maxLength: amountGen, maxContextLength: input.maxContext ?? input.thisMaxContext,
-            isHorde, type, koboldSettings: settings, koboldFlags, apiServer, stoppingStringsParams, macroContext,
-        });
-    } else if (mainApi === 'novel') {
-        generate_data = await createNovelGenerationData({
-            finalPrompt: combinedPrompt, settings, maxLength: amountGen, isImpersonate, isContinue, type, novelDataTier, presetOrder,
-            consoleLogPrompts, requestTokenProbabilities, stoppingStringsParams, tokenizerType: novelTokenizerType,
-            encodeTokens: encodeTokensByType, dropped: droppedEntries, macroContext,
-        });
-    } else {
-        generate_data = await createTextGenGenerationData(settings, model, combinedPrompt, amountGen, isImpersonate, isContinue, cfgValues, type, {
-            stoppingStrings, bannedTokens, bannedStrings, logitBias, maxContext: thisMaxContext, requestTokenProbabilities, macroContext,
-        });
-    }
 
     const itemize = () => itemizeTextPrompt({
         api: isHorde ? 'koboldhorde' : mainApi, settings, generate_data, combinedPrompt, thisMaxContext, tokenPadding,

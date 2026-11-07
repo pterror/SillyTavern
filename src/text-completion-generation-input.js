@@ -135,6 +135,53 @@ export function promptTokenBudget(mainApi, maxContext, maxResponse, novelModel =
 }
 
 /**
+ * What a text completion connection is sent with any prompt, read from the stored settings alone: no chat is needed.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {import('./settings-reads.js').SettingsContext} settingsContext
+ * @param {string} mainApi
+ * @param {number} [amountGenOverride] The reply's length when the turn asks for one.
+ */
+export function readTextCompletionConnection(directories, settingsContext, mainApi, amountGenOverride) {
+    const {
+        power_user: powerUser = {},
+        textgenerationwebui_settings: textgenSettings = {},
+        kai_settings: koboldSettings = {},
+        nai_settings: novelSettings = {},
+        amount_gen: settingsAmountGen,
+        max_context: settingsMaxContext,
+    } = /** @type {TextCompletionSettingsBundle} */ (readSettingsFor(directories, settingsContext, [
+        'power_user', 'textgenerationwebui_settings', 'kai_settings', 'nai_settings', 'amount_gen', 'max_context',
+    ]));
+    const backend = mainApi === 'textgenerationwebui' ? resolveTextGenBackend(directories, settingsContext) : null;
+    const context = powerUser.context ?? {};
+    const instruct = /** @type {import('./instruct-template-format.js').InstructSettings & { user_alignment_message?: string }} */ (powerUser.instruct ?? {});
+    const amountGen = amountGenOverride ?? settingsAmountGen ?? 0;
+    const maxContext = settingsMaxContext ?? 8192;
+    return {
+        mainApi,
+        settings: mainApi === 'kobold' ? koboldSettings : mainApi === 'novel' ? novelSettings : textgenSettings,
+        model: backend ? backend.model : undefined,
+        amountGen,
+        maxContext,
+        thisMaxContext: promptTokenBudget(mainApi, maxContext, amountGen, /** @type {any} */ (novelSettings).model_novel),
+        requestTokenProbabilities: Boolean(powerUser.request_token_probabilities ?? false),
+        isInstruct: Boolean(instruct.enabled ?? false),
+        instructPreset: instruct,
+        contextSettings: context,
+        namesAsStopStrings: Boolean(context.names_as_stop_strings ?? false),
+        singleLine: Boolean(powerUser.single_line ?? false),
+        customStoppingStringsRaw: powerUser.custom_stopping_strings ?? '',
+        customStoppingStringsMacro: Boolean(powerUser.custom_stopping_strings_macro ?? false),
+        bannedTokensRaw: textgenSettings.banned_tokens ?? '',
+        globalBannedTokensRaw: textgenSettings.global_banned_tokens ?? '',
+        sendBannedTokens: Boolean(textgenSettings.send_banned_tokens ?? true),
+        logitBiasEntries: textgenSettings.logit_bias ?? [],
+        apiServer: mainApi === 'kobold' ? (koboldSettings.api_server ?? '') : undefined,
+        consoleLogPrompts: Boolean(powerUser.console_log_prompts ?? false),
+    };
+}
+
+/**
  * @param {import('./chat-request.js').ChatContext | undefined} chat
  * @param {{ nodeId?: string | null }} at
  */
@@ -191,27 +238,18 @@ export async function resolveTextCompletionGenerationInput(directories, {
     const {
         power_user: powerUser = {},
         world_info_settings: worldInfoSettings = {},
-        textgenerationwebui_settings: textgenSettings = {},
-        kai_settings: koboldSettings = {},
-        nai_settings: novelSettings = {},
         extension_settings: extensionSettings = {},
         username,
         user_avatar: userAvatar,
-        amount_gen: settingsAmountGen,
         max_context: settingsMaxContext,
+        amount_gen: settingsAmountGen,
     } = /** @type {TextCompletionSettingsBundle} */ (readSettingsFor(directories, settingsContext, [
-        'power_user', 'world_info_settings',
-        'textgenerationwebui_settings', 'kai_settings', 'nai_settings',
-        'extension_settings', 'username', 'user_avatar', 'amount_gen', 'max_context',
+        'power_user', 'world_info_settings', 'extension_settings', 'username', 'user_avatar', 'max_context', 'amount_gen',
     ]));
+    const connection = readTextCompletionConnection(directories, settingsContext, mainApi, amountGen);
     const activePersona = powerUser.persona_data?.[userAvatar] ?? {};
     const worldInfoSelection = worldInfoSettings.world_info ?? {};
     const worldInfoGlobals = worldInfoGlobalsOf(worldInfoSettings);
-
-    const backendSettings = mainApi === 'kobold' ? koboldSettings : mainApi === 'novel' ? novelSettings : textgenSettings;
-
-    const backend = mainApi === 'textgenerationwebui' ? resolveTextGenBackend(directories, settingsContext) : null;
-    const model = backend ? backend.model : undefined;
 
     const isGroup = Boolean(groupId);
     const hasCharacterOrGroup = Boolean(avatar) || Boolean(groupId);
@@ -244,8 +282,8 @@ export async function resolveTextCompletionGenerationInput(directories, {
         }));
     }
 
-    const context = powerUser.context ?? {};
-    const instruct = /** @type {import('./instruct-template-format.js').InstructSettings & { user_alignment_message?: string }} */ (powerUser.instruct ?? {});
+    const context = connection.contextSettings;
+    const instruct = connection.instructPreset;
     const reasoning = powerUser.reasoning ?? {};
     const sysprompt = powerUser.sysprompt ?? {};
     const noteSettings = extensionSettings.note ?? {};
@@ -254,6 +292,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
     const charaCfg = Array.isArray(cfgSettings.chara) ? cfgSettings.chara.find(e => e.name === avatar) : undefined;
 
     const resolved = {
+        ...connection,
         type, isImpersonate, isContinue, isSwipe, isGroup,
         name1, name2,
         macroFacts: generationMacroFacts({
@@ -280,12 +319,8 @@ export async function resolveTextCompletionGenerationInput(directories, {
 
         pageInjections,
 
-        thisMaxContext: promptTokenBudget(mainApi, settingsMaxContext ?? 8192, amountGen ?? settingsAmountGen ?? 0, novelSettings.model_novel),
-        maxContext: settingsMaxContext ?? 8192,
         tokenPadding: powerUser.token_padding ?? 0,
         countTokens, encodeTokens, countPromptTokens,
-        amountGen: amountGen ?? settingsAmountGen ?? 0,
-        requestTokenProbabilities: Boolean(powerUser.request_token_probabilities ?? false),
 
         chatGuidanceScale: chatMetadata.cfg_guidance_scale,
         groupchatIndividualChars: Boolean(chatMetadata.cfg_groupchat_individual_chars ?? false),
@@ -313,35 +348,17 @@ export async function resolveTextCompletionGenerationInput(directories, {
         personaDescriptionDepth: activePersona.depth ?? persona_description_defaults.depth,
         personaDescriptionRole: activePersona.role ?? persona_description_defaults.role,
         stripExamples: Boolean(powerUser.strip_examples ?? false),
-        isInstruct: Boolean(instruct.enabled ?? false),
-        instructPreset: instruct,
-        contextSettings: context,
         instructUserAlignmentMessage: instruct.user_alignment_message,
         instructWrap: Boolean(instruct.wrap ?? false),
         pinExamples: Boolean(powerUser.pin_examples ?? false),
 
         sysPromptPostHistory: sysprompt.post_history ?? '',
 
-        mainApi,
         collapseNewlines: Boolean(powerUser.collapse_newlines ?? false),
         chatStart: context.chat_start ?? '',
-        naiPreamble: mainApi === 'novel' ? novelSettings.preamble ?? '' : '',
+        naiPreamble: mainApi === 'novel' ? /** @type {any} */ (connection.settings).preamble ?? '' : '',
 
-        namesAsStopStrings: Boolean(context.names_as_stop_strings ?? false),
-        singleLine: Boolean(powerUser.single_line ?? false),
-        customStoppingStringsRaw: powerUser.custom_stopping_strings ?? '',
-        customStoppingStringsMacro: Boolean(powerUser.custom_stopping_strings_macro ?? false),
         groupMemberNames, groupDisabledMembers,
-        bannedTokensRaw: textgenSettings.banned_tokens ?? '',
-        globalBannedTokensRaw: textgenSettings.global_banned_tokens ?? '',
-        sendBannedTokens: Boolean(textgenSettings.send_banned_tokens ?? true),
-        logitBiasEntries: textgenSettings.logit_bias ?? [],
-
-        settings: backendSettings,
-        model,
-
-        apiServer: mainApi === 'kobold' ? (koboldSettings.api_server ?? '') : undefined,
-        consoleLogPrompts: Boolean(powerUser.console_log_prompts ?? false),
     };
 
     return { ...resolved, ...macroExtras };

@@ -21,7 +21,8 @@ import { createLlamaCppPropsCheck, llamaCppPropsModelName } from '../../llamacpp
 import { createStoredCounter, writeBack } from '../../token-count-store.js';
 import { fetchTextgenStatus, lookupBackendModel, rememberRemoteTokenization } from '../../backend-status.js';
 import { rememberOpenRouterModels } from '../../openrouter-models.js';
-import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
+import { readTextCompletionConnection, resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
+import { createTextCompletionParameters } from '../../text-completion-parameters.js';
 import { buildTextCompletionPrompt } from '../../prompt/text-prompt.js';
 import { startItemizing } from '../../prompt-itemization.js';
 import { generateTurnOf, textCompletionQuietInput } from '../../page-writes.js';
@@ -452,26 +453,9 @@ export async function buildRawActionTextCompletionRequest(directories, {
         anchorNodeId = nodeId;
     }
 
-    const { power_user: powerUser = {}, textgenerationwebui_settings: textgenSettings = {} } = readSettingsFor(directories, settingsContext, ['power_user', 'textgenerationwebui_settings']);
-    const tokenizerState = {
-        api: 'textgenerationwebui', type: backend.type, url: backend.serverUrl, model: backend.model ?? '',
-        tokenizerSetting: powerUser.tokenizer,
-    };
-    const llamaCppProps = createLlamaCppPropsCheck({ reuse: false });
-    const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories, llamaCppProps });
-    const identity = await tokenizerIdentity(resolvedTokenizer, { textgenApiType: backend.type, llamaCppProps: llamaCppProps.props });
-    const tokenizerOutcome = createTokenizerOutcome();
-    const encodeOptions = {
-        request, textgenBaseUrl: backend.serverUrl, textgenModel: backend.model, textgenApiType: backend.type,
-        ...tokenizerOptions, outcome: tokenizerOutcome,
-    };
-    const storedCounter = createStoredCounter({
-        resolved: resolvedTokenizer, identity, directories, encodeOptions,
-        identityFacts: { textgenApiType: backend.type, llamaCppProps: llamaCppProps.props },
-    });
-    const encodeTokens = storedCounter.encodeText;
-    const countTokens = storedCounter.countText;
-    const countPromptTokens = storedCounter.countPromptText;
+    const { textgenerationwebui_settings: textgenSettings = {} } = readSettingsFor(directories, settingsContext, ['textgenerationwebui_settings']);
+    const tokenizer = await textgenTokenizer(directories, { request, backend, settingsContext, tokenizerOptions });
+    const { encodeTokens, countTokens, countPromptTokens, llamaCppProps } = tokenizer;
 
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, chatContext: chat, nodeId,
@@ -495,17 +479,74 @@ export async function buildRawActionTextCompletionRequest(directories, {
     const anchorContent = orchestratorInput.chat.length > 0 ? orchestratorInput.chat[orchestratorInput.chat.length - 1] : null;
 
     return {
-        params: assembled.generate_data, prompt: assembled.combinedPrompt, backend, anchorNodeId, anchorContent, activations: assembled.activations, tokenizerIdentity: identity,
+        params: assembled.generate_data, prompt: assembled.combinedPrompt, backend, anchorNodeId, anchorContent, activations: assembled.activations, tokenizerIdentity: tokenizer.identity,
         stream: Boolean(textgenSettings.streaming) && type !== 'quiet',
         macroVariables: macroVariableChanges(orchestratorInput.chatMetadata, orchestratorInput.macroFacts.globalVariables, orchestratorInput.variablesBefore),
         model: backend.model
             ?? (llamaCppProps.props ? llamaCppPropsModelName(llamaCppProps.props) : undefined)
             ?? lookupBackendModel({ api: 'textgenerationwebui', type: backend.type, url: backend.serverUrl, directories }),
-        tokenCountRows: storedCounter.pending,
+        tokenCountRows: tokenizer.pending,
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
-        warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
-        itemize: async () => ({ ...(await assembled.itemize()), tokenizer: tokenizerAnswer(tokenizerState, resolvedTokenizer, tokenizerOutcome) }),
+        warnings: tokenizer.warnings(assembled.droppedEntries),
+        itemize: async () => ({ ...(await assembled.itemize()), tokenizer: tokenizer.answer() }),
     };
+}
+
+/**
+ * The tokenizer a text generation backend's prompts are counted and encoded with.
+ * @param {import('../../users.js').UserDirectoryList} directories
+ * @param {object} params
+ * @param {import('express').Request} [params.request]
+ * @param {{ type: string, serverUrl: string, model: string|undefined }} params.backend
+ * @param {import('../../settings-reads.js').SettingsContext} params.settingsContext
+ * @param {object} [params.tokenizerOptions]
+ */
+export async function textgenTokenizer(directories, { request, backend, settingsContext, tokenizerOptions = {} }) {
+    const { power_user: powerUser = {} } = readSettingsFor(directories, settingsContext, ['power_user']);
+    const tokenizerState = {
+        api: 'textgenerationwebui', type: backend.type, url: backend.serverUrl, model: backend.model ?? '',
+        tokenizerSetting: powerUser.tokenizer,
+    };
+    const llamaCppProps = createLlamaCppPropsCheck({ reuse: false });
+    const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories, llamaCppProps });
+    const identity = await tokenizerIdentity(resolvedTokenizer, { textgenApiType: backend.type, llamaCppProps: llamaCppProps.props });
+    const tokenizerOutcome = createTokenizerOutcome();
+    const encodeOptions = {
+        request, textgenBaseUrl: backend.serverUrl, textgenModel: backend.model, textgenApiType: backend.type,
+        ...tokenizerOptions, outcome: tokenizerOutcome,
+    };
+    const storedCounter = createStoredCounter({
+        resolved: resolvedTokenizer, identity, directories, encodeOptions,
+        identityFacts: { textgenApiType: backend.type, llamaCppProps: llamaCppProps.props },
+    });
+    return {
+        encodeTokens: storedCounter.encodeText, countTokens: storedCounter.countText, countPromptTokens: storedCounter.countPromptText,
+        identity, llamaCppProps, pending: storedCounter.pending,
+        warnings: (/** @type {string[]} */ dropped) => sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, dropped),
+        answer: () => tokenizerAnswer(tokenizerState, resolvedTokenizer, tokenizerOutcome),
+    };
+}
+
+/**
+ * The request a reply to given text is sent to the stored text generation backend with: no chat goes in.
+ * @param {import('../../users.js').UserDirectoryList} directories
+ * @param {object} params
+ * @param {import('express').Request} [params.request]
+ * @param {import('../../settings-reads.js').SettingsContext} params.settingsContext
+ * @param {string} params.prompt
+ * @param {import('../../macro-substitution.js').SubstituteParamsContext} params.macroContext
+ * @param {number} [params.responseLength]
+ * @returns {Promise<{ body: Record<string, any>, tokenCountRows: import('../../token-count-store.js').PendingTokenRows }>}
+ */
+export async function textgenRawRequest(directories, { request, settingsContext, prompt, macroContext, responseLength }) {
+    const backend = resolveTextGenBackend(directories, settingsContext);
+    const tokenizer = await textgenTokenizer(directories, { request, backend, settingsContext });
+    const connection = readTextCompletionConnection(directories, settingsContext, 'textgenerationwebui', responseLength);
+    const { generate_data } = await createTextCompletionParameters(connection, {
+        prompt, type: 'quiet', name1: String(macroContext.name1 ?? ''), name2: String(macroContext.name2 ?? ''), isGroup: Boolean(macroContext.isGroup),
+        groupMemberNames: macroContext.groupMembers ?? [], macroContext, encodeTokens: tokenizer.encodeTokens,
+    });
+    return { body: { ...generate_data, prompt, stream: false, api_type: backend.type, api_server: backend.serverUrl }, tokenCountRows: tokenizer.pending };
 }
 
 /**

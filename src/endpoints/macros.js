@@ -37,14 +37,15 @@ function modelOf(directories, settingsContext, mainApi, oaiSettings) {
 /**
  * @param {any} request
  * @param {Record<string, any>} [body]
+ * @param {{ withChat?: boolean }} [options] Without the chat, the context has the character and no messages.
  * @returns {Promise<import('../macro-substitution.js').SubstituteParamsContext>}
  */
-export async function previewContext(request, body = request.body ?? {}) {
+export async function previewContext(request, body = request.body ?? {}, { withChat = true } = {}) {
     const { directories } = request.user;
     const avatar = typeof body.avatar_url === 'string' && body.avatar_url !== '' ? body.avatar_url : null;
     const groupId = typeof body.group_id === 'string' && body.group_id !== '' ? body.group_id : null;
     const speakers = await resolveSpeakers(directories, { avatar, groupId });
-    const chat = avatar !== null || groupId !== null ? await chatContext(request, { avatar, group: groupId }) : null;
+    const chat = withChat && (avatar !== null || groupId !== null) ? await chatContext(request, { avatar, group: groupId }) : null;
     const at = typeof body.at === 'string' && body.at !== '' ? body.at : null;
     const settingsContext = settingsContextOf({ avatar, groupId, chat, nodeId: at });
     const {

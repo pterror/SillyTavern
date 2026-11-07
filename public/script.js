@@ -3718,17 +3718,14 @@ export class StreamingProcessor {
  */
 export async function generateRaw({ prompt = '', instructOverride = false, quietToLoud = false, systemPrompt = '', responseLength = null, trimNames = true, prefill = '', jsonSchema = null } = {}) {
     const avatar = getCurrentCharacter()?.avatar;
-    if (typeof avatar !== 'string' || avatar === '') throw new Error(t`Open a chat to generate in.`);
-    const nodeId = [...chat].reverse().find(message => isStoredNodeId(message?.node_id))?.node_id ?? null;
 
     const stopController = new AbortController();
     const stop = () => stopController.abort(new Error('Cancelled by stop event'));
     eventSource.on(event_types.GENERATION_STOPPED, stop);
     try {
         const answer = await sendGeneration({
-            character_avatar: avatar,
+            character_avatar: typeof avatar === 'string' && avatar !== '' ? avatar : undefined,
             group_id: selected_group != null ? String(selected_group) : undefined,
-            node_id: nodeId,
             prompt, system_prompt: systemPrompt, prefill,
             instruct: !instructOverride,
             quiet_to_loud: quietToLoud,

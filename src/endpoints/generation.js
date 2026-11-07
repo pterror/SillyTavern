@@ -3,11 +3,11 @@ import { requireSessionHeader } from '../request-session.js';
 import { generationEntryOf, handleGenerationStop } from '../generation-stop.js';
 import { retryPersistReply } from '../assistant-reply-persist.js';
 import { readSettingsFor, settingsContextOf } from '../settings-reads.js';
-import { buildRawActionChatCompletionRequest, generateChatCompletion } from './backends/chat-completions.js';
-import { buildRawActionTextCompletionRequest, generateTextCompletion } from './backends/text-completions.js';
-import { buildRawActionKoboldRequest, generateKobold } from './backends/kobold.js';
+import { buildRawActionChatCompletionRequest, chatCompletionParameters, generateChatCompletion } from './backends/chat-completions.js';
+import { buildRawActionTextCompletionRequest, generateTextCompletion, textgenRawRequest } from './backends/text-completions.js';
+import { buildRawActionKoboldRequest, generateKobold, koboldRawParameters } from './backends/kobold.js';
 import { handleGenerationResume } from './backends/llamacpp-compact-stream.js';
-import { buildRawActionNovelRequest, generateNovel } from './novelai.js';
+import { buildRawActionNovelRequest, generateNovel, novelRawRequest } from './novelai.js';
 import { generateHorde, hordeJobOf } from './horde.js';
 import { previewContext } from './macros.js';
 import { rawPrompt } from '../raw-prompt.js';
@@ -67,13 +67,14 @@ export const router = express.Router();
  * Whose chat a generation action is in, and the connection chosen for it.
  * @param {import('express').Request} request
  * @param {import('express').Response} response
+ * @param {{ needsOwner?: boolean }} [options] False for a reply to given text, which a character only names.
  * @returns {{ avatar: string|null, groupId: string|null, api: keyof typeof GENERATORS }|null} Null when it answered the request.
  */
-function generationTarget(request, response) {
+function generationTarget(request, response, { needsOwner = true } = {}) {
     const body = request.body;
     const avatar = typeof body?.character_avatar === 'string' && body.character_avatar !== '' ? body.character_avatar : null;
     const groupId = typeof body?.group_id === 'string' && body.group_id !== '' ? body.group_id : null;
-    if (avatar === null && groupId === null) {
+    if (needsOwner && avatar === null && groupId === null) {
         response.status(400).send({ error: { message: 'A generation needs a character or a group.' } });
         return null;
     }
@@ -135,23 +136,38 @@ router.post('/store/:id', async function (request, response) {
     return response.json(result);
 });
 
-router.post('/raw', requireSessionHeader, async function (request, response) {
-    const target = generationTarget(request, response);
+/**
+ * The request each kind of connection is sent a reply to given text with.
+ * @type {Record<keyof typeof GENERATORS, (directories: import('../users.js').UserDirectoryList, params: { request: import('express').Request, settingsContext: import('../settings-reads.js').SettingsContext, prompt: any, macroContext: import('../macro-substitution.js').SubstituteParamsContext, responseLength: number|undefined, jsonSchema: object|null }) => Promise<{ body: Record<string, any>, tokenCountRows: import('../token-count-store.js').PendingTokenRows }>>}
+ */
+const RAW_REQUESTS = Object.freeze({
+    openai: async (directories, { settingsContext, prompt, macroContext, responseLength, jsonSchema }) => {
+        const { params, settings, tokenCountRows } = await chatCompletionParameters(directories, { settingsContext, type: 'quiet', messages: prompt, macroContext, responseLength, jsonSchema });
+        return { body: { ...params, messages: prompt, stream: false, chat_completion_source: settings.chat_completion_source }, tokenCountRows };
+    },
+    textgenerationwebui: (directories, params) => textgenRawRequest(directories, params),
+    novel: (directories, params) => novelRawRequest(directories, params),
+    kobold: async (directories, params) => {
+        const { params: koboldParams, tokenCountRows } = await koboldRawParameters(directories, params);
+        return { body: { ...koboldParams, prompt: params.prompt, streaming: false }, tokenCountRows };
+    },
+    koboldhorde: async (directories, params) => {
+        const { params: koboldParams, tokenCountRows } = await koboldRawParameters(directories, { ...params, isHorde: true });
+        const { horde_settings: hordeSettings = {} } = readSettingsFor(directories, params.settingsContext, ['horde_settings']);
+        return { body: hordeJobOf(String(params.prompt), koboldParams, hordeSettings), tokenCountRows };
+    },
+});
+
+router.post('/raw', async function (request, response) {
+    const target = generationTarget(request, response, { needsOwner: false });
     if (!target) return;
     const { avatar, groupId, api } = target;
     const body = request.body;
     const directories = request.user.directories;
     try {
-        const chat = await chatContext(request, { avatar, group: groupId });
-        if (!chat) return response.status(404).send({ error: { message: groupId ? `Group not found: ${groupId}` : `Character not found: ${avatar}` } });
-        const nodeId = typeof body.node_id === 'string' && body.node_id !== '' ? body.node_id : null;
-        const responseLength = Number.isInteger(body.response_length) && body.response_length > 0 ? body.response_length : undefined;
-        const built = await PROMPT_BUILDERS[api](directories, {
-            request, characterAvatar: avatar ?? undefined, groupId: groupId ?? undefined, chat, nodeId, type: 'quiet',
-            pageFacts: readPageMacroFacts(body.macro_facts), responseLength, jsonSchema: body.json_schema ?? null, dryRun: true,
-        });
-        const macroContext = await previewContext(request, { avatar_url: avatar ?? undefined, group_id: groupId ?? undefined, at: nodeId, macro_facts: body.macro_facts });
-        const { power_user: powerUser = {}, horde_settings: hordeSettings = {} } = readSettingsFor(directories, settingsContextOf({ avatar, groupId }), ['power_user', 'horde_settings']);
+        const settingsContext = settingsContextOf({ avatar, groupId });
+        const macroContext = await previewContext(request, { avatar_url: avatar ?? undefined, group_id: groupId ?? undefined, macro_facts: body.macro_facts }, { withChat: false });
+        const { power_user: powerUser = {} } = readSettingsFor(directories, settingsContext, ['power_user']);
         const prompt = rawPrompt(api, {
             prompt: typeof body.prompt === 'string' || Array.isArray(body.prompt) ? body.prompt : '',
             systemPrompt: typeof body.system_prompt === 'string' ? body.system_prompt : '',
@@ -159,20 +175,10 @@ router.post('/raw', requireSessionHeader, async function (request, response) {
             instruct: body.instruct !== false,
             quietToLoud: body.quiet_to_loud === true,
         }, { macroContext, powerUser });
-        /** @type {Record<string, any>} */
-        const params = built.params;
-        if (api === 'openai') {
-            request.body = { ...params, messages: prompt, stream: false, chat_completion_source: /** @type {any} */ (built).settings.chat_completion_source };
-        } else if (api === 'textgenerationwebui') {
-            const backend = /** @type {any} */ (built).backend;
-            request.body = { ...params, prompt, stream: false, api_type: backend.type, api_server: backend.serverUrl };
-        } else if (api === 'novel') {
-            request.body = { ...params, input: prompt, streaming: false };
-        } else if (api === 'koboldhorde') {
-            request.body = hordeJobOf(String(prompt), params, hordeSettings);
-        } else {
-            request.body = { ...params, prompt, streaming: false };
-        }
+        const responseLength = Number.isInteger(body.response_length) && body.response_length > 0 ? body.response_length : undefined;
+        const made = await RAW_REQUESTS[api](directories, { request, settingsContext, prompt, macroContext, responseLength, jsonSchema: body.json_schema ?? null });
+        writeBack(directories, made.tokenCountRows).catch(error => console.error('Failed to store token counts:', error));
+        request.body = made.body;
         return GENERATORS[api](request, response);
     } catch (error) {
         console.error('Could not make the raw generation:', error);

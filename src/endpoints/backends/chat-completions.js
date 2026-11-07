@@ -62,7 +62,8 @@ import { refreshLlamaCppDetection } from '../../custom-llamacpp.js';
 import { createLlamaCppPropsCheck } from '../../llamacpp-props.js';
 import { writeBack } from '../../token-count-store.js';
 import { readSettingsFor, settingsContextOf } from '../../settings-reads.js';
-import { resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
+import { getChatCompletionModel, resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
+import { chatCompletionSettingsWithDefaults } from '../../../public/scripts/chat-completion-defaults.js';
 import { resolveTokenizer, sendTokenizerWarnings, createTokenizerOutcome } from '../../tokenizer-resolve.js';
 import { fetchOpenRouterModels, rememberOpenRouterModels } from '../../openrouter-models.js';
 import { buildChatCompletionPrompt } from '../../prompt/chat-prompt.js';
@@ -2426,6 +2427,50 @@ function chatCompletionConnection(settings, directories, macroContext, llamaCppP
 }
 
 /**
+ * What the stored chat completion connection is sent with the given messages, read from the settings alone.
+ * @param {import('../../users.js').UserDirectoryList} directories
+ * @param {object} params
+ * @param {import('../../settings-reads.js').SettingsContext} params.settingsContext
+ * @param {string} params.type
+ * @param {{ role: string, content: any }[]} params.messages
+ * @param {import('../../macro-substitution.js').SubstituteParamsContext} params.macroContext
+ * @param {string|null} [params.model] The model the prompt was built for; the settings' model when not given.
+ * @param {number} [params.responseLength]
+ * @param {string|null} [params.chatId]
+ * @param {object} [params.toolsPayload]
+ * @param {object|null} [params.jsonSchema]
+ * @param {import('../../llamacpp-props.js').LlamaCppPropsCheck} [params.llamaCppProps]
+ * @param {import('../../token-count-store.js').PendingTokenRows} [params.tokenCountRows]
+ * @param {import('../../tokenizer-resolve.js').TokenizerOutcome} [params.tokenizerOutcome]
+ * @returns {Promise<{ params: Record<string, any>, settings: Record<string, any>, warnings: Array<{kind: string, key: string, message: string, entries?: string[]}>, tokenCountRows: import('../../token-count-store.js').PendingTokenRows }>}
+ */
+export async function chatCompletionParameters(directories, {
+    settingsContext, type, messages, macroContext, model, responseLength, chatId, toolsPayload, jsonSchema = null,
+    llamaCppProps = createLlamaCppPropsCheck({ reuse: false }), tokenCountRows = { counts: [], ids: [] }, tokenizerOutcome = createTokenizerOutcome(),
+}) {
+    const { oai_settings: savedSettings = {}, power_user: powerUser = {} } = readSettingsFor(directories, settingsContext, ['oai_settings', 'power_user']);
+    const settings = responseLength === undefined ? savedSettings : { ...savedSettings, openai_max_tokens: responseLength };
+    const chosenModel = model === undefined ? (getChatCompletionModel(chatCompletionSettingsWithDefaults(settings)) ?? undefined) : model;
+    /** @type {string[]} */
+    const droppedBiasEntries = [];
+    const { generate_data } = await createGenerationParameters(settings, chosenModel, type, messages, {
+        directories,
+        macroContext,
+        biasPresetEntries: settings.bias_preset_selected ? settings.bias_presets?.[settings.bias_preset_selected] : undefined,
+        droppedBiasEntries,
+        useLogprobs: Boolean(powerUser.request_token_probabilities),
+        chatId: chatId ?? undefined,
+        toolsPayload,
+        jsonSchema,
+        llamaCppProps,
+        tokenCountRows,
+    });
+    const warnings = await chatCompletionSendWarnings(settings.chat_completion_source, chosenModel, droppedBiasEntries, tokenizerOutcome,
+        chatCompletionConnection(settings, directories, macroContext, llamaCppProps));
+    return { params: generate_data, settings, warnings, tokenCountRows };
+}
+
+/**
  * @param {import('../../users.js').UserDirectoryList} directories
  * @param {object} params
  * @param {string} [params.characterAvatar]
@@ -2485,10 +2530,10 @@ export async function buildRawActionChatCompletionRequest(directories, {
         anchorNodeId = nodeId;
     }
 
-    const { oai_settings: savedSettings = {}, power_user: powerUser = {} } = readSettingsFor(directories, settingsContextOf({ avatar: characterAvatar, groupId, chat, nodeId }), ['oai_settings', 'power_user']);
-    const settings = responseLength === undefined ? savedSettings : { ...savedSettings, openai_max_tokens: responseLength };
+    const settingsContext = settingsContextOf({ avatar: characterAvatar, groupId, chat, nodeId });
+    const { oai_settings: savedSettings = {} } = readSettingsFor(directories, settingsContext, ['oai_settings']);
 
-    const mediaInliningEnabled = Boolean(settings.media_inlining);
+    const mediaInliningEnabled = Boolean(savedSettings.media_inlining);
     const llamaCppProps = createLlamaCppPropsCheck({ reuse: false });
     /** @type {import('../../token-count-store.js').PendingTokenRows} */
     const tokenCountRows = { counts: [], ids: [] };
@@ -2514,9 +2559,6 @@ export async function buildRawActionChatCompletionRequest(directories, {
 
     const { chat: messages, itemize: itemizeParts, promptManagerParts, canPerformToolCalls: toolCallsAllowed } = await buildChatCompletionPrompt(orchestratorInput);
 
-    const biasPresetEntries = settings.bias_preset_selected ? settings.bias_presets?.[settings.bias_preset_selected] : undefined;
-    const useLogprobs = Boolean(powerUser.request_token_probabilities);
-
     const clientToolsByName = new Map();
     if (toolCallsAllowed && Array.isArray(clientToolSchemas)) {
         for (const entry of clientToolSchemas) {
@@ -2540,26 +2582,13 @@ export async function buildRawActionChatCompletionRequest(directories, {
     const toolsPayload = clientToolsByName.size > 0
         ? { tools: [...clientToolsByName.values()], tool_choice: 'auto' }
         : undefined;
-    /** @type {string[]} */
-    const droppedBiasEntries = [];
-    const { generate_data } = await createGenerationParameters(settings, orchestratorInput.model, type, messages, {
-        directories,
-        macroContext: orchestratorInput.macroContext,
-        biasPresetEntries,
-        droppedBiasEntries,
-        useLogprobs,
-        chatId: anchorNodeId,
-        toolsPayload,
-        jsonSchema,
-        llamaCppProps,
-        tokenCountRows,
+    const { params: generate_data, settings, warnings } = await chatCompletionParameters(directories, {
+        settingsContext, type, messages, macroContext: orchestratorInput.macroContext, model: orchestratorInput.model, responseLength,
+        chatId: anchorNodeId, toolsPayload, jsonSchema, llamaCppProps, tokenCountRows, tokenizerOutcome: orchestratorInput.tokenizerOutcome,
     });
 
     const anchorChat = orchestratorInput.macroContext.chat;
     const anchorContent = anchorChat.length > 0 ? anchorChat[anchorChat.length - 1] : null;
-
-    const warnings = await chatCompletionSendWarnings(settings.chat_completion_source, orchestratorInput.model, droppedBiasEntries, orchestratorInput.tokenizerOutcome,
-        chatCompletionConnection(settings, directories, orchestratorInput.macroContext, llamaCppProps));
 
     /** @returns {Promise<import('../../prompt-itemization.js').PromptItemization>} */
     const itemize = async () => ({

@@ -5,7 +5,8 @@ import { readSettingsFor, settingsContextOf } from '../settings-reads.js';
 import { resolveTokenizer, createTokenizerOutcome, sendTokenizerWarnings, tokenizerAnswer, tokenizerIdentity } from '../tokenizer-resolve.js';
 import { createStoredCounter, writeBack } from '../token-count-store.js';
 import { tokenizers } from '../tokenizer-ids.js';
-import { resolveTextCompletionGenerationInput } from '../text-completion-generation-input.js';
+import { readTextCompletionConnection, resolveTextCompletionGenerationInput } from '../text-completion-generation-input.js';
+import { createTextCompletionParameters } from '../text-completion-parameters.js';
 import { buildTextCompletionPrompt } from '../prompt/text-prompt.js';
 import { startItemizing } from '../prompt-itemization.js';
 import { generateTurnOf, textCompletionQuietInput } from '../page-writes.js';
@@ -218,17 +219,10 @@ export async function buildRawActionNovelRequest(directories, {
         anchorNodeId = nodeId;
     }
 
-    const { nai_settings: naiSettings = {}, power_user: powerUser = {} } = readSettingsFor(directories, settingsContextOf({ avatar: characterAvatar, groupId, chat, nodeId }), ['nai_settings', 'power_user']);
-    const tokenizerState = { api: 'novel', model: naiSettings.model_novel ?? '', tokenizerSetting: powerUser.tokenizer };
-    const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories });
-    const identity = await tokenizerIdentity(resolvedTokenizer);
-    const tokenizerOutcome = createTokenizerOutcome();
-    const encodeOptions = { request, ...tokenizerOptions, outcome: tokenizerOutcome };
-    const storedCounter = createStoredCounter({ resolved: resolvedTokenizer, identity, directories, encodeOptions });
-    const encodeTokens = storedCounter.encodeText;
-    const countTokens = storedCounter.countText;
-    const encodeTokensByType = (_tokenizerType, text) => encodeTokens(text);
-    const novelTokenizerType = resolvedTokenizer.kind === 'estimate' ? tokenizers.NONE : resolvedTokenizer.id;
+    const settingsContext = settingsContextOf({ avatar: characterAvatar, groupId, chat, nodeId });
+    const { nai_settings: naiSettings = {} } = readSettingsFor(directories, settingsContext, ['nai_settings']);
+    const tokenizer = await novelTokenizer(directories, { request, settingsContext, tokenizerOptions });
+    const { encodeTokens, countTokens, encodeTokensByType, novelTokenizerType } = tokenizer;
 
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, mainApi: 'novel', chatContext: chat, nodeId,
@@ -254,12 +248,60 @@ export async function buildRawActionNovelRequest(directories, {
     return {
         params: { ...assembled.generate_data, streaming: Boolean(naiSettings.streaming_novel) && type !== 'quiet' },
         prompt: assembled.combinedPrompt,
-        anchorNodeId, anchorContent, activations: assembled.activations, tokenCountRows: storedCounter.pending,
+        anchorNodeId, anchorContent, activations: assembled.activations, tokenCountRows: tokenizer.pending,
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
-        warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
+        warnings: tokenizer.warnings(assembled.droppedEntries),
         macroVariables: macroVariableChanges(orchestratorInput.chatMetadata, orchestratorInput.macroFacts.globalVariables, orchestratorInput.variablesBefore),
-        itemize: async () => ({ ...(await assembled.itemize()), tokenizer: tokenizerAnswer(tokenizerState, resolvedTokenizer, tokenizerOutcome) }),
+        itemize: async () => ({ ...(await assembled.itemize()), tokenizer: tokenizer.answer() }),
     };
+}
+
+/**
+ * The tokenizer a NovelAI prompt is counted and encoded with.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {object} params
+ * @param {import('express').Request} [params.request]
+ * @param {import('../settings-reads.js').SettingsContext} params.settingsContext
+ * @param {object} [params.tokenizerOptions]
+ */
+export async function novelTokenizer(directories, { request, settingsContext, tokenizerOptions = {} }) {
+    const { nai_settings: naiSettings = {}, power_user: powerUser = {} } = readSettingsFor(directories, settingsContext, ['nai_settings', 'power_user']);
+    const tokenizerState = { api: 'novel', model: naiSettings.model_novel ?? '', tokenizerSetting: powerUser.tokenizer };
+    const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories });
+    const identity = await tokenizerIdentity(resolvedTokenizer);
+    const tokenizerOutcome = createTokenizerOutcome();
+    const encodeOptions = { request, ...tokenizerOptions, outcome: tokenizerOutcome };
+    const storedCounter = createStoredCounter({ resolved: resolvedTokenizer, identity, directories, encodeOptions });
+    const encodeTokens = storedCounter.encodeText;
+    return {
+        encodeTokens, countTokens: storedCounter.countText, pending: storedCounter.pending,
+        encodeTokensByType: (/** @type {number} */ _tokenizerType, /** @type {string} */ text) => encodeTokens(text),
+        novelTokenizerType: resolvedTokenizer.kind === 'estimate' ? tokenizers.NONE : resolvedTokenizer.id,
+        warnings: (/** @type {string[]} */ dropped) => sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, dropped),
+        answer: () => tokenizerAnswer(tokenizerState, resolvedTokenizer, tokenizerOutcome),
+    };
+}
+
+/**
+ * The request a reply to given text is sent to NovelAI with: no chat goes in.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {object} params
+ * @param {import('express').Request} [params.request]
+ * @param {import('../settings-reads.js').SettingsContext} params.settingsContext
+ * @param {string} params.prompt
+ * @param {import('../macro-substitution.js').SubstituteParamsContext} params.macroContext
+ * @param {number} [params.responseLength]
+ * @returns {Promise<{ body: Record<string, any>, tokenCountRows: import('../token-count-store.js').PendingTokenRows }>}
+ */
+export async function novelRawRequest(directories, { request, settingsContext, prompt, macroContext, responseLength }) {
+    const tokenizer = await novelTokenizer(directories, { request, settingsContext });
+    const connection = readTextCompletionConnection(directories, settingsContext, 'novel', responseLength);
+    const { generate_data } = await createTextCompletionParameters(connection, {
+        prompt, type: 'quiet', name1: String(macroContext.name1 ?? ''), name2: String(macroContext.name2 ?? ''), isGroup: Boolean(macroContext.isGroup),
+        groupMemberNames: macroContext.groupMembers ?? [], macroContext,
+        encodeTokens: tokenizer.encodeTokens, encodeTokensByType: tokenizer.encodeTokensByType, novelTokenizerType: tokenizer.novelTokenizerType,
+    });
+    return { body: { ...generate_data, input: prompt, streaming: false }, tokenCountRows: tokenizer.pending };
 }
 
 /**

@@ -212,8 +212,25 @@ async function generateServer(t, reply) {
         post: (body, headers = {}) => fetch(`http://127.0.0.1:${server.address().port}/api/generation/generate`, {
             method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ST-Session': 'none', ...headers }, body: JSON.stringify(body),
         }),
+        /**
+         * @param {object} body
+         */
+        raw: (body) => fetch(`http://127.0.0.1:${server.address().port}/api/generation/raw`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        }),
     };
 }
+
+test('a reply to given text needs no chat, no character and no session', async (t) => {
+    const generate = await generateServer(t, 'Hello back.');
+    const answer = await generate.raw({ prompt: 'Say hello.', response_length: 12 });
+    const reply = await answer.json();
+
+    assert.equal(answer.status, 200, JSON.stringify(reply));
+    assert.equal(reply.choices?.[0]?.text, 'Hello back.');
+    assert.ok(generate.seen.prompt.includes('Say hello.'), generate.seen.prompt);
+    assert.equal(reply.stored, undefined, 'nothing is stored');
+});
 
 test('the user message is stored as the page sent it, and the prompt has what the page added', async (t) => {
     const avatar = `pw-route-${randomUUID()}.png`;

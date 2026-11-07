@@ -6,7 +6,8 @@ import { readSettingsFor, settingsContextOf } from '../../settings-reads.js';
 import { resolveTokenizer, createTokenizerOutcome, sendTokenizerWarnings, tokenizerAnswer, tokenizerIdentity } from '../../tokenizer-resolve.js';
 import { createStoredCounter, writeBack } from '../../token-count-store.js';
 import { fetchKoboldStatus, koboldCanUseTokenization, koboldFlagsFor, koboldFlagsOf, lookupBackendModel, rememberKoboldFlags, rememberRemoteTokenization } from '../../backend-status.js';
-import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
+import { readTextCompletionConnection, resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
+import { createTextCompletionParameters } from '../../text-completion-parameters.js';
 import { buildTextCompletionPrompt } from '../../prompt/text-prompt.js';
 import { startItemizing } from '../../prompt-itemization.js';
 import { generateTurnOf, textCompletionQuietInput } from '../../page-writes.js';
@@ -81,21 +82,8 @@ export async function buildRawActionKoboldRequest(directories, {
         anchorNodeId = nodeId;
     }
 
-    const {
-        power_user: powerUser = {}, kai_settings: koboldSettings = {}, horde_settings: hordeSettings = {},
-    } = readSettingsFor(directories, settingsContextOf({ avatar: characterAvatar, groupId, chat, nodeId }), ['power_user', 'kai_settings', 'horde_settings']);
-    const url = koboldSettings.api_server ?? '';
-    const tokenizerState = macroExtras.isHorde
-        ? { api: 'koboldhorde', hordeModels: Array.isArray(hordeSettings.models) ? hordeSettings.models : [], tokenizerSetting: powerUser.tokenizer }
-        : { api: 'kobold', url, model: '', tokenizerSetting: powerUser.tokenizer };
-    const koboldFlags = macroExtras.isHorde ? {} : await koboldFlagsFor(url);
-    const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories });
-    const identity = await tokenizerIdentity(resolvedTokenizer);
-    const tokenizerOutcome = createTokenizerOutcome();
-    const encodeOptions = { request, koboldBaseUrl: url, ...tokenizerOptions, outcome: tokenizerOutcome };
-    const storedCounter = createStoredCounter({ resolved: resolvedTokenizer, identity, directories, encodeOptions });
-    const encodeTokens = storedCounter.encodeText;
-    const countTokens = storedCounter.countText;
+    const tokenizer = await koboldTokenizer(directories, { request, settingsContext: settingsContextOf({ avatar: characterAvatar, groupId, chat, nodeId }), isHorde: Boolean(macroExtras.isHorde), tokenizerOptions });
+    const { encodeTokens, countTokens, koboldFlags } = tokenizer;
 
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, mainApi: 'kobold', chatContext: chat, nodeId,
@@ -118,12 +106,64 @@ export async function buildRawActionKoboldRequest(directories, {
     const anchorContent = orchestratorInput.chat.length > 0 ? orchestratorInput.chat[orchestratorInput.chat.length - 1] : null;
 
     return {
-        params: assembled.generate_data, prompt: assembled.combinedPrompt, anchorNodeId, anchorContent, activations: assembled.activations, tokenCountRows: storedCounter.pending,
+        params: assembled.generate_data, prompt: assembled.combinedPrompt, anchorNodeId, anchorContent, activations: assembled.activations, tokenCountRows: tokenizer.pending,
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
-        warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
+        warnings: tokenizer.warnings(assembled.droppedEntries),
         macroVariables: macroVariableChanges(orchestratorInput.chatMetadata, orchestratorInput.macroFacts.globalVariables, orchestratorInput.variablesBefore),
-        itemize: async () => ({ ...(await assembled.itemize()), tokenizer: tokenizerAnswer(tokenizerState, resolvedTokenizer, tokenizerOutcome) }),
+        itemize: async () => ({ ...(await assembled.itemize()), tokenizer: tokenizer.answer() }),
     };
+}
+
+/**
+ * The tokenizer a KoboldAI or Horde prompt is counted and encoded with, and the Kobold server's abilities.
+ * @param {import('../../users.js').UserDirectoryList} directories
+ * @param {object} params
+ * @param {import('express').Request} [params.request]
+ * @param {import('../../settings-reads.js').SettingsContext} params.settingsContext
+ * @param {boolean} [params.isHorde]
+ * @param {object} [params.tokenizerOptions]
+ */
+export async function koboldTokenizer(directories, { request, settingsContext, isHorde = false, tokenizerOptions = {} }) {
+    const {
+        power_user: powerUser = {}, kai_settings: koboldSettings = {}, horde_settings: hordeSettings = {},
+    } = readSettingsFor(directories, settingsContext, ['power_user', 'kai_settings', 'horde_settings']);
+    const url = koboldSettings.api_server ?? '';
+    const tokenizerState = isHorde
+        ? { api: 'koboldhorde', hordeModels: Array.isArray(hordeSettings.models) ? hordeSettings.models : [], tokenizerSetting: powerUser.tokenizer }
+        : { api: 'kobold', url, model: '', tokenizerSetting: powerUser.tokenizer };
+    const koboldFlags = isHorde ? {} : await koboldFlagsFor(url);
+    const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories });
+    const identity = await tokenizerIdentity(resolvedTokenizer);
+    const tokenizerOutcome = createTokenizerOutcome();
+    const encodeOptions = { request, koboldBaseUrl: url, ...tokenizerOptions, outcome: tokenizerOutcome };
+    const storedCounter = createStoredCounter({ resolved: resolvedTokenizer, identity, directories, encodeOptions });
+    return {
+        encodeTokens: storedCounter.encodeText, countTokens: storedCounter.countText, koboldFlags, pending: storedCounter.pending,
+        warnings: (/** @type {string[]} */ dropped) => sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, dropped),
+        answer: () => tokenizerAnswer(tokenizerState, resolvedTokenizer, tokenizerOutcome),
+    };
+}
+
+/**
+ * The parameters a reply to given text is sent to the stored KoboldAI server, or the Horde, with: no chat goes in.
+ * @param {import('../../users.js').UserDirectoryList} directories
+ * @param {object} params
+ * @param {import('express').Request} [params.request]
+ * @param {import('../../settings-reads.js').SettingsContext} params.settingsContext
+ * @param {string} params.prompt
+ * @param {import('../../macro-substitution.js').SubstituteParamsContext} params.macroContext
+ * @param {number} [params.responseLength]
+ * @param {boolean} [params.isHorde]
+ * @returns {Promise<{ params: Record<string, any>, tokenCountRows: import('../../token-count-store.js').PendingTokenRows }>}
+ */
+export async function koboldRawParameters(directories, { request, settingsContext, prompt, macroContext, responseLength, isHorde = false }) {
+    const tokenizer = await koboldTokenizer(directories, { request, settingsContext, isHorde });
+    const connection = readTextCompletionConnection(directories, settingsContext, 'kobold', responseLength);
+    const { generate_data } = await createTextCompletionParameters(connection, {
+        prompt, type: 'quiet', name1: String(macroContext.name1 ?? ''), name2: String(macroContext.name2 ?? ''), isGroup: Boolean(macroContext.isGroup),
+        groupMemberNames: macroContext.groupMembers ?? [], macroContext, encodeTokens: tokenizer.encodeTokens, koboldFlags: tokenizer.koboldFlags, isHorde,
+    });
+    return { params: generate_data, tokenCountRows: tokenizer.pending };
 }
 
 /**
