@@ -31,8 +31,6 @@ export const event_types = {
     CHAT_RENAMED: 'chat_renamed',
     GROUP_CHAT_DELETED: 'group_chat_deleted',
     GENERATE_AFTER_COMBINE_PROMPTS: 'generate_after_combine_prompts',
-    GENERATE_AFTER_DATA: 'generate_after_data',
-    CHAT_COMPLETION_SETTINGS_READY: 'chat_completion_settings_ready',
     CHAT_COMPLETION_PROMPT_READY: 'chat_completion_prompt_ready',
     // TODO: Naming convention is inconsistent with other events
     CHARACTER_DELETED: 'characterDeleted',
