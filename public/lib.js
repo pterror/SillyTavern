@@ -2,7 +2,6 @@
  * Add all the libraries that you want to expose to the client here.
  * They are bundled and exposed by Webpack in the /lib.js file.
  */
-import lodash from 'lodash';
 import Fuse from 'fuse.js';
 import DOMPurify from 'dompurify';
 import hljs from 'highlight.js';
@@ -24,7 +23,6 @@ import { gzip } from 'fflate';
 import { sha256 } from 'js-sha256';
 
 export {
-    lodash,
     Fuse,
     DOMPurify,
     hljs,

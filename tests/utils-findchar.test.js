@@ -21,7 +21,6 @@ jest.unstable_mockModule('../public/lib.js', () => ({
     DOMPurify: {},
     Readability: class {},
     isProbablyReaderable: jest.fn(),
-    lodash: {},
 }));
 
 jest.unstable_mockModule('../public/script.js', () => ({

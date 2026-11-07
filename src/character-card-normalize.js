@@ -1,8 +1,7 @@
-import _ from 'lodash';
-
 import { deepMerge, tryParse } from './util.js';
 import { readWorldInfoFile, getCharacterWorldLink } from './endpoints/worldinfo.js';
 import { character_world_link } from '../public/scripts/character-world-link.js';
+import { getAtPath, setAtPath } from '../public/scripts/hash-utils.js';
 export { computeContentIdentityHash, stripInstallLocalFields } from './card-identity-hash.js';
 
 /**
@@ -48,7 +47,7 @@ export function convertToV2(char, directories) {
     if (char.chat != null) {
         result.chat = char.chat;
     } else {
-        _.unset(result, 'chat');
+        delete result.chat;
     }
     result.create_date = char.create_date;
 
@@ -56,24 +55,24 @@ export function convertToV2(char, directories) {
 }
 
 export function unsetPrivateFields(char) {
-    _.set(char, 'fav', false);
-    _.set(char, 'data.extensions.fav', false);
-    _.unset(char, 'chat');
+    char.fav = false;
+    setAtPath(char, 'data.extensions.fav', false);
+    delete char.chat;
 }
 
 export function omitInstallLocalFields(char) {
-    _.unset(char, 'fav');
-    _.unset(char, 'data.extensions.fav');
-    _.unset(char, 'chat');
+    delete char.fav;
+    delete char.data?.extensions?.fav;
+    delete char.chat;
 }
 
 export function omitFavField(char) {
-    _.unset(char, 'fav');
-    _.unset(char, 'data.extensions.fav');
+    delete char.fav;
+    delete char.data?.extensions?.fav;
 }
 
 export function omitChatField(char) {
-    _.unset(char, 'chat');
+    delete char.chat;
 }
 
 export const V1_V2_FIELD_MAPPINGS = {
@@ -93,16 +92,16 @@ export const V1_V2_FIELD_MAPPINGS = {
  * @returns {object}
  */
 export function readFromV2(char) {
-    if (_.isUndefined(char.data)) {
+    if (char.data === undefined) {
         console.warn(`Char ${char.name} has Spec v2 data missing`);
         return char;
     }
 
-    _.unset(char, 'json_data');
+    delete char.json_data;
 
-    _.forEach(V1_V2_FIELD_MAPPINGS, (v2Path, charField) => {
-        const v2Value = _.get(char.data, v2Path);
-        if (_.isUndefined(v2Value)) {
+    for (const [charField, v2Path] of Object.entries(V1_V2_FIELD_MAPPINGS)) {
+        const v2Value = getAtPath(char.data, v2Path);
+        if (v2Value === undefined) {
             let defaultValue = undefined;
 
             if (v2Path === 'extensions.talkativeness') {
@@ -113,18 +112,18 @@ export function readFromV2(char) {
                 defaultValue = false;
             }
 
-            if (!_.isUndefined(defaultValue)) {
+            if (defaultValue !== undefined) {
                 char[charField] = defaultValue;
             } else {
                 console.warn(`Char ${char.name} has Spec v2 data missing for unknown field: ${charField}`);
-                return;
+                continue;
             }
         }
-        if (!_.isUndefined(char[charField]) && !_.isUndefined(v2Value) && String(char[charField]) !== String(v2Value)) {
+        if (char[charField] !== undefined && v2Value !== undefined && String(char[charField]) !== String(v2Value)) {
             console.warn(`Char ${char.name} has Spec v2 data mismatch with Spec v1 for field: ${charField}`, char[charField], v2Value);
         }
         char[charField] = v2Value;
-    });
+    }
 
     return char;
 }
@@ -137,7 +136,7 @@ export function readFromV2(char) {
 export function charaFormatData(data, directories) {
     const char = tryParse(data.json_data) || {};
 
-    _.unset(char, 'json_data');
+    delete char.json_data;
 
     const getAlternateGreetings = data => {
         if (Array.isArray(data.alternate_greetings)) return data.alternate_greetings;
@@ -145,58 +144,58 @@ export function charaFormatData(data, directories) {
         return [];
     };
 
-    _.set(char, 'name', data.ch_name);
-    _.set(char, 'description', data.description || '');
-    _.set(char, 'personality', data.personality || '');
-    _.set(char, 'scenario', data.scenario || '');
-    _.set(char, 'first_mes', data.first_mes || '');
-    _.set(char, 'mes_example', data.mes_example || '');
+    char.name = data.ch_name;
+    char.description = data.description || '';
+    char.personality = data.personality || '';
+    char.scenario = data.scenario || '';
+    char.first_mes = data.first_mes || '';
+    char.mes_example = data.mes_example || '';
 
-    _.set(char, 'creatorcomment', data.creator_notes || '');
-    _.set(char, 'avatar', 'none');
-    _.set(char, 'talkativeness', data.talkativeness || 0.5);
-    _.set(char, 'fav', data.fav == 'true');
-    _.set(char, 'tags', typeof data.tags == 'string' ? (data.tags.split(',').map(x => x.trim()).filter(x => x)) : data.tags || []);
+    char.creatorcomment = data.creator_notes || '';
+    char.avatar = 'none';
+    char.talkativeness = data.talkativeness || 0.5;
+    char.fav = data.fav == 'true';
+    char.tags = typeof data.tags == 'string' ? (data.tags.split(',').map(x => x.trim()).filter(x => x)) : data.tags || [];
 
-    _.set(char, 'spec', 'chara_card_v2');
-    _.set(char, 'spec_version', '2.0');
-    _.set(char, 'data.name', data.ch_name);
-    _.set(char, 'data.description', data.description || '');
-    _.set(char, 'data.personality', data.personality || '');
-    _.set(char, 'data.scenario', data.scenario || '');
-    _.set(char, 'data.first_mes', data.first_mes || '');
-    _.set(char, 'data.mes_example', data.mes_example || '');
+    char.spec = 'chara_card_v2';
+    char.spec_version = '2.0';
+    setAtPath(char, 'data.name', data.ch_name);
+    setAtPath(char, 'data.description', data.description || '');
+    setAtPath(char, 'data.personality', data.personality || '');
+    setAtPath(char, 'data.scenario', data.scenario || '');
+    setAtPath(char, 'data.first_mes', data.first_mes || '');
+    setAtPath(char, 'data.mes_example', data.mes_example || '');
 
-    _.set(char, 'data.creator_notes', data.creator_notes || '');
-    _.set(char, 'data.system_prompt', data.system_prompt || '');
-    _.set(char, 'data.post_history_instructions', data.post_history_instructions || '');
-    _.set(char, 'data.tags', typeof data.tags == 'string' ? (data.tags.split(',').map(x => x.trim()).filter(x => x)) : data.tags || []);
-    _.set(char, 'data.creator', data.creator || '');
-    _.set(char, 'data.character_version', data.character_version || '');
-    _.set(char, 'data.alternate_greetings', getAlternateGreetings(data));
+    setAtPath(char, 'data.creator_notes', data.creator_notes || '');
+    setAtPath(char, 'data.system_prompt', data.system_prompt || '');
+    setAtPath(char, 'data.post_history_instructions', data.post_history_instructions || '');
+    setAtPath(char, 'data.tags', typeof data.tags == 'string' ? (data.tags.split(',').map(x => x.trim()).filter(x => x)) : data.tags || []);
+    setAtPath(char, 'data.creator', data.creator || '');
+    setAtPath(char, 'data.character_version', data.character_version || '');
+    setAtPath(char, 'data.alternate_greetings', getAlternateGreetings(data));
 
-    _.set(char, 'data.extensions.talkativeness', data.talkativeness || 0.5);
-    _.set(char, 'data.extensions.fav', data.fav == 'true');
-    _.set(char, 'data.extensions.world', data.world || '');
+    setAtPath(char, 'data.extensions.talkativeness', data.talkativeness || 0.5);
+    setAtPath(char, 'data.extensions.fav', data.fav == 'true');
+    setAtPath(char, 'data.extensions.world', data.world || '');
 
     const depth_default = 4;
     const role_default = 'system';
     const depth_value = !isNaN(Number(data.depth_prompt_depth)) ? Number(data.depth_prompt_depth) : depth_default;
     const role_value = data.depth_prompt_role ?? role_default;
-    _.set(char, 'data.extensions.depth_prompt.prompt', data.depth_prompt_prompt ?? '');
-    _.set(char, 'data.extensions.depth_prompt.depth', depth_value);
-    _.set(char, 'data.extensions.depth_prompt.role', role_value);
+    setAtPath(char, 'data.extensions.depth_prompt.prompt', data.depth_prompt_prompt ?? '');
+    setAtPath(char, 'data.extensions.depth_prompt.depth', depth_value);
+    setAtPath(char, 'data.extensions.depth_prompt.role', role_value);
 
     if (data.world && getCharacterWorldLink(directories, char) !== character_world_link.EMBEDDED) {
         try {
             const file = readWorldInfoFile(directories, data.world, false);
 
             if (file && file.originalData) {
-                _.set(char, 'data.character_book', file.originalData);
+                setAtPath(char, 'data.character_book', file.originalData);
             }
 
             if (file && file.entries) {
-                _.set(char, 'data.character_book', convertWorldInfoToCharacterBook(data.world, file.entries));
+                setAtPath(char, 'data.character_book', convertWorldInfoToCharacterBook(data.world, file.entries));
             }
         } catch {
             console.warn(`Failed to read world info file: ${data.world}. Character book will not be available.`);
@@ -206,7 +205,7 @@ export function charaFormatData(data, directories) {
     if (data.extensions) {
         try {
             const extensions = JSON.parse(data.extensions);
-            _.set(char, 'data.extensions', deepMerge(char.data.extensions, extensions));
+            setAtPath(char, 'data.extensions', deepMerge(char.data.extensions, extensions));
         } catch {
             console.warn(`Failed to parse extensions JSON: ${data.extensions}`);
         }

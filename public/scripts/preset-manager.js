@@ -1,4 +1,5 @@
-import { Fuse, lodash } from '../lib.js';
+import { Fuse } from '../lib.js';
+import { getAtPath, setAtPath } from './hash-utils.js';
 
 import {
     getCurrentCharacter,
@@ -836,7 +837,7 @@ class PresetManager {
         // Read from settings if the selected preset is the same as the provided name
         if (settings && selectedName === presetName) {
             const settingsExtensions = ensurePlainObject(settings.extensions || {});
-            return path ? lodash.get(settingsExtensions, path, null) : settingsExtensions;
+            return path ? getAtPath(settingsExtensions, path) ?? null : settingsExtensions;
         }
 
         // Otherwise, read from the preset by name
@@ -846,7 +847,7 @@ class PresetManager {
         }
 
         const presetExtensions = ensurePlainObject(preset.extensions || {});
-        const value = path ? lodash.get(presetExtensions, path, null) : presetExtensions;
+        const value = path ? getAtPath(presetExtensions, path) ?? null : presetExtensions;
         return value;
     }
 
@@ -989,7 +990,7 @@ class PresetManager {
         if (settings && selectedName === presetName) {
             // Set the value at the specified path
             settings.extensions = ensurePlainObject(settings.extensions || {});
-            path ? lodash.set(settings.extensions, path, value) : (settings.extensions = value);
+            path ? setAtPath(settings.extensions, path, value) : (settings.extensions = value);
             const settingsKey = this.getExtensionsSettingsKey();
             settingsKey ? await saveSettings(settingsKey) : await saveSettings();
         }
@@ -1002,7 +1003,7 @@ class PresetManager {
 
         // Set the value at the specified path
         preset.extensions = ensurePlainObject(preset.extensions || {});
-        path ? lodash.set(preset.extensions, path, value) : (preset.extensions = value);
+        path ? setAtPath(preset.extensions, path, value) : (preset.extensions = value);
 
         const response = await fetch('/api/presets/save-partial', {
             method: 'POST',

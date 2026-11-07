@@ -4,9 +4,9 @@ import path from 'node:path';
 
 import express from 'express';
 import sanitize from 'sanitize-filename';
-import _ from 'lodash';
 import { readAllSettings, writeSettingsKeys } from '../settings-store.js';
 import { readUserSettings } from '../settings-reads.js';
+import { isPlainObject } from '../util.js';
 import { resolveCharacterWorldLink } from '../../public/scripts/character-world-link.js';
 import { engineStoreHere, requestStore, storeRoute, userStore } from '../user-stores.js';
 import { MAX_UID, bookExistsHere, readBookHere } from '../world-info-engine.js';
@@ -246,7 +246,7 @@ router.post('/create', storeRoute('creating a World Info book', async (request, 
     if (name !== undefined && typeof name !== 'string') {
         return response.status(400).send({ error: 'name must be a string' });
     }
-    if (data !== undefined && (!_.isPlainObject(data) || !_.isObjectLike(data.entries))) {
+    if (data !== undefined && (!isPlainObject(data) || typeof data.entries !== 'object' || data.entries === null)) {
         return response.status(400).send({ error: 'data must be a World Info object with entries' });
     }
 
@@ -294,7 +294,7 @@ router.post('/entries/apply', storeRoute('applying World Info changes', async (r
         if ((typeof uid !== 'number' && typeof uid !== 'string') || !sanitizeEntryUid(uid)) {
             return response.status(400).send({ error: 'every entry change needs a uid' });
         }
-        if (change.data != null && !_.isPlainObject(change.data)) {
+        if (change.data != null && !isPlainObject(change.data)) {
             return response.status(400).send({ error: `entry ${String(uid)}: data must be an object or null` });
         }
     }
@@ -349,18 +349,18 @@ router.post('/rename', storeRoute('renaming a World Info book', async (request, 
     const current = readUserSettings(directories, ['world_info_settings', 'power_user.persona_data']);
     /** @type {Record<string, unknown>} */
     const settings = {};
-    const worldInfoSettings = _.isPlainObject(current.world_info_settings) ? _.cloneDeep(current.world_info_settings) : null;
-    if (worldInfoSettings && _.isPlainObject(worldInfoSettings.world_info)) {
+    const worldInfoSettings = isPlainObject(current.world_info_settings) ? structuredClone(current.world_info_settings) : null;
+    if (worldInfoSettings && isPlainObject(worldInfoSettings.world_info)) {
         const worldInfo = worldInfoSettings.world_info;
         const before = JSON.stringify(worldInfo);
-        if (Array.isArray(worldInfo.globalSelect)) worldInfo.globalSelect = _.uniq(worldInfo.globalSelect.map(rename));
+        if (Array.isArray(worldInfo.globalSelect)) worldInfo.globalSelect = [...new Set(worldInfo.globalSelect.map(rename))];
         if (JSON.stringify(worldInfo) !== before) settings.world_info_settings = worldInfoSettings;
     }
-    const personaData = _.isPlainObject(current['power_user.persona_data']) ? _.cloneDeep(current['power_user.persona_data']) : null;
+    const personaData = isPlainObject(current['power_user.persona_data']) ? structuredClone(current['power_user.persona_data']) : null;
     if (personaData) {
         let personasChanged = false;
         for (const persona of Object.values(personaData)) {
-            if (_.isPlainObject(persona) && persona.lorebook === name) {
+            if (isPlainObject(persona) && persona.lorebook === name) {
                 persona.lorebook = newName;
                 personasChanged = true;
             }
@@ -466,7 +466,7 @@ router.post('/entry/edit', storeRoute('saving a World Info entry', async (reques
     if (uid === undefined || uid === null || uid === '') {
         return response.status(400).send({ error: 'uid is required' });
     }
-    if (!_.isObjectLike(entryData) || Array.isArray(entryData)) {
+    if (!isPlainObject(entryData)) {
         return response.status(400).send({ error: 'data must be an object' });
     }
 

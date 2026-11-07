@@ -1,7 +1,6 @@
 import { describe, test, expect, jest, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import path from 'node:path';
 import process from 'node:process';
-import lodash from 'lodash';
 import { installBrowserStorage } from './util/browser-storage.js';
 import { LIST_CREATOR_NOTES_CHARS } from '../public/scripts/hash-utils.js';
 
@@ -37,7 +36,6 @@ const residentCharacters = [];
 const noop = () => {};
 
 jest.unstable_mockModule('../public/lib.js', () => ({
-    lodash,
     localforage: { createInstance: createFakeLocalforageInstance },
 }));
 jest.unstable_mockModule('../public/scripts/user.js', () => ({ getCurrentUserHandle: () => USER_HANDLE }));

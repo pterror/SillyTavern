@@ -8,7 +8,6 @@ import express from 'express';
 import sanitize from 'sanitize-filename';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import yaml from 'yaml';
-import _ from 'lodash';
 import mime from 'mime-types';
 import extractPngChunks from 'png-chunks-extract';
 import { Jimp, JimpMime } from '../jimp.js';
@@ -16,7 +15,7 @@ import storage from 'node-persist';
 
 import { DEFAULT_AVATAR_PATH } from '../constants.js';
 import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction, forbiddenRegExp } from '../middleware/validateFileName.js';
-import { deepMerge, humanizedDateTime, tryParse, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7, writeBackpressured } from '../util.js';
+import { debounce, deepMerge, humanizedDateTime, isPlainObject, tryParse, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7, writeBackpressured } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { importFailure, NO_CARD_DATA } from '../character-import-error.js';
 import { computeAnimatedHashFromChunks, computeAvatarIdentityHashFromChunks, parse, write } from '../character-card-parser.js';
@@ -32,7 +31,7 @@ import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
 import { savedViewsEvents } from '../saved-views.js';
-import { getStringHash, normalizeFav } from '../../public/scripts/hash-utils.js';
+import { getAtPath, getStringHash, normalizeFav, setAtPath } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
 import { withSearchTiming } from '../search-timing.js';
@@ -231,11 +230,11 @@ export async function readExtraBooks(directories, avatar) {
  * @returns {any}
  */
 function withV2FieldsOnTop(card) {
-    if (card.spec === undefined || _.isUndefined(card.data)) return card;
-    _.forEach(V1_V2_FIELD_MAPPINGS, (v2Path, charField) => {
-        const v2Value = _.get(card.data, v2Path);
-        if (!_.isUndefined(v2Value)) card[charField] = v2Value;
-    });
+    if (card.spec === undefined || card.data === undefined) return card;
+    for (const [charField, v2Path] of Object.entries(V1_V2_FIELD_MAPPINGS)) {
+        const v2Value = getAtPath(card.data, v2Path);
+        if (v2Value !== undefined) card[charField] = v2Value;
+    }
     return card;
 }
 
@@ -453,7 +452,7 @@ export async function characterObjects(request, avatars, { shallow }) {
         character.date_last_chat = stats.get(e.id)?.date_last_chat ?? 0;
         character.data_size = e.dataSize ?? calculateDataSize(character.data);
         character.fav = e.fav;
-        _.set(character, 'data.extensions.fav', e.fav);
+        setAtPath(character, 'data.extensions.fav', e.fav);
         character.chat = chats.get(e.id);
         character.tag_ids = tagKeys.get(e.id) ?? [];
         const allow = e.values.find(v => v.field === FIELD.allow_global_styles);
@@ -840,8 +839,8 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
 
         const data = getCharaCardV2(JSON.parse(rawData), request.user.directories);
         const oldName = data.data?.name ?? data.name;
-        _.set(data, 'data.name', newName);
-        _.set(data, 'name', newName);
+        setAtPath(data, 'data.name', newName);
+        data.name = newName;
         const renamed = typeof oldName === 'string' && oldName !== newName
             ? { from: oldName, pastChats: request.body.rename_past_chats === true }
             : undefined;
@@ -954,8 +953,8 @@ const BULK_MERGE_CONCURRENCY = 10;
 function processUnsetSentinels(target, source) {
     for (const key of Object.keys(source)) {
         if (source[key] === UNSET_SENTINEL) {
-            _.unset(target, key);
-        } else if (_.isPlainObject(source[key]) && _.isPlainObject(target[key])) {
+            delete target[key];
+        } else if (isPlainObject(source[key]) && isPlainObject(target[key])) {
             processUnsetSentinels(target[key], source[key]);
         }
     }
@@ -982,12 +981,12 @@ async function mergeCharacterUpdate(avatar, updateData, request, shouldSkip = nu
         return { ok: false, skipped: true };
     }
 
-    const update = _.cloneDeep(updateData);
-    _.unset(update, 'json_data');
-    _.unset(character, 'json_data');
+    const update = structuredClone(updateData);
+    delete update.json_data;
+    delete character.json_data;
 
     const forbiddenGreetingPaths = ['data.alternate_greetings', 'data.first_mes', 'alternate_greetings', 'first_mes'];
-    const touchedGreetingPaths = forbiddenGreetingPaths.filter(p => _.has(update, p));
+    const touchedGreetingPaths = forbiddenGreetingPaths.filter(p => getAtPath(update, p) !== undefined);
     if (touchedGreetingPaths.length > 0) {
         return { ok: false, error: 'greeting-fields-forbidden', touchedGreetingPaths };
     }
@@ -998,7 +997,7 @@ async function mergeCharacterUpdate(avatar, updateData, request, shouldSkip = nu
     if (loadedFieldHashes && typeof loadedFieldHashes === 'object') {
         const conflictingFields = [];
         for (const [v2Path, loadedHash] of Object.entries(loadedFieldHashes)) {
-            const currentValue = _.get(character, v2Path);
+            const currentValue = getAtPath(character, v2Path);
             const currentHash = getStringHash(JSON.stringify(currentValue !== undefined ? currentValue : null));
             if (currentHash !== loadedHash) {
                 conflictingFields.push(v2Path);
@@ -1012,12 +1011,12 @@ async function mergeCharacterUpdate(avatar, updateData, request, shouldSkip = nu
         }
     }
 
-    const favRequested = _.has(update, 'fav') || _.has(update, 'data.extensions.fav');
-    const chatRequested = _.has(update, 'chat');
+    const favRequested = update.fav !== undefined || update.data?.extensions?.fav !== undefined;
+    const chatRequested = update.chat !== undefined;
 
     character = deepMerge(character, update);
     processUnsetSentinels(character, update);
-    const requestedFav = normalizeFav(character.fav ?? _.get(character, 'data.extensions.fav'));
+    const requestedFav = normalizeFav(character.fav ?? character.data?.extensions?.fav);
     const requestedChat = character.chat;
     omitFavField(character);
     omitChatField(character);
@@ -1041,7 +1040,7 @@ async function mergeCharacterUpdate(avatar, updateData, request, shouldSkip = nu
     if (loadedFieldHashes && typeof loadedFieldHashes === 'object') {
         hashes = {};
         for (const v2Path of Object.keys(loadedFieldHashes)) {
-            const currentValue = _.get(character, v2Path);
+            const currentValue = getAtPath(character, v2Path);
             hashes[v2Path] = getStringHash(JSON.stringify(currentValue !== undefined ? currentValue : null));
         }
     }
@@ -1074,7 +1073,7 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
         if (Array.isArray(request.body.avatars)) {
             const { avatars, data, filter } = request.body;
 
-            if (!_.isPlainObject(data)) {
+            if (!isPlainObject(data)) {
                 return response.status(400).send({ message: 'No valid update data provided.' });
             }
 
@@ -1100,10 +1099,10 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
                     let shouldSkip = () => false;
 
                     if (filter && typeof filter.path === 'string' && 'equals' in filter) {
-                        shouldSkip = (character) => _.get(character, filter.path) !== filter.equals;
+                        shouldSkip = (character) => getAtPath(character, filter.path) !== filter.equals;
                     } else if (filter && typeof filter.path === 'string') {
                         shouldSkip = (character) => {
-                            const value = _.get(character, filter.path);
+                            const value = getAtPath(character, filter.path);
                             return value === undefined;
                         };
                     }
@@ -2274,10 +2273,10 @@ router.get('/changes/stream', async function (request, response) {
         touchBrowserPresence();
     }, PRESENCE_PING_INTERVAL_MS);
 
-    const writeChanged = _.debounce(() => response.write('data: {}\n\n'), 500, { maxWait: 2000 });
-    const writeGroupsChanged = _.debounce(() => send({ type: 'groups-changed' }), 500, { maxWait: 2000 });
-    const writeTagsChanged = _.debounce(() => send({ type: 'tags-changed' }), 500, { maxWait: 2000 });
-    const writeViewsChanged = _.debounce(() => send({ type: 'views-changed' }), 200, { maxWait: 1000 });
+    const writeChanged = debounce(() => response.write('data: {}\n\n'), 500, 2000);
+    const writeGroupsChanged = debounce(() => send({ type: 'groups-changed' }), 500, 2000);
+    const writeTagsChanged = debounce(() => send({ type: 'tags-changed' }), 500, 2000);
+    const writeViewsChanged = debounce(() => send({ type: 'views-changed' }), 200, 1000);
 
     let entityEnd = await lib.changesEnd();
     let assignmentEnd = (await lib.tags.entityChangesEnd()).seq;

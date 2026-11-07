@@ -2,11 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import express from 'express';
-import _ from 'lodash';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import bytes from 'bytes';
 
-import { getConfigValue, generateTimestamp, removeOldBackups } from '../util.js';
+import { getConfigValue, generateTimestamp, isPlainObject, removeOldBackups } from '../util.js';
 import { getAllUserHandles, getUserDirectories } from '../users.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
 import { CHAR_LORE_PATH, getStringHash, seedKeyHashes, setAtPath, settingsWithoutCharLore } from '../../public/scripts/hash-utils.js';
@@ -79,8 +78,8 @@ export async function withCharLore(lib, settings) {
     const charLore = await lib.charLore();
     if (charLore.length === 0) return settings;
     const [top, mid, last] = CHAR_LORE_PATH;
-    const wis = _.isPlainObject(settings[top]) ? settings[top] : {};
-    const worldInfo = _.isPlainObject(wis[mid]) ? wis[mid] : {};
+    const wis = isPlainObject(settings[top]) ? settings[top] : {};
+    const worldInfo = isPlainObject(wis[mid]) ? wis[mid] : {};
     return { ...settings, [top]: { ...wis, [mid]: { ...worldInfo, [last]: charLore } } };
 }
 

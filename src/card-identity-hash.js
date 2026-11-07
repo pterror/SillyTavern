@@ -1,13 +1,11 @@
 import crypto from 'node:crypto';
 
-import _ from 'lodash';
-
 export function stripInstallLocalFields(char) {
-    const clone = _.cloneDeep(char);
-    _.unset(clone, 'fav');
-    _.unset(clone, 'data.extensions.fav');
-    _.unset(clone, 'chat');
-    _.unset(clone, 'create_date');
+    const clone = structuredClone(char);
+    delete clone.fav;
+    delete clone.data?.extensions?.fav;
+    delete clone.chat;
+    delete clone.create_date;
     return clone;
 }
 

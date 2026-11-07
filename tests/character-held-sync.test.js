@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import process from 'node:process';
-import lodash from 'lodash';
 
 const originalCwd = process.cwd();
 
@@ -41,7 +40,6 @@ const noop = () => {};
 let store;
 
 jest.unstable_mockModule('../public/lib.js', () => ({
-    lodash,
     localforage: { createInstance: createFakeLocalforageInstance },
 }));
 jest.unstable_mockModule('../public/scripts/user.js', () => ({ getCurrentUserHandle: () => USER_HANDLE }));

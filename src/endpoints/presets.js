@@ -1,10 +1,11 @@
 import express from 'express';
-import _ from 'lodash';
 import sanitize from 'sanitize-filename';
 
 import { getDefaultPresetFile, getDefaultPresets } from './content-manager.js';
 import { bundleFolder, groupOfApi } from '../bundle-files.js';
 import { deleteBundle, readBundle, renameBundle, writeBundle } from '../bundle-store.js';
+import { isPlainObject } from '../util.js';
+import { setAtPath } from '../../public/scripts/hash-utils.js';
 
 export const router = express.Router();
 
@@ -55,12 +56,12 @@ router.post('/save-partial', async function (request, response) {
     const fieldPath = request.body.path;
     const value = request.body.value;
 
-    if (!_.isPlainObject(preset.extensions)) {
+    if (!isPlainObject(preset.extensions)) {
         preset.extensions = {};
     }
 
     if (fieldPath) {
-        _.set(preset.extensions, fieldPath, value);
+        setAtPath(preset.extensions, fieldPath, value);
     } else {
         preset.extensions = value;
     }

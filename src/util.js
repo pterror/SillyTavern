@@ -13,7 +13,6 @@ import { once } from 'node:events';
 
 import yaml from 'yaml';
 import { sync as commandExistsSync } from 'command-exists';
-import _ from 'lodash';
 import yauzl from 'yauzl';
 import mime from 'mime-types';
 import { default as simpleGit } from 'simple-git';
@@ -23,6 +22,7 @@ import { LOG_LEVELS, CHAT_COMPLETION_SOURCES, MEDIA_REQUEST_TYPE } from './const
 import { serverDirectory } from './server-directory.js';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import { isFirefox } from './express-common.js';
+import { getAtPath } from '../public/scripts/hash-utils.js';
 
 /**
  * Parsed config object.
@@ -102,7 +102,8 @@ export function getConfigValue(key, defaultValue = null, typeConverter = null) {
             return needsJsonParse ? (tryParse(envValue) ?? defaultValue) : envValue;
         }
         const config = getConfig();
-        return _.get(config, key, defaultValue);
+        const value = getAtPath(config, key);
+        return value === undefined ? defaultValue : value;
     }
 
     const value = _getValue();
@@ -500,15 +501,57 @@ export function getArrayBufferSlice(view) {
     return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
 }
 
-function isObject(item) {
-    return (item && typeof item === 'object' && !Array.isArray(item));
+/**
+ * @param {unknown} value
+ * @returns {value is Record<string, any>}
+ */
+export function isPlainObject(value) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * @param {object} obj
+ * @param {readonly string[]} keys
+ * @returns {object} The entries of `obj` whose key is in `keys`.
+ */
+export function pickKeys(obj, keys) {
+    return Object.fromEntries(Object.entries(obj).filter(([key]) => keys.includes(key)));
+}
+
+/**
+ * Calls `fn` once calls stop for `wait` ms, and at least every `maxWait` ms while they don't.
+ * @param {() => void} fn
+ * @param {number} wait
+ * @param {number} maxWait
+ * @returns {(() => void) & { cancel: () => void }}
+ */
+export function debounce(fn, wait, maxWait) {
+    /** @type {NodeJS.Timeout | null} */
+    let timer = null;
+    let firstCall = 0;
+    const cancel = () => {
+        if (timer) clearTimeout(timer);
+        timer = null;
+        firstCall = 0;
+    };
+    const run = () => {
+        cancel();
+        fn();
+    };
+    const debounced = () => {
+        const now = Date.now();
+        if (!firstCall) firstCall = now;
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(run, Math.max(0, Math.min(wait, firstCall + maxWait - now)));
+    };
+    return Object.assign(debounced, { cancel });
 }
 
 export function deepMerge(target, source) {
     let output = Object.assign({}, target);
-    if (isObject(target) && isObject(source)) {
+    if (isPlainObject(target) && isPlainObject(source)) {
         Object.keys(source).forEach(key => {
-            if (isObject(source[key])) {
+            if (isPlainObject(source[key])) {
                 if (!(key in target)) {
                     Object.assign(output, { [key]: source[key] });
                 } else {

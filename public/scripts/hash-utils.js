@@ -22,6 +22,8 @@ export function getStringHash(str, seed = 0) {
     return 4294967296 * (2097151 & h2) + (h1 >>> 0);
 }
 
+const UNSAFE_PATH_PARTS = new Set(['__proto__', 'constructor', 'prototype']);
+
 /**
  * @param {object|null|undefined} obj
  * @param {string} dottedPath
@@ -43,6 +45,7 @@ export function getAtPath(obj, dottedPath) {
  */
 export function setAtPath(obj, dottedPath, value) {
     const parts = dottedPath.split('.');
+    if (parts.some(part => UNSAFE_PATH_PARTS.has(part))) return;
     let current = obj;
     for (let i = 0; i < parts.length - 1; i++) {
         if (!(parts[i] in current) || current[parts[i]] == null || typeof current[parts[i]] !== 'object') {
@@ -51,6 +54,17 @@ export function setAtPath(obj, dottedPath, value) {
         current = current[parts[i]];
     }
     current[parts[parts.length - 1]] = value;
+}
+
+/**
+ * @param {object|null|undefined} obj
+ * @param {string} dottedPath
+ */
+export function unsetAtPath(obj, dottedPath) {
+    const parts = dottedPath.split('.');
+    const last = parts.pop();
+    const parent = parts.length > 0 ? getAtPath(obj, parts.join('.')) : obj;
+    if (parent != null && typeof parent === 'object') delete parent[last];
 }
 
 export const CHAR_LORE_PATH = Object.freeze(['world_info_settings', 'world_info', 'charLore']);

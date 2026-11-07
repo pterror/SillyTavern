@@ -29,8 +29,8 @@ test.describe('live editor library bundle', () => {
     });
 
     test('lib.js still loads, and a copy the browser already has is answered with 304', async ({ page }) => {
-        const hasLodash = await page.evaluate(async () => typeof (await import('/lib.js')).lodash === 'function');
-        expect(hasLodash).toBe(true);
+        const hasFuse = await page.evaluate(async () => typeof (await import('/lib.js')).Fuse === 'function');
+        expect(hasFuse).toBe(true);
         for (const file of ['/lib.js', '/live-editor-lib.js']) {
             const first = await page.request.get(file);
             expect(first.status()).toBe(200);

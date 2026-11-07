@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import _ from 'lodash';
 import sanitize from 'sanitize-filename';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import { extractFileFromZipBuffer, extractFilesFromZipBuffer, normalizeZipEntryPath, ensureDirectory } from './util.js';
@@ -169,7 +168,7 @@ export class CharXParser {
     }
 
     collectCharXAssets(card) {
-        const assets = _.get(card, 'data.assets');
+        const assets = card?.data?.assets;
         if (!Array.isArray(assets)) {
             return [];
         }

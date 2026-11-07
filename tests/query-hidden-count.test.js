@@ -2,7 +2,6 @@ import { describe, test, expect, jest, beforeAll, afterAll, beforeEach, afterEac
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
-import lodash from 'lodash';
 
 const originalCwd = process.cwd();
 const noop = () => {};
@@ -20,7 +19,6 @@ function createFakeLocalforageInstance() {
 }
 
 jest.unstable_mockModule('../public/lib.js', () => ({
-    lodash,
     localforage: { createInstance: createFakeLocalforageInstance },
 }));
 jest.unstable_mockModule('../public/scripts/user.js', () => ({ getCurrentUserHandle: () => 'query-hidden-count-test-user' }));

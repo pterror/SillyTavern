@@ -6,7 +6,6 @@ import readline from 'node:readline';
 
 import express from 'express';
 import sanitize from 'sanitize-filename';
-import _ from 'lodash';
 
 import validateAvatarUrlMiddleware from '../middleware/validateFileName.js';
 import {
@@ -436,7 +435,7 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
         rl.on('line', (line) => {
             if (withMetadata && itemCounter === 0) {
                 const jsonData = tryParse(line);
-                if (jsonData && _.isObjectLike(jsonData.chat_metadata)) {
+                if (jsonData && typeof jsonData.chat_metadata === 'object' && jsonData.chat_metadata !== null) {
                     chatData.chat_metadata = jsonData.chat_metadata;
                 }
             }

@@ -2,7 +2,6 @@ import { describe, test, expect, jest, beforeAll, afterAll, beforeEach, afterEac
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
-import lodash from 'lodash';
 
 const originalCwd = process.cwd();
 const USER_HANDLE = 'sort-fallback-test-user';
@@ -23,7 +22,6 @@ function createFakeLocalforageInstance() {
 const powerUser = { bogus_folders: false, fuzzy_search: false, sort_field: 'name', sort_order: 'asc', sort_rule: undefined };
 
 jest.unstable_mockModule('../public/lib.js', () => ({
-    lodash,
     localforage: { createInstance: createFakeLocalforageInstance },
 }));
 jest.unstable_mockModule('../public/scripts/user.js', () => ({ getCurrentUserHandle: () => USER_HANDLE }));

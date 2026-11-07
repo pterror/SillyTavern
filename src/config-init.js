@@ -2,9 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'yaml';
 import color from 'chalk';
-import _ from 'lodash';
 import { serverDirectory } from './server-directory.js';
-import { keyToEnv, setConfigFilePath, stringToBool } from './util.js';
+import { isPlainObject, keyToEnv, setConfigFilePath, stringToBool } from './util.js';
+import { getAtPath, setAtPath, unsetAtPath } from '../public/scripts/hash-utils.js';
 
 const keyMigrationMap = [
     {
@@ -87,7 +87,7 @@ function getAllKeys(obj, prefix = '') {
         return [];
     }
 
-    return _.flatMap(Object.keys(obj), key => {
+    return Object.keys(obj).flatMap(key => {
         const newPrefix = prefix ? `${prefix}.${key}` : key;
         if (typeof obj[key] === 'object' && !Array.isArray(obj[key])) {
             return getAllKeys(obj[key], newPrefix);
@@ -95,6 +95,24 @@ function getAllKeys(obj, prefix = '') {
             return [newPrefix];
         }
     });
+}
+
+/**
+ * Fills each key `target` lacks from `defaults`, recursing into objects both have. Arrays are values: a configured
+ * list is kept whole.
+ * @param {object} target
+ * @param {object} defaults
+ * @returns {object} `target`
+ */
+function withDefaults(target, defaults) {
+    for (const [key, value] of Object.entries(defaults)) {
+        if (target[key] === undefined) {
+            target[key] = value;
+        } else if (isPlainObject(target[key]) && isPlainObject(value)) {
+            withDefaults(target[key], value);
+        }
+    }
+    return target;
 }
 
 /**
@@ -135,9 +153,9 @@ export function addMissingConfigValues(configPath) {
                 console.log(`Redirecting ${color.blue(oldEnvKey)}=${oldValue} -> ${color.blue(newEnvKey)}=${newValue}`);
             }
 
-            if (_.has(config, oldKey)) {
+            if (getAtPath(config, oldKey) !== undefined) {
                 if (remove) {
-                    _.unset(config, oldKey);
+                    unsetAtPath(config, oldKey);
                     migratedKeys.push({
                         oldKey,
                         newValue: void 0,
@@ -145,10 +163,10 @@ export function addMissingConfigValues(configPath) {
                     continue;
                 }
 
-                const oldValue = _.get(config, oldKey);
+                const oldValue = getAtPath(config, oldKey);
                 const newValue = migrate(oldValue);
-                _.set(config, newKey, newValue);
-                _.unset(config, oldKey);
+                setAtPath(config, newKey, newValue);
+                unsetAtPath(config, oldKey);
 
                 migratedKeys.push({
                     oldKey,
@@ -162,14 +180,14 @@ export function addMissingConfigValues(configPath) {
         // Get all keys from the original config
         const originalKeys = getAllKeys(config);
 
-        // Use lodash's defaultsDeep function to recursively apply default properties
-        config = _.defaultsDeep(config, defaultConfig);
+        config = withDefaults(config ?? {}, defaultConfig);
 
         // Get all keys from the updated config
         const updatedKeys = getAllKeys(config);
 
         // Find the keys that were added
-        const addedKeys = _.difference(updatedKeys, originalKeys);
+        const original = new Set(originalKeys);
+        const addedKeys = updatedKeys.filter(key => !original.has(key));
 
         if (addedKeys.length === 0 && migratedKeys.length === 0) {
             return;

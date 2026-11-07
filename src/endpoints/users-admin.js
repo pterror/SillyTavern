@@ -2,7 +2,6 @@ import { promises as fsPromises } from 'node:fs';
 
 import storage from 'node-persist';
 import express from 'express';
-import lodash from 'lodash';
 import { checkForNewContent, CONTENT_TYPES } from './content-manager.js';
 import { startDroppedWatch, stopDroppedWatch } from './characters.js';
 import {
@@ -26,13 +25,19 @@ export const router = express.Router();
  * - Trims whitespace
  * - Replaces spaces and special characters with hyphens
  * - Removes leading and trailing hyphens
- * - Uses lodash.deburr to remove diacritical marks
+ * - Removes diacritical marks, and spells the Latin letters that have none (ß, æ, ø, ...) in ASCII
  * @param {string} text Text to slugify
  * @returns {string} Slugified text
  */
 function slugify(text) {
-    return lodash.deburr(String(text ?? '').toLowerCase().trim()).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    return String(text ?? '').toLowerCase().trim()
+        .normalize('NFKD').replace(/\p{M}/gu, '')
+        .replace(/[ßæœøđłþð]/g, letter => LATIN_ASCII[letter])
+        .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 }
+
+/** @type {Record<string, string>} */
+const LATIN_ASCII = { 'ß': 'ss', 'æ': 'ae', 'œ': 'oe', 'ø': 'o', 'đ': 'd', 'ł': 'l', 'þ': 'th', 'ð': 'd' };
 
 router.post('/get', requireAdminMiddleware, async (_request, response) => {
     try {

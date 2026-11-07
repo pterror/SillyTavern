@@ -5,7 +5,6 @@ import {
     hljs,
     Handlebars,
     Popper,
-    lodash,
 } from './lib.js';
 
 import { getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown } from './scripts/RossAscends-mods.js';
@@ -167,7 +166,7 @@ import {
     cancelDebounce,
     uuidv4,
 } from './scripts/utils.js';
-import { getAtPath, seedKeyHashes, settingsWithoutCharLore, normalizeFav } from './scripts/hash-utils.js';
+import { getAtPath, seedKeyHashes, setAtPath, settingsWithoutCharLore, normalizeFav } from './scripts/hash-utils.js';
 import { countedCardFieldValue, isCountedCardField } from './scripts/card-token-texts.js';
 import { chatOpenAsks, takeChatOpenParts } from './scripts/chat-open-parts.js';
 import { debounce_timeout, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE, UNSET_VALUE } from './scripts/constants.js';
@@ -521,7 +520,7 @@ let _loadedCharacterFieldHashesAvatar = null;
  * @returns {number}
  */
 function hashCharacterFieldValue(character, v2Path) {
-    const value = lodash.get(character, v2Path);
+    const value = getAtPath(character, v2Path);
     return getStringHash(JSON.stringify(value !== undefined ? value : null));
 }
 
@@ -639,8 +638,8 @@ export function saveCharacterField(avatar, formId, value, baseline = undefined) 
         }
 
         const mergeData = { avatar };
-        if (mapping.v1) lodash.set(mergeData, mapping.v1, converted.value);
-        lodash.set(mergeData, mapping.v2, converted.value);
+        if (mapping.v1) setAtPath(mergeData, mapping.v1, converted.value);
+        setAtPath(mergeData, mapping.v2, converted.value);
         mergeData._loadedFieldHashes = { [mapping.v2]: chain.hash };
 
         try {
@@ -1733,7 +1732,7 @@ export async function redisplayChat({ targetChat = chat, startIndex = 0, fade = 
         //Append to chat in one DOM update.
         chatElement.append(newMessageElements);
 
-        applyCharacterTagsToMessageDivs({ mesIds: lodash.range(startIndex, targetChat.length, 1) });
+        applyCharacterTagsToMessageDivs({ mesIds: Array.from({ length: Math.max(0, targetChat.length - startIndex) }, (_, i) => startIndex + i) });
     }
 
     refreshSwipeButtons(false, fade);

@@ -1,6 +1,5 @@
 import fetch from 'node-fetch';
 import express from 'express';
-import _ from 'lodash';
 
 import {
     TEXTGEN_TYPES,
@@ -12,7 +11,7 @@ import {
     FEATHERLESS_KEYS,
     OPENAI_KEYS,
 } from '../../constants.js';
-import { forwardFetchResponse, trimV1, getConfigValue } from '../../util.js';
+import { forwardFetchResponse, trimV1, getConfigValue, pickKeys } from '../../util.js';
 import { setAdditionalHeaders } from '../../additional-headers.js';
 import { createHash } from 'node:crypto';
 import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta, createBackpressureWriter, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, encodeContent, encodeStoredReplyFrame, encodeIndexFrame, encodeReasoningFrame, encodeProbabilitiesFrame, encodeControlFrame, writeStoredMessagesFrame } from './llamacpp-compact-stream.js';
@@ -676,17 +675,17 @@ router.post('/generate', withGenerationStop(async function (request, response) {
         setAdditionalHeaders(request, args, baseUrl);
 
         if (request.body.api_type === TEXTGEN_TYPES.TOGETHERAI) {
-            request.body = _.pickBy(request.body, (_, key) => TOGETHERAI_KEYS.includes(key));
+            request.body = pickKeys(request.body, TOGETHERAI_KEYS);
             args.body = JSON.stringify(request.body);
         }
 
         if (request.body.api_type === TEXTGEN_TYPES.INFERMATICAI) {
-            request.body = _.pickBy(request.body, (_, key) => INFERMATICAI_KEYS.includes(key));
+            request.body = pickKeys(request.body, INFERMATICAI_KEYS);
             args.body = JSON.stringify(request.body);
         }
 
         if (request.body.api_type === TEXTGEN_TYPES.FEATHERLESS) {
-            request.body = _.pickBy(request.body, (_, key) => FEATHERLESS_KEYS.includes(key));
+            request.body = pickKeys(request.body, FEATHERLESS_KEYS);
             args.body = JSON.stringify(request.body);
         }
 
@@ -695,7 +694,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
         }
 
         if (request.body.api_type === TEXTGEN_TYPES.GENERIC) {
-            request.body = _.pickBy(request.body, (_, key) => OPENAI_KEYS.includes(key));
+            request.body = pickKeys(request.body, OPENAI_KEYS);
             if (Array.isArray(request.body.stop)) { request.body.stop = request.body.stop.slice(0, 4); }
             args.body = JSON.stringify(request.body);
         }
@@ -715,12 +714,12 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 request.body.provider.quantizations = request.body.quantizations;
             }
 
-            request.body = _.pickBy(request.body, (_, key) => OPENROUTER_KEYS.includes(key));
+            request.body = pickKeys(request.body, OPENROUTER_KEYS);
             args.body = JSON.stringify(request.body);
         }
 
         if (request.body.api_type === TEXTGEN_TYPES.VLLM) {
-            request.body = _.pickBy(request.body, (_, key) => VLLM_KEYS.includes(key));
+            request.body = pickKeys(request.body, VLLM_KEYS);
             args.body = JSON.stringify(request.body);
         }
 
@@ -736,7 +735,7 @@ router.post('/generate', withGenerationStop(async function (request, response) {
                 stream: request.body.stream ?? false,
                 keep_alive: keepAlive,
                 raw: true,
-                options: _.pickBy(request.body, (_, key) => OLLAMA_KEYS.includes(key)),
+                options: pickKeys(request.body, OLLAMA_KEYS),
             });
         }
 

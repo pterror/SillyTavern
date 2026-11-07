@@ -1,5 +1,3 @@
-import _ from 'lodash';
-
 import { CARD_COLUMNS, assembleCard, splitCard } from './character-card-storage.js';
 import { computeContentIdentityHash } from './card-identity-hash.js';
 import { LIST_EXTRA_PATHS, cardListValues } from './card-list-values.js';
@@ -18,7 +16,7 @@ import { avatarRefString } from './avatar-refs.js';
 import { bookKey } from './world-info-keys.js';
 import { LIBRARY_LABELS, cursorWeights, cursorWeightsOf, searchClauses } from './search-clauses.js';
 import { SLOT, WorldInfoEngine, isEntryList } from './world-info-engine.js';
-import { groupDigestContentHash, groupDigestFavHash, groupDigestTagIdsHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
+import { groupDigestContentHash, groupDigestFavHash, groupDigestTagIdsHash, normalizeFav, normalizeTagIds, setAtPath, tagNameKey } from '../public/scripts/hash-utils.js';
 
 export { FIELD, HASH, TAG_KEY_PREFIX, TYPE, textEdit, wtf8Length, itemField, valueRecords };
 
@@ -545,7 +543,10 @@ export class LibraryEngine {
             if (!linkKey && links.length > 1) {
                 if (world === '') next.values.delete(FIELD.world);
                 const name = (await this.bookNames([links[1].book])).get(links[1].book);
-                if (typeof name === 'string') identityCard = _.set(_.cloneDeep(card), 'data.extensions.world', name);
+                if (typeof name === 'string') {
+                    identityCard = structuredClone(card);
+                    setAtPath(identityCard, 'data.extensions.world', name);
+                }
             }
             records.push(...valueRecords(id, withoutStatements(stored), next));
             const { getCharaCardV2 } = await import('./character-card-normalize.js');

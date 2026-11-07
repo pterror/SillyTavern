@@ -11,7 +11,6 @@ import storage from 'node-persist';
 import express from 'express';
 import mime from 'mime-types';
 import archiver from 'archiver';
-import _ from 'lodash';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import sanitize from 'sanitize-filename';
 import ipMatching from 'ip-matching';
@@ -475,7 +474,8 @@ export async function migrateSystemPrompts() {
                 }
             }
             // Only leave unique contents
-            migratedPrompts = _.uniqBy(migratedPrompts, 'content');
+            const seenContents = new Set();
+            migratedPrompts = migratedPrompts.filter(prompt => !seenContents.has(prompt.content) && seenContents.add(prompt.content));
             // Only leave contents that are not in the default prompts
             migratedPrompts = migratedPrompts.filter(x => !defaultPrompts.some(y => y.content === x.content));
             for (const sysPromptData of migratedPrompts) {
